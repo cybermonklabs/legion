@@ -846,6 +846,63 @@ and a product bound the test does not mean to race takes `testwait.PastTheRun`. 
 marker in these packages: a new test with neither the call nor the comment runs alone for no
 reason.
 
+## A test in `packages/envoy/internal/store` runs beside the others
+
+Every top-level test of `packages/envoy/internal/store` calls `t.Parallel()` as its first
+statement, or says on its first line, in a `// Not parallel:` comment, why it cannot: it changes
+something the whole test process shares (the environment, the default logger, a package variable,
+the GC, goroutine counts), or it holds a wall-clock span that the parallel tests' load could make it
+miss, which the comment names. A subtest with a server, an account and a registry of its own calls
+`t.Parallel()` too. Subtests that share one fixture run in order, and a `// Sequential:` comment
+above each `t.Run` names the fixture they share. Nothing checks the marker in this package.
+
+Each test owns what it uses. The package's tests share one NATS server per test binary
+(`testnats.Main` in `TestMain`), and each test that asks takes an account of its own on it, so
+`TestMain` declares `testnats.Accounts(1024)`: the package runs more test and subtest names than
+the server's 256 first accounts, and a reload for more accounts holds every client of the server
+while the parallel tests run. A test that needs a server of its own starts one
+(`kvchunktest.SmallPayloadNATS`, `startRoleScanServer`), and no test names a fixed port.
+
+A test that reads log lines reads a logger of its own: it passes `WithLogger` to `Open`, sets
+`Registry.log` on a registry it builds without `Open`, or gives a watcher it builds
+`kvwatch.WithLogger` (`ownLogs`, `ownJSONLogs`). It never replaces the default logger. An absence
+check reads a logger that every source of the line it says is absent writes to.
+
+A wait for a fact goes through `internal/testwait` (`Until`, `Receive`, `Context`), whose only
+bound is the test binary's deadline less its margin, and the package's own waits (`waitFor`,
+`waitForMatches`, `waitForHeld`) are built on it. No test or helper sets a timeout of its own: a
+request, a flush or a JetStream context the test waits on takes `testwait.Context(t)`,
+`testnats.Context(t)` or `testnats.MaxWait(t)`, and a seeded connection takes
+`testnats.AwaitConnectSeed` in place of `ConnectSeed`. A request deadline that is the input of a
+case, whose end the code under test answers, is made on the test's fake clock
+(`clocktest.Fake.WithTimeout`), which the test moves past it.
+
+A timer of this module's own code that a test depends on runs on a clock the test moves, and no
+verdict reads the wall clock:
+
+- Every `Open` of the package's tests goes through `openOnScanClock`, which hands the role claim
+  scan (`scanRoleClaims`) a `clocktest.Fake` and moves it past each connection poll until `Open`
+  returns, so no test waits out `roleClaimScanPoll`. The scan's own tests
+  (`role_claim_scan_test.go`) and `TestOpenFailsWhenTheRoleRevisionScanStalls` (`kv_test.go`) are
+  the exceptions: they hand it a fake through `withRoleScanSeams` and move it themselves, past the
+  scan's deadline, its idle bound and its polls as each case needs, once the scan has armed each.
+- The reapers (`StartReaper`, `StartRoleClaimReaper`) and the interest marker collector tick on the
+  registry's timer clock (`WithTimerClock`, `Registry.timers` on a registry built without `Open`),
+  and the collector's scan and the role claim listing's scan (`roleClaimsUntil`, which the
+  deregistration's fallback, `ReleaseRefusedRoleClaims`' fallback and the role claim reaper's pass
+  run) run their idle bounds on it. Each tick after a pass is armed only once that pass returned,
+  so a test that sees the next tick armed on its fake knows the pass is done.
+- A claim whose caller's context has no deadline runs its rollback or its topic merge in
+  `claimCleanupWindow` on the same timer clock. `openOnScanClock` and `coldRegistry` give the
+  registry a timer clock that nothing moves, so that window never ends under the parallel tests'
+  load, and a case that starts one of the loops passes a timer clock of its own, which it moves.
+- A watcher a test builds fires its idle wait and its re-read through kvwatch's own seams
+  (`kvwatch.WithAfterFunc`, `kvwatch.WithNow`), not a shortened `kvwatch.WithScanIdleTimeout`.
+- Each stamp a verdict or a staged window reads (an interest's `UpdatedAt`, a role claim's
+  `ClaimedAt`) comes from the clock the registry reads (`WithClock`, `Registry.now`), a fake.
+
+Production passes none of these seams, and keeps `clock.Real()` and every duration.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),

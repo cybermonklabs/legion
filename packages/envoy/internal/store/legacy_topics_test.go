@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -87,6 +86,7 @@ var oldOnlyIssueFilters = map[string]string{
 // other families' names too. A filter that hears both forms or the new form alone is neither, and a
 // failed-delivery report of one follows the filter it carries.
 func TestAnOldOnlyWildcardIssueFilterIsCountedAndNamed(t *testing.T) {
+	t.Parallel()
 	const issue = contracts.DispatchIssueTopicPrefix
 	const exceptions = "notifications.envoy.exceptions."
 	const family = "notifications.dispatch.*."
@@ -132,6 +132,7 @@ func TestAnOldOnlyWildcardIssueFilterIsCountedAndNamed(t *testing.T) {
 // delivers nothing (a role is held through POST /v1/roles/set), so advising one would send the
 // caller to a second topic that delivers nothing either.
 func TestEachOldFormTopicIsNamedWithItsNewFormAndCounted(t *testing.T) {
+	t.Parallel()
 	for _, row := range readLegacyFixture(t).CanonicalTopic {
 		counter := &kindCounter{}
 		r := &Registry{legacySubjects: counter}
@@ -156,6 +157,7 @@ func TestEachOldFormTopicIsNamedWithItsNewFormAndCounted(t *testing.T) {
 // that is counted, since it is a reader the old form still has, and named in no warning, since the
 // caller named no such topic and could do nothing with one.
 func TestTheSessionsOwnOldAgentSubjectIsCountedAndNamedInNoWarning(t *testing.T) {
+	t.Parallel()
 	counter := &kindCounter{}
 	r := &Registry{legacySubjects: counter}
 	if warnings := r.LegacyTopicWarnings("ses_own", []string{contracts.LegacyAgentSubject("ses_own")}); len(warnings) != 0 {
@@ -177,6 +179,7 @@ func TestTheSessionsOwnOldAgentSubjectIsCountedAndNamedInNoWarning(t *testing.T)
 // leaves alone, is not. The session's own agent subject in the old form is never counted there:
 // the listener writes it into every row itself, and counting it would move the counter for ever.
 func TestAStoredOldFormTopicIsCountedEachTimeItIsReadIntoAFilter(t *testing.T) {
+	t.Parallel()
 	for _, row := range readLegacyFixture(t).CanonicalTopic {
 		counter := &kindCounter{}
 		r := &Registry{legacySubjects: counter}
@@ -205,6 +208,7 @@ func TestAStoredOldFormTopicIsCountedEachTimeItIsReadIntoAFilter(t *testing.T) {
 // (kind="role") and named with its new form, project first; a role claimed in the new form is
 // read as its name and neither counted nor named.
 func TestEachOldFormRoleIsReadAsItsNameAndCounted(t *testing.T) {
+	t.Parallel()
 	for _, row := range readLegacyFixture(t).CanonicalRole {
 		counter := &kindCounter{}
 		r := &Registry{legacySubjects: counter}
@@ -227,6 +231,7 @@ func TestEachOldFormRoleIsReadAsItsNameAndCounted(t *testing.T) {
 // as they read it today, and a session that registered the new form is reached by today's
 // publishes.
 func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
+	t.Parallel()
 	interests := map[string]Interest{
 		"ses_old": {SessionID: "ses_old", MachineID: "m", Topics: []string{"notifications.dispatch.issue.INFRA-12.>", contracts.LegacyAgentSubject("ses_old")}},
 		"ses_new": {SessionID: "ses_new", MachineID: "m", Topics: []string{contracts.DispatchIssueSubject("INFRA", "INFRA-12", ">"), contracts.AgentSubject("INFRA", "ses_new")}},
@@ -278,6 +283,7 @@ func TestAnInterestInEitherFormMatchesAPublishInEitherForm(t *testing.T) {
 // name and a role's lane under a project are the rows a reading that takes the new form's
 // wildcard (notifications.agent.*.s1) as a literal key leaves behind.
 func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
+	t.Parallel()
 	const kept = "notifications.github.o.r.>"
 	for _, tc := range []struct{ name, stored, removed string }{
 		{"an issue by its old name", "notifications.dispatch.issue.INFRA.INFRA-12.>", "notifications.dispatch.issue.INFRA-12.>"},
@@ -289,6 +295,7 @@ func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
 		{"a role by its new name", "notifications.role.lead-reviewer", "notifications.role._.lead-reviewer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			item := Interest{Topics: []string{tc.stored, kept}}
 			if got := Remove(item, []string{tc.removed}).Topics; !slices.Equal(got, []string{kept}) {
 				t.Fatalf("a record holding %q, asked to remove %q, left %q; want the GitHub topic alone", tc.stored, tc.removed, got)
@@ -306,6 +313,7 @@ func TestRemovingATopicRemovesEveryFormOfIt(t *testing.T) {
 // A role's lane topic names its role in either form, so a record's roles and a release of named
 // topics read a record that holds the new form as they read one that holds the old.
 func TestARoleTopicInEitherFormNamesItsRole(t *testing.T) {
+	t.Parallel()
 	for topic, want := range map[string]string{
 		"notifications.role.legion-priv-priv-1-architect":                 "legion-priv-priv-1-architect",
 		contracts.RoleSubject("PRIV", "legion-priv-priv-1-architect"):     "legion-priv-priv-1-architect",
@@ -330,6 +338,7 @@ func TestARoleTopicInEitherFormNamesItsRole(t *testing.T) {
 // or a lane topic names it; every other name keeps the bare key every claim had before, byte for
 // byte.
 func TestAFreeFormRoleUnderAProjectKeysOnThatProject(t *testing.T) {
+	t.Parallel()
 	for role, want := range map[string]string{
 		"lead-reviewer":                      "lead-reviewer",
 		"_.lead-reviewer":                    "lead-reviewer",
@@ -368,6 +377,7 @@ func TestAFreeFormRoleUnderAProjectKeysOnThatProject(t *testing.T) {
 // nowhere, and the record stores each topic as the caller wrote it, whatever its form, as the merge
 // base stored it, read back through the bucket by a second registry.
 func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
+	t.Parallel()
 	counter := &kindCounter{}
 	unmoved := []string{
 		"notifications.github.o.r.>",
@@ -381,16 +391,14 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	writer, err := Open(t.Context(), conn, WithReplicas(1))
+	writer, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
-	defer writer.StopWatch()
-	reader, err := Open(t.Context(), conn, WithReplicas(1))
+	reader, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the second registry: %v", err)
 	}
-	defer reader.StopWatch()
 	topics := append(slices.Clone(unmoved), "notifications.dispatch.issue.INFRA-12.>", contracts.LegacyAgentSubject("ses_r9"))
 	if _, err := writer.Upsert(Interest{SessionID: "ses_r9", MachineID: "m1"}, topics); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -403,5 +411,5 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 	if !slices.Equal(row.Topics, want) {
 		t.Fatalf("stored topics = %q, want %q as written", row.Topics, want)
 	}
-	pollMatch(t, reader, "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1, 5*time.Second)
+	waitForMatches(t, reader, "the second registry's watcher to deliver ses_r9's row", "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1)
 }

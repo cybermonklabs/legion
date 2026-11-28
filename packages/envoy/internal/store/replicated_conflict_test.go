@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
@@ -20,15 +19,14 @@ func openReplicatedRegistry(t *testing.T) (*testnats.Cluster, *Registry) {
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.Servers[0].URL())
 	t.Cleanup(conn.Close)
-	reg, err := Open(t.Context(), conn, WithReplicas(3))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(3))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	for _, bucket := range []string{bus.InterestBucket, bus.RoleClaimBucket} {
 		cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
 	}
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	return cluster, reg
 }
 
@@ -47,6 +45,7 @@ func raceRoles(t *testing.T, cluster *testnats.Cluster, reg *Registry) *testnats
 // nats.ErrKeyExists does not match, where a bucket of one copy answers 10071, which it does.
 // Before, each row's write answered the loss as a failure of the bucket.
 func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
+	t.Parallel()
 	cluster, reg := openReplicatedRegistry(t)
 	ctx := context.Background()
 	putRecord := func(t *testing.T, sessionID string) (Interest, []byte, uint64) {
@@ -73,6 +72,8 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 	}
 	const holder, claimant = "ses_replicated_holder", "ses_replicated_claimant"
 
+	// Sequential: every subtest races a write through the parent's cluster and registry, whose
+	// bucket handles the race swaps (useKV, raceRoles).
 	t.Run("a conditional delete of an interest record keeps the record", func(t *testing.T) {
 		const sessionID = "ses_replicated_interest_delete"
 		_, _, revision := putRecord(t, sessionID)
@@ -91,6 +92,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 
+	// Sequential: the parent's cluster and registry, as above.
 	t.Run("a conditional write of an interest record is refused for a plan over the new row", func(t *testing.T) {
 		const sessionID = "ses_replicated_interest_write"
 		row, value, revision := putRecord(t, sessionID)
@@ -106,6 +108,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 
+	// Sequential: the parent's cluster and registry, as above.
 	t.Run("a renewal of a role claim is dropped", func(t *testing.T) {
 		const role = "replicated-renewal"
 		claim(t, holder, roleClaimInstance, role)
@@ -120,6 +123,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 
+	// Sequential: the parent's cluster and registry, as above.
 	t.Run("a release of an expired role claim is superseded", func(t *testing.T) {
 		const role = "replicated-expired"
 		claim(t, holder, roleClaimInstance, role)
@@ -138,6 +142,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 
+	// Sequential: the parent's cluster and registry, as above.
 	t.Run("a release of a role claim deletes it at the revision it reads again", func(t *testing.T) {
 		const role = "replicated-release"
 		claim(t, holder, roleClaimInstance, role)
@@ -157,6 +162,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 
+	// Sequential: the parent's cluster and registry, as above.
 	t.Run("an outright claim of a held role writes again over the claim it reads again", func(t *testing.T) {
 		const role = "replicated-outright"
 		claim(t, holder, roleClaimInstance, role)
@@ -171,6 +177,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		}
 	})
 
+	// Sequential: the parent's cluster and registry, as above.
 	t.Run("a conditional claim of a held role is a revision mismatch", func(t *testing.T) {
 		const role = "replicated-conditional"
 		claim(t, holder, roleClaimInstance, role)

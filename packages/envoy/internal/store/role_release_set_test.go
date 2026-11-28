@@ -56,6 +56,7 @@ func assertNoInterestRecord(t *testing.T, rig *repairRig, sessionID string) {
 // (dispatch://INFRA-1383). A release whose set came from the copy alone would leave the lost claim
 // standing, and one that scanned the bucket in place of the per-role reads would show the scan.
 func TestAReleaseSetFreesAClaimTheCopyLostWithOneReadPerRole(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_release_set"
 		kept   = "release-set-kept"
@@ -104,6 +105,7 @@ func TestAReleaseSetFreesAClaimTheCopyLostWithOneReadPerRole(t *testing.T) {
 // neither afterwards. The same drive with a view that can be served frees both as well, from the
 // record and the view and with no scan, so the first case cannot pass for a reason of its own.
 func TestAReleaseUnderARefusingViewFreesEveryClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		holder     = "ses_released_under_a_refusing_view"
 		recorded   = "refusing-view-recorded"
@@ -150,9 +152,8 @@ func TestAReleaseUnderARefusingViewFreesEveryClaim(t *testing.T) {
 	}
 
 	t.Run("a view that cannot be served", func(t *testing.T) {
-		conn, cleanup := connectNATS(t)
-		t.Cleanup(cleanup)
-		reg, _ := coldRegistry(t, conn)
+		t.Parallel()
+		reg, _, _, _ := clockedColdRegistry(t)
 		if err := reg.RoleViewErr(); !errors.Is(err, ErrRoleViewNotReady) {
 			t.Fatalf("the registry's role claim view refuses with %v, want ErrRoleViewNotReady", err)
 		}
@@ -162,6 +163,7 @@ func TestAReleaseUnderARefusingViewFreesEveryClaim(t *testing.T) {
 	})
 
 	t.Run("a view that can be served", func(t *testing.T) {
+		t.Parallel()
 		rig := newRepairRig(t, nil)
 		if err := rig.reg.RoleViewErr(); err != nil {
 			t.Fatalf("the registry's role claim view refuses with %v, want it served", err)

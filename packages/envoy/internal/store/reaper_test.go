@@ -6,13 +6,14 @@ import (
 	"errors"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // storeRoleClaim stores claim under role through the bucket's own handle, which is how a case
@@ -65,20 +66,16 @@ func putHandedBackRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder, inst
 // claim of a lane whose session id a second process resumed and then deregistered: the record is
 // gone and the lane is running, and the renewal is the only thing that says so.
 func TestARoleClaimPassKeepsAClaimItsHolderStillRenews(t *testing.T) {
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
+	t.Parallel()
+	reg, raw, start, _ := clockedColdRegistry(t)
 	const (
 		renewing   = "legion-controller"
 		stopped    = "legion-reviewer"
 		holder     = "ses_gone_from_the_session_bucket"
 		liveWindow = time.Minute
 	)
-	raw := reg.roleKV.Legacy()
-	now := time.Now()
-	putRenewedRoleClaim(t, raw, renewing, holder, roleClaimInstance, now.Add(-liveWindow/2))
-	putRenewedRoleClaim(t, raw, stopped, holder, roleClaimInstance, now.Add(-2*liveWindow))
+	putRenewedRoleClaim(t, raw, renewing, holder, roleClaimInstance, start.Add(-liveWindow/2))
+	putRenewedRoleClaim(t, raw, stopped, holder, roleClaimInstance, start.Add(-2*liveWindow))
 
 	sweep, err := reg.ReapRoleClaims(context.Background(), func(string) bool { return false }, 0, liveWindow)
 	if err != nil {
@@ -101,20 +98,22 @@ func TestARoleClaimPassKeepsAClaimItsHolderStillRenews(t *testing.T) {
 	assertRoleHolder(t, reg, renewing, holder)
 }
 
-// clockedColdRegistry is a cold registry whose clock starts at a fixed moment, with the role
-// bucket's own handle to seed claims through (putRenewedRoleClaim) and an advance that moves the
-// clock that far past that moment, as the renewal cases' fixture does (renewedRoleClaim). A pass
-// weighs a claim's renewal, and this registry's refusal to answer one, against this clock, so a
-// case moves time rather than waiting for it.
-func clockedColdRegistry(t *testing.T) (reg *Registry, roles natsgo.KeyValue, start time.Time, advance func(time.Duration)) {
+// clockedColdRegistry is a cold registry (coldRegistry) on a clock of the test's own: a clocktest
+// fake that starts at a fixed moment, start, which the registry reads its time from (Registry.now)
+// and its loops wait on (Registry.timers). It comes with the role bucket's own handle to seed claims
+// through (putRenewedRoleClaim). A pass weighs a claim's renewal, and this registry's refusal to
+// answer one, against this clock, and a reaper loop's tick comes only when the case moves the fake
+// past it, so a case moves time rather than waiting for it.
+func clockedColdRegistry(t *testing.T) (reg *Registry, roles natsgo.KeyValue, start time.Time, fake *clocktest.Fake) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, _ = coldRegistry(t, conn)
 	start = time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
-	var elapsed atomic.Int64
-	reg.now = func() time.Time { return start.Add(time.Duration(elapsed.Load())) }
-	return reg, reg.roleKV.Legacy(), start, func(since time.Duration) { elapsed.Store(int64(since)) }
+	fake = clocktest.New(start)
+	reg.now = fake.Now
+	reg.timers = fake
+	return reg, reg.roleKV.Legacy(), start, fake
 }
 
 // The rule this change restores, over the very claim that made a wider rule look necessary: one
@@ -127,6 +126,7 @@ func clockedColdRegistry(t *testing.T) (reg *Registry, roles natsgo.KeyValue, st
 // Once that holder session is gone the same lapsed claim is freed, which is the other half of
 // that rule: a row that held only the keeping would pass over a reaper that freed nothing.
 func TestAPassKeepsALapsedClaimThatNamesAProcessWhileItsHolderIsAlive(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_out_of_touch_and_still_answering"
@@ -159,6 +159,7 @@ func TestAPassKeepsALapsedClaimThatNamesAProcessWhileItsHolderIsAlive(t *testing
 // The two together are the whole of the rule: the mark moves a claim past a live holder, and
 // nothing else does.
 func TestAPassFreesAHandedBackClaimWhileItsHolderSessionIsStillAlive(t *testing.T) {
+	t.Parallel()
 	const (
 		marked     = "legion-reviewer"
 		unmarked   = "legion-controller"
@@ -189,12 +190,13 @@ func TestAPassFreesAHandedBackClaimWhileItsHolderSessionIsStillAlive(t *testing.
 // isAlive answers false throughout, so nothing but the claim's own renewal can be keeping it:
 // the same pass a window later frees it.
 func TestAPassKeepsAMarkedClaimWhoseRenewalIsStillInsideTheWindow(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_marked_by_an_older_clients_hand_back"
 		liveWindow = time.Minute
 	)
-	reg, raw, start, advance := clockedColdRegistry(t)
+	reg, raw, start, fake := clockedColdRegistry(t)
 	putHandedBackRoleClaim(t, raw, role, holder, roleClaimInstance, start.Add(-liveWindow/2))
 	gone := func(string) bool { return false }
 
@@ -205,7 +207,7 @@ func TestAPassKeepsAMarkedClaimWhoseRenewalIsStillInsideTheWindow(t *testing.T) 
 	}
 	assertRoleHolder(t, reg, role, holder)
 
-	advance(liveWindow)
+	fake.Advance(liveWindow)
 	sweep, err = reg.ReapRoleClaims(context.Background(), gone, 0, liveWindow)
 	if err != nil || sweep != (RoleClaimSweep{Reaped: 1}) {
 		t.Fatalf("a pass a live window later = %+v, %v; want the marked claim freed", sweep, err)
@@ -220,6 +222,7 @@ func TestAPassKeepsAMarkedClaimWhoseRenewalIsStillInsideTheWindow(t *testing.T) 
 // at a deploy the moment it was claimed can be any age at all - so a pass that weighed the
 // renewal alone would free every role standing at a deploy.
 func TestAPassKeepsALapsedClaimThatNamesNoProcessWhileItsHolderIsAlive(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_holding_a_claim_from_an_earlier_build"
@@ -244,13 +247,13 @@ func TestAPassKeepsALapsedClaimThatNamesNoProcessWhileItsHolderIsAlive(t *testin
 // restoredRoleClaimRegistry seeds the role bucket through the bucket's own handle and then
 // opens a registry over it, so every claim seed stores is one that registry restored at its own
 // start: the restart grace is given to no other claim (releaseReadExpiredRoleClaim). seed is
-// handed that handle and the moment the registry's clock starts at, and the advance returned
-// moves that clock that far past the start, as clockedColdRegistry's does.
+// handed that handle and the moment the registry's clock starts at, a clocktest fake of the
+// test's own (WithClock), and the advance returned sets that clock that far past the start.
 func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, start time.Time)) (*Registry, func(time.Duration)) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -260,18 +263,15 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	}
 	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	seed(raw, start)
-	var elapsed atomic.Int64
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
+	fake := clocktest.New(start)
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(fake.Now))
 	if err != nil {
 		t.Fatalf("open a registry over the stored claims: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
-	ready, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ready); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
-	return reg, func(since time.Duration) { elapsed.Store(int64(since)) }
+	return reg, func(since time.Duration) { fake.Set(start.Add(since)) }
 }
 
 // The restart grace is untouched by the rule above it. A registry that restored a claim at its
@@ -281,6 +281,7 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 // the restart and its holder session is gone, which is exactly the claim a pass frees on sight;
 // past the grace the same pass frees it.
 func TestTheRestartGraceOfARestoredClaimStillHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_held_the_role_before_the_restart"
@@ -319,6 +320,7 @@ func TestTheRestartGraceOfARestoredClaimStillHolds(t *testing.T) {
 // the grace is for and is kept by that same pass (TestTheRestartGraceOfARestoredClaimStillHolds
 // holds that on its own); the pass that follows the grace frees it too.
 func TestARestoredClaimItsHolderHandedBackTakesNoRestartGrace(t *testing.T) {
+	t.Parallel()
 	const (
 		marked     = "legion-reviewer"
 		unmarked   = "legion-controller"
@@ -390,19 +392,17 @@ func logLines(logs *lockedBuffer, msg string) int {
 // which legacy_keys_test.go's "the role claim reaper skips a claim it cannot read or delete"
 // covers: that one is deleted rather than skipped, and the two must not be confused.
 func TestTheRoleClaimReaperGoesPastAClaimItCouldNotRead(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
+	t.Parallel()
+	reg, raw, _, _ := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
 	const unreadable = "legion-controller"
 	roles := []string{"legion-architect", unreadable, "legion-merger", "legion-reviewer"}
-	raw := reg.roleKV.Legacy()
 	for _, role := range roles {
 		if role == unreadable {
 			continue
 		}
-		putRoleClaim(t, raw, role, "ses_gone")
+		putRoleClaim(t, raw, role, "ses_gone", reg.now)
 	}
 	// Stored by a direct put, because a record this build cannot decode is not one putRoleClaim
 	// can write: valid JSON that is not a claim, which the bus hands over and DecodeRoleClaim
@@ -441,17 +441,15 @@ func TestTheRoleClaimReaperGoesPastAClaimItCouldNotRead(t *testing.T) {
 // and its holder in a WARN of its own, since an operator reading a short count has no other way
 // to tell which claim stayed.
 func TestTheRoleClaimReaperGoesPastAClaimItCouldNotRelease(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
+	t.Parallel()
+	reg, raw, _, _ := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
 	const undeletable = "legion-architect"
 	const holder = "ses_gone"
 	roles := []string{"legion-controller", undeletable, "legion-reviewer", "legion-merger"}
-	raw := reg.roleKV.Legacy()
 	for _, role := range roles {
-		putRoleClaim(t, raw, role, holder)
+		putRoleClaim(t, raw, role, holder, reg.now)
 	}
 	// The delete fails the way a loaded bucket fails one key's, so nothing says the next pass
 	// cannot make it either.
@@ -537,15 +535,13 @@ func failRoleClaimDeletesAndEndTheContext(t *testing.T, reg *Registry, end func(
 // puts a pass in flight at the moment of the signal. Both halves are held here: the pass's
 // answer, and the single line StartRoleClaimReaper writes for it.
 func TestTheRoleClaimReaperEndsThePassWhenItsContextEnds(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
+	t.Parallel()
+	reg, raw, start, fake := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
 	roles := []string{"legion-architect", "legion-controller", "legion-merger", "legion-reviewer", "legion-tester"}
-	raw := reg.roleKV.Legacy()
 	for _, role := range roles {
-		putRoleClaim(t, raw, role, "ses_gone")
+		putRoleClaim(t, raw, role, "ses_gone", reg.now)
 	}
 	const releaseFailure = "role reaper skipped a claim it could not release"
 
@@ -568,16 +564,17 @@ func TestTheRoleClaimReaperEndsThePassWhenItsContextEnds(t *testing.T) {
 
 	// And through the loop that runs it, which is where an operator reads a cut-short pass, and
 	// where its level is decided: one line, carrying what the pass had reached beside the error
-	// that ended it, at INFO, because the context that ended was the loop's own.
+	// that ended it, at INFO, because the context that ended was the loop's own. The loop's tick
+	// is on the registry's fake clock, armed one interval past start, and the pass runs once the
+	// case moves the fake there.
 	loopCtx, endLoop := context.WithCancel(context.Background())
 	defer endLoop()
 	failRoleClaimDeletesAndEndTheContext(t, reg, endLoop)
-	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, 10*time.Millisecond, 0, 0)
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the role claim reaper loop is still running after its context ended")
-	}
+	const interval = time.Minute
+	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, interval, 0, 0)
+	fake.AwaitArmedAt(t, "the role claim reaper loop's first tick", start.Add(interval))
+	fake.Advance(interval)
+	testwait.Receive(t, "the role claim reaper loop's end, once its pass has ended the loop's context", done)
 	if got := logLines(logs, releaseFailure); got != 0 {
 		t.Fatalf("the loop's pass wrote %d lines for claims it could not release, over %d roles; want none", got, len(roles))
 	}
@@ -604,13 +601,11 @@ func TestTheRoleClaimReaperEndsThePassWhenItsContextEnds(t *testing.T) {
 // that an ended context could not reach before. None of the three delete arms writes its line
 // here, because the context check comes before them, as it does before the release's line.
 func TestTheRoleClaimReaperEndsThePassWhenItsContextEndsOnAKeyItCannotRead(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
-	raw := reg.roleKV.Legacy()
-	stale := time.Now().Add(-time.Hour).UnixMilli()
+	t.Parallel()
+	reg, raw, start, _ := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
+	stale := start.Add(-time.Hour).UnixMilli()
 	claim, err := json.Marshal(RoleClaim{HolderSessionID: "ses_gone", ClaimedAt: stale})
 	if err != nil {
 		t.Fatalf("encode the claim the earlier listener stored: %v", err)
@@ -706,13 +701,11 @@ func blockRoleClaimDeletes(t *testing.T, reg *Registry, release <-chan struct{})
 // end, which here is the release (bus.Bounded, and ReapRoleClaims on why a delete that lands
 // late is safe).
 func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotReadIsParked(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
-	raw := reg.roleKV.Legacy()
-	stale := time.Now().Add(-time.Hour).UnixMilli()
+	t.Parallel()
+	reg, raw, start, _ := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
+	stale := start.Add(-time.Hour).UnixMilli()
 	claim, err := json.Marshal(RoleClaim{HolderSessionID: "ses_gone", ClaimedAt: stale})
 	if err != nil {
 		t.Fatalf("encode the claim the earlier listener stored: %v", err)
@@ -742,23 +735,13 @@ func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotRe
 		sweep, err := reg.ReapRoleClaims(passCtx, func(string) bool { return false }, 0, 0)
 		answers <- passAnswer{sweep: sweep, err: err}
 	}()
-	select {
-	case <-deletes.sent:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the pass has not reached its delete of the first key it cannot read")
-	}
+	testwait.Receive(t, "the pass to reach its delete of the first key it cannot read", deletes.sent)
 	endPass()
 
-	// Far longer than a pass that answers at its context's end needs, and finite because the
-	// delete it is waiting on answers only when this case releases it: a pass that waits for the
-	// bucket waits here for good.
-	const answerBound = 30 * time.Second
-	var answered passAnswer
-	select {
-	case answered = <-answers:
-	case <-time.After(answerBound):
-		t.Fatalf("the pass is still inside the delete of a key it cannot read %s after its context ended; want it to answer at the context's end, which is what bus.Bounded around that delete is for", answerBound)
-	}
+	// A pass that answers at its context's end answers here at once. The delete it is parked on
+	// answers only when this case releases it, so a pass that waits for the bucket rather than
+	// its context waits here until the shared wait gives up, which names what it waited for.
+	answered := testwait.Receive(t, "the pass's answer at its context's end, with its delete of a key it cannot read still parked: what bus.Bounded around that delete is for", answers)
 	if !errors.Is(answered.err, context.Canceled) {
 		t.Fatalf("a pass whose context ended under its parked delete of an unreadable key = %+v, %v; want it to end with the context's error", answered.sweep, answered.err)
 	}
@@ -786,30 +769,33 @@ func TestTheRoleClaimReaperAnswersAtItsContextsEndWhileItsDeleteOfAKeyItCannotRe
 // pass: earlyEndKV hands the scan a watch that closes before it has delivered the bucket, which
 // drainScan reports as a scan short of it.
 //
-// The loop is left running while this reads its line, so the count is a floor rather than one:
-// the pass repeats every interval, and the line this holds is the first. Whether the loop's own
-// end is INFO is the case above's; this one holds only that a live loop's failure is not.
+// The loop is left running while this reads its line, and it has run exactly one pass: its ticks
+// are on the registry's fake clock, which the case moves to the first of them alone, and the tick
+// after a pass is armed only once that pass has returned (everyInterval), so the line this holds is
+// the one that pass wrote. Whether the loop's own end is INFO is the case above's; this one holds
+// only that a live loop's failure is not.
 func TestTheRoleClaimReaperLogsAPassThatFailedUnderALiveLoopAtError(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
-	putRoleClaim(t, reg.roleKV.Legacy(), "legion-architect", "ses_gone")
+	t.Parallel()
+	reg, raw, start, fake := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
+	putRoleClaim(t, raw, "legion-architect", "ses_gone", reg.now)
 	watchRoleBucketThrough(t, reg, earlyEndKV{KeyValue: reg.roles().WatchHandle(), ended: true})
 
 	loopCtx, endLoop := context.WithCancel(context.Background())
 	defer endLoop()
 	const cycleFailed = "role claim reaper cycle failed"
-	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, 10*time.Millisecond, 0, 0)
-	waitFor(t, 30*time.Second, func() bool { return logLines(logs, cycleFailed) > 0 })
+	const interval = time.Minute
+	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, interval, 0, 0)
+	fake.AwaitArmedAt(t, "the role claim reaper loop's first tick", start.Add(interval))
+	fake.Advance(interval)
+	fake.AwaitArmedAt(t, "the role claim reaper loop's tick after its first pass, armed once that pass has returned", start.Add(2*interval))
+	if got := logLines(logs, cycleFailed); got != 1 {
+		t.Fatalf("the loop wrote %d cycle failure lines over the one pass it ran; want one. the log is:\n%s", got, logs.String())
+	}
 	line := logLine(t, logs, cycleFailed)
 	endLoop()
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the role claim reaper loop is still running after its context ended")
-	}
+	testwait.Receive(t, "the role claim reaper loop's end after its context ended", done)
 
 	for _, want := range []string{"level=ERROR", "reaped=0", "skipped=0"} {
 		if !strings.Contains(line, want) {
@@ -903,13 +889,12 @@ func failRoleClaimGets(t *testing.T, reg *Registry) *refusedGetRoleKeyValue {
 // and TestTheRoleClaimReaperLogsAPassThatFailedUnderALiveLoopAtError holds what the loop writes
 // for it: one line, at ERROR, carrying the counts the pass had reached.
 func TestABusOutageUnderAReaperPassCostsNoPerRoleLineAndReapsEveryClaim(t *testing.T) {
-	logs := captureRegistryLogs(t)
-	conn, cleanup := connectNATS(t)
-	defer cleanup()
-
-	reg, _ := coldRegistry(t, conn)
+	t.Parallel()
+	reg, raw, _, _ := clockedColdRegistry(t)
+	logs, logger := ownLogs()
+	reg.log = logger
 	roles, holderOf := otherSessionsClaims("outage-role", outageRoleClaims)
-	putRoleClaimsInParallel(t, reg.roles().Legacy(), roles, holderOf)
+	putRoleClaimsInParallel(t, raw, roles, holderOf, reg.now)
 	// Every holder is gone, so every claim of the bucket is the pass's to reap and every role
 	// is one the outage could cost a line.
 	gone := func(string) bool { return false }

@@ -77,6 +77,7 @@ func grantClock(t *testing.T, holder, role string) (*Registry, func(time.Duratio
 // renewal, a renewal that states no process and the hand-back's mark each leave the id as the
 // grant wrote it, with the claim's ClaimedAt.
 func TestEveryGrantWritesAnIDOfItsOwnThatRenewalsTheAdoptionAndTheMarkKeep(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_grant_identity"
@@ -140,6 +141,7 @@ func TestEveryGrantWritesAnIDOfItsOwnThatRenewalsTheAdoptionAndTheMarkKeep(t *te
 // is that grant's id where the grant is this release's, which no millisecond can hide, and the
 // moment it was claimed at where the earlier release made it, as that release did.
 func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_claim_without_grant_id"
@@ -166,6 +168,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 	}
 
 	t.Run("a claim that names a process is renewed by that process and freed by its release", func(t *testing.T) {
+		t.Parallel()
 		reg, advance, stored := storeEarlierClaim(t, roleClaimInstance)
 
 		advance(beat)
@@ -184,7 +187,9 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 	})
 
 	t.Run("a claim that names no process", func(t *testing.T) {
+		t.Parallel()
 		t.Run("a hand-back that states no process marks it", func(t *testing.T) {
+			t.Parallel()
 			reg, _, stored := storeEarlierClaim(t, "")
 
 			if _, err := reg.Remove(context.Background(), holder, []string{lane}, RoleReleaseAuthority{}); err != nil {
@@ -199,6 +204,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 		})
 
 		t.Run("a hand-back that races the holder's renewal marks the renewed claim", func(t *testing.T) {
+			t.Parallel()
 			reg, advance, stored := storeEarlierClaim(t, "")
 			advance(beat)
 			racing := raceFirstMarkWith(reg, func() {
@@ -221,6 +227,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 		})
 
 		t.Run("a hand-back that races the adoption by the first heartbeat marks the adopted claim", func(t *testing.T) {
+			t.Parallel()
 			reg, advance, stored := storeEarlierClaim(t, "")
 			advance(beat)
 			racing := raceFirstMarkWith(reg, func() {
@@ -255,6 +262,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 			},
 		} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				reg, advance, _ := storeEarlierClaim(t, "")
 				var granted RoleClaim
 				racing := raceFirstMarkWith(reg, func() {
@@ -284,6 +292,7 @@ func TestAClaimTheEarlierReleaseStoredRenewsReleasesAndIsMarked(t *testing.T) {
 // read. Control: a grant the earlier release made in a later millisecond is left standing and
 // unmarked.
 func TestAHandBackMarksAClaimTheEarlierReleaseRenewed(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_grant_renewed_by_earlier_release"
@@ -292,6 +301,7 @@ func TestAHandBackMarksAClaimTheEarlierReleaseRenewed(t *testing.T) {
 	lane := contracts.RoleTopicPrefix + role
 
 	t.Run("the earlier release's renewal under the mark's first write is marked", func(t *testing.T) {
+		t.Parallel()
 		reg, advance := grantClock(t, holder, role)
 		claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
 		granted := storedRoleClaim(t, reg, role)
@@ -316,6 +326,7 @@ func TestAHandBackMarksAClaimTheEarlierReleaseRenewed(t *testing.T) {
 	})
 
 	t.Run("control: the earlier release's grant in a later millisecond is left standing and unmarked", func(t *testing.T) {
+		t.Parallel()
 		reg, advance := grantClock(t, holder, role)
 		claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
 		var granted RoleClaim
@@ -349,6 +360,7 @@ func TestAHandBackMarksAClaimTheEarlierReleaseRenewed(t *testing.T) {
 // and frees the claim, under the holder's own release and the administrator's force alike.
 // Control: a grant the earlier release made in a later millisecond is left standing.
 func TestAReleaseFreesAClaimTheEarlierReleaseRenewedUnderItsDelete(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_released_under_an_earlier_release_renewal"
@@ -360,7 +372,9 @@ func TestAReleaseFreesAClaimTheEarlierReleaseRenewedUnderItsDelete(t *testing.T)
 		"the administrator's force": {Force: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("the earlier release's renewal under the delete is freed", func(t *testing.T) {
+				t.Parallel()
 				reg, advance := grantClock(t, holder, role)
 				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
 				read := storedRoleClaim(t, reg, role)
@@ -387,6 +401,7 @@ func TestAReleaseFreesAClaimTheEarlierReleaseRenewedUnderItsDelete(t *testing.T)
 			})
 
 			t.Run("control: the earlier release's grant in a later millisecond is left standing", func(t *testing.T) {
+				t.Parallel()
 				reg, advance := grantClock(t, holder, role)
 				claimRoleAs(t, reg, holder, "example-host", role, roleClaimInstance)
 				var granted RoleClaim

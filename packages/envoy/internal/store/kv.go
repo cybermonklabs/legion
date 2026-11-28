@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -64,6 +66,9 @@ type Registry struct {
 	// legacySubjects counts the old-form names callers give the registry (LegacySubjectCounter);
 	// nil counts nothing.
 	legacySubjects LegacySubjectCounter
+	// timers is the clock the registry's own timers run on (WithTimerClock); nil, as in a Registry
+	// this package's tests build as a literal, is clock.Real() (timerClock).
+	timers clock.Clock
 }
 
 // OpenOption configures the registry.
@@ -72,6 +77,7 @@ type OpenOption func(*openOpts)
 type openOpts struct {
 	replicas       int
 	now            func() time.Time
+	timers         clock.Clock
 	log            *slog.Logger
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
@@ -82,11 +88,11 @@ type openOpts struct {
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
 // its own, so the registry's lines and the watcher's (internal/kvwatch) are the JSON records with
-// machine_id that the rest of its output is; the default is slog.Default(), which is what every
-// other caller and the tests use. The listener must not set that default instead: it also routes
-// the stdlib log package's output into the same handler, and the deployed CloudWatch metric filters
-// for publish failures, webhook refusals and dropped stream subjects are space-delimited text
-// patterns anchored on that package's date and time prefix
+// machine_id that the rest of its output is; the default is slog.Default(), which every other
+// caller uses, and a test that reads the lines passes a logger of its own. The listener must not
+// set that default instead: it also routes the stdlib log package's output into the same handler,
+// and the deployed CloudWatch metric filters for publish failures, webhook refusals and dropped
+// stream subjects are space-delimited text patterns anchored on that package's date and time prefix
 // (defined in the deployment repository's listener infrastructure), so JSON there silently stops three
 // alarms. No deployed pattern matches a line from this package or from internal/kvwatch.
 func WithLogger(log *slog.Logger) OpenOption {
@@ -106,6 +112,21 @@ func WithReplicas(n int) OpenOption {
 // move it to end a window without waiting for it.
 func WithClock(now func() time.Time) OpenOption {
 	return func(o *openOpts) { o.now = now }
+}
+
+// WithTimerClock sets the clock the registry's own timers run on: the tick of each pass of
+// StartReaper, StartRoleClaimReaper and StartInterestMarkerCollector, the idle bound
+// (kvwatch.ScanIdleTimeout) of the collector's scan of the interest bucket and of the role claim
+// listing's scan of the role bucket (roleClaimsUntil, which the deregistration's fallback,
+// ReleaseRefusedRoleClaims' fallback and the role claim reaper's pass run), and the window a
+// claim's rollback or topic merge runs in when its caller's context has no deadline
+// (claimCleanupWindow). It is a test seam: the listener passes none, and the default is
+// clock.Real(). A test hands a clocktest fake and moves it past a loop's tick once the loop has
+// armed it, so it waits out no interval, and a window it does not move past never ends under the
+// test's load. WithClock is the time the registry records and judges windows by; a test that
+// wants both on one fake passes that fake's Now to WithClock too.
+func WithTimerClock(c clock.Clock) OpenOption {
+	return func(o *openOpts) { o.timers = c }
 }
 
 // WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
@@ -167,6 +188,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 		log:                   opts.log,
 		index:                 newSubjectIndex(),
 		now:                   opts.now,
+		timers:                opts.timers,
 		openedAt:              opts.now(),
 		restoredRoleRevisions: restoredRoleRevisions,
 		legacySubjects:        opts.legacySubjects,
@@ -265,6 +287,13 @@ func (r *Registry) logger() *slog.Logger {
 		return slog.Default()
 	}
 	return r.log
+}
+
+// timerClock is the clock the registry's own timers run on (WithTimerClock): the one a test gave,
+// or clock.Real() for the listener's Open and for a Registry the package's own tests build as a
+// literal and give none.
+func (r *Registry) timerClock() clock.Clock {
+	return cmp.Or[clock.Clock](r.timers, clock.Real())
 }
 
 // Logger is the logger the registry logs through: the listener's own, which it passes to Open, so

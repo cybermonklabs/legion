@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -30,7 +29,7 @@ const (
 // it applied.
 func awaitInterestApplied(t *testing.T, r *Registry, key string, revision uint64) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		_, epoch := r.watcher.Handle()
@@ -91,11 +90,13 @@ func requireOwnRow(t *testing.T, row Interest, sessionID, what string) {
 // another key, so the write replaces it with the session's own row under the session's key, and
 // S_pub's row keeps its revision, which is to say its stored message.
 func TestAnInterestRowNamingAnotherKeyIsReplacedNotMerged(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
 	for _, write := range rowWrites {
+		// Sequential: both writes go through the parent's registry, each over keys of its own.
 		t.Run(write.name, func(t *testing.T) {
 			source, victim := "ses_pub_"+write.suffix, "ses_priv_"+write.suffix
 			if _, err := reg.Upsert(Interest{SessionID: source, MachineID: "shared-a", Dir: "/pub"}, []string{bindingPubTopic}); err != nil {
@@ -132,6 +133,7 @@ func TestAnInterestRowNamingAnotherKeyIsReplacedNotMerged(t *testing.T) {
 // delete fenced on it was refused with wrong last sequence and the deregistration failed; the
 // delete is fenced on the revision the copy is stored at, and the source's row is not touched.
 func TestADeregistrationDeletesAnInterestRowNamingAnotherKey(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
@@ -160,11 +162,12 @@ func TestADeregistrationDeletesAnInterestRowNamingAnotherKey(t *testing.T) {
 // registry reads it as one it cannot decode, and the next write replaces it with the session's
 // own row, merging none of its topics.
 func TestAnInterestRowNamingNoMachineOrTimeIsReplacedNotMerged(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -173,7 +176,7 @@ func TestAnInterestRowNamingNoMachineOrTimeIsReplacedNotMerged(t *testing.T) {
 		t.Fatalf("open %s: %v", bus.InterestBucket, err)
 	}
 	for key, row := range map[string]string{
-		"ses_no_machine": `{"session_id":"ses_no_machine","topics":["` + bindingPubTopic + `"],"updated_at":` + strconv.FormatInt(time.Now().UnixMilli(), 10) + `}`,
+		"ses_no_machine": `{"session_id":"ses_no_machine","topics":["` + bindingPubTopic + `"],"updated_at":` + strconv.FormatInt(reg.now().UnixMilli(), 10) + `}`,
 		"ses_no_time":    `{"session_id":"ses_no_time","machine_id":"shared-a","topics":["` + bindingPubTopic + `"]}`,
 	} {
 		if _, err := kv.Create(key, []byte(row)); err != nil {
@@ -196,11 +199,13 @@ func TestAnInterestRowNamingNoMachineOrTimeIsReplacedNotMerged(t *testing.T) {
 // until something else replaced the row. The answer names no key, so the next write replaces it
 // under the session's own key.
 func TestAJetStreamAnswerAtAnInterestKeyIsHealedByTheNextWrite(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
 	for _, write := range rowWrites {
+		// Sequential: both writes go through the parent's registry, each over keys of its own.
 		t.Run(write.name, func(t *testing.T) {
 			victim := "ses_priv_" + write.suffix
 			if _, err := write.write(ctx, reg, Interest{SessionID: victim, MachineID: "edge-a", Dir: "/priv"}, []string{bindingPrivTopic}); err != nil {
@@ -235,11 +240,12 @@ func TestAJetStreamAnswerAtAnInterestKeyIsHealedByTheNextWrite(t *testing.T) {
 // which a write replaced before as now: the copy's reported revision is what the write was refused
 // for.
 func TestAWriteOverACopiedDeleteMarkerReplacesItAtItsTrueSequence(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg := openRegistry(t, conn)
 	ctx := context.Background()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -259,6 +265,7 @@ func TestAWriteOverACopiedDeleteMarkerReplacesItAtItsTrueSequence(t *testing.T) 
 		{"the session's own delete marker", "own_delete", false, func(key string) error { return kv.Delete(key) }},
 	} {
 		for _, write := range rowWrites {
+			// Sequential: every marker and write goes through the parent's registry and bucket handle.
 			t.Run(marker.name+"/"+write.name, func(t *testing.T) {
 				victim := "ses_marked_" + marker.suffix + "_" + write.suffix
 				if _, err := write.write(ctx, reg, Interest{SessionID: victim, MachineID: "edge-a", Dir: "/priv"}, []string{bindingPrivTopic}); err != nil {
@@ -267,7 +274,7 @@ func TestAWriteOverACopiedDeleteMarkerReplacesItAtItsTrueSequence(t *testing.T) 
 				var stored uint64
 				if marker.copied {
 					source := victim + "_source"
-					putInterest(t, kv, Interest{SessionID: source, MachineID: "shared-a", Topics: []string{bindingPubTopic}})
+					putInterest(t, kv, Interest{SessionID: source, MachineID: "shared-a", Topics: []string{bindingPubTopic}}, reg.now)
 					if err := marker.mark(source); err != nil {
 						t.Fatalf("mark %s: %v", source, err)
 					}

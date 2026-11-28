@@ -60,13 +60,14 @@ func (kv *racingInterestWrite) racing() {
 // drop every topic the row that won holds - each one a topic the registration that stored it was
 // answered 200 for - with nothing to put them back.
 func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
 
 	const sessionID = "ses_interest_cas"
 	const planned, won = "notifications.planned", "notifications.won"
-	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}})
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}}, reg.now)
 	plan, err := reg.PlanInterest(context.Background(), sessionID, []string{planned})
 	if err != nil {
 		t.Fatalf("plan the registration of %s: %v", sessionID, err)
@@ -74,7 +75,7 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 
 	racing := &racingInterestWrite{KeyValue: kv}
 	racing.beforeFirstWrite = func() {
-		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}})
+		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}}, reg.now)
 	}
 	handle, err := bus.WrapKeyValue(conn, racing)
 	if err != nil {
@@ -111,17 +112,18 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 // took at the first attempt from one it refused: the row the bucket holds afterwards is what
 // says the write was conditional at all.
 func TestAMergingInterestWriteIsBuiltAgainOverARowStoredUnderTheRevisionItRead(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, kv := coldRegistry(t, conn)
 
 	const sessionID = "ses_interest_merge_cas"
 	const merging, won = "notifications.merging", "notifications.won"
-	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}})
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}}, reg.now)
 
 	racing := &racingInterestWrite{KeyValue: kv}
 	racing.beforeFirstWrite = func() {
-		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}})
+		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}}, reg.now)
 	}
 	handle, err := bus.WrapKeyValue(conn, racing)
 	if err != nil {

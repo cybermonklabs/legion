@@ -18,12 +18,13 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Check v3. The roles the sweep releases come from a copy of the bucket, which is at best a
@@ -38,9 +39,10 @@ import (
 // release and the claim is in the deregistration's set from the view alone (removeInterestTopics
 // takes the role topic SetRole added back off the record, releasing nothing).
 func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -51,14 +53,8 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	ready, cancelReady := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancelReady()
-	if err := reg.WaitForCacheReady(ready); err != nil {
+	reg := openRegistry(t, conn)
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -86,7 +82,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		}
 	}})
 	reg.roleWatcher.Start()
-	waitFor(t, 30*time.Second, func() bool { return servableView(reg) })
+	waitFor(t, func() bool { return servableView(reg) })
 
 	// claimAndDropTheTopic has session claim role through the registry, naming the process the
 	// deregistrations below state (releasedByItsProcess), so the claim reaches the view through
@@ -107,13 +103,13 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		}
 	}
 
+	// Sequential: each case deregisters a session of its own through the parent's registry, whose
+	// role claim watcher the gate above holds for all three.
 	t.Run("a claim the registry wrote after the view's last read of the bucket is released", func(t *testing.T) {
 		const session = "ses_sweep_own_write"
 		claimAndDropTheTopic(t, session, ownWrite)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
+		if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s): %v", session, err)
 		}
 		// The watcher has delivered nothing of this role, so a sweep reading the roles from the
@@ -126,20 +122,19 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		assertInterestMissing(t, reg, session)
 	})
 
+	// Sequential: the parent's registry and its gated watcher, as above.
 	t.Run("a claim the view still names the session's that another session has taken is kept", func(t *testing.T) {
 		const session = "ses_sweep_taken_before"
 		claimAndDropTheTopic(t, session, takenBefore)
 		// Another session takes the role by writing its claim to the bucket, as another listener
 		// does. The watcher's delivery of it is gated, so the view goes on naming the session
 		// below the holder: the disagreement the sweep must not act on.
-		revision := putRoleClaim(t, rawRoles, takenBefore, otherHolder)
+		revision := putRoleClaim(t, rawRoles, takenBefore, otherHolder, reg.now)
 		if holder := holderOf(reg, takenBefore); holder != session {
 			t.Fatalf("the view names %q the holder of %s, want the stale %s: the gate did not hold the delivery and the case tests nothing", holder, takenBefore, session)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
+		if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s): %v", session, err)
 		}
 		// The read the sweep makes before each release names the holder, and it is not this
@@ -156,6 +151,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		assertInterestMissing(t, reg, session)
 	})
 
+	// Sequential: the parent's registry and its gated watcher, as above.
 	t.Run("a claim another session takes between the sweep's read and its delete is kept", func(t *testing.T) {
 		const session = "ses_sweep_taken_during"
 		claimAndDropTheTopic(t, session, takenDuring)
@@ -172,9 +168,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 			}
 		}})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
+		if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) lost its conditional delete to a claim that landed under it: %v, want the loss read as the race it is", session, err)
 		}
 		if _, deletes := counting.callsOn(takenDuring); deletes != 1 {
@@ -198,6 +192,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 // claim lands from beforeFirstDelete, under the sweep's own first delete, rather than from any
 // timing of the bucket's size.
 func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.T) {
+	t.Parallel()
 	const otherHolder = "ses_race_other_holder"
 
 	// landClaimUnderTheFirstDelete returns the hook that writes otherHolder's claim on role when
@@ -256,6 +251,7 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 	}
 
 	t.Run("the role reaper keeps an expired claim another session took under its delete and reaps the one that did not change", func(t *testing.T) {
+		t.Parallel()
 		const expired = "ses_reaper_race_expired"
 		// The taken-over role sorts first, so the sweep's first delete - the one the hook runs
 		// before - is the one the new claim lands under.
@@ -281,6 +277,7 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 	})
 
 	t.Run("the deregistration's fallback keeps a claim another session took under its delete and releases the one that did not change", func(t *testing.T) {
+		t.Parallel()
 		const session = "ses_sweep_race_held"
 		// Both sort before the other sessions' claims, and the taken-over role before the
 		// other, so the sweep's first delete is the one the new claim lands under.
@@ -289,9 +286,7 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 		hook, takenRevision := landClaimUnderTheFirstDelete(t, rawRoles, taken)
 		countRoleBucketCalls(t, reg, &sweepRoleKeyValue{beforeFirstDelete: hook})
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
+		if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) lost its conditional delete to a claim that landed under it: %v, want the loss read as the race it is", session, err)
 		}
 		assertTheNewHoldersClaimStands(t, rawRoles, taken, takenRevision())
@@ -316,9 +311,10 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 // Neither session's record carries a role topic, so the record names no role to release and
 // every claim is in the deregistration's set from the view alone (releaseAllRoleClaims).
 func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -329,14 +325,8 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	ready, cancelReady := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancelReady()
-	if err := reg.WaitForCacheReady(ready); err != nil {
+	reg := openRegistry(t, conn)
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -345,20 +335,17 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 		held     = "sweep-process-held"
 		unnamed  = "sweep-process-unnamed"
 		recorded = "notifications.chat"
-		deadline = 30 * time.Second
 	)
 	// The lane's own claim, written by the process the claim names, and a claim of the same
 	// session whose claimant stated no process, which names none.
-	putRenewedRoleClaim(t, rawRoles, held, session, roleClaimInstance, time.Now())
-	putRoleClaim(t, rawRoles, unnamed, session)
+	putRenewedRoleClaim(t, rawRoles, held, session, roleClaimInstance, reg.now())
+	putRoleClaim(t, rawRoles, unnamed, session, reg.now)
 	if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, []string{recorded}); err != nil {
 		t.Fatalf("store %s's interest record: %v", session, err)
 	}
 	waitForHeld(t, reg, session, held, unnamed)
 
-	resumed, cancelResumed := context.WithTimeout(context.Background(), deadline)
-	defer cancelResumed()
-	if _, err := reg.Remove(resumed, session, nil, RoleReleaseAuthority{ClientInstanceID: roleClaimSecondInstance}); err != nil {
+	if _, err := reg.Remove(testwait.Context(t), session, nil, RoleReleaseAuthority{ClientInstanceID: roleClaimSecondInstance}); err != nil {
 		t.Fatalf("a second process's deregistration of %s: %v", session, err)
 	}
 	assertRoleHolder(t, reg, held, session)
@@ -372,9 +359,7 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 		t.Fatalf("register %s's interests again: %v", session, err)
 	}
 	waitForHeld(t, reg, session, held, unnamed)
-	own, cancelOwn := context.WithTimeout(context.Background(), deadline)
-	defer cancelOwn()
-	if _, err := reg.Remove(own, session, nil, releasedByItsProcess); err != nil {
+	if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 		t.Fatalf("the holder's own deregistration of %s: %v", session, err)
 	}
 	assertRoleHolder(t, reg, held, "")

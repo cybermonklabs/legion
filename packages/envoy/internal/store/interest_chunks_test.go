@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -14,15 +15,18 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rawInterests is the interest bucket on conn as a raw handle, which reads what is stored with
 // no reassembly of its own.
 func rawInterests(t *testing.T, conn *natsgo.Conn) natsgo.KeyValue {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -57,6 +61,7 @@ func sortedTopics(sets ...[]string) []string {
 // the writer's own bucket read, its cache, and another listener's cache, which its watcher fills
 // from the bucket alone.
 func TestARecordPastTheMaxPayloadIsStoredInChunksAndReadWhole(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	topics := kvchunktest.Topics("wide", 600)
@@ -77,7 +82,7 @@ func TestARecordPastTheMaxPayloadIsStoredInChunksAndReadWhole(t *testing.T) {
 	requireTopics(t, "the writer's cache", cached, want)
 
 	other := openRegistry(t, conn)
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, func() bool {
 		item, ok := other.Cached("ses_wide")
 		return ok && slices.Equal(item.Topics, want)
 	})
@@ -116,6 +121,7 @@ func TestARecordPastTheMaxPayloadIsStoredInChunksAndReadWhole(t *testing.T) {
 // The control: a record under the max payload is stored whole under the session's key, as every
 // earlier build stores it, with no chunk.
 func TestARecordUnderTheMaxPayloadIsStoredWholeAsBefore(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	topics := kvchunktest.Topics("narrow", 10)
@@ -143,6 +149,7 @@ func TestARecordUnderTheMaxPayloadIsStoredWholeAsBefore(t *testing.T) {
 // set, and a deregistration deletes the manifest and its chunks, so no write leaves a chunk that
 // no record names.
 func TestARewriteThatShrinksGrowsOrDeletesARecordLeavesNoStaleChunk(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
@@ -201,6 +208,7 @@ func TestARewriteThatShrinksGrowsOrDeletesARecordLeavesNoStaleChunk(t *testing.T
 // names. Each reader must have read both records over the run, so a reader that saw only one of
 // them cannot pass for having seen no mix.
 func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	writer := openRegistry(t, conn)
 	other := openRegistry(t, conn)
@@ -209,7 +217,7 @@ func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
 	if _, err := writer.Upsert(Interest{SessionID: "ses_rewritten", MachineID: "m1"}, base); err != nil {
 		t.Fatalf("store the first record: %v", err)
 	}
-	waitFor(t, 10*time.Second, func() bool { _, ok := other.Cached("ses_rewritten"); return ok })
+	waitFor(t, func() bool { _, ok := other.Cached("ses_rewritten"); return ok })
 
 	ctx, stop := context.WithCancel(t.Context())
 	var wg sync.WaitGroup
@@ -239,33 +247,93 @@ func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
 		wg.Go(func() {
 			for ctx.Err() == nil {
 				item, ok, err := read()
+				// The read is weighed before the lock, which guards the counts alone, so a reader
+				// comparing hundreds of topics never holds up the others' counts or the wait's look.
+				var failure string
+				isSmall, isLarge := false, false
+				switch {
+				case err != nil:
+					failure = err.Error()
+				case !ok:
+					failure = "the cache lost the record"
+				case slices.Equal(item.Topics, small):
+					isSmall = true
+				case slices.Equal(item.Topics, large):
+					isLarge = true
+				default:
+					failure = fmt.Sprintf("a record of %d topics, neither the small one's %d nor the large one's %d", len(item.Topics), len(small), len(large))
+				}
 				mu.Lock()
 				switch {
 				case ctx.Err() != nil:
-				case err != nil:
-					got.failure = err.Error()
-				case !ok:
-					got.failure = "the cache lost the record"
-				case slices.Equal(item.Topics, small):
+				case failure != "":
+					got.failure = failure
+				case isSmall:
 					got.small++
-				case slices.Equal(item.Topics, large):
+				case isLarge:
 					got.large++
-				default:
-					got.failure = fmt.Sprintf("a record of %d topics, neither the small one's %d nor the large one's %d", len(item.Topics), len(small), len(large))
 				}
 				mu.Unlock()
+				// The cache's reader reads from memory and never waits, so it hands the processor on
+				// after each read: the writes, the watcher and the server it reads run in this
+				// process, and a reader that kept a processor to itself would slow the very steps
+				// the waits below are for.
+				runtime.Gosched()
 			}
 		})
 	}
+	// The readers stop before the registries they read do, should the test end early.
+	t.Cleanup(func() {
+		stop()
+		wg.Wait()
+	})
+	counts := func(count func(*reading) int) map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		counted := map[string]int{}
+		for name, got := range readings {
+			counted[name] = count(got)
+		}
+		return counted
+	}
+	// readAgain waits until every reader has read what, the record the write just before it stored:
+	// each reader's count of that record (count) has risen past before, read ahead of that write.
+	// A reader reads one read at a time, and no read of it answers a record older than its last one
+	// did (a bucket read answers what the bucket holds as it reads, and a cache moves only forward).
+	// So once every reader has read the record a write replaced, which the readAgain before that
+	// write waited for, a count that rose since is a read of the record the write stored; and the
+	// first grow's large record is the first any reader can count. A reader that met a failure
+	// fails the test at once.
+	readAgain := func(what string, before map[string]int, count func(*reading) int) {
+		t.Helper()
+		testwait.Until(t, "every reader to read "+what, func() (string, bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			var behind []string
+			for name, got := range readings {
+				if got.failure != "" {
+					t.Fatalf("%s read %s", name, got.failure)
+				}
+				if count(got) <= before[name] {
+					behind = append(behind, fmt.Sprintf("%s at %d", name, count(got)))
+				}
+			}
+			return fmt.Sprintf("readers yet to read it again: %v", behind), len(behind) == 0
+		})
+	}
+	smallReads := func(got *reading) int { return got.small }
+	largeReads := func(got *reading) int { return got.large }
 	for range 12 {
+		before := counts(largeReads)
 		if _, err := writer.Upsert(Interest{SessionID: "ses_rewritten", MachineID: "m1"}, extra); err != nil {
 			t.Fatalf("grow the record: %v", err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		readAgain("the large record", before, largeReads)
+		before = counts(smallReads)
 		if err := writer.removeInterestTopics(t.Context(), "ses_rewritten", extra); err != nil {
 			t.Fatalf("shrink the record: %v", err)
 		}
-		time.Sleep(20 * time.Millisecond)
+		readAgain("the small record", before, smallReads)
 	}
 	stop()
 	wg.Wait()
@@ -286,14 +354,10 @@ func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
 // record names, which the reaper's collection deletes once they are older than the collection
 // grace and not before, and which no collection runs while the cache does not follow its bucket.
 func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	clock := &manualClock{at: time.Now()}
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	clock := &manualClock{at: registryClockStart}
+	reg := openRegistry(t, conn, WithClock(clock.Now))
 	other := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
 	legacy := reg.watcher.KV().Legacy()
@@ -311,7 +375,7 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 			t.Fatalf("after a write stopped %s the record reads %v, want the old one", step, err)
 		}
 		requireTopics(t, "the bucket's record after a write stopped "+step, row, old)
-		waitFor(t, 10*time.Second, func() bool {
+		waitFor(t, func() bool {
 			item, ok := other.Cached("ses_crashed")
 			return ok && slices.Equal(item.Topics, old)
 		})
@@ -340,13 +404,20 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 	if len(orphans) == 0 {
 		t.Fatalf("the stopped writes left no chunk behind, want the chunks they wrote: %v", left)
 	}
+	// The chunks no record names are the five the write stopped between its chunks and its manifest
+	// left: the write stopped between two chunks deleted the one chunk it wrote, and the write past
+	// its bound deleted all of its own (kvchunk.Write). The copy took each of the five while the
+	// clock still stood at its start, before the last stopped write moved it, and a chunk keeps the
+	// moment the copy first took it through every later read of the bucket (kvchunk.Chunks), so each
+	// was taken at registryClockStart.
 
-	clock.Set(time.Now())
+	// A write bound past the clock's start, inside the grace for every chunk the copy holds.
+	clock.Set(registryClockStart.Add(kvchunk.WriteBound))
 	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
 		t.Fatalf("a collection inside the grace collected %d chunks (%v), want none", collected, err)
 	}
-	// Past the grace for every chunk the copy holds, whatever the stopped writes moved the clock to.
-	clock.Set(time.Now().Add(kvchunk.Grace + 10*time.Minute))
+	// A minute past the grace of every chunk no record names, each taken at the clock's start.
+	clock.Set(registryClockStart.Add(kvchunk.Grace + time.Minute))
 	reg.watcher.Disconnected()
 	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
 		t.Fatalf("a collection while the cache does not follow its bucket collected %d chunks (%v), want none", collected, err)
@@ -354,7 +425,7 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 	if err := reg.Rewatch(t.Context(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	waitFor(t, 10*time.Second, reg.watcher.Following)
+	waitFor(t, reg.watcher.Following)
 	collected, err := reg.collectInterestChunks(t.Context())
 	if err != nil {
 		t.Fatalf("collect the chunks past the grace: %v", err)
@@ -372,6 +443,7 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 // it names, is a record this build cannot decode, never a partial row: a bucket read answers
 // ErrMalformedInterest, and a listener that reads the bucket afresh stores no row for it.
 func TestAChunkedRecordWithAMissingOrChangedChunkIsUnreadableNotPartial(t *testing.T) {
+	t.Parallel()
 	for _, damage := range []struct {
 		what string
 		do   func(t *testing.T, kv natsgo.KeyValue, key string)
@@ -394,6 +466,7 @@ func TestAChunkedRecordWithAMissingOrChangedChunkIsUnreadableNotPartial(t *testi
 		}},
 	} {
 		t.Run(damage.what, func(t *testing.T) {
+			t.Parallel()
 			conn := kvchunktest.SmallPayloadNATS(t)
 			reg := openRegistry(t, conn)
 			if _, err := reg.Upsert(Interest{SessionID: "ses_damaged", MachineID: "m1"}, kvchunktest.Topics("damaged", 400)); err != nil {
@@ -419,6 +492,7 @@ func TestAChunkedRecordWithAMissingOrChangedChunkIsUnreadableNotPartial(t *testi
 // which the listener answers 400), so no session record can stand where a chunk does. A session
 // id outside it is the control.
 func TestAnInterestWriteForASessionIDInTheChunkKeysIsRefused(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_ordinary", MachineID: "m1"}, []string{"notifications.team.a"}); err != nil {
@@ -455,6 +529,7 @@ func (kv *racingHeadKeyValue) Update(key string, value []byte, revision uint64) 
 // deletes the chunks it wrote before it reads and writes again, so once both writes have landed the
 // bucket holds the chunks of the one record stored and of no write it refused.
 func TestAWriteTheBucketRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	other := openRegistry(t, conn)
@@ -495,14 +570,10 @@ func TestAWriteTheBucketRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
 // with it, as the delete that reads its own revision does (the deregistration of
 // TestARewriteThatShrinksGrowsOrDeletesARecordLeavesNoStaleChunk).
 func TestAFencedDeleteOfAChunkedRecordLeavesNoChunk(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	clock := &manualClock{at: time.Now()}
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	clock := &manualClock{at: registryClockStart}
+	reg := openRegistry(t, conn, WithClock(clock.Now))
 	kv := rawInterests(t, conn)
 	requireNoKey := func(how string) {
 		t.Helper()
@@ -550,6 +621,7 @@ func (kv laggingCopyKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 // of the stream behind the leader, which answers a direct get of a chunk it has not applied as no
 // chunk at all, cannot make the record read as damaged.
 func TestAChunkedRecordReadsWholeWhereADirectGetOfItsChunksWouldMissThem(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	topics := kvchunktest.Topics("lagging", 400)
@@ -579,16 +651,15 @@ func (kv deleteFailingKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) err
 }
 
 // The reaper's pass collects the chunks no record names even when its reap of dead sessions failed,
-// so a bucket whose reap keeps failing still loses its stale chunks.
+// so a bucket whose reap keeps failing still loses its stale chunks. The registry's clock and its
+// loops' ticks are one fake (WithClock, WithTimerClock): the case moves it past the chunks' grace,
+// and then to the reaper's first tick, so the one pass the loop runs is the one this holds.
 func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	clock := &manualClock{at: time.Now()}
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	fake := clocktest.New(registryClockStart)
+	logs, logger := ownLogs()
+	reg := openRegistry(t, conn, WithClock(fake.Now), WithTimerClock(fake), WithLogger(logger))
 	kv := rawInterests(t, conn)
 	legacy := reg.watcher.KV().Legacy()
 	if _, err := reg.Upsert(Interest{SessionID: "ses_dead", MachineID: "m1"}, []string{"notifications.team.dead"}); err != nil {
@@ -601,15 +672,28 @@ func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
 	if len(kvchunktest.LiveChunkKeys(t, kv)) == 0 {
 		t.Fatal("the write whose manifest failed left no chunk, so there is nothing to collect")
 	}
+	// useKV waits for its watcher's read of the bucket, so from here the cache's copy follows the
+	// bucket and holds every chunk the failed write left, each from the fake's start, which is all
+	// a pass judges them by (collectInterestChunks).
 	useKV(t, reg, deleteFailingKeyValue{KeyValue: legacy, key: "ses_dead"})
-	clock.Set(time.Now().Add(InterestReapAllowance(InterestReapGrace) + kvchunk.Grace))
+	fake.Advance(InterestReapAllowance(InterestReapGrace) + kvchunk.Grace)
 	if _, err := reg.Reap(func(string) (bool, error) { return false, nil }, InterestReapGrace); err == nil {
 		t.Fatal("the reap whose delete fails answered no error, so the pass below is not the failing one")
 	}
 	ctx, stop := context.WithCancel(t.Context())
-	done := reg.StartReaper(ctx, func(string) (bool, error) { return false, nil }, 20*time.Millisecond, InterestReapGrace)
-	t.Cleanup(func() { stop(); <-done })
-	waitFor(t, 10*time.Second, func() bool { return len(kvchunktest.LiveChunkKeys(t, kv)) == 0 })
+	const interval = time.Minute
+	first := fake.Now().Add(interval)
+	done := reg.StartReaper(ctx, func(string) (bool, error) { return false, nil }, interval, InterestReapGrace)
+	t.Cleanup(func() {
+		stop()
+		testwait.Receive(t, "the reaper loop's end after its context ended", done)
+	})
+	fake.AwaitArmedAt(t, "the reaper loop's first tick", first)
+	fake.Advance(interval)
+	fake.AwaitArmedAt(t, "the reaper loop's tick after its first pass, armed once that pass has returned", first.Add(interval))
+	if left := kvchunktest.LiveChunkKeys(t, kv); len(left) != 0 {
+		t.Fatalf("the bucket holds %d chunks after a reaper pass whose reap failed, want none: the pass collects them whether or not its reap failed. the log is:\n%s", len(left), logs.String())
+	}
 }
 
 // headRefusingKeyValue is the interest bucket whose writes of key's record the server refuses, as a
@@ -641,6 +725,7 @@ func (kv headRefusingKeyValue) Update(key string, value []byte, revision uint64)
 // client's own before sending (a session id too long for the head's subject, which the chunks'
 // short keys did not meet). The write's error is the refusal itself.
 func TestAWriteWhoseHeadTheBusRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
@@ -680,6 +765,7 @@ func TestAWriteWhoseHeadTheBusRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
 // is rewritten every 5 minutes. The control is the count it reaches without the drop, which the
 // mutation survey's fence-forgets-chunk-deletes run shows growing with the rewrites.
 func TestTheChunkCopysFenceStaysBoundedAcrossRewrites(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
@@ -697,17 +783,18 @@ func TestTheChunkCopysFenceStaysBoundedAcrossRewrites(t *testing.T) {
 	if live == 0 {
 		t.Fatal("the bucket holds no chunk, so the case rewrote no chunked record")
 	}
-	fenced := func() int {
-		reg.mu.RLock()
-		defer reg.mu.RUnlock()
-		return reg.chunks.Fenced()
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for fenced() > live && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Logf("after %d rewrites the bucket holds %d chunks and the chunk copy's fence %d keys", 2*rewrites, live, fenced())
-	if got := fenced(); got > live {
-		t.Fatalf("after %d rewrites the chunk copy's fence holds %d keys, want at most the %d chunks the bucket holds", 2*rewrites, got, live)
+	// The fence fills only from what the watcher delivers, and the watcher delivers the bucket's
+	// messages in their order. So once it has delivered a row stored after the last rewrite, it has
+	// delivered every chunk and every delete the rewrites stored, and the fence holds what they
+	// leave it. The row is stored straight to the bucket, not through the registry, so only the
+	// watcher brings it to the copy (awaitInterestApplied).
+	revision := putInterest(t, kv, Interest{SessionID: "ses_after_the_rewrites", MachineID: "m1", Topics: []string{"notifications.team.after"}}, reg.now)
+	awaitInterestApplied(t, reg, "ses_after_the_rewrites", revision)
+	reg.mu.RLock()
+	fenced := reg.chunks.Fenced()
+	reg.mu.RUnlock()
+	t.Logf("after %d rewrites the bucket holds %d chunks and the chunk copy's fence %d keys", 2*rewrites, live, fenced)
+	if fenced > live {
+		t.Fatalf("after %d rewrites the chunk copy's fence holds %d keys, want at most the %d chunks the bucket holds", 2*rewrites, fenced, live)
 	}
 }

@@ -28,14 +28,13 @@ func claimRoleAs(t *testing.T, reg *Registry, sessionID, machineID, role, instan
 	}
 }
 
-// releasableRoleClaim opens a registry over an empty pair of buckets, gives holder role through
-// the process instance names, and leaves holder's interest record carrying that role's lane
-// topic beside a topic of its own, so a release can be read on both halves at once.
+// releasableRoleClaim opens a registry over an empty pair of buckets, on a clock of the test's
+// own (clockedColdRegistry), gives holder role through the process instance names, and leaves
+// holder's interest record carrying that role's lane topic beside a topic of its own, so a
+// release can be read on both halves at once.
 func releasableRoleClaim(t *testing.T, role, holder, instance string) *Registry {
 	t.Helper()
-	conn, cleanup := connectNATS(t)
-	t.Cleanup(cleanup)
-	reg, _ := coldRegistry(t, conn)
+	reg, _, _, _ := clockedColdRegistry(t)
 	if _, err := reg.Upsert(Interest{SessionID: holder, MachineID: "example-host"}, []string{releaseKeptTopic}); err != nil {
 		t.Fatalf("register %s's interests: %v", holder, err)
 	}
@@ -61,6 +60,7 @@ const releaseKeptTopic = "notifications.team.release"
 // when the claim does. An empty topics is the session's own deregistration and deletes the
 // record whatever the claim did.
 func TestAReleaseFreesARoleClaimOnlyForTheProcessTheClaimNames(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_releasing_holder"
@@ -76,7 +76,9 @@ func TestAReleaseFreesARoleClaimOnlyForTheProcessTheClaimNames(t *testing.T) {
 		"the administrator's forced release": {authority: RoleReleaseAuthority{Force: true}, frees: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("the role's own topic", func(t *testing.T) {
+				t.Parallel()
 				reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 				if _, err := reg.Remove(context.Background(), holder, []string{roleTopic}, release.authority); err != nil {
 					t.Fatalf("release %s's claim of %s: %v", holder, role, err)
@@ -89,6 +91,7 @@ func TestAReleaseFreesARoleClaimOnlyForTheProcessTheClaimNames(t *testing.T) {
 				assertInterestTopicsForSession(t, reg, holder, wantTopics...)
 			})
 			t.Run("every topic the session has", func(t *testing.T) {
+				t.Parallel()
 				reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 				if _, err := reg.Remove(context.Background(), holder, nil, release.authority); err != nil {
 					t.Fatalf("release every interest of %s: %v", holder, err)
@@ -107,6 +110,7 @@ func TestAReleaseFreesARoleClaimOnlyForTheProcessTheClaimNames(t *testing.T) {
 // A claim of another session is no business of this release, whatever process asks: the holder's
 // session id is the first thing weighed, and the process is weighed only after it.
 func TestAReleaseFreesNoClaimOfAnotherSession(t *testing.T) {
+	t.Parallel()
 	const (
 		role     = "legion-controller"
 		holder   = "ses_releasing_other_holder"
@@ -134,6 +138,7 @@ func TestAReleaseFreesNoClaimOfAnotherSession(t *testing.T) {
 // a second process of that session, and leave the claim exactly as it stands. The
 // deregistration deletes the session's interest record either way.
 func TestAClaimThatNamesNoProcessIsFreedByNoReleaseButTheForce(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_releasing_unnamed_process"
@@ -147,6 +152,7 @@ func TestAClaimThatNamesNoProcessIsFreedByNoReleaseButTheForce(t *testing.T) {
 		"the administrator's forced release": {authority: RoleReleaseAuthority{Force: true}, frees: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg := releasableRoleClaim(t, role, holder, "")
 			seeded := storedRoleClaim(t, reg, role)
 			if seeded.ClientInstanceID != "" {
@@ -173,6 +179,7 @@ func TestAClaimThatNamesNoProcessIsFreedByNoReleaseButTheForce(t *testing.T) {
 // names no process is freed by no process; a force frees whatever the session holds; and no
 // release reaches a claim of another session.
 func TestWhichClaimsAReleaseAuthorityFrees(t *testing.T) {
+	t.Parallel()
 	const (
 		holder = "ses_frees_holder"
 		other  = "ses_frees_other"
@@ -196,6 +203,7 @@ func TestWhichClaimsAReleaseAuthorityFrees(t *testing.T) {
 		"the claim's own process, another session":        {authority: releasedByItsProcess, claim: named, sessionID: other},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if got := tc.authority.frees(tc.claim, tc.sessionID); got != tc.want {
 				t.Fatalf("a release %+v frees %+v from %s = %t, want %t", tc.authority, tc.claim, tc.sessionID, got, tc.want)
 			}
@@ -207,6 +215,7 @@ func TestWhichClaimsAReleaseAuthorityFrees(t *testing.T) {
 // record at the same revision, not a claim rewritten with the same holder - so the holder's own
 // renewal and provenance survive a second process's hand-back untouched.
 func TestARefusedReleaseLeavesTheStoredClaimAtItsOwnRevision(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_releasing_untouched"
@@ -273,6 +282,7 @@ func raceReleaseWith(t *testing.T, reg *Registry, role string, races int, wins f
 // (TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding), so the deletes counted here
 // would be the release's own either way.
 func TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_released_under_renewal"
@@ -282,6 +292,7 @@ func TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim(t *testing.T) {
 		"the administrator's forced release": {Force: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 			racing := raceReleaseWith(t, reg, role, 1, func() {
 				if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
@@ -310,6 +321,7 @@ func TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim(t *testing.T) {
 // removing its interests either way. The row covers both ways another claim can read: another
 // session, and the same session id under a second process.
 func TestAReleaseThatRacesAnotherClaimantFreesNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		role    = "legion-controller"
 		holder  = "ses_released_under_claim"
@@ -323,6 +335,7 @@ func TestAReleaseThatRacesAnotherClaimantFreesNothing(t *testing.T) {
 		"a second process under the holder's id": {session: holder, instance: roleClaimSecondInstance},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 			racing := raceReleaseWith(t, reg, role, 1, func() {
 				claimRoleAs(t, reg, winner.session, "example-host", role, winner.instance)
@@ -360,6 +373,7 @@ func TestAReleaseThatRacesAnotherClaimantFreesNothing(t *testing.T) {
 // The grant is stamped a second after the claim the release read, so it differs from that claim
 // in both its grant id and the moment it was claimed at.
 func TestAReleaseLeavesAClaimGrantedSinceItsReadStanding(t *testing.T) {
+	t.Parallel()
 	releaseUnderAFreshGrant(t, "ses_released_under_a_grant", "ses_granted_under_a_release", time.Second)
 }
 
@@ -367,6 +381,7 @@ func TestAReleaseLeavesAClaimGrantedSinceItsReadStanding(t *testing.T) {
 // so the moment it was claimed at cannot tell the two apart: the grant id each grant draws does
 // (RoleClaim.GrantID, RoleClaim.sameGrant), and the grant stands as it does a second later.
 func TestAReleaseLeavesAClaimGrantedInTheMillisecondOfItsReadStanding(t *testing.T) {
+	t.Parallel()
 	releaseUnderAFreshGrant(t, "ses_released_under_a_same_moment_grant", "ses_granted_in_the_same_moment", 0)
 }
 
@@ -397,10 +412,13 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 	}
 	for _, path := range claimReleasePaths {
 		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
 			for _, by := range authorities {
 				t.Run(by.name, func(t *testing.T) {
+					t.Parallel()
 					for _, winner := range winners {
 						t.Run(winner.name, func(t *testing.T) {
+							t.Parallel()
 							reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
 							read := storedRoleClaim(t, reg, role)
 							advance(grantAfter)
@@ -448,6 +466,7 @@ func releaseUnderAFreshGrant(t *testing.T, holder, another string, grantAfter ti
 // and names the role on every path; with the scan reading again a role the row's release weighed,
 // it does so where the row names the role.
 func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-infra-infra-9-reviewer"
 		holder = "ses_refused_release_under_a_grant"
@@ -459,6 +478,7 @@ func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *test
 		{name: "the stored row names the role while the copy cannot be served", handsBack: true},
 	} {
 		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
 			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
 			read := storedRoleClaim(t, reg, role)
 			advance(time.Second)
@@ -502,6 +522,7 @@ func TestARefusedRoleReleaseLeavesAGrantMadeSinceItsReadToTheNextRelease(t *test
 // the administrator's force alike. Control: with the scan reading again a role the row's release
 // weighed, the deregistration sends a second delete and frees the new grant.
 func TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_deregistered_under_a_grant"
@@ -517,6 +538,7 @@ func TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding(t *testing.T) {
 		{name: "the administrator's force", authority: RoleReleaseAuthority{Force: true}},
 	} {
 		t.Run(by.name, func(t *testing.T) {
+			t.Parallel()
 			reg, advance := claimForRelease(t, path, role, holder, roleClaimInstance)
 			if viewErr := reg.RoleViewErr(); !errors.Is(viewErr, ErrRoleViewNotReady) {
 				t.Fatalf("the registry's role claim view refuses with %v, want ErrRoleViewNotReady: a view that answers takes no scan, and the row would control nothing", viewErr)
@@ -552,6 +574,7 @@ func TestADeregistrationLeavesAGrantMadeSinceTheRowsReadStanding(t *testing.T) {
 // HTTP handler and a process registering in a tight loop must not hold a deregistration for as
 // long as it keeps writing.
 func TestAReleaseLeavesAClaimRenewedUnderEveryDeleteStanding(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_released_under_every_renewal"
@@ -589,6 +612,7 @@ func TestAReleaseLeavesAClaimRenewedUnderEveryDeleteStanding(t *testing.T) {
 // the session has rather than a hand-back of any one role, so it marks nothing whatever topics
 // the stored record turns out to carry.
 func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_or_not"
@@ -609,6 +633,7 @@ func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
 		"the administrator's forced clear":                 {authority: RoleReleaseAuthority{Force: true}, frees: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 			stood := storedRoleClaim(t, reg, role)
 
@@ -645,6 +670,7 @@ func TestOnlyAHandBackStatingNoProcessMarksAClaimItCannotFree(t *testing.T) {
 // the revision the renewal left. A release that answered success there would leave a claim
 // nothing stops renewing, which is the whole of what the mark exists to stop.
 func TestAMarkThatRacesItsOwnHoldersRenewalLandsOnTheClaimThatStands(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_under_renewal"
@@ -676,6 +702,7 @@ func TestAMarkThatRacesItsOwnHoldersRenewalLandsOnTheClaimThatStands(t *testing.
 // it, and the release reports no failure, exactly as it reports none for a delete that met
 // another claim.
 func TestAMarkThatRacesAnotherProcessMarksNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_under_claim"
@@ -713,6 +740,7 @@ func TestAMarkThatRacesAnotherProcessMarksNothing(t *testing.T) {
 // the one read is another claim, so it is left alone and is no error, exactly as a claim another
 // process won is.
 func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_under_its_own_grant"
@@ -724,6 +752,7 @@ func TestAMarkThatRacesAFreshGrantByItsOwnProcessMarksNothing(t *testing.T) {
 		"a grant in the same millisecond": 0,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 			seeded := storedRoleClaim(t, reg, role)
 			reg.now = func() time.Time { return time.UnixMilli(seeded.ClaimedAt).Add(later) }
@@ -784,6 +813,7 @@ func (kv *racingEachUpdateKeyValue) Update(key string, value []byte, revision ui
 // one. The writes are bounded at roleClaimReleaseAttempts for the reason the deletes are: the
 // loop runs inside an HTTP handler.
 func TestAHandBackLeavesAClaimRenewedUnderEveryWriteUnmarked(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_marked_under_every_renewal"
@@ -831,6 +861,7 @@ func TestAHandBackLeavesAClaimRenewedUnderEveryWriteUnmarked(t *testing.T) {
 // TestARoleClaimThatNamesNoProcess holds that side of the race, beside the holder's renewal and a
 // fresh grant.
 func TestAForcedReleaseThatRacesTheAdoptionOfAClaimNamingNoProcessFreesIt(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_released_under_adoption"

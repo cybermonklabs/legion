@@ -17,6 +17,7 @@ func matcherKeys(m *TopicMatcher, topic string) []string {
 // The matcher answers a literal topic, a "*" pattern and a ">" pattern alike, over keys that carry
 // no machine at all: the known-session records are keyed by session id.
 func TestTopicMatcherMatchesLiteralStarAndRestPatterns(t *testing.T) {
+	t.Parallel()
 	m := NewTopicMatcher()
 	m.Set("ses_literal", []string{"notifications.team.deploy-squad"})
 	m.Set("ses_star", []string{"notifications.github.*.legion.pr"})
@@ -42,6 +43,7 @@ func TestTopicMatcherMatchesLiteralStarAndRestPatterns(t *testing.T) {
 // A key's second Set replaces its topics: the topics it no longer carries match it no more, and
 // a key two of its own patterns match is visited once, Match having dropped the repeat.
 func TestTopicMatcherReplacesAKeysTopics(t *testing.T) {
+	t.Parallel()
 	m := NewTopicMatcher()
 	m.Set("ses_moving", []string{"notifications.team.alpha", "notifications.team.>"})
 	if got := matcherKeys(m, "notifications.team.alpha"); !slices.Equal(got, []string{"ses_moving"}) {
@@ -58,6 +60,7 @@ func TestTopicMatcherReplacesAKeysTopics(t *testing.T) {
 
 // Remove drops the key, and removing one the matcher never held changes nothing.
 func TestTopicMatcherRemovesAKey(t *testing.T) {
+	t.Parallel()
 	m := NewTopicMatcher()
 	m.Set("ses_going", []string{"notifications.team.alpha"})
 	m.Set("ses_staying", []string{"notifications.team.alpha"})

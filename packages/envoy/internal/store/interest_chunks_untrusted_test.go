@@ -46,14 +46,10 @@ func (kv historyFailingWatch) Watch(ctx context.Context, keys string, opts ...je
 // a manifest no listener joins or reaps. The control is the same record after the collection: it
 // still reads whole.
 func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	clock := &manualClock{at: time.Now()}
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	clock := &manualClock{at: registryClockStart}
+	reg := openRegistry(t, conn, WithClock(clock.Now))
 	topics := kvchunktest.Topics("unread", 400)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_unread", MachineID: "m1"}, topics); err != nil {
 		t.Fatalf("store the record: %v", err)
@@ -63,14 +59,14 @@ func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
 	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(missingGetKeyValue{KeyValue: base.Legacy(), key: "ses_unread", leader: base},
 		historyFailingWatch{KeyValue: base.WatchHandle(), key: "ses_unread"}, base.Streams()), interestCache{reg})
 	reg.watcher.Start()
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	if err := reg.deleteInterest(t.Context(), "ses_unread"); err != nil {
 		t.Fatalf("the delete whose read found nothing: %v", err)
 	}
 	if _, ok := reg.Cached("ses_unread"); !ok {
 		t.Fatal("after a delete that deleted nothing and could not read the history, the cache holds no row for the record that still stands")
 	}
-	clock.Set(time.Now().Add(kvchunk.Grace + time.Minute))
+	clock.Set(clock.Now().Add(kvchunk.Grace + time.Minute))
 	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
 		t.Fatalf("the collection took %d chunks (%v) of a record that still stands, want none", collected, err)
 	}
@@ -105,10 +101,13 @@ func (kv *writingAfterDeleteKeyValue) Delete(key string, opts ...natsgo.DeleteOp
 // delivered yet, which would evict the row as a record it cannot decode and log that it did. The
 // watcher is stopped here, so no chunk of the new record reaches the copy.
 func TestADeleteThatFindsAChunkedRecordStoredSinceLogsNoUndecodableRecord(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	logs := captureRegistryLogs(t)
-	reg := openRegistry(t, conn)
-	other := openRegistry(t, conn)
+	// Both registries log to the test's own logger, so the line this reads for (Registry.logger,
+	// interest_cache.go and interest_writes.go) comes from no other source.
+	logs, logger := ownLogs()
+	reg := openRegistry(t, conn, WithLogger(logger))
+	other := openRegistry(t, conn, WithLogger(logger))
 	if _, err := reg.Upsert(Interest{SessionID: "ses_stored_again", MachineID: "m1"}, kvchunktest.Topics("first", 10)); err != nil {
 		t.Fatalf("store the record: %v", err)
 	}
@@ -148,8 +147,10 @@ var forgedManifests = map[string]string{
 // write replaces it, as a write replaces any record this build cannot decode, and a deregistration
 // of another session holding the same manifest deletes it.
 func TestAForgedManifestIsARecordThisBuildCannotDecodeAndTheNextWriteReplacesIt(t *testing.T) {
+	t.Parallel()
 	for what, manifest := range forgedManifests {
 		t.Run(what, func(t *testing.T) {
+			t.Parallel()
 			// Each forgery is a well-formed manifest whose one fault is its layout, so the store meets
 			// that layout rather than a decode error.
 			if !json.Valid([]byte(manifest)) {
@@ -218,14 +219,10 @@ func (kv missingGetKeyValue) NewestFromLeader(ctx context.Context, key string) (
 // manifest the cache already holds: the cache keeps that row, since the chunk copy holds its chunks,
 // and so no collection takes the chunks of a record that still stands.
 func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	clock := &manualClock{at: time.Now()}
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	clock := &manualClock{at: registryClockStart}
+	reg := openRegistry(t, conn, WithClock(clock.Now))
 	topics := kvchunktest.Topics("kept", 400)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_kept", MachineID: "m1"}, topics); err != nil {
 		t.Fatalf("store the record: %v", err)
@@ -241,7 +238,7 @@ func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
 	}
 	requireTopics(t, "the row the cache kept", cached, sortedTopics(topics))
 	useKV(t, reg, legacy)
-	clock.Set(time.Now().Add(kvchunk.Grace + time.Minute))
+	clock.Set(clock.Now().Add(kvchunk.Grace + time.Minute))
 	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
 		t.Fatalf("the collection took %d chunks (%v) of a record that still stands, want none", collected, err)
 	}
@@ -255,6 +252,7 @@ func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
 // A deregistration or an unsubscribe naming a chunk's key as its session is refused, as a write of
 // one is, so no route deletes a chunk a stored manifest names.
 func TestARemovalNamingAChunksKeyIsRefusedAndDeletesNothing(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_named", MachineID: "m1"}, kvchunktest.Topics("named", 400)); err != nil {
@@ -294,6 +292,7 @@ func TestARemovalNamingAChunksKeyIsRefusedAndDeletesNothing(t *testing.T) {
 // TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone's ("a forged SHA-256"), which this test
 // does not repeat.
 func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
@@ -409,6 +408,7 @@ func copiedManifests(t *testing.T, kv natsgo.KeyValue, head []byte, layout kvchu
 // the generation it deleted, which there is none of. The control is the owner's own deregistration,
 // which deletes them.
 func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
@@ -480,6 +480,7 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 // owner's record read whole, and every chunk its manifest names in the bucket, before the manifest is
 // written over.
 func TestAWriteOverACopyOfANewerManifestThanTheCacheHoldsLeavesTheOwnerWhole(t *testing.T) {
+	t.Parallel()
 	shapes := map[string]func(t *testing.T, kv natsgo.KeyValue, head []byte, layout kvchunk.Layout) []byte{
 		"an exact copy": func(_ *testing.T, _ natsgo.KeyValue, head []byte, _ kvchunk.Layout) []byte { return head },
 		"the owner's first chunks": func(t *testing.T, kv natsgo.KeyValue, _ []byte, layout kvchunk.Layout) []byte {
@@ -514,6 +515,7 @@ func TestAWriteOverACopyOfANewerManifestThanTheCacheHoldsLeavesTheOwnerWhole(t *
 	for shape, manifestOf := range shapes {
 		for path, do := range paths {
 			t.Run(shape+"/"+path, func(t *testing.T) {
+				t.Parallel()
 				conn := kvchunktest.SmallPayloadNATS(t)
 				writer := openRegistry(t, conn)
 				other := openRegistry(t, conn)
@@ -589,6 +591,7 @@ func requireCopyRow(t *testing.T, reg *Registry, kv natsgo.KeyValue, path string
 // would fence the row out of the cache and leave its chunks to a collection that takes chunks no row
 // names. The watcher is stopped here, so no chunk of the record reaches the chunk copy.
 func TestADeleteThatReadNothingKeepsARowWhoseChunksHaveNotArrived(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
 	useKV(t, reg, missingGetKeyValue{KeyValue: reg.watcher.KV().Legacy(), key: "ses_early", leader: reg.watcher.KV()})
