@@ -235,6 +235,15 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // a typed block's, and only one whose text holds a call has its document read for them
 // (calledFootnotes); every other block registers its text as it stands.
 //
+// The request reads the definitions of at most footnoteDocumentsMax documents: its one call of
+// calledFootnotes takes the blocks in the order in which the request's `ref` parameters first
+// name each (blocks), and so the documents in the order in which the request first names a block
+// of each whose text holds a call. A block of any further document keeps the tree of its stored
+// text alone, as a block whose document cannot be read does. The request's order alone decides
+// which documents are read, never what the process keeps of a parse, so the same request answers
+// the same trees and the same ETag. A request that leaves a document unread logs one line with
+// the count of them once the call is done (footnoteDocuments.warnUnread).
+//
 // A block is read only for a member that is not gone, and a member is not gone only where
 // refs.TargetNames named its target for the request's reader. refs.BlockTexts binds no
 // visibility predicate of its own, so that test is what keeps the text of a block the reader may
@@ -263,7 +272,9 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	if err != nil {
 		return err
 	}
-	called := calledFootnotes(ctx, s, texts, documents, 0)
+	var budget footnoteDocuments
+	called := calledFootnotes(ctx, s, blocks, texts, documents, 0, &budget)
+	budget.warnUnread("GET /api/v1/reference-targets")
 	sources := make(map[refs.Target]blockTreeSource, len(texts))
 	for target, whole := range texts {
 		source := called[target]
@@ -278,6 +289,35 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 	return nil
 }
 
+// footnoteDocumentsMax is how many documents one request of the batched reference read
+// (blockTrees) or of the reference graph's read (readGraphFootnotes) reads the footnote
+// definitions of (calledFootnotes). The new issue page reads four documents of an issue - its
+// spec, its plan, its Verification document and its decisions document - so 16 holds the issue's
+// own and those of three issues whose blocks it names. A parse of a document of 25 to 43 KB takes
+// 8.5 to 13.4 ms (decisionCuts), so 16 parses that footnoteParses does not hold take about 215 ms
+// at that size, where the 256 documents that one batched read can name
+// (contracts.ReferenceTargetsMax) would take about 3.4 s.
+const footnoteDocumentsMax = 16
+
+// footnoteDocuments is what one request has spent of footnoteDocumentsMax over all of its calls of
+// calledFootnotes: read, how many documents those calls have read the definitions of, a document
+// whose read failed included, and unread, how many they left unread once read reached the bound.
+type footnoteDocuments struct {
+	read, unread int
+}
+
+// warnUnread logs one line for a request whose calls of calledFootnotes left a document unread,
+// naming route, the read the request is of, and the count of documents it did not read; a request
+// that read every document it named logs nothing. It is called once, after the request's last
+// call of calledFootnotes.
+func (d *footnoteDocuments) warnUnread(route string) {
+	if d.unread == 0 {
+		return
+	}
+	slog.Warn("dispatch: leave the footnote definitions of documents past one request's bound unread for their blocks' trees",
+		"read", route, "unread_documents", d.unread, "footnote_documents_max", footnoteDocumentsMax)
+}
+
 // calledFootnotes is, by key, the source of the tree of each document block's text of texts but
 // its markdown: its document's id, its own block id and the footnotes it calls that its document
 // defines outside it, for the texts whose block documents places and that hold a call at all
@@ -286,6 +326,17 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // not a block: the batched reference read keys each block's stored text by its target
 // (blockTrees), and the reference graph's read draws one block from its whole text and from an
 // edge's excerpt of it (readGraphFootnotes), which can call different labels.
+//
+// keys is the keys of texts in the order in which the request first names each text, and the
+// documents are taken in the order in which keys first names a text of each that holds a call; a
+// document none of whose texts here holds one is not read and takes no place. budget is what the
+// request has spent of footnoteDocumentsMax over all of its calls: while the bound has room, each
+// document spends one place and is read, a document whose read fails included, since it was
+// loaded; once the bound is spent, a document is not read and is counted unread in budget, and
+// its texts have no entry, so they keep the tree of their stored text alone, as a text whose
+// document cannot be read does. The request's order alone decides which documents are read, never
+// what footnoteParses holds, so the same request answers the same trees. The caller logs the
+// count of unread documents once the request's last call is done (footnoteDocuments.warnUnread).
 //
 // version is the version of their documents the texts were cut from, 0 for the latest. Each
 // document is read once, however many of its blocks' texts texts holds. Its id, and the id it
@@ -298,29 +349,41 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // document's state and a room of this process holds it, and from the read cache by the
 // document's stamp where no room holds it; Text renders a room's tree on every read. Any other
 // version's markdown is the one that version stored (documentMarkdownAt). The labels are read
-// from the markdown's parse as a rendering (footnotesCalledIn), and what they are read from is
-// kept by the markdown's sum (footnoteParses), so no read parses a markdown again while its entry
-// stays kept. A text whose document cannot be read or parsed has no entry and keeps the tree of
-// its stored text alone; the failure is logged.
-func calledFootnotes[K comparable](ctx context.Context, s *server, texts map[K]string, documents map[K]refs.DocumentBlock, version int) map[K]blockTreeSource {
-	// wanted is the keys to read, by their document's id.
+// from the markdown's parse as a rendering (footnotesCalledIn), with the document's keys in the
+// order of keys, and what they are read from is kept by the markdown's sum (footnoteParses), so
+// no read parses a markdown again while its entry stays kept. A text whose document cannot be
+// read or parsed has no entry and keeps the tree of its stored text alone; the failure is logged.
+func calledFootnotes[K comparable](ctx context.Context, s *server, keys []K, texts map[K]string, documents map[K]refs.DocumentBlock, version int, budget *footnoteDocuments) map[K]blockTreeSource {
+	// order is the ids of the documents to read, in the order in which keys first names a text
+	// of each that holds a call, and wanted is each one's keys, in the order of keys.
+	var order []string
 	wanted := map[string][]K{}
-	for key, block := range documents {
-		if strings.Contains(texts[key], "[^") {
-			wanted[block.ArtifactID] = append(wanted[block.ArtifactID], key)
+	for _, key := range keys {
+		block, placed := documents[key]
+		if !placed || !strings.Contains(texts[key], "[^") {
+			continue
 		}
+		if _, taken := wanted[block.ArtifactID]; !taken {
+			order = append(order, block.ArtifactID)
+		}
+		wanted[block.ArtifactID] = append(wanted[block.ArtifactID], key)
 	}
-	if len(wanted) == 0 {
+	if len(order) == 0 {
 		return nil
 	}
 	called := map[K]blockTreeSource{}
-	for artifactID, keys := range wanted {
+	for _, artifactID := range order {
+		if budget.read == footnoteDocumentsMax {
+			budget.unread++
+			continue
+		}
+		budget.read++
 		markdown, err := s.documentMarkdownAt(ctx, artifactID, version)
 		if err != nil {
 			slog.Warn("dispatch: read a document's footnote definitions for its blocks' trees", "artifact", artifactID, "error", err)
 			continue
 		}
-		footnotesCalledIn(markdown, artifactID, keys, texts, documents, called)
+		footnotesCalledIn(markdown, artifactID, wanted[artifactID], texts, documents, called)
 	}
 	return called
 }

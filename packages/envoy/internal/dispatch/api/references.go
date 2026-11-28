@@ -215,11 +215,23 @@ type graphFootnotes struct {
 // version's definitions resolve, and a reader of the pinned version reads the note that version
 // gave, where the document as it stands may define another or none. A caller given no trees
 // reads no document.
+//
+// The read reads the definitions of at most footnoteDocumentsMax documents, as the batched
+// reference read does, and both calls spend from the one budget of the request: the first takes
+// the node's text first (graphNodeText), then each edge's excerpt in the order of edges, and the
+// pin's call comes last, where the version it pins counts as one more document even when it is a
+// version of the node's own document. A text of any further document keeps the tree of its
+// stored text alone, as a text whose document cannot be read does. The request's order alone
+// decides which documents are read, never what the process keeps of a parse, so the same request
+// answers the same trees. A request that leaves a document unread logs one line with the count of
+// them once the pin's call is done, or once the first call is done where it reads no pin
+// (footnoteDocuments.warnUnread).
 func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, edges []model.GraphEdge, trees bool) graphFootnotes {
 	var footnotes graphFootnotes
 	if !trees {
 		return footnotes
 	}
+	var keys []int
 	var texts map[int]string
 	var documents map[int]refs.DocumentBlock
 	hold := func(key int, block refs.DocumentBlock, text string) {
@@ -229,6 +241,7 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 		if texts == nil {
 			texts, documents = map[int]string{}, map[int]refs.DocumentBlock{}
 		}
+		keys = append(keys, key)
 		texts[key], documents[key] = text, block
 	}
 	block, documentBlock := graphDocumentBlock(node, "")
@@ -243,16 +256,18 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 			hold(index, cut, edge.Excerpt.Text)
 		}
 	}
+	var budget footnoteDocuments
 	if texts != nil {
-		footnotes.excerpts = calledFootnotes(ctx, s, texts, documents, 0)
+		footnotes.excerpts = calledFootnotes(ctx, s, keys, texts, documents, 0, &budget)
 		footnotes.node = footnotes.excerpts[graphNodeText]
 		delete(footnotes.excerpts, graphNodeText)
 	}
 	if pin := node.Pin; documentBlock && pin != nil && strings.Contains(pin.Text, "[^") {
-		pinned := calledFootnotes(ctx, s, map[int]string{graphNodeText: pin.Text},
-			map[int]refs.DocumentBlock{graphNodeText: block}, pin.Version)
+		pinned := calledFootnotes(ctx, s, []int{graphNodeText}, map[int]string{graphNodeText: pin.Text},
+			map[int]refs.DocumentBlock{graphNodeText: block}, pin.Version, &budget)
 		footnotes.pin = pinned[graphNodeText]
 	}
+	budget.warnUnread("GET /api/v1/references")
 	return footnotes
 }
 
