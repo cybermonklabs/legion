@@ -9,14 +9,19 @@
 #      feature (`amd64.v1`), `goN.M`, a `goexperiment.` name, and `unix`, `cgo`, `gc`, `gccgo`,
 #      `race`, `msan`, `asan`, `ignore`, `boringcrypto` and `odatrace`;
 #   2. skip: a test one required step's `-skip` leaves out and no other required step runs;
-#   3. variable: a variable gate - a Go function, or a Bun `skip`/`skipIf`/`if` condition, that
-#      reads an environment variable (by a literal name, through a constant of its own package,
-#      or through a local that holds the read) and on that value skips the test or guards an
-#      assertion (`t.Error*`, `t.Fatal*`, `t.Fail*`, `expect(`) - whose variable no row of
-#      .github/test-variables.yaml names, or whose row's class does not hold for it; and a row
-#      that names a job that does not set its variable, a job ci-ok does not need, a script that
-#      does not set it, or a variable no gate reads. A row names one variable and its class, and
-#      the search checks the class against each gate:
+#   3. variable: a variable gate - a Go function, or a Bun `skip`/`skipIf`/`if` condition or a
+#      choice between `test` and `test.skip` (`const maybe = process.env.X ? test : test.skip`),
+#      that reads an environment variable (by a literal name, through a constant of its own
+#      package, through a local or a package-level variable that holds the read, or through a
+#      function of its package - its non-test source among them - that returns it) and on that
+#      value skips the test, guards an assertion (`t.Error*`, `t.Fatal*`, `t.Fail*`, `expect(`),
+#      or ends its block before one (a bare `return`, a `continue`, and in TestMain an `os.Exit`
+#      before `m.Run()`) - whose variable no row of .github/test-variables.yaml names, or whose
+#      row's class does not hold for it; a gate outside a tool that keeps its test or its
+#      assertion from running wherever CI or GITHUB_ACTIONS is set, whatever its row, since
+#      GitHub sets both in every job; and a row that names a job that does not set its variable,
+#      a job ci-ok does not need, a script that does not set it, or a variable no gate reads. A
+#      row names one variable and its class, and the search checks the class against each gate:
 #        set and selector: each job the row names sets the variable (a workflow, job or step
 #          `env:`, an inline `NAME=value command`, an `export`, an action that writes it into
 #          $GITHUB_ENV), and some named job runs the gate's test in a step whose environment
@@ -34,18 +39,23 @@
 #      test that its package's tests start again as a child (`-test.run=^TestXHelper$`) reads:
 #      the value is the test's own;
 #   4. script: a script (a `.sh`, `.bash` or `.py` file, or one that starts with `#!`) whose first
-#      15 lines use the words proof, smoke, check or test, that no required step runs - directly,
-#      through a script, an action or a `package.json` script it runs, or through a test it runs -
-#      and whose first 15 lines carry neither the tool line (a comment that starts
-#      `legion: tool - `) nor the not-a-test line (`legion: not a test - `); and a `*.test.sh`
-#      harness, or a script whose header's first line of prose calls it a test or a proof (`A
-#      proof that…`, `Tests for…`, `The smoke test of…`), that carries the not-a-test line, which
-#      marks only a script that acts on GitHub, a release or a deployment and judges no code;
+#      15 lines use the words proof, smoke, check or test, or a `*.test.sh` harness whatever its
+#      words, that no required step runs - directly, through a script, an action or a
+#      `package.json` script it runs, through a test it runs, or as a module a `python3 -m
+#      unittest` it runs names - and whose first 15 lines carry neither the tool line (a comment
+#      that starts `legion: tool - `) nor the not-a-test line (`legion: not a test - `); and a
+#      `*.test.sh` harness, or a script whose header's first line of prose calls it a test or a
+#      proof (`A proof that…`, `Tests for…`, `The smoke test of…`), that carries the not-a-test
+#      line, which marks only a script that acts on GitHub, a release or a deployment and judges
+#      no code;
 #   5. schedule: a step of a workflow, of a job, or of its own `if:`, that runs only on `schedule`
-#      or `workflow_dispatch` and runs a test command (`go test`, `bun test`, `playwright test`, a
-#      `bun run` script that comes to one, through a tool's runs lines too, a `.test.sh` harness)
-#      that no required job runs with the same text in the same directory, unless its workflow
-#      carries the tool line and a required job runs each test it runs in the same mode (rule 7);
+#      or `workflow_dispatch` and runs a test command (`go test`, a gotestsum command, `bun test`,
+#      `playwright test`, a `bun run` script that comes to one, through a tool's runs lines too, a
+#      `.test.sh` harness, or a script whose header's first line of prose calls it a test, a
+#      proof, a smoke test or a check, `Checks the packed tarball…`, and that carries no tool
+#      line) that no required job runs with the same text in the same directory, unless its
+#      workflow carries the tool line and a required job runs each test it runs in the same mode
+#      (rule 7);
 #   6. unrun: a Go test function (Test, Fuzz, Example) that no required step's go test runs: no
 #      step's packages hold its package (a Go module no step runs, a package `go list ./... |
 #      grep -Ev` leaves out), no step that runs its package builds its file under that step's
@@ -54,14 +64,15 @@
 #      builds it leaves it out by its -run or -skip. A test that reads raceEnabled counts as run
 #      only by a step without -race, and a `//go:build !race` file is built by such a step alone,
 #      so either needs a plain step whose -run and -skip select it; a `//go:build race` file needs
-#      a -race step;
+#      a -race step. And a Bun test file or a Playwright spec (a test file that imports bun:test or
+#      @playwright/test) that no required step's `bun test` or `playwright test` runs;
 #   7. outside: a step of a workflow ci-ok does not need (one run on a pull request only when its
 #      own files change, on a push, by another event, or a workflow of this repository such a
 #      workflow calls) that runs a test command no required job runs with the same text in the
 #      same directory; where its workflow carries the tool line, it passes when a required job
 #      runs each test it runs in the same mode (a Bun file with the same `--preload`s, a Go test
-#      under the same -race, a harness), so a repeat count passes and a preload no required job
-#      passes fails;
+#      under the same -race, a harness or another script read as a test), so a repeat count
+#      passes and a preload no required job passes fails;
 #   8. release: a step of a release workflow (.github/workflows/release*.yaml) that runs a test
 #      command and that .github/release-checks.yaml does not list with the artifact it checks,
 #      a `go test` over the tree's source above all; an entry of that list that names no step of
@@ -122,10 +133,14 @@
 # shell script of the repository the step runs by its path (from the step's directory, or from the
 # root through `$GITHUB_WORKSPACE`) through that script's own commands, with the variables it
 # exports. A command these read is read past the words that only start it: the variables set
-# before it, `env`, `exec`, and coreutils `timeout` with its options and duration
-# (dispatch-unit-repeat.yaml's lane step runs `exec timeout … bun run test:repeat …`). A step's
-# `"${NAME[@]}"` word is the words a `read -ra NAME <<< "$VAR"` before it read from the value its
-# env: blocks give VAR, split at blanks, as ci-job-dispatch-ui.yaml's steps run
+# before it, `env`, `exec`, coreutils `timeout` with its options and duration
+# (dispatch-unit-repeat.yaml's lane step runs `exec timeout … bun run test:repeat …`), and
+# `.github/scripts/harness-pool.sh start` with its `--minutes` and the name it gives the command,
+# which the pool runs in the step's directory (envoy-go-checks runs
+# `harness-pool.sh start scripts/approve/ bun test scripts/approve/`). The text of a
+# here-document (`cat > ci.yaml <<'YAML'`) is no command: a harness's fixture runs nothing. A
+# step's `"${NAME[@]}"` word is the words a `read -ra NAME <<< "$VAR"` before it read from the
+# value its env: blocks give VAR, split at blanks, as ci-job-dispatch-ui.yaml's steps run
 # `bun run "${web[@]}"`; an array whose variable no env: block gives a value stays the one word. A
 # `playwright test` runs every spec under its `--config`'s directory that its file filters keep:
 # its `--project`s and `--grep` choose among those specs and are not read, so a spec counts as run
@@ -134,30 +149,46 @@
 #
 # How it reads a gate. A Go file of a test (a `_test.go` file, or one that imports `testing`) is
 # read token by token: each function's reads of os.Getenv and os.LookupEnv, the names that hold a
-# read (a local, a field of one, a package-level variable a function of the package assigns one
-# to, a call of a function that returns one as a plain value), counted where the expression holds
+# read (a local, a field or an element of one, and a container written at a key that holds one,
+# `only[name] = true`; a package-level variable a declaration initialises with one, `var dsn =
+# os.Getenv(X)`, or a function of the package assigns one to with a plain `=`; a call of a
+# function that returns one as a plain value, a function of the package's own non-test source
+# among them, as a `liveEnabled() bool` beside the tests), counted where the expression holds
 # the value itself or a reshaping of it (strings, strconv, filepath, os.Stat) and not where it is
 # the argument of another call; and each `if`, `switch` and `case` whose condition holds one, with
-# the calls its branches make. A call of testprereq.Require whose condition holds one is a gate
-# too, and so is each call that names a variable to a function that reads the one its caller
-# names and skips or asserts on it. Two shapes are no gate: an `if` that is itself an assertion
-# about the environment (its condition names nothing but reads, their holders, an error and
-# constants, and its branches only assert: `if _, set := os.LookupEnv(X); set { t.Fatal(…) }`), and,
-# inside a block a read guards, an `if err != nil` or such a check of the value, which is the
-# block's own reading or writing of what the variable names. A read of a variable its package's
-# TestMain sets for the whole test process (`os.Setenv(NAME, …)`) is no gate either: the test binary
-# hands itself that value, from what its own reads gave it. A Bun or Playwright test file (one
-# that imports `bun:test` or `@playwright/test`) is read for its `skipIf`, `if`, `skip` and `fixme`
-# conditions and the `if` blocks that hold an `expect(` or a skip, each resolved through the
-# file's own declarations and functions and those of a module of the same package it imports. A
-# Go gate's test is its `Test` function, or each test of its package (and, for a helper package,
-# of each package whose tests import it); a Bun gate's test is its file.
+# the calls its branches make. An `if` whose branch ends the rest of its block - a bare `return`,
+# a `continue`, and in TestMain an `os.Exit` - before that rest asserts (in TestMain, before it
+# runs `m.Run()`) is a gate on the same terms as one that skips. A call of testprereq.Require
+# whose condition holds one is a gate too, and so is each call that names a variable to a
+# function that reads the one its caller names and skips or asserts on it. Two shapes are no
+# gate: an `if` that is itself an assertion about the environment (its condition names nothing
+# but reads, their holders, an error and constants, and its branches only assert: `if _, set :=
+# os.LookupEnv(X); set { t.Fatal(…) }`), and, inside a block a read guards, an `if err != nil` or
+# such a check of the value, which is the block's own reading or writing of what the variable
+# names. A read of a variable its package's TestMain sets for the whole test process
+# (`os.Setenv(NAME, …)`) is no gate either: the test binary hands itself that value, from what its
+# own reads gave it. A Bun or Playwright test file (one that imports `bun:test` or
+# `@playwright/test`) is read for its `skipIf`, `if`, `skip` and `fixme` conditions, the condition
+# of a choice between a test function and its skip (`cond ? test : test.skip`), the `if` blocks
+# that hold an `expect(` or a skip, and an `if` that returns before an `expect(` of the rest of
+# its block (`if (!process.env.X) return;`), each resolved through the file's own declarations and
+# functions and those of a module of the same package it imports. Which way a gate keeps its test
+# out is read for CI and GITHUB_ACTIONS alone: its condition is read with the variable `true` and
+# every other unknown (`||`, `&&`, `!`, parentheses, `==` and `!=` or `===` and `!==` between
+# reads and strings, and the names that hold a read as it is), and a gate whose skip (or early
+# return) is then taken, or whose assertion is then not reached, keeps it out wherever that
+# variable is set. A Go gate's test is its `Test` function, or each test of its package (and, for
+# a helper package, of each package whose tests import it; for TestMain, every test of its
+# package); a Bun gate's test is its file.
 #
 # How it reads a script's reach. A script counts as run when a required step names it, or a text
 # a required step runs names it - an action, a `package.json` script, a script already counted,
 # a test file a required step runs, or a module of the same package such a Bun test imports - by
-# a path whose end is the script's path or by its bare name; a Python script reaches another only
-# through an import. A shell text reaches each script a path pattern of it names
+# a path whose end is the script's path or by its bare name; a module a required step's `python3
+# -m unittest [options] <module>…` names is run in the step's directory, a dotted name as its path
+# (`python3 -m unittest -v pg_test stream_test` runs pg_test.py and stream_test.py); a Python
+# script reaches another only through an import. A shell text reaches each script a path pattern
+# of it names
 # (`"$dir"/rows/test-rows-*.sh`) only where a command of the same text sources or runs a script
 # of that directory by a path whose variables, read as `*`, match the script too
 # (`. "$dir/rows/test-rows-$name.sh"`), as operator-token-minters.test.sh runs its row files.
@@ -382,6 +413,9 @@ RUNNER_ENV = frozenset({
     "GITHUB_SERVER_URL", "GITHUB_SHA", "GITHUB_STEP_SUMMARY", "GITHUB_WORKFLOW", "GITHUB_WORKSPACE",
     "HOME", "PATH", "RUNNER_ARCH", "RUNNER_NAME", "RUNNER_OS", "RUNNER_TEMP", "RUNNER_TOOL_CACHE",
 })
+# The variables GitHub sets in every job, each to `true`: a gate that keeps its test (or its
+# assertion) from running wherever one of them is set keeps it out of every job, whatever its row.
+ALWAYS_SET = {"CI": "true", "GITHUB_ACTIONS": "true"}
 GITHUB_ENV_WRITE = re.compile(r">>\s*\"?\$\{?GITHUB_ENV\b")
 ENV_ENTRY = re.compile(r"(?:echo|printf)\s+(?:-[a-z]+\s+)?[\"']?([A-Za-z_][A-Za-z0-9_]*)(?:=|<<)")
 EXPORT = re.compile(r"(?:^|[;&|]\s*)export\s+((?:[A-Za-z_][A-Za-z0-9_]*(?:=\S*)?\s*)+)")
@@ -1183,16 +1217,38 @@ class Tok:
 
 
 def go_tokens(text: str) -> list[Tok]:
-    tokens, line = [], 1
-    for match in GO_TOKEN.finditer(text):
+    return list(go_token_stream(text))
+
+
+def go_token_stream(text: str, start: int = 0) -> Iterator[Tok]:
+    """The tokens of a Go text from offset `start`, read as they are asked for, each line counted
+    from that offset."""
+    line = 1
+    for match in GO_TOKEN.finditer(text, start):
         kind = match.lastgroup
         value = match.group()
         if kind == "nl" or (kind == "comment" and "\n" in value):
-            tokens.append(Tok("nl", "\n", line))
+            yield Tok("nl", "\n", line)
         elif kind not in ("ws", "comment", "other"):
-            tokens.append(Tok(kind, value, line))
+            yield Tok(kind, value, line)
         if kind in ("nl", "comment", "raw"):
             line += value.count("\n")
+
+
+def declaration_tokens(text: str, start: int) -> list[Tok]:
+    """The tokens of the package-level `var` declaration at offset `start`: to the `)` that closes
+    its block, or to its line's end outside brackets."""
+    tokens, depth = [], 0
+    for token in go_token_stream(text, start):
+        tokens.append(token)
+        if token.text in ("(", "[", "{"):
+            depth += 1
+        elif token.text in (")", "]", "}"):
+            depth -= 1
+            if depth == 0 and tokens[1].text == "(":
+                break
+        elif token.kind == "nl" and depth == 0:
+            break
     return tokens
 
 
@@ -1293,9 +1349,6 @@ CHILD_LITERAL = re.compile(r'"([A-Z_][A-Z0-9_]*)=[^"\s%]*"')
 CHILD_CONCAT = re.compile(r'\b((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s*\+\s*"=[^"\s]*"')
 CHILD_FORMAT = re.compile(r'"%s=[^"\s]*"\s*,\s*((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)')
 ENV_READ_TEXT = re.compile(r"\bos\.(?:Getenv|LookupEnv)\(|\btestprereq\.Require\(")
-PACKAGE_VAR = re.compile(r"^var\s+([A-Za-z_]\w*)", re.M)
-PACKAGE_VAR_BLOCK = re.compile(r"^var\s*\((.*?)^\)", re.S | re.M)
-PACKAGE_VAR_ENTRY = re.compile(r"^\s*([A-Za-z_]\w*)", re.M)
 # A test a test of its own package starts again as a child process, `-test.run=^TestXHelper$`:
 # what it reads is what its parent hands the child.
 RERUN = re.compile(r"-test\.run[= ]\W{0,3}(Test[A-Za-z0-9_]+)")
@@ -1345,6 +1398,10 @@ class Gate:
     prerequisite: bool  # calls testprereq.Require, requireOrSkip or skipWithout
     fails_on_actions: bool  # reads GITHUB_ACTIONS and fails there
     tool: bool  # in a Benchmark, or in a file that carries the tool line
+    # The variables of ALWAYS_SET where the gate always keeps its test or its assertion from
+    # running: it skips (or returns) wherever the variable is set, or asserts only where it is not.
+    excluded_where_set: frozenset[str] = frozenset()
+    holder: str = ""  # a Go gate's function
 
 
 @dataclass
@@ -1367,6 +1424,7 @@ class GoGates:
         self._child: dict[str, set[str]] = {}
         self._main: dict[str, set[str]] = {}
         self._package_taint: dict[str, dict[str, set]] = {}
+        self._declarations: dict[str, list[tuple[GoFunc, list[str], list[Tok]]]] = {}
         self._reruns: dict[str, set[str]] = {}
         self._functions: dict[str, list[GoFunc]] = {}
         self._taint: dict[GoFunc, dict[str, set]] = {}
@@ -1519,7 +1577,9 @@ class GoGates:
             self._taint[function] = self.local_taint(function, tainted)
         return self._taint[function]
 
-    def local_taint(self, function: GoFunc, tainted: dict[str, set]) -> dict[str, set]:
+    def local_taint(self, function: GoFunc, tainted: dict[str, set], assigned: set[str] | None = None) -> dict[str, set]:
+        """The names of a function that hold a read, added to `tainted`; `assigned` collects the
+        names a plain `=` assigns (no `:=`, no `var`), which a name of the package can be."""
         statements = split_statements(function.body)
         for _ in range(3):
             for statement in statements:
@@ -1531,37 +1591,67 @@ class GoGates:
                     left = left[1:2]
                 elif left and left[0].text in ("if", "for", "switch"):
                     left = left[1:]
-                roots = []
+                roots, keys = [], []
                 for operand in split_commas(left):
-                    # `x` or a field of it, `x.y.z`: the root is what holds the read.
-                    if (operand and operand[0].kind == "ident"
-                            and all(t.text == "." if i % 2 else t.kind == "ident" for i, t in enumerate(operand))):
-                        roots.append(operand[0].text)
-                    else:
+                    # `x`, a field of it or an element of it, `x.y[k].z`: the root is what holds the
+                    # read, and so it is where a key holds one (`only[name] = true`).
+                    found = operand_root(operand)
+                    if found is None:
                         roots = []
                         break
+                    roots.append(found[0])
+                    keys += found[1]
                 if not roots:
                     continue
-                held = self.reads_in(function, statement[assign + 1:], tainted)
+                if (assigned is not None and statement[assign].text == "="
+                        and statement[0].text not in ("var", "if", "for", "switch")):
+                    assigned.update(roots)
+                held = self.reads_in(function, statement[assign + 1:], tainted) | self.reads_in(function, keys, tainted)
                 for root in roots:
                     if held and root not in ("_", "err"):
                         tainted.setdefault(root, set()).update(held)
         return tainted
 
+    def declarations(self, directory: str) -> list[tuple[GoFunc, list[str], list[Tok]]]:
+        """The package-level `var` declarations of a package, `var dsn = os.Getenv(X)`, `var dsn
+        string` and each entry of a `var ( … )` block alike: each with a function that stands for
+        its file (no name, no parameters), the names it declares and the tokens of its value (none
+        where it gives none)."""
+        if directory not in self._declarations:
+            found = []
+            for go_file in self.tree.by_directory.get(directory, []):
+                standing = GoFunc(go_file, "", False, [], [], [])
+                for match in PACKAGE_DECLARATION.finditer(go_file.text):
+                    found += [(standing, names, value)
+                              for names, value in var_declarations(declaration_tokens(go_file.text, match.start()))]
+            self._declarations[directory] = found
+        return self._declarations[directory]
+
     def package_taint(self, directory: str) -> dict[str, set]:
+        """The package-level variables that hold a read, with the variables each holds: those a
+        declaration initialises with one (`var dsn = os.Getenv(X)`), and those a function of the
+        package assigns one to with a plain `=` (a snapshot TestMain takes); a `:=` of the same
+        name declares a local of its own."""
         if directory not in self._package_taint:
-            globals_ = set()
-            for go_file in self.tree.by_directory.get(directory, []):
-                globals_ |= set(PACKAGE_VAR.findall(go_file.text))
-                for block in PACKAGE_VAR_BLOCK.finditer(go_file.text):
-                    globals_ |= set(PACKAGE_VAR_ENTRY.findall(block.group(1)))
+            declared = self.declarations(directory)
+            globals_ = {name for _, names, _ in declared for name in names}
             found: dict[str, set] = {}
+            for standing, names, value in declared:
+                held = self.reads_in(standing, value, found) if value else set()
+                for name in names:
+                    if held and name != "_":
+                        found.setdefault(name, set()).update(held)
             for go_file in self.tree.by_directory.get(directory, []):
-                if go_file.path not in self._functions:
+                if go_file.path not in self._functions or not globals_:
                     continue
                 for function in self._functions[go_file.path]:
-                    for name, held in self.local_taint(function, {}).items():
-                        if name in globals_:
+                    # Only a function that names one of them and makes a plain `=` can assign one.
+                    if not (any(t.text == "=" for t in function.body)
+                            and any(t.kind == "ident" and t.text in globals_ for t in function.body)):
+                        continue
+                    assigned: set[str] = set()
+                    for name, held in self.local_taint(function, {}, assigned).items():
+                        if name in globals_ and name in assigned:
                             found.setdefault(name, set()).update(held)
             self._package_taint[directory] = found
         return self._package_taint[directory]
@@ -1572,13 +1662,18 @@ class GoGates:
         over the files that read a variable, so a function another file or another package calls
         is known before its callers are read. A function returning anything else - a store, a
         server - carries no variable to its callers: what it does with the read is a gate of its
-        own, read where it is."""
+        own, read where it is. The returns of a package's own non-test source are read too (a
+        `liveEnabled()` there, which a test skips on), and only its returns: a gate is a test's."""
         testing = [f for f in self.tree.files.values() if f.is_test or "testing" in self.imports(f.path).values()]
         readers = [f for f in testing if ENV_READ_TEXT.search(f.text)]
         everything = [function for go_file in readers for function in self.functions(go_file)]
+        testing_paths = {f.path for f in testing}
+        sources = [f for f in self.tree.files.values() if f.path not in testing_paths and ENV_READ_TEXT.search(f.text)]
+        returners = everything + [function for go_file in sources for function in self.functions(go_file)]
         for _ in range(2):
             self._taint.clear()
-            for function in everything:
+            self._package_taint.clear()
+            for function in returners:
                 if function.receiver or not plain_result(function.results):
                     continue
                 tainted = self.taint(function)
@@ -1590,8 +1685,9 @@ class GoGates:
                 if returned:
                     self.returning[(function.file.directory, function.name)] = frozenset(returned)
         self._taint.clear()
+        self._package_taint.clear()
         for function in everything:
-            for variables, _, prerequisite, fails in self.function_gates(function):
+            for variables, _, prerequisite, fails, _ in self.function_gates(function):
                 for value in variables:
                     if isinstance(value, tuple):
                         self.helpers[(function.file.directory, function.name)].append(
@@ -1614,12 +1710,22 @@ class GoGates:
                 for go_file in testing:
                     if f'"{path}"' in go_file.text and calling.search(go_file.text):
                         targets[go_file.path] = go_file
+        # And the files that name a package-level variable of their own package that holds a read:
+        # `var dsn = os.Getenv(X)` in one file, `if dsn == "" { t.Skip(…) }` in another.
+        for directory in {f.directory for f in readers + sources}:
+            held = self.package_taint(directory)
+            if not held:
+                continue
+            naming = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, held))) + r")\b")
+            for go_file in testing:
+                if go_file.directory == directory and naming.search(go_file.text):
+                    targets[go_file.path] = go_file
         for go_file in targets.values():
             for function in self.functions(go_file):
-                for variables, line, prerequisite, fails in self.function_gates(function):
+                for variables, line, prerequisite, fails, where_set in self.function_gates(function):
                     names = frozenset(v for v in variables if isinstance(v, str))
                     if names:
-                        self.add(function, line, names, prerequisite, fails)
+                        self.add(function, line, names, prerequisite, fails, where_set)
                 self.helper_calls(function)
 
     def reruns(self, directory: str) -> set[str]:
@@ -1628,7 +1734,8 @@ class GoGates:
                                        for name in RERUN.findall(go_file.text)}
         return self._reruns[directory]
 
-    def add(self, function: GoFunc, line: int, names: frozenset[str], prerequisite: bool, fails: bool) -> None:
+    def add(self, function: GoFunc, line: int, names: frozenset[str], prerequisite: bool, fails: bool,
+            where_set: frozenset[str] = frozenset()) -> None:
         go_file = function.file
         if function.name in self.reruns(go_file.directory):
             return  # a helper process its own package's test starts, with the environment it hands it
@@ -1641,7 +1748,8 @@ class GoGates:
                                  and any(name == function.name for name, _ in go_file.tests)) else None
         self.gates.append(Gate("go", go_file.path, line, names, go_file, test, prerequisite,
                                fails and "GITHUB_ACTIONS" in names,
-                               function.name.startswith("Benchmark") or go_file.tool))
+                               function.name.startswith("Benchmark") or go_file.tool,
+                               where_set & names, function.name))
 
     def setenv_names(self, function: GoFunc) -> set[str]:
         """The variables a function's own body sets with `<t>.Setenv(NAME, …)` or `os.Setenv(NAME,
@@ -1695,11 +1803,14 @@ class GoGates:
                 if name is not None:
                     self.add(function, token.line, frozenset({name}), helper.prerequisite, helper.fails_on_actions)
 
-    def function_gates(self, function: GoFunc) -> list[tuple[set, int, bool, bool]]:
-        """(variables, line, prerequisite, fails there) of each gate in a function's body: an `if`
-        whose condition holds a read and one of whose branches skips, asserts or calls
-        testprereq.Require; a `switch` case the same; and a testprereq.Require whose condition
-        holds a read."""
+    def function_gates(self, function: GoFunc) -> list[tuple[set, int, bool, bool, frozenset[str]]]:
+        """(variables, line, prerequisite, fails there, excluded where set) of each gate in a
+        function's body: an `if` whose condition holds a read and one of whose branches skips,
+        asserts or calls testprereq.Require, or ends the function (a bare `return`, and in TestMain
+        an `os.Exit`) before an assertion of the rest of its block (in TestMain, before `m.Run()`);
+        a `switch` case the same; and a testprereq.Require whose condition holds a read. The last
+        member names each variable of ALWAYS_SET (excluded_where_set) where an `if` always keeps the
+        test or the assertion from running."""
         if function in self._gates:
             return self._gates[function]
         tainted = self.taint(function)
@@ -1723,9 +1834,21 @@ class GoGates:
                 header = tokens[index + 1:header_end]
                 variables = self.reads_in(function, header, tainted)
                 if variables:
-                    calls = set().union(*(self.branch_calls(function, branch, packages, tainted) for branch in branches))
+                    each = [self.branch_calls(function, branch, packages, tainted) for branch in branches]
+                    calls = set().union(*each)
+                    # A branch that ends the function skips the rest of its block, where that rest
+                    # asserts.
+                    ends = [self.ends_early(function, branch) for branch in branches]
+                    ends_before = any(ends) and self.asserts_after(function, tokens, if_end(tokens, index), packages)
+                    roles = ["skip" if branch_calls & (SKIP_CALLS | {"Require"}) or (ended and ends_before)
+                             else "guard" if branch_calls & ASSERT_CALLS else None
+                             for branch_calls, ended in zip(each, ends)]
                     if self.is_gate(calls, header, branches, tainted, packages, constants):
-                        found.append((variables, token.line, "Require" in calls, fails))
+                        found.append((variables, token.line, "Require" in calls, fails,
+                                      self.where_set(function, header, roles, variables)))
+                    elif ends_before:
+                        found.append((variables, token.line, False, fails,
+                                      self.where_set(function, header, roles, variables)))
             elif token.kind == "ident" and token.text == "switch":
                 open_at = header_close(tokens, index + 1)
                 if open_at >= len(tokens):
@@ -1736,17 +1859,175 @@ class GoGates:
                     calls = self.branch_calls(function, case_body, packages, tainted)
                     if variables and self.is_gate(calls, tokens[index + 1:open_at] + case_header, [case_body],
                                                   tainted, packages, constants):
-                        found.append((variables, token.line, "Require" in calls, fails))
+                        found.append((variables, token.line, "Require" in calls, fails, frozenset()))
             elif (token.text == "testprereq" and index + 3 < len(tokens) and tokens[index + 1].text == "."
                     and tokens[index + 2].text == "Require" and tokens[index + 3].text == "("):
                 arguments = split_commas(tokens[index + 4:match_close(tokens, index + 3)])
                 if len(arguments) >= 2:
                     variables = self.reads_in(function, arguments[1], tainted)
                     if variables:
-                        found.append((variables, token.line, True, False))
+                        found.append((variables, token.line, True, False, frozenset()))
             index += 1
         self._gates[function] = found
         return found
+
+    @staticmethod
+    def ends_early(function: GoFunc, branch: list[Tok]) -> bool:
+        """Whether a block ends the rest of the block it is in at its own level: a `return` with
+        no value (any `return` of a function with no results), a `continue`, which ends its loop's
+        pass (a dial that narrows the rows a loop drives), or, in TestMain, an `os.Exit`, which runs
+        no test."""
+        depth = 0
+        for index, token in enumerate(branch):
+            if token.text in ("(", "[", "{"):
+                depth += 1
+            elif token.text in (")", "]", "}"):
+                depth -= 1
+            elif depth == 0 and token.kind == "ident" and token.text == "continue":
+                return True
+            elif depth == 0 and token.kind == "ident" and token.text == "return":
+                following = branch[index + 1] if index + 1 < len(branch) else None
+                if not function.results or following is None or following.kind == "nl" or following.text == ";":
+                    return True
+            elif (depth == 0 and function.name == "TestMain" and not function.receiver and token.text == "os"
+                    and index + 3 < len(branch) and branch[index + 1].text == "." and branch[index + 2].text == "Exit"
+                    and branch[index + 3].text == "("):
+                return True
+        return False
+
+    @staticmethod
+    def asserts_after(function: GoFunc, tokens: list[Tok], start: int, packages: frozenset) -> bool:
+        """Whether the rest of the block from `start` asserts, or, in TestMain, runs the tests
+        (`m.Run()`)."""
+        depth, end = 0, start
+        while end < len(tokens):
+            text = tokens[end].text
+            if text in ("(", "[", "{"):
+                depth += 1
+            elif text in (")", "]", "}"):
+                if depth == 0:
+                    break
+                depth -= 1
+            end += 1
+        calls = calls_in(tokens[start:end], packages)
+        return bool(calls & ASSERT_CALLS) or (function.name == "TestMain" and "Run" in calls)
+
+    def where_set(self, function: GoFunc, header: list[Tok], roles: list[str | None], variables: set) -> frozenset[str]:
+        """The variables of ALWAYS_SET under whose value an `if` always keeps its test or its
+        assertion from running: a branch that skips (or ends the function) is taken, or every
+        branch that asserts is not. Its condition is read by go_truth, with each other variable
+        unknown."""
+        always = [v for v in variables if isinstance(v, str) and v in ALWAYS_SET]
+        if not always:
+            return frozenset()
+        found = set()
+        condition, values = self.condition_of(function, header)
+        for variable in always:
+            truth = self.go_truth(function, condition, {variable: ALWAYS_SET[variable]}, values)
+            if truth is None:
+                continue
+            taken = [truth, not truth][:len(roles)]
+            if any(role == "skip" and went for role, went in zip(roles, taken)) or (
+                    "guard" in roles and not any(role == "guard" and went for role, went in zip(roles, taken))):
+                found.add(variable)
+        return frozenset(found)
+
+    def condition_of(self, function: GoFunc, header: list[Tok]) -> tuple[list[Tok], dict[str, tuple[str, str]]]:
+        """An `if` header's condition, after its init statement, and the names that hold a read as
+        it is: the package's declarations, the function's assignments and the init statement's."""
+        parts = split_tokens([t for t in header if t.kind != "nl"], ";")
+        values = dict(self.package_values(function.file.directory))
+        for statement in split_statements(function.body):
+            values.update(self.assigned_read(function, statement))
+        if len(parts) > 1:
+            values.update(self.assigned_read(function, parts[-2]))
+        return parts[-1], values
+
+    def package_values(self, directory: str) -> dict[str, tuple[str, str]]:
+        found = {}
+        for standing, names, value in self.declarations(directory):
+            found.update(self.assigned_read(standing, [Tok("ident", name, 0) for name in names[:1]]
+                                            + [Tok("op", "=", 0)] + value, names))
+        return found
+
+    def assigned_read(self, function: GoFunc, statement: list[Tok],
+                      names: list[str] | None = None) -> dict[str, tuple[str, str]]:
+        """The names one assignment gives a read as it is: `v := os.Getenv(X)` the value of X,
+        `v, ok := os.LookupEnv(X)` its value and whether it is set (`set`)."""
+        tokens = [t for t in statement if t.kind != "nl"]
+        if tokens and tokens[0].text == "var":
+            tokens = tokens[1:]
+        assign = next((i for i, t in enumerate(tokens) if t.text in (":=", "=")), None)
+        if assign is None or assign == 0:
+            return {}
+        if names is None:
+            left = tokens[:assign]
+            names = [t.text for t in left[::2]]
+            if not all(t.kind == "ident" for t in left[::2]) or not all(t.text == "," for t in left[1::2]):
+                names = [left[0].text] if left[0].kind == "ident" else []
+        value = tokens[assign + 1:]
+        read = self.read(function, value, 0) if value else None
+        if read is None or read[1] != len(value) or len(read[0]) != 1:
+            return {}
+        variable = next(iter(read[0]))
+        if not isinstance(variable, str):
+            return {}
+        found = {}
+        if names:
+            found[names[0]] = ("value", variable)
+        if value[2].text == "LookupEnv" and len(names) > 1:
+            found[names[1]] = ("set", variable)
+        return found
+
+    def go_truth(self, function: GoFunc, tokens: list[Tok], assumed: dict[str, str],
+                 values: dict[str, tuple[str, str]]) -> bool | None:
+        """What a condition is where the variables of `assumed` hold their values and every other
+        is unknown: True, False, or None where it cannot be read. It reads `||`, `&&`, `!`,
+        parentheses, `==` and `!=` between reads and strings, and the names that hold a read."""
+        tokens = [t for t in tokens if t.kind != "nl"]
+        while tokens and tokens[0].text == "(" and match_close(tokens, 0) == len(tokens) - 1:
+            tokens = tokens[1:-1]
+        if not tokens:
+            return None
+        parts = split_tokens(tokens, "||")
+        if len(parts) > 1:
+            truths = [self.go_truth(function, part, assumed, values) for part in parts]
+            return True if True in truths else False if all(t is False for t in truths) else None
+        parts = split_tokens(tokens, "&&")
+        if len(parts) > 1:
+            truths = [self.go_truth(function, part, assumed, values) for part in parts]
+            return False if False in truths else True if all(t is True for t in truths) else None
+        for operator in ("==", "!="):
+            parts = split_tokens(tokens, operator)
+            if len(parts) == 2:
+                left, right = (self.go_value(function, part, assumed, values) for part in parts)
+                return None if left is None or right is None else (left == right) == (operator == "==")
+        if tokens[0].text == "!":
+            inner = self.go_truth(function, tokens[1:], assumed, values)
+            return None if inner is None else not inner
+        if len(tokens) == 1:
+            if tokens[0].text in ("true", "false"):
+                return tokens[0].text == "true"
+            held = values.get(tokens[0].text)
+            if held and held[0] == "set" and held[1] in assumed:
+                return True
+        return None
+
+    def go_value(self, function: GoFunc, tokens: list[Tok], assumed: dict[str, str],
+                 values: dict[str, tuple[str, str]]) -> str | None:
+        """The string an operand is: a literal, an os.Getenv of a variable of `assumed`, or a name
+        that holds one; None for any other."""
+        if len(tokens) == 1:
+            literal = go_string(tokens[0].text)
+            if literal is not None:
+                return literal
+            held = values.get(tokens[0].text)
+            return assumed.get(held[1]) if held and held[0] == "value" else None
+        read = self.read(function, tokens, 0)
+        if read is None or read[1] != len(tokens) or tokens[2].text != "Getenv" or len(read[0]) != 1:
+            return None
+        variable = next(iter(read[0]))
+        return assumed.get(variable) if isinstance(variable, str) else None
 
     def is_gate(self, calls: set[str], condition: list[Tok], branches: list[list[Tok]], tainted: dict,
                 packages: frozenset, constants: dict) -> bool:
@@ -1836,6 +2117,52 @@ def header_close(tokens: list[Tok], index: int) -> int:
     return index
 
 
+def if_end(tokens: list[Tok], index: int) -> int:
+    """The index past the `if` statement at tokens[index], its `else` and `else if` blocks among
+    it."""
+    header_end = header_close(tokens, index + 1)
+    if header_end >= len(tokens):
+        return len(tokens)
+    after = match_close(tokens, header_end) + 1
+    if after + 1 < len(tokens) and tokens[after].text == "else":
+        if tokens[after + 1].text == "{":
+            return match_close(tokens, after + 1) + 1
+        if tokens[after + 1].text == "if":
+            return if_end(tokens, after + 1)
+    return after
+
+
+# The start of a package-level `var` declaration, alone or a block: gofmt puts it at a line's start.
+PACKAGE_DECLARATION = re.compile(r"^var\b", re.M)
+
+
+def var_declarations(tokens: list[Tok]) -> list[tuple[list[str], list[Tok]]]:
+    """The entries of one package-level `var` declaration (declaration_tokens), each as the names
+    it declares and the tokens of its value (none where it gives none): `var dsn = os.Getenv(X)`,
+    `var a, b string`, and each entry of a `var ( … )` block, each entry running to its line's end
+    outside brackets."""
+    body = tokens[2:-1] if tokens[1:2] and tokens[1].text == "(" else tokens[1:]
+    found, at = [], 0
+    while at < len(body):
+        start, level = at, 0
+        while at < len(body) and not (level == 0 and (body[at].kind == "nl" or body[at].text == ";")):
+            if body[at].text in ("(", "[", "{"):
+                level += 1
+            elif body[at].text in (")", "]", "}"):
+                level -= 1
+            at += 1
+        entry = [t for t in body[start:at] if t.kind != "nl"]
+        at += 1
+        if entry and entry[0].kind == "ident":
+            assign = next((i for i, t in enumerate(entry) if t.text == "="), len(entry))
+            names, name_at = [entry[0].text], 1
+            while name_at + 1 < assign and entry[name_at].text == "," and entry[name_at + 1].kind == "ident":
+                names.append(entry[name_at + 1].text)
+                name_at += 2
+            found.append((names, entry[assign + 1:]))
+    return found
+
+
 PLAIN_TYPES = frozenset({"bool", "string", "int", "int64", "uint64", "float64"})
 
 
@@ -1873,7 +2200,30 @@ def split_statements(tokens: list[Tok]) -> list[list[Tok]]:
     return statements
 
 
+def operand_root(operand: list[Tok]) -> tuple[str, list[Tok]] | None:
+    """The name an assignment's operand writes - `x`, `x.y.z` or `x[k].y` - with the tokens of the
+    keys it indexes by; None for any other operand (`*p`, `f().x`)."""
+    if not operand or operand[0].kind != "ident":
+        return None
+    keys, index = [], 1
+    while index < len(operand):
+        if operand[index].text == "." and index + 1 < len(operand) and operand[index + 1].kind == "ident":
+            index += 2
+        elif operand[index].text == "[":
+            close = match_close(operand, index)
+            keys += operand[index + 1:close]
+            index = close + 1
+        else:
+            return None
+    return operand[0].text, keys
+
+
 def split_commas(tokens: list[Tok]) -> list[list[Tok]]:
+    return split_tokens(tokens, ",")
+
+
+def split_tokens(tokens: list[Tok], operator: str) -> list[list[Tok]]:
+    """`tokens` split at each `operator` outside brackets, their newlines dropped."""
     parts, current, depth = [], [], 0
     for token in tokens:
         if token.kind == "nl":
@@ -1882,7 +2232,7 @@ def split_commas(tokens: list[Tok]) -> list[list[Tok]]:
             depth += 1
         elif token.text in (")", "]", "}"):
             depth -= 1
-        if token.text == "," and depth == 0:
+        if token.text == operator and depth == 0:
             parts.append(current)
             current = []
         else:
@@ -2176,8 +2526,15 @@ class TsTree:
 TS_GATE_CALL = re.compile(r"\b(?:test|it|describe)(?:\.(?:only|concurrent|serial|todo|failing))*\.(skipIf|if|skip|fixme)\s*\(")
 TS_IF = re.compile(r"\bif\s*\(")
 TS_THROW_ON_ACTIONS = re.compile(r"GITHUB_ACTIONS[\s\S]{0,200}?\bthrow\b")
-# A block an `if` guards that asserts or skips: an `expect(`, or a skip of the test it is in.
-TS_GUARDED = re.compile(r"\bexpect\s*\(|\.skip\s*\(\s*\)|\.skip\s*\(\s*true\b")
+# An assertion, and a skip of the test a block is in. A block an `if` guards that asserts or skips
+# holds either.
+TS_EXPECT = re.compile(r"\bexpect\s*\(")
+TS_SKIP_SELF = re.compile(r"\.skip\s*\(\s*\)|\.skip\s*\(\s*true\b")
+TS_GUARDED = re.compile(f"{TS_EXPECT.pattern}|{TS_SKIP_SELF.pattern}")
+# A conditional whose arms are a test function and its skip, `cond ? test : test.skip` (or the
+# reverse): the arms' members, read against TS_SKIP_MEMBERS.
+TS_TERNARY = re.compile(r"\?\s*(?:test|it|describe)((?:\.[A-Za-z]+)*)\s*:\s*(?:test|it|describe)((?:\.[A-Za-z]+)*)(?![\w$.(])")
+TS_SKIP_MEMBERS = frozenset({"skip", "todo", "fixme"})
 
 # A term of a gate's condition that reads only whether this run is GitHub Actions: `!onActions`
 # where `onActions` (in the file or a module of its package it imports) is declared as
@@ -2263,10 +2620,123 @@ def never_skips_on_actions(tree: "TsTree", path: str, condition: str, kind: str,
     return False
 
 
+# What a TypeScript condition's operand is where it names no defined value: `undefined`, `null`.
+TS_UNDEFINED = object()
+
+
+def ts_eval(tree: "TsTree", path: str, text: str, assumed: dict[str, str], depth: int = 0):
+    """What a condition (or an operand of one) is where the variables of `assumed` hold their
+    values and every other is unknown: a string, a bool, TS_UNDEFINED, or None where it cannot be
+    read. It reads `||`, `&&`, `!`, parentheses, `===`, `!==`, `==` and `!=`, reads of a variable,
+    strings, `true`, `false`, `undefined`, `null`, and a name through its declaration (in the file or
+    a module of its package it imports)."""
+    text = unwrap(text)
+    if not text or depth > 6:
+        return None
+    parts = split_operator(text, "||")
+    if len(parts) > 1:
+        truths = [ts_truthy(ts_eval(tree, path, part, assumed, depth + 1)) for part in parts]
+        return True if True in truths else False if all(t is False for t in truths) else None
+    parts = split_operator(text, "&&")
+    if len(parts) > 1:
+        truths = [ts_truthy(ts_eval(tree, path, part, assumed, depth + 1)) for part in parts]
+        return False if False in truths else True if all(t is True for t in truths) else None
+    for operator in ("===", "!==", "==", "!="):
+        parts = split_operator(text, operator)
+        if len(parts) == 2:
+            left, right = (ts_eval(tree, path, part, assumed, depth + 1) for part in parts)
+            if left is None or right is None:
+                return None
+            return (left == right) == (operator in ("===", "=="))
+    if text.startswith("!"):
+        inner = ts_truthy(ts_eval(tree, path, text[1:], assumed, depth + 1))
+        return None if inner is None else not inner
+    read = TS_ENV.fullmatch(text)
+    if read:
+        return assumed.get(read.group(1) or read.group(2))
+    if len(text) >= 2 and text[0] in "\"'`" and text[-1] == text[0] and "${" not in text:
+        return text[1:-1]
+    if text in ("true", "false"):
+        return text == "true"
+    if text in ("undefined", "null"):
+        return TS_UNDEFINED
+    if TS_NAME.fullmatch(text):
+        declared = declaration(tree, path, text)
+        if declared is not None:
+            return ts_eval(tree, declared[0], declared[1], assumed, depth + 1)
+    return None
+
+
+def ts_truthy(value) -> bool | None:
+    if value is None:
+        return None
+    if value is TS_UNDEFINED:
+        return False
+    return bool(value)
+
+
 def skip_space(text: str, index: int) -> int:
     while index < len(text) and text[index] in " \t\n\r":
         index += 1
     return index
+
+
+def block_end(text: str, index: int) -> int:
+    """The index of the bracket that closes the block text[index] is in, strings skipped; the
+    text's end at its top level."""
+    while index < len(text):
+        char = text[index]
+        if char in "([{":
+            index = balanced(text, index)
+            continue
+        if char in "\"'`":
+            index = _string_end(text, index)
+            continue
+        if char in ")]}":
+            return index
+        index += 1
+    return len(text)
+
+
+def returns_at_once(body: str) -> bool:
+    """Whether a statement an `if` guards (strings blanked) is a `return`, or a block that
+    returns at its own level."""
+    if re.match(r"return\b", body):
+        return True
+    if not body.startswith("{"):
+        return False
+    index = 1
+    while index < len(body):
+        if body[index] in "([{":
+            index = balanced(body, index)
+            continue
+        if re.match(r"return\b", body[index:]) and not (body[index - 1].isalnum() or body[index - 1] in "_$."):
+            return True
+        index += 1
+    return False
+
+
+def expression_start(text: str, at: int) -> int:
+    """The start of the expression that ends at text[at] (strings blanked): back past brackets to
+    an assignment, a `return`, an open bracket, a `,`, a `;`, or another `?` or `:`."""
+    index, depth = at - 1, 0
+    while index >= 0:
+        char = text[index]
+        if char in ")]}":
+            depth += 1
+        elif char in "([{":
+            if depth == 0:
+                break
+            depth -= 1
+        elif depth == 0:
+            if char in ";,?:":
+                break
+            if char == "=" and text[index - 1:index] not in ("=", "!", "<", ">") and text[index + 1:index + 2] not in ("=", ">"):
+                break
+            if text.endswith("return", 0, index + 1) and not (index >= 6 and (text[index - 6].isalnum() or text[index - 6] in "_$")):
+                break
+        index -= 1
+    return index + 1
 
 
 def bun_test_files(files: list[str]) -> list[str]:
@@ -2275,6 +2745,8 @@ def bun_test_files(files: list[str]) -> list[str]:
 
 TS_ENV_TEXT = re.compile(r"\b(?:process\.env|Bun\.env|import\.meta\.env)\b")
 TS_RELATIVE_IMPORT = re.compile(r"""from\s*["'](\.[^"']*)["']""")
+# A file Bun or Playwright runs as a test: one that imports its test functions.
+TS_TEST_IMPORT = re.compile(r"""from\s+["'](?:bun:test|@playwright/test)["']""")
 
 
 def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
@@ -2293,7 +2765,7 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
 
     for path in files:
         raw = read_text(path)
-        if not re.search(r"""from\s+["'](?:bun:test|@playwright/test)["']""", raw):
+        if not TS_TEST_IMPORT.search(raw):
             continue
         if not TS_ENV_TEXT.search(raw) and not any(
                 reads_a_variable(tree.resolve(str(Path(path).parent), imported))
@@ -2301,7 +2773,10 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
             continue
         module = tree.module(path)
         blank = module.blank
-        sites: list[tuple[tuple[int, int], int, str]] = []
+        # Each site: the span of its condition, its line, its kind, and which way the condition
+        # keeps the test (or its assertion) from running: True where it holds, False where it does
+        # not, None where the search does not read which.
+        sites: list[tuple[tuple[int, int], int, str, bool | None]] = []
         lines = LineCounter(blank)
         for match in TS_GATE_CALL.finditer(blank):
             open_at = match.end() - 1
@@ -2315,31 +2790,48 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
                         or head_text.startswith(("async", "function", "{"))):
                     continue
                 span = (begin, open_at + 1 + len(first))
-            sites.append((span, lines.line_of(match.start()), match.group(1)))
+            sites.append((span, lines.line_of(match.start()), match.group(1), match.group(1) != "if"))
         lines = LineCounter(blank)
         for match in TS_IF.finditer(blank):
             open_at = match.end() - 1
             close = balanced(blank, open_at)
             start = skip_space(blank, close)
             end = balanced(blank, start) if blank[start:start + 1] == "{" else statement_end(blank, start)
-            body = blank[start:end]
+            body = then = blank[start:end]
             follow = skip_space(blank, end)
-            if blank.startswith("else", follow):
+            otherwise = blank.startswith("else", follow)
+            if otherwise:
                 tail = skip_space(blank, follow + 4)
                 if blank[tail:tail + 1] == "{":
                     body += blank[tail:balanced(blank, tail)]
             if TS_GUARDED.search(body):
-                sites.append(((open_at + 1, close - 1), lines.line_of(match.start()), "block"))
+                direction = None if otherwise else bool(TS_SKIP_SELF.search(then))
+                sites.append(((open_at + 1, close - 1), lines.line_of(match.start()), "block", direction))
+            elif not otherwise and returns_at_once(then) and TS_EXPECT.search(blank, end, block_end(blank, end)):
+                # An early return: the rest of its block asserts only where the test goes on.
+                sites.append(((open_at + 1, close - 1), lines.line_of(match.start()), "return", True))
+        # A test chosen between test and test.skip: `const maybe = process.env.X ? test : test.skip`.
+        for match in TS_TERNARY.finditer(blank):
+            arms = [set(match.group(arm).split(".")) & TS_SKIP_MEMBERS for arm in (1, 2)]
+            if bool(arms[0]) == bool(arms[1]):
+                continue
+            begin = expression_start(blank, match.start())
+            sites.append(((begin, match.start()), blank.count("\n", 0, match.start()) + 1,
+                          "skipIf" if arms[0] else "if", bool(arms[0])))
         tool = carries_tool_line(path)
-        for span, line, kind in sites:
+        for span, line, kind, direction in sites:
             variables, chained = tree.chain(path, span)
             if not variables:
                 continue
+            condition = module.text[span[0]:span[1]]
             on_actions = "GITHUB_ACTIONS" in variables and (
                 bool(TS_THROW_ON_ACTIONS.search(chained))
-                or never_skips_on_actions(tree, path, module.text[span[0]:span[1]], kind))
+                or never_skips_on_actions(tree, path, condition, "skipIf" if kind == "return" else kind))
+            where_set = frozenset(
+                variable for variable in variables if variable in ALWAYS_SET and direction is not None
+                and ts_truthy(ts_eval(tree, path, condition, {variable: ALWAYS_SET[variable]})) is direction)
             gates.append(Gate("bun", path, line, frozenset(variables), None, None,
-                              bool(TS_PREREQUISITE.search(chained)), on_actions, tool))
+                              bool(TS_PREREQUISITE.search(chained)), on_actions, tool, where_set))
     return gates
 
 
@@ -2385,11 +2877,25 @@ _commands: dict[str, tuple[str, ...]] = {}
 _words: dict[str, tuple[str, ...]] = {}
 
 
+# A here-document a line opens (`cat > file <<'YAML'`, `<<-EOF`), and its delimiter: the lines up
+# to the delimiter's are the document's text, not commands.
+HEREDOC = re.compile(r"(?<!<)<<-?(?!<)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
 def commands(script: str) -> list[str]:
     """The simple commands of a script's lines, split at `&&`, `||`, `;` and `|`, braces and
-    subshell parentheses dropped, continuation lines joined."""
+    subshell parentheses dropped, continuation lines joined, and the text of each here-document
+    left out: a harness's fixture (`run: bun test` in the YAML it writes) is no command it runs."""
     if script not in _commands:
-        text = GH_EXPRESSION.sub("GHEXPR", "\n".join(script_lines(script))).replace("\\\n", " ")
+        lines, delimiter = [], None
+        for line in script_lines(script):
+            if delimiter is not None:
+                delimiter = None if line == delimiter else delimiter
+                continue
+            lines.append(line)
+            opened = HEREDOC.search(line)
+            delimiter = opened.group(2) if opened else None
+        text = GH_EXPRESSION.sub("GHEXPR", "\n".join(lines)).replace("\\\n", " ")
         found = []
         for line in text.split("\n"):
             for part in split_shell(line):
@@ -2434,14 +2940,20 @@ def repository_script(cwd: str, words: list[str]) -> str | None:
 # of it is one word: --foreground, --preserve-status, -v, and the `--signal=TERM` and
 # `--kill-after=60` forms.
 TIMEOUT_VALUE_OPTIONS = {"-s", "--signal", "-k", "--kill-after"}
+# The pool a job queues its harnesses in: `harness-pool.sh start [--minutes <n>] <name> <command>
+# [<argument>...]` runs the command in the step's directory and environment, and the job's wait
+# step is its verdict.
+HARNESS_POOL = "harness-pool.sh"
 
 
 def unwrapped(words: list[str], env: set[str]) -> list[str]:
     """The command a command's words run, after the words that only start it: the variables set
-    before it (`NAME=value`, each name added to env), `env`, `exec`, and coreutils `timeout` with
-    its options and its duration, in any order. dispatch-unit-repeat.yaml's lane step runs
-    `exec timeout --foreground --signal=TERM --kill-after=60 <seconds> bun run test:repeat …`, so
-    a reader that reads only words that start with `bun` reads that step as no test command."""
+    before it (`NAME=value`, each name added to env), `env`, `exec`, coreutils `timeout` with its
+    options and its duration, and `harness-pool.sh start` with its --minutes and the name it gives
+    the command, in any order. dispatch-unit-repeat.yaml's lane step runs `exec timeout
+    --foreground --signal=TERM --kill-after=60 <seconds> bun run test:repeat …`, so a reader that
+    reads only words that start with `bun` reads that step as no test command; envoy-go-checks
+    runs `harness-pool.sh start scripts/approve/ bun test scripts/approve/`."""
     while words:
         assignment = INLINE.match(words[0])
         if assignment:
@@ -2453,6 +2965,11 @@ def unwrapped(words: list[str], env: set[str]) -> list[str]:
             index = 1
             while index < len(words) and words[index].startswith("-"):
                 index += 2 if words[index] in TIMEOUT_VALUE_OPTIONS else 1
+            words = words[index + 1:]
+        elif Path(words[0]).name == HARNESS_POOL and words[1:2] == ["start"]:
+            index = 2
+            while index < len(words) and words[index].startswith("--minutes"):
+                index += 1 if "=" in words[index] else 2
             words = words[index + 1:]
         else:
             break
@@ -2668,6 +3185,17 @@ class BunReader:
         return set(specs)
 
 
+def bun_unrun_findings(reader: BunReader, bun: list[BunRun]) -> list[Finding]:
+    """Rule 6 for Bun and Playwright: each test file (bun_test_files, that imports bun:test or
+    @playwright/test) that no required step's `bun test` or `playwright test` runs. A Bun package
+    and a Playwright project are packages, and a test of a package no required step runs is one no
+    merge waits for."""
+    run = {path for each in bun for path in each.files}
+    return [Finding("unrun", path, 0, Path(path).name,
+                    "no required step's bun test or playwright test runs it")
+            for path in reader.tests if path not in run and TS_TEST_IMPORT.search(read_text(path))]
+
+
 # -------------------------------------------------------------------------------- the registry
 @dataclass
 class Row:
@@ -2778,6 +3306,12 @@ def variable_findings(rows: dict[str, Row], gates: list[Gate], flows: Workflows,
                 found.append(Finding("variable", gate.path, gate.line, variable,
                                      f"{what(gate)} gates on it and no row of {REGISTRY} names it"))
                 continue
+            if variable in gate.excluded_where_set and not gate.tool:
+                found.append(Finding("variable", gate.path, gate.line, variable,
+                                     f"the gate keeps {what(gate)} from running wherever {variable} is set, and GitHub "
+                                     f"sets {variable} in every job, so no job ci-ok needs runs it, whatever its row's "
+                                     "class"))
+                continue
             reason = class_fails(row, gate, variable, tree, go, bun)
             if reason:
                 found.append(Finding("variable", gate.path, gate.line, variable, reason))
@@ -2802,6 +3336,8 @@ def inline_env(script: str) -> set[str]:
 
 def what(gate: Gate) -> str:
     if gate.language == "go":
+        if gate.test is None and gate.holder == "TestMain":
+            return "the TestMain of its package"
         return gate.test or "a helper of its package's tests"
     return "the file's tests"
 
@@ -2993,11 +3529,14 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
         by_name[Path(path).name].append(path)
     mentions = Mentions(by_name)
     texts: list[tuple[str, str]] = []
+    file_set = set(files)
+    modules: set[str] = set()
     for step in required_steps(flows):
         texts.append((step.part.workflow, step.script))
         for words in step_words(step):
             texts += [(f"{step.workdir}/package.json", text)
                       for text in package_script_texts(bun_reader, step.workdir, words, set())]
+        modules |= unittest_modules(step, file_set)
     reached_files = set()
     for go_run in go:
         for directory in go_run.directories:
@@ -3016,8 +3555,8 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
             if resolved and TS_SOURCE.search(resolved):
                 pending_modules.append(resolved)
     # Each file is read, its comments dropped, only when the walk takes it off the queue.
-    pending: list[tuple[str, str | None]] = [*texts, *((path, None) for path in sorted(reached_files))]
-    reached: set[str] = set()
+    pending: list[tuple[str, str | None]] = [*texts, *((path, None) for path in sorted(reached_files | modules))]
+    reached: set[str] = set(modules)
     while pending:
         path, text = pending.pop()
         if text is None:
@@ -3031,14 +3570,55 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
         if path in reached:
             continue
         lines = head(path)
-        if not any(TEST_WORDS.search(line) for line in lines):
+        harness = steps.HARNESS_NAME.search(path)
+        if not harness and not any(TEST_WORDS.search(line) for line in lines):
             continue
         if any(TOOL_LINE.match(line) or NOT_A_TEST_LINE.match(line) for line in lines):
             continue
         found.append(Finding("script", path, 1, Path(path).name,
-                             "it uses the words proof, smoke, check or test, no required step runs it, and it "
-                             "carries neither `legion: tool - ` nor `legion: not a test - ` in its first 15 lines"))
+                             ("it is a harness (*.test.sh)" if harness else "it uses the words proof, smoke, check or test")
+                             + ", no required step runs it, and it carries neither `legion: tool - ` nor "
+                             "`legion: not a test - ` in its first 15 lines"))
     return found + marker_findings(candidates)
+
+
+# `python3 -m unittest`'s options that take the next word as their value.
+UNITTEST_VALUE_OPTIONS = frozenset({"-k", "--durations"})
+
+
+def unittest_modules(step: RunStep, file_set: set[str]) -> set[str]:
+    """The files each `python3 -m unittest [options] <module>…` command of a step runs, from the
+    step's directory (as a `cd` before it leaves it): a module's dotted name is its path, `pg_test`
+    pg_test.py and `lib.row_test` lib/row_test.py (the longest of its prefixes that is a file, so
+    `row_test.RowTest.test_one` is row_test.py), and a word that ends in .py is that file.
+    `unittest discover` names no module, and is not read."""
+    found = set()
+    cwd = step.workdir
+    for words in step_words(step):
+        if words[:1] == ["cd"] and len(words) == 2:
+            cwd = join(cwd, words[1])
+            continue
+        words = unwrapped(words, set())
+        if not words or Path(words[0]).name not in ("python", "python3") or words[1:3] != ["-m", "unittest"]:
+            continue
+        index = 3
+        while index < len(words):
+            word = words[index]
+            index += 1
+            if word == "discover":
+                break
+            if word.startswith("-"):
+                index += word in UNITTEST_VALUE_OPTIONS
+                continue
+            if word.endswith(".py"):
+                candidates = [join(cwd, word)]
+            else:
+                parts = word.split(".")
+                candidates = [join(cwd, "/".join(parts[:end]) + ".py") for end in range(len(parts), 0, -1)]
+            path = next((path for path in candidates if path in file_set), None)
+            if path is not None:
+                found.add(path)
+    return found
 
 
 # A header's first line of prose that says the script is a test or a proof (`A proof that…`,
@@ -3046,19 +3626,27 @@ def script_findings(files: list[str], flows: Workflows, tree: GoTree, go: list[G
 # starts or reads is (`A smoke stack.`, `Starts the stack the smoke checks run on.`).
 CALLS_ITSELF = re.compile(r"^(?:(?:a|an|the|this(?:\s+script)?(?:\s+is)?(?:\s+an?)?)\s+)?(?:[\w-]+\s+){0,2}?"
                           r"(?:tests?|proofs?)\b|^(?:proves|smoke-tests)\b", re.IGNORECASE)
+# The same for a check (`Checks the packed tarball…`, `A check that…`). A word that names another
+# script (`Runs check-private-names.sh over…`) is no check.
+CALLS_ITSELF_A_CHECK = re.compile(r"^(?:(?:a|an|the|this(?:\s+script)?(?:\s+is)?(?:\s+an?)?)\s+)?"
+                                  r"(?:[\w-]+\s+){0,2}?checks?(?![\w.-])", re.IGNORECASE)
 COMMENT_MARK = re.compile(r"^\s*(?:#!.*|#+|//+|/\*+|\*+/?|--|;)\s*")
 
 
-def calls_itself_a_test(lines: list[str]) -> bool:
-    """Whether a header's first line of prose, its shebang and its legion: lines aside, calls the
-    script a test, a proof or a smoke test."""
+def header_prose(lines: list[str]) -> str:
+    """A header's first line of prose, its shebang and its legion: lines aside."""
     for line in lines:
         if line.startswith("#!") or TOOL_LINE.match(line) or NOT_A_TEST_LINE.match(line) or RUNS_LINE.match(line):
             continue
         prose = COMMENT_MARK.sub("", line, count=1).strip()
         if prose:
-            return bool(CALLS_ITSELF.match(prose))
-    return False
+            return prose
+    return ""
+
+
+def calls_itself_a_test(lines: list[str]) -> bool:
+    """Whether a header's first line of prose calls the script a test, a proof or a smoke test."""
+    return bool(CALLS_ITSELF.match(header_prose(lines)))
 
 
 def marker_findings(candidates: list[str]) -> list[Finding]:
@@ -3108,23 +3696,86 @@ def package_script_texts(reader: BunReader, cwd: str, words: list[str], seen: se
 
 # ---------------------------------------------------- rules 5, 7 and 8: steps no merge waits for
 # A `go test` is a test command unless it builds its binary alone (`-c`) or runs none of its tests
-# (`-run '^$'`, as ci-caches.yaml's fill starts each test binary to link and cache it).
+# (`-run '^$'`, as ci-caches.yaml's fill starts each test binary to link and cache it). So is a
+# gotestsum command (by the last part of the word that names it, as go_test_steps.py reads one),
+# which runs the go test its words after `--` give.
 GO_RUNS_NONE = r"(?!.*\s-c\b)(?!.*\s-run[= ]?[\"']?\^\$[\"']?(?:\s|$))"
 GO_TEST = rf"\bgo\s+(?:-C\s+\S+\s+)?test\b{GO_RUNS_NONE}"
 TEST_COMMAND = re.compile(rf"{GO_TEST}|\bbun\s+test\b|\bplaywright\s+test\b|\.test\.sh\b|_test\.sh\b")
 GO_TEST_COMMAND = re.compile(GO_TEST)
 RELEASE_WORKFLOW = re.compile(rf"^{re.escape(WORKFLOWS)}/release[^/]*\.ya?ml$")
+# The words that run a script as their argument, before its path.
+INTERPRETERS = ("bash", "sh", "python", "python3")
+
+
+def line_commands(line: str) -> list[list[str]]:
+    """The words of each command of one line, after the words that only start it (unwrapped). A
+    `${{ }}` left in the line (a timeout's duration among them) is one word, as BunReader reads it
+    (commands)."""
+    return [unwrapped(words_of(command.strip()), set())
+            for command in re.split(r"&&|\|\||;|\|", GH_EXPRESSION.sub("GHEXPR", line))]
+
+
+def runs_go_test(line: str) -> bool:
+    """Whether a line runs a go test that runs tests: `go test`, or a gotestsum command."""
+    return bool(GO_TEST_COMMAND.search(line)) or any(
+        words and Path(words[0]).name in steps.GOTESTSUM_COMMANDS and re.match(GO_RUNS_NONE, " " + " ".join(words))
+        for words in line_commands(line))
+
+
+def script_run(cwd: str, words: list[str]) -> str | None:
+    """The script of the repository a command runs by its path - from the step's directory, or
+    from the checkout's root through $GITHUB_WORKSPACE - alone or after an interpreter, or None."""
+    if words[:1] and Path(words[0]).name in INTERPRETERS:
+        words = words[1:]
+    if not words:
+        return None
+    word = words[0]
+    path = next((norm(word[len(prefix):]) for prefix in WORKSPACE_PREFIXES if word.startswith(prefix)), None)
+    if path is None:
+        if word.startswith("$") or "/" not in word:
+            return None
+        path = join(cwd, word)
+    return path if (ROOT / path).is_file() and is_script(path) else None
+
+
+def reads_as_test(path: str) -> bool:
+    """Whether a script a step runs is a test there: a `*.test.sh` harness, or a script whose
+    header's first line of prose calls it a test, a proof, a smoke test or a check (`Checks the
+    packed tarball…`); in either case one that carries no tool line, and no not-a-test line unless
+    it is a harness or calls itself a test (marker_findings). A word of the header that names what
+    the script does or runs (the `check-built` command of release-push.sh) makes no test of it:
+    rule 4's wider reading of the four words asks only that a script be reached or say what it is."""
+    lines = head(path)
+    if any(TOOL_LINE.match(line) for line in lines):
+        return False
+    harness = bool(steps.HARNESS_NAME.search(path))
+    tested = calls_itself_a_test(lines)
+    if any(NOT_A_TEST_LINE.match(line) for line in lines) and not (harness or tested):
+        return False
+    return harness or tested or bool(CALLS_ITSELF_A_CHECK.match(header_prose(lines)))
 
 
 def is_test_command(reader: BunReader, cwd: str, line: str) -> bool:
-    if TEST_COMMAND.search(line):
+    if TEST_COMMAND.search(line) or runs_go_test(line):
         return True
-    # A `${{ }}` left in the line (a timeout's duration among them) is one word, as BunReader
-    # reads it (commands).
-    for command in re.split(r"&&|\|\||;|\|", GH_EXPRESSION.sub("GHEXPR", line)):
-        if any(TEST_COMMAND.search(text) for text in package_script_texts(reader, cwd, words_of(command.strip()), set())):
+    for words in line_commands(line):
+        if any(TEST_COMMAND.search(text) for text in package_script_texts(reader, cwd, words, set())):
+            return True
+        path = script_run(cwd, words)
+        if path is not None and reads_as_test(path):
             return True
     return False
+
+
+def test_scripts(cwd: str, script: str) -> set[str]:
+    """The scripts rule 4 reads as tests (reads_as_test) a step's script runs by their paths."""
+    found = set()
+    for command in commands(script):
+        path = script_run(cwd, unwrapped(words_of(command), set()))
+        if path is not None and reads_as_test(path):
+            found.add(path)
+    return found
 
 
 @dataclass
@@ -3174,12 +3825,13 @@ def outside_steps(files: list[str], flows: Workflows) -> list[Outside]:
 
 
 def uncovered(step: RunStep, reader: BunReader, tree: GoTree, go: list[GoRun], bun: list[BunRun],
-              harnesses: set[str]) -> list[str]:
+              scripts: set[str]) -> list[str]:
     """What a step no merge waits for runs that no required job runs in the same mode: each test
     file of its Bun and Playwright runs that no required run runs with the same preloads, each Go
     test it runs that no required go test runs under the same -race (builds and selects), and each
-    harness it runs that no required step runs. A step whose test commands this search reads as
-    no run at all is uncovered too: nothing it read is what a required job runs."""
+    script rule 4 reads as a test (a harness among them) it runs that no required step runs. A step
+    whose test commands this search reads as no run at all is uncovered too: nothing it read is
+    what a required job runs."""
     missing, read = [], 0
     for run in reader.runs(step):
         read += 1
@@ -3198,13 +3850,10 @@ def uncovered(step: RunStep, reader: BunReader, tree: GoTree, go: list[GoRun], b
                     if run.runs(name) and not any(other.race == run.race and other.builds(go_file) and other.runs(name)
                                                   for other in go):
                         missing.append(f"{name} of {directory}" + (" under -race" if run.race else ""))
-    cwd = step.workdir
-    for command in commands(step.script):
-        path = repository_script(cwd, words_of(command))
-        if path is not None and steps.HARNESS_NAME.search(path):
-            read += 1
-            if path not in harnesses:
-                missing.append(path)
+    for path in test_scripts(step.workdir, step.script):
+        read += 1
+        if path not in scripts:
+            missing.append(path)
     if not read:
         missing.append("test commands this search reads as no run a required job makes")
     return missing
@@ -3218,13 +3867,10 @@ def outside_findings(outside: list[Outside], flows: Workflows, reader: BunReader
     lists it. Any other passes where a required job runs that very line in that very directory,
     or where its workflow carries the tool line and every test it runs a required job runs in the
     same mode. A step that runs no test command is not read."""
-    required_lines, harnesses = set(), set()
+    required_lines, scripts = set(), set()
     for step in required_steps(flows):
         required_lines |= {(step.workdir, squash(line)) for line in script_lines(step.script)}
-        for command in commands(step.script):
-            path = repository_script(step.workdir, words_of(command))
-            if path is not None and steps.HARNESS_NAME.search(path):
-                harnesses.add(path)
+        scripts |= test_scripts(step.workdir, step.script)
     found = []
     for entry in outside:
         step = entry.step
@@ -3234,10 +3880,10 @@ def outside_findings(outside: list[Outside], flows: Workflows, reader: BunReader
         if entry.kind == "release":
             if any((step.part.workflow, step.part.name, key) in listed for key in step.keys):
                 continue
-            line = next((line for line in tests if GO_TEST_COMMAND.search(line)), tests[0])
+            line = next((line for line in tests if runs_go_test(line)), tests[0])
             reason = (f"it runs `{squash(line)}` over the tree's source in a release workflow: a release checks "
                       "an artifact it built, and a test of the source runs in a job ci-ok needs"
-                      if GO_TEST_COMMAND.search(line) else
+                      if runs_go_test(line) else
                       f"it runs `{squash(line)}` in a release workflow")
             found.append(Finding("release", step.part.workflow, step.line, step.name,
                                  f"{reason}, and {RELEASE_CHECKS} lists no such step with the artifact it checks"))
@@ -3246,7 +3892,7 @@ def outside_findings(outside: list[Outside], flows: Workflows, reader: BunReader
         if not lines:
             continue
         if carries_tool_line(entry.top):
-            missing = uncovered(step, reader, tree, go, bun, harnesses)
+            missing = uncovered(step, reader, tree, go, bun, scripts)
             if not missing:
                 continue
             more = f" and {len(missing) - 1} more" if len(missing) > 1 else ""
@@ -3329,7 +3975,7 @@ def release_findings(entries: list[ReleaseCheck]) -> list[Finding]:
             finding(f"job {entry.job} of {entry.workflow} has no step whose name, id or uses is {entry.step}")
             continue
         script = str(job_steps[index].get("run") or "")
-        if not any(GO_TEST_COMMAND.search(line) for line in script_lines(script)):
+        if not any(runs_go_test(line) for line in script_lines(script)):
             continue
         environment = (set(document.get("env") or {}) | set(job.get("env") or {}) | set(job_steps[index].get("env") or {})
                        | inline_env(script)) - RUNNER_ENV
@@ -3429,7 +4075,7 @@ def main() -> int:
     tags, skips = tag_findings(tree, go), skip_findings(tree, go)
     reported = {finding.path for finding in tags} | {(finding.path, finding.subject) for finding in skips}
     listed = {(entry.workflow, entry.job, entry.step) for entry in entries}
-    findings = (tags + skips + unrun_findings(tree, go, reported)
+    findings = (tags + skips + unrun_findings(tree, go, reported) + bun_unrun_findings(reader, bun)
                 + variable_findings(rows, gates, flows, tree, go, bun)
                 + script_findings(files, flows, tree, go, reader, bun)
                 + outside_findings(outside, flows, reader, tree, go, bun, listed)

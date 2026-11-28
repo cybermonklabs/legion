@@ -2082,4 +2082,29 @@ check "go-skips-where-set: fails" "$(is "$status" 1)"
 check "go-skips-where-set: names the file, the gate's line and the variable" \
   "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/off_ci_test.go:9: CI: ')"
 
+# A required step that runs `python3 -m unittest [options] <module>…` runs each module's file in its
+# directory, a dotted name as its path, as test / "Test the search-measure helpers" runs
+# scripts/search-measure's pg_test and stream_test
+# (dispatch://INFRA-5794/comment/88ceccb8-5b1b-42bb-8300-a8848651ab02); a sibling *_test.py the
+# command does not name is a script no required step runs.
+echo "case: 4 - the modules a required step's python3 -m unittest names, and a sibling it does not"
+root=$(fixture unittest-modules)
+mkdir -p "$root/scripts/measure/lib"
+for module in pg_test lib/row_test; do
+  printf '"""Tests for the measure helpers."""\nimport unittest\n' > "$root/scripts/measure/$module.py"
+done
+required_job "$root" measure '    runs-on: ubuntu-24.04
+    steps:
+      - name: Test the measure helpers
+        run: python3 -m unittest -v pg_test lib.row_test
+        working-directory: scripts/measure'
+run_check "$root"
+passes "unittest-modules: each module the step names, by its name and by its dotted path, is run"
+cp "$root/scripts/measure/pg_test.py" "$root/scripts/measure/stream_test.py"
+run_check "$root"
+check "unittest-modules: a sibling the step does not name fails" "$(is "$status" 1)"
+check "unittest-modules: and is named" \
+  "$(contains "$out" '^check-test-reach: script: scripts/measure/stream_test.py:1: stream_test.py: ')"
+check "unittest-modules: and not the modules the step names" "$(is "$(contains "$out" 'pg_test.py\|row_test.py')" false)"
+
 summary "check-test-reach.sh"
