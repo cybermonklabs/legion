@@ -16,17 +16,19 @@ import (
 )
 
 // correctionDeleteRoutes is the path of the route that deletes each kind of post, read from the
-// route declarations: every DELETE route whose ID names a kind that keeps a body history
-// (postHistoryOwner). That history is where a delete keeps the body it clears
-// (clearDeletedPostBody), so a route that deletes a post of a new kind joins both, and
-// TestEveryIDRouteIsNamed holds every route with an id the server serves to declaring one. It fails t
-// when two routes delete one kind: each post is deleted once, so a second route needs posts of its
-// own in the test that reads this.
+// route declarations: every DELETE route of a post itself, its pattern ending at the post's
+// {id}, whose ID names a kind that keeps a body history (postHistoryOwner). That history is where
+// a delete keeps the body it clears (clearDeletedPostBody), so a route that deletes a post of a
+// new kind joins both, and TestEveryIDRouteIsNamed holds every route with an id the server serves
+// to declaring one. A DELETE under a post's path, such as a session leaving the thread a comment
+// is in (/api/v1/comments/{id}/followers/{session_id}), deletes no post and is left out. It fails
+// t when two routes delete one kind: each post is deleted once, so a second route needs posts of
+// its own in the test that reads this.
 func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 	t.Helper()
 	routes := map[refs.ItemKind]string{}
 	for _, declared := range routeRegistry {
-		if declared.Method != http.MethodDelete || declared.ID == nil {
+		if declared.Method != http.MethodDelete || declared.ID == nil || !strings.HasSuffix(declared.Pattern, "/{id}") {
 			continue
 		}
 		path := declared.Pattern

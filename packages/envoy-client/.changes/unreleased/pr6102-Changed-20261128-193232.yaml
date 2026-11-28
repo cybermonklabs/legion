@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `dispatch follow --ask <id>` and `dispatch unfollow --ask <id>` replace `dispatch follow --ask
+  <id> --action follow|unfollow`, and both take `--comment <id>` instead to follow or leave a
+  comment thread; `--action` is gone. Each refuses a call naming both or neither, a bare comment
+  prefix is read back so the output names the full id, and the output, the notices and the help
+  say what a leave does not stop: a reply that mentions the session, the issue's claim holder
+  until it releases the claim, and a session the issue is routed to.
+time: 2026-11-28T19:32:32Z
+custom:
+    Issue: pr6102

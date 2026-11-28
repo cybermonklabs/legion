@@ -839,6 +839,37 @@ test("a delivery and a resolution of an agents' thread are lines of the history"
   expect(lines).toEqual(["comment.resolved", "comment.delivery"]);
 });
 
+// A session following or leaving a comment thread names the thread's root comment, as a delivery
+// names its comment: a line of the history where the history holds that thread, and the
+// outline's where the outline draws it.
+test("a follow and a leave of an agents' thread are lines of the history", () => {
+  seq = 0;
+  const among = comment("among", "2026-11-15T09:00:00Z", AGENT);
+  const mine = comment("mine", "2026-11-15T09:00:00Z", PERSON);
+  const follower = (type: string, at: string, commentId: string) =>
+    event(type, at, { by: REVIEWER, comment_id: commentId, session_id: "reviewer" }, REVIEWER);
+  const events = [
+    event("comment.created", "2026-11-15T09:00:00Z", { id: "among" }),
+    follower("thread.follower_added", "2026-11-15T09:01:00Z", "among"),
+    follower("thread.follower_removed", "2026-11-15T09:02:00Z", "among"),
+    follower("thread.follower_added", "2026-11-15T09:03:00Z", "mine"),
+    follower("thread.follower_removed", "2026-11-15T09:04:00Z", "mine"),
+  ];
+  const lines = flat(
+    buildHistory({
+      artifacts: [],
+      asks: [],
+      blocks: new Map(),
+      comments: [among, mine],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) => (entry.kind === "event" ? [entry.event.type] : []));
+  expect(lines).toEqual(["thread.follower_removed", "thread.follower_added"]);
+});
+
 // A delivery's line names where it went by the attempt's target, an address - `session:<id>`, or
 // `role:<token>` for a role a session held - which no reader names an agent by: the history
 // draws the agent it went to as the page names an agent (`AgentName`), from the session the

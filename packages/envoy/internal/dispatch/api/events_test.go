@@ -88,7 +88,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		"child.added", "child.removed", "child.status",
 		"artifact.created", "artifact.version", "artifact.human_edited", "artifact.approved", "artifact.changes_requested",
 		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of",
-		"ask.follower_added", "ask.follower_removed",
+		"ask.follower_added", "ask.follower_removed", "thread.follower_added", "thread.follower_removed",
 		"comment.created", "comment.delivery", "comment.answered", "comment.resolved", "comment.reopened",
 		"comment.edited", "comment.deleted", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
 		"subscription.remove_requested", "subscription.removed",

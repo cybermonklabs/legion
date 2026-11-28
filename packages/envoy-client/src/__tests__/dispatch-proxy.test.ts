@@ -2360,7 +2360,9 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   editAsk: "edit-ask",
   resolveAsk: "resolve-ask",
   followAsk: "follow",
-  unfollowAsk: "follow",
+  unfollowAsk: "unfollow",
+  followCommentThread: "follow",
+  unfollowCommentThread: "unfollow",
   comment: "comment",
   // `dispatch suggest` sends the requests that `dispatch comment` sends.
   suggest: "comment",

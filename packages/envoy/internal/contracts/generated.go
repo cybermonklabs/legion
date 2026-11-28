@@ -432,6 +432,8 @@ var DispatchEventTypes = []string{
 	"subscription.removed",
 	"suggestion.accepted",
 	"suggestion.rejected",
+	"thread.follower_added",
+	"thread.follower_removed",
 	"user_agent_state.updated",
 	"user_state.updated",
 	"user_thread_state.updated",

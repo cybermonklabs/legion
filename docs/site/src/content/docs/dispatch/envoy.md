@@ -167,6 +167,21 @@ All of them are kept in the stream. Some are also delivered straight to an agent
 - A person's reply to a comment reaches every session that wrote a comment in its thread, and
   every session that wrote the document the thread is on. A person's new comment on a document
   reaches every session that wrote the document. Each arrives on the session's own inbox topic.
+  A session leaves a thread with `dispatch unfollow --comment <id>` (`DELETE
+  /api/v1/comments/{id}/followers/{session_id}`, where `{id}` is any comment of the thread): the
+  thread's later replies, their edits and deletes, the edit and delete of its first comment, and,
+  where the session wrote that first comment, the thread's resolution and reopening no longer
+  reach it, whether it wrote in the thread, wrote the thread's document, or wrote the issue's spec
+  on an issue with no route and no session claim. A reply that mentions it still does, as the
+  mention. The session that holds the issue's claim still gets every reply until it releases the
+  claim, and a session the issue is routed to gets them while the route names it. A later comment
+  of the session in the thread rejoins it,
+  and so does `dispatch follow --comment <id>` (`PUT` on the same path), which also lets a session
+  hear a thread it never wrote in. Each change appends `thread.follower_added` or
+  `thread.follower_removed`, naming the thread's root comment (`comment_id`), the session and who
+  made the change (`by`); a person can move any session, which then hears of it on its inbox
+  topic. An ask's thread is the ask's: its comments answer `409 ASK_THREAD`, and
+  `dispatch unfollow --ask <id>` leaves it.
 - The session holding an issue's claim gets, on its own inbox topic, a person's answers,
   hand-backs and resolutions of asks, comments (new, edited, resolved or reopened) and messages on
   that issue. A message a person sends to one session reaches only that session. Dispatch reads
@@ -186,7 +201,8 @@ comment on the session's inbox topic once that claim lapses and sends the mentio
 session can get the comment twice, once as the mention and once on its inbox topic. A session
 treats the second copy as the same comment. A comment's edit reaches every one
 of these sessions, mentioned or not; a resolution or reopening reaches the route, the claimant, the
-ask's followers and the thread root's author, mentioned or not. Neither is held back with the new
+ask's followers and the thread root's author (unless that author left the thread), mentioned or
+not. Neither is held back with the new
 comment: while the new comment waits on its mention, an edit to it can arrive first. A session that
 gets an edit, resolution or reopening of a comment it has not seen yet should expect the comment
 to follow. Anything else on an issue, including every event an agent makes outside an ask the
@@ -212,7 +228,7 @@ daemon, reads it there.
 
 | Topic | What it is |
 | --- | --- |
-| `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
+| `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in and has not left, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
 | `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. A publish through the API that names no session of yours is not kept: it is refused `404`, since nothing could tell you if the copy expired. A message published straight onto NATS that names no session is still kept, and dropped at the end of its hour with no word to anyone. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |

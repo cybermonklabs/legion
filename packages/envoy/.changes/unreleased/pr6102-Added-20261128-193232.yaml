@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  A session can leave a comment thread, so a person's later replies there stop reaching it, and
+  can follow one again. `DELETE /api/v1/comments/{id}/followers/{session_id}` leaves the thread a
+  comment is in and `PUT` on the same path follows it; `{id}` is any comment of the thread. A
+  session credential acts for its own session alone and a person's credential for any session, as
+  on an ask's followers route. A comment in an ask's thread answers `409 ASK_THREAD`. Each change
+  appends `thread.follower_added` or `thread.follower_removed`, and migration `20261128175523`
+  creates the table that holds each choice. After a leave, the thread's later replies, their edits
+  and deletes, the edit and delete of its first comment, and, for its first author, its resolution
+  and reopening no longer reach the session, whether it wrote in the thread, wrote the thread's
+  document, or wrote the issue's spec on an issue nobody routes or claims. A reply that mentions
+  the session still reaches it, the issue's claim holder and route still get every reply, and a
+  later comment of the session in the thread rejoins it. The outbox reads who left a thread in one
+  more lookup statement per batch, so a batch reads at most nine.
+time: 2026-11-28T19:32:32Z
+custom:
+    Issue: pr6102

@@ -2966,6 +2966,20 @@ export class DispatchClient {
     await this.#json("DELETE", ["api", "v1", "asks", id, "followers", sessionId], { actor });
   }
 
+  /** Follows the comment thread `id` is in: any comment of the thread names it, and Dispatch
+   *  records the follow on the thread's root comment. As with an ask, a bearer follows only its
+   *  own session. */
+  async followCommentThread(id: string, sessionId: string, actor: Actor): Promise<void> {
+    await this.#json("PUT", ["api", "v1", "comments", id, "followers", sessionId], { actor });
+  }
+
+  /** Leaves the comment thread `id` is in: its later replies no longer reach the session, except
+   *  one that mentions it, every reply while the session holds the issue's claim, and every reply
+   *  while the issue's route names the session. */
+  async unfollowCommentThread(id: string, sessionId: string, actor: Actor): Promise<void> {
+    await this.#json("DELETE", ["api", "v1", "comments", id, "followers", sessionId], { actor });
+  }
+
   async getComment(id: string, read: AsOfRead = {}): Promise<CommentRead> {
     return this.#read(["api", "v1", "comments", id], undefined, read);
   }

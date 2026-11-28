@@ -553,6 +553,14 @@ test("the issue log keeps the session an unsubscribe or a follower names", () =>
 
   expect(eventDescription(sessionEvent("subscription.removed"))).toEqual(["Unsubscribed ", agent]);
   expect(eventDescription(sessionEvent("ask.follower_added"))).toEqual([agent, " follows an ask"]);
+  expect(eventDescription(sessionEvent("thread.follower_added"))).toEqual([
+    agent,
+    " follows a thread",
+  ]);
+  expect(eventDescription(sessionEvent("thread.follower_removed"))).toEqual([
+    agent,
+    " left a thread",
+  ]);
 });
 
 const receipt = (

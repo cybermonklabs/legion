@@ -29,7 +29,7 @@ Read, against the goal, every check and every requirement:
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, and sign off again.
 
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under `Open asks:` whose question opens `Finding from ` or `Clear defect from `.
-  Follow it (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
+  Follow it (`dispatch follow --ask <id>`) and publish its reference to the controller topic.
   Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or `Not filed:`):
   a closed issue hides its open questions from the controller.
 

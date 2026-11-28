@@ -5,7 +5,7 @@ import {
   type MessageDelivery,
   type MessageDeliveryMode,
 } from "@legion/contracts";
-import { commandLine } from "../dispatch-command";
+import { commandLine, commandName } from "../dispatch-command";
 import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
@@ -15,7 +15,7 @@ import {
 } from "../dispatch-owner";
 import { ToolInputError } from "../tool-input-errors";
 import { legionRunsPostedIssue, renderAdvice } from "./advice";
-import { movedApprovalLine, resolveReplyToAsk } from "./asks";
+import { movedApprovalLine, resolveReplyToAsk, setAskFollow } from "./asks";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -36,6 +36,7 @@ import {
   messageArgumentId,
   messageArgumentProblem,
   messageInReplyTo,
+  normalizeUUID,
   refOwnerName,
   refuseItemOffRef,
   resolveIdPrefix,
@@ -165,6 +166,75 @@ export async function resolveCommentCommand(context: CommandContext): Promise<Di
   });
   const { label, details } = await commentOwnerResult(client, comment, document);
   return { text: `Resolved comment ${comment.id} on ${label}.`, details };
+}
+
+/**
+ * The full id of the comment `reference` names for a follow or a leave of its thread. A reference
+ * resolves as every comment argument does (`resolveCommentArgument`); a bare whole uuid is that
+ * comment; a bare 8+ hex prefix is read from Dispatch, whose prefix layer resolves it as the
+ * follower routes do, so the write names the comment's full id and the result can print it.
+ * `argumentProblems` refused a value that is none of these.
+ */
+async function threadCommentId(
+  tool: string,
+  reference: string,
+  client: DispatchClient
+): Promise<string> {
+  if (reference.startsWith("dispatch://")) {
+    return (await resolveCommentArgument(tool, reference, client)).id;
+  }
+  const whole = normalizeUUID(reference);
+  if (whole !== undefined) return whole;
+  const read = await client.getComment(reference).catch((error: unknown) => {
+    throw refuseMissingPost(error, { kind: "comment", id: reference });
+  });
+  return read.comment.id;
+}
+
+/**
+ * `dispatch follow` and `dispatch unfollow`: with `ask`, `setAskFollow`; with `comment`, have the
+ * later replies of the thread that comment is in reach this session, or stop them. Any comment of
+ * the thread names it, and Dispatch records the choice on the thread's root. After a leave, a
+ * reply that mentions the session still reaches it, the session's next comment in the thread
+ * rejoins it, the issue's claim holder keeps getting every reply until it releases the claim, and
+ * a session the issue is routed to keeps getting them while the route names it. The
+ * contract refused a call that names both or neither, and `argumentProblems` a comment value that
+ * is no comment id or comment reference.
+ */
+async function setFollow(context: CommandContext, follow: boolean): Promise<DispatchToolResult> {
+  const { args, client, actor, input } = context;
+  const sessionId = input.sessionId?.trim();
+  if (!sessionId) {
+    throw new Error(`host session id is required for dispatch ${commandName(input.tool)}`);
+  }
+  const reference = optionalString(args, "comment");
+  if (reference === undefined) return setAskFollow(context, sessionId, follow);
+  const id = await threadCommentId(input.tool, reference, client);
+  const missing = (error: unknown): never => {
+    throw refuseMissingPost(error, { kind: "comment", id });
+  };
+  if (!follow) {
+    await client.unfollowCommentThread(id, sessionId, actor).catch(missing);
+    return {
+      text: `Left the thread of comment ${id}: its replies no longer reach this session; a reply that mentions it still does, the session that holds the issue's claim keeps getting every reply until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it.`,
+      details: { comment: id },
+    };
+  }
+  await client.followCommentThread(id, sessionId, actor).catch(missing);
+  return {
+    text: `Following the thread of comment ${id}: its replies reach this session directly.`,
+    details: { comment: id },
+  };
+}
+
+/** `dispatch follow`: follow an ask or a comment thread (`setFollow`). */
+export function followCommand(context: CommandContext): Promise<DispatchToolResult> {
+  return setFollow(context, true);
+}
+
+/** `dispatch unfollow`: unfollow an ask or leave a comment thread (`setFollow`). */
+export function unfollowCommand(context: CommandContext): Promise<DispatchToolResult> {
+  return setFollow(context, false);
 }
 
 /** `dispatch edit-comment`: the author replaces the body of their own comment. */

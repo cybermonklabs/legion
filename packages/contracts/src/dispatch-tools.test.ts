@@ -113,7 +113,8 @@ const validCalls = {
     reason: "A newer question supersedes this one.",
   },
   dispatch_resolve_comment: { comment: "dispatch://DSP-1/comment/comment-1" },
-  dispatch_follow: { ask: "ask-1", action: "follow" },
+  dispatch_follow: { ask: "ask-1" },
+  dispatch_unfollow: { comment: "comment-1" },
   dispatch_comment: { issue: "DSP-1", body: "Looks good." },
   dispatch_suggest: {
     issue: "DSP-1",
@@ -264,6 +265,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_resolve_ask",
       "dispatch_resolve_comment",
       "dispatch_follow",
+      "dispatch_unfollow",
       "dispatch_comment",
       "dispatch_suggest",
       "dispatch_edit_comment",
@@ -1964,13 +1966,51 @@ describe("dispatchToolSpecs", () => {
     }
   );
 
-  test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {
-    const schema = schemaFor("dispatch_follow");
-    expect(schema.safeParse({ ask: "ask-1", action: "unfollow" }).success).toBe(true);
-    expect(schema.safeParse({ ask: "ask-1", action: "mute" }).success).toBe(false);
-    expect(schema.safeParse({ ask: "ask-1" }).success).toBe(false);
-    expect(schema.safeParse({ ask: "ask-1", action: "follow", issue: "DSP-1" }).success).toBe(
-      false
+  test.each(["dispatch_follow", "dispatch_unfollow"] as const)(
+    "%s takes one ask or one comment, nothing else",
+    (name) => {
+      const schema = schemaFor(name);
+      expect(schema.safeParse({ ask: "ask-1" }).success).toBe(true);
+      expect(schema.safeParse({ comment: "comment-1" }).success).toBe(true);
+      // The tool is the action: the argument that named it once is gone.
+      expect(schema.safeParse({ ask: "ask-1", action: "follow" }).success).toBe(false);
+      expect(schema.safeParse({ ask: "ask-1", issue: "DSP-1" }).success).toBe(false);
+      // Both, or neither, is one refusal that names the two.
+      for (const call of [{ ask: "ask-1", comment: "comment-1" }, {}]) {
+        const parsed = schema.safeParse(call);
+        expect(parsed.success, JSON.stringify(call)).toBe(false);
+        expect(parsed.error?.issues.map((issue) => issue.message)).toEqual([
+          "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
+        ]);
+      }
+    }
+  );
+
+  test("dispatch_follow says what a thread's follower hears, and dispatch_unfollow what still reaches a session that left", () => {
+    const follow = specFor("dispatch_follow").description;
+    expect(follow).toContain(
+      "its later replies, and their edits and deletes, reach that session; the thread's resolution and reopening reach the author of its first comment, and a person's also reach the issue's claim holder and the session the issue is routed to"
+    );
+    expect(follow).not.toContain("reach only");
+    expect(follow).toContain("409 ASK_THREAD");
+    const unfollow = specFor("dispatch_unfollow").description;
+    expect(unfollow).toContain(
+      "Leaving a comment thread stops its later replies, their edits and deletes, and its resolution and reopening from reaching this session, including what reached it as a writer of the thread's document or of the issue's spec."
+    );
+    expect(unfollow).toContain(
+      "A reply that mentions this session still reaches it, and this session's next comment in the thread rejoins it."
+    );
+    // Releasing the claim ends what the claim delivers; the route delivers while it names the
+    // session, whatever the claim does.
+    expect(unfollow).toContain(
+      "The session that holds the issue's claim keeps getting every reply, and the thread's resolution and reopening, until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it."
+    );
+    expect(unfollow).toContain(
+      "Unfollowing an ask stops what reached this session as the ask's follower; the issue's claim holder and the session the issue is routed to still get a person's answer and replies on it, and so does a writer of the issue's spec on an issue nobody routes or claims."
+    );
+    expect(unfollow).toContain("409 ASK_THREAD");
+    expect(specFor("dispatch_answers").description).toContain(
+      "dispatch unfollow --comment <id> leaves a comment thread: its later replies stop reaching this session, except a reply that mentions it, every reply until this session releases the issue's claim if it holds it (dispatch claim --release), and every reply while the issue's route names it."
     );
   });
 

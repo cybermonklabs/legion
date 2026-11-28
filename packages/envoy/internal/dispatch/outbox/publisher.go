@@ -1479,12 +1479,15 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 // addPrimaryDocumentAuthors delivers a person's comment, its edit or its delete, on an issue
 // with no route and no session claimant (takesPrimaryAuthors) to every session the issue's
 // primary document credits, each on its own topic: a session that writes an issue's spec
-// without a claim still hears the comments on it. The comment's own thread does not matter: a
-// comment in an ask's thread, or a reply, reaches those sessions too. The batch reads them
-// for all such events in one query (loadLookups, loadPrimaryDocumentAuthors); when that query
-// failed, its error ends the event's destinations here. The actor is skipped (recipientFilter),
-// and a session whose own mention of the comment delivers it is left to that mention
-// (destinations.addSession, the mention rule).
+// without a claim still hears the comments on it. Which thread the comment is in matters for one
+// thing alone: a comment in an ask's thread, or a reply, reaches those sessions too, but not a
+// session that left the comment's thread (threadLeave), unless a mention of the comment decides
+// that session's copy, since leaving a thread stops what its replies owe the writers of the
+// issue's spec as much as what they owe its members. The batch reads them for all such events in
+// one query (loadLookups, loadPrimaryDocumentAuthors); when that query failed, its error ends the
+// event's destinations here. The actor is skipped (recipientFilter), and a session whose own
+// mention of the comment delivers it is left to that mention (destinations.addSession, the
+// mention rule).
 func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, d *destinations) error {
 	if !takesPrimaryAuthors(event, routing) {
 		return nil
@@ -1493,15 +1496,109 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 	if err != nil {
 		return err
 	}
+	leave, err := readThreadLeave(event, look, d, func() (map[string]string, error) {
+		return failedMentionsOf(event, look, d)
+	})
+	if err != nil {
+		return err
+	}
 	filter := newRecipientFilter(event)
 	var targets []string
 	for _, sessionID := range authors {
-		if filter.keep(sessionID) {
+		if leave.keeps(sessionID) && filter.keep(sessionID) {
 			targets = append(targets, sessionID)
 		}
 	}
 	d.addSessions(targets, "publish primary document author route to")
 	return nil
+}
+
+// failedMentionsOf reads the sessions a comment event's comment names and no mention of it
+// reached, keyed as mentionDeliveries.fallbackKeys keys them: a new comment's are the reading the
+// build holds (eventDestinations), and an edit's are read of its comment alone
+// (lookup.mentionFallbackKeys), which adds no reading of that comment anywhere else. An edit whose
+// payload names no mention can exempt nobody that way, so it asks nothing, and no other event
+// names a mention. A read that failed ends the event's destinations, as every other lookup does.
+//
+// It is asked once per route that asks it and never per session: the pass that only records the
+// ids an event asks for answers no row at all (wanted), so an ask made per session would register
+// no id and the resolved pass would find nothing read for it.
+func failedMentionsOf(event model.Event, look lookup, d *destinations) (map[string]string, error) {
+	switch {
+	case event.Type == "comment.created":
+		return d.mentions.fallbackKeys, nil
+	case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
+		return look.mentionFallbackKeys(payloadString(event.Payload, "id"))
+	}
+	return nil, nil
+}
+
+// eventThread names the comment thread a comment event belongs to, for the read of who left it
+// (readThreadLeave): a reply's reply_to, which the read climbs to the thread's root; and the
+// event's own comment where that comment is no reply - an edit, a delete, a resolution or a
+// reopening of the comment that heads a thread. A comment in an ask's thread names none, since an
+// ask's thread is its followers' (addFollowerRoutes), and so does a new comment that heads a
+// thread, which nobody can have left yet.
+func eventThread(event model.Event) string {
+	if payloadString(event.Payload, "ask_id") != "" {
+		return ""
+	}
+	if replyTo := payloadString(event.Payload, "reply_to"); replyTo != "" {
+		return replyTo
+	}
+	switch event.Type {
+	case "comment.edited", "comment.deleted", "comment.resolved", "comment.reopened":
+		return payloadString(event.Payload, "id")
+	}
+	return ""
+}
+
+// threadLeave is who left the thread of one comment event, and what keeps such a session's copy
+// all the same: a mention of the comment that decides it, the exemption the claim's left-out
+// credits take (addAuthorRoutes) - one whose mention failed before the batch read it, which takes
+// the copy under that mention's key, and one a mention of a new comment still decides, which the
+// mention rule then holds back or keeps as a fallback row (destinations.addSession,
+// destinations.leftTo). The zero value is an event of no thread, which leaves nobody out.
+type threadLeave struct {
+	left           map[string]bool
+	failedMentions map[string]string
+	mentions       mentionDeliveries
+}
+
+// keeps reports whether the event still reaches sessionID by a route that leaving the thread
+// stops: it did not leave the thread, or a mention of the comment decides its copy.
+func (leave threadLeave) keeps(sessionID string) bool {
+	if !leave.left[sessionID] {
+		return true
+	}
+	_, failed := leave.failedMentions[sessionID]
+	return failed || leave.mentions.decidesCopyFor(sessionID)
+}
+
+// readThreadLeave reads who left the thread of event (eventThread) through the batch's read of
+// the leaves of its threads (loadThreadLeaves), which reads no document credit, so a credit no
+// read can take fails no route that does not read it, and the failed mentions that keep such a
+// session, through failed, which the caller shares with any other rule of its route that reads
+// them, so they are read once per route. Each read is asked whatever the
+// answer, as the wanted pass requires; an event of no thread asks nothing.
+func readThreadLeave(event model.Event, look lookup, d *destinations, failed func() (map[string]string, error)) (threadLeave, error) {
+	thread := eventThread(event)
+	if thread == "" {
+		return threadLeave{}, nil
+	}
+	sessions, err := look.threadLeaves(thread)
+	if err != nil {
+		return threadLeave{}, err
+	}
+	failedMentions, err := failed()
+	if err != nil {
+		return threadLeave{}, err
+	}
+	leave := threadLeave{left: make(map[string]bool, len(sessions)), failedMentions: failedMentions, mentions: d.mentions}
+	for _, sessionID := range sessions {
+		leave.left[sessionID] = true
+	}
+	return leave, nil
 }
 
 // addAuthorRoutes delivers a human comment-thread action, or a person's settled edit of a
@@ -1512,7 +1609,8 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // wrote a document never learns of a new comment on it or of a person's edit to it.
 //
 // A reply (reply_to set), its edit and its delete reach every session that wrote a comment in
-// the thread, its root and each reply, and, where the claim below does not leave them out, every
+// the thread, its root and each reply, or follows it, and has not left it, and, where the claim
+// below does not leave them out, every
 // session the thread's document credits, which the batch reads for all its replies in one query
 // (loadLookups, loadCommentRecipients); when that query failed, its error ends the event's
 // destinations here. A new comment on a document (no reply_to and no ask_id), its edit and its
@@ -1520,8 +1618,9 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // (loadDocumentSessionAuthors, whose failed query ends the event's destinations here too); a new
 // comment on an issue's conversation names no document and reaches no author. A message reply
 // (in_reply_to set), its edit and its delete reach the session that wrote the message it
-// answers. A resolution or a reopening reaches the thread root's author only, so the reopening a
-// reply makes tells no new session twice.
+// answers. A resolution or a reopening reaches the thread root's author only, and not one that
+// left the thread (loadRootCommentAuthors), so the reopening a reply makes tells no new session
+// twice.
 // artifact.human_edited, which the notice sweep appends once a person's quiet window on a document
 // ends (docs.sendEditNotice), reaches every session the document its payload's artifact_id names
 // credits, read the same way. Ask threads are not walked here: their asker and repliers are the
@@ -1540,10 +1639,17 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // under a comment at the head of a thread anchored on it. The read is made all the same, so a
 // credit read that failed still ends the event's destinations and backs it off.
 //
+// A session that left the thread (comment_thread_follows, threadLeave) is left out of a reply,
+// its edit and its delete, of the edit and the delete of the thread's first comment, and of the
+// thread's resolution and reopening, whatever it wrote there or the thread's document credits it
+// for, except where a mention of the comment decides its copy, the same exemption the claim's
+// left-out credits take: a mention is a delivery of its own, which leaving a thread does not stop.
+//
 // Kept whatever the claim: a comment on a project document, which names no issue; a comment on an
 // issue a person claims, which leaves routing.claimant empty; a comment on an unclaimed issue,
-// routed or not; a session that wrote in the thread, which keeps the person's later replies; a
-// session the comment names whose copy of it a mention decides - one whose mention failed before
+// routed or not; a session that wrote in the thread and did not leave it, which keeps the
+// person's later replies; a session the comment names whose copy of it a mention decides - one
+// whose mention failed before
 // the batch read it, which takes this copy under that mention's key, for a new comment
 // (mentionDeliveries.fallbackKeys) and for its edit (lookup.mentionFallbackKeys) alike, and one a
 // mention of a new comment still decides (mentionDeliveries.decidesCopyFor), whose copy the
@@ -1573,48 +1679,48 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 		}
 		return nil
 	}
+	// readFailedMentions reads, once for the event whichever rule asks first, the one thing that
+	// keeps a session a rule would otherwise leave out and that is not in the destination build
+	// already (failedMentionsOf): the claim's left-out credits ask it (askTheClaim), and so does
+	// a session that left the thread (readThreadLeave), which share the one read.
+	var mentionsRead bool
+	readFailedMentions := func() (map[string]string, error) {
+		if !mentionsRead {
+			keys, err := failedMentionsOf(event, look, d)
+			if err != nil {
+				return nil, err
+			}
+			failedMentions, mentionsRead = keys, true
+		}
+		return failedMentions, nil
+	}
 	// askTheClaim decides, once for the arm that asks it, whether this event leaves the credits
-	// of a document out, and reads the one thing that exempts a session from that and is not in
-	// the destination build already: the sessions this comment names and no mention of it
-	// reached. A new comment's are the reading the build holds (eventDestinations), and an edit's
-	// are read of its comment alone (lookup.mentionFallbackKeys), which adds no reading of that
-	// comment anywhere else. An edit whose payload names no mention can exempt nobody that way,
-	// so it asks nothing. A read that failed ends the event's destinations, as every other lookup
-	// here does.
-	//
-	// It is asked once per arm and never per credit row: the pass that only records the ids an
-	// event asks for answers no row at all (wanted), so an ask made per row would register no id
-	// and the resolved pass would find nothing read for it.
+	// of a document out, and, where it does, reads the sessions that exempts
+	// (readFailedMentions).
 	askTheClaim := func() error {
 		claimed = takesClaimantRoute(event, routing.claimant)
 		if !claimed {
 			return nil
 		}
-		switch {
-		case event.Type == "comment.created":
-			failedMentions = d.mentions.fallbackKeys
-		case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
-			keys, err := look.mentionFallbackKeys(payloadString(event.Payload, "id"))
-			if err != nil {
-				return err
-			}
-			failedMentions = keys
-		}
-		return nil
+		_, err := readFailedMentions()
+		return err
 	}
-	// considerCredit adds a session a document credits, unless the claim leaves it out. Two it
-	// does not leave out, both of them sessions the comment names whose copy of it a mention
-	// decides: one whose mention failed before the batch read it, which takes the copy under that
-	// mention's key (failedMentions), and one a mention of the comment still decides
-	// (mentionDeliveries.decidesCopyFor), which stays in the list so that the mention rule runs
-	// for it - holding the event while that send is live, and keeping the fallback row the pass
-	// publishes when it fails (destinations.addSession, destinations.leftTo).
+	// mentionDecides reports whether a mention of this comment decides the copy bound for a
+	// session a rule here would leave out, which the rule then keeps: one whose mention failed
+	// before the batch read it, which takes the copy under that mention's key (failedMentions),
+	// and one a mention of the comment still decides (mentionDeliveries.decidesCopyFor), which
+	// stays in the list so that the mention rule runs for it - holding the event while that
+	// send is live, and keeping the fallback row the pass publishes when it fails
+	// (destinations.addSession, destinations.leftTo).
+	mentionDecides := func(sessionID string) bool {
+		_, failed := failedMentions[sessionID]
+		return failed || d.mentions.decidesCopyFor(sessionID)
+	}
+	// considerCredit adds a session a document credits, unless the claim leaves it out and no
+	// mention of the comment decides its copy.
 	considerCredit := func(sessionID string) {
-		if claimed {
-			_, failed := failedMentions[sessionID]
-			if !failed && !d.mentions.decidesCopyFor(sessionID) {
-				return
-			}
+		if claimed && !mentionDecides(sessionID) {
+			return
 		}
 		consider(sessionID)
 	}
@@ -1640,15 +1746,24 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 			if err := askTheClaim(); err != nil {
 				return err
 			}
-			// A member of the comment's thread keeps the copy whatever the issue's claim is;
-			// a session the thread's document credits alone is considerCredit's
-			// (loadCommentRecipients, threadRecipient).
+			leave, err := readThreadLeave(event, look, d, readFailedMentions)
+			if err != nil {
+				return err
+			}
+			// A session that left the thread is reached by a mention of it alone: it is kept
+			// only where a mention of this comment decides its copy, which the mention rule then
+			// leaves to the mention or publishes as its fallback (threadLeave). A member of the
+			// comment's thread keeps the copy whatever the issue's claim is; a session the
+			// thread's document credits alone is considerCredit's (loadCommentRecipients,
+			// threadRecipient).
 			for _, recipient := range recipients {
-				if recipient.fromThread {
+				switch {
+				case !leave.keeps(recipient.sessionID):
+				case recipient.fromThread:
 					consider(recipient.sessionID)
-					continue
+				default:
+					considerCredit(recipient.sessionID)
 				}
-				considerCredit(recipient.sessionID)
 			}
 		default:
 			if document := commentedDocument(event); document != "" {
@@ -1659,15 +1774,35 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 				if err := askTheClaim(); err != nil {
 					return err
 				}
-				addEach(credited, considerCredit)
+				// An edit or a delete of a comment that heads a thread is that thread's, so a
+				// credit of its document that left the thread is left out of it as of a reply
+				// (readThreadLeave); a new comment heads a thread nobody has left.
+				leave, err := readThreadLeave(event, look, d, readFailedMentions)
+				if err != nil {
+					return err
+				}
+				addEach(credited, func(sessionID string) {
+					if leave.keeps(sessionID) {
+						considerCredit(sessionID)
+					}
+				})
 			}
 		}
 	case "comment.resolved", "comment.reopened":
 		// New threads persist a reply's reply_to as the thread root. Walking from the comment
-		// still finds the root for legacy nested rows.
+		// still finds the root for legacy nested rows. A root author that left the thread hears
+		// neither (threadLeave).
 		if commentID := payloadString(event.Payload, "id"); commentID != "" {
-			if err := considerLoaded(look.rootCommentAuthor(commentID)); err != nil {
+			leave, err := readThreadLeave(event, look, d, readFailedMentions)
+			if err != nil {
 				return err
+			}
+			author, found, err := look.rootCommentAuthor(commentID)
+			if err != nil {
+				return err
+			}
+			if found && author.Kind == "session" && leave.keeps(author.ID) {
+				consider(author.ID)
 			}
 		}
 	case "message.created", "message.answered", "message.edited", "message.deleted":
@@ -1676,7 +1811,8 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 				return err
 			}
 		}
-	case "subscription.removed", "ask.follower_added", "ask.follower_removed":
+	case "subscription.removed", "ask.follower_added", "ask.follower_removed",
+		"thread.follower_added", "thread.follower_removed":
 		// The target is the unsubscribed, added, or removed session itself, carried directly
 		// in the payload — there is no thread or ask to walk to find it.
 		if sessionID := payloadString(event.Payload, "session_id"); sessionID != "" {
@@ -1807,7 +1943,8 @@ func payloadSummary(event model.Event, slug string) string {
 	case event.Type == "ask.answered":
 		// The answer, not the question: it is the first thing the asker should read.
 		detail = text.HeadRunes(askAnswerText(event.Payload), 120)
-	case event.Type == "subscription.removed", event.Type == "ask.follower_added", event.Type == "ask.follower_removed":
+	case event.Type == "subscription.removed", event.Type == "ask.follower_added", event.Type == "ask.follower_removed",
+		event.Type == "thread.follower_added", event.Type == "thread.follower_removed":
 		detail = payloadString(event.Payload, "session_id")
 	case event.Type == "issue.claimed", event.Type == "issue.released":
 		// "claimed", "takeover", "forced", "released", or "closed": why the holder changed.

@@ -118,6 +118,8 @@ var unchangingTypes = map[string]string{
 	"ask.anchor_refreshed":                      "it leaves the ask's question, options and answer alone",
 	"ask.follower_added":                        "it leaves the ask's question, options and answer alone",
 	"ask.follower_removed":                      "it leaves the ask's question, options and answer alone",
+	"thread.follower_added":                     "it leaves the thread's comments alone",
+	"thread.follower_removed":                   "it leaves the thread's comments alone",
 	"comment.resolved":                          "the comment's body does not change",
 	"comment.reopened":                          "the comment's body does not change",
 	"comment.anchor_refreshed":                  "the comment's body does not change",

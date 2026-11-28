@@ -37,7 +37,7 @@ export function followNoticeText(
   topics: readonly string[] | null
 ): string {
   const subscribe = ownerSubscribeLine(owner, topics);
-  return `Following ask ${ask} on ${owner.label}: its answer and replies reach you directly (${commandLine("dispatch_follow", { ask, action: "unfollow" })} to stop).${subscribe === null ? "" : ` ${subscribe}.`}`;
+  return `Following ask ${ask} on ${owner.label}: its answer and replies reach you directly (${commandLine("dispatch_unfollow", { ask })} to stop following it).${subscribe === null ? "" : ` ${subscribe}.`}`;
 }
 
 /**

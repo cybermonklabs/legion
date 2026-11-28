@@ -267,6 +267,10 @@ function describe(event: DispatchEvent): string | SentencePart[] {
         { sessionId: event.payload.session_id, storedTitle: undefined },
         " unfollowed an ask",
       ];
+    case "thread.follower_added":
+      return [{ sessionId: event.payload.session_id, storedTitle: undefined }, " follows a thread"];
+    case "thread.follower_removed":
+      return [{ sessionId: event.payload.session_id, storedTitle: undefined }, " left a thread"];
     case "block.repaired":
       return `Repaired block ${event.payload.block_id}`;
     case "block.invalid":

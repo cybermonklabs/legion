@@ -6876,9 +6876,7 @@ describe("executeDispatchTool", () => {
         named,
       ]);
       const askThroughSpec = "dispatch://DSP-42/artifact/spec@v2/ask/aaaaaaaa";
-      expect(
-        await problemsOf("dispatch_follow", { ask: askThroughSpec, action: "follow" })
-      ).toEqual([
+      expect(await problemsOf("dispatch_follow", { ask: askThroughSpec })).toEqual([
         `${askThroughSpec} names an ask through its document, which Dispatch does not address; name it dispatch://DSP-42/ask/aaaaaaaa`,
       ]);
     });
@@ -7203,7 +7201,9 @@ describe("executeDispatchTool", () => {
     test("the writes refuse it before writing", async () => {
       writes.length = 0;
       expect(await problemsOf("dispatch_resolve_comment", { comment })).toEqual([offComment]);
-      expect(await problemsOf("dispatch_follow", { ask, action: "follow" })).toEqual([offAsk]);
+      expect(await problemsOf("dispatch_follow", { ask })).toEqual([offAsk]);
+      expect(await problemsOf("dispatch_unfollow", { ask })).toEqual([offAsk]);
+      expect(await problemsOf("dispatch_unfollow", { comment })).toEqual([offComment]);
       expect(
         await problemsOf("dispatch_resolve_ask", { ask, kind: "resolved", reason: "Done." })
       ).toEqual([offAsk]);
@@ -15210,7 +15210,7 @@ describe("executeDispatchTool", () => {
 
   test.each([
     [
-      "follow",
+      "dispatch_follow",
       "PUT",
       [
         "/api/v1/asks/5a660655-04ad-4ce0-8a9b-93dd03c412b7",
@@ -15218,7 +15218,7 @@ describe("executeDispatchTool", () => {
       ],
     ],
     [
-      "unfollow",
+      "dispatch_unfollow",
       "DELETE",
       // An ask named by a reference is read first, to hold it to the issue the reference names.
       [
@@ -15226,9 +15226,9 @@ describe("executeDispatchTool", () => {
         "/api/v1/asks/5a660655-04ad-4ce0-8a9b-93dd03c412b7/followers/session-7",
       ],
     ],
-  ])(
-    "dispatch_follow %s names the calling session in the path and the body",
-    async (action, method, paths) => {
+  ] as const)(
+    "%s --ask sends %s naming the calling session in the path and the body",
+    async (tool, method, paths) => {
       const askUuid = "5a660655-04ad-4ce0-8a9b-93dd03c412b7";
       const requests: Array<{ method: string; pathname: string; body: unknown }> = [];
       const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -15250,8 +15250,8 @@ describe("executeDispatchTool", () => {
       };
 
       const result = await executeDispatchTool({
-        tool: "dispatch_follow",
-        args: { ask: `dispatch://DSP-42/ask/${askUuid}`, action },
+        tool,
+        args: { ask: `dispatch://DSP-42/ask/${askUuid}` },
         cwd: "/workspace",
         host: "omp",
         sessionId: "session-7",
@@ -15261,13 +15261,13 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
 
-      expect(requests.map((request) => request.pathname)).toEqual(paths);
+      expect(requests.map((request) => request.pathname)).toEqual([...paths]);
       const change = requests.at(-1);
       expect(change?.method).toBe(method);
       expect(change?.body).toEqual({
         actor: expect.objectContaining({ kind: "session", id: "session-7" }),
       });
-      if (action === "follow") {
+      if (tool === "dispatch_follow") {
         expect(result.text).toBe(
           `Following ask ${askUuid}: its answer and replies reach this session directly.`
         );
@@ -15284,11 +15284,14 @@ describe("executeDispatchTool", () => {
     }
   );
 
-  test("dispatch_follow needs the host session id", async () => {
+  test.each([
+    ["dispatch_follow", "follow", { ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7" }],
+    ["dispatch_unfollow", "unfollow", { comment: "cccccccc-0000-4000-8000-000000000042" }],
+  ] as const)("%s needs the host session id", async (tool, command, args) => {
     await expect(
       executeDispatchTool({
-        tool: "dispatch_follow",
-        args: { ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", action: "follow" },
+        tool,
+        args,
         cwd: "/workspace",
         host: "omp",
         config,
@@ -15298,8 +15301,156 @@ describe("executeDispatchTool", () => {
           throw new Error("network must not be called");
         }) as unknown as typeof fetch,
       })
-    ).rejects.toThrow("host session id is required for dispatch follow");
+    ).rejects.toThrow(`host session id is required for dispatch ${command}`);
   });
+
+  test.each([
+    // A whole uuid goes straight to the thread's route: Dispatch reads its thread from it.
+    ["dispatch_follow", "PUT", "a whole uuid", "cccccccc-0000-4000-8000-000000000042", []],
+    // A comment named by a reference is read first, to hold it to the issue the reference names.
+    [
+      "dispatch_unfollow",
+      "DELETE",
+      "a reference",
+      "dispatch://DSP-42/comment/cccccccc-0000-4000-8000-000000000042",
+      ["GET /api/v1/comments/cccccccc-0000-4000-8000-000000000042"],
+    ],
+    // A bare prefix is read from Dispatch, whose prefix layer resolves it, so the write and the
+    // result name the whole id and never the prefix.
+    ["dispatch_unfollow", "DELETE", "a bare prefix", "cccccccc", ["GET /api/v1/comments/cccccccc"]],
+    ["dispatch_follow", "PUT", "a bare prefix", "cccccccc", ["GET /api/v1/comments/cccccccc"]],
+  ] as const)(
+    "%s --comment sends %s to the thread's followers route under the whole id, naming the calling session in the path and the body (%s)",
+    async (tool, method, _named, comment, reads) => {
+      const commentUuid = "cccccccc-0000-4000-8000-000000000042";
+      const requests: Array<{ method: string; pathname: string; body: unknown }> = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const pathname = new URL(String(url)).pathname;
+        requests.push({
+          method: init?.method ?? "GET",
+          pathname,
+          body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+        });
+        if (
+          pathname === `/api/v1/comments/${commentUuid}` ||
+          pathname === "/api/v1/comments/cccccccc"
+        ) {
+          return response({ comment: { id: commentUuid, issue_key: "DSP-42" }, replies: [] });
+        }
+        if (pathname === `/api/v1/comments/${commentUuid}/followers/session-7`) {
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      };
+
+      const result = await executeDispatchTool({
+        tool,
+        args: { comment },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-7",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+      expect(requests.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+        ...reads,
+        `${method} /api/v1/comments/${commentUuid}/followers/session-7`,
+      ]);
+      expect(requests.at(-1)?.body).toEqual({
+        actor: expect.objectContaining({ kind: "session", id: "session-7" }),
+      });
+      expect(result.details).toEqual({ comment: commentUuid });
+      expect(followedAsk(result.details)).toBeNull();
+      expect(result.text).toBe(
+        tool === "dispatch_follow"
+          ? `Following the thread of comment ${commentUuid}: its replies reach this session directly.`
+          : `Left the thread of comment ${commentUuid}: its replies no longer reach this session; a reply that mentions it still does, the session that holds the issue's claim keeps getting every reply until it releases the claim (dispatch claim --release), and a session the issue is routed to keeps getting them while the route names it.`
+      );
+    }
+  );
+
+  test("a bare comment prefix Dispatch holds no comment for is refused by that prefix, and nothing is written", async () => {
+    const writes: string[] = [];
+    const fetchImpl = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const { pathname } = new URL(String(url));
+      if (method !== "GET") writes.push(`${method} ${pathname}`);
+      return new Response(JSON.stringify({ code: "NOT_FOUND", error: "not found" }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_unfollow",
+        args: { comment: "dddddddd" },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-7",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+      })
+    ).rejects.toThrow("this Dispatch holds no comment dddddddd");
+    expect(writes).toEqual([]);
+  });
+
+  test.each(["dispatch_follow", "dispatch_unfollow"])(
+    "%s names one ask or one comment thread: both, or neither, is refused before any request",
+    async (tool) => {
+      let requests = 0;
+      const fetchImpl = (() => {
+        requests += 1;
+        throw new Error("network must not be called");
+      }) as unknown as typeof fetch;
+      const problemsOf = (args: Record<string, unknown>) =>
+        executeDispatchTool({
+          tool,
+          args,
+          cwd: "/workspace",
+          host: "omp",
+          sessionId: "session-7",
+          config,
+          env: {},
+          exec: repoExec("owner/repo"),
+          fetchImpl,
+        }).then(
+          () => {
+            throw new Error(`${tool} was not refused`);
+          },
+          (error: unknown) => {
+            if (!(error instanceof ToolInputError)) throw error;
+            return error.problems;
+          }
+        );
+      const rule =
+        "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.";
+      expect(
+        await problemsOf({
+          ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7",
+          comment: "cccccccc-0000-4000-8000-000000000042",
+        })
+      ).toEqual([rule]);
+      expect(await problemsOf({})).toEqual([rule]);
+      // The comment is checked as dispatch resolve-comment checks its own: an ask reference, or a
+      // bare value that is no id, names no comment.
+      const noComment =
+        "comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference";
+      expect(
+        await problemsOf({ comment: "dispatch://DSP-42/ask/5a660655-04ad-4ce0-8a9b-93dd03c412b7" })
+      ).toEqual([noComment]);
+      expect(await problemsOf({ comment: "thread" })).toEqual([noComment]);
+      // The tool is the action: the flag that named it once is no flag of either.
+      expect(
+        await problemsOf({ ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", action: "follow" })
+      ).toEqual(["unknown flag --action"]);
+      expect(requests).toBe(0);
+    }
+  );
 
   test("rejects a comment reply that names both reply_to and reply_to_ask", async () => {
     const fetchImpl = (() => {
@@ -20872,7 +21023,7 @@ function openAsksBody(asks: readonly { readonly id: string; readonly question: s
   };
 }
 
-/** The three tools whose only owner is the ask id the caller supplies. */
+/** The four tools whose only owner is the ask id the caller supplies. */
 const askWriteTools = [
   {
     tool: "dispatch_edit_ask",
@@ -20886,8 +21037,13 @@ const askWriteTools = [
   },
   {
     tool: "dispatch_follow",
-    args: (ask: string) => ({ ask, action: "follow" }),
+    args: (ask: string) => ({ ask }),
     writes: [`GET /api/v1/asks/${askUUID}`, `PUT /api/v1/asks/${askUUID}/followers/session-42`],
+  },
+  {
+    tool: "dispatch_unfollow",
+    args: (ask: string) => ({ ask }),
+    writes: [`DELETE /api/v1/asks/${askUUID}/followers/session-42`],
   },
 ] as const;
 

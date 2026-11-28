@@ -3922,6 +3922,120 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/comments/{id}/followers/{session_id}": {
+      "put": {
+        "description": "Follow the comment thread a comment is in, so a person's later replies there reach the session: rejoin a thread it left, or hear one it never wrote in (a credential holding the person scope for any session; every other for its own session alone). A comment in an ask's thread answers 409 ASK_THREAD: follow the ask.",
+        "operationId": "putApiV1CommentsByIdFollowersBySessionId",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
+      "delete": {
+        "description": "Leave the comment thread a comment is in, so a person's later replies there no longer reach the session, as a writer in the thread, of its document or of the issue's spec; a reply that mentions it still does, the holder of the issue's claim or route still gets every reply, and a later comment of it in the thread rejoins it (a credential holding the person scope for any session; every other for its own session alone). A comment in an ask's thread answers 409 ASK_THREAD: unfollow the ask.",
+        "operationId": "deleteApiV1CommentsByIdFollowersBySessionId",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/comments/{id}/history": {
       "get": {
         "description": "Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A comment nobody edited or deleted answers an empty list; a delete writes an entry of its own, so a comment deleted with no edit lists one, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text. At a cut the route answers only the entries that the comment's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. deleted_at and deleted_by are the comment's present values, so a comment deleted after the cut answers as a deleted comment answers now. as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. A malformed as_of, a cut later than the database's present time, and a second as_of are 400 INVALID_AS_OF. A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. An answer at a cut names the cut in the Dispatch-As-Of header, in UTC with six fractional digits. At a cut the answer leaves out no member. Dispatch dates each write by the start of its transaction, and records no time at which a write committed. So a write that began before the cut and committed after it reads as made at its start. In a sample of production's access log, the write requests of 2026-11-16 to 2026-11-19, the longest took 47 s. Production's event log held an event 249 s older than an event with a lower id.",
@@ -5483,7 +5597,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: 25 of the 46 tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: 26 of the 47 tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {

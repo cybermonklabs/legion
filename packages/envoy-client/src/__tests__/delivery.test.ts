@@ -1020,7 +1020,7 @@ describe("renderInbound dispatch events", () => {
     ).toMatchObject({
       skip: false,
       content:
-        "Now following ask ask-1 on DSP-1 (added by alice): its answer and replies reach you directly; dispatch follow --ask ask-1 --action unfollow to stop.",
+        "Now following ask ask-1 on DSP-1 (added by alice): its answer and replies reach you directly; dispatch unfollow --ask ask-1 to stop following it.",
     });
     expect(
       renderInbound(
@@ -1041,6 +1041,61 @@ describe("renderInbound dispatch events", () => {
           "ask.follower_removed",
           { ask_id: "ask-1", session_id: "ses_someone_else", by: human },
           human
+        ),
+        reader
+      )
+    ).toMatchObject({ skip: true, content: "" });
+  });
+
+  test("renders thread.follower_added and thread.follower_removed as short notices for the named session only, each with the command that undoes it", () => {
+    const human = { kind: "user", id: "alice" };
+    const thread = "5a660655-04ad-4ce0-8a9b-93dd03c412b7";
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_added",
+          { comment_id: thread, session_id: reader, by: human },
+          human
+        ),
+        reader
+      )
+    ).toMatchObject({
+      skip: false,
+      content: `Now following the thread of comment ${thread} on DSP-1 (added by alice): its replies reach you directly; dispatch unfollow --comment ${thread} to stop following it.`,
+    });
+    // Another session that removes this one names itself as the one who did it.
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_removed",
+          { comment_id: thread, session_id: reader, by: actor },
+          actor
+        ),
+        reader
+      )
+    ).toMatchObject({
+      skip: false,
+      content: `No longer following the thread of comment ${thread} on DSP-1 (removed by session-1): its replies no longer reach you as its follower; a reply that mentions you still does, every reply does while you hold the issue's claim (until you release it with dispatch claim --release), and every reply does while the issue's route names you; dispatch follow --comment ${thread} to rejoin.`,
+    });
+    // Every other session the event reaches, such as a subscriber of the issue, sees nothing.
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_added",
+          { comment_id: thread, session_id: "ses_someone_else", by: human },
+          human
+        ),
+        reader
+      )
+    ).toMatchObject({ skip: true, content: "" });
+    // The session's own leave is its own write: nothing comes back to it.
+    const self = { kind: "session", id: reader };
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_removed",
+          { comment_id: thread, session_id: reader, by: self },
+          self
         ),
         reader
       )

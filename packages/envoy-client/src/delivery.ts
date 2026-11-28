@@ -31,6 +31,7 @@ import {
   readDispatchPayload,
   type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
+  ThreadFollowerEventPayloadSchema as ThreadFollowerPayloadSchema,
   topicForms,
 } from "@legion/contracts";
 import { encode, encodeLines, escapeString } from "@toon-format/toon";
@@ -1412,8 +1413,30 @@ export function renderInbound(
             skip: false,
             content:
               frame.event.type === "ask.follower_added"
-                ? `Now following ask ${ask} on ${owner} (added by ${who}): its answer and replies reach you directly; ${commandLine("dispatch_follow", { ask, action: "unfollow" })} to stop.`
+                ? `Now following ask ${ask} on ${owner} (added by ${who}): its answer and replies reach you directly; ${commandLine("dispatch_unfollow", { ask })} to stop following it.`
                 : `No longer following ask ${ask} on ${owner} (removed by ${who}).`,
+            envelope,
+          };
+        }
+        // A comment thread's follow or leave, by a person or by another session, reads the same
+        // way: only the session the payload names hears it, with the command that undoes it.
+        if (
+          frame.event.type === "thread.follower_added" ||
+          frame.event.type === "thread.follower_removed"
+        ) {
+          const follower = ThreadFollowerPayloadSchema.safeParse(frame.event.payload);
+          if (!follower.success || follower.data.session_id !== sessionID) {
+            return { skip: true, content: "", envelope };
+          }
+          const who = follower.data.by?.id ?? "someone";
+          const owner = dispatchOwner(frame.event, topic);
+          const comment = follower.data.comment_id ?? "?";
+          return {
+            skip: false,
+            content:
+              frame.event.type === "thread.follower_added"
+                ? `Now following the thread of comment ${comment} on ${owner} (added by ${who}): its replies reach you directly; ${commandLine("dispatch_unfollow", { comment })} to stop following it.`
+                : `No longer following the thread of comment ${comment} on ${owner} (removed by ${who}): its replies no longer reach you as its follower; a reply that mentions you still does, every reply does while you hold the issue's claim (until you release it with dispatch claim --release), and every reply does while the issue's route names you; ${commandLine("dispatch_follow", { comment })} to rejoin.`,
             envelope,
           };
         }

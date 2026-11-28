@@ -52,6 +52,12 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 // 1-indexed, so that first element is (min(rank))[1], which the row carries as from_thread. The
 // caller keeps a member of the thread whatever the issue's claim is and leaves a credit out on an
 // issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states.
+//
+// A session that follows the thread (comment_thread_follows, the PUT of
+// /api/v1/comments/{id}/followers/{session_id}) is a member of it whether or not it wrote there,
+// and one the read finds by nothing but its follow ranks after every other, in the order the
+// follows were made. A session that left the thread is still read here: who left is the batch's
+// read of the thread's leaves (loadThreadLeaves), which every route of a reply asks (threadLeave).
 const commentRecipientsQuery = `
 	with recursive
 	up as (
@@ -85,24 +91,39 @@ const commentRecipientsQuery = `
 	documents as (
 		select key, artifact_id from roots where artifact_id is not null
 	),
+	credits as (
+		` + documentCreditsSQL + `
+	),
 	credited as (
 		select m.key, c.author,
 			array[0, row_number() over (partition by m.key order by c.reply_to is null desc, c.created_at, c.id), 0]::bigint[] as rank
 		from members m
 		join comments c on c.id = m.id
 		union all
-		` + documentCreditsSQL + `
+		select key, author, rank from credits
+	),
+	found as (
+		select key, author->>'id' as session_id, min(rank) as rank
+		from credited
+		where ` + sessionCreditSQL + `
+		group by key, author->>'id'
+	),
+	followed as (
+		select r.key, f.session_id, f.since
+		from roots r
+		join comment_thread_follows f on f.comment_id = r.id and f.follows
 	)
-	select key::text, author->>'id', (min(rank))[1] = 0 as from_thread
-	from credited
-	where ` + sessionCreditSQL + `
-	group by key, author->>'id'
-	order by key, min(rank)
+	select coalesce(found.key, followed.key)::text,
+		coalesce(found.session_id, followed.session_id),
+		followed.session_id is not null or coalesce((found.rank)[1] = 0, false) as from_thread
+	from found
+	full join followed on followed.key = found.key and followed.session_id = found.session_id
+	order by 1, found.rank nulls last, followed.since, 2
 `
 
 // threadRecipient is one session a person's reply under a comment reaches, and where the read
-// found it: fromThread for a session that wrote a comment in the thread, false for one the
-// thread's document credits alone (commentRecipientsQuery, addAuthorRoutes).
+// found it: fromThread for a session that wrote a comment in the thread or follows it, false for
+// one the thread's document credits alone (commentRecipientsQuery, addAuthorRoutes).
 type threadRecipient struct {
 	sessionID  string
 	fromThread bool
@@ -115,11 +136,13 @@ type threadRecipient struct {
 // session that wrote a comment in the comment's thread (its root first, then each reply in the
 // order it was written), marked fromThread, then every session the thread's document credits
 // (documentCreditsSQL; none when the thread is on no document), each once and marked fromThread
-// only where the thread names it too. A session the thread's document credits alone is left out
-// by the caller where the comment is a person's on an issue a session claims (addAuthorRoutes),
-// by the rule takesClaimantRoute states. People are left out, since a person has no Envoy topic.
-// A comment that has no row has no entry. The actor and the sessions the reply's mentions reach
-// are skipped by the caller too.
+// only where the thread names it too, then every session that follows the thread and is neither.
+// A session that left the thread is read all the same and left out by the caller (threadLeave). A
+// session the
+// thread's document credits alone is left out by the caller where the comment is a person's on an
+// issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states. People are left
+// out, since a person has no Envoy topic. A comment that has no row has no entry. The actor and the
+// sessions the reply's mentions reach are skipped by the caller too.
 func loadCommentRecipients(ctx context.Context, db queryer, commentIDs []string) (map[string][]threadRecipient, error) {
 	if len(commentIDs) == 0 {
 		return map[string][]threadRecipient{}, nil

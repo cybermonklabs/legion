@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `dispatch_follow` and the new `dispatch_unfollow` replace `dispatch_follow`'s `action` argument:
+  each takes exactly one of `ask` and `comment`, and `comment` names any comment of a thread, so a
+  session can follow or leave a comment thread as it can an ask. The event union adds
+  `thread.follower_added` and `thread.follower_removed`, whose payload
+  (`ThreadFollowerEventPayload`) names the thread's first comment, the session and who made the
+  change.
+time: 2026-11-28T19:32:32Z
+custom:
+    Issue: pr6102
