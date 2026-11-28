@@ -51,6 +51,12 @@ type Clock interface {
 	WithTimeoutCause(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc)
 	// WithDeadline is a context that ends with context.DeadlineExceeded at at.
 	WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc)
+	// WithDeadlineCause is WithDeadline whose end at at carries cause (context.Cause), as
+	// context.WithDeadlineCause's does: its Err is context.DeadlineExceeded at at, with cause as
+	// its cause, or context.DeadlineExceeded when cause is nil, and context.Canceled, as error and
+	// cause both, once its cancel runs first. An at the clock has already reached ends it before it
+	// is returned.
+	WithDeadlineCause(ctx context.Context, at time.Time, cause error) (context.Context, context.CancelFunc)
 }
 
 // Timer is one armed wait, as time.Timer is.
@@ -97,6 +103,10 @@ func (realClock) WithTimeoutCause(ctx context.Context, d time.Duration, cause er
 
 func (realClock) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {
 	return context.WithDeadline(ctx, at)
+}
+
+func (realClock) WithDeadlineCause(ctx context.Context, at time.Time, cause error) (context.Context, context.CancelFunc) {
+	return context.WithDeadlineCause(ctx, at, cause)
 }
 
 // realTimer is a time.Timer as a Timer.

@@ -49,14 +49,14 @@
 //
 // # Deadline contexts
 //
-// WithTimeout, WithTimeoutCause and WithDeadline give a context that ends once the fake reaches its
-// deadline with context.DeadlineExceeded as its error, and as its cause or the one WithTimeoutCause
-// names, as a context derived from it does too; a cancel that runs first ends it with
-// context.Canceled as its error and cause, as the context package's own do. Its
-// Deadline reports the parent's and never the fake's own: a fake deadline that reached pgx, nats.go
-// or a net.Dialer would be compared there with the wall clock, and end the call at a moment the test
-// never chose. Code that reads ctx.Deadline() for its own logic takes the deadline from its clock
-// instead.
+// WithTimeout, WithTimeoutCause, WithDeadline and WithDeadlineCause give a context that ends once
+// the fake reaches its deadline with context.DeadlineExceeded as its error, and as its cause or the
+// one WithTimeoutCause or WithDeadlineCause names, as a context derived from it does too; a cancel
+// that runs first ends it with context.Canceled as its error and cause, as the context package's
+// own do. Its Deadline reports the parent's and never the fake's own: a fake deadline that reached
+// pgx, nats.go or a net.Dialer would be compared there with the wall clock, and end the call at a
+// moment the test never chose. Code that reads ctx.Deadline() for its own logic takes the deadline
+// from its clock instead.
 //
 // # Another source's moments
 //
@@ -479,6 +479,12 @@ func (c *Fake) WithTimeoutCause(ctx context.Context, d time.Duration, cause erro
 
 func (c *Fake) WithDeadline(ctx context.Context, at time.Time) (context.Context, context.CancelFunc) {
 	return c.withDeadline(ctx, func(time.Time) time.Time { return at }, context.DeadlineExceeded)
+}
+
+// WithDeadlineCause is WithDeadline whose end at at carries cause, or context.DeadlineExceeded when
+// cause is nil, as context.WithDeadlineCause's does.
+func (c *Fake) WithDeadlineCause(ctx context.Context, at time.Time, cause error) (context.Context, context.CancelFunc) {
+	return c.withDeadline(ctx, func(time.Time) time.Time { return at }, cmp.Or(cause, context.DeadlineExceeded))
 }
 
 // arm places t at the deadline due gives for the fake's present, read under the same hold of the

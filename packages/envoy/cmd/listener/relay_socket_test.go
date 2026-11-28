@@ -253,12 +253,30 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 // nothing reads connected, and the session's client receives no probe frame. The probe's reply is
 // the prober's own inbox, which is no relay receipt, so two filters of forward each keep it from
 // the client: the probe's header, and the stray reply. A message carrying the probe's header with
-// a relay receipt's reply, which only the header's filter stops, is not forwarded either.
-// Controls: the header's filter removed, the second message is forwarded and the row fails naming
-// it; the header's and the stray reply's filters removed together, the probe is forwarded too.
-// (Either filter alone removed passes the probe's half: the other stops it.) The row's second half
-// is its own control: the socket closed first, the replica holds no subscription, and the same
-// probe reads stopped.
+// a relay receipt's reply, which only the header's filter stops, is not forwarded either. A marker
+// frame published after both is the client's next frame: the socket's one subscription took the
+// probe before the marker was published, and the message carrying the probe's header, which was
+// flushed before it, ahead of it too, and hands each on in that order, so either one forwarded
+// would reach the client first.
+//
+// The probe's bound runs on a fake clock of the row's own (probeSessionConnection's clock), not
+// the rig's, on which the socket checks its token: the row moves it past connectionProbeTimeout
+// once the bound is armed and the probe has reached the socket's subscription, so silence ends
+// the probe at its bound with no second waited out, and no check of the socket runs. A fake's
+// context reports its parent's deadline and none of its own, and RequestCore bounds a context
+// that reports none by a wait of its own on the wall clock, which the probe reads as connected
+// too, so the probe's parent reports the test binary's deadline (testnats.Context): nothing but
+// the fake's bound or the binary's end can end the probe in the row. A bound left on the wall
+// clock fails the row at the wait for it to be armed, naming it.
+//
+// Controls: the header's filter removed, the second message is forwarded ahead of the marker and
+// the row fails naming it; the header's and the stray reply's filters removed together, the edge's
+// rule withholds the probe, which names no stored subject, and answers it done on its reply, so
+// the probe ends answered and releases its bound, and the row fails at the wait for the bound, or,
+// where that wait read the bound first, at the marker, which the second message reaches the client
+// ahead of. (Either filter alone removed passes the probe's half: the other stops it.) The row's
+// second half is its own control: the socket closed first, the replica holds no subscription, and
+// the same probe reads stopped, answered at once with its bound never reached.
 func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	t.Parallel()
 	rig := newRelaySocketRig(t)
@@ -266,21 +284,47 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	client, _ := rig.open(t, session)
 	held := rig.client.Connection().NumSubscriptions()
 	client.subscribeOwn(session)
+	subscription := rig.openSocket(t, session).awaitSubscription(t)
+	before, err := subscription.Delivered()
+	if err != nil {
+		t.Fatalf("read what the socket's subscription has taken: %v", err)
+	}
 
 	prober := rig.client
 	logger := logging.NewWithWriter("prober", &bytes.Buffer{})
-	if !probeSessionConnection(t.Context(), prober, session, logger) {
+	probeClock := clocktest.New(time.Now())
+	parent := testnats.Context(t)
+	probe := func() <-chan bool {
+		answered := make(chan bool, 1)
+		go func() { answered <- probeSessionConnection(parent, probeClock, prober, session, logger) }()
+		return answered
+	}
+	started := probeClock.Now()
+	connected := probe()
+	probeClock.AwaitArmedAt(t, "the probe's bound, connectionProbeTimeout past its start on the probe's clock", started.Add(connectionProbeTimeout))
+	testwait.Until(t, "the probe to reach the socket's subscription of "+bus.DeliverSubject(session), func() (int64, bool) {
+		delivered, err := subscription.Delivered()
+		return delivered, err == nil && delivered > before
+	})
+	probeClock.Advance(connectionProbeTimeout)
+	if !testwait.Receive(t, "the probe's answer once its bound passed", connected) {
 		t.Fatal("the probe of a session whose socket subscribes its relay subject read stopped, want connected")
 	}
-	client.none(500*time.Millisecond, "the connection probe")
-	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{bus.ConnectionProbeHeader: []string{"1"}})
-	client.none(500*time.Millisecond, "a message carrying the probe's header under a relay receipt")
+	headed := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{bus.ConnectionProbeHeader: []string{"1"}})
+	marker := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	switch frame := client.frame("the marker published after the probe and the message carrying its header"); {
+	case frame.Reply == headed.Reply:
+		t.Fatalf("the message carrying the probe's header under a relay receipt reached the client as %s, ahead of the marker published after it", frame.raw)
+	case frame.Reply != marker.Reply:
+		t.Fatalf("the client received %s ahead of the marker %s published after the probe: the probe, the one message before the marker but the one carrying its header, was forwarded", frame.raw, marker.Reply)
+	}
 
 	_ = client.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
-	waitFor(t, "the replica to drop the socket's subscription", func() bool {
-		return rig.client.Connection().NumSubscriptions() == held
+	testwait.Until(t, "the replica to drop the socket's subscription", func() (int, bool) {
+		subscriptions := rig.client.Connection().NumSubscriptions()
+		return subscriptions, subscriptions == held
 	})
-	if probeSessionConnection(t.Context(), prober, session, logger) {
+	if testwait.Receive(t, "the probe of the session whose socket closed to answer, its bound never reached", probe()) {
 		t.Fatal("the probe of a session whose socket closed read connected, want stopped")
 	}
 }

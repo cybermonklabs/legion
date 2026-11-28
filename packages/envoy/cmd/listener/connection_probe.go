@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
@@ -46,9 +47,9 @@ const connectionProbeTimeout = 1 * time.Second
 // probeSessionConnection asks whether anything subscribes sessionID's relay subject
 // (bus.DeliverSubject), the subject both plugins subscribe before they register and on which the
 // session's owning listener relays its consumer's messages, and reports whether the session is
-// connected. The request is one core NATS request bounded by connectionProbeTimeout within ctx
-// (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply subject of
-// its own that names the session (bus.SessionReplySubject under a new inbox of the client's
+// connected. The request is one core NATS request bounded by connectionProbeTimeout on c within
+// ctx (bus.Client.RequestCore), carrying bus.ConnectionProbeHeader and no body, on a reply subject
+// of its own that names the session (bus.SessionReplySubject under a new inbox of the client's
 // connection, which an edge listener names under its machine's prefix), so its answer never
 // reaches the relay's reply handler, and a session on its own grant (natsgrant.Session), which
 // publishes bus.SessionReplies, its replies under its own id alone, in place of every _INBOX.
@@ -63,8 +64,14 @@ const connectionProbeTimeout = 1 * time.Second
 // connected too, and logged: a publish this listener's own grant denies (bus.ErrPublishDenied) and
 // a connection that is reconnecting say something about this listener, not about the session, and
 // a listener that cannot ask must not call every session of the deployment stopped.
-func probeSessionConnection(ctx context.Context, client *bus.Client, sessionID string, logger *logging.Logger) bool {
-	probeCtx, cancel := context.WithTimeout(ctx, connectionProbeTimeout)
+//
+// The send route passes the listener's clock (listenerDeps.clk), so a test that hands the
+// listener a clocktest.Fake moves the probe's bound past its second rather than waiting it out.
+// A fake's context reports its parent's deadline and none of its own, and RequestCore bounds a
+// ctx that reports none by a wait of its own on the wall clock (storedMessageWait), which this
+// probe reads as connected too; such a test gives ctx a parent that reports a deadline.
+func probeSessionConnection(ctx context.Context, c clock.Clock, client *bus.Client, sessionID string, logger *logging.Logger) bool {
+	probeCtx, cancel := c.WithTimeout(ctx, connectionProbeTimeout)
 	defer cancel()
 	reply := bus.SessionReplySubject(client.Connection().NewInbox(), sessionID)
 	_, err := client.RequestCore(probeCtx, bus.DeliverSubject(sessionID), reply, nats.Header{bus.ConnectionProbeHeader: []string{"1"}})

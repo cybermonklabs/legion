@@ -66,3 +66,21 @@ func TestWithShownTimeoutsCancelReleasesTheClocksDeadline(t *testing.T) {
 		t.Fatalf("the fake still holds %v armed once the cancel ran, want nothing: the cancel left the clock's own deadline", armed)
 	}
 }
+
+// The real clock's WithDeadlineCause is the context package's: its context reports the moment it
+// was given as its deadline, and ends there with context.DeadlineExceeded as its error and the
+// cause it was given as its cause. The moment is a millisecond off, waited for on the context's
+// own Done.
+func TestTheRealClocksWithDeadlineCauseReportsItsMomentAndEndsWithItsCause(t *testing.T) {
+	cause := errors.New("the budget ended")
+	at := time.Now().Add(time.Millisecond)
+	ctx, cancel := clock.Real().WithDeadlineCause(context.Background(), at, cause)
+	defer cancel()
+	if got, ok := ctx.Deadline(); !ok || !got.Equal(at) {
+		t.Fatalf("the real clock's context reports the deadline %s, %v; want the moment it was given, %s", got, ok, at)
+	}
+	testwait.Receive(t, "the real clock's context at its deadline", ctx.Done())
+	if err, got := ctx.Err(), context.Cause(ctx); err != context.DeadlineExceeded || got != cause {
+		t.Fatalf("the real clock's context at its deadline ended with %v (cause %v), want context.DeadlineExceeded with the cause it was given, %v", err, got, cause)
+	}
+}
