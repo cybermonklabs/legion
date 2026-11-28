@@ -93,7 +93,7 @@ func (r *outbox) closeWaitPublish(ctx context.Context, row record.OutboxRow, pay
 		}
 		return r.closeWaitFailed(row, err)
 	}
-	if len(shown.Withdrawn) == 0 && shown.Ended == nil {
+	if len(shown.Withdrawn) == 0 {
 		return nil
 	}
 	// A failure here fails the run, and the row writes the same version again before it clears.
@@ -101,12 +101,9 @@ func (r *outbox) closeWaitPublish(ctx context.Context, row record.OutboxRow, pay
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
-		if err := r.records.ClearWaitWithdrawals(ctx, tx, row.Issue, shown.Withdrawn); err != nil {
-			return err
-		}
-		return r.records.ClearWaitEnded(ctx, tx, row.Issue, shown.Ended)
+		return r.records.ClearWaitWithdrawals(ctx, tx, row.Issue, shown.Withdrawn)
 	}); err != nil {
-		return fmt.Errorf("take what close-wait.md of %s showed once out of its stored wait: %w", row.Issue, err)
+		return fmt.Errorf("take the withdrawals close-wait.md of %s showed out of its stored wait: %w", row.Issue, err)
 	}
 	return nil
 }

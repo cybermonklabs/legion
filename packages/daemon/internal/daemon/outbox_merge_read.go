@@ -22,7 +22,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/wait"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The bounds of the merge read: one bounded pass of GETs, resumed where it stopped.
@@ -44,8 +43,8 @@ const (
 	// automatic fourth attempt (record.MergeReadMaxFailures, which the row's validate holds too).
 	mergeReadAttempts = record.MergeReadMaxFailures
 	// mergeReadParked is when an unread or stopped read looks at its row again. The look sends
-	// nothing unless a door asked a links refresh (record.MergeReadProgress.RefreshAsked), and a
-	// door that asks makes the row due at once.
+	// nothing unless a door asked a links refresh (record.MergeReadProgress.Refresh), and a door
+	// that asks makes the row due at once.
 	mergeReadParked = 24 * time.Hour
 )
 
@@ -102,14 +101,13 @@ type mergeRequest struct {
 	candidate int
 }
 
-// mergeReadAnswer is what one GET answered: the issue's links and the repository Dispatch resolves
-// the issue to, its results, a page of pull requests a commit is in, or one pull request.
+// mergeReadAnswer is what one GET answered: the issue's links, its results, a page of pull
+// requests a commit is in, or one pull request.
 type mergeReadAnswer struct {
-	links    []dispatch.IssueLink
-	resolved string
-	results  dispatch.IssueResults
-	page     githubrest.Page[mergeCommitPull]
-	pull     githubPullRequest
+	links   []dispatch.IssueLink
+	results dispatch.IssueResults
+	page    githubrest.Page[mergeCommitPull]
+	pull    githubPullRequest
 }
 
 // mergeCommitPull is one pull request GitHub lists for a commit (GET
@@ -175,14 +173,14 @@ func (r *outbox) mergeRead(ctx context.Context, row record.OutboxRow, payload re
 	if progress.Reserved {
 		// An attempt whose answer no turn saved: it was sent, or may have been. It stays spent.
 		progress = mergeReadFailed(progress, errors.New("a request whose answer was never saved: the daemon stopped after it was reserved"), now, true)
-		return r.saveMergeRead(ctx, row, progress, now)
+		return r.saveMergeRead(ctx, row, progress, false, now)
 	}
 	request, merge, done := nextMergeRequest(payload.Issue, recorded, history.Evidence, &progress)
 	if done {
 		if merge.Merged() {
 			return r.answerMergeRead(ctx, row, payload, merge, progress, now)
 		}
-		return r.saveMergeRead(ctx, row, progress, now)
+		return r.saveMergeRead(ctx, row, progress, false, now)
 	}
 	if !progress.RetryAt.IsZero() && progress.RetryAt.After(now) {
 		return wait.Until(progress.RetryAt, fmt.Sprintf("the merge read of %s tries its stage again at %s", row.Issue, progress.RetryAt.Format(time.RFC3339)))
@@ -200,9 +198,10 @@ func (r *outbox) mergeRead(ctx context.Context, row record.OutboxRow, payload re
 		slot.Release(ctx)
 		return wait.Until(next, fmt.Sprintf("the merge read of %s waits for the next pass: this one spent its %d GETs", row.Issue, mergeReadPassGETs))
 	}
+	consumed := progress.Refresh && request.stage == mergeStageLinks
 	progress.Attempts++
 	progress.Reserved = true
-	reserved, err := checkpointMergeRead(ctx, slot.Transact, row, progress)
+	reserved, err := checkpointMergeRead(ctx, slot.Transact, row, progress, false)
 	if err != nil || !reserved {
 		slot.Release(ctx)
 		if err == nil {
@@ -219,13 +218,13 @@ func (r *outbox) mergeRead(ctx context.Context, row record.OutboxRow, payload re
 	if sendErr != nil {
 		progress = mergeReadFailed(progress, sendErr, now, false)
 		// A refresh whose read failed stays asked, and is tried again as its stage is.
-		return errors.Join(r.saveMergeRead(ctx, row, progress, now), mergeReadLimit(sendErr))
+		return errors.Join(r.saveMergeRead(ctx, row, progress, false, now), mergeReadLimit(sendErr))
 	}
 	progress = applyMergeAnswer(payload.Issue, recorded, progress, request, answer)
 	if _, merge, done := nextMergeRequest(payload.Issue, recorded, history.Evidence, &progress); done && merge.Merged() {
 		return r.answerMergeRead(ctx, row, payload, merge, progress, now)
 	}
-	return r.saveMergeRead(ctx, row, progress, now)
+	return r.saveMergeRead(ctx, row, progress, consumed, now)
 }
 
 // peek says whether the pass has an attempt left at now, without spending it, and else when the
@@ -256,16 +255,11 @@ func mergeReadLimit(err error) error {
 
 // answerMergeRead carries the newest merge the read found back as one intake.MergeRead fact of the
 // row's issue and generation, and the row finishes: the workflow applies it under the fact lock.
-// A fact that does not apply leaves the progress saved, and the row fails with the apply's error
-// alone, so the outbox retries it as a failure and never reads it as the save's wait.
+// A fact that does not apply leaves the progress saved, and the row runs again.
 func (r *outbox) answerMergeRead(ctx context.Context, row record.OutboxRow, payload record.MergeRead, merge record.Merge, progress record.MergeReadProgress, now time.Time) error {
 	fact := intake.MergeRead{Issue: payload.Issue, Generation: payload.Generation, Merge: merge}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-read:%s:%d:%d", row.Issue, row.ID, progress.Attempts), fact, r.handlers...); err != nil {
-		applied := fmt.Errorf("apply the merge read of %s: %w", row.Issue, err)
-		if saved := r.saveMergeRead(ctx, row, progress, now); saved != nil && !errors.Is(saved, wait.ErrWaiting) {
-			return errors.Join(applied, saved)
-		}
-		return applied
+		return errors.Join(fmt.Errorf("apply the merge read of %s: %w", row.Issue, err), r.saveMergeRead(ctx, row, progress, false, now))
 	}
 	r.log.Info("outbox merge read found the issue's merge", "row", row.ID, "issue", row.Issue, "repo", merge.Repo, "number", merge.Number,
 		"attempts", progress.Attempts)
@@ -274,20 +268,16 @@ func (r *outbox) answerMergeRead(ctx context.Context, row record.OutboxRow, payl
 
 // saveMergeRead saves progress under the row's lease and answers when the row runs next: at once
 // after a turn that left work, when its stage's retry is due, and a day on for a read that is
-// unread or stopped. A read that this save ends unread or stopped tells the workflow so once
-// (tellMergeUnread), so the controller hears of it at once, and the daily turn after that.
-func (r *outbox) saveMergeRead(ctx context.Context, row record.OutboxRow, progress record.MergeReadProgress, now time.Time) error {
+// unread or stopped.
+func (r *outbox) saveMergeRead(ctx context.Context, row record.OutboxRow, progress record.MergeReadProgress, consumedRefresh bool, now time.Time) error {
 	saved, err := checkpointMergeRead(ctx, func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
 		return store.Transact(ctx, r.pool, write)
-	}, row, progress)
+	}, row, progress, consumedRefresh)
 	if err != nil {
 		return err
 	}
 	if !saved {
 		return fmt.Errorf("save the merge read of %s: %w", row.Issue, record.ErrOutboxLeaseLost)
-	}
-	if progress.State != "" {
-		r.tellMergeUnread(ctx, row, progress)
 	}
 	switch {
 	case progress.State != "":
@@ -306,26 +296,10 @@ func mergeReadCause(progress record.MergeReadProgress) string {
 	return "no candidate answered with a merge that names the issue"
 }
 
-// tellMergeUnread posts the read's end with no answer (intake.MergeUnread) where the row stood
-// still reading when this turn leased it, so a read tells it once: a read that was unread or
-// stopped already, and only reads its links again, posts nothing. The workflow applies it under
-// the fact lock. A fact that fails to apply is logged, and the controller's daily turn tells the
-// controller instead (workflow's tellEachMergeUnread).
-func (r *outbox) tellMergeUnread(ctx context.Context, row record.OutboxRow, progress record.MergeReadProgress) {
-	var leased record.MergeRead
-	if err := json.Unmarshal(row.Payload, &leased); err != nil || leased.Progress.State != "" {
-		return
-	}
-	fact := intake.MergeUnread{Issue: leased.Issue, Generation: leased.Generation, Cause: workflow.MergeUnreadCause(progress)}
-	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-unread:%s:%d:%d", row.Issue, row.ID, progress.Attempts), fact, r.handlers...); err != nil {
-		r.log.Error("outbox merge read could not tell that it found no merge; the daily turn tells it", "row", row.ID, "issue", row.Issue, "error", err)
-	}
-}
-
 // checkpointMergeRead writes progress over the row's progress in a transaction transact opens,
 // under the row's lease (store.CheckpointMergeRead), and answers whether it did.
 func checkpointMergeRead(ctx context.Context, transact func(context.Context, func(context.Context, pgx.Tx) error) error, row record.OutboxRow,
-	progress record.MergeReadProgress) (bool, error) {
+	progress record.MergeReadProgress, consumedRefresh bool) (bool, error) {
 	encoded, err := json.Marshal(progress)
 	if err != nil {
 		return false, err
@@ -333,7 +307,7 @@ func checkpointMergeRead(ctx context.Context, transact func(context.Context, fun
 	var saved bool
 	err = transact(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		saved, err = store.CheckpointMergeRead(ctx, tx, row.ID, row.LeaseToken, encoded)
+		saved, err = store.CheckpointMergeRead(ctx, tx, row.ID, row.LeaseToken, encoded, consumedRefresh)
 		return err
 	})
 	return saved, err
@@ -407,7 +381,7 @@ func nextMergeRequest(issue string, recorded ghrepo.Repository, evidence record.
 	}
 	seedMergeCandidates(recorded, evidence, progress)
 	if progress.State != "" {
-		if progress.RefreshAsked() {
+		if progress.Refresh {
 			return mergeRequest{stage: mergeStageLinks}, record.Merge{}, false
 		}
 		return mergeRequest{}, record.Merge{}, true
@@ -548,7 +522,7 @@ func (m mergeReader) send(ctx context.Context, issue string, progress record.Mer
 		if err != nil {
 			return mergeReadAnswer{}, fmt.Errorf("read the links of %s: %w", issue, err)
 		}
-		return mergeReadAnswer{links: read.Links, resolved: read.ResolvedRepo}, nil
+		return mergeReadAnswer{links: read.Links}, nil
 	case mergeStageResults:
 		results, err := m.dispatch.IssueResults(ctx, issue)
 		if err != nil {
@@ -598,17 +572,16 @@ func (m mergeReader) send(ctx context.Context, issue string, progress record.Mer
 }
 
 // applyMergeAnswer is progress once request's GET answered with answer: the stage's answer kept and
-// the read moved to what comes next. The links add each pull request they name in the issue's own
-// repository as a candidate (linkOfIssue); the results add each merge commit a check is compared
-// with as a base, and each merged pull request basis as a candidate; a page adds each pull request
-// it lists and saves where the next page is; a pull request's read is that candidate's answer.
+// the read moved to what comes next. The links add each pull request they name as a candidate;
+// the results add each merge commit a check is compared with as a base, and each merged pull
+// request basis as a candidate; a page adds each pull request it lists and saves where the next
+// page is; a pull request's read is that candidate's answer.
 //
-// A links read answers every refresh the doors had asked when its turn began (RefreshesRead): one a
-// door asks while it runs stays asked. A links read a door's refresh asked of a read that ended
-// (unread or stopped) is new input only where it adds a candidate, or where the stage that stopped
-// was the links read itself, which it now answered. Then the read goes on at the stage it ended
-// at, its failures counted from zero. Otherwise the read stays as it ended: unchanged links reset
-// no failed stage and replay no completed read.
+// A links read a door's refresh asked of a read that ended (unread or stopped) is new input only
+// where it adds a candidate, or where the stage that stopped was the links read itself, which it
+// now answered. Then the read goes on at the stage it ended at, its failures counted from zero.
+// Otherwise the read stays as it ended: unchanged links reset no failed stage and replay no
+// completed read.
 func applyMergeAnswer(issue string, recorded ghrepo.Repository, progress record.MergeReadProgress, request mergeRequest, answer mergeReadAnswer) record.MergeReadProgress {
 	ended := progress.State != ""
 	if !ended {
@@ -616,12 +589,12 @@ func applyMergeAnswer(issue string, recorded ghrepo.Repository, progress record.
 	}
 	switch request.stage {
 	case mergeStageLinks:
-		progress.RefreshesRead = progress.Refreshes
+		progress.Refresh = false
 		progress.Links = nil
 		added := false
 		for _, link := range answer.links {
 			progress.Links = append(progress.Links, link.URL)
-			if repo, number, ok := pullRequestOfLink(link.URL); ok && linkOfIssue(repo, recorded, answer.resolved) && addMergeCandidate(&progress, repo, number, mergeSourceLink) {
+			if repo, number, ok := pullRequestOfLink(link.URL); ok && addMergeCandidate(&progress, repo, number, mergeSourceLink) {
 				added = true
 			}
 		}
@@ -706,12 +679,4 @@ func pullRequestOfLink(link string) (string, int, bool) {
 		return "", 0, false
 	}
 	return repository.String(), number, true
-}
-
-// linkOfIssue says whether a pull request a link on the issue names in repo may be the issue's
-// merge: repo is the repository the record holds the issue on, or the one Dispatch resolves the
-// issue to (resolved). Whoever can edit the issue's links can name any pull request, and one of
-// another repository names no merge of this issue, so the read never asks GitHub for it.
-func linkOfIssue(repo string, recorded ghrepo.Repository, resolved string) bool {
-	return strings.EqualFold(repo, recorded.String()) || resolved != "" && strings.EqualFold(repo, resolved)
 }

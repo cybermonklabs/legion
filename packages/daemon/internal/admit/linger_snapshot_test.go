@@ -125,9 +125,6 @@ func TestReconcileReentersAParkedChildSetBackToTodoInABootSummary(t *testing.T) 
 		Key: "LEGION-CHILD", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-ROOT", Project: testProject, Title: "child", Parent: &parent,
 		Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 1,
 	})
-	// The child closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so the listing's todo re-enters it as today.
-	confirmNeverMerged(t, pool, "LEGION-CHILD")
 
 	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
 		{Key: "LEGION-CHILD", ResolvedRepo: "acme/widgets", Title: "child", Status: "todo", Parent: &parent, Rank: "B", LastSeq: 5},

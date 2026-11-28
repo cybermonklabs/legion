@@ -41,9 +41,6 @@ func TestADaemonBuiltFactLeavesTheCopy(t *testing.T) {
 		parent := root
 		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: root, Tree: root, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
 		putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "child", Tree: root, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "C", LastDispatchSeq: 1})
-		// The child closed with no merge in its record: a person confirmed that its work never
-		// merged (D17), so its stranded todo re-enters it as today.
-		confirmNeverMerged(t, pool, child)
 		apply(t, pool, admission, "root-unlabeled", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root, Rank: "B"}, engine)
 		apply(t, pool, admission, "child-reopened-unlabeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "C"}, engine)
 		apply(t, pool, admission, "root-relabeled", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: root, Rank: "B", HandedOver: handed}, engine)

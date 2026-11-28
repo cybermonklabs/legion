@@ -242,9 +242,6 @@ func TestAClosedTreesRepositoryStaysHeardAcrossARepublicationAndARestart(t *test
 	if got, want := repositoryNames(heard), []string{"acme/widgets", "orbit/gadgets", "zeta/tools"}; !slices.Equal(got, want) {
 		t.Fatalf("a restart hears %v, want %v", got, want)
 	}
-	// The root closed with no merge in its record: a person's confirmation that its work never
-	// merged (D17) is what lets the todo take today's re-admission.
-	confirmOutboxNeverMerged(t, w.pool, "LEGION-300")
 	reopened := intake.DispatchIssue{Key: "LEGION-300", Seq: 2, Status: "todo", Title: "root", Rank: "A", HandedOver: true, ResolvedRepo: "orbit/gadgets"}
 	if reopened, err = w.prepareRepository(ctx, reopened); err != nil {
 		t.Fatal(err)

@@ -449,9 +449,6 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 			GitHubRepo: "acme/widgets", Project: testProject, Title: readmitted, Tree: readmitted,
 			Phase: phase.Done, Generation: 1, Status: record.DoneStatus, DispatchStatus: record.DoneStatus,
 			Rank: "W", HandedOver: true, LastDispatchSeq: 1})
-		// The closed root holds no merge in its record: a person confirmed that its work never
-		// merged (D17), so the todo below re-admits it as today.
-		confirmNeverMerged(t, pool, readmitted)
 
 		var engineNow, passNow time.Time
 		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,

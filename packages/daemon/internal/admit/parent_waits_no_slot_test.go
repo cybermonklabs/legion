@@ -575,9 +575,6 @@ func pnTestingPaths() []pnTestingPath {
 					Title: "member", Tree: root, Parent: record.ParentOf(root), Phase: phase.Testing, Generation: 1, Status: "in_progress",
 					DispatchStatus: "in_progress", Rank: "B", LastDispatchSeq: 1})
 				putWorkerClaim(t, pool, root, member, claim.RoleTester, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
-				// The root closed with no merge in its record: a person confirmed that its work never
-				// merged (D17), so its todo re-admits the tree as today.
-				confirmNeverMerged(t, pool, root)
 				return newAdmission(t, 1, nil)
 			},
 			move: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
@@ -1525,9 +1522,6 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		for _, role := range claim.Roles {
 			tokens = append(tokens, putWorkerClaim(t, pool, root, member, role, 1, supervise.StateSuspended, supervise.SuspendedByDaemon))
 		}
-		// The root closed with no merge in its record: a person confirmed that its work never merged
-		// (D17), so its todo re-admits the tree as today.
-		confirmNeverMerged(t, pool, root)
 
 		apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 			Status: "todo", Title: "root", Rank: "A", HandedOver: true}, pnLingering())

@@ -90,9 +90,6 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
 			Project: testProject, Title: root, Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "A",
 			HandedOver: true, LingerUntil: &until, LastDispatchSeq: 4})
-		// The root closed with no merge in its record: a person confirmed that its work never
-		// merged (D17), so its todo re-admits it as today.
-		confirmNeverMerged(t, pool, root)
 
 		apply(t, pool, newAdmission(t, 1, quiet), "todo", todo(root, "", "A", 5, handed), newEngine())
 

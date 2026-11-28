@@ -146,20 +146,17 @@ func putStoredWait(issue *record.Issue, stored record.StoredWait) error {
 
 // waitOf is the stored wait of view: each item the close waits for, with since when it stands.
 // An item that stood in old in the same state keeps its since. Every other item stands from now.
-// Entered is old's: only an entry into verifying sets it (enterVerifying, endChange). Closed is
-// set by the close alone, so it is said in one version.
+// Entered is old's: only an entry into verifying sets it (enterVerifying, endChange). Ended and
+// Closed are set by the change's end and the close alone, so each is said in one version.
 //
 // Withdrawn is old's, whole: a withdrawal stays in the wait until a version of close-wait.md
 // holding it is uploaded, which is what says it once (daemon's closeWaitPublish clears exactly
 // what its version showed). Every writer of the wait goes through this, the entry into verifying
 // and a lingering tree's merge among them, so a withdrawal made before a merge reaches the first
-// version written after it. A caller with one to add appends it to this. Ended is old's on the
-// same rule: the change's end sets it, and it stays until an uploaded version has said it
-// (record.Store.ClearWaitEnded), so a write of the wait between the end and that upload loses no
-// end of a change from the document.
+// version written after it. A caller with one to add appends it to this.
 func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWait, now time.Time) record.StoredWait {
 	wait := view.wait
-	stored := record.StoredWait{Entered: old.Entered, Ended: old.Ended, Withdrawn: slices.Clone(old.Withdrawn)}
+	stored := record.StoredWait{Entered: old.Entered, Withdrawn: slices.Clone(old.Withdrawn)}
 	blocks := map[string]dispatch.CheckBlock{}
 	if view.answer != nil {
 		for _, block := range view.answer.Results.Checks {

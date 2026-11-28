@@ -44,6 +44,22 @@ func rcApply(t *testing.T, pool *pgxpool.Pool, admission *Admission, id string, 
 	return result
 }
 
+// rcMove is Dispatch's move of key to status at seq under parent ("" for a root), carrying the
+// label: a person's event where byPerson is set, and the daemon's own write otherwise.
+func rcMove(key, parent, status string, seq int64, byPerson bool) intake.DispatchIssue {
+	fact := intake.DispatchIssue{Key: key, Seq: seq, Type: "issue.updated", Status: status, Title: key, Parent: parent, Rank: "B",
+		HandedOver: true, ResolvedRepo: "acme/widgets"}
+	if status == record.DoneStatus {
+		fact.Type = "issue.closed"
+	}
+	if byPerson {
+		fact.PersonActor = "a-person"
+	} else {
+		fact.DaemonActor = true
+	}
+	return fact
+}
+
 // rcMergeOf is the merge commit GitHub names for pull request number.
 func rcMergeOf(number int) string { return "merge-" + strconv.Itoa(number) }
 
@@ -178,12 +194,12 @@ func TestADefectAReadmissionLeftCarriedStartsTheNextChange(t *testing.T) {
 		t.Fatalf("the retro's return = %+v, want it taken", result.Refusal)
 	}
 
-	apply(t, pool, admission, "rc-backlog", mnwMove(rcRoot, "", "backlog", 2, "person"), admission.engine)
+	apply(t, pool, admission, "rc-backlog", rcMove(rcRoot, "", "backlog", 2, true), admission.engine)
 	if got := issue(t, pool, rcRoot); !got.Lingers() || got.Status != "backlog" {
 		t.Fatalf("%s after a person's backlog stands in %s with status %s, lingering %t; want it lingering in backlog", rcRoot, got.Phase, got.Status,
 			got.Lingers())
 	}
-	apply(t, pool, admission, "rc-todo", mnwMove(rcRoot, "", "todo", 3, "person"), admission.engine)
+	apply(t, pool, admission, "rc-todo", rcMove(rcRoot, "", "todo", 3, true), admission.engine)
 	if got := issue(t, pool, rcRoot); got.Generation != 2 || got.Phase != phase.Admitted || got.NextChange != 0 || got.NextChanges != 0 {
 		t.Fatalf("%s after a person's todo = generation %d in %s, change %d of %d; want the re-admission's run at generation 2 at admitted, no change",
 			rcRoot, got.Generation, got.Phase, got.NextChange, got.NextChanges)
@@ -240,12 +256,10 @@ func TestACheckReasonAReadmissionLeftCarriedIsNoReasonAgain(t *testing.T) {
 		t.Fatalf("the reasons of %s = %+v, want c-after's fail by result-1, carried by its change 2", rcChild, rows)
 	}
 
-	apply(t, pool, admission, "rc-root-backlog", mnwMove(rcRoot, "", "backlog", 2, "person"), admission.engine)
-	apply(t, pool, admission, "rc-root-done", mnwMove(rcRoot, "", record.DoneStatus, 3, "person"), admission.engine)
+	apply(t, pool, admission, "rc-root-backlog", rcMove(rcRoot, "", "backlog", 2, true), admission.engine)
+	apply(t, pool, admission, "rc-root-done", rcMove(rcRoot, "", record.DoneStatus, 3, true), admission.engine)
 	rcApply(t, pool, admission, "rc-linger", intake.LingerExpired{Issue: rcRoot, Generation: 1})
-	handover := mnwMove(rcChild, rcRoot, "todo", 10, "")
-	handover.DaemonActor = true
-	apply(t, pool, admission, "rc-child-handed-over", handover, admission.engine)
+	apply(t, pool, admission, "rc-child-handed-over", rcMove(rcChild, rcRoot, "todo", 10, false), admission.engine)
 	if got := issue(t, pool, rcChild); got.Tree != rcChild || got.Generation != 3 || got.NextChange != 0 {
 		t.Fatalf("%s after its hand-over = tree %s at generation %d with change %d open; want its own tree at generation 3 with no change",
 			rcChild, got.Tree, got.Generation, got.NextChange)

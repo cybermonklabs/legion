@@ -111,10 +111,9 @@ type doneByChecksIssueSpec struct {
 type doneByChecksRig struct {
 	*stepRecordsRig
 	standIn *doneByChecksGitHub
-	// controllerSession and controllerSecret are the project's registered controller's
-	// (registerController): its session holds the controller's role at the listener, and its
-	// registration secret mints the grant its requests take.
-	controllerSession, controllerSecret string
+	// controllerSession is the project's registered controller's session (registerController),
+	// which holds the controller's role at the listener.
+	controllerSession string
 }
 
 // newDoneByChecksRig is the rig of one issue, ACME-1, with doneByChecksVerification as its
@@ -201,8 +200,7 @@ func newDoneByChecksRigWith(t *testing.T, options doneByChecksOptions) *doneByCh
 // with it. The listener then names that session the controller role's live holder, as it does once
 // the controller claims the role, so a notice for the controller is published there (the outbox's
 // controllerNotice) rather than kept waiting. No controller process runs: what the daemon publishes
-// for it is read from the listener (controllerNotices), and its requests are the rig's own, with the
-// grant its registration secret mints (controllerRequest).
+// for it is read from the listener (controllerNotices).
 func (r *doneByChecksRig) registerController() {
 	t := r.t
 	t.Helper()
@@ -226,7 +224,6 @@ func (r *doneByChecksRig) registerController() {
 	if err := json.Unmarshal(body, &registered); err != nil {
 		t.Fatalf("decode the controller's registration %s: %v", body, err)
 	}
-	r.controllerSecret = registered.Secret
 	r.notices.holds(string(claim.ControllerToken(r.project)), r.controllerSession)
 	t.Logf("the project's controller is registered as %s (claim %s) and holds its role at the listener", r.controllerSession, registered.ClaimToken)
 }
@@ -1429,8 +1426,6 @@ type doneByChecksGitHub struct {
 	// as its caller, method and path.
 	served   int
 	unserved []string
-	// requests is each request the stand-in was sent, in order, as its caller, method and path.
-	requests []string
 }
 
 // doneByChecksRefWrite is one write of a branch's ref GitHub took: its method (POST makes the
@@ -1502,9 +1497,6 @@ func newDoneByChecksGitHub(t *testing.T) *doneByChecksGitHub {
 	routes.HandleFunc("POST /graphql", g.graphql)
 	routes.HandleFunc("/", g.noRoute)
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		g.requests = append(g.requests, standInCaller(r)+" "+r.Method+" "+r.URL.Path)
-		g.mu.Unlock()
 		answered := &doneByChecksStatus{ResponseWriter: w, status: http.StatusOK}
 		routes.ServeHTTP(answered, r)
 		t.Logf("github stand-in: %s %s %s answered %d", standInCaller(r), r.Method, r.URL.RequestURI(), answered.status)
@@ -1568,14 +1560,6 @@ func (g *doneByChecksGitHub) logRequests() {
 	}
 	g.t.Logf("github stand-in: %d requests, %d answered by a route, %d with no route, each answered 404: %s",
 		g.served+len(g.unserved), g.served, len(g.unserved), strings.Join(g.unserved, "; "))
-}
-
-// requestsSince is each request the stand-in was sent after the first from, as its caller, method
-// and path, and the count it holds now, which a later call names as its from.
-func (g *doneByChecksGitHub) requestsSince(from int) ([]string, int) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return slices.Clone(g.requests[from:]), len(g.requests)
 }
 
 // doneByChecksInstallation is the App's one installation, on acme, as GitHub answers it.

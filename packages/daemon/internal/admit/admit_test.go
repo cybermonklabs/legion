@@ -210,9 +210,6 @@ func TestApplyFactReadmitsLingeringRootAndIgnoresOwnStatusEcho(t *testing.T) {
 	until := fixedNow.Add(time.Hour)
 	lingering := record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1}
 	putIssue(t, pool, lingering)
-	// The root closed with no merge in its record, so its todo runs as today only on a person's
-	// confirmation that its work never merged (D17).
-	confirmNeverMerged(t, pool, lingering.Key)
 
 	fact := intake.DispatchIssue{Key: lingering.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: lingering.Title, Rank: lingering.Rank, HandedOver: handed}
 	apply(t, pool, admission, "readmit", fact, engine)
@@ -262,9 +259,6 @@ func TestReadmissionStartsTheTreesMidPhaseChildren(t *testing.T) {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
 	putIssue(t, pool, root)
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so its todo re-admits the tree as today.
-	confirmNeverMerged(t, pool, root.Key)
 	parentKey := root.Key
 	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "mid-phase child", Tree: root.Key, Parent: &parentKey,
 		Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
@@ -302,9 +296,6 @@ func TestAResumedMergerIsToldNoApprovedHeadAcrossGenerations(t *testing.T) {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
 	putIssue(t, pool, root)
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so its todo re-admits the tree as today.
-	confirmNeverMerged(t, pool, root.Key)
 	parentKey := root.Key
 	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "merging child", Tree: root.Key, Parent: &parentKey,
 		Phase: phase.Merging, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1})
@@ -353,9 +344,6 @@ func TestReadmissionSendsAnAwaitingChildWithNoREADYBackToMerging(t *testing.T) {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "root", Tree: "LEGION-208", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LastDispatchSeq: 1}
 	putIssue(t, pool, root)
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so its todo re-admits the tree as today.
-	confirmNeverMerged(t, pool, root.Key)
 	parentKey := root.Key
 	putIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "awaiting child", Tree: root.Key, Parent: &parentKey,
 		Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
@@ -726,13 +714,13 @@ func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *t
 	}
 }
 
-// A generation owns its facts. Generation 1 left an approved pull request that closed unmerged, an
-// implementer two review rounds in, a READY pending, and an approved design gate; the re-admitted
-// generation 2 starts with none of them. Its architect registers the spec again, the approval
-// opens the gate, and planning moves it to implementing, where the implementer's first handoff
-// waits for its own pull request instead of starting the tester on generation 1's. A child's READY
-// the old gate refused goes with the rest: its packet is cleared with the handoffs, so the new
-// gate's approval neither posts a READY with no packet nor moves the child on.
+// A generation owns its facts. Generation 1 left a merged, approved pull request, an implementer
+// two review rounds in, a READY pending, and an approved design gate; the re-admitted generation 2
+// starts with none of them. Its architect registers the spec again, the approval opens the gate,
+// and planning moves it to implementing, where the implementer's first handoff waits for its own
+// pull request instead of starting the tester on generation 1's. A child's READY the old gate
+// refused goes with the rest: its packet is cleared with the handoffs, so the new gate's approval
+// neither posts a READY with no packet nor moves the child on.
 func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testing.T) {
 	pool := migratedPool(t)
 	// Two slots, so the cap holds nothing back here: the root, whose planning starts when its new
@@ -753,10 +741,7 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 		if err := records.PutGate(ctx, tx, record.DesignGate{Issue: key, ArtifactID: artifact, LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
 			t.Fatalf("seed gate: %v", err)
 		}
-		// The pull request closed unmerged: a merged one is positive evidence of the root's merge, and
-		// a todo then starts the root's next change, which keeps the generation's facts (D17). This
-		// test is of today's re-admission, which a person's confirmation below lets the todo take.
-		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestClosed, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "merged", CheckedHead: "merged", Failing: []string{}}); err != nil {
+		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "merged", CheckedHead: "merged", Failing: []string{}}); err != nil {
 			t.Fatalf("seed pull request: %v", err)
 		}
 		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "gen1-handoff", HandoffRecord: "gen1-implement", HandoffVersion: 3, LastHandoff: "gen1-implement", Rounds: 2}); err != nil {
@@ -766,7 +751,6 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 			t.Fatalf("seed the child's merger: %v", err)
 		}
 	})
-	confirmNeverMerged(t, pool, key)
 
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "lingering", Rank: "A", HandedOver: handed}, engine)
 	readmitted := issue(t, pool, key)
@@ -874,9 +858,6 @@ func TestAReopenedChildReentersALiveTreeAndIsAnOrphanRootOfALingeringOne(t *test
 					}
 				}
 			})
-			// The child closed with no merge in its record: a person confirmed that its work never
-			// merged (D17), so its todo re-enters it, or admits it as an orphan, as today.
-			confirmNeverMerged(t, pool, child)
 
 			apply(t, pool, admission, "child-reopened", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B", HandedOver: tc.handedOver}, engine)
 			reopened := issue(t, pool, child)
@@ -978,9 +959,6 @@ func TestReconcileReadmitsALingeringRootSetBackToTodo(t *testing.T) {
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	until := fixedNow.Add(time.Hour)
 	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until})
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so the listing's todo re-admits it as today.
-	confirmNeverMerged(t, pool, "LEGION-LINGER")
 
 	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-LINGER", ResolvedRepo: "acme/widgets", Title: "lingering", Status: "todo", Rank: "A", HandedOver: handed}})
 	readmitted := issue(t, pool, "LEGION-LINGER")
@@ -1042,9 +1020,6 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 			t.Fatalf("seed the child's open pull request: %v", err)
 		}
 	})
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so the listing's todo re-admits the tree, its whole clear included, as today.
-	confirmNeverMerged(t, pool, "LEGION-LINGER")
 
 	reconcile(t, pool, admission, []dispatch.IssueSummary{{Key: "LEGION-LINGER", ResolvedRepo: "acme/widgets", Title: "lingering", Status: "todo", Rank: "A", HandedOver: handed}})
 

@@ -211,9 +211,7 @@ func assertPlanUnchanged(t *testing.T, pool *pgxpool.Pool, key string, generatio
 
 // liveTreeWithDoneChild records the tree of pathsRoot running, implementing on a slot of its own
 // with its design gate approved, and pathsChild done at generation 1 beneath it, and answers an
-// admission with a slot to spare, so a run the child opens takes a slot of its own at once. The
-// child closed with no merge in its record, and a person confirmed that its work never merged
-// (D17), so each path's todo re-enters it as today.
+// admission with a slot to spare, so a run the child opens takes a slot of its own at once.
 func liveTreeWithDoneChild(t *testing.T, pool *pgxpool.Pool) *Admission {
 	t.Helper()
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -222,7 +220,6 @@ func liveTreeWithDoneChild(t *testing.T, pool *pgxpool.Pool) *Admission {
 	parent := pathsRoot
 	putIssue(t, pool, record.Issue{Key: pathsChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: pathsRoot,
 		Project: testProject, Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", LastDispatchSeq: 2})
-	confirmNeverMerged(t, pool, pathsChild)
 	return admission
 }
 
@@ -276,11 +273,9 @@ func lingeringRoot(t *testing.T, pool *pgxpool.Pool) {
 
 // readmitAndOpen is a person's todo on the lingering or closed pathsRoot, which re-admits it as
 // generation 2 with its architect started (readmit, not carried), and then the opening of its
-// design gate, which starts its first step (the workflow's gateOpened). The root closed with no
-// merge in its record, so the person first confirms that its work never merged (D17).
+// design gate, which starts its first step (the workflow's gateOpened).
 func readmitAndOpen(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
-	confirmNeverMerged(t, pool, pathsRoot)
 	apply(t, pool, admission, "root-todo", intake.DispatchIssue{Key: pathsRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: handed}, admission.engine)
 	if got := issue(t, pool, pathsRoot); got.Generation != 2 || got.Phase != phase.Admitted || got.LingerUntil != nil {

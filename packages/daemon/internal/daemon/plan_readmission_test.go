@@ -29,17 +29,17 @@ import (
 // The architect of a tree gives the plan `implementer reviewer` for a child the daemon has not
 // recorded, which stores it at generation 0. The root walks its own plan to its merge, where it
 // waits in verifying, since the child in backlog holds its close (Dispatch lists it open). A person
-// closes the root, the linger closes its tree, and a person sets the root todo again. The root's
-// work merged, so that request starts the root's next change at generation 2 (D17 of the
-// done-by-checks plan, admission's continuation mode): no clear runs, and the gate stands. The
-// child's rows at generation 0 stand as given, and the root's plan stays at generation 1 as it ran.
-// The architect of a tree is the claim of its root's key at every generation
-// (record.ArchitectOfTree), so the root's architect, which the change's promotion resumes, still
-// owns both plans. The change's first phase waits on the open child (awaiting_children, D10), and
-// the architect's release of the child starts the child at implementing, the first step of the
-// plan given for it, carried to the child's generation from its start; no planner of the child
-// runs. The control: the same release of a child its owner gave no plan starts planning, the first
-// of the project's default steps, and runs no implementer.
+// closes the root, the linger closes its tree, and a person sets the root todo again, which
+// re-admits it at generation 2. The
+// re-admission clears the facts of the tree's recorded issues (record.ClearTreeGeneration) and no
+// plan row: the child's rows at generation 0 stand as given, and the root's plan stays at
+// generation 1. The architect of a tree is the claim of its root's key at every generation
+// (record.ArchitectOfTree), so the re-admitted root's architect still owns both plans. The root's
+// gate opening again starts the root at implementing on its own plan, carried to generation 2 from
+// its start, and the architect's release of the child starts the child at implementing, the first
+// step of the plan given for it, carried to the child's generation from its start; no planner of
+// the child runs. The control: the same release of a child its owner gave no plan starts planning,
+// the first of the project's default steps, and runs no implementer.
 func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -80,35 +80,33 @@ func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *test
 
 			launched := len(r.launchesOfRole(claim.RoleArchitect))
 			r.todoAgain()
-			// The root's work merged, so the person's todo starts one next change of it at generation 2
-			// (D17), whose first phase waits on the child open in backlog (D10): held at admitted, or in
-			// awaiting_children holding that start. D17's opposite of the re-admission: no clear runs,
-			// so the gate stays approved and needs no new opening, and the change is the one next
-			// change of the root.
-			var stands api.Issue
-			if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
-				stands = r.d.state().Issues[root]
-				return stands.Generation == 2 && (stands.Phase == phase.AwaitingChildren || stands.Phase == phase.Admitted)
-			}) {
-				t.Fatalf("%s stands in %q at generation %d, want its next change at generation 2 waiting on its open child", root, stands.Phase, stands.Generation)
-			}
-			r.wantOneNextChangeOnItsKeptGate(root, 2)
+			r.waitStands(root, 2, phase.Admitted)
 			if got := r.storedPlan(child, 0); !reflect.DeepEqual(got, given) {
-				t.Fatalf("the plan of %s at generation 0 after the next change of %s started = %+v, want %+v as given", child, root, got, given)
+				t.Fatalf("the plan of %s at generation 0 after the re-admission of %s = %+v, want %+v as given", child, root, got, given)
 			}
 			if got := r.storedPlan(root, 1); !reflect.DeepEqual(got, ran) {
-				t.Fatalf("the plan of %s at generation 1 after its next change started = %+v, want %+v as it ran", root, got, ran)
+				t.Fatalf("the plan of %s at generation 1 after its re-admission = %+v, want %+v as it ran", root, got, ran)
+			}
+			if got := r.storedPlan(root, 2); got != nil {
+				t.Fatalf("%s holds the plan %+v at generation 2 before its gate opens, want none: its first step writes it", root, got)
 			}
 			if _, recorded := r.d.state().Issues[child]; recorded {
 				t.Fatalf("%s is recorded before its release, want it unrecorded", child)
 			}
 
-			// The linger's close of the tree suspended the architect, and the change's promotion resumes
-			// it in its own session, whose pane comes up in that launch (reattach).
+			// The linger's close of the tree suspended the architect, and the re-admission resumes it
+			// in its own session, whose pane comes up in that launch (reattach).
 			testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the resume of "+string(architect), func() bool {
 				return len(r.launchesOfRole(claim.RoleArchitect)) > launched
 			})
 			r.reattach(r.worker(claim.RoleArchitect))
+			r.openGate(phase.Implementing)
+			again := r.storedPlan(root, 2)
+			if again == nil || again.Version.Source != record.PlanSourceOwner || again.Version.ArtifactID != ran.Version.ArtifactID ||
+				len(again.Tasks) != 1 || again.Tasks[0].State != record.TaskRunning || again.Tasks[0].Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) ||
+				!reflect.DeepEqual(again.Tasks[0].Counts, record.ReturnCounts{}) {
+				t.Fatalf("the plan of %s at generation 2 = %+v, want its owner's plan of generation 1 from its start, task a running at step 1", root, again)
+			}
 
 			status, body := r.d.request(http.MethodPost, "/legion/v1/waves/release",
 				api.WaveReleaseRequest{GrantID: r.worker(claim.RoleArchitect).grant(), Issues: []string{child}}, false)
@@ -141,38 +139,6 @@ func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *test
 				t.Fatalf("the plan of %s at generation 0 after its release = %+v, want %+v as given", child, got, given)
 			}
 		})
-	}
-}
-
-// wantOneNextChangeOnItsKeptGate fails the test unless issue stands on one next change, at
-// generation, with every row of its design gate still approved: a request on merged work starts
-// that change with the gate kept and runs no clear of the tree (D17 of the done-by-checks plan),
-// where a re-admission empties the gate and asks for a new opening.
-func (r *ownerStepsRig) wantOneNextChangeOnItsKeptGate(issue string, generation uint64) {
-	r.t.Helper()
-	ctx := context.Background()
-	var stored *record.Issue
-	var gates map[record.DesignStep]record.DesignGate
-	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		if stored, err = r.records.Issue(ctx, tx, issue); err != nil {
-			return err
-		}
-		gates, err = r.records.GatesOf(ctx, tx, issue)
-		return err
-	}); err != nil {
-		r.t.Fatalf("read %s and its gate: %v", issue, err)
-	}
-	if stored == nil || stored.NextChange != generation || stored.NextChanges != 1 {
-		r.t.Fatalf("%s = %+v, want one next change open at generation %d", issue, stored, generation)
-	}
-	if len(gates) == 0 {
-		r.t.Fatalf("%s holds no gate row after its next change started, want its approved gate kept", issue)
-	}
-	for step, gate := range gates {
-		if gate.ApprovedVersion == nil {
-			r.t.Fatalf("%s's %s gate = %+v after its next change started, want it kept approved: no clear runs", issue, step, gate)
-		}
 	}
 }
 

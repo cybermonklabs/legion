@@ -1307,12 +1307,7 @@ func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
 			return err
 		}
 		// Generation 1 was caught up through 10 at some boot.
-		if err := records.SetCaughtUp(ctx, tx, root.Key, 10); err != nil {
-			return err
-		}
-		// The root closed with no merge in its record: a person's confirmation that its work never
-		// merged (D17) is what lets the todo below take today's re-admission.
-		return records.ConfirmNeverMerged(ctx, tx, root.Key)
+		return records.SetCaughtUp(ctx, tx, root.Key, 10)
 	})
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "reopen", intake.DispatchIssue{Key: "CAPTURE-100", ResolvedRepo: "acme/widgets",
 		Seq: readmittedAt, Type: "issue.updated", Status: "todo", Title: "root", Rank: "A", HandedOver: true}, w.handlers...); err != nil {

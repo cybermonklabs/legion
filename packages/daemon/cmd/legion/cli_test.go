@@ -74,7 +74,7 @@ var legionCommands = [][]string{
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},
 	{"intake"}, {"intake", "replay"}, {"intake", "discard"},
-	{"merge-history-report"}, {"reopened-report"},
+	{"merge-history-report"},
 }
 
 // legionHidden is every command only a program runs — a pod's, a pane's, git's or an image

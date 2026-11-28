@@ -330,9 +330,6 @@ func TestAHandedOverChildStaysItsOwnTreeWhenItsOldRootIsReadmitted(t *testing.T)
 			putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 				Project: testProject, Title: child, Tree: old, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done",
 				DispatchStatus: "done", Rank: "B", TakenBack: true, LastDispatchSeq: 1})
-			// The child closed with no merge in its record: a person confirmed that its work never
-			// merged (D17), so its todo admits it as an orphan as today.
-			confirmNeverMerged(t, pool, child)
 			applyMirrored(t, pool, admission, "person-reopens", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets",
 				Seq: 2, Type: "issue.updated", Status: "todo", Title: child, Parent: old, Ancestry: []string{old}, Rank: "B",
 				HandedOver: handed, Blockers: []string{blocker}}, admission.engine)
@@ -352,9 +349,6 @@ func TestAHandedOverChildStaysItsOwnTreeWhenItsOldRootIsReadmitted(t *testing.T)
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 
-			// The old root closed with no merge in its record: a person confirmed that its work never
-			// merged (D17), so its todo re-admits its tree as today.
-			confirmNeverMerged(t, pool, old)
 			applyMirrored(t, pool, admission, "old-readmitted", intake.DispatchIssue{Key: old, ResolvedRepo: "acme/widgets", Seq: 3,
 				Type: "issue.updated", Status: "todo", Title: old, Rank: "A", HandedOver: handed}, admission.engine)
 			if got := issue(t, pool, child); !reflect.DeepEqual(got, left) {

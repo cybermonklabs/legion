@@ -28,14 +28,13 @@ import (
 // An open issue's claims are stopped by nothing but the exceptions
 // TestOpenIssueSuspensionInvariantKeepsTheExceptions enumerates, and an issue whose pod is still
 // working takes none of them. This drives the durable workflow and outbox through phase changes,
-// an awaiting-person hand-back and answer, a child's re-entry and a merged child's next change,
-// boot/tick reconciliation, and a pass of the idle tick with release on: no suspend, no
-// issue-suspend, no step stop and no idle release may appear at any layer. The release (INFRA-945)
-// and the owner's stop of a task are the two exceptions that act on an issue still in the
-// workflow, so they are the ones this case has to keep out, and each is told from every other stop
-// by its own kind and op: an `issue_release` row and `supervise` rows whose op is `release`, and a
-// `supervise` row whose op is `step_stop`, against the `issue_suspend` row and the `suspend` op of
-// a stop that ends a claim's phase.
+// an awaiting-person hand-back and answer, two child re-entries, boot/tick reconciliation, and a
+// pass of the idle tick with release on: no suspend, no issue-suspend, no step stop and no idle
+// release may appear at any layer. The release (INFRA-945) and the owner's stop of a task are the
+// two exceptions that act on an issue still in the workflow, so they are the ones this case has to
+// keep out, and each is told from every other stop by its own kind and op: an `issue_release` row
+// and `supervise` rows whose op is `release`, and a `supervise` row whose op is `step_stop`,
+// against the `issue_suspend` row and the `suspend` op of a stop that ends a claim's phase.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	t.Parallel()
 	const (
@@ -212,16 +211,6 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	working(implementer, "check-task", "")
 	check := openCheck(issues[4], "merged")
 	putProductionCheck(t, pool, records, check)
-	// The check is of the child's merge, which the record keeps whole (its final head and base): the
-	// todo on the merged child starts its next change at once, which closes the open check not_run
-	// and stops no claim (D6 and D17 of the done-by-checks plan).
-	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := records.PutMergeSnapshot(ctx, tx, checking, record.Merge{Number: check.Number, Head: "head-42", SHA: check.MergeSHA,
-			Base: "main", Repo: check.Repo, MergedAt: time.Now().Add(-time.Hour)})
-		return err
-	}); err != nil {
-		t.Fatalf("record the merge of %s: %v", checking, err)
-	}
 
 	apply("forward", intake.HandoffComplete{Issue: forward, Role: claim.RolePlanner, Claim: "forward-planner", Generation: 1, Summary: "planned", HandoffRecord: "forward-plan", HandoffVersion: 1})
 	apply("backward", intake.BackwardMove{Issue: backward, Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "rework"})

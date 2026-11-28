@@ -91,13 +91,13 @@ func (s *MergeReadSlot) close(ctx context.Context) {
 // MergeReadProgress, as JSON), over the progress of the merge_read outbox row id, only while lease
 // still holds the row, and answers whether it did. It writes that one field, so who asked and what
 // they asked, which a door may write over while the read runs, stay as the door left them. A door
-// may also ask links refreshes meanwhile, which it counts in the stored progress (refreshes): the
-// stored count stands over the one progress carries, so a refresh asked during the turn stays
-// asked, while the count of refreshes the turn's links read answered (refreshesRead) is the turn's.
-func CheckpointMergeRead(ctx context.Context, tx pgx.Tx, id int64, lease string, progress json.RawMessage) (bool, error) {
+// may also ask one links refresh meanwhile (the progress's refresh): a refresh the stored row asks
+// for stays asked unless consumedRefresh says this turn made it.
+func CheckpointMergeRead(ctx context.Context, tx pgx.Tx, id int64, lease string, progress json.RawMessage, consumedRefresh bool) (bool, error) {
 	tag, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{progress}',
-			($3::jsonb - 'refreshes') || coalesce(jsonb_strip_nulls(jsonb_build_object('refreshes', payload->'progress'->'refreshes')), '{}'::jsonb))
-		where id = $1 and lease_token = $2 and kind = 'merge_read'`, id, lease, string(progress))
+			($3::jsonb - 'refresh') || case when not $4 and coalesce((payload->'progress'->>'refresh')::boolean, false)
+				then '{"refresh": true}'::jsonb else '{}'::jsonb end)
+		where id = $1 and lease_token = $2 and kind = 'merge_read'`, id, lease, string(progress), consumedRefresh)
 	if err != nil {
 		return false, fmt.Errorf("save the progress of merge read row %d: %w", id, err)
 	}

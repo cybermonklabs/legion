@@ -128,12 +128,9 @@ func closeFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, 
 	apply(t, pool, admission, "root-closed", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 }
 
-// reopenFinishingTree sets the closed root todo again, a person's re-admission of its tree. The
-// root closed with no merge in its record, so the person first confirms that its work never
-// merged (D17), and the todo re-admits the tree as today.
+// reopenFinishingTree sets the closed root todo again, a person's re-admission of its tree.
 func reopenFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 	t.Helper()
-	confirmNeverMerged(t, pool, finishedRoot)
 	apply(t, pool, admission, "root-reopened", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: "todo", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 }
 

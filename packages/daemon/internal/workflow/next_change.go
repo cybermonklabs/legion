@@ -30,12 +30,8 @@ type ChangePlace struct {
 	Parent *string
 	// WaitsSince is when the issue's close waits from (Issue.CloseWaitSince): nil carries the
 	// moment the merge set, which every reason after a merge does, and a time is the moment a
-	// request applied (D1). A request with no WaitsSince waits from the moment it starts the change.
+	// request applied (D1).
 	WaitsSince *time.Time
-	// Request is the request for new work that starts the change (D17), nil for a change a reason
-	// after a merge starts. StartNextChange writes its row (record.DefectKindRequest), the one
-	// writer of that kind, and the change carries it as its reason.
-	Request *Request
 }
 
 // ChangeInPlace is the placement of a change that starts where the issue already stands: its own
@@ -79,19 +75,6 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if check != nil && check.Open() {
 		if err := e.markCheckClosed(ctx, tx, check, record.CheckNotRun); err != nil {
 			return err
-		}
-	}
-	// A request is a reason of its own kind, written here alone and carried by the change it
-	// starts, so the checks that passed before cannot end the change before its owner takes a turn.
-	if place.Request != nil {
-		request := record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindRequest, Text: place.Request.Text,
-			Role: place.Request.Requester, ReportedAt: now}
-		if request.ID, err = e.store.PutDefect(ctx, tx, request); err != nil {
-			return err
-		}
-		reasons = append(slices.Clone(reasons), request)
-		if place.WaitsSince == nil {
-			place.WaitsSince = &now
 		}
 	}
 	ids := make([]int64, 0, len(reasons))
@@ -157,24 +140,13 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // nextChangeReason is the next-change notice: the change's generation, each reason it carries and
-// where the work stands now, and, where a request is among the reasons, the instruction of D17 to
-// the owner (requestInstruction). Each sentence holds at most 25 words and no semicolon.
+// where the work stands now. Each sentence holds at most 25 words and no semicolon.
 func nextChangeReason(issue record.Issue, reasons []record.Defect) string {
 	text := fmt.Sprintf("The next change of %s started as generation %d, on its own branch with its approved design kept.", issue.Key, issue.Generation)
 	if named := reasonLines(reasons); len(named) > 0 {
-		text += " It carries these reasons:" + bulleted(named) + "\nIt waits in the admission line for a slot."
-	} else {
-		text += " It waits in the admission line for a slot."
+		return text + " It carries these reasons:" + bulleted(named) + "\nIt waits in the admission line for a slot."
 	}
-	if carriesRequest(reasons) {
-		text += "\n" + requestInstruction
-	}
-	return text
-}
-
-// carriesRequest says whether reasons hold a request for new work (record.DefectKindRequest).
-func carriesRequest(reasons []record.Defect) bool {
-	return slices.ContainsFunc(reasons, func(reason record.Defect) bool { return reason.Kind == record.DefectKindRequest })
+	return text + " It waits in the admission line for a slot."
 }
 
 // reasonLines is one line for each reason of a change: its id, its kind and what it says.

@@ -294,9 +294,6 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 	t.Run("rerun_child", func(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		rig.put(rig.member(doorChild, doorRoot, phase.Done, "done", "V"), rig.member(doorGrandchild, doorChild, phase.Done, "done", "W"))
-		// The child closed with no merge in its record: an architect's rerun runs it as today only
-		// on a person's confirmation that its work never merged (D17).
-		confirmOutboxNeverMerged(t, rig.pool, doorChild)
 		rig.written("rerun", childAt("todo", 2))
 		rig.wantChildsArchitectToldItsIssues([]string{doorChild, doorGrandchild})
 	})

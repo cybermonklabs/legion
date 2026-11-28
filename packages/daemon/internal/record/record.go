@@ -395,11 +395,6 @@ type Issue struct {
 	// its own, and every write site that records the issue holds a copy read before its own fact,
 	// which would otherwise write the entry away or write an older one back.
 	ClaimLeft *ClaimLeft
-	// MergeReadWaits says that a request for new work on the issue waits for its merge read: a
-	// merge_read outbox row of the issue stands (Store.PendingMergeRead). It is read beside the
-	// record and never written by PutIssue. Such a root is no queued root (QueuedRoot), since its
-	// record stands at done and nothing of its tree may open before the read places it.
-	MergeReadWaits bool
 }
 
 // Merge is one merge of an issue's work as the record keeps it: the pull request's number, the
@@ -3078,26 +3073,6 @@ type Store interface {
 	// whether one stood, so a confirmation allows one rerun alone. PutMergeSnapshot and every
 	// clear of a generation take it as well, and PutIssue keeps it.
 	ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error)
-	// PendingMergeRead is issue's standing merge_read row, locked until the transaction ends, nil
-	// for none: the request that waits for its merge read.
-	PendingMergeRead(ctx context.Context, tx pgx.Tx, issue string) (*PendingMergeRead, error)
-	// QueueMergeRead queues read as its issue's one merge_read row where none stands, and answers
-	// whether it queued one.
-	QueueMergeRead(ctx context.Context, tx pgx.Tx, read MergeRead, now time.Time) (bool, error)
-	// RequestMergeRead writes a later request's asker and text over issue's standing merge_read row,
-	// and answers whether one stood. The caller judges that the request is a person's.
-	RequestMergeRead(ctx context.Context, tx pgx.Tx, issue string, requester claim.Role, request string) (bool, error)
-	// RefreshMergeRead asks issue's standing merge_read row for one read of the issue's links, due at
-	// now, and answers whether one stood.
-	RefreshMergeRead(ctx context.Context, tx pgx.Tx, issue string, now time.Time) (bool, error)
-	// CancelMergeRead deletes issue's standing merge_read row, and answers whether one stood.
-	CancelMergeRead(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
-	// UnreadMergeReads is each standing merge_read row of project whose read ended unread or
-	// stopped, by issue.
-	UnreadMergeReads(ctx context.Context, tx pgx.Tx, project string) ([]PendingMergeRead, error)
-	// MarkMergeUnreadTold records at as the moment the controller was last told of merge_read row
-	// id's empty read (MergeRead.ToldAt).
-	MarkMergeUnreadTold(ctx context.Context, tx pgx.Tx, id int64, at time.Time) error
 	// PutDefect records a reason of a next change of the issue (Defect) and answers its id.
 	PutDefect(ctx context.Context, tx pgx.Tx, defect Defect) (int64, error)
 	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
@@ -3117,11 +3092,6 @@ type Store interface {
 	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
 	// this read and this write.
 	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
-	// ClearWaitEnded takes the end of a change out of issue's stored wait (StoredWait.Ended) where
-	// it is still shown, the end an uploaded version of close-wait.md said: the wait holds it until
-	// then, so a write of the wait between the end and that upload loses it from no version. The
-	// caller holds the lock the workflow writes the wait under, as for ClearWaitWithdrawals.
-	ClearWaitEnded(ctx context.Context, tx pgx.Tx, issue string, shown *WaitChangeEnd) error
 	// WithdrawDefect ends the open reported defect or request id of issue with reason, at at. It
 	// answers false where issue holds no such row: none of that id, a check's or a production
 	// check's reason, one already withdrawn, or one a merged change carried. The reason is

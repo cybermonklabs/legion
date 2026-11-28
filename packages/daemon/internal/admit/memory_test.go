@@ -266,9 +266,6 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	// The root signs off, lingers, and a person hands it back to Legion: a new generation of the
 	// same tree, recorded from the copy read before the draw.
 	linger(t, pool, root)
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so the todo re-admits it as today.
-	confirmNeverMerged(t, pool, root)
 	apply(t, pool, admission, "root-readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2,
 		Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: handed}, engine)
 	if readmitted := issue(t, pool, root); readmitted.Generation != 2 {
@@ -417,9 +414,6 @@ func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t 
 	}
 	// And no later pass draws for the root either: a re-admission opens the same row again.
 	linger(t, pool, root)
-	// The root closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so the todo re-admits it as today.
-	confirmNeverMerged(t, pool, root)
 	apply(t, pool, admission, "root-readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2,
 		Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: handed}, engine)
 	if readmitted := issue(t, pool, root); readmitted.Generation != 2 {
@@ -581,9 +575,7 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 			if got := answers(t, pool, child); len(got) != 0 {
 				t.Fatalf("the handed-over child holds %v, want none: the tree it left was never opened", got)
 			}
-			// The person hands the old root back to Legion, so both roots wait for a slot. It closed
-			// with no merge in its record, and the person confirmed that its work never merged (D17).
-			confirmNeverMerged(t, pool, root)
+			// The person hands the old root back to Legion, so both roots wait for a slot.
 			apply(t, pool, handing, "root-handed-back", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 4,
 				Type: "issue.updated", Status: "todo", Title: root, Rank: "B", HandedOver: handed}, engine)
 
@@ -616,9 +608,7 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 // handOverChild records child in root's tree, signs root off, and hands child to Legion as a tree
 // of its own at at, the hour of the hand-over, which is where every test of a hand-over above
 // starts. The child is recorded holding no answer of its own, as every child of a tree is, since
-// a tree's answers are its root's; what the hand-over settles it at is what each caller reads. The
-// child closed with no merge in its record, and a person confirmed that its work never merged
-// (D17), so its todo admits it as an orphan as today.
+// a tree's answers are its root's; what the hand-over settles it at is what each caller reads.
 func handOverChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler,
 	root, child, rank string, at time.Time) {
 	t.Helper()
@@ -626,7 +616,6 @@ func handOverChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, engin
 	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: root, Project: testProject, Title: "child", Parent: &parent, Phase: phase.Done, Generation: 1,
 		Status: "done", Rank: rank, LastDispatchSeq: 2})
-	confirmNeverMerged(t, pool, child)
 	if got := answers(t, pool, child); len(got) != 0 {
 		t.Fatalf("a child of the tree holds %v, want none: a tree's answers are its root's", got)
 	}

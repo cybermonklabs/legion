@@ -1202,13 +1202,6 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // Legion opens and reopens nothing for the issue, and the controller routes the fail as it routes
 // any defect. No earlier release decodes the kind, so block A of the done-by-checks migration
 // deletes its unsent rows.
-//
-// A merge-unread notice names a closed issue whose request for new work waits because the
-// record holds no proof of its merge and the merge read found no candidate that answers
-// (MergeUnreadNotice, workflow's tellMergeUnread). It names the issue, its generation and what the
-// read waits on. A person ends the wait by a link or by a confirmation, and the controller asks
-// one. It is written once when the read ends so, and once each UTC day after while the request
-// stands (MergeRead.ToldAt). The way back of migration 20261128022326 deletes its unsent rows.
 const (
 	TriageNotice            NoticeKind = "triage"
 	SlotFreeNotice          NoticeKind = "slot-free"
@@ -1224,7 +1217,6 @@ const (
 	ProjectResumedNotice    NoticeKind = "project-resumed"
 	IntakeGaveUpNotice      NoticeKind = "intake-gave-up"
 	ClosedCheckFailedNotice NoticeKind = "closed-check-failed"
-	MergeUnreadNotice       NoticeKind = "merge-unread"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -2157,16 +2149,13 @@ func (CloseWaitPublish) OutboxKind() OutboxKind { return OutboxKindCloseWaitPubl
 // claim.RoleController or claim.RoleArchitect), and Request the request's text. A later request by
 // a person writes its asker and its text over the row's; the apply of the read's fact reads both
 // from the row as it stands then. Progress is the read's saved stage, written by the executor
-// alone. ToldAt is when the project's controller was last told that the read found nothing
-// (MergeUnreadNotice), zero for never: written by the workflow alone, it keeps that notice to once
-// a UTC day. One row stands for an issue at a time.
+// alone. One row stands for an issue at a time.
 type MergeRead struct {
 	Issue      string            `json:"issue"`
 	Generation uint64            `json:"generation"`
 	Requester  claim.Role        `json:"requester"`
 	Request    string            `json:"request"`
 	Progress   MergeReadProgress `json:"progress"`
-	ToldAt     time.Time         `json:"toldAt,omitzero"`
 }
 
 func (MergeRead) OutboxKind() OutboxKind { return OutboxKindMergeRead }
@@ -2203,10 +2192,8 @@ const MergeReadMaxFailures = 3
 // reserved, retries and redirects included, and Failures the failed attempts of the current stage,
 // with Cause the last failure's text and RetryAt the stage's next attempt after it. Reserved is an
 // attempt reserved whose answer is not saved yet, and Uncertain counts such attempts a crash left.
-// MetadataReads counts the pull-request reads of missing branch metadata of a known merge.
-// Refreshes counts the doors' asks for one links read each, which only RefreshMergeRead raises, and
-// RefreshesRead how many of them the executor's links reads answered: a refresh asked while a links
-// read runs is one more than that read answers, so it stays asked (RefreshAsked). No token or
+// MetadataReads counts the pull-request reads of missing branch metadata of a known merge. Refresh
+// is a door's ask for one links read, which the executor clears once it ran it. No token or
 // credential is kept here.
 type MergeReadProgress struct {
 	Stage         string               `json:"stage,omitempty"`
@@ -2222,12 +2209,8 @@ type MergeReadProgress struct {
 	Reserved      bool                 `json:"reserved,omitempty"`
 	Uncertain     int                  `json:"uncertain,omitempty"`
 	MetadataReads int                  `json:"metadataReads,omitempty"`
-	Refreshes     int                  `json:"refreshes,omitempty"`
-	RefreshesRead int                  `json:"refreshesRead,omitempty"`
+	Refresh       bool                 `json:"refresh,omitempty"`
 }
-
-// RefreshAsked says whether a door asked a links read that no links read has answered yet.
-func (p MergeReadProgress) RefreshAsked() bool { return p.Refreshes > p.RefreshesRead }
 
 // The sources of a merge read's base (MergeReadBase.Source): Dispatch's results read, or the
 // issue's production check.
@@ -4093,7 +4076,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
 		ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice,
-		ClosedCheckFailedNotice, MergeUnreadNotice:
+		ClosedCheckFailedNotice:
 		return true
 	default:
 		return false

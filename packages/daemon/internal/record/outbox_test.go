@@ -99,7 +99,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 				Candidates: []MergeReadCandidate{{Repo: "acme/widgets", Number: 41, Source: MergeReadSourceLink,
 					Answer: &MergeReadAnswer{Merged: true, Names: true, Head: "h1", SHA: "c0de", Base: "main", MergedAt: now}}},
 				Attempts: 4, Failures: 1, Cause: "502 Bad Gateway", RetryAt: now.Add(time.Minute), Reserved: true, Uncertain: 1,
-				MetadataReads: 1, Refreshes: 2, RefreshesRead: 1}},
+				MetadataReads: 1, Refresh: true}},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		// A release's workspace check, and a left pod's close's, which names the roles it closes and

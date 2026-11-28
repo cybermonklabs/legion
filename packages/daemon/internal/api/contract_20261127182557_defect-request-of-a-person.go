@@ -12,9 +12,7 @@ package api
 // own status write also says who asked for it, which the record writes as the request's role:
 // `set_status` with the operator's grant (`legion issue status`) asks as a person, with a
 // controller session's grant as the controller, and `rerun_child` and `release_children` as an
-// architect. A write through the operator's grant confirms no never-merged work, since under
-// `controller: operator` the controller's agent holds the operator token too: only a person's
-// `backlog` in Dispatch does. No request or answer of those routes changes.
+// architect. No request or answer of those routes changes.
 const defectRequestOfAPersonContract = 20261127182557
 
 func init() {

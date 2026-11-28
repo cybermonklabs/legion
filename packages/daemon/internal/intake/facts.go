@@ -1291,19 +1291,6 @@ type MergeRead struct {
 
 func (f MergeRead) namedIssue() (string, bool) { return f.Issue, true }
 
-// MergeUnread is the outbox's read of an older issue's merge (record.MergeRead) ending with no
-// candidate that answers it, or stopping after its third failed attempt, carried back once as a
-// fact: never decoded from an event. Issue and Generation are the pending row's, and Cause is what
-// the read waits on. The workflow tells the project's controller (merge-unread) while the request
-// still stands, since a person ends that wait.
-type MergeUnread struct {
-	Issue      string
-	Generation uint64
-	Cause      string
-}
-
-func (f MergeUnread) namedIssue() (string, bool) { return f.Issue, true }
-
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
 // pull request Number of Issue at the row's last attempt, or, with Unread, no read of it

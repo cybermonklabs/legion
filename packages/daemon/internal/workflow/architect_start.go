@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -94,11 +93,6 @@ type ArchitectStart struct {
 	// Decided is what a person decided on the tree while nobody in it could hear them, as
 	// KeptDecisionsTask writes it, empty where there is nothing.
 	Decided string
-	// Requested says the root's open next change carries a request for new work (D17): its
-	// generation is a next change (record.OnNextChange) and a request row stands carried by it.
-	// The derivation reads it before any other rule, so the owner is told the request's
-	// instruction (requestInstruction) whatever else holds of the root.
-	Requested bool
 }
 
 // ArchitectStartOf reads from the record what the first task of root's architect is derived from
@@ -151,9 +145,6 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	if start.Resting, err = restingRootsTask(ctx, tx, store, root.Key); err != nil {
 		return ArchitectStart{}, err
 	}
-	if start.Requested, err = changeCarriesRequest(ctx, tx, store, root); err != nil {
-		return ArchitectStart{}, err
-	}
 	if root.Phase == phase.Admitted {
 		if start.MembersRun, err = store.TreeMembersRun(ctx, tx, root.Tree); err != nil {
 			return ArchitectStart{}, err
@@ -190,13 +181,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 //
 // The derivation serves two roots: one standing at phase.Admitted, which is where every tree the
 // workflow opens stands, and one a hand-over carried in, past phase.Admitted in the run that
-// hand-over carried it into. It gives every other root nothing. Which of its shapes a root it
+// hand-over carried it into. It gives every other root nothing. Which of five shapes a root it
 // serves gets is read here rather than by each caller. The first rule that holds wins:
 //
-//  0. The root's open next change carries a request for new work (Requested, D17). Whatever
-//     phase it stands in and whatever its gate, it is told that its work merged, that a request
-//     started this change, and what the request asks of it (requestInstruction). It names none of
-//     the change's reasons: the first start of the change's phase names each.
 //  1. A hand-over carried the root in (Carried) and it is past phase.Admitted. It came into that
 //     run with its phase records, its pull request and, where the row says so, its design gate
 //     (GateCarried), so it is told to take up the phase it stands in and that it decomposes
@@ -298,15 +285,6 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // label of its own shape alone.
 func ArchitectStartTask(start ArchitectStart) string {
 	lead := architectLead(start)
-	if start.Requested {
-		var task strings.Builder
-		if lead != "" {
-			task.WriteString(lead)
-			task.WriteString("\n\n")
-		}
-		writeRequested(&task, start)
-		return task.String()
-	}
 	if start.Root.Phase != phase.Admitted && !start.Carried {
 		return lead
 	}
@@ -342,30 +320,6 @@ func architectLead(start ArchitectStart) string {
 		return start.Decided
 	}
 	return start.Decided + "\n\n" + start.Resting
-}
-
-// writeRequested writes the task of a root whose open next change a request for new work started
-// (D17, "The instruction"): the change runs with the root's approved design, and the request's
-// instruction follows (requestInstruction). The change's reasons are not listed here: the first
-// start of its phase names each of them, the request among them.
-func writeRequested(task *strings.Builder, start ArchitectStart) {
-	fmt.Fprintf(task, "%s is yours, and its next change %d runs with its approved design kept. %s",
-		start.Root.Key, start.Root.Generation, requestInstruction)
-}
-
-// changeCarriesRequest says whether issue's open next change (record.OnNextChange) carries a request
-// for new work that still holds: a request row its generation carries that no withdrawal ended.
-func changeCarriesRequest(ctx context.Context, tx pgx.Tx, store record.Store, issue record.Issue) (bool, error) {
-	if !record.OnNextChange(issue) {
-		return false, nil
-	}
-	open, err := store.OpenDefects(ctx, tx, issue.Key)
-	if err != nil {
-		return false, err
-	}
-	return slices.ContainsFunc(open, func(defect record.Defect) bool {
-		return defect.Kind == record.DefectKindRequest && defect.CarriedBy == issue.Generation
-	}), nil
 }
 
 // writeFreshTree writes the task of a tree nobody has architected: the whole first act, since

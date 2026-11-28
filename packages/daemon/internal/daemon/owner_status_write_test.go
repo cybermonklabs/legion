@@ -308,14 +308,6 @@ func (r *ownerMoveRig) daemonWritesAfter(seq int64) []string {
 // over the move is named as the write, before the record that took its event back.
 func (r *ownerMoveRig) holds(status string, move int64) {
 	r.t.Helper()
-	r.holdsRecorded(status, status, move)
-}
-
-// holdsRecorded is holds where the record reads recorded at phase done, not the owner's status:
-// an owner's move out of done on a closed child whose record holds no merge keeps the record's
-// status done, since only a person's backlog confirms that the work never merged (D17).
-func (r *ownerMoveRig) holdsRecorded(status, recorded string, move int64) {
-	r.t.Helper()
 	if writes := r.daemonWritesAfter(move); len(writes) != 0 {
 		r.t.Fatalf("the daemon wrote %v on the child after the owner's move, want nothing: Dispatch ends at %s, and the owner's moves end at %s",
 			writes, r.dispatch.last().status, status)
@@ -324,8 +316,8 @@ func (r *ownerMoveRig) holdsRecorded(status, recorded string, move int64) {
 		r.t.Fatalf("Dispatch ends with the child at %s, want the owner's %s", shown, status)
 	}
 	child := storedIssueOf(r.t, context.Background(), r.pool, r.records, ownerMoveChild)
-	if child.Phase != phase.Done || child.Status != recorded {
-		r.t.Fatalf("the child's record = phase %s, status %s, want %s at phase done", child.Phase, child.Status, recorded)
+	if child.Phase != phase.Done || child.Status != status {
+		r.t.Fatalf("the child's record = phase %s, status %s, want the owner's %s at phase done", child.Phase, child.Status, status)
 	}
 	for _, write := range r.statusWritesLeft() {
 		if write.Status != status {
@@ -438,10 +430,7 @@ func TestTheOwningArchitectsDoneStandsOverAStatusWriteTheDaemonQueuedOrHasInFlig
 			var move int64
 			r.inFlight(false, &move, record.DoneStatus, "backlog")
 			r.run()
-			// The owner's done closed the child, and its record holds no merge: the owner's backlog
-			// after it keeps the record closed at done (D17: a non-person's backlog cannot bypass the
-			// next closed-history decision), while Dispatch shows the owner's backlog.
-			r.holdsRecorded("backlog", record.DoneStatus, move)
+			r.holds("backlog", move)
 			r.yielded(move)
 		}},
 		{"row 7: a worker's backlog, then the worker's done", func(r *ownerMoveRig) {

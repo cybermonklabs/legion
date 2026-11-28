@@ -377,11 +377,6 @@ func TestALabelAddedToAReopenedChildOfALingeringTreeAdmitsItAsAnOrphan(t *testin
 					}
 				}
 			})
-			if tc.lingering {
-				// The child closed with no merge in its record: a person confirmed that its work
-				// never merged (D17), so its todo admits it as an orphan as today.
-				confirmNeverMerged(t, pool, child)
-			}
 
 			if tc.lingering {
 				apply(t, pool, admission, "reopened-unlabeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B"}, engine)
@@ -421,9 +416,6 @@ func TestReadmissionReentersAChildStrandedTodoWithoutTheLabel(t *testing.T) {
 	parent := root
 	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering", Tree: root, Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, HandedOver: true})
 	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "child", Tree: root, Parent: &parent, Phase: phase.Done, Generation: 2, Status: "done", Rank: "B", LastDispatchSeq: 1})
-	// The root and the child closed with no merge in their records: a person confirmed that their
-	// work never merged (D17), so their todos re-admit the tree and re-enter the child as today.
-	confirmNeverMerged(t, pool, root, child)
 
 	apply(t, pool, admission, "child-reopened-unlabeled", intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: root, Rank: "B"}, engine)
 	if got := issue(t, pool, child); got.Tree != root || got.Phase != phase.Done || got.Status != "todo" {
@@ -456,9 +448,6 @@ func TestPromotingAWaitingRootReentersAChildStrandedWhileItsLabelWasOff(t *testi
 	parent := root
 	putIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: root, Tree: root, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
 	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "child", Tree: root, Parent: &parent, Phase: phase.Done, Generation: 1, Status: "done", Rank: "C", LastDispatchSeq: 1})
-	// The child closed with no merge in its record: a person confirmed that its work never merged
-	// (D17), so its stranded todo re-enters it as today.
-	confirmNeverMerged(t, pool, child)
 
 	// The root's label is taken off: it drops from the waiting line, and its tree is no longer live.
 	apply(t, pool, admission, "root-unlabeled", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: root, Rank: "B"}, engine)

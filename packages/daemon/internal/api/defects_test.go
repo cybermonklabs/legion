@@ -519,7 +519,7 @@ func TestWithdrawDefectAnswersEachCase(t *testing.T) {
 			t.Fatalf("the close of %s waits on the requests %v after the withdrawal, want none", statusRoot, requests)
 		}
 		wait := storedWaitOn(t, h, statusRoot)
-		if len(wait.Withdrawn) != 1 || wait.Withdrawn[0].ID != id || wait.Withdrawn[0].Kind != record.DefectKindRequest || wait.Withdrawn[0].Reason != reason {
+		if len(wait.Withdrawn) != 1 || wait.Withdrawn[0].ID != id || wait.Withdrawn[0].Reason != reason {
 			t.Fatalf("the stored wait's withdrawals = %+v, want request %s with its reason", wait.Withdrawn, request)
 		}
 	})

@@ -276,9 +276,6 @@ func TestAP0IssueThatComesBackTakesItsSlotAtAFullCap(t *testing.T) {
 		putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 			Title: key, Tree: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "C", Priority: record.P0, LingerUntil: &until,
 			LastDispatchSeq: 1, HandedOver: true})
-		// The root closed with no merge in its record: a person confirmed that its work never
-		// merged (D17), so the todo re-admits it as today.
-		confirmNeverMerged(t, pool, key)
 
 		apply(t, pool, admission, "back-to-todo", priorityEvent(key, "todo", "C", 2, record.P0), priorityEngine())
 

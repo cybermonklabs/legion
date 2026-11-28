@@ -644,13 +644,12 @@ func TestALeftTreeStopWaitsForTheMachineOfAStoredClaimInItsTree(t *testing.T) {
 // to reach it. The linger's suspend of it can be superseded by a newer start, as a production
 // check's look start is, the one start a lingering tree runs, and finish without acting; or that
 // look's start, already past its fences when the move commits, can bring the claim up only after
-// the move has read the claims. A person, who confirmed that the closed child's work never merged
-// (D17), sets it back to todo while its look runs, and admission carries it into a tree of its own
-// (an orphan), held there on an unfinished blocker, so its new tree starts nothing that would stop
-// the role. When the old root's linger expires, the old tree's cleanup waits on the role still
-// running in it. The move itself queues the old tree's stop of every role of the issue, so the role
-// is stopped, its session kept, and the old tree's cleanup confirms while the child still waits on
-// its blocker.
+// the move has read the claims. A person sets the merged child back to todo while its look runs,
+// and admission carries it into a tree of its own (an orphan), held there on an unfinished blocker,
+// so its new tree starts nothing that would stop the role. When the old root's linger expires, the
+// old tree's cleanup waits on the role still running in it. The move itself queues the old tree's
+// stop of every role of the issue, so the role is stopped, its session kept, and the old tree's
+// cleanup confirms while the child still waits on its blocker.
 func TestAMoveStopsTheCarriedRoleNoStopRowOfItsOldTreeStillReaches(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -717,10 +716,7 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 		}
 	}
 
-	// A person sets the closed child back to todo: an orphan, a tree of its own held on its blocker.
-	// Its record holds no merge, so the todo takes that rerun only on a person's confirmation that
-	// its work never merged (D17).
-	confirmOutboxNeverMerged(t, pool, childKey)
+	// A person sets the merged child back to todo: an orphan, a tree of its own held on its blocker.
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "person-sets-the-child-todo", intake.DispatchIssue{Key: childKey, ResolvedRepo: "acme/widgets",
 		Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: rootKey, Rank: "B", HandedOver: true, Blockers: []string{blockerKey}},
 		engine, admission); err != nil {

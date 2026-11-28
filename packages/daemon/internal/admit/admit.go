@@ -486,15 +486,6 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		return returned, nil, err
 	}
 
-	if read, ok := fact.(intake.MergeRead); ok {
-		// The merge read's answer places a root, an orphan and a child of a tree that does not run
-		// (applyMergeRead), after the workflow saved the merge and placed a child of a live tree.
-		if err := a.applyMergeRead(ctx, tx, read); err != nil {
-			return nil, nil, err
-		}
-		_, returned, err := a.promoteWritten(ctx, tx)
-		return returned, nil, err
-	}
 	observation, ok := fact.(intake.DispatchIssue)
 	if !ok {
 		promote := a.promoteWritten
@@ -1483,7 +1474,7 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		Status: status, Shown: summary.Status, Ancestry: summary.Ancestry, HandedOver: handed, Seq: seq,
 	}
 	if summary.Status == "todo" && handed && stored.Readmittable() {
-		return a.readmitRequest(ctx, tx, *stored, o, workflow.RequestOf(summary))
+		return a.readmit(ctx, tx, *stored, o, false)
 	}
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
 	// daemon itself wrote and Dispatch had not shown yet. Its status is taken only while the
@@ -1507,9 +1498,6 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 			}
 			return nil
 		}
-	}
-	if err := a.strandedRequest(ctx, tx, *stored, summary.Status, workflow.RequestOf(summary)); err != nil {
-		return err
 	}
 	return a.recordObservation(ctx, tx, *stored, o)
 }
@@ -1572,17 +1560,12 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 				store.OnCommit(ctx, func() {
 					a.log.Info("admission hand-over", "issue", stored.Key, "tree", handover.Tree, "linger", handover.Generation)
 				})
-				// A handed child at done has no run to carry, and its accepted todo is a request for
-				// new work (D17), which the record decides (readmitRequest).
-				if stored.Phase == phase.Done {
-					return a.readmitRequest(ctx, tx, stored, o, workflow.RequestOf(observation))
-				}
 				return a.readmit(ctx, tx, stored, o, stored.CarriesRun())
 			}
 		}
 	}
 	if observation.Status == "todo" && handed && stored.Readmittable() {
-		return a.readmitRequest(ctx, tx, stored, o, workflow.RequestOf(observation))
+		return a.readmit(ctx, tx, stored, o, false)
 	}
 	orphan, err := a.orphan(ctx, tx, stored, observation.Status, handed)
 	if err != nil {
@@ -1593,13 +1576,7 @@ func (a *Admission) applyObservation(ctx context.Context, tx pgx.Tx, stored reco
 		// Legion: a child stranded by a root that closed before its hand-over existed carries its
 		// phase, gate and pull request too (record.Issue.CarriesRun).
 		store.OnCommit(ctx, func() { a.log.Info("admission orphan", "issue", stored.Key, "parent", observation.Parent) })
-		if stored.Phase == phase.Done {
-			return a.readmitRequest(ctx, tx, stored, o, workflow.RequestOf(observation))
-		}
 		return a.readmit(ctx, tx, stored, o, stored.CarriesRun())
-	}
-	if err := a.strandedRequest(ctx, tx, stored, observation.Status, workflow.RequestOf(observation)); err != nil {
-		return err
 	}
 	return a.recordObservation(ctx, tx, stored, o)
 }
@@ -1667,15 +1644,9 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	store.OnCommit(ctx, func() {
 		a.log.Info("admission hand-over", "issue", fact.Issue, "tree", fact.Tree, "linger", fact.Generation, "via", "outbox")
 	})
-	o := observed{
+	return a.readmit(ctx, tx, *stored, observed{
 		Title: stored.Title, Parent: deref(stored.Parent), Rank: stored.Rank, Priority: stored.Priority, Resolved: stored.Resolved, Ancestry: stored.Ancestry, Seq: stored.LastDispatchSeq,
-	}
-	// A handed child at done has no run to carry: its accepted todo is a request for new work,
-	// which its record shows (D17).
-	if stored.Phase == phase.Done {
-		return a.readmitRequest(ctx, tx, *stored, o, workflow.RecordedRequest(*stored))
-	}
-	return a.readmit(ctx, tx, *stored, o, stored.CarriesRun())
+	}, stored.CarriesRun())
 }
 
 // orphan says whether an observation makes a recorded child an orphan, admitted as a root of its
@@ -2948,15 +2919,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					return admitted, released, err
 				}
 				// A fresh admission hands the architect its tree: what it hands back to a person
-				// afterwards is what it may wait on (workflow's ReconcileAwaiting). A next change
-				// of the root hands nothing out: its architect's run stands, and the start below
-				// resumes it (D17).
-				if !record.OnNextChange(issue) {
-					if err := a.store.StartHandout(ctx, tx, issue.Key); err != nil {
-						return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
-					}
+				// afterwards is what it may wait on (workflow's ReconcileAwaiting).
+				if err := a.store.StartHandout(ctx, tx, issue.Key); err != nil {
+					return admitted, released, fmt.Errorf("record admitted issue %s: %w", issue.Key, err)
 				}
-				if err := a.enqueue(ctx, tx, issue.Key, record.IssueBranchOf(issue), now); err != nil {
+				if err := a.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}, now); err != nil {
 					return admitted, released, err
 				}
 				// The architect's start hands it work it was not on: the derivation's first task
@@ -3823,7 +3790,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	for _, standing := range members {
 		member := standing.issue
 		if member.Key != root.Key {
-			if err := a.enqueue(ctx, tx, member.Key, record.IssueBranchOf(member), now); err != nil {
+			if err := a.enqueue(ctx, tx, member.Key, record.IssueBranch{Generation: member.Generation}, now); err != nil {
 				return err
 			}
 		}
@@ -4635,11 +4602,6 @@ func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 // fields: no live event reopened it, so there is nothing newer to apply, only its own next
 // generation to start.
 //
-// A stranded child's accepted todo is a request for new work (D17): it is routed by the record's
-// decision (workflow's RouteRequest) with the request its record shows (workflow.RecordedRequest).
-// Its work merged: one next change of it starts in place, with no re-entry. Its request waits for
-// its merge read: it stays as it stands. Otherwise it is re-entered as today.
-//
 // What a child waits on is deliberately not read here either: this re-enters a child whose
 // previous run finished (phase.Done), and Engine.ReenterChild's own entry withholds the start of
 // one that waits on unfinished work.
@@ -4649,20 +4611,6 @@ func (a *Admission) reenterStrandedChildren(ctx context.Context, tx pgx.Tx, cand
 			continue
 		}
 		if child.Status != "todo" || child.Phase != phase.Done {
-			continue
-		}
-		request := workflow.RecordedRequest(child)
-		route, err := a.engine.RouteRequest(ctx, tx, child, request)
-		if err != nil {
-			return fmt.Errorf("route the request of stranded child %s: %w", child.Key, err)
-		}
-		switch route {
-		case workflow.RequestWaits:
-			continue
-		case workflow.RequestStartsChange:
-			if err := a.engine.StartRequestedChange(ctx, tx, child.Key, request, workflow.ChangeInPlace(child)); err != nil {
-				return fmt.Errorf("start the next change of stranded child %s: %w", child.Key, err)
-			}
 			continue
 		}
 		if err := a.engine.ReenterChild(ctx, tx, child, workflow.RecordedFact(child)); err != nil {
