@@ -259,6 +259,32 @@ func TestProbeAnswersTheScriptedVerdictOrTheScriptedFailure(t *testing.T) {
 	}
 }
 
+// A probe scripted for one claim answers a probe of that claim alone, before the shared script. So
+// a test that ends one claim's process hands its answer to no other claim's probe.
+func TestAProbeScriptedForOneClaimAnswersThatClaimAlone(t *testing.T) {
+	ctx := context.Background()
+	fake := NewRuntime()
+	ended, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-tester"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	other, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-reviewer"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	fake.ScriptProbeOf(ended.Claim, ProbeResult{Kind: runtime.Gone})
+	fake.ScriptProbe(ProbeResult{Kind: runtime.Uncertain})
+	if got, err := fake.Probe(ctx, other); err != nil || got.Kind != runtime.Uncertain {
+		t.Fatalf("the probe of %s = %+v, %v; want the shared script's %s, never the answer scripted for %s", other.Claim, got, err, runtime.Uncertain, ended.Claim)
+	}
+	if got, err := fake.Probe(ctx, ended); err != nil || got.Kind != runtime.Gone {
+		t.Fatalf("the probe of %s = %+v, %v; want %s, its own script's answer", ended.Claim, got, err, runtime.Gone)
+	}
+	if got, err := fake.Probe(ctx, ended); err != nil || got.Kind != runtime.Alive {
+		t.Fatalf("the probe of %s once both scripts are spent = %+v, %v; want %s", ended.Claim, got, err, runtime.Alive)
+	}
+}
+
 func TestAScriptedFailureReachesTheMethodItWasSetOn(t *testing.T) {
 	ctx := context.Background()
 	fake := NewRuntime()

@@ -164,14 +164,14 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	located := refs.NewReader(ctx, tx, record.Writer, "artifact", artifactID, s.serverURL).Mentions(markdown)
+	located := refs.NewReader(ctx, tx, record.Writer, "artifact", artifactID, s.origins).Mentions(markdown)
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
 	moved, indexBlocks, stated, won, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
 		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
 		Markdown: markdown, Blocks: blocks, Located: located, Pointers: blockPointers(artifactID, markdown, blocks, tree),
-		ServerURL: s.serverURL,
+		Origins: s.origins,
 	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
@@ -179,7 +179,7 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	if err := write(ctx, tx, indexBlocks); err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL), won)
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.origins), won)
 	return changes, stated, err
 }
 
@@ -218,7 +218,7 @@ func (s *Service) indexUnrenderedVersion(ctx context.Context, tx pgx.Tx, artifac
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
-	reader := refs.NewReader(ctx, tx, writer, "artifact", artifactID, s.serverURL)
+	reader := refs.NewReader(ctx, tx, writer, "artifact", artifactID, s.origins)
 	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), nil, nil, false)
 }
 
@@ -273,7 +273,7 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 // of it (indexedVersionOf). It plans against what the index holds: as the transaction's own
 // queued indexing of the document leaves it, when there is one, else as read in tx; and it
 // records what this one leaves for a later indexing of the same document. Each block's excerpt
-// is cut in the plan, around the dashboard URLs of the deployment at version.ServerURL.
+// is cut in the plan, around the dashboard URLs of the server's origins, version.Origins.
 func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, WriteStep, graphstore.Uncaused, bool, error) {
 	ledger := queueFor(ctx, tx)
 	index, held := refs.BlockIndex{}, false
@@ -531,7 +531,7 @@ func planAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, qu
 // which each of the ask's edges shows, cut against r's deployment (refs.EditedTargets).
 func planEditedAskReferences(ctx context.Context, tx pgx.Tx, r *refs.Reader, askID, previous, question string) (model.ReferenceChanges, WriteStep, error) {
 	found := text.Refs(r.Mentions(question))
-	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.ServerURL(), found))
+	return planReplaceCounted(ctx, tx, "ask", askID, found, nil, refs.EditedTargets(previous, question, r.Origins(), found))
 }
 
 // ExcerptsOwedChannel is the Postgres notification channel every artifact mention left owed an
@@ -541,7 +541,7 @@ const ExcerptsOwedChannel = "dispatch_excerpts_owed"
 
 // referenceExcerptBatch is how many documents one reconciliation pass reads, and
 // referenceExcerptRetryCeiling the longest a document that keeps failing waits between attempts
-// (refs.DeferExcerpts).
+// (refs.DeferExcerptsAt).
 const (
 	referenceExcerptBatch        = 20
 	referenceExcerptRetryCeiling = 6 * time.Hour
@@ -550,7 +550,7 @@ const (
 // excerptSchedule is the reconciliation's pace. minGap is the least time from one pass's start to
 // the next one's, whatever woke it (duty.WokenLoop.MinGap), and also how long a pass waits when
 // another process holds the lease; retryBase is how long a document whose read or record failed
-// waits before its first retry, doubling with each failure after (refs.DeferExcerpts), and how
+// waits before its first retry, doubling with each failure after (refs.DeferExcerptsAt), and how
 // long a pass whose own read failed waits before the next. A test runs the loop faster.
 type excerptSchedule struct {
 	minGap    time.Duration
@@ -569,7 +569,7 @@ var referenceExcerptSchedule = excerptSchedule{minGap: 2 * time.Second, retryBas
 const referenceExcerptLease = "reference-excerpts"
 
 // RunReferenceExcerptReconciliation stores the excerpts of every document some of whose mentions
-// are owed one (refs.DriftedExcerpts): every mention indexed before migration 0092, each one
+// are owed one (refs.DriftedExcerptsAt): every mention indexed before migration 0092, each one
 // rebuild-refs inserts, and each a version write could not cut. It is a woken loop
 // (duty.RunWoken) under the reference-excerpts lease: one pass at start, then a pass when wake is
 // signalled - in the server, the pglisten.Hub wake on ExcerptsOwedChannel, which every mention
@@ -581,7 +581,7 @@ const referenceExcerptLease = "reference-excerpts"
 // statement. A nil wake leaves the loop with its start and its own due times.
 //
 // A document the pass cannot read or record is deferred, one minute after its first failure and
-// doubling to six hours (refs.DeferExcerpts), so it neither holds the loop at two seconds nor
+// doubling to six hours (refs.DeferExcerptsAt), so it neither holds the loop at two seconds nor
 // fills every batch ahead of the documents that sort after it; a document holding an element
 // this build does not know (ErrDocNewerContent), which a newer build wrote while two builds serve
 // one database, is deferred the same way, its mentions left owed for a build that reads it. The
@@ -631,7 +631,12 @@ func (s *Service) markStaleExcerpts(ctx context.Context) bool {
 // reconcileExcerptPass is one pass of the reconciliation's batch, and returns when the loop next
 // needs to run with no wake: now while a full batch leaves documents it can still record, else the
 // earliest due time of a document it deferred, else never. A pass whose own read failed asks again
-// after schedule.retryBase.
+// after schedule.retryBase. Where Deps.Clock is nil, as in production, the due time is the earliest
+// retry's own moment, as Postgres stamped it (refs.NextExcerptRetry), as on main. Where a test set a
+// clock, the retry was stamped and is judged on that clock's reading (excerptMoment), so the due
+// time is the wait to it from that reading (refs.NextExcerptRetryAt), added to this process's wall
+// clock, the one the loop arms its timer on (duty.RunWoken) until duty takes a clock (INFRA-6392):
+// a fake however far from the wall clock moves the timer by no more than the wait.
 func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSchedule) time.Time {
 	documents, full, err := s.reconcileReferenceExcerpts(ctx, schedule.retryBase)
 	if documents > 0 {
@@ -646,7 +651,16 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 	case full:
 		return time.Now()
 	}
-	next, err := refs.NextExcerptRetry(ctx, s.store.Pool)
+	var next time.Time
+	if judged := s.excerptMoment(); judged == nil {
+		next, err = refs.NextExcerptRetry(ctx, s.store.Pool)
+	} else {
+		var wait time.Duration
+		var owed bool
+		if wait, owed, err = refs.NextExcerptRetryAt(ctx, s.store.Pool, judged); err == nil && owed {
+			next = time.Now().Add(wait)
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return time.Time{}
@@ -655,6 +669,16 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 		return time.Now().Add(schedule.retryBase)
 	}
 	return next
+}
+
+// excerptMoment is the moment the reconciliation writes and judges a document's retry at, handed
+// to the statements in place of the database's now() (refs.DeferExcerptsAt, DriftedExcerptsAt,
+// NextExcerptRetryAt), read off excerptClock (store.MomentOn): nil where Deps.Clock is nil, as it
+// is in production, so Postgres's clock alone stamps and judges every retry and no process's
+// clock, however far it is off the database's, moves one; a test's fake's reading, to the
+// microsecond the database keeps, where it runs on one.
+func (s *Service) excerptMoment() *time.Time {
+	return store.MomentOn(s.excerptClock)
 }
 
 // ReconcileReferenceExcerpts runs one batch of the reconciliation at the server's pace
@@ -671,19 +695,24 @@ func (s *Service) ReconcileReferenceExcerpts(ctx context.Context) (documents int
 // (ErrDocNewerContent) is one a newer build wrote while two builds serve one database: its
 // mentions stay owed, for a build that reads it, and it is deferred so the batches after it are
 // read. A document it cannot read or record for any other reason is logged and deferred too
-// (refs.DeferExcerpts, retryBase after its first failure), its mentions left owed, so one document
-// never holds back the rest of its batch nor the batches after it; a recorded document's backoff
-// row is deleted. documents counts the ones recorded, and full reports a full batch at least one
-// of whose documents left the drift a batch reads - recorded or deferred - so the next batch reads
-// documents this one did not.
+// (refs.DeferExcerptsAt, retryBase after its first failure), its mentions left owed, so one
+// document never holds back the rest of its batch nor the batches after it; a recorded document's
+// backoff row is deleted. documents counts the ones recorded, and full reports a full batch at
+// least one of whose documents left the drift a batch reads - recorded or deferred - so the next
+// batch reads documents this one did not.
+//
+// What this pass leaves out as not yet due (refs.DriftedExcerptsAt) is judged at the pass's start,
+// and each deferral (refs.DeferExcerptsAt) counts its wait from the moment it is made, both on the
+// database's clock, or on a test's fake (excerptMoment): a document deferred after a pass that ran
+// longer than its backoff still waits the whole of it, rather than falling due at once.
 func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time.Duration) (documents int, full bool, err error) {
-	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch)
+	drifted, err := refs.DriftedExcerptsAt(ctx, s.store.Pool, referenceExcerptBatch, s.excerptMoment())
 	if err != nil {
 		return 0, false, err
 	}
 	moved := 0
 	deferDocument := func(document refs.ExcerptDrift) {
-		if err := refs.DeferExcerpts(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling); err != nil {
+		if err := refs.DeferExcerptsAt(ctx, s.store.Pool, document.FromID, document.Version, retryBase, referenceExcerptRetryCeiling, s.excerptMoment()); err != nil {
 			if ctx.Err() == nil {
 				slog.Error("dispatch: reference excerpt reconciliation could not defer a document; the next batch reads it again",
 					"artifact", document.FromID, "error", err)
@@ -725,8 +754,8 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 				deferDocument(document)
 				continue
 			}
-			reader := refs.NewReader(ctx, s.store.Pool, record.Writer, "artifact", document.FromID, s.serverURL)
-			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown), s.serverURL)
+			reader := refs.NewReader(ctx, s.store.Pool, record.Writer, "artifact", document.FromID, s.origins)
+			excerpts = refs.MentionExcerpts(markdown, blocks, reader.Mentions(markdown), s.origins)
 		}
 		// The reconciliation appends no event, so what it moved is named nowhere: until it stores
 		// an excerpt, the route answers a mention owed one with the document's name.

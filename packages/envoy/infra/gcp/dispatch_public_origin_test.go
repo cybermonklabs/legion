@@ -107,10 +107,12 @@ func TestDispatchPublicOriginTakesOutsideSignIn(t *testing.T) {
 }
 
 // Each publicOrigin the component cannot serve is refused naming it before anything registers:
-// one weborigin.Parse refuses, one that is not https, one beside the tailnet inputs, whose front
-// door's name is then Dispatch's origin, one whose host Google refuses in a redirect URI while
-// browser sign-in is on, and a second origin on its own host. What no Dispatch without a front
-// door can make good is refused beside it too, as in the sandbox.
+// one weborigin.Parse refuses, one that is not https, one beside the tailnet inputs and
+// iapAudience, whose front door would serve Dispatch where no request carries IAP's signed header,
+// one whose host Google refuses in a redirect URI while browser sign-in is on, and a second origin
+// on its own host. What no Dispatch without a front door can make good is refused beside it too,
+// as in the sandbox. Beside the tailnet inputs alone publicOrigin is the canonical address
+// (TestDispatchRendersServedAndFormerOrigins).
 func TestDispatchRefusesAPublicOriginItCannotServe(t *testing.T) {
 	with := func(edit func(*gcp.DispatchArgs)) func() *gcp.DispatchArgs {
 		return func() *gcp.DispatchArgs {
@@ -130,12 +132,12 @@ func TestDispatchRefusesAPublicOriginItCannotServe(t *testing.T) {
 			"publicOrigin: must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"},
 		{"http", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "http://dispatch.example.com" }),
 			"publicOrigin must be an https origin: Dispatch's session cookie, browser sign-in and IAP need TLS at it, as they do at the front door's name"},
-		{"beside the tailnet inputs", "publicOrigin", func() *gcp.DispatchArgs {
-			args := dispatchArgs()
-			args.PublicOrigin = dispatchPublicOrigin
+		{"beside the tailnet inputs and iapAudience", "publicOrigin", func() *gcp.DispatchArgs {
+			args := dispatchIAPArgs()
+			setDispatchTailnetGroup(args)
 			return args
-		}, "publicOrigin is refused beside the tailnet inputs: the front door serves Dispatch at <hostname>.<tailnetDnsName>, which is then its origin, " +
-			"and a second origin beside that one is outsideOrigin; unset publicOrigin, or unset the tailnet inputs"},
+		}, "publicOrigin is refused beside the tailnet inputs and iapAudience: behind the IAP door a browser reaches Dispatch through IAP alone, at publicOrigin, " +
+			"and the front door would serve it at <hostname>.<tailnetDnsName> too, where no request carries IAP's signed header; unset publicOrigin and iapAudience, or unset the tailnet inputs"},
 		{"an IP address with browser sign-in", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://10.0.0.1" }),
 			"publicOrigin's host 10.0.0.1 is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name"},
 		{"a single label with browser sign-in", "publicOrigin", with(func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://dispatch" }),

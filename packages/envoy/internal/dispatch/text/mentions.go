@@ -52,9 +52,9 @@ type Prefix struct {
 // markdown parse here, so a candidate in code is read, as a reference in code is, and is marked
 // as written there (Located.InCode) by the one reading of the body's code contexts extractSpans
 // makes.
-func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
+func Mentions(body string, origins Origins, r Resolver) ([]Located, error) {
 	spans := referencePattern.FindAllStringIndex(body, -1)
-	located, code := extractSpans(body, serverURL, spans, true)
+	located, code := extractSpans(body, origins, spans, true)
 	if r == nil {
 		return located, nil
 	}

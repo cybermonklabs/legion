@@ -210,10 +210,11 @@ type Querier interface {
 // AwaitLockWaiters waits until n backends wait on a lock behind holder's backend and answers their
 // pids. It waits through testwait.Until, so its one bound is the test binary's deadline less
 // testwait's margin, and a wait that gives up prints the waiters it read last. A backend counts
-// when it waits on a lock (wait_event_type 'Lock') that holder's backend holds, or that a backend
-// already counted holds or is ahead of it in the queue for: a second waiter for one row waits on
-// the first waiter's tuple lock, and pg_blocking_pids names only that first waiter, never the
-// holder. Waiters behind other holders, in other tests on the same server, never count.
+// when pg_blocking_pids names holder's backend for it, or a backend already counted: a second
+// waiter for one row waits on the first waiter's tuple lock, and pg_blocking_pids names only that
+// first waiter, never the holder. pg_blocking_pids reads the lock manager's queue, as pg_locks
+// does (lockwaittest.Waiting, whose package comment says why not from the wait event). Waiters
+// behind other holders, in other tests on the same server, never count.
 func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	pid := holder.Conn().PgConn().PID()
@@ -237,9 +238,9 @@ func LockWaitersBehind(t testing.TB, q Querier, pid uint32) []int32 {
 	t.Helper()
 	var waiting []int32
 	if err := q.QueryRow(context.Background(), `with recursive waiting(pid) as (
-			select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+			select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
 			union
-			select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
+			select a.pid from pg_stat_activity a, waiting w where w.pid = any(pg_blocking_pids(a.pid))
 		)
 		select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
 		t.Fatalf("read the backends waiting behind %d: %v", pid, err)

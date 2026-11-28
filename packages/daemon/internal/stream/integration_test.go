@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -328,6 +329,17 @@ func (d *daemonEnd) expect(t *testing.T, want ...stream.Event) {
 	}
 }
 
+// expectFinalTotals reads the last totals the real shim sends as its harness exits. The fake OMP
+// answers no call, so the totals hold the final read alone. FinalTotals holds a slice, so it is
+// compared by value, not with expect's !=.
+func (d *daemonEnd) expectFinalTotals(t *testing.T) {
+	t.Helper()
+	want := stream.FinalTotals{Claim: integrationClaim, Generation: integrationGeneration, Totals: shimwire.Totals{Read: 1, Counts: []shimwire.ModelCount{}}}
+	if got := d.next(t); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the shim's event as its harness exited = %#v, want its final totals %#v", got, want)
+	}
+}
+
 // close ends the listener — the daemon going away — and returns every event it had not yet handed
 // out, through the channel's close.
 func (d *daemonEnd) close(t *testing.T) []stream.Event {
@@ -496,7 +508,7 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 	const thumbprint = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
 	agentSecrets := filepath.Join(work, "agent-secrets")
 	keygen := "#!/bin/sh\n[ \"$1\" = keygen ] || exit 2\nprintf 'key\\n' >\"$3/key.pem\"\necho " + thumbprint + "\n"
-	if err := os.WriteFile(agentSecrets, []byte(keygen), 0o700); err != nil {
+	if err := execfile.Write(agentSecrets, []byte(keygen), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	tokenFile := filepath.Join(work, "token")
@@ -691,6 +703,7 @@ func bridge(t *testing.T, legion, addr string) {
 	if err := conn.Shutdown(ctx); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
+	second.expectFinalTotals(t)
 	second.expect(t, stream.Closed{Claim: integrationClaim})
 	testwait.Receive(t, "the shim's exit after the daemon's shutdown", shim.exited)
 	var exit *exec.ExitError
@@ -750,6 +763,7 @@ func TestTheRealShimRedialsAHelloTheDaemonCouldNotResolve(t *testing.T) {
 	if err := conn.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
+	d.expectFinalTotals(t)
 	d.expect(t, stream.Closed{Claim: integrationClaim})
 	testwait.Receive(t, "the shim's exit after the daemon's shutdown", shim.exited)
 

@@ -23,17 +23,20 @@ type stepsPrinted struct {
 }
 
 // stepLine is one run as `dispatch steps` prints it: `<task> <step> <kind> <role> <type|->
-// attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>`.
+// attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running> set
+// <set model|-> answered <answers>`. The model is the one that answered last, and the answers
+// are `running`, `unknown`, `none`, or each model that answered as `<model>=<calls>(<share>%)`.
 type stepLine struct {
 	text                                 string
 	task, kind, role, typ                string
 	step, attempt                        int
 	agent, model, started, ended, result string
+	setModel, answered                   string
 }
 
 // parseSteps reads the output of `dispatch steps --issue key` for an issue in no experiment's
-// group: the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs, with no
-// `Experiment <experiment>: variant <variant>.` line between them, which it would read as no run.
+// group. That is the header `<key>: <n> steps in <m> tasks`, then exactly n lines of runs
+// (runFields). An `Experiment <experiment>: variant <variant>.` line between them is no run.
 // The line of a task of the issue's plan, `task <task> needs <needs>: …` with its needs as
 // `[a,b]`, `[]` or `-`, which comes before that task's runs, is no run and is passed over.
 func parseSteps(key, out string) (stepsPrinted, error) {
@@ -47,11 +50,11 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		return printed, fmt.Errorf("the header %q: %v", lines[0], err)
 	}
 	for _, text := range lines[1:] {
-		fields := strings.Fields(text)
-		if len(fields) > 2 && fields[0] == "task" && fields[2] == "needs" {
+		if fields := strings.Fields(text); len(fields) > 2 && fields[0] == "task" && fields[2] == "needs" {
 			continue
 		}
-		if len(fields) != 12 || fields[5] != "attempt" {
+		fields, ok := runFields(text)
+		if !ok {
 			return printed, fmt.Errorf("the line %q is no run", text)
 		}
 		step, err := strconv.Atoi(fields[1])
@@ -65,6 +68,7 @@ func parseSteps(key, out string) (stepsPrinted, error) {
 		printed.lines = append(printed.lines, stepLine{
 			text: text, task: fields[0], step: step, kind: fields[2], role: fields[3], typ: fields[4], attempt: attempt,
 			agent: fields[7], model: fields[8], started: fields[9], ended: fields[10], result: fields[11],
+			setModel: fields[13], answered: fields[15],
 		})
 	}
 	if len(printed.lines) != printed.steps {
@@ -110,11 +114,13 @@ func holdsTen(printed stepsPrinted) error {
 
 // holdsLines says whether lines hold each run of want, of the task default, ended (its end a
 // moment, printedMoment) with its result, with an agent, and each of kind step with the model that
-// answered it; with exact, they hold no other run. The error names the first run that is missing
-// or wrong as lineName spells it.
+// answered it last. Each holds the set model and the answers the walk's stand-ins leave it
+// (printedModels). With exact, they hold no other run. The error names the first run that is
+// missing or wrong as lineName spells it.
 func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 	for _, w := range want {
 		got, name, typ := findLine(lines, w), lineName(w), printedType(w)
+		setModel, answered := printedModels(w)
 		switch {
 		case got.text == "":
 			return fmt.Errorf("no line of %s", name)
@@ -124,6 +130,8 @@ func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 			return fmt.Errorf("%s prints %q: want a start, an end and result %s", name, got.text, w.result)
 		case w.kind == "step" && got.model != stepRecordsModel:
 			return fmt.Errorf("%s prints %q: want the model %s", name, got.text, stepRecordsModel)
+		case got.setModel != setModel || got.answered != answered:
+			return fmt.Errorf("%s prints %q: want set %s answered %s", name, got.text, setModel, answered)
 		}
 	}
 	if exact && len(lines) != len(want) {
@@ -159,50 +167,146 @@ func printedType(w stepWant) string {
 	return w.typ
 }
 
+// printedModels is what `dispatch steps` must print of w's set model and of the models that
+// answered it, as the walk's stand-ins leave them. Each agent of the walk answers once in each of
+// its runs, on the one model its role was set to (stepRecordsModel). So a step or the retro prints
+// that model as its set model and its one call on it. The merger the merge launches never
+// registers, so no read of its calls is answered. The merge then prints no set model, and that its
+// counts are not known.
+func printedModels(w stepWant) (setModel, answered string) {
+	if w.kind == "merge" {
+		return "-", "unknown"
+	}
+	return stepRecordsModel, stepRecordsModel + "=1(100%)"
+}
+
 // lineName spells w as the command prints its leading fields, then its result: `4 step reviewer
 // review attempt 1 … failed`.
 func lineName(w stepWant) string {
 	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, printedType(w), w.attempt, w.result)
 }
 
+// walkPrinted is what `dispatch steps --issue SR-1` prints of the walk's ten runs (stepRecordsTen).
+// Each run ended at a moment with its result. Its set model and its answers are as the walk's
+// stand-ins leave them (printedModels). Each line is the words edit returns of the line's run and
+// of its 16 words.
+func walkPrinted(edit func(w stepWant, words []string) []string) string {
+	lines := []string{"SR-1: 10 steps in 1 tasks"}
+	for _, w := range stepRecordsTen {
+		model := "-"
+		if w.kind == "step" {
+			model = stepRecordsModel
+		}
+		setModel, answered := printedModels(w)
+		words := []string{"default", strconv.Itoa(w.step), w.kind, w.role, printedType(w), "attempt", strconv.Itoa(w.attempt), "agent-" + w.role,
+			model, "2026-11-20T09:00:00Z", "2026-11-20T09:40:00.123456Z", w.result, "set", setModel, "answered", answered}
+		lines = append(lines, strings.Join(edit(w, words), " "))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // The driver's end check, which the proof runs over what `dispatch steps` prints: a line ends its
-// run only when it prints a moment as its end. steps.ts prints `running` there, and as the result,
-// for a run that has not ended; `-`, which a printer that wrote the end through orDash would print,
-// and any other word are no end either, so each fails the walk's read, naming the line. The control
-// is the same ten lines with every end a moment, which the check passes.
+// run only when it prints a moment as its end. steps.ts prints `running` there, as the result and
+// as the answers, for a run that has not ended. `-`, which a printer that wrote the end through
+// orDash would print, and any other word are no end either. So each fails the walk's read, naming
+// the line. The control is the same ten lines with every end a moment, which the check passes. A
+// line of the command before the set model, 12 words that end at the result, is no run, and the
+// parse fails naming it.
 func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
 	t.Parallel()
-	const key = "SR-1"
-	printed := func(end, result string) string {
-		lines := []string{key + ": 10 steps in 1 tasks"}
-		for _, w := range stepRecordsTen {
-			model, lineEnd, lineResult := "-", "2026-11-20T09:40:00.123456Z", w.result
-			if w.kind == "step" {
-				model = stepRecordsModel
-			}
+	ending := func(end, result string) func(stepWant, []string) []string {
+		return func(w stepWant, words []string) []string {
 			if w.kind == "step" && w.step == 2 && w.attempt == 2 {
-				lineEnd, lineResult = end, result
+				words[10], words[11] = end, result
+				if end == "running" {
+					words[15] = "running"
+				}
 			}
-			lines = append(lines, fmt.Sprintf("default %d %s %s %s attempt %d agent-%s %s 2026-11-20T09:00:00Z %s %s",
-				w.step, w.kind, w.role, printedType(w), w.attempt, w.role, model, lineEnd, lineResult))
+			return words
 		}
-		return strings.Join(lines, "\n") + "\n"
 	}
 	read := func(out string) error {
-		parsed, err := parseSteps(key, out)
+		parsed, err := parseSteps("SR-1", out)
 		if err != nil {
 			t.Fatalf("parse %q: %v", out, err)
 		}
 		return holdsTen(parsed)
 	}
-	if err := read(printed("2026-11-20T09:40:00Z", "passed")); err != nil {
+	if err := read(walkPrinted(ending("2026-11-20T09:40:00Z", "passed"))); err != nil {
 		t.Fatalf("control: the ten lines, each ended at a moment, read as %v, want the walk's ten", err)
 	}
 	for _, no := range []struct{ end, result string }{{"running", "running"}, {"-", "passed"}, {"unknown", "passed"}} {
-		err := read(printed(no.end, no.result))
+		err := read(walkPrinted(ending(no.end, no.result)))
 		if err == nil || !strings.Contains(err.Error(), "2 step implementer implementation attempt 2") || !strings.Contains(err.Error(), "an end") {
 			t.Errorf("the ten lines with implementing's second run ending %q %q read as %v, want an error naming that run and its end", no.end, no.result, err)
 		}
+	}
+	old := walkPrinted(func(_ stepWant, words []string) []string { return words[:12] })
+	first := "default 1 step planner planning attempt 1 agent-planner stand-in/model 2026-11-20T09:00:00Z 2026-11-20T09:40:00.123456Z passed"
+	if parsed, err := parseSteps("SR-1", old); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the line %q is no run", first)) {
+		t.Errorf("the ten lines in the 12 words of the command before the set model parsed as %+v, %v; want an error naming %q", parsed, err, first)
+	}
+}
+
+// The driver's check of each run's models. A step or the retro prints the stand-in's model as its
+// set model, and its one call on it. The merge, whose agent never registers, prints no set model
+// and that its counts are not known (printedModels). The ten lines as the walk leaves them pass.
+// Each control prints one run's models otherwise, and wants the error that names that run.
+func TestTheDriverReadsEachRunsSetModelAndAnswers(t *testing.T) {
+	t.Parallel()
+	parsed, err := parseSteps("SR-1", walkPrinted(func(_ stepWant, words []string) []string { return words }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := holdsTen(parsed); err != nil {
+		t.Fatalf("control: the ten lines as the walk leaves them read as %v, want the walk's ten", err)
+	}
+	for _, control := range []struct {
+		name, kind    string
+		step, attempt int
+		set, answered string
+		why           string
+	}{
+		{"implementing's second run counted with its first", "step", 2, 2, stepRecordsModel, stepRecordsModel + "=2(100%)", "2 step implementer implementation attempt 2"},
+		{"a review answered off its set model", "step", 4, 1, stepRecordsModel, stepRecordsModel + "=1(50%),stand-in/other=1(50%)", "4 step reviewer review attempt 1"},
+		{"a test that does not know its counts", "step", 3, 1, stepRecordsModel, "unknown", "3 step tester testing attempt 1"},
+		{"the retro with no set model", "retro", 0, 1, "-", stepRecordsModel + "=1(100%)", "0 retro implementer - attempt 1"},
+		{"the merge with a set model", "merge", 0, 1, stepRecordsModel, "unknown", "0 merge merger - attempt 1"},
+	} {
+		out := walkPrinted(func(w stepWant, words []string) []string {
+			if w.kind == control.kind && w.step == control.step && w.attempt == control.attempt {
+				words[13], words[15] = control.set, control.answered
+			}
+			return words
+		})
+		parsed, err := parseSteps("SR-1", out)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", control.name, err)
+		}
+		if err := holdsTen(parsed); err == nil || !strings.Contains(err.Error(), control.why) || !strings.Contains(err.Error(), "want set") {
+			t.Errorf("control: %s read as %v, want an error naming %q and the set model and answers it wants", control.name, err, control.why)
+		}
+	}
+}
+
+// variantPlace reads each run below the Experiment line as `dispatch steps` prints it: 16 words
+// that end `set <set model> answered <answers>`. The walk's ten runs below the line pass.
+// The same runs in the 12 words of the command before the set model are no runs, and the place
+// fails naming the first.
+func TestVariantPlaceReadsEachRunInTheWordsDispatchStepsPrints(t *testing.T) {
+	t.Parallel()
+	const line = "Experiment planning: variant b."
+	withLine := func(printed string) string {
+		header, runs, _ := strings.Cut(printed, "\n")
+		return header + "\n" + line + "\n" + runs
+	}
+	if err := variantPlace("SR-1", line, withLine(walkPrinted(func(_ stepWant, words []string) []string { return words }))); err != nil {
+		t.Errorf("the ten runs of 16 words below %q read as %v, want the line in its place", line, err)
+	}
+	old := walkPrinted(func(_ stepWant, words []string) []string { return words[:12] })
+	first := strings.SplitN(old, "\n", 3)[1]
+	if err := variantPlace("SR-1", line, withLine(old)); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the line %q is no run", first)) {
+		t.Errorf("the ten runs in the 12 words of the command before the set model read as %v, want an error naming %q", err, first)
 	}
 }
 
@@ -214,7 +318,7 @@ func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
 func TestVariantPlacePassesOverTheLineOfAPlansTask(t *testing.T) {
 	t.Parallel()
 	const (
-		run     = "default 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed"
+		run     = "default 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed set anthropic/claude-opus-5 answered anthropic/claude-opus-5=1(100%)"
 		variant = "Experiment planning: variant b."
 		task    = "task default needs []: 1 implementer passed"
 	)

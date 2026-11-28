@@ -747,7 +747,7 @@ func TestGhOpenPrivateRefusesALinkItsOpenFollowed(t *testing.T) {
 func TestGhPrivateIsTheUsersAlone(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "copy")
-	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+	if err := execfile.Write(path, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // Surface is the files every input names.
@@ -82,7 +84,9 @@ func New(dir string) (Surface, error) {
 		{s.Workload, s.config(`"workload":` + s.workload()), 0o600},
 		{s.Proxy, s.config(`"pkcs11":` + pkcs11), 0o600},
 	} {
-		if err := os.WriteFile(file.path, []byte(file.content), file.mode); err != nil {
+		// The signer is a program Google's library may run while the test's process forks, so each
+		// file is written under the fork lock.
+		if err := testexec.WriteFile(file.path, []byte(file.content), file.mode); err != nil {
 			return s, err
 		}
 	}

@@ -40,7 +40,6 @@ test("a relay socket session takes its relay subject on the socket and no agent 
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
       },
-      timeoutMs: 30_000,
     });
     const opened = server.upgrades.filter((upgrade) => upgrade.status === 101);
     if (opened.length === 0) {
@@ -67,7 +66,7 @@ test("a relay socket session takes its relay subject on the socket and no agent 
   } finally {
     server.stop();
   }
-}, 60_000);
+});
 
 // The wire lets the listener answer any `sub` `subject_not_granted`. #4658 answers so only a
 // subject other than the session's own, and closes the socket 1013 when NATS refuses a subscribe;
@@ -96,7 +95,6 @@ test("a relay subject the listener refuses is told naming why", async () => {
         AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
         AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
       },
-      timeoutMs: 45_000,
       waitFor: "receives nothing",
     });
     expect(server.refusedSubs[0]).toEqual({
@@ -112,4 +110,4 @@ test("a relay subject the listener refuses is told naming why", async () => {
   } finally {
     server.stop();
   }
-}, 60_000);
+});
