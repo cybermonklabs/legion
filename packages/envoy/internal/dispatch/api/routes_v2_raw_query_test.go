@@ -30,6 +30,9 @@ var rawQueryReaders = map[string]string{
 		"UTF-8 before its handler runs, whatever the route declares",
 	"api.legionStateURL": "settings_legion.go: the query of the daemon URL a Legion setting's body names, read to refuse " +
 		"a URL that carries one, and no request's query",
+	"api.server.asOfGate": "the as_of gate: it runs a route the decoder reads before it reads the query, and reads as_of off " +
+		"the raw query only on a route it does not read (a route of the v1 table, a test hook, a row of the INFRA-979 tree), " +
+		"which keeps its /api/v1 rules",
 }
 
 // v1OnlyWriters are the response writers of package api that only a /api/v1 route's chain wraps an

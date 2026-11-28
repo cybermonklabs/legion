@@ -23,14 +23,15 @@ import (
 // that judges its form. A process builds its form once (NewSpecForm), which sets the gate of its
 // document service, and the API judges with that same form (Deps.SpecForm). refuseSpecForm
 // refuses, at its two call sites: the opening or hand-back of an approval request
-// (requestArtifactApproval), and an approval in a person's name (approvalDocuments), which gives
-// the documents that approval covers and judges each of them. Every writer of an approval in a
-// person's name asks approvalDocuments: her review on either review route and her answer to an
-// approval request (queueApprovalReviews), and the carry of an approval to a new version
-// (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read findings
-// and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the
-// repair pass (prepareRestoration), which judges a request at the versions it names once the
-// reopen ends and leaves a broken approval request resolved rather than open it again
+// (requestApproval, the work both versions' route hands it: requestArtifactApproval at /api/v1,
+// requestArtifactApprovalV2 at /api/v2), and an approval in a person's name (approvalDocuments),
+// which gives the documents that approval covers and judges each of them. Every writer of an
+// approval in a person's name asks approvalDocuments: her review on either review route and her
+// answer to an approval request (queueApprovalReviews), and the carry of an approval to a new
+// version (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read
+// findings and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen
+// and of the repair pass (prepareRestoration), which judges a request at the versions it names
+// once the reopen ends and leaves a broken approval request resolved rather than open it again
 // (docs.WriteRestoredAsks, which only it calls, writes the others open). Every route that opens
 // an approval request or answers one reaches one of these calls;
 // TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census, and to

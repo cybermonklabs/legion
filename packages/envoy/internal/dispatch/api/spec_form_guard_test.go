@@ -22,12 +22,13 @@ import (
 
 // The route census of the form gate (spec_form.go) holds only while every way to a person's
 // approval passes one of its two call sites: an approval request opens or is handed back in
-// requestArtifactApproval, an approval in a person's name is judged in approvalDocuments, which
-// gives the documents that approval covers, and a reopen or the repair pass opens a withdrawn
-// request again in prepareRestoration, through docs.WriteRestoredAsks, which nothing else calls.
-// Each writer of an approval in a person's name asks approvalDocuments: a person's review in
-// queueApprovalReviews, and the carry of an approval in carryBreaksForm, the gate that
-// writeCarriedReview asks. This test holds the code to that census.
+// requestApproval, the work both versions' route hands it (requestArtifactApproval at /api/v1,
+// requestArtifactApprovalV2 at /api/v2), an approval in a person's name is judged in
+// approvalDocuments, which gives the documents that approval covers, and a reopen or the repair
+// pass opens a withdrawn request again in prepareRestoration, through docs.WriteRestoredAsks,
+// which nothing else calls. Each writer of an approval in a person's name asks approvalDocuments:
+// a person's review in queueApprovalReviews, and the carry of an approval in carryBreaksForm, the
+// gate that writeCarriedReview asks. This test holds the code to that census.
 
 // asksTable names asks as a statement may write it: bare, schema-qualified, quoted, or both, as
 // reviewTable names artifact_reviews.
@@ -154,7 +155,7 @@ func moduleRelative(source string) string {
 var askOpeningWriterCensus = map[string]string{
 	"openApprovalAsk":     "internal/dispatch/api/reviews.go",
 	"WriteRestoredAsks":   "internal/dispatch/docs/ask_row.go",
-	"createAskFor":        "internal/dispatch/api/asks.go",
+	"openAsk":             "internal/dispatch/api/asks.go",
 	"createAskBlock":      "internal/dispatch/docs/ask_blocks.go",
 	"restoreRetractedAsk": "internal/dispatch/docs/ask_blocks.go",
 	"writeAsks":           "cmd/dispatch-seed/write_items.go",
@@ -168,12 +169,12 @@ var askOpeningWriterCensus = map[string]string{
 // writes the asks it opens again twice, the asks that are no approval request and then the
 // requests that its judgment passes (prepareRestoration).
 var approvalCallers = map[string][]string{
-	"openApprovalAsk":           {"requestArtifactApproval"},
-	"renewApprovalAsk":          {"requestArtifactApproval"},
+	"openApprovalAsk":           {"requestApproval"},
+	"renewApprovalAsk":          {"requestApproval"},
 	"docs.QueueReview(person)":  {"queueApprovalReviews"},
 	"docs.WriteRestoredAsks":    {"prepareRestoration", "prepareRestoration"},
 	"approvalDocuments":         {"carryBreaksForm", "queueApprovalReviews"},
-	"refuseSpecForm":            {"approvalDocuments", "requestArtifactApproval"},
+	"refuseSpecForm":            {"approvalDocuments", "requestApproval"},
 	"specFormOf":                {"getArtifactSpecForm", "prepareRestoration", "refuseSpecForm"},
 	"docs: QueueReview(person)": {"writeCarriedReview"},
 	"docs: gate":                {"writeCarriedReview"},
@@ -336,13 +337,14 @@ func plantedSource(t *testing.T, code string) moduleSource {
 }
 
 // Every statement of the module that opens an ask is one of the six writers of the census, and only
-// requestArtifactApproval opens or hands back an approval request, only prepareRestoration writes
-// a withdrawn ask open again, and only queueApprovalReviews writes a person's review, each beside
-// its call of the form gate; a person's review and the carry judge the documents of an approval by
-// one function (approvalDocuments). A scan that read nothing names fewer than six and fails; each
-// control plants one writer the census must name, or one the patterns must leave out, or a second
-// caller that the caller part must refuse, or a plan review's write that it must leave out. The gate
-// a carry asks is set in one place too (formGateSetter); its control plants a second setter.
+// requestApproval, the work of both versions' route, opens or hands back an approval request, only
+// prepareRestoration writes a withdrawn ask open again, and only queueApprovalReviews writes a
+// person's review, each beside its call of the form gate; a person's review and the carry judge the
+// documents of an approval by one function (approvalDocuments). A scan that read nothing names
+// fewer than six and fails; each control plants one writer the census must name, or one the
+// patterns must leave out, or a second caller that the caller part must refuse, or a plan review's
+// write that it must leave out. The gate a carry asks is set in one place too (formGateSetter); its
+// control plants a second setter.
 func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	sources := moduleSources(t)
 	if problems := approvalCallerProblems(sources); len(problems) > 0 {

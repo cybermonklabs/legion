@@ -54,6 +54,15 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A document's newest version at a cut, read in one batch of one or two selects on the bare pool
+	// (versionAtTheCut), only where the context carries a cut: by the text read (documentText),
+	// which the answers of PATCH /api/v2/artifacts/{id} and of the /api/v2 uploads share through
+	// artifactRowsV2, by the block route and by the checks' read. No keyed write runs it: only
+	// asOfGate puts a cut on a request's context (serveAtCut), on a GET row that answers as_of, and
+	// the limited-token gate refuses a token that carries a cut on every write. At a cut the store
+	// sends the batch in a read-only transaction of its own (store.Pool.SendBatch), which refuses
+	// every write.
+	"api.server.versionAtTheCut": "reads at a cut, which no keyed write's context carries",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",

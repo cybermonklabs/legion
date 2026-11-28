@@ -2796,7 +2796,7 @@ func documentRoleOf(artifact model.Artifact) string {
 // document of an issue. Both readers that ask it about an approval ask it here — the coverage
 // an approval request's answer carries (approvalCoverage), which only a spec has, and
 // include_verification, which names the spec and its issue's Verification document together
-// (requestArtifactApproval).
+// (requestApproval, which both versions' approval-request routes run).
 func isSpecDocument(artifact model.Artifact) bool {
 	return artifact.Primary && artifact.IssueKey != nil
 }
