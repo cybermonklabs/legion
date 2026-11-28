@@ -274,19 +274,55 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
   }
 });
 
-/** A style rule that narrows the header's labels' box by 170 px from the moment a reading's fit is
- *  drawn, which is when the box loses `invisible` (`HeaderLabels`, `IssuePropertiesRow.tsx`): the
- *  narrowing lands in the reading's own frame, through the browser's own `ResizeObserver`, as a
- *  classic scrollbar that comes in that frame would narrow it. */
+/** A style rule that narrows the header's labels' box by 170 px while the box is drawn (no longer
+ *  `invisible`, `HeaderLabels`, `IssuePropertiesRow.tsx`) and holds 11 chips: the narrowing lands
+ *  in the frame of the reading that drew them, through the browser's own `ResizeObserver`, as a
+ *  classic scrollbar does that comes with the line a fit draws and goes with a shorter one. */
 const NARROWED_ONCE_DRAWN =
-  '[data-testid="issue-state-actions"] [data-testid="issue-header-labels"]:not(.invisible) { max-width: calc(100% - 170px) !important; }';
+  '[data-testid="issue-state-actions"] [data-testid="issue-header-labels"]:not(.invisible):has(> [data-header-label]:nth-child(12)) { max-width: calc(100% - 170px) !important; }';
+
+/** One line the labels' box drew: its chips, whether it is hidden for a reading, and the box's
+ *  computed `max-width`, which says whether the rule above held it. */
+interface LabelLine {
+  chips: number;
+  hidden: boolean;
+  maxWidth: string;
+}
+
+// What `recordLabelLines` keeps on the page's window.
+declare global {
+  interface Window {
+    /** Each line the labels' box drew, in order, from the moment the document was parsed. */
+    __labelLines?: LabelLine[];
+  }
+}
+
+/** Records each line the labels' box draws, in `window.__labelLines`, from the moment the document
+ *  is parsed. */
+function recordLabelLines(): void {
+  document.addEventListener("DOMContentLoaded", () => {
+    const lines: LabelLine[] = [];
+    window.__labelLines = lines;
+    new MutationObserver(() => {
+      const box = document.querySelector('[data-testid="issue-header-labels"]');
+      if (box === null) return;
+      const line = {
+        chips: box.querySelectorAll(":scope > [data-header-label]").length,
+        hidden: box.classList.contains("invisible"),
+        maxWidth: getComputedStyle(box).maxWidth,
+      };
+      if (JSON.stringify(lines.at(-1)) !== JSON.stringify(line)) lines.push(line);
+    }).observe(document.documentElement, { attributes: true, childList: true, subtree: true });
+  });
+}
 
 // R21: the line draws no chip it hides, and its count names every chip left out, also where the
 // box narrows in the frame of the reading that drew its fit. At 1000 px on part P's header seed
 // with 20 labels, the reading takes the box while it is 54 px wide and draws it on to the count's
 // line with 11 chips; there it narrows, by the rule above, so that the 11th chip wraps onto the
-// line the box clips away. Read once the line holds still: every chip it holds is drawn whole,
-// and the count names the rest.
+// line the box clips away. The line takes one trim to 10 chips, and the rule no longer holds the
+// box. Read once the line holds still: it took no reading and did not change for a second, every
+// chip it holds is drawn whole, and the count names the rest.
 // SLOW(>=2s): the header's seed with 20 labels written, then one load of the issue.
 test("a box the fit moves on to the count's line draws no chip it hides when it narrows in the reading's frame", async ({
   browser,
@@ -303,6 +339,7 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
         document.documentElement.append(style);
       });
     }, NARROWED_ONCE_DRAWN);
+    await page.context().addInitScript(recordLabelLines);
     await page.setViewportSize(viewportAt(1000));
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectHeaderDrawn(page);
@@ -379,12 +416,25 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
         return box === null ? "no box" : getComputedStyle(box).maxWidth;
       }),
     }));
-    // The rule holds the drawn box, so the row reads the narrowing it is about and not a line that
-    // never narrowed.
+    const lines = await page.evaluate(() => window.__labelLines ?? []);
+    const drawnLines = lines.filter((line) => !line.hidden);
+    // The rule held the box when a fit of 11 chips was drawn, so the row reads the narrowing it is
+    // about and not a line that never narrowed.
     expect(
-      drawn.maxWidth,
-      `${where}: the narrowing rule does not hold the labels' box`
-    ).not.toMatch(/^(none|no box)$/);
+      drawnLines.some((line) => line.chips === 11 && line.maxWidth !== "none"),
+      `${where}: the narrowing rule never held a drawn line of 11 chips: ${JSON.stringify(lines)}`
+    ).toBe(true);
+    // One trim took the line from the 11 chips the rule narrowed to 10, and the rule no longer
+    // holds the box.
+    expect(
+      drawnLines.slice(-2),
+      `${where}: the line did not go from 11 narrowed chips to 10 in one trim: ${JSON.stringify(lines)}`
+    ).toEqual([
+      { chips: 11, hidden: false, maxWidth: expect.not.stringMatching(/^none$/) },
+      { chips: 10, hidden: false, maxWidth: "none" },
+    ]);
+    expect(drawn.held, `${where}: the line holds ${drawn.held} chips, not 10`).toBe(10);
+    expect(drawn.maxWidth, `${where}: the narrowing rule still holds the labels' box`).toBe("none");
     expect(drawn.cut, `${where}: the labels' box cuts a chip the line holds`).toEqual([]);
     expect(
       drawn.held,
