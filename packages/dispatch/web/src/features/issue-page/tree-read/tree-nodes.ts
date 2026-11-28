@@ -877,10 +877,7 @@ function draftProse(
   _answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
-  if (
-    node.supertag !== "prose" &&
-    !(isPlainBlock(node, context) && !isForeign(node, context.key))
-  ) {
+  if (node.supertag !== "prose" && !(isPlainBlock(node) && !isForeign(node, context.key))) {
     return undefined;
   }
   return draftOf(node, "prose", context);
@@ -893,19 +890,14 @@ function draftProse(
  * The read types a block by the typed block its text opens and answers that type as its
  * supertag (`typedNodeOf` reads the typed node of that reading), an ask's block's `ask` among
  * them, so a block of the supertag `block` opens none. A finding is a block whose id names its
- * lens (`lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id) or whose
- * parent is a lens, so it is never drafted as prose, even where nothing drafts its lens. A block
+ * lens (`lens/<uuid>#<block id>`, as `lenses/store-link.ts` reads a finding's read id): a block
+ * is a finding only by its own id, as the server's kind rule reads it (`nodeKind`,
+ * `graphstore.ParseFindingID`), so a block moved under a lens is still prose. A block
  * of an ask, a comment or a message is a node of its item's own block kind (`comment_block`),
  * part of that item, and no block node.
  */
-function isPlainBlock(node: TreeAnswerNode, context: TreeDraftContext): boolean {
-  if (node.kind !== "block" || node.supertag !== "block" || node.id.startsWith("lens/")) {
-    return false;
-  }
-  return !(
-    node.parent !== null &&
-    (node.parent.kind === "lens" || context.nodeOf(node.parent.id)?.supertag === "lens")
-  );
+function isPlainBlock(node: TreeAnswerNode): boolean {
+  return node.kind === "block" && node.supertag === "block" && !node.id.startsWith("lens/");
 }
 
 /** A reading: an agent's reading of the ask or the decision it reads, never of the issue, drawn

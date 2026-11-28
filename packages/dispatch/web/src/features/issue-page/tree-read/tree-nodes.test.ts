@@ -2192,11 +2192,11 @@ test("a prose node of the tree read is drafted and named in Graph", () => {
 // a list, a heading: a block whose text opens no typed block - as a block node of the supertag
 // `block`, and only its `kind` filter names it prose (the server's `nodeKind`). Graph draws it as
 // a prose row, and so does Conversation, whose read asks for prose and answers it so too. A
-// finding - a block whose id names its lens, or whose parent is a lens, even one nothing drafts -
-// and a typed block are never drafted as prose, and an ask's, a comment's or a message's own
-// block stays part of its item. A block of a converted document, which names its `document`, is a
-// prose row of Graph and no row of Conversation, and no filter draws a block its view read marks
-// as context.
+// finding - a block whose id names its lens - and a typed block are never drafted as prose, and
+// an ask's, a comment's or a message's own block stays part of its item; a plain block under a
+// lens, even one nothing drafts, is prose, as the server reads a block by its own id. A block of
+// a converted document, which names its `document`, is a prose row of Graph and no row of
+// Conversation, and no filter draws a block its view read marks as context.
 test("a plain block of the room's fragment is drafted and named as prose in Graph", () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
   const orphanLens = "c3000000-0000-4000-8000-000000000004";
@@ -2228,13 +2228,14 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
   ).toEqual(["paragraph", "prose"]);
   expect(typeOf(blockNodeId("spec", "r1")), "the typed block keeps its step").toBe("requirement");
   expect(typeOf("f1"), "a finding is drafted as prose").not.toBe("prose");
-  expect(typeOf("f2"), "a finding under a lens nothing drafts is drafted").toBeUndefined();
+  expect(typeOf("f2"), "a plain block under a lens nothing drafts is not prose").toBe("prose");
   expect(typeOf("cb1"), "a comment's own block is drafted as prose").toBeUndefined();
   expect(typeOf("c-1")).toBe("comment");
   expect(typeOf("q1"), "another issue's plain block is drafted as prose").toBeUndefined();
   expect(proseRows(graph.root, "graph"), "Graph's prose rows").toEqual([
     ["p1", "Words of p1."],
     [blockNodeId("spec", "d1"), "Words of d1."],
+    ["f2", "Words of f2."],
   ]);
   expect(placementsOf(graph.root, "p1").map((one) => one.parent)).toEqual([KEY]);
 
@@ -2242,6 +2243,7 @@ test("a plain block of the room's fragment is drafted and named as prose in Grap
   const conversation = drawn(answer(shared));
   expect(proseRows(conversation.root, "conversation"), "Conversation's prose rows").toEqual([
     ["p1", "Words of p1."],
+    ["f2", "Words of f2."],
   ]);
 
   // Each filter's view read marks the plain block as context beside a node of its own kind, which
