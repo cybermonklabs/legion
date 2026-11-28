@@ -285,7 +285,7 @@ func TestALockingsRetriesPauseOnItsClock(t *testing.T) {
 				})
 			}()
 			for n := int32(1); n < LockTimeoutAttempts; n++ {
-				fake.AwaitArmedAt(t, fmt.Sprintf("the pause after attempt %d", n), fake.Now().Add(LockTimeoutRetryPause))
+				awaitRetryPause(t, fake, done, fmt.Sprintf("the pause after attempt %d", n), fake.Now().Add(LockTimeoutRetryPause))
 				if got := attempts.Load(); got != n {
 					t.Fatalf("%d attempts ran before pause %d, want %d", got, n, n)
 				}
@@ -303,6 +303,26 @@ func TestALockingsRetriesPauseOnItsClock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// awaitRetryPause waits until fake holds a timer due at at: the pause that a retry, run on a
+// goroutine whose result done carries, arms between two attempts. what names that pause. Before
+// each reading of fake it reads done, and when the retry has returned it fails at once, naming
+// what and the retry's result: a retry that has returned arms no pause, and the wait would run on
+// until testwait gives up near the binary's deadline, naming the pause and never printing the
+// retry's error. The wait looks for the one deadline, so a pause of another length fails it, and
+// its failure prints the deadlines its last reading saw armed.
+func awaitRetryPause(t *testing.T, fake *clocktest.Fake, done <-chan error, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		select {
+		case err := <-done:
+			t.Fatalf("the retry returned before %s: %v", what, err)
+		default:
+		}
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
 }
 
 // A Locking's Timeout is the lock_timeout Postgres runs the migration under, in both apply modes,

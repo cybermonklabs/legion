@@ -430,7 +430,7 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 			return err
 		})
 	}()
-	fake.AwaitArmedAt(t, "RetryLockTimeouts' pause after the first attempt", start.Add(LockTimeoutRetryPause))
+	awaitRetryPause(t, fake, done, "RetryLockTimeouts' pause after the first attempt", start.Add(LockTimeoutRetryPause))
 	if len(errs) != 1 {
 		t.Fatalf("attempts before the pause = %d, want 1", len(errs))
 	}
