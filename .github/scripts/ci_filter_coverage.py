@@ -420,9 +420,10 @@ class Session:
     toolchains: dict = field(default_factory=dict)
     tmp: str = ""
     # The future of the CompletedProcess of each run's listing start() began, by the key the cache
-    # keeps the listing under, until listing() takes it; the pool that runs them, start_early()'s,
-    # None in every other session; and the lock that guards `early` alone, which start() fills on
-    # the table's thread while listing() empties it on the walk's and prefetch()'s threads.
+    # keeps the listing under, until listing() drops it once the answer is cached; the pool that
+    # runs them, start_early()'s, None in every other session; and the lock that guards `early`
+    # alone, which start() fills on the table's thread while listing() empties it on the walk's and
+    # prefetch()'s threads.
     early: dict = field(default_factory=dict)
     pool: ThreadPoolExecutor | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -512,9 +513,11 @@ class Session:
         key, args = self.listing_command(run_)
         if key not in self.cache:
             with self.lock:
-                begun = self.early.pop(key, None)
+                begun = self.early.get(key)
             result = begun.result() if begun is not None else self.command(run_, args)
             self.cache[key] = decode_stream(self.reported(run_, args, result))
+            with self.lock:
+                self.early.pop(key, None)
         return self.cache[key]
 
     def named(self, run_: Run) -> list:
@@ -604,7 +607,7 @@ def background_priority() -> None:
     if sys.platform.startswith("linux"):
         try:
             os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 10)
-        except (AttributeError, OSError):
+        except OSError:
             pass
 
 
@@ -952,14 +955,11 @@ def tie_entry(glob: str) -> str | None:
 
 
 def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
-    """Read the closure of `go test <pkgs>` in workdir for spec-check citations. Where EARLY is
-    armed the walk runs on it, as check()'s does, so it takes the listing run() began there, and it
-    answers only the problems it adds, never one EARLY held before."""
+    """Read the closure of `go test <pkgs>` in workdir for spec-check citations."""
     # ci_job_reads imports this module, so import its rules only after this module loads.
     import ci_job_reads as data
 
-    session = EARLY or Session()
-    before = len(session.problems)
+    session = Session()
     why = f"go test {' '.join(pkgs)} in {workdir}"
     tested = run(workdir, pkgs, why, env=env)
     reads = closure(session, data.RULES, tested, set())
@@ -977,7 +977,7 @@ def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
             session.problems.append(error(None, f"{read.glob} has no form of a tie, so the closure of {why} is unknown"))
         else:
             entries.add(entry)
-    return sorted(entries), [problem.message for problem in session.problems[before:]]
+    return sorted(entries), [problem.message for problem in session.problems]
 
 
 GO_FILE_NAMES = ("go.mod", "go.sum", "go.work", "go.work.sum")

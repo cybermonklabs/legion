@@ -407,10 +407,11 @@
 # processors, at most 8; 1 runs them one after another), each answer keyed by what it asks, so the
 # filters are the same text whatever the pool's size. With more than one, each Run's `go list
 # -deps` starts as the table declares the Run (ci_filter_coverage.start_early), so those listings
-# run while the rest of the table loads; the other go commands, module_files()'s `go env -json`
-# and `go work edit -json` and check_vet_tags()'s `go list`, run when the walk asks them. A
-# listing's failure waits in its answer and is reported when the walk asks it, as it is when the
-# command runs then.
+# run while the rest of the table loads, and toolchain()'s `go env GOROOT`, once per module
+# directory, runs on the table's thread during the load; the other go commands, module_files()'s
+# `go env -json` and `go work edit -json` and check_vet_tags()'s `go list`, run when the walk asks
+# them. A listing's failure waits in its answer and is reported when the walk asks it, as it is
+# when the command runs then.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -695,6 +696,7 @@ import warnings
 
 token = secrets.token_hex(16)
 print(f"::stop-commands::{token}", flush=True)
+mode = os.environ["CI_FILTERS_MODE"]
 # Every way out after start_early() passes its one stop_early() before the second reading of the
 # tree: a table that fails to load, any other fault of the imports, and main(), however it ends.
 with contextlib.ExitStack() as stop:
@@ -702,8 +704,8 @@ with contextlib.ExitStack() as stop:
         warnings.simplefilter("always")
         import ci_filter_coverage
         ci_filter_coverage.OPENED = opened
-        ci_filter_coverage.TREE_FILES = sorted(before) if isinstance(before, dict) else None
-        if os.environ["CI_FILTERS_MODE"] == "generate":
+        ci_filter_coverage.TREE_FILES = list(before) if isinstance(before, dict) else None
+        if mode == "generate":
             import ci_ts_listing
             ci_ts_listing.COMPILER = "tsgo"
             ci_ts_listing.start()
@@ -723,14 +725,13 @@ with contextlib.ExitStack() as stop:
     print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
     if progress is not None:
         print(progress, flush=True)
-    if os.environ["CI_FILTERS_MODE"] == "generate":
+    if mode == "generate":
         print(ci_ts_listing.started_summary(), flush=True)
     for import_warning in caught:
         ci_filter_coverage.print_import_warning(import_warning)
     status = ci_filter_coverage.main()
 after = tree(before if isinstance(before, dict) else None)
 
-mode = os.environ["CI_FILTERS_MODE"]
 written = []
 if mode == "write":
     written = list(getattr(ci_job_reads, "PUSH_WORKFLOWS", {}).values())

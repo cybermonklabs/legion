@@ -719,11 +719,11 @@ check "generates the base tree" "$(contains "$out" "^the base tree's filter gene
 check "whose failure makes every filter every path" \
   "$(is "$(for name in app image site; do filter_of "$name"; done | tr '\n' ' ')" '** ** ** ')"
 
-# What tsc and bun resolve with is a file the filters are computed with too: a tsconfig edit (a
-# `paths` map, an `extends`) can move a listed block while no file of the block changes. The stand-in
-# bunx prints the program's `listed` file, which stands for the compiler's new answer to the new
-# tsconfig. The generation lists a program with `bunx --no-install tsgo` (ci_ts_listing.BUNX and
-# ci_ts_listing.COMPILER), so each stand-in bunx here answers `--no-install tsgo -p` alone and
+# What the compiler and bun resolve with is a file the filters are computed with too: a tsconfig
+# edit (a `paths` map, an `extends`) can move a listed block while no file of the block changes. The
+# stand-in bunx prints the program's `listed` file, which stands for the compiler's new answer to
+# the new tsconfig. The generation lists a program with `bunx --no-install tsgo` (ci_ts_listing.BUNX
+# and ci_ts_listing.COMPILER), so each stand-in bunx here answers `--no-install tsgo -p` alone and
 # refuses any other argv: a generation that listed with tsc, or without --no-install, would fail
 # these cases.
 echo "case: a tsconfig edit that moves a listed block selects every path through that filter"
@@ -1151,7 +1151,7 @@ check "in a merge, judged against the filters MERGE_HEAD computes, not HEAD's" \
   "$(contains "$out" "^added 1 read(s) to .github/ci-gates/app.py, 1 file(s) the branch's patterns docs/\*\* selected (docs/\*\* kept")"
 # Main's filters are computed after a frozen install in main's own checkout: a listed block resolves
 # a workspace package through node_modules, and another tree's node_modules would resolve it into
-# that tree, whose files the listing leaves out. The stand-in tsc lists the package by the path its
+# that tree, whose files the listing leaves out. The stand-in bunx lists the package by the path its
 # link resolves to; the stand-in bun install links it, as bun does.
 root=$(fixture convert-kept-workspace)
 table_with_reads "$root"

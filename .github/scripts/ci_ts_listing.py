@@ -109,11 +109,12 @@ def nearest(start: Path, name: str) -> Path | None:
 
 
 def record_resolution(kind: str, path: str, files: list) -> None:
-    """What the listing of one program or bundle resolved with, into RESOLVED. tsc resolves a
-    program with that program's one tsconfig and its chain; bun resolves each module of a bundle
-    with the tsconfig nearest that module, so a bundle records the chain nearest every module its
-    metafile lists (`files`), the entry among them. Each listed file adds the package.json nearest
-    it, whose `exports` and `imports` decide what an import of that package resolves to."""
+    """What the listing of one program or bundle resolved with, into RESOLVED. The compiler
+    (COMPILER) resolves a program with that program's one tsconfig and its chain; bun resolves
+    each module of a bundle with the tsconfig nearest that module, so a bundle records the chain
+    nearest every module its metafile lists (`files`), the entry among them. Each listed file adds
+    the package.json nearest it, whose `exports` and `imports` decide what an import of that
+    package resolves to."""
     source = REPO / path
     if kind == "program":
         tsconfig_chain(source / "tsconfig.json" if source.is_dir() else source)
