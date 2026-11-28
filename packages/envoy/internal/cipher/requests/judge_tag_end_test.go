@@ -9,7 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -34,7 +34,7 @@ import (
 // the reason that the key carries no judge tag.
 func TestAJudgeTagLoweredBelowAJudgedGrantOrTakenOffEndsItForGood(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, logtest.Swap, slog.SetDefault).
-	deel := func(judge int) secrets.LocalSecret {
+	deel := func(judge int) memory.Secret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {
 			return s

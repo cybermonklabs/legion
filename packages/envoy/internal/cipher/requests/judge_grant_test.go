@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // judgedGrant is one grant the model judge approved for names on enrollmentID, the state every
@@ -50,7 +50,7 @@ func releasedValue(release Release, name string) string {
 // throughout: none of this moves it.
 func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
 	t.Parallel()
-	deel := func(judge int) secrets.LocalSecret {
+	deel := func(judge int) memory.Secret {
 		s := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		if judge == 0 {
 			return s
@@ -110,7 +110,7 @@ func TestAJudgedGrantLivesByItsJudgeTagAndNotByAnOwner(t *testing.T) {
 // lower than that lifetime, or whose grant names no lifetime is no longer live.
 func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
 	t.Parallel()
-	store := secrets.NewLocal(
+	store := memory.New(
 		policytest.Judged(policytest.Secret("JUDGED_KEY", fixtureOperator, policy.TierHuman, "v"), 600, ""),
 		policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "v"),
 	)
@@ -138,7 +138,7 @@ func TestJudgeStillDecidesReadsTheJudgeTag(t *testing.T) {
 // below is signed in as, and a max-grant, an hour here (policytest.FixtureMaxGrant), which is
 // longer than any grant this file makes. Nothing else about the secret moves, so what answers
 // below is the admin tag and not a secret that changed hands, shrank its cap or lost its judge.
-func deelAsAdmin() secrets.LocalSecret {
+func deelAsAdmin() memory.Secret {
 	admin := policytest.ListedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, fixtureOperator, "deel-v1")
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
 	return policytest.Judged(admin, 900, "")

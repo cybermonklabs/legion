@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // startGoogleTokenServer answers Google's JWT-bearer grant, as oauth2.googleapis.com/token does
@@ -206,7 +207,7 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		"esac",
 		"",
 	}, "\n")
-	if err := os.WriteFile(filepath.Join(bin, "gcloud"), []byte(script), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "gcloud"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -257,7 +258,7 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 // configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
 func TestGCPSecretCredentialOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:291); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:292); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	const (
 		wk           = "wk@example.iam.gserviceaccount.com"
 		gac          = "gac@example.iam.gserviceaccount.com"
@@ -311,7 +312,7 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // one refusal that names each of the six sources (the third by both its variables, the well-known
 // file by the setting that names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:318); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:319); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
@@ -349,7 +350,7 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 // source is never retried under another. The metadata server is there in every row, so a fall
 // through would show as a call under it.
 func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:364); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:365); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	for _, row := range []struct {
 		name     string
 		use      func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager)
@@ -542,7 +543,7 @@ func useFakeGCPMetadataClock(t *testing.T, start time.Time) *clocktest.Fake {
 // the bound is armed and the command has not returned: the email read, after the token, at
 // probeWait, and the token read at tokenWait, with no email read after it.
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:577); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381; main.useFakeGCPMetadataClock, gcpMetadataClock set at secret_gcp_order_test.go:530).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:578); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381; main.useFakeGCPMetadataClock, gcpMetadataClock set at secret_gcp_order_test.go:531).
 	const (
 		// probeWait and tokenWait are the bounds of the email read and of the token read, written
 		// here and never read from the code under test, so a changed bound fails the row.

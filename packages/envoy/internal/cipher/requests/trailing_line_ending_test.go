@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // valueDigest names a value by its length and the first sixteen hex digits of its SHA-256, which
@@ -27,7 +28,7 @@ func valueDigest(value string) string {
 // build is the operator's own and agent tier, so Create grants it at once and the release needs
 // no approval; one Create and one Values means the shape rule reads the stored value once, which
 // is what the log rows count.
-func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, secret secrets.LocalSecret, name string) string {
+func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, secret memory.Secret, name string) string {
 	t.Helper()
 	retag(t, m, secret)
 	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "")
@@ -178,7 +179,7 @@ func TestTheBrokerReleasesTheTrimmedValue(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	m, enrollmentID, key, _ := newFixture(t)
-	tagged := func(name, leftover, stored string) secrets.LocalSecret {
+	tagged := func(name, leftover, stored string) memory.Secret {
 		s := policytest.Secret(name, fixtureOperator, policy.TierAgent, stored)
 		if leftover != "" {
 			s.Tags["shape"] = leftover

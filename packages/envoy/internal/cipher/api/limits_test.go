@@ -6,6 +6,7 @@ package api
 import (
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -20,7 +21,7 @@ var mountedRereadBuckets = []struct {
 	overall ratelimit.Limit
 }{
 	{"DefaultRereadOverallLimit", DefaultRereadOverallLimit},
-	{"GCPRereadOverallLimit", GCPRereadOverallLimit},
+	{"the GCP store's budget at MinReplicas", RereadOverallFor(gcp.RereadBudget, MinReplicas)},
 }
 
 // TestOneAddressNeverSustainsMoreThanHalfTheMountedRereadBucket asserts the safety property on

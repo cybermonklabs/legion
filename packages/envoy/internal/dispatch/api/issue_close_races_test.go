@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
@@ -372,7 +373,7 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 }
 
 // A decision block written within the settle delay, whose settlement is in flight - holding the
-// issue's row - when the issue is closed: the close waits for it on that row, so the settlement
+// issue's owner lock - when the issue is closed: the close waits for that lock, so the settlement
 // indexes the block as an ask credited to its writer, and the close then withdraws that ask,
 // naming the closer. The close's own settlement, behind it, finds the document settled, so the
 // two write at most one version of it before the close, and none holds the block resolved. The
@@ -381,7 +382,8 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
 	t.Parallel()
 	var documents *docs.Service
-	// hold names the document whose next settlement is held at its owner row, until release.
+	// hold names the document whose next settlement is held once it holds its owner lock (its
+	// issue's), until release.
 	var hold atomic.Pointer[string]
 	held := make(chan struct{})
 	release := make(chan struct{})
@@ -428,12 +430,15 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 		defer close(closing)
 		closed = dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
 	}()
-	// The close's own settlement of the document waits on the issue's row, which the held
-	// settlement owns.
+	// The close waits for the issue's owner lock, which the held settlement holds. lockWaiters
+	// counts any backend of this database that waits on a lock, not the close's alone, and that is
+	// enough here: in 15 runs that logged the waiter, the one waiter ran owner_lock('exclusive', …),
+	// and with the close never sent no backend waited in 20 of 20 runs. A close that does not wait
+	// fails the test anyway, at the select below or at the end-state checks after it.
 	awaitLockWaiters(t, database, 1)
 	select {
 	case <-closing:
-		t.Fatalf("the close answered %d while the settlement held the issue's row: body=%s", closed.Code, closed.Body.String())
+		t.Fatalf("the close answered %d while the settlement held the issue's owner lock: body=%s", closed.Code, closed.Body.String())
 	default:
 	}
 	releaseSettlement()
@@ -585,9 +590,9 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 	var waiting int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+		where datname = current_database() and `+lockwaittest.Waiting+` and pid <> pg_backend_pid()
 	`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting
 }

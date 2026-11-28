@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testtmp"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // peerRequest is one connection fakeHelperWithPids answered: the pid the kernel names for its
@@ -358,7 +359,7 @@ done
 printf '%s\n' "$?" > "$d/code.tmp"
 mv "$d/code.tmp" "$d/code"
 `
-	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
+	if err := testexec.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outer := exec.Command("sh", "-c", `sh "$0" "$@" &`, script, dir, strconv.Itoa(os.Getpid()), binary)
@@ -600,7 +601,7 @@ func TestRegisterAcceptsARootAboveTheLauncher(t *testing.T) {
 		launcherScript: "printf '%s\\n' \"$$\" > \"$(dirname \"$0\")/launcher.pid\"\n\"$@\"\nexit $?\n",
 		rootScript:     "sh \"$(dirname \"$0\")/launcher.sh\" \"$@\"\nexit $?\n",
 	} {
-		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		if err := testexec.WriteFile(path, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}

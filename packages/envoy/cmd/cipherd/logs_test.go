@@ -2,14 +2,18 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	smithylogging "github.com/aws/smithy-go/logging"
 	"github.com/go-logr/stdr"
@@ -17,10 +21,10 @@ import (
 	"google.golang.org/grpc/grpclog"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/awssdk"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
 	"github.com/sjawhar/envoy/internal/cipher/placeholder"
-	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -149,7 +153,7 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 
 	t.Run("the AWS SDK", func(t *testing.T) {
 		isolateAWS(t)
-		awsCfg, err := loadAWSConfig(t.Context())
+		awsCfg, err := awssdk.LoadConfig(t.Context())
 		if err != nil {
 			t.Fatalf("load the AWS configuration: %v", err)
 		}
@@ -159,10 +163,10 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 			awsCfg.Logger.Logf(smithylogging.Debug, "a debug line of the SDK's")
 		})
 		aws := func(text string) func(map[string]any) bool {
-			return func(line map[string]any) bool { return line["message"] == awsSDKMessage && line["text"] == text }
+			return func(line map[string]any) bool { return line["message"] == awssdk.Message && line["text"] == text }
 		}
 		if imds, ok := logtest.LineWhere(lines, aws("falling back to IMDSv1: token "+logmask.Mark)); !ok || imds["severity"] != "WARNING" {
-			t.Errorf("the AWS SDK's warning = %v; want %q at WARNING, its text masked (log: %q)", imds, awsSDKMessage, written)
+			t.Errorf("the AWS SDK's warning = %v; want %q at WARNING, its text masked (log: %q)", imds, awssdk.Message, written)
 		}
 		if _, ok := logtest.LineWhere(lines, aws(strings.Repeat("y", answer.FieldBytes))); !ok {
 			t.Errorf("no line of the AWS SDK is its long warning cut to %d bytes: %q", answer.FieldBytes, written)
@@ -246,18 +250,50 @@ func (r *redirectedStderr) point(w io.Writer) {
 	r.mu.Unlock()
 }
 
-// TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore
-// loads for the AWS store, or an IAM database, is the one with awsLog as its logger, whose lines
-// are the broker's own rather than the SDK's own log.Logger on stderr.
+// TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore loads
+// to sign in to an IAM database (databaseSignIn) is the one whose logger is the broker's own
+// (awssdk.Log), whose lines are the broker's rather than the SDK's own log.Logger on stderr. The
+// minter it answers signs a token with the instance role's credentials, which a stand-in for the
+// instance metadata service serves with IMDSv1 alone, refusing IMDSv2's token: the SDK logs that
+// it falls back, through that configuration's logger, so a line of the SDK's (awssdk.Message,
+// whatever its words) is in the broker's log. A database that signs in as its URL says gets no
+// minter. The AWS store's own configuration is the AWS store package's
+// (TestOpenStoreLogsThroughTheBrokersLogger there).
+//
+// The named revert: load the IAM database's configuration with the SDK's own LoadDefaultConfig,
+// and the SDK's line goes to stderr, not the broker's log.
 func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.isolateAWS, t.Setenv).
 	isolateAWS(t)
-	st, awsCfg, err := openStore(t.Context(), config.Config{DatabaseURL: storetest.URL(t)}, true)
-	if err != nil {
-		t.Fatalf("openStore: %v", err)
+	imds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest/api/token":
+			http.Error(w, "IMDSv2 is off", http.StatusForbidden)
+		case "/latest/meta-data/iam/security-credentials/":
+			fmt.Fprint(w, "broker-role")
+		case "/latest/meta-data/iam/security-credentials/broker-role":
+			fmt.Fprintf(w, `{"Code": "Success", "Type": "AWS-HMAC", "AccessKeyId": "AKIDEXAMPLE", "SecretAccessKey": "secret", "Token": "token", "Expiration": %q}`,
+				time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(imds.Close)
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "false")
+	t.Setenv("AWS_EC2_METADATA_SERVICE_ENDPOINT", imds.URL)
+	logged := captureLog(t)
+	mint, err := databaseSignIn(t.Context(), config.Config{DatabaseIAM: true})
+	if err != nil || mint == nil {
+		t.Fatalf("databaseSignIn(an IAM database) = minter %t, %v; want the RDS IAM token minter", mint != nil, err)
 	}
-	t.Cleanup(st.Close)
-	if _, ok := awsCfg.Logger.(awsLog); !ok {
-		t.Fatalf("openStore's AWS configuration logs through %T; want awsLog, the broker's own", awsCfg.Logger)
+	token, err := mint(t.Context(), "broker-db.example:5432", "broker")
+	if err != nil || token == "" {
+		t.Fatalf("the minter signed %q, %v; want a token over the instance role's credentials", token, err)
+	}
+	if got := logged.String(); !strings.Contains(got, `msg="`+awssdk.Message+`"`) {
+		t.Fatalf("the broker's log after the IAM database's credentials were read:\n%s\nwant a line of the SDK's, %q", got, awssdk.Message)
+	}
+	if mint, err := databaseSignIn(t.Context(), config.Config{}); err != nil || mint != nil {
+		t.Fatalf("databaseSignIn(a password database) = minter %t, %v; want none", mint != nil, err)
 	}
 }

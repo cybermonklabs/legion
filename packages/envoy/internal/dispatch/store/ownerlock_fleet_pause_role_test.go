@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst holds the claim of
@@ -15,17 +17,22 @@ import (
 // still exists finds the role's grants and its table there and fails too. Once the test database
 // is gone nothing depends on the role, so a drop made then takes it. The role must not outlive
 // the test: the check is registered before the store is opened, so it runs after the test
-// database's own drop, and it drops any role it finds, so this test leaves nothing either way.
+// database's own drop, and it drops any role it finds, so this test leaves nothing either way. A
+// role spans the server, so the check looks for the role and drops it in a database the test made
+// for it (testdb.DatabaseOn), never in the server's postgres database: that database is made
+// before the check is registered, so its drop runs after the check, and it is there when the
+// check connects.
 func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	server := adminDatabaseURL(t)
+	admin := adminDatabaseURL(t)
+	checkDatabase := testdb.DatabaseOn(t, admin.String(), "", "dispatch_pause_role_check")
 	var role string
 	t.Cleanup(func() {
 		if role == "" {
 			return
 		}
-		conn, err := pgx.Connect(context.Background(), server.String())
+		conn, err := pgx.Connect(context.Background(), checkDatabase)
 		if err != nil {
 			t.Errorf("connect to the test server to look for the role %s: %v", role, err)
 			return

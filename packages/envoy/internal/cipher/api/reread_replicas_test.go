@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -23,8 +25,8 @@ var rereadBudgets = []struct {
 	// RereadLimitFor of it.
 	shared, address time.Duration
 }{
-	{"default", api.DefaultRereadFleetBudget, 2250 * time.Millisecond, 4500 * time.Millisecond},
-	{"gcp", api.GCPRereadFleetBudget, 9 * time.Second, 18 * time.Second},
+	{"default", secretstore.DefaultRereadBudget, 2250 * time.Millisecond, 4500 * time.Millisecond},
+	{"gcp", gcp.RereadBudget, 9 * time.Second, 18 * time.Second},
 }
 
 // newRereadRate is a rate on budget, with the buffer its log lines are written to.
@@ -78,7 +80,7 @@ func TestTheMountedRereadLimitsAreTheBudgetAtTwoPods(t *testing.T) {
 		want ratelimit.Limit
 	}{
 		{"DefaultRereadOverallLimit", api.DefaultRereadOverallLimit, ratelimit.Limit{Every: time.Second, Burst: 10}},
-		{"GCPRereadOverallLimit", api.GCPRereadOverallLimit, ratelimit.Limit{Every: 4 * time.Second, Burst: 10}},
+		{"the GCP store's budget at MinReplicas", api.RereadOverallFor(gcp.RereadBudget, api.MinReplicas), ratelimit.Limit{Every: 4 * time.Second, Burst: 10}},
 	} {
 		if row.got != row.want {
 			t.Errorf("%s = %+v, want %+v unchanged", row.name, row.got, row.want)
@@ -145,7 +147,7 @@ func TestABucketSpentBeforeASetReplicasKeepsItsRereads(t *testing.T) {
 	t.Parallel()
 	const address = "203.0.113.9"
 	const spent = 5
-	rate, _ := newRereadRate(api.DefaultRereadFleetBudget)
+	rate, _ := newRereadRate(secretstore.DefaultRereadBudget)
 	perAddress, _ := rate.Buckets()
 	before := time.Now()
 	for sent := range spent {
@@ -186,7 +188,7 @@ func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
 		want     string
 	}{{2, "1"}, {3, "3"}} {
 		t.Run(strconv.Itoa(row.replicas)+" pods", func(t *testing.T) {
-			rate, _ := newRereadRate(api.DefaultRereadFleetBudget)
+			rate, _ := newRereadRate(secretstore.DefaultRereadBudget)
 			ts := newTestServerWith(t, func(d *api.Deps) { d.RereadRate = rate })
 			rate.SetReplicas(row.replicas)
 			for sent := 1; sent <= 100; sent++ {
@@ -214,7 +216,7 @@ func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
 // words and keys are the thing asserted.
 func TestSetReplicasLogsEachRateOnceAndWarnsAboveFour(t *testing.T) {
 	t.Parallel()
-	rate, logged := newRereadRate(api.DefaultRereadFleetBudget)
+	rate, logged := newRereadRate(secretstore.DefaultRereadBudget)
 
 	rate.SetReplicas(2)
 	first := lines(t, logged)

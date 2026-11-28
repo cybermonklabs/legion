@@ -4,13 +4,15 @@ package policy_test
 // tag, and a proxy-narrowed one, as `agent-secrets secret` writes them, with the kinds guard entry
 // in their requesters tag, a bare twin of each that carries the same tags without it, and what the
 // broker before the kinds answers for each. That broker is the merge base of the kinds, commit
-// 233828e4aeb: it reads neither proxy tag, so it serves the bare
-// twin, a secret meant for Cipher's proxy alone, as its value. The file uses only API that exists at
-// that commit, so it is the one file the golden is generated from.
-// testdata/kinds-guard-merge-base.json was written once, at the merge base, by:
+// 233828e4aeb: it reads neither proxy tag, so it serves the bare twin, a secret meant for Cipher's
+// proxy alone, as its value. testdata/kinds-guard-merge-base.json was written once, at the merge
+// base. This file reads the memory store, which the merge base does not hold: its store is the fake
+// AWS one, secrets.Local holding secrets.LocalSecret, built by secrets.NewLocal, which its
+// policytest.Secret answers and its policytest.Loader takes. So the recipe puts this file there
+// with the memory store's import and names spelled as that store's, from the root of a checkout:
 //
 //	git archive 233828e4aeb packages/envoy | tar -x -C <tmp>
-//	cp packages/envoy/internal/cipher/policy/kindsguard_base_test.go <tmp>/packages/envoy/internal/cipher/policy/
+//	sed -e 's#envoy/internal/cipher/secretstore/memory#envoy/internal/cipher/secrets#' -e 's/memory\.Secret/secrets.LocalSecret/g; s/memory\.New/secrets.NewLocal/g; s/\*memory\.Store/*secrets.Local/g' packages/envoy/internal/cipher/policy/kindsguard_base_test.go > <tmp>/packages/envoy/internal/cipher/policy/kindsguard_base_test.go
 //	go test -C <tmp>/packages/envoy ./internal/cipher/policy -run TestTheKindsGuardBaseAnswersAreRecorded -count=1 -v -args -write-kinds-guard-golden
 //	cp <tmp>/packages/envoy/internal/cipher/policy/testdata/kinds-guard-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //
@@ -31,7 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 var writeKindsGuardGolden = flag.Bool("write-kinds-guard-golden", false, "write testdata/kinds-guard-merge-base.json; run only at the merge base, as kindsguard_base_test.go's head comment says")
@@ -51,7 +53,7 @@ const (
 // it carries the guard, and list, the requesters list it carries beside the guard ("" for none).
 type kindsGuardCase struct {
 	name    string
-	secret  secrets.LocalSecret
+	secret  memory.Secret
 	guarded bool
 	list    string
 }
@@ -67,26 +69,26 @@ type kindsGuardCase struct {
 func kindsGuardCases() []kindsGuardCase {
 	shapes := []struct {
 		shape string
-		make  func(name string) secrets.LocalSecret
+		make  func(name string) memory.Secret
 		list  string
 		tags  map[string]string
 	}{
-		{"STORED", func(name string) secrets.LocalSecret {
+		{"STORED", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProxy: "slack"}},
-		{"LISTED", func(name string) secrets.LocalSecret {
+		{"LISTED", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProxy: "github"}},
-		{"ADMIN", func(name string) secrets.LocalSecret {
+		{"ADMIN", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProxy: "github", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
-		{"NARROWED", func(name string) secrets.LocalSecret {
+		{"NARROWED", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProxy: "github", baseTagProxyNarrowed: "true"}},
-		{"APP", func(name string) secrets.LocalSecret {
+		{"APP", func(name string) memory.Secret {
 			return policytest.TypeSecret(name, policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 		}, "", map[string]string{baseTagProxy: "github"}},
-		{"FEDERATION", func(name string) secrets.LocalSecret {
+		{"FEDERATION", func(name string) memory.Secret {
 			return policytest.TypeSecret(name, guardOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 		}, guardOwner, map[string]string{baseTagProxy: "anthropic", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
 	}
@@ -117,8 +119,8 @@ func kindsGuardCases() []kindsGuardCase {
 }
 
 // kindsGuardStore is a store holding every case.
-func kindsGuardStore() *secrets.Local {
-	store := secrets.NewLocal()
+func kindsGuardStore() *memory.Store {
+	store := memory.New()
 	for _, c := range kindsGuardCases() {
 		store.Put(c.secret)
 	}

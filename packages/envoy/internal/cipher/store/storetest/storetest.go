@@ -105,7 +105,9 @@ var templates sync.Map
 // databases, or as different logins, take the one lock. Builds are swept per login: the sweep of
 // unfinished builds below drops every build of its own login it finds, which under the server's one
 // lock is never one another process is building, and leaves every other login's, which only that
-// login may drop.
+// login may drop. A process waits for the lock through the shared wait (takeTemplateLock), so one
+// behind a process that holds it and never gives it back fails naming the lock 30 s before the
+// test binary's deadline, not at go test's alarm.
 const templateLockKey = "envoy broker storetest template"
 
 // lockDatabase is the database of the server templateLockKey is taken in: one every Postgres
@@ -119,10 +121,12 @@ const lockDatabase = "postgres"
 // another login owns is refused, the package comment says why), migrated once by the first
 // process of that login to ask and left on the server for the next run of the same migration set.
 // It uses that database when it exists, without taking templateLockKey. Otherwise it takes the
-// lock and looks again, and under the lock, where the template is still missing, it drops what a
-// process of the same login that died while building left, builds the template under a name of its
-// own, migrates it and closes it to connections (a database anyone is connected to cannot be
-// copied), and only then renames it, so a database of the template's name is always a whole one.
+// lock, waiting for it through the shared wait (takeTemplateLock), whose give-up fails t naming
+// the lock, and looks again, and under the lock, where the template is still missing, it drops
+// what a process of the same login that died while building left, builds the template under a
+// name of its own, migrates it and closes it to connections (a database anyone is connected to
+// cannot be copied), and only then renames it, so a database of the template's name is always a
+// whole one.
 func template(t testing.TB, raw string) string {
 	t.Helper()
 	entry, _ := templates.LoadOrStore(testdb.ServerKey(raw), sync.OnceValues(func() (string, error) { return makeTemplate(raw) }))
@@ -143,6 +147,10 @@ func loginKey(login string) string {
 	return hex.EncodeToString(sum[:6])
 }
 
+// makeTemplate finds or makes the template of raw's login and migration set, as template says, and
+// answers its name. It has no t: template calls it once per server URL (templates) for every test
+// that asks, so it answers what failed as an error, which template fails its test with, the
+// give-up of its wait for templateLockKey (takeTemplateLock) among them.
 func makeTemplate(raw string) (string, error) {
 	digest, err := store.MigrationsDigest()
 	if err != nil {
@@ -182,8 +190,8 @@ func makeTemplate(raw string) (string, error) {
 	if found, err := find(); err != nil || found != "" {
 		return found, err
 	}
-	if _, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
-		return "", fmt.Errorf("take the template lock: %w", err)
+	if err := takeTemplateLock(conn); err != nil {
+		return "", err
 	}
 	// The lock is the connection's: closing the connection releases it whatever happens below.
 	// Another process of the login may have finished the template between the look above and the
@@ -235,6 +243,43 @@ func makeTemplate(raw string) (string, error) {
 		}
 	}
 	return name, nil
+}
+
+// templateLockWait is what takeTemplateLock's wait waits for, as its give-up names it.
+var templateLockWait = fmt.Sprintf("the template lock (session advisory lock hashtext('%s') on the server's %s database)", templateLockKey, lockDatabase)
+
+// takeTemplateLock takes templateLockKey on conn, makeTemplate's connection to the server's
+// lockDatabase, which then holds it until it closes. makeTemplate has no t, so the wait for the
+// lock goes through the shared wait's form for a helper with none (testwait.ReceiveInHelper),
+// whose one bound is the test binary's deadline less the margin: the lock statement runs on a
+// goroutine of its own, and when the wait gives up the statement is cancelled, and its goroutine
+// has returned, before the wait's give-up is returned. That text names the lock, so the failure of
+// a test behind a process that holds the lock and never gives it back names the lock too, where a
+// wait with no end would run into go test's alarm. A statement that took the lock as the wait
+// gave up leaves it held until makeTemplate closes conn. The server ends a cancelled statement's
+// wait on the cancel request pgx sends from a goroutine of its own once the statement has
+// returned, so a process that exits at once can leave its backend waiting on the server until the
+// holder lets the lock go.
+func takeTemplateLock(conn *pgx.Conn) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	taken := make(chan error, 1)
+	go func() {
+		_, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey)
+		taken <- err
+	}()
+	err, gaveUp := testwait.ReceiveInHelper("storetest", templateLockWait, taken)
+	if gaveUp != nil {
+		// A cancelled statement returns at once: pgx stops reading and closes conn, so this
+		// receive waits on nothing the server holds.
+		cancel()
+		<-taken
+		return gaveUp
+	}
+	if err != nil {
+		return fmt.Errorf("take the template lock: %w", err)
+	}
+	return nil
 }
 
 // migrateTemplate makes testSchema in the database build and migrates it there, closing every
@@ -351,10 +396,11 @@ type Querier interface {
 // AwaitLockWaiters waits until n backends wait on a lock behind holder's backend and answers their
 // pids. It waits through testwait.Until, so its one bound is the test binary's deadline less
 // testwait's margin, and a wait that gives up prints the waiters it read last. A backend counts
-// when it waits on a lock (wait_event_type 'Lock') that holder's backend holds, or that a backend
-// already counted holds or is ahead of it in the queue for: a second waiter for one row waits on
-// the first waiter's tuple lock, and pg_blocking_pids names only that first waiter, never the
-// holder. Waiters behind other holders, in other tests on the same server, never count.
+// when pg_blocking_pids names holder's backend for it, or a backend already counted: a second
+// waiter for one row waits on the first waiter's tuple lock, and pg_blocking_pids names only that
+// first waiter, never the holder. pg_blocking_pids reads the lock manager's queue, as pg_locks
+// does (lockwaittest.Waiting, whose package comment says why not from the wait event). Waiters
+// behind other holders, in other tests on the same server, never count.
 func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	pid := holder.Conn().PgConn().PID()
@@ -378,9 +424,9 @@ func LockWaitersBehind(t testing.TB, q Querier, pid uint32) []int32 {
 	t.Helper()
 	var waiting []int32
 	if err := q.QueryRow(context.Background(), `with recursive waiting(pid) as (
-			select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+			select pid from pg_stat_activity where $1 = any(pg_blocking_pids(pid))
 			union
-			select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
+			select a.pid from pg_stat_activity a, waiting w where w.pid = any(pg_blocking_pids(a.pid))
 		)
 		select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
 		t.Fatalf("read the backends waiting behind %d: %v", pid, err)

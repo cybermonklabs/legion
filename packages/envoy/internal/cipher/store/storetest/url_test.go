@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // A server URL that does not parse fails the template's build with no part of the URL in its
@@ -92,7 +93,7 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 		t.Helper()
 		var n int
 		if err := holder.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where application_name = $1 and wait_event_type = 'Lock' and $2 = any(pg_blocking_pids(pid))`,
+			where application_name = $1 and `+lockwaittest.WaitingOn("advisory")+` and $2 = any(pg_blocking_pids(pid))`,
 			app, int32(holder.PgConn().PID())).Scan(&n); err != nil {
 			t.Fatalf("read the builder's lock waits: %v", err)
 		}

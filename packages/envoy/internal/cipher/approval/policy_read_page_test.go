@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // retagOnAsk is a projectaccess.Access that, once armed, runs retag the first time it is asked
@@ -62,7 +62,7 @@ func TestThePagePrintsNoOtherRequestOnAPolicyItsRuleDidNotCheck(t *testing.T) {
 	front.retag = func() error {
 		tagged := policytest.Secret("SHARED_SECRET", policy.OwnerShared, policy.TierHuman, "shared-v1")
 		tagged.Tags[policy.TagProject] = privProject
-		r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local).Put(tagged)
+		r.machine.Secrets.(*memory.Store).Put(tagged)
 		return r.machine.Policy.Refresh(context.Background())
 	}
 	mainSession, mainKey := r.benSession(t, "ben-main-box")

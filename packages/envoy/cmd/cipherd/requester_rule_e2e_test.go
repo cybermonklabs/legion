@@ -2,7 +2,7 @@
 // binary and the REAL compiled agent-secrets client, driven over sockets against a real Postgres,
 // with the requesters tag deciding every answer. Nothing here is a unit test — the binaries are
 // the ones cmd/cipherd and cmd/cipher build, the schema is a fresh one on the test server,
-// the policy comes from a fake secrets store the broker reads off disk, and every refusal is read
+// the policy comes from a memory store file the broker reads off disk, and every refusal is read
 // off the client's own output rather than out of the broker's internals.
 package main
 
@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -167,7 +168,7 @@ const (
 )
 
 // TestRequesterRuleEndToEnd drives the whole requesters feature through the two real binaries:
-// one broker process, one fake secrets store, one Postgres schema, and two sessions enrolled the
+// one broker process, one memory store file, one Postgres schema, and two sessions enrolled the
 // two ways a person's session is enrolled — jason's through his own machine login (the device
 // grant, approved by him through the routes Dispatch relays) and aditya's through his sign-in on
 // a shared box (the RFC 8693 sign-in trade, his Google identity token with the box's as the actor
@@ -233,7 +234,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeStore.path,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + fakeStore.path,
 		"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
@@ -840,19 +842,19 @@ func requestIDFromDenial(t *testing.T, stderr string) string {
 	return match[1]
 }
 
-// requesterStore is the fake Secrets Manager this run serves, the file
-// BROKER_FAKE_SECRETS_FILE names: the four secrets of the spec's table and the two
-// google-service-account secrets of this issue's leg, which a row may retag and have the broker
-// read again, as `agent-secrets secret retag` does in production.
+// requesterStore is the memory store this run serves, the file BROKER_MEMORY_SECRETS_FILE names:
+// the four secrets of the spec's table and the two google-service-account secrets of this issue's
+// leg, which a row may retag and have the broker read again, as `agent-secrets secret retag`
+// does in production.
 type requesterStore struct {
 	path string
-	rows []secrets.LocalSecret
+	rows []memory.Secret
 }
 
 // newRequesterStore writes the run's six secrets and answers the store that holds them.
 func newRequesterStore(t *testing.T) *requesterStore {
 	t.Helper()
-	s := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
+	s := &requesterStore{path: filepath.Join(t.TempDir(), "memory-secrets.json"), rows: []memory.Secret{
 		requesterRow(requesterGCloudSami, sami, policy.TierHuman, requesterGCloudValue, map[string]string{
 			policy.TagRequesters: requesterDaemonService + " " + sami,
 			policy.TagMaxGrant:   requesterMaxGrant,
@@ -910,15 +912,13 @@ func requesterStoreName(name string) string {
 	return testSecretsPrefix + slug
 }
 
-// requesterRow is one secret of the fake store: its place in the store (requesterStoreName), the
-// key every secret of these tests is encrypted with (testSecretsKMSKeyARN), its owner, its tier
-// and whatever of this feature's tags the row sets.
-func requesterRow(name, owner, tier, value string, extra map[string]string) secrets.LocalSecret {
-	row := secrets.LocalSecret{
-		Name:     requesterStoreName(name),
-		KmsKeyID: testSecretsKMSKeyARN,
-		Tags:     map[string]string{policy.TagOwner: owner, policy.TagTier: tier},
-		Value:    value,
+// requesterRow is one secret of the memory store: its place in the store (requesterStoreName),
+// its owner, its tier and whatever of this feature's tags the row sets.
+func requesterRow(name, owner, tier, value string, extra map[string]string) memory.Secret {
+	row := memory.Secret{
+		Name:  requesterStoreName(name),
+		Tags:  map[string]string{policy.TagOwner: owner, policy.TagTier: tier},
+		Value: value,
 	}
 	for tag, setting := range extra {
 		row.Tags[tag] = setting
@@ -951,7 +951,7 @@ func (s *requesterStore) retag(t *testing.T, name, tag, value string) {
 		s.write(t)
 		return
 	}
-	t.Fatalf("the fake store holds no secret served as %s", name)
+	t.Fatalf("the memory store holds no secret served as %s", name)
 }
 
 // reread has the broker read one name's tags again, the route a retag is followed by, as a session

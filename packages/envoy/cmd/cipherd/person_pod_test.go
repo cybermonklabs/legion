@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -58,7 +58,7 @@ var personPodMapping = []string{
 
 // TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval drives the REAL compiled broker on a
 // real Postgres. A local OIDC issuer stands in for the cluster's ServiceAccount token issuer
-// (BROKER_K8S_OIDC_ISSUER). The fake secrets store holds one secret, owned by ada at the agent
+// (BROKER_K8S_OIDC_ISSUER). The memory store's file holds one secret, owned by ada at the agent
 // tier. Each pod is the REAL compiled agent-secrets, which runs as a pod runs it: `enroll --pod
 // --service <its login service>` with the projected token of its own account, bound to its own
 // pod.
@@ -80,8 +80,8 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 	issuer := oidctest.New(t)
 	clusterKey := issuer.PublishKey(t, "cluster-key")
 	store := &requesterStore{
-		path: filepath.Join(t.TempDir(), "fake-secrets.json"),
-		rows: []secrets.LocalSecret{requesterRow(personPodSecret, personPodPerson, policy.TierAgent, personPodSecretValue, nil)},
+		path: filepath.Join(t.TempDir(), "memory-secrets.json"),
+		rows: []memory.Secret{requesterRow(personPodSecret, personPodPerson, policy.TierAgent, personPodSecretValue, nil)},
 	}
 	store.write(t)
 	cli := buildAgentSecrets(t)
@@ -90,7 +90,8 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + store.path,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + store.path,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
 		// Nothing is left in flight when the test ends, so the broker exits at once.
@@ -205,7 +206,7 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 		privProject: {Visibility: "private", Owner: privateOwner, Listed: []string{personPodPerson}},
 		elseProject: {Visibility: "private", Owner: privateOwner},
 	}
-	store := &requesterStore{path: filepath.Join(t.TempDir(), "fake-secrets.json"), rows: []secrets.LocalSecret{
+	store := &requesterStore{path: filepath.Join(t.TempDir(), "memory-secrets.json"), rows: []memory.Secret{
 		requesterRow(privKey, policy.OwnerShared, policy.TierAgent, privValue, map[string]string{policy.TagProject: privProject}),
 		requesterRow(elseKey, policy.OwnerShared, policy.TierAgent, "else-value", map[string]string{policy.TagProject: elseProject}),
 	}}
@@ -223,7 +224,8 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 			"BROKER_DATABASE_URL=" + databaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + store.path,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + store.path,
 			"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 			"BROKER_K8S_OIDC_AUDIENCE=" + personPodAudience,
 			"BROKER_PROJECT_ACCESS_URL=" + dispatch.URL,
@@ -329,7 +331,7 @@ func TestASecretOwnedByAMappedAccountsLoginServiceIsRefusedAtLoad(t *testing.T) 
 			personPodAdaAccount, cfg.PodOperators[personPodAdaAccount], cfg.ServiceLogins[personPodAdaAccount], personPodPerson, personPodAdaService)
 	}
 
-	set := policytest.Current(t, secrets.NewLocal(
+	set := policytest.Current(t, memory.New(
 		policytest.Secret(loginOwnedSecret, personPodAdaService, policy.TierAgent, "login-owned-value"),
 		policytest.Secret(serviceOwnedSecret, registeredService, policy.TierAgent, "service-owned-value"),
 	), serviceNames(cfg)...).Get()

@@ -15,6 +15,7 @@ import {
   claimStandsWithoutHandover,
   claimStepRecord,
   type LegionClaimHost,
+  roleClaimWords,
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
@@ -384,7 +385,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
     async () => {
       if (++tries < 3) throw claimAnswered503();
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: (line) => lines.push(line), firstDelayMs: 1 }
   );
   expect(tries).toBe(3);
@@ -396,7 +397,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
       async () => {
         throw refused;
       },
-      "controller",
+      roleClaimWords("controller"),
       { log: (line) => lines.push(line), firstDelayMs: 1 }
     )
   ).rejects.toBe(refused);
@@ -413,7 +414,7 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
         tries++;
         throw busy;
       },
-      "controller",
+      roleClaimWords("controller"),
       { log: (line) => lines.push(line), firstDelayMs: 1, maxAttempts: 3 }
     )
   ).rejects.toBe(busy);
@@ -425,10 +426,48 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
     async () => {
       if (++unbounded < 6) throw claimAnswered503();
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: () => {}, firstDelayMs: 1 }
   );
   expect(unbounded).toBe(6);
+});
+
+// The same helper makes a subscription again on a 503: the controller's watched workflow topics
+// (`packages/pi-legion/src/controller-session.ts`), which an edge listener answers 503
+// `repositories_unknown` while it cannot read the project's repositories. Each wait's line names
+// what the listener answered and what is made again in the caller's own words, not a role claim's,
+// and the waits double as a role claim's do.
+test("a subscription made again on a 503 logs its own words and doubles its wait", async () => {
+  const topic =
+    "notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule";
+  const lines: string[] = [];
+  const handed: unknown[] = [];
+  const busy = claimAnswered503();
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 4) throw busy;
+    },
+    { what: `subscription of ${topic}`, again: "subscribing it again" },
+    {
+      log: (line, error) => {
+        lines.push(line);
+        handed.push(error);
+      },
+      firstDelayMs: 1,
+    }
+  );
+
+  expect(tries).toBe(4);
+  expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
+    `subscription of ${topic} was answered 503 at attempt 1; subscribing it again in 1 ms`,
+    `subscription of ${topic} was answered 503 at attempt 2; subscribing it again in 2 ms`,
+    `subscription of ${topic} was answered 503 at attempt 3; subscribing it again in 4 ms`,
+  ]);
+  for (const line of lines) {
+    expect(line).toContain("the message bus refused the message because its stream is full");
+  }
+  expect(handed).toEqual([busy, busy, busy]);
 });
 
 /** The listener's 503 to a role claim with `body`, as envoy-client's `setRole` rejects with it. */
@@ -465,7 +504,7 @@ test("a claim 503 whose claim stands is told from one that wrote nothing, and ea
     async () => {
       if (++tries < 2) throw handover;
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: (_line, error) => handed.push(error), firstDelayMs: 1 }
   );
   expect(handed).toEqual([handover]);
