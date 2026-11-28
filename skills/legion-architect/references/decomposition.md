@@ -56,6 +56,7 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - Your `Production check` line says whether this project checks production after a merge.
   When it names a role, write one `after_merge` check for the production check in each child's Verification document, with its spec and while the child is open, because a closed issue refuses every new document.
+  Where `dispatch deploys --repo <the child's repository>` lists the program that check reads, give each child's check `subject="production"` and that `program`; otherwise, or where Dispatch refuses either attribute, give it neither.
   Under `Production check: off`, write none.
 
 - A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key lower-cased: `legion-acme-legion-41-architect`.

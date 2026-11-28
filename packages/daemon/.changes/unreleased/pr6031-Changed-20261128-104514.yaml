@@ -1,0 +1,5 @@
+kind: Changed
+body: The architect prompts tell an architect to give the production check subject="production" and its program where `dispatch deploys` lists that program, and neither where it lists none or Dispatch refuses either attribute. The production check's task and the tester's prompts record a pass of a check with subject production or graph at the commit of its program's deploy, which must hold the merge, and a fail there where that deploy holds the merge. Where production does not carry the merge, or Dispatch names no deploy of the program, they record the fail at the merge commit, which leaves the check not known, and the report carries the fail.
+time: 2026-11-28T10:45:14.786409831Z
+custom:
+    Issue: pr6031

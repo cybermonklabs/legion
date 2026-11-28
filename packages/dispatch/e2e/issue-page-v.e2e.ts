@@ -18,17 +18,19 @@ import { blockNodeId } from "../web/src/features/issue-page/statement-rules";
 import {
   createComment,
   createIssue,
+  createIssueArtifact,
   createProject,
   getArtifact,
   getIssueCoverage,
   getIssueResults,
   recordCheckResult,
+  recordDeploy,
   retractCheckResult,
 } from "./api";
 import { nextFrames } from "./frames";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
-import { HEAD_SHA, PROJECT } from "./issue-layout-seed-support";
-import { requirementBlockId } from "./issue-layout-seed-text";
+import { HEAD_SHA, PROJECT, STRAY_SHA, seedLandedMerge } from "./issue-layout-seed-support";
+import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { gotoIssue, issuePage, phase } from "./issue-page";
 import {
   DESKTOP,
@@ -83,8 +85,8 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * the view's cards through `e2e/issue-page-v.ts`, whose measures fail where the view draws no
  * card.
  *
- * The file holds eight rows. Rows 1 and 2 come from an earlier `e2e/issue-layout.e2e.ts`, and the
- * other six were written for this view; each runs under the title the Verification document
+ * The file holds nine rows. Rows 1 and 2 come from an earlier `e2e/issue-layout.e2e.ts`, and the
+ * other seven were written for this view; each runs under the title the Verification document
  * names it by.
  */
 
@@ -1423,5 +1425,139 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
       ),
       "after Retry the tree does not answer j with a row"
     ).toBe(true);
+  });
+});
+
+/** The block ids of the live check's issue: its one statement and its one check. */
+const LIVE_BLOCKS = { check: "c-live", statement: "r-live" } as const;
+
+/** What `seedLiveCheck` wrote. */
+interface LiveCheckSeed {
+  /** The node id the view draws the check's row under. */
+  readonly check: string;
+  readonly key: string;
+  /** The id of the pass recorded at the merge. */
+  readonly pass: string;
+  /** The repository the issue's pull request merged in, which a deploy of its program names. */
+  readonly repository: string;
+}
+
+/** An issue whose pull request merged at `HEAD_SHA` (`seedLandedMerge`), with one statement, one
+ *  `after_merge` check of production that serves it and names the program `dispatch`, and one
+ *  pass of that check at the merge. The pass is recorded once the coverage read counts the check
+ *  for its statement, as `seedLinkedChecks` waits for it. */
+async function seedLiveCheck(): Promise<LiveCheckSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    spec: `:::requirement{#${LIVE_BLOCKS.statement}}\nThe deployed program answers its health check.\n:::\n`,
+    title: "A production check reads the deploy of its program",
+  });
+  const repository = await seedLandedMerge(issue.key);
+  const run = "curl -fsS https://dispatch.example/healthz";
+  const verification = await createIssueArtifact(issue.key, {
+    content:
+      "How production is proved.\n\n" +
+      `:::check{#${LIVE_BLOCKS.check} serves="${specBlockRef(issue.key, LIVE_BLOCKS.statement)}"` +
+      ` surface="api" run="${run}" when="after_merge" subject="production" program="dispatch"}\n` +
+      "The deployed program answers its health check.\n:::\n",
+    name: "verification.md",
+  });
+  await expect
+    .poll(
+      async () =>
+        ((await getIssueCoverage(issue.key)).requirements ?? []).map((one) => [
+          one.block_id,
+          one.checks,
+        ]),
+      { message: `${issue.key}'s coverage does not count the production check for its statement` }
+    )
+    .toEqual([[LIVE_BLOCKS.statement, 1]]);
+  const recorded = await recordCheckResult(
+    issue.key,
+    {
+      check: LIVE_BLOCKS.check,
+      commit: HEAD_SHA,
+      observed: "200 OK",
+      role: "tester",
+      run,
+      surface: "api",
+      verdict: "pass",
+    },
+    asRecorder
+  );
+  return {
+    check: blockNodeId(verification.artifact.slug, LIVE_BLOCKS.check),
+    key: issue.key,
+    pass: recorded.result.id,
+    repository,
+  };
+}
+
+/** What the results read answers of the live check and its pass: whether a pass of the check
+ *  stands and why not, where the pass's commit stands, and whether the pass counts. */
+async function liveAnswer(seeded: LiveCheckSeed) {
+  const block = ((await getIssueResults(seeded.key)).checks ?? []).find(
+    (one) => one.block_id === LIVE_BLOCKS.check
+  );
+  const pass = (block?.results ?? []).find((one) => one.id === seeded.pass);
+  return {
+    answer: block?.pass_stands.answer,
+    commit: pass?.commit_stands?.answer,
+    counted: pass !== undefined && pass.not_counted === undefined,
+    reason: block?.pass_stands.reason,
+  };
+}
+
+// A check of production run after the merge is decided by the current deploy of the program it
+// names, as the server reads it (`readsTheLiveDeploy`, `liveResultStands`), and never by a pass
+// at its basis: the page once drew such a check Passed where the results route answered that it
+// could not tell (dispatch://INFRA-5610). A pass at the merge reads Cannot tell with no deploy of
+// `dispatch`, and again once a deploy of it at another commit is recorded, against which the
+// server counts the pass for nothing. The server's answer is read before each load, so each load
+// reads the page's reading of that answer, and not a read that had not yet placed the merge.
+// SLOW(>=2s): an issue with a merged pull request, a check and a pass seeded and waited for in the
+// coverage and results reads, then the view loaded twice, around a recorded deploy.
+test("the Verification view reads a production check after the merge by the deploy of its program", async ({
+  browser,
+}) => {
+  await phase(browser, seedLiveCheck, async (page, seeded) => {
+    const drawn = verificationCheck(page, seeded.check);
+    await expect
+      .poll(() => liveAnswer(seeded), {
+        message: "the results read does not answer the pass at the merge as one with no deploy",
+      })
+      .toEqual({ answer: "unknown", commit: "at_basis", counted: true, reason: "no_deploy" });
+    await openPreset(page, seeded.key, "verification");
+    await expect(drawn, "the Verification view draws no row for the production check").toHaveCount(
+      1
+    );
+    await expect(
+      drawn,
+      "with no deploy of its program, the production check does not read Cannot tell"
+    ).toHaveAttribute("data-node-state", "unmarked");
+
+    await recordDeploy({ commit: STRAY_SHA, program: "dispatch", repo: seeded.repository });
+    await expect
+      .poll(() => liveAnswer(seeded), {
+        message:
+          "the results read does not count the pass at the merge for nothing after the deploy",
+      })
+      .toEqual({
+        answer: "unknown",
+        commit: "at_basis",
+        counted: false,
+        reason: "deploy_not_merged",
+      });
+    await openPreset(page, seeded.key, "verification");
+    await expect(
+      drawn,
+      "the Verification view draws no row for the production check after the deploy"
+    ).toHaveCount(1);
+    await expect(
+      drawn,
+      "after a deploy of its program at another commit, the production check does not read Cannot tell"
+    ).toHaveAttribute("data-node-state", "unmarked");
   });
 });

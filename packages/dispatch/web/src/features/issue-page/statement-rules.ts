@@ -95,8 +95,17 @@ export function coverageStatements(
  * a check other than `checkStanding` does. Whether it passed is the server's own answer over
  * every result of the check (`pass_stands`, main's e98fc56ef8): a pass recorded before a later
  * fail still stands, while a retracted pass, a pass recorded against an older wording of the
- * check and a pass at a commit the check no longer compares with stand for nothing. The other
- * states read what no pass standing is:
+ * check and a pass at a commit the check no longer compares with stand for nothing. A check that
+ * reads the live deploy comes here only for an answer of `no` for no result, which
+ * `liveResultStands` gives before it compares the deploy, where it compared the check with
+ * nothing (the issue's pull request has not merged, or it has no pull request or branch), as
+ * `newestResultStands` does for a code check. Its payload can still name the program's current
+ * deploy (`pass_stands.deploy`) and mark results `not_counted` (`markNotCounted` runs first),
+ * which the code path reads as it reads them for any check: a `not_counted` result stands at no
+ * basis (`standsAtBasis`), and every result stands at another commit (`commit_stands` answers
+ * `other_commit`). `checkStanding` reads every other answer for it from `pass_stands`
+ * (`liveStanding`), as `liveResultStands` decides it. The other states read what no pass
+ * standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -116,7 +125,7 @@ export function coverageStatements(
  * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
  *   commit it cannot place.
  *
- * A retracted result is no evidence, as the server counts it (`results_comparison.go`'s
+ * A retracted result is no evidence, as the server counts it (`results_pass_stands.go`'s
  * `passStandsOf` skips it), so `older` and `failed` are read from the newest result that still
  * stands and never from a withdrawn one: a pass taken back at the compared commit over an older
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
@@ -140,12 +149,17 @@ function checkState(check: CheckStateReads): CheckState {
   return standing.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
 
-/** What a check's state is read from: the server's answer over its results and the results
- *  themselves. `pass_stands` is declared required by the API types and is missing from what
- *  the deployed server sends, so it is optional here and the page reads a payload without it
- *  rather than throwing over the whole issue page. */
-export type CheckStateReads = Pick<CheckBlock, "results"> & {
+/** What a check's state is read from: the server's answer over its results, the results
+ *  themselves, and what the check reads and when it runs (`subject`, `when`), which say whether
+ *  that answer is read against its program's current deploy (`readsTheLiveDeploy`). The page
+ *  passes the check's own `CheckBlock`, which carries all of them. `when` is required, as the API
+ *  types declare it, so no caller can leave it out and have a check of the live deploy read as a
+ *  check of the code; `subject` is optional there, as here. `pass_stands` is declared required by
+ *  the API types and is missing from what the deployed server sends, so it is optional here and
+ *  the page reads a payload without it rather than throwing over the whole issue page. */
+export type CheckStateReads = Pick<CheckBlock, "results" | "when"> & {
   readonly pass_stands?: CheckBlock["pass_stands"];
+  readonly subject?: CheckBlock["subject"];
 };
 
 /** How one check stands, as the server reads the commit each of its results ran at. */
@@ -154,8 +168,11 @@ export interface CheckStanding {
   readonly state: CheckState;
   /** The result that state stands on: the newest result over the check's words now at its
    *  basis, a pass or a fail, where one is there; else the newest result that stands at all,
-   *  and none for a check the server says passed with no pass at its basis in the read. Absent
-   *  where none stands. */
+   *  and none for a check the server says passed with no pass at its basis in the read. For a
+   *  check that reads the live deploy it is the result the server's answer names
+   *  (`pass_stands.results`), where the read holds it, but for an answer of `no` for no result,
+   *  which `checkStanding` reads as any check's: the newest result that stands. Absent where
+   *  none stands. */
   readonly stands?: CheckResult;
 }
 
@@ -172,13 +189,39 @@ export interface CheckStanding {
  * Each result is read against the commit the server names for its own check - the basis the
  * check compares with, which the result's `commit_stands` answers (`at_basis`, `other_commit`,
  * `unknown`) - as the server's `standingCommit` and `passStandsOf` read it
- * (`results_comparison.go`), and never against one commit the page names for every check: two
+ * (`results_pass_stands.go`), and never against one commit the page names for every check: two
  * checks of one issue compare with different commits, a `before_merge` check with the pull
  * request's head and an `after_merge` one with the branch it merged into, so a pass at its own
  * check's basis reads Passed whatever newer result another check holds at another commit, as its
  * own fact reads "Up to date" (`check-facts.ts`'s `resultFacts`). A result stands for something
  * at the basis only where nobody withdrew it and its check's words have not moved since it was
  * recorded.
+ *
+ * **A check that reads the live deploy is the server's answer alone, but for an answer of `no`
+ * for no result.** A check of production or of the graph, run after the merge or on the default
+ * branch (`readsTheLiveDeploy`, the page's form of the server's function of that name in
+ * `results_deploys.go`), is decided by the current deploy of the program it reads and not by its
+ * basis: the server counts only the results recorded at the commit that deploy runs and after it
+ * went out, marks every other one `not_counted` (`markNotCounted`), and answers over the rest
+ * (`liveResultStands` in `results_pass_stands.go`). So such a check takes its state from
+ * `pass_stands`, with or without results: `yes` is Passed and `no` for a fail is Failed, each
+ * standing on the result the answer names (`pass_stands.results`) where the read holds it; and
+ * `unknown` is Cannot tell, whatever its reason - no deploy of the program, no result since its
+ * deploy, a program the check leaves unnamed, a deploy at a commit that does not hold the merge,
+ * or a read that failed. A pass at its basis says nothing of it, so with no deploy, or after a
+ * deploy at another commit, the page says what the route says: it cannot tell. `no` for no
+ * result is no answer about the deploy: `liveResultStands` gives it before it compares the
+ * deploy, where it compared the check with nothing - the issue's pull request has not merged, or
+ * it has no pull request or branch - as `newestResultStands` does for a code check. Its payload
+ * can still name the program's current deploy (`pass_stands.deploy`) and mark results
+ * `not_counted` (`markNotCounted` runs first), which the code path reads as it reads them for
+ * any check: a `not_counted` result stands at no basis (`standsAtBasis`), and every result stands
+ * at another commit (`commit_stands` answers `other_commit`). So that answer is read as any
+ * check's is, as the rest of this says: No result where the check holds no result at all,
+ * Retracted where every result was withdrawn, and else Out of date, standing on the newest result
+ * that stands, and never No result over the results drawn under it, which the record route takes
+ * before the merge. One whose payload carries no `pass_stands` reads Could not read, whatever
+ * results it holds. Every other check is read as the rest of this says.
  *
  * **The latest evidence at the basis decides.** A check with no result reads No result, and one
  * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
@@ -194,6 +237,9 @@ export interface CheckStanding {
  * Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
  */
 export function checkStanding(check: CheckStateReads): CheckStanding {
+  if (readsTheLiveDeploy(check) && check.pass_stands?.reason !== "no_result") {
+    return liveStanding(check);
+  }
   const standing = newestFirst(standingResults(check));
   // The newest result that stands for something at the commit the server names for the check:
   // over the check's words now and at its basis (`standingCommit`). A check with no result has
@@ -209,14 +255,58 @@ export function checkStanding(check: CheckStateReads): CheckStanding {
   return { state, ...(stands === undefined ? {} : { stands }) };
 }
 
-/** Whether `result` stands at its check's basis: recorded against the check's words now
- *  (`check_words_moved`) and at the commit the server names for the check (`commit_stands` is
+/** Whether `check` is read against the current deploy of the program it reads: a check of
+ *  production or of the graph, run after the merge or on the default branch, as the server's
+ *  `readsTheLiveDeploy` (`results_deploys.go`) decides which checks it compares so. */
+function readsTheLiveDeploy(check: CheckStateReads): boolean {
+  return (
+    (check.subject === "production" || check.subject === "graph") &&
+    (check.when === "after_merge" || check.when === "default_branch")
+  );
+}
+
+/** How a check that reads the live deploy stands: the server's answer over the results its
+ *  program's current deploy counts (`liveResultStands`). Where the answer names a pass or a fail,
+ *  which of the results that deploy counts is the server's to say (`markNotCounted`), so nothing
+ *  the page reads of the results itself decides it: the check stands on the result the answer
+ *  names, the newest one that deploy counts, and on none where the answer names none or the read
+ *  does not hold the one named. An answer of `no` for no result never comes here:
+ *  `liveResultStands` gives it before it compares the deploy, where it compared the check with
+ *  nothing (the issue's pull request has not merged, or it has no pull request or branch), as
+ *  `newestResultStands` does for a code check, so `checkStanding` reads it on the code path, as
+ *  it reads any check's. Its payload can still name the program's current deploy
+ *  (`pass_stands.deploy`) and mark results `not_counted` (`markNotCounted` runs first), which
+ *  the code path reads as it reads them for any check: a `not_counted` result stands at no basis
+ *  (`standsAtBasis`), and every result stands at another commit (`commit_stands` answers
+ *  `other_commit`). */
+function liveStanding(check: CheckStateReads): CheckStanding {
+  const answer = check.pass_stands;
+  if (answer === undefined) return { state: "unreadable" };
+  if (answer.answer === "unknown") return { state: "unmarked" };
+  const named = answer.results?.[0];
+  const stands = (check.results ?? []).find((result) => result.id === named);
+  const state = answer.answer === "yes" ? "passed" : "failed";
+  return { state, ...(stands === undefined ? {} : { stands }) };
+}
+
+/** Whether `result` still speaks for its check, wherever its commit stands: it was recorded
+ *  against the check's words now (`check_words_moved`), and the server counts it, since a result
+ *  marked `not_counted`, one that names a commit its live check's current deploy does not run or
+ *  that was recorded before that deploy went out (`markNotCounted`), speaks for no build that runs
+ *  now. A result that does not is out of date whatever commit it ran at: it stands at no basis
+ *  (`standsAtBasis`), and its own fact reads so (`check-facts.ts`'s `resultFacts`). */
+export function speaksForTheCheckNow(result: CheckResult): boolean {
+  return result.not_counted === undefined && result.check_words_moved !== true;
+}
+
+/** Whether `result` stands at its check's basis: it speaks for the check now
+ *  (`speaksForTheCheckNow`), at the commit the server names for the check (`commit_stands` is
  *  `at_basis`), as the server's `standingCommit` reads it. It is the one reading of "this result
  *  stands at its check's basis" that a check's state (`checkStanding`) and its body's mark
  *  (`statement-state.ts`'s `atBasis`) share, so the two never disagree. Whether anybody withdrew
  *  the result is no part of it: both read it only of a result that stands (`standingResults`). */
 export function standsAtBasis(result: CheckResult): boolean {
-  return result.check_words_moved !== true && result.commit_stands?.answer === "at_basis";
+  return speaksForTheCheckNow(result) && result.commit_stands?.answer === "at_basis";
 }
 
 /** Every result of `check` nobody withdrew, which is every result that stands as evidence: the
@@ -234,12 +324,13 @@ export function newestFirst(results: readonly CheckResult[]): readonly CheckResu
 
 /**
  * The one commit the page names for the issue's results (root R17): the commit of the newest
- * result recorded against any check of the issue that still stands, against the words its check
- * has now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
- * result names no commit here; nor does one recorded against words its check no longer has
- * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
- * standing; and a result recorded with no commit at all names none either. It is `undefined`
- * where no result names one.
+ * result recorded against any check of the issue that still stands, speaks for its check now, and
+ * names one. A result nobody withdrew is the evidence the page reads, so a withdrawn result names
+ * no commit here; nor does one that does not speak for its check now (`speaksForTheCheckNow`),
+ * whether recorded against words its check no longer has (`check_words_moved`) or counted for
+ * nothing by the server (`not_counted`), since the server's `standingCommit`
+ * (`results_pass_stands.go`) gives neither any standing; and a result recorded with no commit at
+ * all names none either. It is `undefined` where no result names one.
  *
  * The Verification view's body names it, and every statement's state is read at it (R6): each
  * check of a statement is read there by `stateAtCommit`, which Dashboard's two tiles read too, so
@@ -250,7 +341,7 @@ export function newestFirst(results: readonly CheckResult[]): readonly CheckResu
 export function namedCommit(checks: readonly CheckStateReads[]): string | undefined {
   const named = checks.flatMap((check) =>
     standingResults(check).filter(
-      (result) => result.commit_sha !== "" && result.check_words_moved !== true
+      (result) => result.commit_sha !== "" && speaksForTheCheckNow(result)
     )
   );
   return newestFirst(named)[0]?.commit_sha;

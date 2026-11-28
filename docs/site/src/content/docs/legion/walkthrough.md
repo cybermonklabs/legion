@@ -88,8 +88,10 @@ carries it with a requirement only the deploy can show still unobserved, it repo
 time, until the check's last look, where such a requirement still unobserved is a `fail` whether
 or not production carries the merge. Nothing else wakes a check. The look that finds the merge in
 production drives the change and records the result of
-the issue's `after_merge` check, naming the merge commit and what woke the look, with that
-result's line on the pull request. A closed issue takes such a result, a comment and a message.
+the issue's `after_merge` check, naming the merge commit (for a check with `subject` `production`
+or `graph`, the commit `dispatch results` names as its program's deploy, which holds the merge)
+and what woke the look, with that result's line on the pull request.
+A closed issue takes such a result, a comment and a message.
 
 ## The operator's view
 

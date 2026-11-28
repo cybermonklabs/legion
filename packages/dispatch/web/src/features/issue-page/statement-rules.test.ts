@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 
 import type { CheckBlock } from "../../api/types";
-import { NODE_STATE_WORDS, VERIFICATION_WORDS } from "./page-words";
+import { type CheckState, NODE_STATE_WORDS, VERIFICATION_WORDS } from "./page-words";
 import {
   type CheckStateReads,
   checkStanding,
   namedCommit,
+  standsAtBasis,
   stateAtCommit,
   statementState,
 } from "./statement-rules";
@@ -179,4 +180,287 @@ test("with no named commit each check reads as it stands on its own", () => {
   expect(statementState(atNamedCommit([noCommit, unrun]))).toBe("unknown");
   // A statement with no check is Unknown, whatever commit is named.
   expect(statementState([])).toBe("unknown");
+});
+
+// ---------------------------------------------------------------------------------------------
+// A check that reads the live deploy: one of production or of the graph, run after the merge or
+// on the default branch (the server's `readsTheLiveDeploy`, `results_deploys.go`). The server
+// decides it by the current deploy of the program it reads, counting only the results recorded
+// at that deploy's commit after it went out (`markNotCounted`), and answers over them alone
+// (`liveResultStands`), so its row reads that answer and no pass at its basis. The issue page
+// once read Passed where the results route answered unknown, with no deploy and after a deploy
+// at another commit (dispatch://INFRA-5610). Each test below is one case: a live check under
+// each answer the route gives it, and beside them checks that read no deploy, as they read before.
+// ---------------------------------------------------------------------------------------------
+
+/** The block id of each row's one check. */
+const LIVE = "c-live";
+
+/** A pass at the basis the check compares with (`at_basis`), at `COMMIT`. */
+const PASS_AT_BASIS = result({ check_block_id: LIVE, id: "pass-basis" });
+
+/** A check of production run after the merge, whose one result is a pass at its basis, with
+ *  whatever the row changes about it. */
+function liveCheck(partial: Partial<CheckBlock>): CheckBlock {
+  return check({
+    block_id: LIVE,
+    results: [PASS_AT_BASIS],
+    subject: "production",
+    when: "after_merge",
+    ...partial,
+  });
+}
+
+/** The current deploy of the program the check reads, at `commit`, gone out before every result
+ *  these rows record. */
+function deployAt(commit: string): NonNullable<CheckBlock["pass_stands"]["deploy"]> {
+  return { commit, deployed_at: "2026-11-14T00:00:00Z", program: "dispatch" };
+}
+
+/** How `block` reads on its own row: the state `checkStanding` reads, by its key and by the
+ *  page's word for it. */
+function rowReading(block: CheckBlock): { readonly state: CheckState; readonly word: string } {
+  const { state } = checkStanding(block);
+  return { state, word: NODE_STATE_WORDS.check[state] };
+}
+
+// With no deploy of the program the route answers unknown (`no_deploy`), and a pass at the
+// check's basis says nothing of a deploy that is not there.
+test("a production check after the merge with no deploy of its program reads Cannot tell over a pass at its basis", () => {
+  const noDeploy = liveCheck({ pass_stands: { answer: "unknown", reason: "no_deploy" } });
+
+  expect(rowReading(noDeploy)).toEqual({ state: "unmarked", word: "Cannot tell" });
+  expect(checkStanding(noDeploy).stands).toBeUndefined();
+});
+
+// Once the program is deployed at another commit, the server marks the pass at the basis not
+// counted, and it stands at no basis on the page either.
+test("a production check after the merge whose program's deploy runs another commit reads Cannot tell over a pass that deploy does not count", () => {
+  const uncounted = result({
+    check_block_id: LIVE,
+    id: "pass-basis",
+    not_counted:
+      "it names a commit that the current deploy of the program this check reads does not run",
+  });
+  const elsewhere = liveCheck({
+    pass_stands: {
+      answer: "unknown",
+      deploy: deployAt(OTHER_COMMIT),
+      reason: "no_result_from_deploy",
+    },
+    results: [uncounted],
+  });
+
+  expect(rowReading(elsewhere)).toEqual({ state: "unmarked", word: "Cannot tell" });
+  expect(checkStanding(elsewhere).stands).toBeUndefined();
+  // The one fact that tells the two passes apart is `not_counted`: the same pass counted stands
+  // at its basis.
+  expect(standsAtBasis(uncounted)).toBe(false);
+  expect(standsAtBasis(PASS_AT_BASIS)).toBe(true);
+});
+
+test("a production check after the merge whose deploy's pass the server names reads Passed on that pass", () => {
+  const passed = liveCheck({
+    pass_stands: {
+      answer: "yes",
+      commit: COMMIT,
+      deploy: deployAt(COMMIT),
+      results: [PASS_AT_BASIS.id],
+      roles: ["tester"],
+    },
+  });
+
+  expect(rowReading(passed)).toEqual({ state: "passed", word: "Passed" });
+  expect(checkStanding(passed)).toEqual({ stands: PASS_AT_BASIS, state: "passed" });
+});
+
+test("a production check after the merge whose newest result at its deploy failed reads Failed on that fail", () => {
+  const fail = result({
+    check_block_id: LIVE,
+    created_at: "2026-11-14T01:10:00Z",
+    failed: 1,
+    id: "fail-deploy",
+    verdict: "fail",
+  });
+  const failed = liveCheck({
+    pass_stands: {
+      answer: "no",
+      commit: COMMIT,
+      deploy: deployAt(COMMIT),
+      reason: "fail",
+      results: [fail.id],
+    },
+    results: [fail, PASS_AT_BASIS],
+  });
+
+  expect(rowReading(failed)).toEqual({ state: "failed", word: "Failed" });
+  expect(checkStanding(failed)).toEqual({ stands: fail, state: "failed" });
+});
+
+test("a graph check on the default branch whose program is not named reads Cannot tell over a pass at its basis", () => {
+  const unnamed = liveCheck({
+    pass_stands: { answer: "unknown", reason: "program_not_named" },
+    subject: "graph",
+    when: "default_branch",
+  });
+
+  expect(rowReading(unnamed)).toEqual({ state: "unmarked", word: "Cannot tell" });
+});
+
+test("a production check after the merge whose deploy does not hold the merge reads Cannot tell over a pass at its basis", () => {
+  const unmerged = liveCheck({ pass_stands: { answer: "unknown", reason: "deploy_not_merged" } });
+
+  expect(rowReading(unmerged)).toEqual({ state: "unmarked", word: "Cannot tell" });
+});
+
+test("a production check after the merge whose deploy could not be read reads Cannot tell over a pass at its basis", () => {
+  const unread = liveCheck({ pass_stands: { answer: "unknown", reason: "read_failed" } });
+
+  expect(rowReading(unread)).toEqual({ state: "unmarked", word: "Cannot tell" });
+});
+
+// A check of production before the merge reads no deploy, so its pass at the pull request's
+// head is read at its basis as every other check's is.
+test("a production check before the merge reads Passed on a pass at its head", () => {
+  const beforeMerge = liveCheck({
+    compared_with: [{ commit: COMMIT, kind: "pull_request", pull_request: 7 }],
+    pass_stands: { answer: "yes" },
+    when: "before_merge",
+  });
+
+  expect(rowReading(beforeMerge)).toEqual({ state: "passed", word: "Passed" });
+  expect(checkStanding(beforeMerge)).toEqual({ stands: PASS_AT_BASIS, state: "passed" });
+});
+
+// A check of the code after the merge reads no deploy: the server answers unknown over a pass
+// and a fail at one commit (`pass_and_fail`), and the newest of them at the basis decides.
+test("a code check after the merge with a pass and then a fail at its basis reads Failed, as before", () => {
+  const fail = result({
+    check_block_id: LIVE,
+    created_at: "2026-11-14T01:10:00Z",
+    failed: 1,
+    id: "fail-basis",
+    verdict: "fail",
+  });
+  const code = liveCheck({
+    pass_stands: {
+      answer: "unknown",
+      commit: COMMIT,
+      reason: "pass_and_fail",
+      results: [PASS_AT_BASIS.id, fail.id],
+    },
+    results: [fail, PASS_AT_BASIS],
+    subject: undefined,
+  });
+
+  expect(rowReading(code)).toEqual({ state: "failed", word: "Failed" });
+  expect(checkStanding(code)).toEqual({ stands: fail, state: "failed" });
+});
+
+test("a production check after the merge with no deploy and no result reads Cannot tell", () => {
+  const unrun = liveCheck({ pass_stands: { answer: "unknown", reason: "no_deploy" }, results: [] });
+
+  expect(rowReading(unrun)).toEqual({ state: "unmarked", word: "Cannot tell" });
+});
+
+test("a production check after the merge the server says has no result reads No result", () => {
+  const unrun = liveCheck({ pass_stands: { answer: "no", reason: "no_result" }, results: [] });
+
+  expect(rowReading(unrun)).toEqual({ state: "no-result", word: "No result" });
+});
+
+// Before the issue's pull request merges, the server compares a check run after the merge with
+// nothing (`not_merged`) and answers `no` for no result whatever results it holds
+// (`liveResultStands`), while the record route takes such a result before the merge. So the pass
+// here reads `commit_stands` `other_commit`, as the server's `commitStands` answers every result
+// of a check that compares with nothing for `not_merged`, and no `not_counted`, since its program
+// has no deploy to bound it (`markNotCounted`). The row reads the result the view draws under it,
+// as a check with nothing standing at its basis does, and never No result over it.
+test("a production check after the merge of an unmerged issue with a pass recorded reads Out of date on that pass", () => {
+  const early = result({
+    check_block_id: LIVE,
+    commit_stands: { answer: "other_commit" },
+    id: "pass-unmerged",
+  });
+  const unmerged = liveCheck({
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [early],
+  });
+
+  expect(rowReading(unmerged)).toEqual({ state: "older", word: "Out of date" });
+  expect(checkStanding(unmerged)).toEqual({ stands: early, state: "older" });
+});
+
+// The same check with its only result withdrawn holds nothing that stands for it or against it,
+// so it reads Retracted, as any check whose every result was taken back does.
+test("a production check after the merge of an unmerged issue whose only result was retracted reads Retracted", () => {
+  const withdrawn = result({
+    check_block_id: LIVE,
+    commit_stands: { answer: "other_commit" },
+    id: "pass-withdrawn",
+    retracted: {
+      actor: { id: "tester", kind: "session" },
+      created_at: "2026-11-14T01:10:00Z",
+      reason: "Run was wrong.",
+    },
+  });
+  const unmerged = liveCheck({
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [withdrawn],
+  });
+
+  expect(rowReading(unmerged)).toEqual({ state: "retracted", word: "Retracted" });
+  expect(checkStanding(unmerged).stands).toBeUndefined();
+});
+
+test("a code check after the merge with no result reads No result", () => {
+  const unrun = liveCheck({
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [],
+    subject: undefined,
+  });
+
+  expect(rowReading(unrun)).toEqual({ state: "no-result", word: "No result" });
+});
+
+// A payload with no `pass_stands`, from a server that does not send it, says nothing of the
+// deploy, so the page says it could not read the check.
+test("a production check after the merge whose answer holds no pass_stands reads Could not read", () => {
+  const unanswered = liveCheck({ pass_stands: undefined });
+
+  expect(rowReading(unanswered)).toEqual({ state: "unreadable", word: "Could not read" });
+});
+
+// A result the server marks `not_counted` stands for nothing: its check's current deploy does
+// not run its commit, or it was recorded before that deploy, and the server's `standingCommit`
+// gives it no standing, as it gives none to a result over moved words. So, like such a result,
+// it names no commit for the page (`namedCommit`): a newer fail at a commit the deploy does not
+// run leaves the commit the page names at the deploy's pass, where the check's row reads Passed
+// and its statement reads Met.
+test("a result the server does not count names no commit for the page", () => {
+  const uncountedFail = result({
+    check_block_id: LIVE,
+    commit_sha: OTHER_COMMIT,
+    commit_stands: { answer: "other_commit" },
+    created_at: "2026-11-14T02:00:00Z",
+    failed: 1,
+    id: "fail-elsewhere",
+    not_counted:
+      "it names a commit that the current deploy of the program this check reads does not run",
+    verdict: "fail",
+  });
+  const live = liveCheck({
+    pass_stands: {
+      answer: "yes",
+      commit: COMMIT,
+      deploy: deployAt(COMMIT),
+      results: [PASS_AT_BASIS.id],
+      roles: ["tester"],
+    },
+    results: [uncountedFail, PASS_AT_BASIS],
+  });
+
+  expect(checkStanding(live)).toEqual({ stands: PASS_AT_BASIS, state: "passed" });
+  expect(namedCommit([live])).toBe(COMMIT);
+  expect(statementState(atNamedCommit([live]))).toBe("met");
 });

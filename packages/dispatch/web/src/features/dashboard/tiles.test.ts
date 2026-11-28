@@ -150,6 +150,27 @@ test("the passed tile counts the checks that read Passed at the commit the page 
   expect(passedTile({ ...RESULTS, checks: [failHere] }).counted).toEqual([]);
 });
 
+// A check of production run after the merge reads the current deploy of its program, and with
+// no deploy the results route answers unknown (`no_deploy`), so its pass at the basis is no pass
+// the tile counts (dispatch://INFRA-5610). The same check before the merge reads no deploy, and
+// the tile counts its pass.
+test("the passed tile leaves out a production check after the merge with no deploy of its program, over a pass at its basis", () => {
+  const c1 = checkOf("c1");
+  const live: CheckBlock = {
+    ...c1,
+    pass_stands: { answer: "unknown", reason: "no_deploy" },
+    subject: "production",
+    when: "after_merge",
+  };
+  expect(checkStanding(live).state).toBe("unmarked");
+  expect(passedTile({ ...RESULTS, checks: [live] })).toEqual({ counted: [], whole: 1 });
+  const beforeMerge: CheckBlock = { ...c1, subject: "production" };
+  expect(passedTile({ ...RESULTS, checks: [beforeMerge] })).toEqual({
+    counted: [beforeMerge],
+    whole: 1,
+  });
+});
+
 // R6: "A result recorded at another commit reads Out of date and makes its statement Unknown."
 // The captured reads with one statement more, r5, served by two checks that each passed at their
 // own basis, a head of one of the issue's two pull requests: c6 at the older head, before every

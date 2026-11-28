@@ -146,9 +146,9 @@ export async function awaitBlockAsk(issueKey: string, block: string): Promise<st
   }
 }
 
-/** The imported component model, the repository and the pull request the results are measured
- *  against, whose title attributes it to `issueKey`. */
-async function seedProjectSurroundings(issueKey: string, repository: string): Promise<void> {
+/** The fake GitHub's component model and `repository`, whose pull request merged at `HEAD_SHA`
+ *  under a title that attributes it to `issueKey`. */
+async function seedLandedRepository(issueKey: string, repository: string): Promise<void> {
   await seedFakeGithub({
     [ARCHITECTURE_REPO]: { contents: "read", files: ARCHITECTURE_MODEL, installation_id: 311 },
     [repository]: {
@@ -176,11 +176,47 @@ async function seedProjectSurroundings(issueKey: string, repository: string): Pr
       },
     },
   });
+}
+
+/** The imported component model, the repository and the pull request the results are measured
+ *  against, whose title attributes it to `issueKey`. */
+async function seedProjectSurroundings(issueKey: string, repository: string): Promise<void> {
+  await seedLandedRepository(issueKey, repository);
   await putArchitectureSource(PROJECT, { branch: "main", repo: ARCHITECTURE_REPO });
   const source = await syncArchitectureSource(PROJECT, ARCHITECTURE_REPO);
   if (source.last_error !== null) {
     throw new Error(`the component model did not import: ${source.last_error}`);
   }
+}
+
+/** The address of the seeded pull request of `repository`, which an issue links as its own and
+ *  the fake GitHub answers as merged at `HEAD_SHA` (`seedLandedRepository`). */
+function pullRequestUrl(repository: string): string {
+  return `https://github.com/${repository}/pull/${PULL_NUMBER}`;
+}
+
+/** `name` suffixed with a name of its own, for a seed's repository. The server keeps what it last
+ *  read of a repository - its default branch, or that the App cannot read it - for five minutes,
+ *  across rows, and the after-merge checks stand on that answer once the App is gone. A
+ *  repository of a seed's own is read afresh, while the App is installed, so no answer an earlier
+ *  row left behind decides them. */
+function freshRepository(name: string): string {
+  return `${name}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+/** The landed merge alone, for a row that reads an issue's after-merge checks and nothing else of
+ *  the whole issue: `seedLandedRepository` in a repository of the issue's own
+ *  (`freshRepository`), and the issue linked to that repository and its pull request, so an
+ *  after-merge check compares with the default branch, which holds the merge at `HEAD_SHA`.
+ *  Answers the repository. */
+export async function seedLandedMerge(issueKey: string): Promise<string> {
+  const repository = freshRepository(WHOLE_REPO);
+  await seedLandedRepository(issueKey, repository);
+  await patchIssue(issueKey, {
+    external_links: [{ kind: "github_pr", url: pullRequestUrl(repository) }],
+    repo: repository,
+  });
+  return repository;
 }
 
 /** The sessions a seeded issue routes to, is claimed by and is subscribed by. A subscriber is a
@@ -309,19 +345,13 @@ export async function seedIssueWithDocuments(shape: IssueShape): Promise<SeededS
     title: shape.title,
   });
   const specArtifactId = issue.primary_artifact_id ?? "";
-  // The server keeps what it last read of a repository - its default branch, or that the App
-  // cannot read it - for five minutes, across rows, and the after-merge checks stand on that
-  // answer once the App is gone. A repository of this seed's own is read afresh here, while the
-  // App is installed, so no answer an earlier row left behind decides them.
-  const repository = `${shape.repository}-${crypto.randomUUID().slice(0, 8)}`;
+  const repository = freshRepository(shape.repository);
   await seedProjectSurroundings(issue.key, repository);
   await seedSessions(issue.key, [PLANNER, REVIEWER, TESTER]);
   await patchIssue(issue.key, {
     assignee: "alice",
     components: { ids: COMPONENT_IDS, mode: "explicit" },
-    external_links: [
-      { kind: "github_pr", url: `https://github.com/${repository}/pull/${PULL_NUMBER}` },
-    ],
+    external_links: [{ kind: "github_pr", url: pullRequestUrl(repository) }],
     labels: ["dispatch", "layout", "redesign"],
     priority: 1,
     repo: repository,

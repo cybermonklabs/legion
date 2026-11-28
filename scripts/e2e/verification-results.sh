@@ -33,6 +33,11 @@
 # `after-merge-answer` records a pass, a later fail, then a conflicting pass through the real CLI.
 # It checks that the command names the deciding results and commit.
 # `deploy-recorded` records and lists a build as the run's person, then checks its writer.
+# `live-subject` marks an `after_merge` check `subject="production" program="live-proof"` through
+# the real `dispatch artifact`, then reads through `dispatch results` that a pass stands neither
+# with no deploy of that program nor once a second build is deployed, and stands from the result
+# at the build deployed first while that build runs, whose pass the results route then marks
+# `not_counted`.
 #
 # Three more cases run the `dispatch` command as a process against the run's server.
 # They judge each step by its exit code and what it printed: `dash-refused`, where the
@@ -45,12 +50,14 @@
 # `--dry-run`, exits 2 with its line, over at least 28 commands and 112 flags; and `values-kept`,
 # where a value that starts with `-`, a value written `--observed=<value>` and a `-` a file or
 # stdin gives are stored byte for byte, while `--observed '--- PASS ...'` still reads as a flag.
-# Each case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case
-# failing stops the run, since every later case records a result too, and any FAIL exits 1.
+# Each case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case,
+# `the-results-route-is-served`, stops the run where it runs and fails, since every later case
+# records a result too, and any FAIL exits 1.
 #
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] \
 #     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+#     [VERIFICATION_RESULTS_E2E_CASES=<case>[,<case>...]] \
 #     bash scripts/e2e/verification-results.sh
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
@@ -72,6 +79,13 @@
 # line for its flag; naming the command of a worktree of the head whose rule refuses every value
 # that starts with `-`, `values-kept` fails at step 1, which exits 2 with the line for
 # --negative-control.
+# VERIFICATION_RESULTS_E2E_CASES is optional and names, comma-separated, the only cases the
+# driver runs: the setup runs either way, every case it leaves out is neither run nor counted,
+# and a name that is no case of the driver fails the run, naming it. It is the negative control's
+# way to run one case alone: with DISPATCH_BIN built from 2326c5d65772, which reads a check's
+# `subject` and `program` but refuses to write them, `VERIFICATION_RESULTS_E2E_CASES=live-subject`
+# fails `live-subject` at its step 2, the `dispatch artifact` whose write the server refuses as
+# one it cannot write yet.
 #
 # The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
 # (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
@@ -104,9 +118,11 @@ timeout_hook=''
 . "$root/scripts/e2e/lib/run-verdict.sh"
 
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
-# VERIFICATION_RESULTS_E2E_DISPATCH_CLI, its other input, is read beside it; the sweep leaves it.
+# VERIFICATION_RESULTS_E2E_DISPATCH_CLI and VERIFICATION_RESULTS_E2E_CASES, its other inputs, are
+# read beside it; the sweep leaves them.
 dispatch_bin=${DISPATCH_BIN:-}
 dispatch_cli=${VERIFICATION_RESULTS_E2E_DISPATCH_CLI:-}
+cases=${VERIFICATION_RESULTS_E2E_CASES:-}
 database_url=${DATABASE_URL:-}
 dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
 envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
@@ -285,6 +301,7 @@ pass
 check=cases
 status=0
 VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
+  VERIFICATION_RESULTS_E2E_CASES=$cases \
   VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
   VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
   bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
@@ -292,7 +309,7 @@ VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
 case "$status" in
   0) ;;
-  1) fail "a case failed (above)" ;;
+  1) fail "a case failed, or VERIFICATION_RESULTS_E2E_CASES named no case of the driver (above)" ;;
   *) fail "the driver stopped before its cases (status $status)" ;;
 esac
 run_end

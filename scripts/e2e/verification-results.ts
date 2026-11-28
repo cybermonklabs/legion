@@ -10,10 +10,19 @@
 //   VERIFICATION_RESULTS_E2E_AGENT_TOKEN=<token> \
 //     VERIFICATION_RESULTS_E2E_DATABASE_URL=<dsn> \
 //     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+//     [VERIFICATION_RESULTS_E2E_CASES=<case>[,<case>...]] \
 //     bun scripts/e2e/verification-results.ts <dispatch-url> <nats-url> <fake-github-url>
 //
 // The `dispatch` command is the bin/dispatch.ts VERIFICATION_RESULTS_E2E_DISPATCH_CLI names, an
 // absolute path the shell script made, else this checkout's packages/envoy-client/bin/dispatch.ts.
+//
+// VERIFICATION_RESULTS_E2E_CASES, where it names at least one case, is the comma-separated list
+// of the cases the run runs. Every other case is neither run nor counted, and prints one `not
+// selected <case>` line in place of its `== <case>`. The setup runs either way, since every case
+// needs it. A name that is no case of `caseNames` fails the run at its summary, which names it,
+// so a mistyped name never reads as a pass of nothing. It is how a negative control runs one case
+// alone: `live-subject` against a build that reads a check's `subject` and `program` but cannot
+// write them fails at its step 2, and a run of that case alone reads that failure and no other.
 //
 // The database URL is the run's own, which the shell script resets before the server migrates it.
 // The driver writes SQL for one fixture and reads it for one answer: a stored pull request row of
@@ -22,10 +31,11 @@
 // which no route answers either.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
-// follows, and the exit status is 1 when any case failed. The first case,
-// `the-results-route-is-served`, is the run's first result write, against a plain issue whose
-// spec marks nothing: when it fails, as it does against a binary built from the base commit,
-// which serves no such route, the run stops there, since every later case records a result too.
+// follows, and the exit status is 1 when any case failed or the selection names no such case.
+// The first case, `the-results-route-is-served`, is the run's first result write, against a
+// plain issue whose spec marks nothing: when it runs and fails, as it does against a binary built
+// from the base commit, which serves no such route, the run stops there, since every later case
+// records a result too.
 // Each later case seeds the issue it drives, with the spec and the Verification document that
 // case needs. A step outside the cases that fails (the sign-in, the projects, the fake GitHub's
 // seed, the delivery intake's bind, the probe issue) exits 2 naming it.
@@ -129,6 +139,14 @@ const heldCommits = {
   answerMerge: "b1".repeat(20),
   answerLater: "b2".repeat(20),
   deployedBuild: "b3".repeat(20),
+  /** The merged work of the check of production the live-subject case marks. */
+  liveMerge: "e1".repeat(20),
+  /** The first build of the program that check reads, deployed after the merge and holding it,
+   *  which the case's pass is recorded at. */
+  liveFirstBuild: "e2".repeat(20),
+  /** The second build, deployed after the first and holding the merge too, which no result is
+   *  recorded at, so the pass at the first counts for nothing once it runs. */
+  liveSecondBuild: "e3".repeat(20),
   /** The head of the attribution case's first pull request, the one its branch credits to the
    *  child. */
   attributionBranch: "c1".repeat(20),
@@ -247,6 +265,16 @@ function asPerson(method: string, path: string, body?: Json): Promise<unknown> {
   return call(method, path, { Cookie: personCookie, Origin: origin }, body);
 }
 
+/** Mints an agent token of the run's person, scoped `person` and named `name`, so a `dispatch`
+ *  command run with it acts as that person. */
+async function personToken(name: string): Promise<string> {
+  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
+    name,
+    scopes: ["person"],
+  })) as { token: string };
+  return credential.token;
+}
+
 function issuePath(key: string, rest = ""): string {
   return `/api/v1/issues/${encodeURIComponent(key)}${rest}`;
 }
@@ -270,19 +298,26 @@ async function checkOf(key: string, blockID: string): Promise<CheckBlock> {
   return found;
 }
 
-/** Where one result's commit stands, in one word a case compares with: the `commit_stands`
- *  answer, with the reason an `unknown` carries after a colon. */
-function standsOf(result: CheckResult): string {
-  const stands = result.commit_stands;
-  if (stands === undefined) return "unset";
+/** One answer in one word a case compares with: `answer`, with the reason it carries after a
+ *  colon where it carries one. */
+function answerWord(stands: { answer: string; reason?: string }): string {
   const reason = stands.reason ?? "";
   return reason === "" ? stands.answer : `${stands.answer}:${reason}`;
+}
+
+/** Where one result's commit stands, in one word a case compares with: the `commit_stands`
+ *  answer, with the reason an `unknown` carries after a colon (`answerWord`). */
+function standsOf(result: CheckResult): string {
+  const stands = result.commit_stands;
+  return stands === undefined ? "unset" : answerWord(stands);
 }
 
 /** Where the commit of the newest result recorded at `commit` against `blockID` stands, or
  *  "absent" where that check holds no result at that commit. */
 async function commitStandsAt(key: string, blockID: string, commit: string): Promise<string> {
-  const result = (await checkOf(key, blockID)).results.find((row) => row.commit_sha === commit);
+  const result = ((await checkOf(key, blockID)).results ?? []).find(
+    (row) => row.commit_sha === commit
+  );
   return result === undefined ? "absent" : standsOf(result);
 }
 
@@ -308,6 +343,27 @@ async function awaitCommitStands(
   while (seen !== want && Date.now() < deadline) {
     await Bun.sleep(pollMs);
     seen = await commitStandsAt(key, blockID, commit);
+  }
+  return seen;
+}
+
+/** Whether a pass of `blockID` stands, in one word with the reason it carries: the `pass_stands`
+ *  answer, with its reason after a colon (`answerWord`), as `standsOf` writes where a commit
+ *  stands. */
+async function passReasonOf(key: string, blockID: string): Promise<string> {
+  return answerWord((await checkOf(key, blockID)).pass_stands);
+}
+
+/** Waits, bounded, for a pass of `blockID` to stand as `want` says, and answers what it last
+ *  read. Whether a pass stands is computed while the results are read, from the merge the bus
+ *  teaches Dispatch among the rest, so this writes nothing and polls the read, as
+ *  `awaitCommitStands` does. */
+async function awaitPassReason(key: string, blockID: string, want: string): Promise<string> {
+  const deadline = Date.now() + headWaitMs;
+  let seen = await passReasonOf(key, blockID);
+  while (seen !== want && Date.now() < deadline) {
+    await Bun.sleep(pollMs);
+    seen = await passReasonOf(key, blockID);
   }
   return seen;
 }
@@ -347,6 +403,30 @@ async function publishPullRequest(payload: Record<string, string>): Promise<stri
   );
   await nats.flush();
   return subject;
+}
+
+/** Publishes the merge of pull request `number` of `repo`, whose head branch, body and title
+ *  name `issue`, with `commit` as both its head and its merge commit, merged now. */
+async function publishMerge(issue: string, number: number, commit: string): Promise<string> {
+  const mergedAt = new Date().toISOString();
+  return publishPullRequest({
+    action: "closed",
+    base_ref: "main",
+    body: `Proves ${issue}.`,
+    head_ref: `legion/${issue}`,
+    head_repo: repo,
+    head_sha: commit,
+    kind: "pr",
+    merge_commit_sha: commit,
+    merged_at: mergedAt,
+    merged: "true",
+    state: "closed",
+    number: String(number),
+    repo,
+    title: `${issue} merged work`,
+    updated_at: mergedAt,
+    url: `https://github.com/${repo}/pull/${number}`,
+  });
 }
 
 /** One basis of a check, in the words a case compares with: the kind, the commit or the branch
@@ -571,9 +651,47 @@ function note(line: string): void {
   console.log(`   ${line}`);
 }
 
+/** Every case the driver declares, in the order it runs them; `runCase` takes no other name. It
+ *  is the one list VERIFICATION_RESULTS_E2E_CASES is read against, at the early stop as at the
+ *  end, since at the early stop no case after the first has been reached yet. */
+const caseNames = [
+  "the-results-route-is-served",
+  "a2-record-and-read",
+  "a4-a-push-moves-the-head",
+  "a-fork-pull-request-is-no-basis",
+  "a5-a-closed-issue-takes-the-after-merge-result",
+  "a10-a-default-branch-result-follows-the-branch",
+  "a-result-at-a-commit-the-repository-does-not-hold-is-refused",
+  "an-unreadable-repository-answers-unknown",
+  "k-compared-commit-the-bases-each-check-names",
+  "after-merge-answer",
+  "deploy-recorded",
+  "live-subject",
+  "k-attribution-what-decides-a-pull-request-issue",
+  "dash-refused",
+  "dash-refused-every-flag",
+  "values-kept",
+] as const;
+
+/** The cases VERIFICATION_RESULTS_E2E_CASES names, comma-separated. Where it names none, every
+ *  case runs. */
+const selectedCases: readonly string[] = (process.env.VERIFICATION_RESULTS_E2E_CASES ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name !== "");
+
 const results: { name: string; ok: boolean }[] = [];
 
-async function runCase(name: string, body: () => Promise<string | undefined>): Promise<void> {
+/** Runs one case, unless VERIFICATION_RESULTS_E2E_CASES names cases and not this one: such a
+ *  case is neither run nor counted, and prints `not selected <case>` alone. */
+async function runCase(
+  name: (typeof caseNames)[number],
+  body: () => Promise<string | undefined>
+): Promise<void> {
+  if (selectedCases.length > 0 && !selectedCases.includes(name)) {
+    console.log(`not selected ${name}`);
+    return;
+  }
   console.log(`== ${name}`);
   let failure: string | undefined;
   try {
@@ -585,14 +703,24 @@ async function runCase(name: string, body: () => Promise<string | undefined>): P
   console.log(failure === undefined ? `ok ${name}` : `FAIL ${name}: ${failure}`);
 }
 
+/** Prints the summary and exits: 1 when a case failed, or when VERIFICATION_RESULTS_E2E_CASES
+ *  names a case `caseNames` does not hold, each such name printed, so a mistyped selection that
+ *  ran nothing never reads as a pass. */
 function summarise(stopped?: string): never {
   const failed = results.filter((result) => !result.ok).map((result) => result.name);
+  const declared: readonly string[] = caseNames;
+  const unknown = selectedCases.filter((name) => !declared.includes(name));
   if (stopped !== undefined) console.log(`   ${stopped}`);
+  if (unknown.length > 0) {
+    console.log(
+      `   VERIFICATION_RESULTS_E2E_CASES names a case this driver does not declare: ${unknown.join(", ")}`
+    );
+  }
   console.log(
-    `summary: ${results.length - failed.length} ok, ${failed.length} FAIL${failed.length === 0 ? "" : ` (${failed.join(", ")})`}`
+    `summary: ${results.length - failed.length} ok, ${failed.length} FAIL${failed.length === 0 ? "" : ` (${failed.join(", ")})`}${unknown.length === 0 ? "" : `, ${unknown.length} not a case (${unknown.join(", ")})`}`
   );
   void nats.close();
-  process.exit(failed.length === 0 ? 0 : 1);
+  process.exit(failed.length === 0 && unknown.length === 0 ? 0 : 1);
 }
 
 // --- setup ---------------------------------------------------------------------------------------
@@ -646,10 +774,15 @@ async function seedRepositories(pulls: Record<string, FakePullRequest>): Promise
             commits.comparedLandingMerge,
             commits.answerMerge,
             commits.answerLater,
+            commits.liveMerge,
+            commits.liveFirstBuild,
+            commits.liveSecondBuild,
           ],
           [commits.comparedLandingHead]: [commits.comparedMergeCommit],
           [commits.comparedOnMain]: [commits.comparedLandingMerge],
           [commits.answerLater]: [commits.answerMerge],
+          [commits.liveFirstBuild]: [commits.liveMerge],
+          [commits.liveSecondBuild]: [commits.liveMerge],
         },
         commits: Object.values(heldCommits),
         contents: "read",
@@ -755,14 +888,15 @@ const probeIssue = String(
 );
 
 console.log(
-  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}). Each case seeds the issue it drives.`
+  `setup: person ${person}; session ${session}; probe issue ${probeIssue}; repositories ${repo} (default branch main) and ${hiddenRepo} (no installation); dispatch command ${dispatchCommand} (${dispatchCommandInput === "" ? "this checkout's" : "VERIFICATION_RESULTS_E2E_DISPATCH_CLI"}); cases ${selectedCases.length === 0 ? "every one" : `${selectedCases.join(", ")} (VERIFICATION_RESULTS_E2E_CASES)`}. Each case seeds the issue it drives.`
 );
 
 // --- cases ---------------------------------------------------------------------------------------
 
 // The run's first result write, and the one every later case depends on: the record route takes a
 // result and judges the check it names. A binary that does not serve the route at all answers 404
-// and the run stops here, which is what this proof's negative control reads.
+// and the run stops here, which is what this proof's negative control reads. The stop reads this
+// case by its name and only where it ran, so a run that selects later cases alone reaches them.
 await runCase("the-results-route-is-served", async () => {
   const { answer } = await refusal("POST", issuePath(probeIssue, "/results"), {
     check: "no-such-check",
@@ -773,7 +907,7 @@ await runCase("the-results-route-is-served", async () => {
   note(`a result naming a check ${probeIssue} does not have answers ${answer}`);
   return answer === "400 UNKNOWN_CHECK" ? undefined : `the record route answers ${answer}`;
 });
-if (!results[0]?.ok) {
+if (results.find((result) => result.name === "the-results-route-is-served")?.ok === false) {
   summarise("every later case records a result too, so the run stops at the first result write");
 }
 
@@ -799,16 +933,17 @@ The result read back under this check is the one that was recorded.
   note(`the pull-request body line is ${JSON.stringify(answered.line)}`);
   note(`the record's answer says it was stored at ${answered.result.created_at}`);
   const check = await checkOf(a2Issue, "a2");
+  const rows = check.results ?? [];
   note(
-    `${a2Issue} check a2 (${check.when}) holds ${check.results.length} result(s): ${check.results
+    `${a2Issue} check a2 (${check.when}) holds ${rows.length} result(s): ${rows
       .map(
         (row) =>
           `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
       )
       .join(", ")}`
   );
-  if (check.results.length !== 1) return `the check holds ${check.results.length} results, want 1`;
-  const [recorded] = check.results;
+  if (rows.length !== 1) return `the check holds ${rows.length} results, want 1`;
+  const [recorded] = rows;
   if (recorded?.commit_sha !== commits.a2 || recorded.verdict !== "pass") {
     return `the result read back is ${JSON.stringify(recorded)}`;
   }
@@ -960,7 +1095,7 @@ A result stands while its commit is the head of a pull request of this repositor
   if (atFork === "at_basis") return "a fork's pull request was taken for a basis";
   const compared = await checkOf(forkIssue, "fork");
   note(
-    `the check compared with ${compared.compared_with.length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
+    `the check compared with ${(compared.compared_with ?? []).length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
   );
   if (compared.compared_nothing !== "no_pull_request_or_branch") {
     return `the check compared with nothing for ${JSON.stringify(compared.compared_nothing)}`;
@@ -1017,8 +1152,8 @@ The pre-merge check runs before it.
   });
   note(`the after-merge result recorded: ${JSON.stringify(afterMerge.line)}`);
   const check = await checkOf(a5Issue, "after");
-  if (check.results.length !== 1)
-    return `the after-merge check holds ${check.results.length} results, want 1`;
+  const rows = check.results ?? [];
+  if (rows.length !== 1) return `the after-merge check holds ${rows.length} results, want 1`;
 
   const { answer: beforeMerge } = await refusal("POST", issuePath(a5Issue, "/results"), {
     check: "before",
@@ -1108,10 +1243,11 @@ A result is recorded only at a commit the repository holds.
     return `the refusal does not name ${repo}: ${refused.error}`;
   }
   const check = await checkOf(unheldIssue, "unheld");
-  note(`${unheldIssue} check unheld holds ${check.results.length} result(s)`);
-  return check.results.length === 0
+  const rows = check.results ?? [];
+  note(`${unheldIssue} check unheld holds ${rows.length} result(s)`);
+  return rows.length === 0
     ? undefined
-    : `the refused result left ${check.results.length} row(s) under the check`;
+    : `the refused result left ${rows.length} row(s) under the check`;
 });
 
 // The unreadable repository: Dispatch cannot say where the commit stands, so it answers unknown
@@ -1361,7 +1497,7 @@ A default-branch result is compared with the default branch alone.
     [commits.comparedHeadA, 21],
     [commits.comparedHeadA2, 22],
   ] as const) {
-    const result = before.results.find((row) => row.commit_sha === commit);
+    const result = (before.results ?? []).find((row) => row.commit_sha === commit);
     const stands = result === undefined ? "absent" : standsOf(result);
     const stood = result?.commit_stands?.basis;
     note(
@@ -1391,7 +1527,7 @@ A default-branch result is compared with the default branch alone.
   ) {
     return `the after_merge check compares with ${comparedOf(after)}`;
   }
-  const merged = after.results.find((row) => row.commit_sha === commits.comparedOnMain);
+  const merged = (after.results ?? []).find((row) => row.commit_sha === commits.comparedOnMain);
   const mergedStands = merged === undefined ? "absent" : standsOf(merged);
   const mergedBasis = merged?.commit_stands?.basis;
   if (mergedStands !== "at_basis" || mergedBasis?.branch !== "main") {
@@ -1422,7 +1558,7 @@ A default-branch result is compared with the default branch alone.
       if (bases.join(", ") !== `named ${named}`) {
         return `?at=${what}: check ${check.block_id} compares with ${comparedOf(check)}`;
       }
-      for (const result of check.results) {
+      for (const result of check.results ?? []) {
         const stands = standsOf(result);
         const wanted = result.commit_sha === named ? "at_basis" : "other_commit";
         if (stands !== wanted) {
@@ -1518,25 +1654,7 @@ await runCase("after-merge-answer", async () => {
     "The newest after-merge result decides the command's line",
     ':::check{#newest when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe newest result names the build it proves.\n:::\n'
   );
-  const mergedAt = new Date().toISOString();
-  await publishPullRequest({
-    action: "closed",
-    base_ref: "main",
-    body: `Proves ${issue}.`,
-    head_ref: `legion/${issue}`,
-    head_repo: repo,
-    head_sha: commits.answerMerge,
-    kind: "pr",
-    merge_commit_sha: commits.answerMerge,
-    merged_at: mergedAt,
-    merged: "true",
-    state: "closed",
-    number: "31",
-    repo,
-    title: `${issue} merged work`,
-    updated_at: mergedAt,
-    url: `https://github.com/${repo}/pull/31`,
-  });
+  await publishMerge(issue, 31, commits.answerMerge);
   const recordWithCommand = async (verdict: "pass" | "fail", commit: string): Promise<string> => {
     const argv = resultArgv(issue, "newest", commit);
     argv[argv.indexOf("--verdict") + 1] = verdict;
@@ -1548,7 +1666,7 @@ await runCase("after-merge-answer", async () => {
       "The build was checked.",
     ]);
     if (run.code !== 0) throw new Error(stepFailed(1, argv, run, 0));
-    const result = (await checkOf(issue, "newest")).results.find(
+    const result = ((await checkOf(issue, "newest")).results ?? []).find(
       (row) => row.verdict === verdict && row.commit_sha === commit
     );
     if (result === undefined) throw new Error(`the command stored no ${verdict} at ${commit}`);
@@ -1570,10 +1688,7 @@ await runCase("after-merge-answer", async () => {
 });
 
 await runCase("deploy-recorded", async () => {
-  const credential = (await asPerson("POST", "/api/v1/me/agent-tokens", {
-    name: "verification-deploy",
-    scopes: ["person"],
-  })) as { token: string };
+  const deployer = await personToken("verification-deploy");
   const argv = [
     "deploy",
     "--repo",
@@ -1584,7 +1699,7 @@ await runCase("deploy-recorded", async () => {
     commits.deployedBuild,
     "--json",
   ];
-  const recorded = await runDispatch(argv, { token: credential.token });
+  const recorded = await runDispatch(argv, { token: deployer });
   if (recorded.code !== 0) return stepFailed(1, argv, recorded, 0);
   const answer = JSON.parse(recorded.stdout) as {
     deploy: { program: string; commit: string; recorded_by: { kind: string; id: string } };
@@ -1597,7 +1712,7 @@ await runCase("deploy-recorded", async () => {
   ) {
     return `the deploy command did not name the run's person: ${recorded.stdout}`;
   }
-  const listed = await runDispatch(["deploys", "--repo", repo], { token: credential.token });
+  const listed = await runDispatch(["deploys", "--repo", repo], { token: deployer });
   if (listed.code !== 0) return stepFailed(2, ["deploys", "--repo", repo], listed, 0);
   note(listed.stdout.trim());
   return ["proof", commits.deployedBuild, `user ${person}`].every((value) =>
@@ -1605,6 +1720,135 @@ await runCase("deploy-recorded", async () => {
   )
     ? undefined
     : `the deploy list omitted the build or its writer: ${listed.stdout}`;
+});
+
+// live-subject. A check of production read after the merge counts a result only at the build its
+// program runs now (readsTheLiveDeploy, withLiveDeploy and markNotCounted in
+// packages/envoy/internal/dispatch/api/results_deploys.go, liveResultStands in
+// results_pass_stands.go). The author marks the check `subject="production"` and names its program
+// through the real `dispatch artifact`, so a build that reads the two attributes but cannot write
+// them fails at step 2, which is this case's negative control. The real `dispatch results` then
+// says what each deploy leaves standing: nothing it can count with no deploy of the program, the
+// pass recorded at the first build once that build is deployed, and nothing again once a second
+// build replaces it, while the results route marks the first build's pass not counted.
+await runCase("live-subject", async () => {
+  const program = "live-proof";
+  // Step 1: the check, which marks neither subject nor program, and its work merged.
+  const issue = await seedIssue(
+    "VRF",
+    "A production check counts the result of the build deployed now",
+    ':::check{#live serves="dispatch://%KEY%/spec#b-r1" when="after_merge" surface="cli" run="bash scripts/e2e/verification-results.sh"}\nThe build the program runs answers.\n:::\n'
+  );
+  await publishMerge(issue, 51, commits.liveMerge);
+  note(`${issue} holds the after-merge check live, merged at ${commits.liveMerge} by #51`);
+
+  // Step 2: the whole Verification document again, with the check's opening line marking
+  // production and the program, over the version `dispatch doc-read` names.
+  const readArgv = ["doc-read", "--issue", issue, "--artifact", "verification.md"];
+  const read = await runDispatch(readArgv);
+  if (read.code !== 0) return stepFailed(2, readArgv, read, 0);
+  const trailer = read.stdout.indexOf("\n\nDocument token: ");
+  const token = /^Document token: (sha256:[0-9a-f]{64})$/m.exec(read.stdout)?.[1];
+  const stored = read.stdout.slice(0, trailer);
+  const opening = /^:::check\{#live [^\n]*\}$/m.exec(stored)?.[0];
+  if (trailer === -1 || token === undefined || opening === undefined) {
+    return stepFailed(2, readArgv, read, 0, "it printed no check live and no document token");
+  }
+  note(`dispatch doc-read: verification.md at ${token} opens check live with ${opening}`);
+  const marked = stored.replace(
+    opening,
+    () => `${opening.slice(0, -1)} subject="production" program="${program}"}`
+  );
+  const markArgv = [
+    "artifact",
+    "--issue",
+    issue,
+    "--name",
+    "verification.md",
+    "--content",
+    marked,
+    "--force",
+    "--precondition-json",
+    JSON.stringify({ document: token }),
+  ];
+  const markRun = await runDispatch(markArgv);
+  if (markRun.code !== 0) {
+    return stepFailed(
+      2,
+      markArgv,
+      markRun,
+      0,
+      `the check's subject="production" program="${program}" was not written`
+    );
+  }
+  for (const line of markRun.stdout.trim().split("\n").slice(0, 2))
+    note(`dispatch artifact: ${line}`);
+  const markedCheck = await checkOf(issue, "live");
+  if (markedCheck.subject !== "production" || markedCheck.program !== program) {
+    return `step 2: the results route reads check live with subject ${JSON.stringify(markedCheck.subject)} and program ${JSON.stringify(markedCheck.program)}`;
+  }
+
+  // Step 3: no deploy of the program, so no result can count, once the bus has taught Dispatch
+  // the merge; before that the check reads as unmerged work.
+  const noDeploy = await awaitPassReason(issue, "live", "unknown:no_deploy");
+  if (noDeploy !== "unknown:no_deploy") {
+    return `step 3: with no deploy of ${program} a pass of live stands ${noDeploy}, want unknown:no_deploy`;
+  }
+  const noDeployLine = `A pass stands: not known, as Dispatch holds no deploy of ${program} in ${repo}.`;
+  const noDeployOutput = await resultsCommand(issue);
+  for (const line of commandHeadLines(noDeployOutput)) note(line);
+  if (!noDeployOutput.includes(noDeployLine)) return `step 3: the command omitted ${noDeployLine}`;
+
+  // Steps 4 and 5 deploy as the run's person, as deploy-recorded does.
+  const deployer = await personToken("verification-live-deploy");
+  const deploy = async (step: number, commit: string): Promise<string> => {
+    const argv = ["deploy", "--repo", repo, "--program", program, "--commit", commit, "--json"];
+    const run = await runDispatch(argv, { token: deployer });
+    if (run.code !== 0) throw new Error(stepFailed(step, argv, run, 0));
+    const answer = JSON.parse(run.stdout) as {
+      deploy: { program: string; commit: string; deployed_at: string };
+    };
+    note(
+      `dispatch deploy: ${answer.deploy.program} runs ${answer.deploy.commit} since ${answer.deploy.deployed_at}`
+    );
+    return answer.deploy.deployed_at;
+  };
+
+  // Step 4: the first build deployed, then a pass recorded at it.
+  await deploy(4, commits.liveFirstBuild);
+  const recordArgv = [
+    ...resultArgv(issue, "live", commits.liveFirstBuild),
+    "--run",
+    "bash scripts/e2e/verification-results.sh",
+    "--observed",
+    "The first deployed build answered.",
+  ];
+  const recorded = await runDispatch(recordArgv);
+  if (recorded.code !== 0) return stepFailed(4, recordArgv, recorded, 0);
+  const pass = ((await checkOf(issue, "live")).results ?? []).find(
+    (row) => row.verdict === "pass" && row.commit_sha === commits.liveFirstBuild
+  );
+  if (pass === undefined) return `step 4: the command stored no pass at ${commits.liveFirstBuild}`;
+  const firstLine = `A pass stands: yes, from implementer, as the newest result is pass ${pass.id} at ${commits.liveFirstBuild}.`;
+  const firstOutput = await resultsCommand(issue);
+  for (const line of commandHeadLines(firstOutput)) note(line);
+  if (!firstOutput.includes(firstLine)) return `step 4: the command omitted ${firstLine}`;
+
+  // Step 5: the second build deployed, which no result is recorded at.
+  const secondDeployedAt = await deploy(5, commits.liveSecondBuild);
+  const secondLine = `A pass stands: not known, as no result counts for ${program} at ${commits.liveSecondBuild}, deployed ${secondDeployedAt}.`;
+  const secondOutput = await resultsCommand(issue);
+  for (const line of commandHeadLines(secondOutput)) note(line);
+  if (!secondOutput.includes(secondLine)) return `step 5: the command omitted ${secondLine}`;
+  const notCounted =
+    "it names a commit that the current deploy of the program this check reads does not run";
+  const replaced = ((await checkOf(issue, "live")).results ?? []).find((row) => row.id === pass.id);
+  note(
+    `the results route marks pass ${pass.id} not_counted ${JSON.stringify(replaced?.not_counted)}`
+  );
+  return replaced?.not_counted === notCounted
+    ? undefined
+    : `step 5: pass ${pass.id} reads not_counted ${JSON.stringify(replaced?.not_counted)}, want ${JSON.stringify(notCounted)}`;
 });
 
 // k-attribution. What decides a pull request's issue: the five ranked sources
@@ -1745,7 +1989,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     surface: "cli",
   });
   const childCheck = (await checksOf(child, commits.attributionBranch))[0];
-  const childStands = childCheck?.results.map(standsOf).join(", ") ?? "";
+  const childStands = childCheck?.results?.map(standsOf).join(", ") ?? "";
   note(
     `${child} with ?at=${commits.attributionBranch.slice(0, 12)} compares with ${comparedOf(childCheck as CheckBlock)}, and its result stands ${childStands}`
   );

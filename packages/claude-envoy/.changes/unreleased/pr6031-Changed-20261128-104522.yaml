@@ -1,0 +1,5 @@
+kind: Changed
+body: The dispatch-writing-specs, legion-architect and legion-worker skills tell an author to write subject and program on a check that reads production or another live system after the merge only where `dispatch deploys` lists that program, and neither where it lists none or Dispatch refuses either attribute. The legion-worker skill says a live check's result counts only at its program's deploy, where the newest result decides, and that a fail where production does not carry the merge names the merge commit and leaves the check not known.
+time: 2026-11-28T10:45:22.743419186Z
+custom:
+    Issue: pr6031

@@ -29,11 +29,10 @@ func TestADeployRecordNamesItsWriter(t *testing.T) {
 }
 
 func TestALiveCheckCountsOnlyTheDeployOfTheProgramItNames(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
-	restore := useTheNextReleasesManifest(t)
 	issue := rig.issue(t, "A named program", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"worker\"}\nThe worker answers.\n:::\n")
 	unnamed := rig.issue(t, "An unnamed program", ":::check{#live when=\"after_merge\" subject=\"production\"}\nThe program answers.\n:::\n")
-	restore()
 	for index, key := range []string{issue, unnamed} {
 		writeKnownMergeOnBase(t, rig.database, "acme/widgets", 200+index, headCommit, key, "main", afterMergeM)
 	}
@@ -70,10 +69,9 @@ func TestALiveCheckCountsOnlyTheDeployOfTheProgramItNames(t *testing.T) {
 }
 
 func TestAnUnnamedLiveCheckReadsTheOnlyProgram(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
-	restore := useTheNextReleasesManifest(t)
 	issue := rig.issue(t, "One program", ":::check{#live when=\"after_merge\" subject=\"graph\"}\nThe graph answers.\n:::\n")
-	restore()
 	writeKnownMergeOnBase(t, rig.database, "acme/widgets", 300, headCommit, issue, "main", afterMergeM)
 	rig.github.carry("main", afterMergeM, afterMergeC1)
 	rig.github.hold(afterMergeM, afterMergeC1)
@@ -83,8 +81,8 @@ func TestAnUnnamedLiveCheckReadsTheOnlyProgram(t *testing.T) {
 }
 
 func TestARecordedDeployWakesEachOpenIssueThatHoldsALiveResult(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
-	restore := useTheNextReleasesManifest(t)
 	var issues []string
 	for index, attributes := range []string{
 		`subject="production"`, `subject="code"`, `subject="graph" program="renderer"`,
@@ -92,7 +90,6 @@ func TestARecordedDeployWakesEachOpenIssueThatHoldsALiveResult(t *testing.T) {
 	} {
 		issues = append(issues, rig.issue(t, fmt.Sprintf("Event recipient %d", index+1), ":::check{#live when=\"after_merge\" "+attributes+"}\nThe system answers.\n:::\n"))
 	}
-	restore()
 	for index, issue := range issues {
 		if index != 4 {
 			rig.record(t, issue, "live", "tester", "pass", afterMergeC1)
@@ -156,10 +153,9 @@ func TestADeployRouteRefusesACommitGitHubSaysTheRepositoryDoesNotHold(t *testing
 }
 
 func TestADeployedCommitBeforeTheMergeCannotDecideALiveCheck(t *testing.T) {
+	t.Parallel()
 	rig := newAfterMergeRig(t)
-	restore := useTheNextReleasesManifest(t)
 	issue := rig.issue(t, "The deployed commit predates the merge", ":::check{#live when=\"after_merge\" subject=\"production\" program=\"worker\"}\nThe worker answers.\n:::\n")
-	restore()
 	writeKnownMergeOnBase(t, rig.database, "acme/widgets", 400, headCommit, issue, "main", afterMergeM)
 	rig.github.carry("main", afterMergeM, afterMergeC0, afterMergeC1)
 	rig.github.hold(afterMergeM, afterMergeC1)

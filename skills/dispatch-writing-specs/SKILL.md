@@ -24,7 +24,7 @@ Part | Content
 `Problem` | What goes wrong, for whom, with counts
 `Goals and non-goals` | What is in and out of scope
 `Requirements` | a `:::requirement` block each, `**R1.**` on, its source (`From:`)
-`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (where it names tests, specific ones), `when`, `negative_control`. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
+`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (where it names tests, specific ones), `when`, `negative_control`. A check that reads production or another live system after the merge names what it reads in `subject` (`production`, or `graph` for Dispatch's stored graph) and `program`. It names both only where `dispatch deploys --repo <the issue's repository>` lists that program, and neither where it lists none or Dispatch refuses either attribute. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
 `Design` | How it meets them; a value and its reason for each limit, size and time
 `Decisions` | The choices the spec rests on (Decisions below)
 

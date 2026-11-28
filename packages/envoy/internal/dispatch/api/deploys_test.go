@@ -163,12 +163,12 @@ func requireNotCounted(t *testing.T, check liveCheckAnswer, id, reason string) {
 }
 
 func TestAGraphCheckReadsTheCurrentDeployAsProductionDoes(t *testing.T) {
+	t.Parallel()
 	for _, subject := range []string{"production", "graph"} {
 		t.Run(subject, func(t *testing.T) {
+			t.Parallel()
 			rig := newAfterMergeRig(t)
-			restore := useTheNextReleasesManifest(t)
 			issue := rig.issue(t, "A running program", fmt.Sprintf(":::check{#live when=\"after_merge\" subject=%q program=\"renderer\"}\nThe running program answers.\n:::\n", subject))
-			restore()
 			writeKnownMergeOnBase(t, rig.database, "acme/widgets", 101, headCommit, issue, "main", afterMergeM)
 			rig.github.carry("main", afterMergeM, afterMergeC0, afterMergeC1, afterMergeC2)
 			rig.github.hold(afterMergeM, afterMergeC1, afterMergeC2)

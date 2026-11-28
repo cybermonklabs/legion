@@ -197,10 +197,15 @@ export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
      *  that was retracted reads the same word for the same reason, and `STATE_WORDS` holds
      *  the two to it. */
     retracted: "Retracted",
-    /** There is a result, and Dispatch cannot tell whether a pass of the check stands - it
-     *  could not read the repository, or could not place the commit a pass was recorded at -
-     *  so the page will not say that it passed. The word says Dispatch cannot tell, which "No
-     *  result" does not: there is a result to tell about. */
+    /** Dispatch cannot tell whether a pass of the check stands, so the page will not say that
+     *  it passed. For a check read at its basis there is a result, and Dispatch could not read
+     *  the repository or could not place the commit a pass was recorded at. For a check that
+     *  reads the current deploy of its program (`statement-rules.ts`'s `liveStanding`), the
+     *  server says it cannot tell with or without a result: there is no deploy of the program,
+     *  no result since its deploy, a program the check leaves unnamed, a deploy at a commit that
+     *  does not hold the merge, or a read that failed. The word says Dispatch cannot tell, which
+     *  "No result" does not: either there is a result to tell about, or what a result is read
+     *  against is not known. */
     unmarked: "Cannot tell",
     /** The payload carries no answer over the check's results at all, which is a server that
      *  does not send `pass_stands` - an older build behind the same load balancer as this

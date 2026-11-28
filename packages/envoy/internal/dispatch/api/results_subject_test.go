@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // subjectChecks is a Verification document whose checks name what they read: k5 reads production
@@ -25,26 +23,21 @@ const subjectChecks = ":::check{#k5 when=\"after_merge\" subject=\"production\" 
 // A check block names what it reads in `subject` (code, production or graph) and the deployed
 // program it reads in `program`, and GET /api/v1/issues/{key}/results serves each as
 // `checks[].subject` and `checks[].program`, as stored, leaving the key out where the block names
-// none; a subject outside the three is refused as markdown outside the schema. The document is
-// written under a manifest that creates both marks, this build's raised one version
-// (pmdoc.UseManifestForTest), and read after the restore, so the test asserts nothing of the
-// build's own version: the build that reads the marks and does not create them yet, and the build
-// that creates them, each pass it. TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne holds which
-// version reads them and which writes them.
-//
-// It stays serial: the manifest is the package's, and every other test reads it.
+// none; a subject outside the three is refused as markdown outside the schema. This build writes
+// both marks and serves them, so the document is written and read under the build's own schema.
+// TestTheCheckMarksAreReadAtNAndWrittenFromNPlusOne (pmdoc/manifest_test.go) holds the version
+// boundary: which version reads the marks and which writes them.
 func TestACheckBlockServesItsSubjectAndProgram(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESSP", "Subject and program", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
 
-	restore := useTheNextReleasesManifest(t)
 	uploadDocument(t, handler, owner, "verification.md", subjectChecks)
 	staging := dispatchRequest(t, handler, http.MethodPost, owner+"/artifacts", map[string]any{
 		"name": "staging.md", "content": ":::check{#k7 subject=\"staging\"}\nA subject outside the three.\n:::\n",
 	}, "alice")
 	requireMarkdownRefused(t, staging, "a subject outside the three", "must be one of code, production, graph, got \"staging\"")
-	restore()
 
 	checks := servedCheckMembers(t, handler, issue.Key)
 	requireCheckMember(t, checks, "k5", "subject", `"production"`)
@@ -55,31 +48,52 @@ func TestACheckBlockServesItsSubjectAndProgram(t *testing.T) {
 	requireCheckMember(t, checks, "k1", "program", "")
 }
 
-// useTheNextReleasesManifest makes the package read and write by the embedded manifest with its
-// version raised by one, as the next release's build does: each element this build reads and
-// creates only from that version is one it creates. restore puts this build's manifest back, and
-// the test's cleanup does too should it end before.
-func useTheNextReleasesManifest(t *testing.T) (restore func()) {
-	t.Helper()
-	var manifest map[string]any
-	if err := json.Unmarshal(pmdoc.SchemaJSON(), &manifest); err != nil {
-		t.Fatalf("decode the manifest: %v", err)
+// An author marks a check they wrote before: the Verification document uploaded again whole,
+// naming the token it stood at after a pass of the check was recorded, with `subject` and
+// `program` added to the check's opening line, is taken under this build's own schema, with no
+// manifest raised. The results read then serves the check's subject and program, and its serves,
+// surface, run, when and negative_control as they were before the edit. A check's digest covers
+// its whole block, its opening line included, so the pass recorded before the edit reads
+// check_words_moved true.
+func TestAnAuthorWritesACheckSubjectAndProgram(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "RESAW", "An author's marks", twoRequirements)
+	owner := "/api/v1/issues/" + issue.Key
+	opening := `:::check{#k8 serves="dispatch://` + issue.Key + `/spec#b-r1" surface="cli"` +
+		` run="go test ./internal/dispatch/api" when="after_merge" negative_control="Stop the server and watch the read fail."`
+	words := "\nProduction answers the results read at the deploy's commit.\n:::\n"
+	uploadDocument(t, handler, owner, "verification.md", opening+"}"+words)
+	kept := []struct{ name, want string }{
+		{"serves", `["dispatch://` + issue.Key + `/spec#b-r1"]`},
+		{"surface", `"cli"`},
+		{"run", `"go test ./internal/dispatch/api"`},
+		{"when", `"after_merge"`},
+		{"negative_control", `"Stop the server and watch the read fail."`},
 	}
-	version, ok := manifest["version"].(float64)
-	if !ok {
-		t.Fatalf("the manifest declares no version")
+	before := servedCheckMembers(t, handler, issue.Key)
+	requireCheckMember(t, before, "k8", "subject", "")
+	requireCheckMember(t, before, "k8", "program", "")
+	for _, member := range kept {
+		requireCheckMember(t, before, "k8", member.name, member.want)
 	}
-	manifest["version"] = int(version) + 1
-	encoded, err := json.Marshal(manifest)
-	if err != nil {
-		t.Fatalf("encode the manifest: %v", err)
+
+	pass := recordStored(t, handler, issue.Key, "k8", mergeCommit)
+	uploadDocument(t, handler, owner, "verification.md", opening+` subject="production" program="dispatch"}`+words)
+
+	after := servedCheckMembers(t, handler, issue.Key)
+	requireCheckMember(t, after, "k8", "subject", `"production"`)
+	requireCheckMember(t, after, "k8", "program", `"dispatch"`)
+	for _, member := range kept {
+		requireCheckMember(t, after, "k8", member.name, member.want)
 	}
-	restore, err = pmdoc.UseManifestForTest(encoded)
-	if err != nil {
-		t.Fatalf("install the manifest of version %d: %v", int(version)+1, err)
+	switch moved := resultRead(t, readResults(t, handler, issue.Key), "k8", pass.ID).CheckWordsMoved; {
+	case moved == nil:
+		t.Errorf("the pass recorded at k8's version %d carries no check_words_moved after the edit, want true", pass.CheckVersion)
+	case !*moved:
+		t.Errorf("the pass recorded at k8's version %d reads check_words_moved false after the edit, want true: a check's digest covers its opening line",
+			pass.CheckVersion)
 	}
-	t.Cleanup(restore)
-	return restore
 }
 
 // requireMarkdownRefused holds a document write to 400 INVALID_MARKDOWN, the caller's markdown to
