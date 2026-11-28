@@ -328,7 +328,7 @@ func (r *mergeReadRig) drain(limit int) []int {
 	var sent []int
 	for range limit {
 		progress, due, standing := r.pending()
-		if !standing || progress.State != "" && !progress.Refresh {
+		if !standing || progress.State != "" && !progress.RefreshAsked() {
 			return sent
 		}
 		if due.After(r.clock()) {
@@ -551,8 +551,10 @@ func TestAMergeReadResumesItsPageAndBudget(t *testing.T) {
 func TestAMergeReadStopsAfterThreeStageFailures(t *testing.T) {
 	t.Parallel()
 	refresh := func(r *mergeReadRig) {
-		r.exec(fmt.Sprintf(`update outbox set payload = jsonb_set(payload, '{progress,refresh}', 'true'), next_at = '%s' where kind = 'merge_read'`,
-			r.clock().Format(time.RFC3339Nano)))
+		r.t.Helper()
+		if err := r.doorRefresh(); err != nil {
+			r.t.Fatalf("ask the merge read to read its links again: %v", err)
+		}
 	}
 	twoDays := func(t *testing.T, r *mergeReadRig) {
 		t.Helper()

@@ -122,7 +122,7 @@ func TestAClearedMergedChildWithNoTraceWaitsUnread(t *testing.T) {
 		t.Fatalf("the ticks of two days sent %d GETs to Dispatch and GitHub, want none", gets()-sent)
 	}
 	stands := r.waits(mnwChild, 1, claim.RoleController)
-	if stands.Progress.State != searched.Progress.State || stands.Progress.Attempts != searched.Progress.Attempts || stands.Progress.Refresh {
+	if stands.Progress.State != searched.Progress.State || stands.Progress.Attempts != searched.Progress.Attempts || stands.Progress.RefreshAsked() {
 		t.Fatalf("the merge read after two days of ticks = %+v, want it as its search left it, %+v, with no refresh asked", stands.Progress,
 			searched.Progress)
 	}

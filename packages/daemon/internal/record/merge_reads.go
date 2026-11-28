@@ -70,11 +70,13 @@ func (s *Postgres) RequestMergeRead(ctx context.Context, tx pgx.Tx, issue string
 	return tag.RowsAffected() > 0, nil
 }
 
-// RefreshMergeRead asks issue's standing merge_read row for one read of the issue's links
-// (MergeReadProgress.Refresh) and makes it due at now, and answers whether one stood. A new
-// observation of the issue is what asks it: a link may have come with it.
+// RefreshMergeRead asks issue's standing merge_read row for one more read of the issue's links
+// (MergeReadProgress.Refreshes, counted up by one) and makes it due at now, and answers whether one
+// stood. A new observation of the issue is what asks it: a link may have come with it. Each ask is
+// counted, so one made while a links read runs outlives that read's save.
 func (s *Postgres) RefreshMergeRead(ctx context.Context, tx pgx.Tx, issue string, now time.Time) (bool, error) {
-	tag, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{progress}', coalesce(payload->'progress', '{}'::jsonb) || '{"refresh": true}'::jsonb),
+	tag, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{progress}', coalesce(payload->'progress', '{}'::jsonb)
+			|| jsonb_build_object('refreshes', coalesce((payload->'progress'->>'refreshes')::int, 0) + 1)),
 		next_at = least(next_at, $3) where issue = $1 and kind = $2`, issue, string(OutboxKindMergeRead), now)
 	if err != nil {
 		return false, fmt.Errorf("ask the merge read of %s to read its links again: %w", issue, err)

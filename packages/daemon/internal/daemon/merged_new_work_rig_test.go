@@ -324,7 +324,7 @@ func (r *mnwRig) readMerge(key string, limit int) {
 	r.t.Helper()
 	for range limit {
 		read, due, standing := r.pending(key)
-		if !standing || read.Progress.State != "" && !read.Progress.Refresh {
+		if !standing || read.Progress.State != "" && !read.Progress.RefreshAsked() {
 			return
 		}
 		if due.After(r.clock()) {
