@@ -362,14 +362,18 @@ func TestALateReconnectCallbackDoesNotCutAReleasedAttemptsDrain(t *testing.T) {
 	t.Cleanup(client.Close)
 	conn = client.Conn
 	// nats.go runs its callbacks on one goroutine, in order, so the reconnect's callback waits
-	// behind the restart's disconnect callback, which this hook holds until unhold.
+	// behind the restart's disconnect callback, which this hook holds until unhold. It holds for no
+	// span of its own, only until unhold or the end of the test's waits (testwait.Context): the
+	// restart, the reconnect and the send can take longer on a loaded machine with nothing wrong, and
+	// a hook that let go first would let the reconnect's callback begin before sendCore returned.
 	held := make(chan struct{})
 	unhold := sync.OnceFunc(func() { close(held) })
 	t.Cleanup(unhold)
+	holdEnds := testwait.Context(t)
 	client.AddDisconnectHook(func() {
 		select {
 		case <-held:
-		case <-time.After(30 * time.Second):
+		case <-holdEnds.Done():
 		}
 	})
 	var callbackBegan atomic.Bool

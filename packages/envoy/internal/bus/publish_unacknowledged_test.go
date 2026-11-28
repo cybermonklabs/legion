@@ -33,6 +33,17 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 	}
 }
 
+// pastTheRunAcknowledgements is the acknowledgement clock (bus.WithPublishAcknowledgementClock) of
+// the clients below whose publishes wait through a reconnect. The bus bounds every stored publish
+// by publishBound, 5 s, whatever its context; a reconnect can take longer than that on a loaded
+// machine with nothing wrong, and no row here races that bound, so each publish ends with its own
+// context instead: testwait.Context, or a window's 500 ms.
+type pastTheRunAcknowledgements struct{}
+
+func (pastTheRunAcknowledgements) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, testwait.PastTheRun)
+}
+
 // A stored publish that failed after its send went out unanswered may still have put its message
 // in the stream, and its error says so (bus.ErrUnacknowledged) beside the error it wraps; one that
 // sent nothing, or that the server refused, does not. The listener's sender limit charges a
@@ -45,7 +56,7 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
 	t.Parallel()
 	server, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -70,8 +81,15 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, bus.ErrUnacknowledged) {
 			t.Fatalf("a publish under an ended context = %v, want the context's error and no ErrUnacknowledged", err)
 		}
-		if stored := storedOn(t, topic); stored != 0 {
-			t.Fatalf("the stream holds %d messages on %s, want none", stored, topic)
+		// One read of the stream right after the call can run before the stream has stored what the
+		// call sent, and pass a bus that sent a message. So a live publish on the same topic follows,
+		// on the same connection, and once the stream has acknowledged it the topic must hold that
+		// marker alone: anything the publish under the ended context sent reached the server first.
+		if _, err := client.PublishAckWithin(testwait.Context(t), unacknowledgedEnvelope(topic)); err != nil {
+			t.Fatalf("the live publish after it on %s: %v", topic, err)
+		}
+		if stored := storedOn(t, topic); stored != 1 {
+			t.Fatalf("the stream holds %d messages on %s once it acknowledged the live publish after the ended one, want that publish alone: the publish under an ended context sent a message", stored, topic)
 		}
 	})
 
@@ -159,7 +177,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	t.Run("a publish interrupted by reconnect is sent again after its first copy is stored", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_reconnect")
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
@@ -219,7 +237,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
 		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
@@ -254,6 +272,12 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if !errors.Is(got, bus.ErrUnacknowledged) {
 			t.Fatalf("a cursor write whose answer the reconnect cut = %v, want ErrUnacknowledged", got)
 		}
+		// The answer is the stream's refusal of the resend, the case this row is about, and not the
+		// end of the write's own wait: a write that gave up before its resend reached the stream
+		// wraps ErrUnacknowledged too, and would pass both checks above without the refusal.
+		if !bus.IsCASConflict(got) {
+			t.Fatalf("a cursor write whose answer the reconnect cut = %v, want the stream's refusal of its resend (a wrong last sequence): the write ended before its resend reached the stream", got)
+		}
 		stored, err := client.JS().GetLastMsg(bus.Stream, subject)
 		if err != nil {
 			t.Fatalf("read the cursor back: %v", err)
@@ -277,7 +301,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		subject := bus.TakeoverSubject(role, previous, id.New())
 		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
@@ -322,39 +346,36 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		subject := bus.HandoverSubject(role, previous, successor)
 		record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: time.Now().UnixMilli()}
 		proxy := testnats.StartProxy(t, uri)
-		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
+		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(pastTheRunAcknowledgements{}))
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
 		t.Cleanup(reconnecting.Close)
 		proxy.FreezeServerReplies()
 		answered := make(chan error, 1)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		ctx := testwait.Context(t)
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
 			answered <- reconnecting.WriteHandoverRecord(ctx, subject, record)
 		}()
-		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the handover record to be stored before reconnecting",
-			func() bool { return storedOn(t, subject) == 1 })
+		testwait.UntilPolling(t, storedOnPoll, "the handover record to be stored before reconnecting (the last read is how many records the stream held on the subject)",
+			func() (uint64, bool) {
+				stored := storedOn(t, subject)
+				return stored, stored == 1
+			})
 		if err := reconnecting.Connection().ForceReconnect(); err != nil {
 			t.Fatalf("force reconnect: %v", err)
 		}
 		proxy.Restore()
-		var got error
-		select {
-		case got = <-answered:
-		case <-time.After(15 * time.Second):
-			t.Fatal("the handover record write interrupted by reconnect did not return")
-		}
+		got := testwait.Receive(t, "the handover record write interrupted by reconnect to return", answered)
 		if got != nil {
 			t.Fatalf("a handover record write the stream stored before the reconnect = %v, want nil: the subject holds the record", got)
 		}
 		if n := storedOn(t, subject); n != 1 {
 			t.Fatalf("the stream holds %d handover records on %s, want the one this call stored", n, subject)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		records, err := client.TakeoverRecords(ctx, role)
+		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
+		records, err := client.TakeoverRecords(testwait.Context(t), role)
 		if err != nil {
 			t.Fatalf("read %s's takeover records: %v", role, err)
 		}

@@ -740,13 +740,9 @@ func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *
 		held    time.Time
 	)
 	holdOnAnswer := func(replies <-chan *nats.Msg) {
-		deadline := time.Now().Add(30 * time.Second)
-		for len(replies) == 0 {
-			if time.Now().After(deadline) {
-				t.Fatal("control: the stream's acknowledgement did not reach the request's inbox within 30 s")
-			}
-			time.Sleep(time.Millisecond)
-		}
+		// No span of its own: the acknowledgement can come late on a loaded machine with nothing wrong.
+		testwait.UntilPolling(t, time.Millisecond, "control: the stream's acknowledgement to reach the request's inbox (the last read is how many replies the inbox held)",
+			func() (int, bool) { return len(replies), len(replies) > 0 })
 		hold.HoldReconnect(t, conn)
 		attempt = hold.Attempts()
 		held = time.Now()
