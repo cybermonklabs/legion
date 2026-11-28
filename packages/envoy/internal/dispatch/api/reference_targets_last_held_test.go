@@ -137,9 +137,9 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 	}
 	// A row put under a conversation item, as New node under and Retype make one (R3, R5): a
 	// typed block of the issue's own fragment whose parent names the item or a block of it, of the
-	// issue or of the issue above. The walk holds it through the issue's conversation, or through
-	// the nodes placed under the issues above (refs.TreePlacedAbove), which the part_of climb does
-	// not pass.
+	// issue or of the issue above, or a block of the issue above. The walk holds it through the
+	// issue's conversation, or through the nodes placed under the issues above
+	// (refs.TreePlacedAbove), which the part_of climb does not pass.
 	comment := created201[model.Comment](t, "alice's comment", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+key+"/comments", map[string]any{"body": "A criterion stands under this comment."}, "alice"))
 	message := created201[model.Comment](t, "alice's message", dispatchRequest(t, rig.handler, http.MethodPost,
@@ -148,18 +148,36 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 		"/api/v1/issues/"+above.Key+"/comments", map[string]any{"body": "A criterion of the issue below stands under this comment."}, "alice"))
 	aboveMessage := created201[model.Comment](t, "alice's message on the issue above", dispatchRequest(t, rig.handler, http.MethodPost,
 		"/api/v1/issues/"+above.Key+"/messages", map[string]any{"body": "A statement of the issue below stands under this message."}, "alice"))
-	// itemBlock is the reference of the first block of the item id of kind, an item of the issue,
-	// and the parent the tree read names for a node under that block: its storage kind and node id.
-	itemBlock := func(kind refs.ItemKind, id string) (string, model.IssueTreeParent) {
-		reference := firstItemBlock(t, rig.database, kind, key, id)
+	// An ask asked on no block states no part_of (graphstore's askRelations), and an ask's part
+	// is part_of its ask in graph_edges alone, so the climb ends at either.
+	ask := createPartAsk(t, rig.handler, key, "Which criterion stands under this ask?")
+	aboveAsk := createPartAsk(t, rig.handler, above.Key, "Which criterion of the issue below stands under this ask?")
+	// itemBlock is the reference of the block at place, counted from 1 among the current blocks
+	// of the item id of kind, an item of issueKey, and the parent the tree read names for a node
+	// under that block: its storage kind and node id. An ask's blocks are its parts.
+	itemBlock := func(kind refs.ItemKind, issueKey, id string, place int) (string, model.IssueTreeParent) {
+		blocks := map[refs.ItemKind]string{refs.ItemAsk: "ask_blocks where ask_id",
+			refs.ItemComment: "comment_blocks where comment_id", refs.ItemMessage: "message_blocks where message_id"}[kind]
+		var block string
+		if err := rig.database.Pool.QueryRow(t.Context(), `select block_id from `+blocks+` = $1::uuid and position is not null
+			order by position offset $2 limit 1`, id, place-1).Scan(&block); err != nil {
+			t.Fatalf("read block %d of %s %s: %v", place, kind, id, err)
+		}
+		reference, written := text.FormatItemBlockRef(text.Ref{Kind: "block", Item: string(kind), IssueKey: issueKey, ID: id, Block: block})
 		ref, ok := text.CanonicalItemBlockRef(reference)
-		if !ok {
-			t.Fatalf("the first block of %s %s is written %q, which reads as no block of an item", kind, id, reference)
+		if !written || !ok {
+			t.Fatalf("block %s of %s %s is written %q, which reads as no block of an item", block, kind, id, reference)
 		}
 		return reference, model.IssueTreeParent{Kind: kind.BlockKind(), ID: text.TargetID(ref)}
 	}
-	commentBlock, commentBlockParent := itemBlock(refs.ItemComment, comment.ID)
-	messageBlock, messageBlockParent := itemBlock(refs.ItemMessage, message.ID)
+	commentBlock, commentBlockParent := itemBlock(refs.ItemComment, key, comment.ID, 1)
+	messageBlock, messageBlockParent := itemBlock(refs.ItemMessage, key, message.ID, 1)
+	askPart, askPartParent := itemBlock(refs.ItemAsk, key, ask.ID, 1)
+	aboveCommentBlock, aboveCommentBlockParent := itemBlock(refs.ItemComment, above.Key, aboveComment.ID, 1)
+	aboveMessageBlock, aboveMessageBlockParent := itemBlock(refs.ItemMessage, above.Key, aboveMessage.ID, 1)
+	aboveAskPart, aboveAskPartParent := itemBlock(refs.ItemAsk, above.Key, aboveAsk.ID, 1)
+	aboveSpec := readDecisionDocument(t, rig.database, above.Key, "spec")
+	_, aboveProse := textBlockOf(t, rig.database, aboveSpec.id, "paragraph", "The issue above states no requirement.")
 	// Each typed block written under an item: its type, its id and words, the reference its parent
 	// attribute holds, and the parent the tree read names for it.
 	underItems := []struct {
@@ -170,12 +188,22 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 			model.IssueTreeParent{Kind: graphstore.KindComment, ID: comment.ID}},
 		{"requirement", "under-message", "The statement under a message.", "dispatch://" + key + "/message/" + message.ID,
 			model.IssueTreeParent{Kind: graphstore.KindMessage, ID: message.ID}},
+		{"criterion", "under-ask", "The criterion under an ask asked on no block.", "dispatch://" + key + "/ask/" + ask.ID,
+			model.IssueTreeParent{Kind: graphstore.KindAsk, ID: ask.ID}},
 		{"criterion", "under-comment-block", "The criterion under a comment's block.", commentBlock, commentBlockParent},
 		{"requirement", "under-message-block", "The statement under a message's block.", messageBlock, messageBlockParent},
+		{"requirement", "under-ask-part", "The statement under an ask's part.", askPart, askPartParent},
+		{"criterion", "above-block", "The criterion under a block of the issue above.", lastHeldBlockRef(t, above.Key, "spec", aboveProse),
+			model.IssueTreeParent{Kind: refs.BlockNodeKind, ID: aboveSpec.address(aboveProse)}},
 		{"criterion", "above-comment", "The criterion under a comment of the issue above.", "dispatch://" + above.Key + "/comment/" + aboveComment.ID,
 			model.IssueTreeParent{Kind: graphstore.KindComment, ID: aboveComment.ID}},
 		{"requirement", "above-message", "The statement under a message of the issue above.", "dispatch://" + above.Key + "/message/" + aboveMessage.ID,
 			model.IssueTreeParent{Kind: graphstore.KindMessage, ID: aboveMessage.ID}},
+		{"criterion", "above-ask", "The criterion under an ask of the issue above.", "dispatch://" + above.Key + "/ask/" + aboveAsk.ID,
+			model.IssueTreeParent{Kind: graphstore.KindAsk, ID: aboveAsk.ID}},
+		{"criterion", "above-comment-block", "The criterion under a comment's block of the issue above.", aboveCommentBlock, aboveCommentBlockParent},
+		{"requirement", "above-message-block", "The statement under a message's block of the issue above.", aboveMessageBlock, aboveMessageBlockParent},
+		{"requirement", "above-ask-part", "The statement under an ask's part of the issue above.", aboveAskPart, aboveAskPartParent},
 	}
 	markdown := lastHeldProse + "\n\n:::requirement{#tree-statement}\nThe tree fragment's statement.\n:::\n"
 	for _, under := range underItems {
@@ -230,6 +258,41 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 		lastHeldWant{lastHeldBlockRef(t, key, "spec", "kept"), 0, false},
 		lastHeldWant{"dispatch://" + lens, 0, true},
 	)...)
+
+	// The cut-currency case, in five steps. The walk reads an item's blocks only while they are
+	// current (refs' conversationBlocks), and an edit of the item that takes a block out keeps the
+	// block's row with its removed_at. 1: a spec version holds a criterion under a comment's
+	// second block. 2: the comment's author edits the comment so that the block goes. 3: the next
+	// spec edit writes a version whose walk does not reach the criterion. 4: the criterion is
+	// removed. 5: last_held names the version of step 1, though at the version of step 3 the climb
+	// still reaches the comment's gone block.
+	edited := created201[model.Comment](t, "alice's comment of two blocks", dispatchRequest(t, rig.handler, http.MethodPost,
+		"/api/v1/issues/"+key+"/comments", map[string]any{"body": "The first block stays.\n\nA criterion stands under this block, which goes."}, "alice"))
+	goneBlock, goneBlockParent := itemBlock(refs.ItemComment, key, edited.ID, 2)
+	editLastHeldTree(t, rig.handler, tree, map[string]any{"op": "insert", "after": "end",
+		"markdown": ":::criterion{#under-gone-block parent=\"" + goneBlock + "\"}\nThe criterion under a block an edit takes out.\n:::\n"})
+	editSpec(t, rig.handler, key, []map[string]any{{"op": "replace", "find": "The kept statement, revised again.", "with": "The kept statement, revised a third time."}})
+	lastHeldQuiet(t, rig)
+	heldUnderBlock := newestQueryVersion(t, rig.database, spec.id).number
+	underGoneBlock := tree.address("under-gone-block")
+	if parent := treeNodes(t, rig.handler, key, fmt.Sprintf("?view=spec&v=%d", heldUnderBlock))[underGoneBlock].Parent; parent == nil ||
+		parent.Kind != goneBlockParent.Kind || parent.ID != goneBlockParent.ID {
+		t.Fatalf("step 1: the spec query version %d holds under-gone-block under %+v, want it under %s %s", heldUnderBlock, parent, goneBlockParent.Kind, goneBlockParent.ID)
+	}
+	requireEdit(t, "step 2: take the comment's second block out", editCommentAs(t, rig.handler, edited.ID, "The first block stays.", nil, nil))
+	editSpec(t, rig.handler, key, []map[string]any{{"op": "replace", "find": "The kept statement, revised a third time.", "with": "The kept statement, revised a fourth time."}})
+	lastHeldQuiet(t, rig)
+	afterBlock := newestQueryVersion(t, rig.database, spec.id).number
+	if afterBlock <= heldUnderBlock {
+		t.Fatalf("step 3: the spec edit after the comment's edit left version %d, want a version after %d", afterBlock, heldUnderBlock)
+	}
+	if _, reached := treeNodes(t, rig.handler, key, fmt.Sprintf("?view=spec&v=%d", afterBlock))[underGoneBlock]; reached {
+		t.Fatalf("step 3: the spec query version %d holds under-gone-block, whose parent block the comment's edit took out", afterBlock)
+	}
+	editLastHeldTree(t, rig.handler, tree, map[string]any{"op": "delete", "block": "under-gone-block"})
+	lastHeldQuiet(t, rig)
+	checkLastHeld(t, rig.handler, lastHeldWant{lastHeldBlockRef(t, key, "spec", "under-gone-block"), heldUnderBlock, true})
+
 	// The contracts module is rendered from the committed OpenAPI document and never committed
 	// itself, so the document is what declares the field (`schemaFields`).
 	fields := schemaFields(committedDocument(t, repositoryRoot(t)))["ReferenceTarget"]

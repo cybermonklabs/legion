@@ -137,20 +137,25 @@ var lastHeldBlocksStatement = `
 			select parent.to_kind, parent.to_id, child.kind, child.id
 			from placed child
 			cross join lateral (` + refs.AsOfPlacement("child.kind", "child.id", lastHeldCut) + `) parent
-			-- The climb ends at a comment or a message, or a block of one. The part_of log alone does
-			-- not prove that the walk's conversation held it at this cut; the item's row does (below).
-			where child.kind not in ('issue', 'comment', 'comment_block', 'message', 'message_block')
+			-- The climb ends at an ask, a comment or a message, or a block of one. The part_of log
+			-- alone does not prove that the walk's conversation held it at this cut; the item's row
+			-- does (below).
+			where child.kind not in ('issue', 'ask', 'ask_block', 'comment', 'comment_block', 'message', 'message_block')
 			  and ` + refs.TreeOwnsSQL("block.issue_key", "child.kind", "child.id") + `
 			  and (` + refs.AsOfValue("child.kind", "child.id", graphstore.AttributeState, lastHeldCut, false) + `) is distinct from $4
 		)
 		select 1 from placed where kind = 'issue' and id = block.issue_key
 		union all
-		-- A comment or a message is a root of the walk where the walk's conversation reads it
-		-- at the cut (WalkIssueTree, refs.ConversationNodes): an item of the block's issue
-		-- written at or before the cut's time. The conversation also leaves out an item no
-		-- person wrote or wrote in the thread of, which this statement does not test: a write
-		-- places a block under no such item (pmdoc's itemReach), so only a block placed before
-		-- that rule could stand under one.
+		-- An ask, a comment or a message is a root of the walk where the walk's conversation reads
+		-- it at the cut (WalkIssueTree, refs.ConversationNodes): an item of the block's issue
+		-- written at or before the cut's time. The conversation also leaves out a comment or a
+		-- message no person wrote or wrote in the thread of, which this statement does not test: a
+		-- write places a block under no such item (pmdoc's itemReach), so only a block placed
+		-- before that rule could stand under one.
+		select 1 from placed item_root
+		join asks item on item.id = ` + store.CastableUUID("item_root.id") + `
+		where item_root.kind = '` + graphstore.KindAsk + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		union all
 		select 1 from placed item_root
 		join comments item on item.id = ` + store.CastableUUID("item_root.id") + `
 		where item_root.kind = '` + graphstore.KindComment + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
@@ -159,22 +164,33 @@ var lastHeldBlocksStatement = `
 		join messages item on item.id = ` + store.CastableUUID("item_root.id") + `
 		where item_root.kind = '` + graphstore.KindMessage + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
 		union all
-		-- A block of such a comment or message is a root of the walk as well: readConversation
-		-- puts each current block of an item of the conversation in the frontier. The item's table
-		-- of blocks names the block's item by the block's address; read the item's row through it.
+		-- A block of such an item is a root of the walk as well: readConversation puts each block
+		-- of an item of the conversation in the frontier while the block is current (refs'
+		-- conversationBlocks), so the block was the item's at the cut: written at or before the
+		-- cut's time and not removed by then. The item's table of blocks names the block's item by
+		-- the block's address; read the item's row through it.
+		select 1 from placed item_root
+		join ask_blocks own on own.node_id = item_root.id
+		join asks item on item.id = own.ask_id
+		where item_root.kind = '` + refs.ItemAsk.BlockKind() + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		  and own.created_at <= cut.at and (own.removed_at is null or own.removed_at > cut.at)
+		union all
 		select 1 from placed item_root
 		join comment_blocks own on own.node_id = item_root.id
 		join comments item on item.id = own.comment_id
 		where item_root.kind = '` + refs.ItemComment.BlockKind() + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		  and own.created_at <= cut.at and (own.removed_at is null or own.removed_at > cut.at)
 		union all
 		select 1 from placed item_root
 		join message_blocks own on own.node_id = item_root.id
 		join messages item on item.id = own.message_id
 		where item_root.kind = '` + refs.ItemMessage.BlockKind() + `' and item.issue_key = block.issue_key and item.created_at <= cut.at
+		  and own.created_at <= cut.at and (own.removed_at is null or own.removed_at > cut.at)
 		union all
 		-- A block placed directly under an ancestor's block, or under an ancestor's ask, comment
 		-- or message or a block of one (refs.ItemOfIssuesSQL), is also a root of the second half
 		-- of WalkIssueTree (TreePlacedAbove). Prove its membership at the cut.
+		-- That half tests neither the item's time nor its block's currency, and neither does this arm.
 		select 1 from placed foreign_parent
 		join spec_chain ancestor on ancestor.subject = block.issue_key and ancestor.depth > 0
 		where foreign_parent.child_kind = '` + refs.BlockNodeKind + `'
