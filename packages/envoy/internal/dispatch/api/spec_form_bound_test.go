@@ -72,11 +72,13 @@ func (c *cancelAtPoll) Err() error {
 // statement is boundBroken, and one of as many statements, each boundClean. The work of the
 // judgment of the broken one (specFormOf at actRead), the CPU time of the thread that judges it
 // (cputest.OnThread), and the bytes that the process allocates during it, are each less than
-// boundWorkTimes times those of the clean one, the least of two samples of each. The route answers
-// at most specFormFindingsHeld findings, and counts them all in findings_total. A context that
-// ends stops the judgment: it answers the context's error at the next text, and judges no text
-// after it. Each subtest judges what it compares, so each runs alone (`-run`) as it runs among the
-// others.
+// boundWorkTimes times those of the clean one, the least of two samples of each.
+//
+// The route's answer of the broken document's findings, and the end of its judgment at a context
+// that ends, are TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte's. They assert
+// counts, so they judge beside the other tests; this test's work reads the heap that the whole
+// process allocates and the CPU time of its thread, which a test beside it would move, so it runs
+// alone.
 func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{})
 	served := tree.deps.SpecForm
@@ -137,8 +139,40 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 				statements, times, work["broken"], bytes, float64(allocated["broken"])/1e6, boundWorkTimes)
 		}
 	})
+}
+
+// The read route answers at most specFormFindingsHeld findings of a document of about 1 MB, and
+// counts them all in findings_total. A context that ends stops the judgment of that document: it
+// answers the context's error at the next text, and judges no text after it. The document is the
+// broken one of the read route's bound (TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork),
+// on an issue with no root named, its every statement boundBroken. Both assert counts, and no heap
+// or CPU time, so they judge beside the other tests, as that test's work cannot. The two subtests
+// run beside each other too: neither changes what the other judges (the document's settled version
+// and the projects and people its judgment reads), and each judges under a context of its own. Each
+// subtest judges what it compares, so each runs alone (`-run`) as it runs among the others.
+func TestTheReadRouteAnswersAndStopsTheJudgmentOfADocumentOfOneMebibyte(t *testing.T) {
+	t.Parallel()
+	tree := newSpecFormTree(t, testServerOptions{})
+	served := tree.deps.SpecForm
+	statements := (boundDocumentBytes - len("# Bound\n")) / len(boundStatements(boundBroken, 1))
+	documents := map[string]model.Artifact{
+		"broken": uploadFormDocument(t, tree.handler, tree.root, "broken.md", boundStatements(boundBroken, statements)),
+	}
+	awaitSettled(t, tree.database, documents["broken"].ID)
+
+	// judge judges the document name and gives the count of its findings. It reads no heap and no
+	// CPU time, so a judgment beside it moves nothing it gives.
+	judge := func(ctx context.Context, name string) (int, error) {
+		named := []model.AskApprovalDocument{{ArtifactID: documents[name].ID, Name: documents[name].Name, Version: 1}}
+		result, err := served.specFormOf(ctx, tree.database.Pool, named, actRead)
+		if err != nil {
+			return 0, err
+		}
+		return len(result.documents[0].findings), nil
+	}
 	t.Run("the findings it answers", func(t *testing.T) {
-		_, _, findings, err := judge(context.Background(), "broken")
+		t.Parallel()
+		findings, err := judge(context.Background(), "broken")
 		if err != nil {
 			t.Fatalf("judge the broken document: %v", err)
 		}
@@ -156,13 +190,14 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 		}
 	})
 	t.Run("a context that ends", func(t *testing.T) {
+		t.Parallel()
 		inner, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		// The context ends at the poll of the text half way through the statements: the reads
 		// before the judgment poll it a few times at most, and the judgment once for each
 		// statement's text.
 		ctx := &cancelAtPoll{Context: inner, cancel: cancel, poll: int64(statements / 2)}
-		_, _, _, err := judge(ctx, "broken")
+		_, err := judge(ctx, "broken")
 		polls := ctx.polls.Load()
 		t.Logf("the judgment polled its context %d times, and ended at poll %d with the error %v", polls, ctx.poll, err)
 		if !errors.Is(err, context.Canceled) || polls != ctx.poll {
@@ -177,6 +212,7 @@ func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 // Control: the refusal of fewer findings names the command that lists them all
 // (TestTheRefusalListsTwentyAndCountsTheRest).
 func TestARefusalOfMoreFindingsThanItHoldsNamesWhatTheReadRouteLists(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "Seventy broken statements", boundStatements(boundBroken, 70))
 	response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
