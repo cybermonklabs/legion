@@ -117,9 +117,10 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 	if err != nil {
 		b.Fatalf("jetstream: %v", err)
 	}
+	end, bounded := testwait.GiveUpAt(b)
 	for i := range keys {
 		key, value := benchRecord(b, i)
-		if _, err := js.PublishAsync("$KV."+kv.Bucket()+"."+key, value, stallWait(b)); err != nil {
+		if _, err := js.PublishAsync("$KV."+kv.Bucket()+"."+key, value, stallWait(end, bounded)); err != nil {
 			b.Fatalf("publish record %d: %v", i, err)
 		}
 	}
@@ -132,7 +133,7 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 			return js.PublishAsyncPending(), false
 		}
 	})
-	status, err := kv.WatchHandle().Status(testwait.Context(b))
+	status, err := kv.WatchHandle().Status(callContext(b))
 	if err != nil {
 		b.Fatalf("bucket status: %v", err)
 	}
@@ -142,13 +143,12 @@ func fillCIBucket(b *testing.B, conn *natsgo.Conn, kv bus.KeyValue, keys int) {
 }
 
 // stallWait is how long an asynchronous publish of fillCIBucket waits for room among its 1,024
-// pending publishes: until the shared wait gives up (testwait.GiveUpAt), where nats.go gives up
-// after 200 ms of its own (ErrTooManyStalledMsgs), which a loaded machine reaches. nats.go refuses
-// a context for an asynchronous publish (ErrContextAndTimeout), so this span is the one form the
-// shared wait's end reaches the call in. Under -timeout 0 there is no end, and the span is the
-// longest a time.Duration holds.
-func stallWait(b *testing.B) natsgo.PubOpt {
-	end, bounded := testwait.GiveUpAt(b)
+// pending publishes: until end, the moment the shared wait gives up (testwait.GiveUpAt), where
+// nats.go gives up after 200 ms of its own (ErrTooManyStalledMsgs), which a loaded machine reaches.
+// nats.go refuses a context for an asynchronous publish (ErrContextAndTimeout), so this span is
+// the one form the shared wait's end reaches the call in. Under -timeout 0 there is no end
+// (bounded false), and the span is the longest a time.Duration holds.
+func stallWait(end time.Time, bounded bool) natsgo.PubOpt {
 	if !bounded {
 		return natsgo.StallWait(time.Duration(math.MaxInt64))
 	}
@@ -172,12 +172,14 @@ func benchmarkStoreRewatch(b *testing.B, keys int) {
 	_, uri := testnats.Start(b)
 	conn := testnats.Connect(b, uri)
 	b.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	// The legacy JetStream context EnsureKeyValue takes waits on the test binary's deadline
+	// (testnats.MaxWait), not on nats.go's default, and the ensure itself on the call context.
+	js, err := conn.JetStream(testnats.MaxWait(b))
 	if err != nil {
 		b.Fatalf("jetstream: %v", err)
 	}
 	// The bucket as Open makes it, so Open finds it already filled.
-	kv, err := bus.EnsureKeyValue(b.Context(), conn, js, &natsgo.KeyValueConfig{
+	kv, err := bus.EnsureKeyValue(callContext(b), conn, js, &natsgo.KeyValueConfig{
 		Bucket:   bus.CIStateBucket,
 		Replicas: 1,
 		Storage:  natsgo.FileStorage,

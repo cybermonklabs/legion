@@ -105,7 +105,7 @@ func putHeadGatedRecord(t *testing.T, s *Store, h head, lastEventAt int64, edit 
 	if err != nil {
 		t.Fatalf("encode the head-gated record: %v", err)
 	}
-	if _, err := s.watcher.KV().WatchHandle().Put(testwait.Context(t), h.key(), raw); err != nil {
+	if _, err := s.watcher.KV().WatchHandle().Put(callContext(t), h.key(), raw); err != nil {
 		t.Fatalf("store the head-gated record: %v", err)
 	}
 	waitCached(t, s, h.key(), func(st State) bool { return st.LastEventAt == lastEventAt })
@@ -130,7 +130,7 @@ func waitCached(t *testing.T, s *Store, key string, ok func(State) bool) {
 // read through the bucket's jetstream handle, whose Get takes the test's deadline as its context.
 func storedSchema(t *testing.T, s *Store, key string) (int, uint64) {
 	t.Helper()
-	entry, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), key)
+	entry, err := s.watcher.KV().WatchHandle().Get(callContext(t), key)
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}
@@ -145,10 +145,10 @@ func storedSchema(t *testing.T, s *Store, key string) (int, uint64) {
 
 var legacyHead = head{"example-org", "example-repo", "42", "1e9ac1000000000000000000000000000000beef"}
 
-// onLegacyFake is a fake clock for a legacy row's store (WithClock), standing until the row moves
+// legacyFake is a fake clock for a legacy row's store (WithClock), standing until the row moves
 // it: the store stamps its records there, runSummaryTick runs each pass there, and the row takes
 // every moment it writes into a record from it.
-func onLegacyFake() *clocktest.Fake {
+func legacyFake() *clocktest.Fake {
 	return clocktest.New(time.Date(2026, 9, 28, 5, 0, 0, 0, time.UTC))
 }
 
@@ -159,7 +159,7 @@ func onLegacyFake() *clocktest.Fake {
 func TestAHeadGatedListenersUnsettledRecordPastTheGraceIsNotSettled(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	fake := onLegacyFake()
+	fake := legacyFake()
 	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 50 * time.Millisecond
@@ -198,7 +198,7 @@ func TestAHeadGatedListenersUnsettledRecordPastTheGraceIsNotSettled(t *testing.T
 func TestANewCheckRunOnAHeadGatedRecordSettlesItOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	fake := onLegacyFake()
+	fake := legacyFake()
 	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 20 * time.Millisecond
@@ -239,7 +239,7 @@ func TestANewCheckRunOnAHeadGatedRecordSettlesItOnce(t *testing.T) {
 func TestAHeadGatedRecordInsideTheGraceSettles(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	fake := onLegacyFake()
+	fake := legacyFake()
 	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 50 * time.Millisecond
@@ -262,7 +262,7 @@ func TestAStampedRecordPendingAcrossARestartSettles(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	// Both stores, the one before the restart and the one after it, stand on one clock.
-	fake := onLegacyFake()
+	fake := legacyFake()
 	before := openStore(t, conn, WithClock(fake))
 	if err := record(before, legacyHead.check("build", 702, "completed", "failure", "2026-09-25T10:00:00Z")); err != nil {
 		t.Fatalf("record the check run: %v", err)
@@ -285,7 +285,7 @@ func TestAStampedRecordPendingAcrossARestartSettles(t *testing.T) {
 func TestASettledRecordIsNotPublishedAgain(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	fake := onLegacyFake()
+	fake := legacyFake()
 	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 20 * time.Millisecond
@@ -319,7 +319,7 @@ func TestASettledRecordIsNotPublishedAgain(t *testing.T) {
 func TestTheHeldBacklogIsCountedAndLoggedOnce(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	fake := onLegacyFake()
+	fake := legacyFake()
 	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	debounce := 20 * time.Millisecond
@@ -391,7 +391,7 @@ func TestAHeadGatedListenerDecodesAStampedRecord(t *testing.T) {
 	if pub.count() != 1 {
 		t.Fatalf("published %d settlements, want 1", pub.count())
 	}
-	entry, err := store.watcher.KV().WatchHandle().Get(testwait.Context(t), legacyHead.key())
+	entry, err := store.watcher.KV().WatchHandle().Get(callContext(t), legacyHead.key())
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}

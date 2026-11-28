@@ -299,14 +299,14 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
 	admin, err := adminConn.JetStream()
 	require.NoError(t, err)
-	adminKV, err := jetstream.New(adminConn)
+	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	for _, name := range []string{"SCRATCH_VICTIM", "SCRATCH_VICTIM_ADMIN", "SCRATCH_VICTIM_HEADERS"} {
 		_, err := admin.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"scratch." + strings.ToLower(name) + ".>"}, Storage: natsgo.MemoryStorage}, natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
 	for _, bucket := range []string{bus.InterestBucket, bus.LegionAgentBucket, bus.CIStateBucket} {
-		_, err := adminKV.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.MemoryStorage})
+		_, err := adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.MemoryStorage})
 		require.NoError(t, err)
 	}
 	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool, opts ...natsgo.JSOpt) error {
@@ -330,9 +330,9 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 	info, err := admin.StreamInfo("KV_"+bus.InterestBucket, natsgo.Context(ctx))
 	require.NoError(t, err)
 	require.Nil(t, info.Config.RePublish, "KV_%s carries a republish after the edge's refused update", bus.InterestBucket)
-	edgeKV, err := jetstream.New(edgeConn)
+	edgeStreams, err := jetstream.New(edgeConn)
 	require.NoError(t, err)
-	interests, err := edgeKV.KeyValue(ctx, bus.InterestBucket)
+	interests, err := edgeStreams.KeyValue(ctx, bus.InterestBucket)
 	require.NoError(t, err)
 	_, err = interests.Put(ctx, "rp", nil)
 	require.NoError(t, err, "the edge writes an empty value to a key of the interest bucket")
@@ -350,7 +350,7 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, adminConn.FlushWithContext(ctx))
 		require.NoError(t, republishInto(admin, control.bucket, control.victim, control.headersOnly, natsgo.Context(ctx)), "the administrator sets a republish on KV_%s", control.bucket)
-		bucket, err := adminKV.KeyValue(ctx, control.bucket)
+		bucket, err := adminStreams.KeyValue(ctx, control.bucket)
 		require.NoError(t, err)
 		_, err = bucket.Put(ctx, "rp", control.value)
 		require.NoError(t, err)
@@ -394,7 +394,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
 	admin, err := adminConn.JetStream()
 	require.NoError(t, err)
-	adminKV, err := jetstream.New(adminConn)
+	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	streams := []string{"SCRATCH_DG", "SCRATCH_DG_DELETE", "SCRATCH_DG_MSG_GET", "SCRATCH_DG_INFO", "SCRATCH_DG_PUBACK"}
 	for _, name := range append([]string{"SCRATCH_DG_CONTROL", "SCRATCH_DG_GONE"}, streams...) {
@@ -403,7 +403,7 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 		_, err = admin.Publish("scratch."+strings.ToLower(name)+".m", []byte("kept"), natsgo.Context(ctx))
 		require.NoError(t, err)
 	}
-	_, err = adminKV.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.InterestBucket, Storage: jetstream.MemoryStorage})
+	_, err = adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bus.InterestBucket, Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
 	// state is a stream's state as this row reads it: gone, or present with its max_msgs and its
 	// message count.
@@ -440,9 +440,9 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	directGet := "$JS.API.DIRECT.GET.KV_" + bus.InterestBucket + ".$KV." + bus.InterestBucket + "."
 
 	listenerConn, _ := grantedConnection(t, uri, listenerSeed)
-	listenerJS, err := jetstream.New(listenerConn)
+	listenerStreams, err := jetstream.New(listenerConn)
 	require.NoError(t, err)
-	interests, err := listenerJS.KeyValue(ctx, bus.InterestBucket)
+	interests, err := listenerStreams.KeyValue(ctx, bus.InterestBucket)
 	require.NoError(t, err)
 	for key, value := range map[string][]byte{"dg-update": update("SCRATCH_DG"), "dg-control": update("SCRATCH_DG_CONTROL"), "dg-empty": nil} {
 		_, err := interests.Put(ctx, key, value)
@@ -547,7 +547,7 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	adminConn, _ := grantedConnection(t, uri, adminSeed)
 	admin, err := adminConn.JetStream()
 	require.NoError(t, err)
-	adminKV, err := jetstream.New(adminConn)
+	adminStreams, err := jetstream.New(adminConn)
 	require.NoError(t, err)
 	otherConn, _ := grantedConnection(t, uri, otherSeed)
 	other, err := otherConn.JetStream()
@@ -563,9 +563,9 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 		scratch(admin, name)
 	}
 	scratch(other, "SCRATCH_DELETE")
-	_, err = adminKV.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "scratch_kv_delete", Storage: jetstream.MemoryStorage})
+	_, err = adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "scratch_kv_delete", Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
-	written, err := adminKV.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "scratch_kv_write", Storage: jetstream.MemoryStorage})
+	written, err := adminStreams.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "scratch_kv_write", Storage: jetstream.MemoryStorage})
 	require.NoError(t, err)
 	update, err := admin.StreamInfo("SCRATCH_UPDATE", natsgo.Context(ctx))
 	require.NoError(t, err)
@@ -893,8 +893,7 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	told := testwait.Receive(t, "the server's refusal of the edge's publish of "+subject, refusedErrs)
 	require.True(t, errors.Is(told, natsgo.ErrPermissionViolation), "the edge's connection was told %v, want a permissions violation", told)
 	require.Contains(t, told.Error(), `Publish to "`+subject+`"`)
-	next, err := events.NextMsgWithContext(testwait.Context(t))
-	require.NoError(t, err, "the edge's marker on %s did not reach the subscriber, so nothing shows its publish of %s did not", marker, subject)
+	next := nextMsg(t, events, "the edge's marker on "+marker+" at the subscriber, without which nothing shows its publish of "+subject+" did not reach it")
 	if next.Subject != marker {
 		t.Fatalf("the edge's publish reached the subscriber before its marker: %s %q", next.Subject, next.Data)
 	}

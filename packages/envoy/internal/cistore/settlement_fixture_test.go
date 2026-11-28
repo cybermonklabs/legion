@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
@@ -20,7 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -178,13 +176,7 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 	}
 	defer client.Close()
 	c := newLoopClock()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn, c.options()...)
 	// The reconcile's writer, which records the statuses Dispatch reads of GitHub into the same
 	// bucket the listener's store settles from, and stamps them on the same clock.
 	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("reconcile"), cistore.WithClock(c.fake))

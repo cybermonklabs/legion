@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -46,6 +47,13 @@ type loopClock struct {
 func newLoopClock() *loopClock {
 	start := time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
 	return &loopClock{fake: clocktest.New(start), start: start, passes: &summaryPasses{}}
+}
+
+// options put a row's CI store and its summary loop on c: the store stamps its records and waits
+// on c's fake (cistore.WithClock), and its loop reports each pass it ends to c's passes
+// (cistore.WithSummaryObserver), which runTo waits on.
+func (c *loopClock) options() []cistore.Option {
+	return []cistore.Option{cistore.WithClock(c.fake), cistore.WithSummaryObserver(c.passes)}
 }
 
 // settle moves the clock as production's grid runs over a head whose records were all written at
@@ -92,8 +100,22 @@ func (c *loopClock) runTo(t *testing.T, until time.Time) {
 	}
 }
 
+// callContext is the context each NATS call and flush of the package's tests takes in place of a
+// default wait of nats.go's own: testwait.Context's, which ends at the test binary's deadline less
+// testwait's margin, as clock.WithShownDeadline shows it, so under that deadline it is
+// testwait.Context itself. Under -timeout 0 testwait.Context reports no deadline, and nats.go then
+// refuses a flush (nats.ErrNoDeadlineContext) and ends a jetstream call at the jetstream
+// package's DefaultTimeout (5 s); shown a deadline that bounds nothing, each call waits for its
+// answer there, as every wait does.
+func callContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, release := clock.WithShownDeadline(testwait.Context(t))
+	t.Cleanup(release)
+	return ctx
+}
+
 // ciBucket is the CI record bucket on conn through the jetstream package, whose calls take the
-// test's deadline as their context (testwait.Context): nats.go's older KeyValue, Get and Keys take
+// test's deadline as their context (callContext): nats.go's older KeyValue, Get and Keys take
 // none, and end at a timeout of their own.
 func ciBucket(t *testing.T, conn *natsgo.Conn) jetstream.KeyValue {
 	t.Helper()
@@ -101,7 +123,7 @@ func ciBucket(t *testing.T, conn *natsgo.Conn) jetstream.KeyValue {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := js.KeyValue(testwait.Context(t), bus.CIStateBucket)
+	kv, err := js.KeyValue(callContext(t), bus.CIStateBucket)
 	if err != nil {
 		t.Fatalf("bind the CI bucket: %v", err)
 	}
@@ -113,7 +135,7 @@ func ciBucket(t *testing.T, conn *natsgo.Conn) jetstream.KeyValue {
 // clock: a pass that ran before the cache had that write would judge the record it replaced.
 func awaitCachedAsStored(t *testing.T, store *cistore.Store, conn *natsgo.Conn, key string) {
 	t.Helper()
-	entry, err := ciBucket(t, conn).Get(testwait.Context(t), key)
+	entry, err := ciBucket(t, conn).Get(callContext(t), key)
 	if err != nil {
 		t.Fatalf("read the record of %s: %v", key, err)
 	}
@@ -121,11 +143,13 @@ func awaitCachedAsStored(t *testing.T, store *cistore.Store, conn *natsgo.Conn, 
 	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
 		t.Fatalf("decode the record of %s: %v", key, err)
 	}
-	testwait.Until(t, fmt.Sprintf("the cache to hold %s at generation %d, snapshot %s, last event %d", key, stored.Generation, stored.Hash(), stored.LastEventAt), func() (string, bool) {
+	snapshot := stored.Hash()
+	testwait.Until(t, fmt.Sprintf("the cache to hold %s at generation %d, snapshot %s, last event %d", key, stored.Generation, snapshot, stored.LastEventAt), func() (string, bool) {
 		for _, st := range store.List() {
 			if cistore.Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
-				return fmt.Sprintf("generation %d, snapshot %s, last event %d", st.Generation, st.Hash(), st.LastEventAt),
-					st.Generation == stored.Generation && st.Hash() == stored.Hash() && st.LastEventAt == stored.LastEventAt
+				hash := st.Hash()
+				return fmt.Sprintf("generation %d, snapshot %s, last event %d", st.Generation, hash, st.LastEventAt),
+					st.Generation == stored.Generation && hash == snapshot && st.LastEventAt == stored.LastEventAt
 			}
 		}
 		return "no record of " + key, false
@@ -133,10 +157,10 @@ func awaitCachedAsStored(t *testing.T, store *cistore.Store, conn *natsgo.Conn, 
 }
 
 // nextMsg waits for sub's next message until the test binary's deadline less testwait's margin
-// (testwait.Context), and fails the test naming what, the message it waited for, when none comes.
+// (callContext), and fails the test naming what, the message it waited for, when none comes.
 func nextMsg(t *testing.T, sub *natsgo.Subscription, what string) *natsgo.Msg {
 	t.Helper()
-	msg, err := sub.NextMsgWithContext(testwait.Context(t))
+	msg, err := sub.NextMsgWithContext(callContext(t))
 	if err != nil {
 		t.Fatalf("gave up waiting for %s: %v", what, err)
 	}
@@ -157,13 +181,7 @@ func TestEndToEndCheckRunToChecks(t *testing.T) {
 	}
 	defer client.Close()
 	c := newLoopClock()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn, c.options()...)
 
 	const (
 		secret = "s"
@@ -245,13 +263,7 @@ func TestEndToEndACheckRunWithNoPullRequestIsAttributedByItsSuiteHeadBranch(t *t
 	}
 	defer client.Close()
 	c := newLoopClock()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn, c.options()...)
 
 	const (
 		secret = "s"
@@ -337,13 +349,7 @@ func TestEndToEndACodeHeadSettlesAfterASkippedHandoffHead(t *testing.T) {
 	}
 	defer client.Close()
 	c := newLoopClock()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(c.fake))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn, c.options()...)
 	const (
 		secret  = "s"
 		code    = "c0de000000000000000000000000000000000000"

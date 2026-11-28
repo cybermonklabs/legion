@@ -47,6 +47,20 @@ func openStore(t testing.TB, conn *natsgo.Conn, options ...Option) *Store {
 	return st
 }
 
+// callContext is the context each NATS call of the package's tests takes in place of a default
+// wait of nats.go's own: testwait.Context's, which ends at the test binary's deadline less
+// testwait's margin, as clock.WithShownDeadline shows it, so under that deadline it is
+// testwait.Context itself. Under -timeout 0 testwait.Context reports no deadline, and nats.go then
+// refuses a flush (nats.ErrNoDeadlineContext) and ends a jetstream call at the jetstream
+// package's DefaultTimeout (5 s); shown a deadline that bounds nothing, each call waits for its
+// answer there, as every wait does.
+func callContext(t testing.TB) context.Context {
+	t.Helper()
+	ctx, release := clock.WithShownDeadline(testwait.Context(t))
+	t.Cleanup(release)
+	return ctx
+}
+
 // standingFake is a fake clock for a row's stores (WithClock) that stands until the row moves it:
 // the stores stamp every record and claim at its moment, runSummaryTick runs each pass there, and
 // the row takes each moment it writes or judges from it, so no verdict reads the wall clock. A
@@ -66,17 +80,12 @@ func stampsOn(fake *clocktest.Fake) clock.Clock {
 	return clocktest.WithNow(clock.Real(), fake.Now)
 }
 
-// within returns f's error, or an error once the shared wait gives up on f's return: a record that
-// a broken hand-over leaves waiting on its record's writer fails its test, naming the wait, instead
-// of hanging the package until go test's alarm. It is recordFor with what says of any record.
-func within(f func() error) error {
-	return recordFor("a record of the CI store to return", f)
-}
-
-// recordFor is within for a record what names. Its callers, recordCheck and recordSuite, take no
-// t (the package's other test files call them so), so the wait is testwait.ReceiveInHelper's,
-// whose bound is every shared wait's, the test binary's deadline less the margin, and whose
-// give-up names this helper and what.
+// recordFor returns f's error, or an error once the shared wait gives up on f's return: a record
+// that a broken hand-over leaves waiting on its record's writer fails its test, naming what, the
+// record it waited for, instead of hanging the package until go test's alarm. Its callers,
+// recordCheck, recordSuite and record, take no t (the package's other test files call them so), so
+// the wait is testwait.ReceiveInHelper's, whose bound is every shared wait's, the test binary's
+// deadline less the margin, and whose give-up names this helper and what.
 func recordFor(what string, f func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- f() }()
@@ -158,10 +167,10 @@ func recordSuite(s *Store, owner, repo, number, sha, suiteID, status, conclusion
 
 // getState reads the durable state directly (bypassing the eventually-consistent
 // cache) so assertions are deterministic right after a write. It reads through the bucket's
-// jetstream handle, whose Get takes the test's deadline as its context (testwait.Context).
+// jetstream handle, whose Get takes the test's deadline as its context (callContext).
 func getState(t *testing.T, s *Store, owner, repo, number, sha string) State {
 	t.Helper()
-	entry, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), Key(owner, repo, number, sha))
+	entry, err := s.watcher.KV().WatchHandle().Get(callContext(t), Key(owner, repo, number, sha))
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}
@@ -510,7 +519,7 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open replacement JetStream: %v", err)
 	}
-	kv, err := streams.KeyValue(testwait.Context(t), bus.CIStateBucket)
+	kv, err := streams.KeyValue(callContext(t), bus.CIStateBucket)
 	if err != nil {
 		t.Fatalf("open replacement CI bucket: %v", err)
 	}
@@ -519,7 +528,7 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal replacement state: %v", err)
 	}
-	if _, err := kv.Put(testwait.Context(t), Key(state.Owner, state.Repo, state.Number, state.SHA), value); err != nil {
+	if _, err := kv.Put(callContext(t), Key(state.Owner, state.Repo, state.Number, state.SHA), value); err != nil {
 		t.Fatalf("put replacement state: %v", err)
 	}
 	testwait.Until(t, "the rewatched store to receive the replacement state", func() ([]State, bool) {
@@ -548,7 +557,7 @@ func TestWatchEvictsMalformedState(t *testing.T) {
 		t.Fatalf("record valid state: %v", err)
 	}
 	waitCacheChecks(t, s, owner, repo, number, sha, 1)
-	if _, err := s.watcher.KV().WatchHandle().Put(testwait.Context(t), Key(owner, repo, number, sha), []byte("{")); err != nil {
+	if _, err := s.watcher.KV().WatchHandle().Put(callContext(t), Key(owner, repo, number, sha), []byte("{")); err != nil {
 		t.Fatalf("put malformed state: %v", err)
 	}
 
@@ -570,7 +579,7 @@ func TestWatchSkipsARetiredHeadRecord(t *testing.T) {
 		number = "42"
 		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
-	if _, err := s.watcher.KV().WatchHandle().Put(testwait.Context(t), "head."+owner+"."+repo+"."+number,
+	if _, err := s.watcher.KV().WatchHandle().Put(callContext(t), "head."+owner+"."+repo+"."+number,
 		[]byte(`{"kind":"head","sha":"`+sha+`","updated_at":"2026-09-07T03:00:00Z","generation":0}`)); err != nil {
 		t.Fatalf("put a retired head record: %v", err)
 	}
@@ -629,7 +638,7 @@ func TestARecordUnderAnOldKeySpellingIsNotCached(t *testing.T) {
 	}
 	waitCacheChecks(t, s, owner, "example.repo", number, sha, 1)
 	// The bucket's jetstream handle, whose calls take the test's deadline as their context.
-	kv, ctx := s.watcher.KV().WatchHandle(), testwait.Context(t)
+	kv, ctx := s.watcher.KV().WatchHandle(), callContext(t)
 	entry, err := kv.Get(ctx, Key(owner, "example.repo", number, sha))
 	if err != nil {
 		t.Fatalf("get the record: %v", err)
@@ -806,7 +815,7 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 	// row's one writer meets no CAS conflict, so no backoff waits on it. A conflict's backoff would
 	// wait on that fake for good (casState's budget is armed on it too), so the claim and the
 	// reclaim run inside the shared wait, which then gives up naming the call.
-	fake := clocktest.New(time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC))
+	fake := standingFake()
 	s := openStore(t, conn, WithClock(fake))
 	const (
 		owner = "example-org"
@@ -820,7 +829,7 @@ func TestClaimSettlementStampsClaimAtCASTime(t *testing.T) {
 	}
 	key := Key(owner, repo, pr, sha)
 	// The bucket's jetstream handle, whose calls take the test's deadline as their context.
-	bucket, ctx := s.watcher.KV().WatchHandle(), testwait.Context(t)
+	bucket, ctx := s.watcher.KV().WatchHandle(), callContext(t)
 	entry, err := bucket.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
@@ -947,7 +956,7 @@ func TestMarkSettledCacheWriteDoesNotOverwriteNewerWatcherRevision(t *testing.T)
 	originalKV := s.watcher.KV()
 	// The test's own read and write of the record go through the bucket's jetstream handle, whose
 	// calls take the test's deadline as their context.
-	bucket, ctx := originalKV.WatchHandle(), testwait.Context(t)
+	bucket, ctx := originalKV.WatchHandle(), callContext(t)
 	var watcherRevision uint64
 	useKV(t, s, &interleavingKV{
 		KeyValue: originalKV.Legacy(),

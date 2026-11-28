@@ -79,8 +79,8 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 			if s.clock.Now().After(deadline) {
 				return spent(attempt, retryErr)
 			}
-			// The backoff ignores ctx as it always has; the next kvCall gives up at once on a
-			// ctx that ended during it, which write fails on (errKVUnanswered).
+			// The backoff ignores ctx; the next kvCall gives up at once on a ctx that ended during
+			// it, which write fails on (errKVUnanswered).
 			_ = s.clock.Sleep(context.Background(), casBackoff(attempt-1))
 		}
 		kv := s.kv()

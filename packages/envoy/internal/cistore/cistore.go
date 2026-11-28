@@ -62,8 +62,8 @@ const recordBackoffCap = 50 * time.Millisecond
 // caller queued behind it, for the MaxWait. Within that wait a call is still waited for past its
 // write's own budget, so a server that stalls for less and then answers loses nothing.
 //
-// It is exported because a caller's own test asserts the deadline a record arms on the store's
-// clock (cmd/listener's frozen-bus rows) rather than keeping a copy of this number.
+// It is exported so a test of another package can read this bound, the deadline a record arms on
+// the store's clock, rather than copy it.
 const RecordWait = 2 * recordBudget
 
 // checkRunID is a GitHub check-run id. Records written before ids were

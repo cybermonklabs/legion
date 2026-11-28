@@ -6,13 +6,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
-	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -27,13 +24,7 @@ func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, client.Conn)
 	kv := ciBucket(t, client.Conn)
 
 	const (
@@ -65,7 +56,7 @@ func TestASuiteRequestLeavesTheRecordAsItWas(t *testing.T) {
 	// stored is the record's revision and the suite 9200 it holds, nil for none.
 	stored := func() (uint64, map[string]any) {
 		t.Helper()
-		entry, err := kv.Get(testwait.Context(t), key)
+		entry, err := kv.Get(callContext(t), key)
 		if err != nil {
 			t.Fatalf("read the record: %v", err)
 		}

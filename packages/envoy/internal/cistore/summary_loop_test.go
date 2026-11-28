@@ -14,7 +14,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -202,23 +201,6 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 	}
 }
 
-// publishTimes records the millisecond, on now, of each publication pub makes: a summary loop on a
-// clocktest.Fake publishes at the moment of the fake its pass runs at.
-func publishTimes(pub *recPub, now func() time.Time) func() []int64 {
-	var mu sync.Mutex
-	var at []int64
-	pub.onPublish = func(contracts.Envelope) {
-		mu.Lock()
-		at = append(at, now().UnixMilli())
-		mu.Unlock()
-	}
-	return func() []int64 {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]int64(nil), at...)
-	}
-}
-
 // loopPasses counts the passes a summary loop ended (WithSummaryObserver), so a row that moved the
 // loop's clock waits for the pass the move fired to end.
 type loopPasses struct {
@@ -283,6 +265,17 @@ func gaugeReads(t *testing.T, met *metrics.Registry, name string) int64 {
 	return 0
 }
 
+const (
+	// loopDebounce and loopTick are the summary loop's debounce and tick as cmd/listener runs it:
+	// ENVOY_CI_DEBOUNCE's default and the loop's one-second tick.
+	loopDebounce = 5 * time.Second
+	loopTick     = time.Second
+)
+
+// loopStart is where the fake of a row that runs the loop at loopDebounce and loopTick stands as
+// the row starts the loop, so the loop's grid starts there.
+var loopStart = time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
+
 // A record that falls due while nothing else changes settles on the first tick at or after its
 // debounce runs out: the loop wakes for the deadline itself, not for a write. The loop runs at
 // cmd/listener's debounce and tick on a fake clock the test moves to each instant the loop arms,
@@ -290,53 +283,45 @@ func gaugeReads(t *testing.T, met *metrics.Registry, name string) int64 {
 func TestARecordFallingDueSettlesWithNoOtherChange(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	start := time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
+	fake := clocktest.New(loopStart)
 	passes := &loopPasses{}
 	store := openStore(t, conn, WithClock(fake), WithSummaryObserver(passes))
 	pub := &recPub{}
-	published := publishTimes(pub, fake.Now)
 	const (
-		// debounce and tick are cmd/listener's: ENVOY_CI_DEBOUNCE's default and the loop's tick.
-		debounce = 5 * time.Second
-		tick     = time.Second
-		owner    = "example-org"
-		repo     = "example-repo"
-		number   = "42"
-		sha      = "abcdef1234567890abcdef1234567890abcdef12"
+		owner  = "example-org"
+		repo   = "example-repo"
+		number = "42"
+		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	StartSummaryLoop(ctx, store, pub, debounce, tick, metrics.New().NewGauge("held", ""), logging.New("test"))
+	StartSummaryLoop(ctx, store, pub, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("test"))
 
 	if err := recordCheck(store, owner, repo, number, sha, "build", "820", "https://example.test/820", "completed", "success", "2026-09-07T03:00:00Z"); err != nil {
 		t.Fatalf("record the terminal check: %v", err)
 	}
 	waitCacheChecks(t, store, owner, repo, number, sha, 1)
-	due := getState(t, store, owner, repo, number, sha).LastEventAt + debounce.Milliseconds()
+	due := getState(t, store, owner, repo, number, sha).LastEventAt + loopDebounce.Milliseconds()
 
-	// The loop's grid runs from start. Its first pass finds the record inside its debounce, and
-	// the loop arms the first instant at or after the debounce's end with no write to wake it.
-	fake.AwaitArmedAt(t, "the loop's first pass", start.Add(tick))
-	fake.Set(start.Add(tick))
-	dueAt := gridInstant(start, tick, due)
+	// The loop's grid runs from loopStart. Its first pass finds the record inside its debounce,
+	// and the loop arms the first instant at or after the debounce's end with no write to wake it.
+	fake.AwaitArmedAt(t, "the loop's first pass", loopStart.Add(loopTick))
+	fake.Set(loopStart.Add(loopTick))
+	dueAt := gridInstant(loopStart, loopTick, due)
 	fake.AwaitArmedAt(t, "the loop's pass at the first instant past the record's debounce", dueAt)
 	if got := pub.count(); got != 0 {
 		t.Fatalf("the record published %d settlements before its debounce ran out at %d, want none", got, due)
 	}
 	fake.Set(dueAt)
 	// The pass there attempts the record, and the loop arms the next instant to look at it again.
-	fake.AwaitArmedAt(t, "the loop's look at the record after its attempt", dueAt.Add(tick))
+	fake.AwaitArmedAt(t, "the loop's look at the record after its attempt", dueAt.Add(loopTick))
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the record falling due published %d settlements on the first tick at or after its debounce ran out at %d, want 1", got, due)
-	}
-	if at := published()[0]; at < due {
-		t.Fatalf("the record settled at %d, before its debounce ran out at %d", at, due)
 	}
 	// Three more ticks, the look after the attempt among them, once the cache holds the record
 	// the settlement marked.
 	cachedAsStored(t, store, head{owner, repo, number, sha})
-	moveTicks(t, fake, passes, tick, 3)
+	moveTicks(t, fake, passes, loopTick, 3)
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the record published %d settlements, want 1", got)
 	}
@@ -352,20 +337,15 @@ func TestARecordFallingDueSettlesWithNoOtherChange(t *testing.T) {
 func TestAStaleClaimIsReclaimedWithNoOtherChange(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	start := time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
+	fake := clocktest.New(loopStart)
 	passes := &loopPasses{}
 	store := openStore(t, conn, WithClock(fake), WithSummaryObserver(passes))
 	pub := &recPub{}
-	published := publishTimes(pub, fake.Now)
 	const (
-		// debounce and tick are cmd/listener's: ENVOY_CI_DEBOUNCE's default and the loop's tick.
-		debounce = 5 * time.Second
-		tick     = time.Second
-		owner    = "example-org"
-		repo     = "example-repo"
-		number   = "42"
-		sha      = "abcdef1234567890abcdef1234567890abcdef12"
+		owner  = "example-org"
+		repo   = "example-repo"
+		number = "42"
+		sha    = "abcdef1234567890abcdef1234567890abcdef12"
 	)
 	h := head{owner, repo, number, sha}
 	if err := recordCheck(store, owner, repo, number, sha, "build", "821", "https://example.test/821", "completed", "success", "2026-09-07T03:00:00Z"); err != nil {
@@ -376,19 +356,19 @@ func TestAStaleClaimIsReclaimedWithNoOtherChange(t *testing.T) {
 	state := getState(t, store, owner, repo, number, sha)
 	claimedAt := fake.Now().UnixMilli()
 	setClaim(t, store, owner, repo, number, sha, &SettlementClaim{Hash: state.Hash(), Generation: state.Generation, ClaimedAt: claimedAt})
-	stale := claimedAt + (2 * debounce).Milliseconds() + 1
+	stale := claimedAt + (2 * loopDebounce).Milliseconds() + 1
 	// The loop's first pass reads the claim, so the cache holds it before the loop starts.
 	cachedAsStored(t, store, h)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	StartSummaryLoop(ctx, store, pub, debounce, tick, metrics.New().NewGauge("held", ""), logging.New("test"))
+	StartSummaryLoop(ctx, store, pub, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("test"))
 
-	// The loop's grid runs from start. Its first pass finds the claim fresh, and the loop arms the
-	// first instant at or after the claim goes stale with no write to wake it.
-	fake.AwaitArmedAt(t, "the loop's first pass", start.Add(tick))
-	fake.Set(start.Add(tick))
-	reclaimAt := gridInstant(start, tick, stale)
+	// The loop's grid runs from loopStart. Its first pass finds the claim fresh, and the loop arms
+	// the first instant at or after the claim goes stale with no write to wake it.
+	fake.AwaitArmedAt(t, "the loop's first pass", loopStart.Add(loopTick))
+	fake.Set(loopStart.Add(loopTick))
+	reclaimAt := gridInstant(loopStart, loopTick, stale)
 	fake.AwaitArmedAt(t, "the loop's pass at the first instant past the claim's staleness", reclaimAt)
 	if got := pub.count(); got != 0 {
 		t.Fatalf("the record published %d settlements while its claim was fresh until %d, want none", got, stale)
@@ -398,21 +378,18 @@ func TestAStaleClaimIsReclaimedWithNoOtherChange(t *testing.T) {
 	// instant to look at the record again, where it reads the reclaimed record once the cache
 	// holds it.
 	fake.Set(reclaimAt)
-	settleAt := reclaimAt.Add(tick)
+	settleAt := reclaimAt.Add(loopTick)
 	fake.AwaitArmedAt(t, "the loop's look at the record after the reclaim", settleAt)
 	cachedAsStored(t, store, h)
 	fake.Set(settleAt)
-	fake.AwaitArmedAt(t, "the loop's look at the record after its attempt", settleAt.Add(tick))
+	fake.AwaitArmedAt(t, "the loop's look at the record after its attempt", settleAt.Add(loopTick))
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the record behind a dead replica's claim published %d settlements by the second tick at or after its claim went stale at %d, want 1", got, stale)
-	}
-	if at := published()[0]; at < stale {
-		t.Fatalf("the record settled at %d, while its claim was fresh until %d", at, stale)
 	}
 	// Three more ticks, the look after the attempt among them, once the cache holds the record
 	// the settlement marked.
 	cachedAsStored(t, store, h)
-	moveTicks(t, fake, passes, tick, 3)
+	moveTicks(t, fake, passes, loopTick, 3)
 	if got := pub.count(); got != 1 {
 		t.Fatalf("the record published %d settlements, want 1", got)
 	}
@@ -429,22 +406,18 @@ func TestAStaleClaimIsReclaimedWithNoOtherChange(t *testing.T) {
 func TestARecordPastTheGraceIsCountedWithNoOtherChange(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	start := time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
+	fake := clocktest.New(loopStart)
 	store := openStore(t, conn, WithClock(fake))
 	pub := &recPub{}
 	const (
-		// debounce and tick are cmd/listener's: ENVOY_CI_DEBOUNCE's default and the loop's tick.
-		debounce = 5 * time.Second
-		tick     = time.Second
-		gauge    = "envoy_ci_legacy_records_held"
-		noPass   = -1
+		gauge  = "envoy_ci_legacy_records_held"
+		noPass = -1
 	)
-	now := start.UnixMilli()
+	now := loopStart.UnixMilli()
 	// The grace ends 3.5 s from now, between two instants of the loop's grid; the claim stays
 	// fresh for 10 s.
 	graceEnds := now + 3500
-	putHeadGatedRecord(t, store, legacyHead, graceEnds-(debounce+handoverGrace).Milliseconds(), func(st *State) {
+	putHeadGatedRecord(t, store, legacyHead, graceEnds-(loopDebounce+handoverGrace).Milliseconds(), func(st *State) {
 		st.Claim = &SettlementClaim{Hash: "claimed", Generation: st.Generation, ClaimedAt: now}
 	})
 	met := metrics.New()
@@ -452,14 +425,14 @@ func TestARecordPastTheGraceIsCountedWithNoOtherChange(t *testing.T) {
 	held.Set(noPass)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	StartSummaryLoop(ctx, store, pub, debounce, tick, held, logging.New("test"))
+	StartSummaryLoop(ctx, store, pub, loopDebounce, loopTick, held, logging.New("test"))
 
-	// The loop's grid runs from start. Its first pass holds nothing back, since the grace has not
-	// ended, and the loop arms the first instant at or after the grace's end with no write to wake
-	// it; the gauge is set before that arm.
-	fake.AwaitArmedAt(t, "the loop's first pass", start.Add(tick))
-	fake.Set(start.Add(tick))
-	graceAt := gridInstant(start, tick, graceEnds)
+	// The loop's grid runs from loopStart. Its first pass holds nothing back, since the grace has
+	// not ended, and the loop arms the first instant at or after the grace's end with no write to
+	// wake it; the gauge is set before that arm.
+	fake.AwaitArmedAt(t, "the loop's first pass", loopStart.Add(loopTick))
+	fake.Set(loopStart.Add(loopTick))
+	graceAt := gridInstant(loopStart, loopTick, graceEnds)
 	fake.AwaitArmedAt(t, "the loop's pass at the first instant past the grace", graceAt)
 	if got := gaugeReads(t, met, gauge); got != 0 {
 		t.Fatalf("the gauge reads %d after the loop's pass before the grace ended at %d, want 0 held", got, graceEnds)
@@ -555,7 +528,7 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 	// record is never cached, so it changes nothing for the loop. Once its revision is applied, the
 	// replay has been.
 	marker := head{"example-org", "example-repo", "64", "ead000000000000000000000000000000000beef"}.key()
-	revision, err := store.watcher.KV().WatchHandle().Put(testwait.Context(t), marker, []byte(`{"kind":"`+retiredHeadKind+`"}`))
+	revision, err := store.watcher.KV().WatchHandle().Put(callContext(t), marker, []byte(`{"kind":"`+retiredHeadKind+`"}`))
 	if err != nil {
 		t.Fatalf("store the marker: %v", err)
 	}
@@ -582,8 +555,8 @@ func TestTheSummaryLoopSleepsWhileNothingChanges(t *testing.T) {
 func TestAFailingPublisherIsRetriedOncePerTick(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	start := time.Date(2026, 9, 7, 4, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
+	fake := standingFake()
+	start := fake.Now()
 	store := openStore(t, conn, WithClock(fake))
 	// NATS fails every publication while it is unreachable.
 	pub := &failingPub{err: errors.New("nats unavailable")}
@@ -617,9 +590,10 @@ func TestAFailingPublisherIsRetriedOncePerTick(t *testing.T) {
 	attempts, elapsed := pub.count(), fake.Now().Sub(start)
 	cancel()
 
-	// Passes run only at the ticks after the loop started, one attempt each at most.
-	if most := int(elapsed/tick) + 1; attempts > most {
-		t.Fatalf("%d publication attempts in %v, want at most %d, one a tick", attempts, elapsed, most)
+	// Passes run only at the ticks after the loop started, one attempt each at most: the fake
+	// reached ticks of them.
+	if attempts > ticks {
+		t.Fatalf("%d publication attempts in %v, want at most %d, one a tick", attempts, elapsed, ticks)
 	}
 	if attempts < 2 {
 		t.Fatalf("%d publication attempts in %v, want the failed settlement retried", attempts, elapsed)
@@ -661,11 +635,13 @@ func TestARecreatedBucketForgetsTheOldBucketsRecords(t *testing.T) {
 	}
 
 	// The bucket is deleted through the jetstream package, whose call takes the test's deadline as
-	// its context; testnats.RecreateKeyValue takes nats.go's older context, which takes none.
-	if err := store.watcher.KV().Streams().DeleteKeyValue(testwait.Context(t), bus.CIStateBucket); err != nil {
+	// its context. testnats.RecreateKeyValue takes nats.go's older context, whose CreateKeyValue
+	// takes none, so that context waits as long as testnats.MaxWait says rather than nats.go's
+	// five seconds.
+	if err := store.watcher.KV().Streams().DeleteKeyValue(callContext(t), bus.CIStateBucket); err != nil {
 		t.Fatalf("delete the bucket: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

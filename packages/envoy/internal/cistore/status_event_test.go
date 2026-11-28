@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -39,7 +38,7 @@ func TestTheListenerDropsAStatusEvent(t *testing.T) {
 	}
 	defer client.Close()
 	c := newLoopClock()
-	store := openListener(t, client.Conn, cistore.WithClock(c.fake), cistore.WithSummaryObserver(c.passes))
+	store := openListener(t, client.Conn, c.options()...)
 	const secret = "s"
 	handler := webhook.GitHubHandler(secret, "@legion", "", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
@@ -51,7 +50,7 @@ func TestTheListenerDropsAStatusEvent(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer sub.Unsubscribe()
-	if err := client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+	if err := client.Conn.FlushWithContext(callContext(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	post := func(event, delivery, body string) {
@@ -104,7 +103,7 @@ func TestTheListenerDropsAStatusEvent(t *testing.T) {
 		t.Fatalf("the bus carried %s from delivery %q before the pull request's envelope, want nothing but the pull request's envelopes", msg.Subject, env.SourceEventID)
 	}
 
-	if keys, err := ciBucket(t, client.Conn).Keys(testwait.Context(t)); !errors.Is(err, jetstream.ErrNoKeysFound) {
+	if keys, err := ciBucket(t, client.Conn).Keys(callContext(t)); !errors.Is(err, jetstream.ErrNoKeysFound) {
 		t.Fatalf("the CI bucket holds %v (%v) after a status delivery, want no record", keys, err)
 	}
 }

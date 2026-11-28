@@ -43,7 +43,7 @@ func recordRunsCheck(name string, id uint64, status, conclusion, observedAt stri
 // through the bucket's jetstream handle, whose Get takes the test's deadline as its context.
 func recordRunsStored(t *testing.T, s *Store) (State, uint64) {
 	t.Helper()
-	entry, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA))
+	entry, err := s.watcher.KV().WatchHandle().Get(callContext(t), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA))
 	if err != nil {
 		t.Fatalf("read the record: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestRecordRunsRefusesTheRunsOfTwoHeads(t *testing.T) {
 		t.Fatalf("recordRuns of two heads = %v, %v; want a refusal", changed, err)
 	}
 	for _, sha := range []string{recordRunsSHA, other.SHA} {
-		if _, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, sha)); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		if _, err := s.watcher.KV().WatchHandle().Get(callContext(t), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, sha)); !errors.Is(err, jetstream.ErrKeyNotFound) {
 			t.Fatalf("head %s after a refused write: %v, want no record (%v)", sha, err, jetstream.ErrKeyNotFound)
 		}
 	}

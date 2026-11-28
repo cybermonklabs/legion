@@ -105,27 +105,20 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 // now, which may still land it after cause is returned (write says why that is safe); a caller
 // answered cause changed nothing it can report, so it reports none.
 func (s *Store) leave(key string, c *keyCombiner, own *pendingMutation, cause error) (bool, error) {
-	// left says the caller left the queue, which queueHook hears of once combineMu is let go.
-	left := false
-	defer func() {
-		if left {
-			s.queueChanged(key)
-		}
-	}()
 	s.combineMu.Lock()
-	defer s.combineMu.Unlock()
 	select {
 	case outcome := <-own.done:
 		if !outcome.lead {
+			s.combineMu.Unlock()
 			return outcome.changed, outcome.err
 		}
 		s.passLeadLocked(key, c, own)
-		left = true
-		return false, cause
 	default:
+		c.queue = slices.DeleteFunc(c.queue, func(p *pendingMutation) bool { return p == own })
 	}
-	c.queue = slices.DeleteFunc(c.queue, func(p *pendingMutation) bool { return p == own })
-	left = true
+	s.combineMu.Unlock()
+	// The caller left the queue, which queueHook hears of now that combineMu is let go.
+	s.queueChanged(key)
 	return false, cause
 }
 

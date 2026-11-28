@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // staleOnceKV is the CI bucket as a direct get of a replicated bucket can answer it: once armed,
@@ -118,7 +117,7 @@ func TestASettlementWhoseMarkReadsACopyBehindIsPublishedOnce(t *testing.T) {
 			setLastEventAt(t, store, owner, repo, number, sha, 0)
 			key := Key(owner, repo, number, sha)
 			original := store.watcher.KV()
-			read, err := original.WatchHandle().Get(testwait.Context(t), key)
+			read, err := original.WatchHandle().Get(callContext(t), key)
 			if err != nil {
 				t.Fatalf("read the unclaimed record: %v", err)
 			}
@@ -239,7 +238,7 @@ func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehin
 			original := store.watcher.KV()
 			// The hook reads the claimed record through the bucket's jetstream handle, under the
 			// test's deadline.
-			bucket, ctx := original.WatchHandle(), testwait.Context(t)
+			bucket, ctx := original.WatchHandle(), callContext(t)
 			kv := &staleOnceKV{key: key}
 			rearmed := false
 			kv.KeyValue = &interleavingKV{KeyValue: original.Legacy(), afterUpdate: func(got string, _ []byte, _ uint64) {

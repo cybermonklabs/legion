@@ -43,6 +43,12 @@ type writeKV struct {
 	getErr  error
 	getHold func()
 	written map[string][]writtenState
+
+	// queueChanged receives a signal each time a caller joins or leaves one of the store's
+	// records' queues (wrapStore sets the store's queueHook to send it), so waitQueued waits on it.
+	// One signal waiting is enough: waitQueued reads the queue afresh on each, so a change made
+	// while one waits is read with it.
+	queueChanged chan struct{}
 }
 
 // failNextGet makes the next Get return err instead of reading.
@@ -147,13 +153,6 @@ func (k *writeKV) holdNextWrite() (entered <-chan struct{}, release func()) {
 	return reached, func() { close(gate) }
 }
 
-// recv waits for ch (testwait.Receive), failing the test when it never comes, so a regression in
-// the hand-over fails the test instead of hanging it.
-func recv(t *testing.T, ch <-chan struct{}, what string) {
-	t.Helper()
-	testwait.Receive(t, what, ch)
-}
-
 // storedRecord is a record as the bucket holds it.
 type storedRecord struct {
 	state    State
@@ -164,7 +163,7 @@ type storedRecord struct {
 // deadline as its context.
 func getRecord(t *testing.T, s *Store, key string) storedRecord {
 	t.Helper()
-	entry, err := s.watcher.KV().WatchHandle().Get(testwait.Context(t), key)
+	entry, err := s.watcher.KV().WatchHandle().Get(callContext(t), key)
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}
@@ -188,39 +187,32 @@ func (k *writeKV) states(key string) []State {
 	return states
 }
 
-// wrapStore opens a store on the shared NATS and routes its writes through a writeKV. Its
-// queueHook signals the channel queueSignals holds for it, on which waitQueued waits.
+// wrapStore opens a store on the shared NATS and routes its writes through a writeKV, whose
+// queueChanged the store's queueHook signals, for waitQueued to wait on.
 func wrapStore(t testing.TB, conn *natsgo.Conn, delay time.Duration) (*Store, *writeKV) {
 	t.Helper()
 	s := openStore(t, conn)
-	kv := &writeKV{KeyValue: s.watcher.KV().Legacy(), delay: delay, written: map[string][]writtenState{}}
+	kv := &writeKV{KeyValue: s.watcher.KV().Legacy(), delay: delay, written: map[string][]writtenState{}, queueChanged: make(chan struct{}, 1)}
 	useKV(t, s, kv)
-	// One signal waiting is enough: waitQueued reads the queue afresh on each, so a change made
-	// while one waits is read with it.
-	changed := make(chan struct{}, 1)
 	s.queueHook = func(string) {
 		select {
-		case changed <- struct{}{}:
+		case kv.queueChanged <- struct{}{}:
 		default:
 		}
 	}
-	queueSignals.Store(s, changed)
-	t.Cleanup(func() { queueSignals.Delete(s) })
 	return s, kv
 }
 
-// queueSignals holds, for each store wrapStore opened, the channel its queueHook signals each
-// time a caller joins or leaves one of its records' queues, so waitQueued, which is handed the
-// store alone, waits on it. A store's entry goes when the test that opened it ends.
-var queueSignals sync.Map // *Store -> chan struct{}
-
 // record records one observation of a head as the webhook handler does, a check when CheckName is
-// set and a suite otherwise, failing once testwait's wait gives up rather than hanging (within).
+// set and a suite otherwise, failing once testwait's wait gives up rather than hanging (recordFor).
 func record(s *Store, observation contracts.CIObservation) error {
-	return within(func() error {
-		if observation.CheckName == "" {
+	key := Key(observation.Owner, observation.Repo, observation.Number, observation.SHA)
+	if observation.CheckName == "" {
+		return recordFor(fmt.Sprintf("RecordSuite of suite %s (%s) on %s to return", observation.SuiteID, observation.Status, key), func() error {
 			return s.RecordSuite(context.Background(), observation)
-		}
+		})
+	}
+	return recordFor(fmt.Sprintf("Record of check %s (run %d, %s) on %s to return", observation.CheckName, observation.CheckRunID, observation.Status, key), func() error {
 		return s.Record(context.Background(), observation)
 	})
 }
@@ -255,32 +247,23 @@ func queued(s *Store, key string) int {
 }
 
 // waitQueued waits until n callers are queued to be written to key, through the shared wait
-// (testwait.Receive) on the signal the store's queueHook sends at each change of a queue
+// (testwait.Receive) on kv's queueChanged, which s's queueHook signals at each change of a queue
 // (wrapStore), reading the count afresh after each; its failure names the last count it read.
-func waitQueued(t *testing.T, s *Store, key string, n int) {
+func waitQueued(t *testing.T, s *Store, kv *writeKV, key string, n int) {
 	t.Helper()
-	changed, ok := queueSignals.Load(s)
-	if !ok {
-		t.Fatalf("waitQueued: the store was not opened by wrapStore, so no queueHook signals its queues")
-	}
 	for {
 		got := queued(s, key)
 		if got == n {
 			return
 		}
-		testwait.Receive(t, fmt.Sprintf("the callers queued for %s to number %d (%d at the last read)", key, n, got), changed.(chan struct{}))
+		testwait.Receive(t, fmt.Sprintf("the callers queued for %s to number %d (%d at the last read)", key, n, got), kv.queueChanged)
 	}
 }
 
-// waitAll waits for every call started on wg (testwait.Receive), failing the test if one hangs.
+// waitAll waits for every call started on wg (testwait.Returns), failing the test if one hangs.
 func waitAll(t testing.TB, wg *sync.WaitGroup, what string) {
 	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	testwait.Receive(t, what+": every caller to return", done)
+	testwait.Returns(t, what+": every caller to return", wg.Wait)
 }
 
 // backoffClock is the store's clock in a row that drives a write's retries on a fake: every wait
@@ -318,15 +301,20 @@ func (c backoffClock) Sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// onBackoffFake puts s's waits on a fake that stands at start until the row moves it
-// (backoffClock), and returns the fake and the steps its backoffs are reported on. The channel
-// holds one step, all one writer ever has waiting: it arms its next backoff only once the row has
-// moved past the last, and the row reports its callers' return only once the write has ended.
-func onBackoffFake(s *Store, start time.Time) (*clocktest.Fake, chan writeStep) {
-	fake := clocktest.New(start)
+// writeStart is where a row that moves the store's clock through a write stands that clock's fake
+// until it moves it, so the write begins there (onBackoffFake).
+var writeStart = time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
+
+// onBackoffFake puts s's waits on a fake that stands at writeStart until the row moves it
+// (backoffClock), and returns the fake, the steps its backoffs are reported on and writeStart. The
+// channel holds one step, all one writer ever has waiting: it arms its next backoff only once the
+// row has moved past the last, and the row reports its callers' return only once the write has
+// ended.
+func onBackoffFake(s *Store) (*clocktest.Fake, chan writeStep, time.Time) {
+	fake := clocktest.New(writeStart)
 	steps := make(chan writeStep, 1)
 	s.clock = backoffClock{Fake: fake, steps: steps}
-	return fake, steps
+	return fake, steps, writeStart
 }
 
 // onStandingFake puts s's waits and stamps on a fake that stands for good (standingFake): no
@@ -360,18 +348,19 @@ func driveBackoffs(t *testing.T, fake *clocktest.Fake, steps <-chan writeStep, s
 }
 
 // calls runs numbered calls against one record, each in its own goroutine, and keeps each one's
-// error.
+// error. kv is the writeKV wrapStore returned with s, on whose queueChanged queue waits.
 type calls struct {
 	t    *testing.T
 	s    *Store
+	kv   *writeKV
 	key  string
 	call func(i int) error
 	wg   sync.WaitGroup
 	errs []error
 }
 
-func newCalls(t *testing.T, s *Store, key string, n int, call func(i int) error) *calls {
-	return &calls{t: t, s: s, key: key, call: call, errs: make([]error, n)}
+func newCalls(t *testing.T, s *Store, kv *writeKV, key string, n int, call func(i int) error) *calls {
+	return &calls{t: t, s: s, kv: kv, key: key, call: call, errs: make([]error, n)}
 }
 
 func (c *calls) start(i int) {
@@ -388,7 +377,7 @@ func (c *calls) queue(from, to int) {
 	c.t.Helper()
 	for i := from; i < to; i++ {
 		c.start(i)
-		waitQueued(c.t, c.s, c.key, i-from+1)
+		waitQueued(c.t, c.s, c.kv, c.key, i-from+1)
 	}
 }
 
@@ -397,7 +386,7 @@ func (c *calls) queue(from, to int) {
 func (c *calls) behind(entered <-chan struct{}, to int) {
 	c.t.Helper()
 	c.start(0)
-	recv(c.t, entered, "call 0's write")
+	testwait.Receive(c.t, "call 0's write", entered)
 	c.queue(1, to)
 }
 
@@ -458,7 +447,7 @@ func recordAsOneBatch(t *testing.T, s *Store, kv *writeKV, observations []contra
 	t.Helper()
 	key := Key(observations[0].Owner, observations[0].Repo, observations[0].Number, observations[0].SHA)
 	entered, release := kv.holdNextWrite()
-	batch := newCalls(t, s, key, len(observations), func(i int) error { return record(s, observations[i]) })
+	batch := newCalls(t, s, kv, key, len(observations), func(i int) error { return record(s, observations[i]) })
 	batch.behind(entered, len(observations))
 	release()
 	errs := batch.wait("recordAsOneBatch")
@@ -685,7 +674,7 @@ func TestABurstOfObservationsOnOneHeadIsRecordedUnderSlowWrites(t *testing.T) {
 
 	entered, release := kv.holdNextWrite()
 	released := make(chan struct{})
-	burst := newCalls(t, s, h.key(), n, func(i int) error {
+	burst := newCalls(t, s, kv, h.key(), n, func(i int) error {
 		if i > 0 {
 			<-released
 		}
@@ -694,12 +683,12 @@ func TestABurstOfObservationsOnOneHeadIsRecordedUnderSlowWrites(t *testing.T) {
 	// The first observation's write begins alone, so its batch carries it alone; the rest of the
 	// burst is released together once that write is held.
 	burst.start(0)
-	recv(t, entered, "the burst's first write")
+	testwait.Receive(t, "the burst's first write", entered)
 	for i := 1; i < n; i++ {
 		burst.start(i)
 	}
 	close(released)
-	waitQueued(t, s, h.key(), n-1)
+	waitQueued(t, s, kv, h.key(), n-1)
 	release()
 	errs := burst.wait("the burst")
 	kv.onWrite(nil)
@@ -745,10 +734,10 @@ func TestAFailedBatchWriteReachesEveryCallerAndTheNextBatchIsWritten(t *testing.
 			}
 			return nil
 		})
-		batch := newCalls(t, s, h.key(), 7, checkCall(s, h, 500))
+		batch := newCalls(t, s, kv, h.key(), 7, checkCall(s, h, 500))
 		batch.behind(enteredFirst, 5)
 		close(releaseFirst)
-		recv(t, enteredSecond, "the write of check-1..4's batch")
+		testwait.Receive(t, "the write of check-1..4's batch", enteredSecond)
 		batch.queue(5, 7)
 		close(releaseSecond)
 		errs := batch.wait("a KV failure")
@@ -791,7 +780,7 @@ func TestAFailedBatchWriteReachesEveryCallerAndTheNextBatchIsWritten(t *testing.
 			return nil
 		})
 		var recovered any
-		batch := newCalls(t, s, h.key(), 4, func(i int) error {
+		batch := newCalls(t, s, kv, h.key(), 4, func(i int) error {
 			if i == 0 {
 				defer func() { recovered = recover() }()
 			}
@@ -821,11 +810,10 @@ func TestALostCompareAndSwapRetriesTheWholeBatch(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s, kv := wrapStore(t, conn, 0)
-	start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-	fake, steps := onBackoffFake(s, start)
+	fake, steps, start := onBackoffFake(s)
 	// The other task writes the bucket directly, outside this store, through the bucket's
 	// jetstream handle, whose calls take the test's deadline as their context.
-	other, ctx := s.watcher.KV().WatchHandle(), testwait.Context(t)
+	other, ctx := s.watcher.KV().WatchHandle(), callContext(t)
 	if err := record(s, h.check("seed", 400, "completed", "success", "2026-09-24T01:00:00Z")); err != nil {
 		t.Fatalf("seed the record: %v", err)
 	}
@@ -856,7 +844,7 @@ func TestALostCompareAndSwapRetriesTheWholeBatch(t *testing.T) {
 		}
 		return nil
 	})
-	batch := newCalls(t, s, h.key(), 4, checkCall(s, h, 500))
+	batch := newCalls(t, s, kv, h.key(), 4, checkCall(s, h, 500))
 	batch.behind(entered, 4)
 	close(release)
 	requireNoErrors(t, "a lost compare-and-swap", batch.driven(fake, steps, start, "a lost compare-and-swap"))
@@ -882,8 +870,7 @@ func TestAWriteThatRunsOutOfItsBudgetLogsTheHeadAndItsAttempts(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s, kv := wrapStore(t, conn, 0)
-	start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-	fake, steps := onBackoffFake(s, start)
+	fake, steps, start := onBackoffFake(s)
 	var logs bytes.Buffer
 	s.logger = logging.NewWithWriter("test", &logs)
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -897,16 +884,11 @@ func TestAWriteThatRunsOutOfItsBudgetLogsTheHeadAndItsAttempts(t *testing.T) {
 		moved := &natsgo.APIError{Code: 400, ErrorCode: natsgo.JSErrCodeStreamWrongLastSequence, Description: "wrong last sequence: 1"}
 		return fmt.Errorf("%w: %w", moved, natsgo.ErrKeyRevisionMismatch)
 	})
-	batch := newCalls(t, s, h.key(), 4, checkCall(s, h, 500))
+	batch := newCalls(t, s, kv, h.key(), 4, checkCall(s, h, 500))
 	batch.behind(entered, 4)
 	close(release)
-	go func() {
-		batch.wg.Wait()
-		steps <- writeStep{returned: true}
-	}()
 	// The fake has not moved, so the batch's write began at start.
-	driveBackoffs(t, fake, steps, start)
-	errs := batch.wait("a write that runs out of its budget")
+	errs := batch.driven(fake, steps, start, "a write that runs out of its budget")
 	if errs[0] != nil {
 		t.Fatalf("check-0's write failed: %v", errs[0])
 	}
@@ -915,13 +897,7 @@ func TestAWriteThatRunsOutOfItsBudgetLogsTheHeadAndItsAttempts(t *testing.T) {
 			t.Fatalf("check-%d: %v, want the batch's CAS budget error", i+1, err)
 		}
 	}
-	var lines []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		var entry map[string]any
-		if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "ci record exceeded its retry budget" {
-			lines = append(lines, entry)
-		}
-	}
+	lines := warnings(&logs, "ci record exceeded its retry budget")
 	if len(lines) != 1 {
 		t.Fatalf("%d budget lines, want one for the batch's write:\n%s", len(lines), logs.String())
 	}
@@ -951,11 +927,10 @@ func TestQueuedCallersReturnPromptlyWhenTheConnectionCloses(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s, kv := wrapStore(t, conn, 0)
-	start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-	_, steps := onBackoffFake(s, start)
+	_, steps, start := onBackoffFake(s)
 	h := head{"example-org", "example-repo", "42", "4444444444444444444444444444444444444444"}
 	entered, release := kv.holdNextWrite()
-	batch := newCalls(t, s, h.key(), 10, checkCall(s, h, 600))
+	batch := newCalls(t, s, kv, h.key(), 10, checkCall(s, h, 600))
 	batch.behind(entered, 10)
 	conn.Close()
 	release()
@@ -989,12 +964,11 @@ func TestATransientKVErrorFailsNoCallerInABurst(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			s, kv := wrapStore(t, conn, 0)
-			start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-			fake, steps := onBackoffFake(s, start)
+			fake, steps, start := onBackoffFake(s)
 			h := head{"example-org", "example-repo", "42", "5555555555555555555555555555555555555555"}
 			const n = 80
 			entered, release := kv.holdNextWrite()
-			batch := newCalls(t, s, h.key(), n, checkCall(s, h, 700))
+			batch := newCalls(t, s, kv, h.key(), n, checkCall(s, h, 700))
 			batch.behind(entered, n)
 			kv.failNextGet(tc.err)
 			release()
@@ -1029,8 +1003,7 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			s, kv := wrapStore(t, conn, 0)
-			start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-			fake, steps := onBackoffFake(s, start)
+			fake, steps, start := onBackoffFake(s)
 			h := head{"example-org", "example-repo", "42", "7777777777777777777777777777777777777777"}
 			const n = 10
 			entered, release := tc.hang(kv)
@@ -1040,7 +1013,7 @@ func TestAKVCallInFlightAtAReconnectIsRetriedOnTheNewConnection(t *testing.T) {
 					release()
 				}
 			}()
-			batch := newCalls(t, s, h.key(), n, checkCall(s, h, 900))
+			batch := newCalls(t, s, kv, h.key(), n, checkCall(s, h, 900))
 			batch.behind(entered, n)
 			if err := s.Rewatch(context.Background(), conn); err != nil {
 				t.Fatalf("rewatch: %v", err)
@@ -1078,13 +1051,13 @@ func TestASlowKVCallOnALiveConnectionIsWaitedFor(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s, kv := wrapStore(t, conn, 0)
-	start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
+	start := writeStart
 	fake := clocktest.New(start)
 	s.clock = fake
 	h := head{"example-org", "example-repo", "42", "8888888888888888888888888888888888888888"}
 	const n = 10
 	entered, release := kv.holdNextWrite()
-	batch := newCalls(t, s, h.key(), n, checkCall(s, h, 950))
+	batch := newCalls(t, s, kv, h.key(), n, checkCall(s, h, 950))
 	batch.behind(entered, n)
 	// check-0's write took its budget from start, where the fake stands, and each caller armed its
 	// record wait there before it queued.
@@ -1113,7 +1086,7 @@ func TestAQueuedCallerWhoseContextEndsLeavesTheQueue(t *testing.T) {
 	entered, release := kv.holdNextWrite()
 	leaving, leave := context.WithCancel(context.Background())
 	defer leave()
-	batch := newCalls(t, s, h.key(), 3, func(i int) error {
+	batch := newCalls(t, s, kv, h.key(), 3, func(i int) error {
 		ctx := context.Background()
 		if i == 1 {
 			ctx = leaving
@@ -1122,7 +1095,7 @@ func TestAQueuedCallerWhoseContextEndsLeavesTheQueue(t *testing.T) {
 	})
 	batch.behind(entered, 3)
 	leave()
-	waitQueued(t, s, h.key(), 1)
+	waitQueued(t, s, kv, h.key(), 1)
 	release()
 	errs := batch.wait("a queued caller whose context ended")
 	if errs[0] != nil || errs[2] != nil {
@@ -1152,11 +1125,10 @@ func TestALastingKVErrorFailsAWriteAtOnce(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			s, kv := wrapStore(t, conn, 0)
-			start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-			_, steps := onBackoffFake(s, start)
+			_, steps, start := onBackoffFake(s)
 			kv.failNextGet(lasting)
 			h := head{"example-org", "example-repo", "42", "6666666666666666666666666666666666666666"}
-			write := newCalls(t, s, h.key(), 1, func(int) error {
+			write := newCalls(t, s, kv, h.key(), 1, func(int) error {
 				return s.Record(context.Background(), h.check("check-0", 800, "completed", "success", "2026-09-24T01:00:00Z"))
 			})
 			write.start(0)
@@ -1173,18 +1145,19 @@ func TestALastingKVErrorFailsAWriteAtOnce(t *testing.T) {
 // its budget and with that answer, rather than waiting on JetStream's MaxWait or on its record
 // wait. The store's clock is a fake the test moves only to each backoff the write arms, so the
 // write fails at its first look at the budget past it: after start + recordBudget on that clock,
-// and within one backoff (recordBackoffCap) of it.
+// which the row checks, and within one backoff (recordBackoffCap) of it, which driveBackoffs holds:
+// it fails the row on a backoff armed past start + recordBudget + recordBackoffCap before it moves
+// the fake there, and nothing else moves the fake.
 func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s, _ := wrapStore(t, conn, 0)
-	start := time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)
-	fake, steps := onBackoffFake(s, start)
+	fake, steps, start := onBackoffFake(s)
 	var logs bytes.Buffer
 	s.logger = logging.NewWithWriter("test", &logs)
 	// The bucket is deleted through the jetstream package, whose call takes the test's deadline as
 	// its context.
-	if err := s.watcher.KV().Streams().DeleteKeyValue(testwait.Context(t), bus.CIStateBucket); err != nil {
+	if err := s.watcher.KV().Streams().DeleteKeyValue(callContext(t), bus.CIStateBucket); err != nil {
 		t.Fatalf("delete the bucket: %v", err)
 	}
 	h := head{"example-org", "example-repo", "42", "6666666666666666666666666666666666666666"}
@@ -1204,21 +1177,12 @@ func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 	if !errors.Is(writeErr, natsgo.ErrNoResponders) {
 		t.Fatalf("the write failed with %v, want the no responders of its last attempt at its budget", writeErr)
 	}
-	var lines []map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		var entry map[string]any
-		if json.Unmarshal([]byte(line), &entry) == nil && entry["msg"] == "ci record exceeded its retry budget" {
-			lines = append(lines, entry)
-		}
-	}
+	lines := warnings(&logs, "ci record exceeded its retry budget")
 	if len(lines) != 1 || lines[0]["error"] != writeErr.Error() {
 		t.Fatalf("budget lines %v, want one naming the write's error %q:\n%s", lines, writeErr, logs.String())
 	}
 	if !failedAt.After(start.Add(recordBudget)) {
 		t.Fatalf("the write failed %v after it began on the store's clock (%v), before its %v budget ran out", failedAt.Sub(start), writeErr, recordBudget)
-	}
-	if failedAt.After(start.Add(recordBudget + recordBackoffCap)) {
-		t.Fatalf("the write failed %v after it began on the store's clock (%v), past its %v budget and one %v backoff", failedAt.Sub(start), writeErr, recordBudget, recordBackoffCap)
 	}
 }
 

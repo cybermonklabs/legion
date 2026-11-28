@@ -2,7 +2,6 @@ package cistore
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -107,11 +106,11 @@ func answer(t *testing.T, writer *Writer, revision uint64, caches ...*Store) {
 }
 
 // streamOf is the identity of the stream the bucket writer writes is held in now, read under the
-// test's deadline (testwait.Context): with no deadline of its own, the jetstream read would end at
+// test's deadline (callContext): with no deadline of its own, the jetstream read would end at
 // nats.go's default timeout.
 func streamOf(t *testing.T, writer *Writer) int64 {
 	t.Helper()
-	stream, err := streamIdentity(testwait.Context(t), writer.store.kv())
+	stream, err := streamIdentity(callContext(t), writer.store.kv())
 	if err != nil {
 		t.Fatalf("read the bucket's stream: %v", err)
 	}
@@ -119,16 +118,13 @@ func streamOf(t *testing.T, writer *Writer) int64 {
 }
 
 // waitHeadCached waits until each store's cached record of recordRunsHead is one done holds of.
-// The give-up names the record the cache held last, or that it held none.
+// The give-up names the record the cache held last, or the zero State when it held none.
 func waitHeadCached(t *testing.T, done func(State) bool, caches ...*Store) {
 	t.Helper()
 	for _, cache := range caches {
-		testwait.Until(t, "the store's cache to hold the record of the head wanted", func() (string, bool) {
+		testwait.Until(t, "the store's cache to hold the record of the head wanted", func() (State, bool) {
 			st, ok := cache.cachedState(verifyRecordKey)
-			if !ok {
-				return "no record of the head", false
-			}
-			return fmt.Sprintf("%+v", st), done(st)
+			return st, ok && done(st)
 		})
 	}
 }
@@ -538,7 +534,7 @@ func TestAStampReadInABucketSinceCreatedAgainAuthorizesNothing(t *testing.T) {
 	// its context. testnats.RecreateKeyValue takes nats.go's older context, whose CreateKeyValue
 	// takes none, so that context waits as long as testnats.MaxWait says rather than nats.go's
 	// five seconds.
-	if err := s.watcher.KV().Streams().DeleteKeyValue(testwait.Context(t), bus.CIStateBucket); err != nil {
+	if err := s.watcher.KV().Streams().DeleteKeyValue(callContext(t), bus.CIStateBucket); err != nil {
 		t.Fatalf("delete the bucket: %v", err)
 	}
 	js, err := conn.JetStream(testnats.MaxWait(t))

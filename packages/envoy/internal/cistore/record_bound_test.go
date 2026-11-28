@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const natsDefaultMaxPayload = 1 << 20
@@ -66,7 +65,7 @@ func TestACommitRecordRefusesACheckPastItsBoundsAndNeverSettles(t *testing.T) {
 			}
 
 			// Read through the bucket's jetstream handle, whose Get takes the test's deadline.
-			entry, err := store.watcher.KV().WatchHandle().Get(testwait.Context(t), Key(owner, repo, number, sha))
+			entry, err := store.watcher.KV().WatchHandle().Get(callContext(t), Key(owner, repo, number, sha))
 			if err != nil {
 				t.Fatalf("read the record: %v", err)
 			}

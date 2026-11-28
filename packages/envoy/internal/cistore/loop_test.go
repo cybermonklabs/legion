@@ -116,7 +116,7 @@ func waitCacheStateMissing(t *testing.T, s *Store, owner, repo, number, sha stri
 func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string, at int64) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	bucket, ctx := store.watcher.KV().WatchHandle(), testwait.Context(t)
+	bucket, ctx := store.watcher.KV().WatchHandle(), callContext(t)
 	entry, err := bucket.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
@@ -152,7 +152,7 @@ func setLastEventAt(t *testing.T, store *Store, owner, repo, number, sha string,
 func setClaim(t *testing.T, store *Store, owner, repo, number, sha string, claim *SettlementClaim) {
 	t.Helper()
 	key := Key(owner, repo, number, sha)
-	bucket, ctx := store.watcher.KV().WatchHandle(), testwait.Context(t)
+	bucket, ctx := store.watcher.KV().WatchHandle(), callContext(t)
 	entry, err := bucket.Get(ctx, key)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
@@ -455,7 +455,7 @@ func TestSummaryTickKeepsLegacyFailureAfterFreshCheckArrives(t *testing.T) {
 
 	legacy := []byte(`{"owner":"example-org","repo":"example-repo","number":"42","sha":"abcdef1234567890abcdef1234567890abcdef12",` +
 		`"checks":{"build":{"status":"completed","conclusion":"failure"},"lint":{"status":"in_progress"}}}`)
-	if _, err := store.watcher.KV().WatchHandle().Create(testwait.Context(t), Key(owner, repo, number, sha), legacy); err != nil {
+	if _, err := store.watcher.KV().WatchHandle().Create(callContext(t), Key(owner, repo, number, sha), legacy); err != nil {
 		t.Fatalf("write deployed-listener state: %v", err)
 	}
 	if err := recordCheck(store, owner, repo, number, sha, "lint", "901", "https://example.test/901", "completed", "success", "2026-09-07T03:01:00Z"); err != nil {
@@ -746,7 +746,7 @@ func TestSummaryTickUsesLatestCheckRunIDAfterStateExpiration(t *testing.T) {
 	}
 
 	key := Key(owner, repo, number, sha)
-	if err := store.watcher.KV().WatchHandle().Delete(testwait.Context(t), key); err != nil {
+	if err := store.watcher.KV().WatchHandle().Delete(callContext(t), key); err != nil {
 		t.Fatalf("delete expired state: %v", err)
 	}
 	waitCacheStateMissing(t, store, owner, repo, number, sha)
@@ -814,16 +814,16 @@ func TestSummaryTickConcurrentExactlyOnce(t *testing.T) {
 	}()
 	// The second replica either returns, having observed the first's durable claim, or reaches
 	// publish, where it reports on entered and then blocks until release.
-	reachedPublish := testwait.Until(t, "the second replica to return or reach publish", func() (bool, bool) {
+	outcome := make(chan bool, 1)
+	go func() {
 		select {
 		case <-secondDone:
-			return false, true
+			outcome <- false
 		case <-entered:
-			return true, true
-		default:
-			return false, false
+			outcome <- true
 		}
-	})
+	}()
+	reachedPublish := testwait.Receive(t, "the second replica to return or reach publish", outcome)
 	if reachedPublish {
 		close(release)
 		testwait.Receive(t, "the first replica's tick to return", firstDone)
@@ -1302,7 +1302,7 @@ func TestSummaryTickPublishesLegacyResettledRecordWithoutTimestamps(t *testing.T
 		"resettled":true,
 		"last_event_at":` + strconv.FormatInt(fake.Now().UnixMilli(), 10) + `
 	}`)
-	if _, err := store.watcher.KV().WatchHandle().Put(testwait.Context(t), Key(owner, repo, number, sha), legacy); err != nil {
+	if _, err := store.watcher.KV().WatchHandle().Put(callContext(t), Key(owner, repo, number, sha), legacy); err != nil {
 		t.Fatalf("store legacy state: %v", err)
 	}
 	waitCacheChecks(t, store, owner, repo, number, sha, 1)

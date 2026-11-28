@@ -123,14 +123,7 @@ func verdictListenerOn(d *verdictDeployment, verdictAppID string) *verdictListen
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
 	passes := &summaryPasses{}
-	store, err := cistore.Open(t.Context(), d.client.Conn, logging.New("test"),
-		cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithClock(d.fake), cistore.WithSummaryObserver(passes))
-	if err != nil {
-		t.Fatalf("open cistore: %v", err)
-	}
-	if err := store.WaitForCacheReady(testwait.Context(t)); err != nil {
-		t.Fatalf("cache ready: %v", err)
-	}
+	store := openListener(t, d.client.Conn, cistore.WithClock(d.fake), cistore.WithSummaryObserver(passes))
 	loop, endLoop := context.WithCancel(t.Context())
 	t.Cleanup(endLoop)
 	cistore.StartSummaryLoop(loop, store, d.client, loopDebounce, loopTick, metrics.New().NewGauge("held", ""), logging.New("e2e"))
@@ -176,32 +169,14 @@ func (d *verdictDeployment) pastDebounce() time.Time {
 }
 
 // cached waits until the cache of each of d's listeners holds the head's record as the bucket
-// holds it, so each loop's change feed names the head's last write before the fake moves: a pass
-// that ran before its cache had the write would judge the record the write replaced. It reads the
-// bucket through its jetstream handle (ciBucket), whose Get takes the test's deadline as its
-// context.
+// holds it (awaitCachedAsStored), so each loop's change feed names the head's last write before the
+// fake moves: a pass that ran before its cache had the write would judge the record the write
+// replaced.
 func (d *verdictDeployment) cached() {
-	t := d.t
-	t.Helper()
+	d.t.Helper()
 	key := cistore.Key("acme", "widgets", "42", verdictHead)
-	entry, err := ciBucket(t, d.client.Conn).Get(testwait.Context(t), key)
-	if err != nil {
-		t.Fatalf("read the head's record: %v", err)
-	}
-	var stored cistore.State
-	if err := json.Unmarshal(entry.Value(), &stored); err != nil {
-		t.Fatalf("decode the head's record: %v", err)
-	}
-	for i, l := range d.listeners {
-		testwait.Until(t, fmt.Sprintf("listener %d's cache to hold the head's record at generation %d, last event %d", i, stored.Generation, stored.LastEventAt), func() (string, bool) {
-			for _, st := range l.store.List() {
-				if cistore.Key(st.Owner, st.Repo, st.Number, st.SHA) == key {
-					return fmt.Sprintf("generation %d, last event %d", st.Generation, st.LastEventAt),
-						st.Hash() == stored.Hash() && st.Generation == stored.Generation && st.LastEventAt == stored.LastEventAt
-				}
-			}
-			return "no record of the head", false
-		})
+	for _, l := range d.listeners {
+		awaitCachedAsStored(d.t, l.store, d.client.Conn, key)
 	}
 }
 

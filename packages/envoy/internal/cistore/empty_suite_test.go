@@ -10,7 +10,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // emptySuiteApps are the Apps of the queued suites with no run one production head carried at
@@ -232,7 +231,7 @@ func putRecord(t *testing.T, s *Store, h head, edit func(st *State)) {
 	if raw, err = json.Marshal(wire); err != nil {
 		t.Fatalf("encode the record: %v", err)
 	}
-	if _, err := s.watcher.KV().WatchHandle().Put(testwait.Context(t), h.key(), raw); err != nil {
+	if _, err := s.watcher.KV().WatchHandle().Put(callContext(t), h.key(), raw); err != nil {
 		t.Fatalf("store the record: %v", err)
 	}
 	waitCached(t, s, h.key(), func(cached State) bool {

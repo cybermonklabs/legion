@@ -30,21 +30,18 @@ func (h head) status(name, state, createdAt string) contracts.StatusObservation 
 }
 
 // recordStatus records one status as the reconcile's writer does (Writer.RecordStatus), waiting for
-// the call through the shared wait (testwait.Receive), which fails t naming the call rather than
+// the call through the shared wait (testwait.Returns), which fails t naming the call rather than
 // hanging the test binary when it never returns.
 func recordStatus(t *testing.T, s *Store, observation contracts.StatusObservation) (bool, error) {
 	t.Helper()
-	type result struct {
+	var (
 		changed bool
 		err     error
-	}
-	done := make(chan result, 1)
-	go func() {
-		changed, err := s.recordStatus(context.Background(), observation)
-		done <- result{changed, err}
-	}()
-	r := testwait.Receive(t, fmt.Sprintf("the record of the %s status %q to return", observation.State, observation.Context), done)
-	return r.changed, r.err
+	)
+	testwait.Returns(t, fmt.Sprintf("the record of the %s status %q to return", observation.State, observation.Context), func() {
+		changed, err = s.recordStatus(context.Background(), observation)
+	})
+	return changed, err
 }
 
 // lastSettlement decodes the payload of pub's last settlement, and returns it with its one line.
@@ -349,7 +346,7 @@ func TestARecreatedRecordSettlesAStatusChangeWithItsCreatedAt(t *testing.T) {
 		t.Fatalf("before the recreation the head settled naming statuses %+v, want %+v", before.Statuses, want)
 	}
 
-	if err := s.watcher.KV().WatchHandle().Delete(testwait.Context(t), h.key()); err != nil {
+	if err := s.watcher.KV().WatchHandle().Delete(callContext(t), h.key()); err != nil {
 		t.Fatalf("delete the record as its TTL would: %v", err)
 	}
 	waitCacheStateMissing(t, s, h.owner, h.repo, h.number, h.sha)
@@ -749,7 +746,7 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		status := bigStatus(t, h, 0)
 		var statusChanged bool
 		entered, release := kv.holdNextWrite()
-		together := newCalls(t, s, h.key(), 3, func(i int) error {
+		together := newCalls(t, s, kv, h.key(), 3, func(i int) error {
 			switch i {
 			case 0:
 				return s.Record(context.Background(), h.check("small-a", 1, "completed", "success", "2026-11-17T05:00:00Z"))
@@ -802,7 +799,7 @@ func TestAStatusPastTheRecordBoundLeavesTheChecksSettling(t *testing.T) {
 		var statusChanged bool
 		var statusErr error
 		entered, release := kv.holdNextWrite()
-		together := newCalls(t, s, h.key(), 3, func(i int) error {
+		together := newCalls(t, s, kv, h.key(), 3, func(i int) error {
 			switch i {
 			case 0:
 				return recordBigCheck(s, h, first)

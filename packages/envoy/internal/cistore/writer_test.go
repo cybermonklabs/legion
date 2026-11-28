@@ -50,7 +50,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	}
 	defer client.Close()
 	c := newLoopClock()
-	store := openListener(t, client.Conn, cistore.WithClock(c.fake))
+	store := openListener(t, client.Conn, c.options()...)
 	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithClock(c.fake))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
@@ -116,7 +116,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 
 	// Read straight from the bucket, which is where the listener's store writes the head's record
 	// too: one key per head, whichever process wrote it.
-	raw, err := ciBucket(t, client.Conn).Get(testwait.Context(t), cistore.Key(owner, repo, number, sha))
+	raw, err := ciBucket(t, client.Conn).Get(callContext(t), cistore.Key(owner, repo, number, sha))
 	if err != nil {
 		t.Fatalf("get the head's record under cistore.Key: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestOpenWriterFailsAndCreatesNothingWithoutTheBucket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := streams.KeyValue(testwait.Context(t), bus.CIStateBucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
+	if _, err := streams.KeyValue(callContext(t), bus.CIStateBucket); !errors.Is(err, jetstream.ErrBucketNotFound) {
 		t.Fatalf("the CI bucket after the refused OpenWriter: %v, want %v", err, jetstream.ErrBucketNotFound)
 	}
 }
@@ -398,7 +398,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		t.Fatalf("each pair sending one new observation must hold exactly one change: %v", answers)
 	}
 
-	raw, err := ciBucket(t, client.Conn).Get(testwait.Context(t), cistore.Key(owner, repo, number, sha))
+	raw, err := ciBucket(t, client.Conn).Get(callContext(t), cistore.Key(owner, repo, number, sha))
 	if err != nil {
 		t.Fatalf("get the head's record: %v", err)
 	}

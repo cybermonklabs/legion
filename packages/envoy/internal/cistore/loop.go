@@ -26,8 +26,11 @@ type Publisher interface {
 
 // SummaryObserver receives scheduling decisions and completion on the summary-loop goroutine.
 // SummaryScheduled precedes any resulting publication; only SummaryPassEnded witnesses that
-// the whole pass, including verification and publication, finished. Callbacks must not block
-// or change state, whose maps belong to the store. WithSummaryObserver opts a store in.
+// the whole pass, including verification and publication, finished, and with it the loop's work
+// after the pass: the held gauge is set and the loop's timer armed for its next pass, if it has
+// one. So a test that moves the loop's clock once SummaryPassEnded has come moves it past a timer
+// already armed, never beside a loop still arming it. Callbacks must not block or change state,
+// whose maps belong to the store. WithSummaryObserver opts a store in.
 type SummaryObserver interface {
 	SummaryScheduled(key string, state State, reason string)
 	SummaryPassEnded()
@@ -96,6 +99,9 @@ func StartSummaryLoop(ctx context.Context, store *Store, pub Publisher, debounce
 				backlog.observe(count, logger)
 				if ok {
 					arm(max(passed+1, gridIndexAtOrAfter(clk.Now(), start, tick, next)))
+				}
+				if z.observer != nil {
+					z.observer.SummaryPassEnded()
 				}
 			}
 		}
@@ -385,9 +391,6 @@ func newSummarizer(store *Store, debounce time.Duration) *summarizer {
 // (verdictHeld) and, when the queue or a verify wait is not empty, the earliest millisecond it has
 // to run again.
 func (z *summarizer) pass(pub Publisher, logger *logging.Logger, now int64) (held int, next int64, ok bool) {
-	if z.observer != nil {
-		defer z.observer.SummaryPassEnded()
-	}
 	z.mu.Lock()
 	keys, reset := z.store.takeChanges()
 	if reset {
