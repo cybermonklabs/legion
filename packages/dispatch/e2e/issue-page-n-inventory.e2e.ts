@@ -60,22 +60,24 @@ import {
   AWAITING_THE_BOX,
   AWAITING_THREADS,
   assertInventoryCarried,
-  documentLink,
-  documentsList,
   INVENTORY_PARENT_ROWS,
   INVENTORY_RENAMES,
   INVENTORY_ROWS,
+  type ParentRowMapping,
+  zoomCrumbs,
+} from "./issue-page-n";
+import {
+  documentLink,
+  documentsList,
   identityBlock,
   offered,
   openDocuments,
   openedEditor,
   openIssueActions,
   openVersionControl,
-  type ParentRowMapping,
   uploadInDocuments,
   versionControl,
-  zoomCrumbs,
-} from "./issue-page-n";
+} from "./issue-page-n-documents";
 import { commentWithBody } from "./margin-helpers";
 import type { InventoryEntry } from "./page-inventory";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
