@@ -459,8 +459,8 @@ func TestAnApprovedVersionThatDispatchCannotReadStopsNoOtherJudgment(t *testing.
 	if !containsLine(unreadOf(t, form), line) {
 		t.Errorf("the request's spec_form names %q, want the line %q: %s", unreadOf(t, form), line, requested.Body.String())
 	}
-	if _, counted := form["terms"]; counted {
-		t.Errorf("the request's spec_form counts terms: %s, want no count, since Dispatch reads no list of terms", requested.Body.String())
+	if counted, ok := form["terms"].(float64); !ok || counted != 0 {
+		t.Errorf("the request's spec_form counts %v terms: %s, want 0, since no approved document under the root defines a term", form["terms"], requested.Body.String())
 	}
 	read := dispatchRequest(t, tree.handler, http.MethodGet, "/api/v1/artifacts/"+clean.PrimaryArtifactID+"/spec-form", nil, "alice")
 	if body := decodeBody[map[string]any](t, read); read.Code != http.StatusOK || !containsLine(unreadOf(t, body), line) || body["refuses_approval"] != false {
