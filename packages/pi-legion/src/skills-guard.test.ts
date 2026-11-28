@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { readFileSync, rmSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as path from "node:path";
 import {
   LEGION_PLAN_RATING_LEAST,
@@ -15,6 +15,7 @@ import {
   misnamedSkills,
   oversizedFiles,
   REPO_ROOT,
+  type Reference,
   references,
   shippedAgents,
   skillLinks,
@@ -33,13 +34,17 @@ const repoSkillsRoot = path.join(REPO_ROOT, "skills");
 const promptsRoot = path.join(REPO_ROOT, "packages/daemon/internal/prompts");
 const agentsRoot = path.join(REPO_ROOT, "packages/pi-legion/agents");
 let staged: string;
+// The Envoy plugin's partition, which the two reference tests resolve against beside this one's.
+let envoyStaged: string;
 
 beforeAll(() => {
   staged = stageSkills("@sjawhar/pi-legion");
+  envoyStaged = stageSkills("@sjawhar/pi-envoy");
 });
 
 afterAll(() => {
   rmSync(path.dirname(staged), { recursive: true, force: true });
+  rmSync(path.dirname(envoyStaged), { recursive: true, force: true });
 });
 
 test("every staged file is under Oh My Pi's spill threshold, so a skill:// read arrives whole", () => {
@@ -70,8 +75,14 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // `skills/<name>/<path>` path names a skill one partition stages, a file of it, and a heading of
 // that file for its `#anchor`; a `task(agent="<name>")` names an agent this plugin ships or Oh My
 // Pi bundles. Each group of files must hold a reference, so a reader that found none cannot pass
-// while checking nothing.
-function everyReference(envoyStaged: string) {
+// while checking nothing. The walk reads every Go file of the daemon, so both tests share one walk.
+let walked: Reference[] | undefined;
+function everyReference(): Reference[] {
+  walked ??= walkReferences();
+  return walked;
+}
+
+function walkReferences(): Reference[] {
   const typeScript = [
     "packages/pi-shared/src",
     "packages/pi-legion/src",
@@ -111,15 +122,8 @@ function everyReference(envoyStaged: string) {
 }
 
 test("every reference a shipped text or the daemon names resolves against the packed plugins", () => {
-  const envoyStaged = stageSkills("@sjawhar/pi-envoy");
-  try {
-    const skillReferences = everyReference(envoyStaged).filter(
-      (reference) => !("agent" in reference)
-    );
-    expect(unresolvedReferences(skillReferences, [staged, envoyStaged], new Set())).toEqual([]);
-  } finally {
-    rmSync(path.dirname(envoyStaged), { recursive: true, force: true });
-  }
+  const skillReferences = everyReference().filter((reference) => !("agent" in reference));
+  expect(unresolvedReferences(skillReferences, [staged, envoyStaged], new Set())).toEqual([]);
 });
 
 // The agents Oh My Pi bundles are read from the Oh My Pi binary itself, as
@@ -133,19 +137,12 @@ test.skipIf(omp === undefined)(
   "every task agent a shipped text or the daemon names is one this plugin ships or Oh My Pi bundles",
   async () => {
     if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
-    const envoyStaged = stageSkills("@sjawhar/pi-envoy");
-    try {
-      const agentReferences = everyReference(envoyStaged).filter(
-        (reference) => "agent" in reference
-      );
-      const available = new Set([
-        ...shippedAgents(path.dirname(agentsRoot)),
-        ...(await bundledAgents(omp)),
-      ]);
-      expect(unresolvedReferences(agentReferences, [], available)).toEqual([]);
-    } finally {
-      rmSync(path.dirname(envoyStaged), { recursive: true, force: true });
-    }
+    const agentReferences = everyReference().filter((reference) => "agent" in reference);
+    const available = new Set([
+      ...shippedAgents(path.dirname(agentsRoot)),
+      ...(await bundledAgents(omp)),
+    ]);
+    expect(unresolvedReferences(agentReferences, [], available)).toEqual([]);
   },
   60_000
 );
@@ -248,11 +245,21 @@ test("the guides say only a review that requests changes counts a round", () => 
 
 // skills/AGENTS.md bounds a skill's SKILL.md and each of its references at 150 lines and 8 KB,
 // counted here as 8,000 bytes. Every file of the Legion role skills is held to it, so a file that
-// grows past it moves its detail one level down before it ships.
+// grows past it moves its detail one level down before it ships. The Legion role skills are read
+// from the staged partition, and each one's SKILL.md must be on the list, so a pattern that
+// matches no file fails rather than checking nothing.
 test("every file of the Legion role skills fits the skill budget", () => {
   const budgeted = files(staged).filter((file) =>
     /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
   );
+  const skills = readdirSync(staged).filter((name) => name.startsWith("legion-"));
+  expect(skills).not.toEqual([]);
+  expect(
+    skills
+      .map((skill) => path.join(staged, skill, "SKILL.md"))
+      .filter((file) => !budgeted.includes(file))
+      .map((file) => path.relative(staged, file))
+  ).toEqual([]);
   const over = budgeted.flatMap((file) => {
     const text = readFileSync(file, "utf8");
     const bytes = Buffer.byteLength(text);

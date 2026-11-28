@@ -668,7 +668,7 @@
   - TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead  # 2.5 s
   - TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt  # 0.4 s
   - TestARoleMessageThePauseHeldForARoleItStoppedSurvivesTheGapBetweenItsReadyAndItsRoleClaim  # 5.6 s
-  - TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk  # 2.0 s
+  - TestARootArchitectIsToldTheGatedSteps  # 2.0 s
   - TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout  # 0.3 s
   - TestARootWaitingOnItsGateAtDeployKeepsItsRow  # 0.9 s
   - TestARoundOverAGonePodIsDecidedOnce  # 0.4 s

@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"fmt"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -377,6 +380,48 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: opened + " " + treeNothingChangedClause(4)},
 	})
 	assertOpeningsOwed(t, pool, gatedRoot)
+}
+
+// The merger knows the gate's hold and its release by the opening words of the two messages:
+// roles/merger.md quotes `The design gate of <tree> closed: …` as what holds a merge, and
+// `The design gate of <tree> opened: …` as what releases it. So the words each message begins
+// with, up to its first colon, stand quoted that way in the merger's prompt as the daemon composes
+// it: the close, an opening on a person's approval, and an opening on an ancestor's approval. A
+// change of those words in the daemon or in the prompt leaves the merger unable to read the hold or
+// the release, and fails here.
+func TestTheMergersPromptQuotesTheOpeningWordsOfEachGateMessage(t *testing.T) {
+	t.Parallel()
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	parts, err := composer.Compose(claim.RoleMerger, false)
+	if err != nil {
+		t.Fatalf("compose the merger's prompt: %v", err)
+	}
+	var prompt strings.Builder
+	for _, path := range parts.RolePromptPaths {
+		part, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read the merger's prompt part %s: %v", path, err)
+		}
+		prompt.Write(part)
+	}
+	onBasis := record.OpenOnBasis(record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 4}, *approvedBasis())
+	for _, message := range []struct{ name, text string }{
+		{"the close", gateClosedSentence("<tree>", record.DesignStepSpec, gateDoc, 4)},
+		{"an opening on a person's approval", gateOpenedMessage("<tree>", record.DesignStepSpec, gateDoc, 4, nil)},
+		{"an opening on an ancestor's approval", gateOpenedMessage("<tree>", record.DesignStepSpec, gateDoc, 4, []record.DesignGate{onBasis})},
+	} {
+		words, _, ok := strings.Cut(message.text, ":")
+		if !ok {
+			t.Errorf("%s has no colon to end its opening words: %q", message.name, message.text)
+			continue
+		}
+		if quote := "`" + words + ": …`"; !strings.Contains(prompt.String(), quote) {
+			t.Errorf("%s begins %q, and the merger's prompt does not quote it as %s", message.name, words+":", quote)
+		}
+	}
 }
 
 // seedMergingRoot records the gated tree's root in merging, where its merger holds the phase the

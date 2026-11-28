@@ -30,7 +30,7 @@
 # what the run does on that server, in a few words.
 #
 # Thirteen call sites read a DSN with this guard before they start anything, because the server
-# must be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
+# must be this machine's. Seven are scripts of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
 # eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads

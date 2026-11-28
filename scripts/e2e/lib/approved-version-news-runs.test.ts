@@ -844,15 +844,16 @@ function controlRun(history: History) {
 // parent of the first commit in HEAD's history that adds a news mark. In a branch merged forward
 // past main's commit that adds the marks, the base is that commit's parent, which carries none,
 // while the merge base of HEAD and origin/main, the base before this rule, carries them: the
-// first test shows both, so it fails on the old rule. Where the first commit that adds a mark adds
-// the second mark sessions_file names, and a later one the first, the base is the first one's
-// parent, and not the parent of the first mark's adder. A history in which no commit adds a mark,
-// and one cut where a shallow clone cuts it, are refused with exit 2, naming the remedies. A
-// driver line that assigns a news mark in a form the script does not read fails the run with exit
-// 1, naming the line, where a read that skipped it passed. A run of both parts reads no base, since
-// part two runs on this checkout's prompts alone, so it passes where no commit adds a mark.
+// first test shows both, so it fails on the old rule, and shows that the control runs against that
+// base. Where the first commit that adds a mark adds the second mark sessions_file names, and a
+// later one the first, the base is the first one's parent, and not the parent of the first mark's
+// adder. A history in which no commit adds a mark, and one cut where a shallow clone cuts it, are
+// refused with exit 2, naming the remedies. A driver line that assigns a news mark in a form the
+// script does not read fails the run with exit 1, naming the line, where a read that skipped it
+// passed. A run of both parts reads no base, since part two runs on this checkout's prompts alone,
+// so it passes where no commit adds a mark.
 gitHost.describe("the base", () => {
-  test("is the parent of the first commit that adds a news mark, in a branch merged forward past it", () => {
+  test("is the parent of the first commit that adds a news mark, in a branch merged forward past it, and part one's negative control runs against it", () => {
     const run = controlRun(mergedForward);
     const { c0, c1, c2 } = run.commits;
     // The test's own control: the old rule's base, the merge base of HEAD and origin/main, is c2,
@@ -865,8 +866,11 @@ gitHost.describe("the base", () => {
     expect(run.out).toContain(
       `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
     );
+    expect(run.out).toContain(`\n   part one's negative control against ${c0}\n`);
     expect(run.last).toMatch(
-      new RegExp(`^approved version news e2e: control bites at ${controlStep} against ${c0} in `)
+      new RegExp(
+        `^approved version news e2e: control bites at ${controlStep} against ${c0} in \\d+s \\(assertions: \\d+/\\d+; part one alone, part two did not run, evidence: `
+      )
     );
   }, 60_000);
 
@@ -928,20 +932,5 @@ gitHost.describe("the base", () => {
     expect(run.code).toBe(0);
     expect(run.out).not.toContain("the base: ");
     expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
-  }, 60_000);
-
-  test("is the same for part one's negative control, --control with no --base-commit", () => {
-    const run = controlRun(mergedForward);
-    const { c0, c1 } = run.commits;
-    expect(run.out).toContain(
-      `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
-    );
-    expect(run.out).toContain(`\n   part one's negative control against ${c0}\n`);
-    expect(run.code).toBe(0);
-    expect(run.last).toMatch(
-      new RegExp(
-        `^approved version news e2e: control bites at ${controlStep} against ${c0} in \\d+s \\(assertions: \\d+/\\d+; part one alone, part two did not run, evidence: `
-      )
-    );
   }, 60_000);
 });

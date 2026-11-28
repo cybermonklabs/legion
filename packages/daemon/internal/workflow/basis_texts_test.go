@@ -25,13 +25,13 @@ const basisOpening = " The spec step stands open on an ancestor's approval: a pe
 
 // An opening of the standing gate on an ancestor's approval names that approval: the ancestor, its
 // document and the version a person approved, and says that no person approved the root's version.
-// It begins with the words `The design gate of <tree> opened: every step the deployment gates now
-// stands open`, or, where a person's approval of another step opens the gate while the spec step
-// stands on a basis, words that name that person's approval first; the step on the basis is named
-// after it. Each holder took every approved version before the opening (seedTold), so none is owed
-// news of the approved design and each is sent the opened message, with the clause that nothing
-// changed since the version of the opening step it took (openingDelivery), as the gate messages
-// tests seed it.
+// It begins with the words `The design gate of <tree> opened:`, which roles/merger.md quotes as
+// the release of a merge, then `every step the deployment gates now stands open`, or, where a
+// person's approval of another step opens the gate while the spec step stands on a basis, words
+// that name that person's approval first; the step on the basis is named after it. Each holder
+// took every approved version before the opening (seedTold), so none is owed news of the approved
+// design and each is sent the opened message, with the clause that nothing changed since the
+// version of the opening step it took (openingDelivery), as the gate messages tests seed it.
 func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

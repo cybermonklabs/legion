@@ -181,7 +181,7 @@ export function skillLinks(linkingRoots: readonly string[]): SkillLink[] {
     .flatMap((file) =>
       [...readFileSync(file, "utf8").matchAll(SKILL_LINK)].map(([, name = "", raw]) => {
         // A link that ends a sentence carries its full stop.
-        const [target = "", anchor] = (raw ?? "").replace(/[.,;:]+$/, "").split("#");
+        const [target = "", anchor] = trimClosingPunctuation(raw ?? "").split("#");
         return { source: file, name, target, anchor };
       })
     );

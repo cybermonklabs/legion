@@ -1363,8 +1363,9 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // message at the opening (tellGateMoved) and the news task that carries the opening in its place
 // (RenderNews, gateAtSend). onBasis is the gated steps that stand open on an ancestor's approval.
 // Every opening keeps two parts: `The design gate of <tree> opened:` and `every step the deployment
-// gates now stands open`. Where the step whose move opened the gate stands on a person's approval,
-// that approval is named first, as the person's clause. Where onBasis is empty, that clause is the
+// gates now stands open`. roles/merger.md quotes the first part, the opening words, as the release
+// of a merge. Where the step whose move opened the gate stands on a person's approval, that
+// approval is named first, as the person's clause. Where onBasis is empty, that clause is the
 // whole cause of the opening, and the message says the design worked to is the approved one.
 // Otherwise each step on a basis is named after it with the ancestor's approval it stands on, and
 // with the root's version that no person approved.
@@ -1520,7 +1521,8 @@ func nothingChangedSince(took int) string {
 // version of step's document, now with its reviewer. Its two senders are gateOpenedMessage's: the
 // role message at the close, and a news task composed while the gate stood open and sent after a
 // later version closed it (RenderNews), which says closed rather than an opening that no longer
-// stands.
+// stands. roles/merger.md quotes its opening words, `The design gate of <tree> closed:`, as what
+// holds a merge.
 func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
 	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+

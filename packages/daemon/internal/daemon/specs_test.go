@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -29,18 +28,18 @@ func noAppOwners(claim.Role) []string { return nil }
 
 // A tree's root architect is told the design-gate steps its deployment gates after its
 // addressing, on the "Design gate steps" line. No other claim is told the steps: a child's spec is
-// never gated. A two-step deployment and one on `root-issues` give their root architects different
-// prompts, so what a launch is told follows the configuration rather than a policy word that says
-// nothing about which steps hold its tree. Every architect's addressing then ends with the
-// project's production check (ProductionCheckFragment), the root's after the steps, which
+// never gated. Each deployment below gives its root architect a line of its own, so a two-step
+// deployment and one on `root-issues` tell their root architects different steps, and what a
+// launch is told follows the configuration rather than a policy word that says nothing about which
+// steps hold its tree. Every architect's addressing then ends with the project's production check
+// (ProductionCheckFragment), the root's after the steps, which
 // TestEveryArchitectIsToldTheProjectsProductionCheck reads for both settings.
-func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
+func TestARootArchitectIsToldTheGatedSteps(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	composed := map[string]string{}
 	for _, deployment := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -79,24 +78,8 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 				if architect := tc.role == claim.RoleArchitect; strings.HasSuffix(spec.Prompt.Addressing, check) != architect {
 					t.Fatalf("addressing %q; want it to end with %q: %t", spec.Prompt.Addressing, check, architect)
 				}
-				if !tc.root {
-					return
-				}
-				var prompt strings.Builder
-				prompt.WriteString(spec.Prompt.Addressing)
-				for _, path := range spec.Prompt.RolePromptPaths {
-					part, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatalf("read role prompt part %s: %v", path, err)
-					}
-					prompt.Write(part)
-				}
-				composed[deployment.name] = prompt.String()
 			})
 		}
-	}
-	if composed["two steps"] == composed["root-issues"] {
-		t.Error("a two-step deployment's root architect is told exactly what a root-issues deployment's is; nothing in its prompt says which steps hold its tree")
 	}
 }
 

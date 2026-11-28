@@ -6435,9 +6435,9 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   [--runs <n>] [--tasks <1|2>] [--mid-approval <approved|unapproved>]     # → "plan pointer drive: PASS in <n>s", exit 0
 ```
 
-dispatch://INFRA-2038's live proof that a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved.
-A grep over the prompt files says the words changed;
-only a session says what an agent reading them writes, and only a control says the change caused it ([`docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md`](../../docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md)).
+A historical reproduction, not a proof about this checkout: it shows how a Legion phase worker whose task line names a stale plan-handoff pointer built from the newest `plan.md` version the plan review approved, under the implementer's role prompt of the commit `--base-commit` names (dispatch://INFRA-2038).
+It runs one arm and no control, so it shows what a session on that prompt wrote, and never that a change of the prompt caused it.
+A proof of a prompt change needs the old prompt as its control ([`docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md`](../../docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md)).
 
 The staged issue carries four designs of one plan, as INFRA-1992's own history carried them, and each design names one call:
 
@@ -6755,7 +6755,7 @@ Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 ref
 Prints what libpq reads from a PostgreSQL DSN, rewrites that DSN to name a run's own database, or refuses the DSN in one line.
 Python 3.9 or later, the standard library, and libpq itself, which it loads with `ctypes`.
 Thirteen call sites read a DSN with it before they start anything, each of which creates, resets or drops something on the server its caller's DSN names.
-Seven are proofs of their own:
+Seven are scripts of their own:
 [`plan-pointer-drive.sh`](#plan-pointer-drivesh), [`verification-results.sh`](#verification-resultssh), [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh), `clean-session-stop-tmux.sh`, `envoy-session-states.sh`, [`envoy-session-delivery.sh`](#envoy-session-deliverysh) and [`dispatch-session-settings.sh`](#dispatch-session-settingssh).
 The eighth is [`lib/two-builds.sh`](#libtwo-buildssh), the harness the two two-builds proofs share, which reads `DATABASE_URL` once for `dispatch-two-builds.sh` and `dispatch-search-two-builds.sh`.
 Each of those eight call sites calls it in one line, through [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` or through its `run_database_url`, which begins with the same check.

@@ -299,7 +299,7 @@ begin prerequisites
 # python3 and openssl are the Dispatch server's own: packages/dispatch/e2e/run-server.sh holds
 # the port with scripts/e2e/lib/held-port.py and mints a throwaway App key with `openssl genrsa`.
 # python3 reads the DSN below as well.
-for tool in bun go git jj psql curl dispatch python3 openssl; do
+for tool in bun go git psql curl dispatch python3 openssl; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 case "$pg_dsn" in

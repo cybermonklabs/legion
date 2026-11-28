@@ -26,11 +26,11 @@ It carries:
 
 - `legion` (`packages/daemon`), compiled from the same commit at `go.work`'s Go version, static, at `/opt/legion/bin/legion` — the `legion` on `PATH` and the image's `ENTRYPOINT` — with the `agent-secrets` client beside it at `/opt/legion/bin/agent-secrets`.
   It links the commit it was built from: `docker run --rm ghcr.io/cybermonklabs/legion-worker@sha256:… version` prints `legion (devel) commit <sha>`.
-  It embeds Legion's role prompts, which `prompts.Compose` reads in this order (`packages/daemon/internal/prompts/prompts.go`):
+  It embeds Legion's role prompts, which the daemon's composer reads in this order (`packages/daemon/internal/prompts/prompts.go`), through `Composer.Compose` for every role but the controller:
   a phase worker's are `roles/core/common.md`, `roles/core/<role>.md`, `roles/mechanics/headless.md` and `roles/<role>.md`, then `go/<role>.md` and `go/worker-common.md`;
   the merger's are `roles/mechanics/headless.md` and `roles/merger.md`, then `go/merger.md` and `go/worker-common.md`;
   an architect's are `roles/architect-root.md` or `roles/architect.md`, then the `go/` part of the same name and `go/architect-common.md`;
-  the controller's are `roles/controller-root.md`, then `go/controller-headless.md` or `go/controller-interactive.md`.
+  the controller's, through `Composer.ControllerPromptPaths`, are `roles/controller-root.md`, then `go/controller-headless.md` or `go/controller-interactive.md`.
   A part can be empty, as `go/planner.md` is: the composer still reads it, so its path stays.
   The daemon snapshots its own into its state directory before a pane can read them and inlines that snapshot into each pod it runs, and `legion probe-image`, given no `--role-references`, resolves the task agents and skills named by the prompts the image's own `legion` embeds (`packages/daemon/cmd/legion/probe_image.go`);
 
