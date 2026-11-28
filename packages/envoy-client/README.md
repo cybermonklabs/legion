@@ -1407,8 +1407,17 @@ lapses, until one ordinary trade renews it (the token files, below).
 
 Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
 `dispatch whoami` says that the credential may only read, and names its cut where it has one.
-Under a cut, every other read prints `AS_OF_TOKEN_NOT_SERVED: …` and exits 1, because Dispatch
-serves no read at a past time yet.
+Under a cut, each of the seven read commands reads Dispatch as of the cut, and the cut replaces
+any `--as-of` the call gives (Reads at a past time, below). Any other read of a route that holds
+no past answer prints Dispatch's refusal (`AS_OF_TOKEN_NOT_SERVED: …`) and exits 1.
+`dispatch issues` is not one of the seven: it reads no whoami first and sends no `as_of`.
+`GET /api/v1/issues` answers a token that carries a cut as of that cut, so under such a token
+`dispatch issues` lists the issues as they stood at the cut, with no `Left out at` line. A line of
+an issue whose route the listing leaves out names the route and says that the listing does not say
+whether it reaches anyone. The listing learns the cut from the answer's `Dispatch-As-Of`
+(`AnswerCut`), and its row in the details and in `--json` then has no `route_status`,
+`route_holder` or `route_status_reason` the listing left out: `null` there says the present's "no
+route", "nobody holds it" or "no reason". A listing of the present keeps `null`.
 
 ### The `dispatch` command
 
@@ -1706,7 +1715,10 @@ request of a route under `/api/v1` that no other command sends (`apiCommand`,
 `src/dispatch-commands/api.ts`), with the session's own credential as every Dispatch call presents
 it (a set bearer, the token files' broker token, else a token traded at the secrets broker, with a
 new DPoP proof for the request), and prints the answer's body: Dispatch's JSON, indented as every
-command prints it, for `jq`; any other 2xx body as it came. It is the contract's spec
+command prints it, for `jq`; any other 2xx body as it came. When Dispatch answers a GET as of a
+past time, under a token that carries one or with `as_of` in the path, the command writes to
+standard error the `Left out at <time>:` line that every read at a past time prints, naming each
+field the answer left out, so standard output stays the body alone. It is the contract's spec
 `dispatch_api`. With no `--method` it sends a GET (`DispatchClient.readRoute`); `--method` sends
 `POST`, `PUT`, `PATCH` or `DELETE` in its place (`DispatchClient.sendRoute`), and `GET` is no
 value of it. A write that a named command makes goes through that command (`dispatch --help` lists
@@ -1856,6 +1868,60 @@ removed, at most once a day.
 `bun bin/stand-in-gateway.ts --status 502 --body html` serves one non-Dispatch answer (`html`,
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
 prints its URL, for proving what a command shows when a gateway, not Dispatch, answers.
+
+### Reads at a past time
+
+`read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and `results` take `--as-of <text>`,
+an RFC 3339 time such as `2026-11-10T12:00:00Z`. The flag comes from the `as_of` field of each of
+the seven specs (`packages/contracts/src/dispatch-tools.ts`), so `--as-of-file` and the help come
+with it. Each of the seven reads `GET /api/v1/whoami` before any other request, with or without
+`--as-of` (`readAtCut`, `dispatch-commands/as-of.ts`). A token whose answer names a cut reads at
+that cut, and its cut replaces any `--as-of` the call gives.
+
+At a cut the command sends `as_of` to each route it calls that answers it (`AsOfRead`, which
+`DispatchClient`'s `#url` adds as `as_of`). It calls no route that holds no history: the reference
+graph (`GET /api/v1/references`), an issue's references and coverage, whether a session runs
+(`GET /api/v1/agents`), and the Inbox's unread threads (`GET /api/v1/me/replies`) and credential
+requests. A block read (`--ref …#b-…`) reads its block from the document, the ask, the comment or
+the message at the cut. `search` sends a search at a cut to `GET /api/v1/search/results`, because
+`everyBuildReadsSearch` sends there each member beyond the ones every build reads.
+
+At a cut the first line of the output is always `Left out at <cut>: …`. It names each part that
+the command did not read, and each field that an answer named in `Dispatch-As-Of-Absent`, in words
+(`absentFieldWords`), or it says `nothing`. `ABSENT_FIELD_WORDS` holds words for each member that
+`asof.AbsentFields` (`packages/envoy/internal/dispatch/asof/absent.go`) names, and a test of
+`dispatch-as-of.test.ts` reads that file and fails on a member with no words and on words for no
+member. A member that a newer Dispatch names and this table does not is named by its JSON
+Pointer. Every age and window counts from the cut. `answers` lists what people wrote in the 72
+hours before the cut, and says so. `open-asks` counts each age from the cut. `inbox` counts its
+bands and ages from the cut, and leaves out its `Later` band, because no event records a snooze.
+`read` prints no present-tense route or claim line for a field that the answer left out.
+
+A read that sends no `as_of` reads the present, but Dispatch answers a token that carries a cut at
+that cut whatever the read sends. `DispatchClient` tells such a read the cut its answer names and
+each member it left out, as it tells a read at a cut, and refuses nothing, since an answer of the
+present names no cut (`AnswerCut`, an `AsOfRead` with no `asOf`). The reads outside the seven
+commands learn the cut this way: the answers list on every model request (`readSessionAnswers`,
+which keeps the cut with the list in memory and in `answers.json` as `as_of`, and counts the
+list's 72 hours back from the cut, not from the host's clock: a read whose list kept a cut, or
+whose read before was answered with the list left out at a cut, sends no `since`, and Dispatch
+answers the 72 hours before the cut it reads at; a read whose answer's having a cut differs from
+how it asked asks once more, at once), the open-asks summary of the Claude Code and Codex hooks,
+and `dispatch issues`. Every renderer prints a member that an answer left out as
+`left out at <cut>` where it knows the cut and as `left out by Dispatch` where it does not
+(`leftOutWords`), and never throws on it. A member whose absence says something
+of the present, such as no person an ask waits on or no token, keeps that meaning on a read that
+knows of no cut.
+
+A Dispatch older than `as_of` ignores the parameter and answers the present. So the command uses
+nothing of an answer to a call that sent `as_of` with no `Dispatch-As-Of` header, and exits 1
+naming the route (`AsOfNotAnswered`). `results --at` with a cut is refused with exit 2: beside
+`--as-of` before any request, and under a token that carries a cut after the whoami read alone.
+`--at` compares each check with one commit through GitHub now, and a read at a cut reads nothing
+from GitHub. Dispatch's refusals of a read at a cut print in words before Dispatch's own message,
+and keep their code and status: `AS_OF_NOT_SERVED`, `INVALID_AS_OF`, `AS_OF_TOKEN_NOT_SERVED`, and
+`AS_OF_SEARCH_NOT_FILLED`, which names the time that the keyword table reaches where Dispatch
+sends it (`Dispatch-As-Of-Filled-Through`), and otherwise says that the table reaches no time yet.
 
 ### `dispatch proxy`
 
@@ -2123,6 +2189,22 @@ anything, a `delete` or `retype` by block id that would take an `ask` block out 
 (the block itself, or one inside a deleted block) while its ask is open: the edit would write its
 version at once and settlement would retract the ask without writing another, so the question
 would leave the human's Inbox unanswered and the approval refusal would find no block to judge.
+
+`dispatch request-approval` prints a refusal for the form of The Spec as Dispatch writes it, after its code (`SPEC_FORM: <error>`), and exits 1.
+A request that Dispatch records ends with one line on the form when a root of The Spec covers the document (the answer's `spec_form`): the count of each kind of text it read, or that it found no text of The Spec.
+Dispatch reads no list of terms yet, so the line names no terms.
+
+`dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The Spec in one version of a document, as an approval request would judge it, and writes nothing (`specFormCommand`, `src/dispatch-commands/spec-form.ts`, over `GET /api/v1/artifacts/{id}/spec-form`).
+The version is the latest settled one by default.
+A version number belongs to one document, and an issue has several, so `--version` needs `--artifact` (or a `--ref` that names the document), and the argument check refuses it beside an issue alone before any request.
+A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node> in <where>: <detail>.`, or what Dispatch read.
+Dispatch writes these lines (`finding_lines` of the read), each finding's line as its refusal writes it, and the command prints them as they are.
+The read lists at most 500 findings; when it holds more, the lines say how many it lists.
+A document out of scope first says why Dispatch refuses nothing for it, by its scope, and still lists its findings.
+With no `--artifact`, it reads the spec and the Verification document of the issue, and names a document that has no version yet.
+It reads them from the issue's own read, so for a key that names no issue it prints what `dispatch read` prints (`NOT_FOUND: not found`) and exits 1.
+`dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
+It ends with the count of issues and documents it read.
 
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
 [--reason <text>]` records a person's review of one version of an issue's document: what the
