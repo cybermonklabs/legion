@@ -392,6 +392,10 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 			MinAgeMinutes: t.MinAgeMinutes, IntervalSeconds: t.IntervalSeconds,
 		}
 	}
+	var watchedWorkflows []sandbox.WatchedWorkflow
+	for _, entry := range cfg.Projects[cfg.Project].WatchedWorkflows {
+		watchedWorkflows = append(watchedWorkflows, sandbox.WatchedWorkflow(entry))
+	}
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,
 		Scheduling: sandbox.Scheduling{NodeSelector: k.Scheduling.NodeSelector, Tolerations: tolerations, PriorityClass: k.Scheduling.PriorityClass},
@@ -403,7 +407,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		// The controller this runtime launches reads the project's watched workflows from its
 		// registration's answer, and is relaunched when they change (sandbox's address record), so
 		// its new registration answers the new list.
-		ControllerWatchedWorkflows: cfg.Projects[cfg.Project].WatchedWorkflows,
+		ControllerWatchedWorkflows: watchedWorkflows,
 		// The controller this runtime launches is told the project's channels, and is relaunched
 		// when they change (sandbox's address record).
 		ControllerSlackChannels: cfg.Projects[cfg.Project].SlackChannels,

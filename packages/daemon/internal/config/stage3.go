@@ -145,11 +145,7 @@ type WatchedWorkflow struct {
 // String is the entry as the file writes it, with the events it resolved to:
 // `<owner>/<repo>/<file>@<event>,<event>`.
 func (w WatchedWorkflow) String() string {
-	entry := w.Repository.String() + "/" + w.File
-	if len(w.Events) == 0 {
-		return entry
-	}
-	return entry + "@" + strings.Join(w.Events, ",")
+	return w.Repository.String() + "/" + w.File + "@" + strings.Join(w.Events, ",")
 }
 
 // defaultStepWords is `default_steps` for a project that names none, as the file would write it:

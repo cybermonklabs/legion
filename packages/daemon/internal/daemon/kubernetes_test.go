@@ -1176,18 +1176,21 @@ func TestSandboxOptionsCarryTheProjectsWatchedWorkflows(t *testing.T) {
 	t.Parallel()
 	cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 	project := cfg.Projects[cfg.Project]
-	watched := []config.WatchedWorkflow{
+	project.WatchedWorkflows = []config.WatchedWorkflow{
 		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
 		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
 	}
-	project.WatchedWorkflows = watched
 	cfg.Projects = map[string]config.Project{cfg.Project: project}
 	opts, err := sandboxOptions(cfg, *cfg.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(opts.ControllerWatchedWorkflows, watched) {
-		t.Fatalf("ControllerWatchedWorkflows = %v, want %v", opts.ControllerWatchedWorkflows, watched)
+	want := []sandbox.WatchedWorkflow{
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
+		{Repository: ghrepo.MustParse("acme/widgets"), File: "y.yml", Events: []string{"schedule"}},
+	}
+	if !reflect.DeepEqual(opts.ControllerWatchedWorkflows, want) {
+		t.Fatalf("ControllerWatchedWorkflows = %v, want %v", opts.ControllerWatchedWorkflows, want)
 	}
 	project.WatchedWorkflows = nil
 	cfg.Projects[cfg.Project] = project

@@ -2,6 +2,7 @@ import { afterEach, expect, jest, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { githubDefaultBranchWorkflowSubject, slackMentionTopic } from "@legion/contracts";
+import type { LegionControllerRegistration } from "@legion/contracts/legion-api";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import { resetEnvoyPluginInterfaceForTests } from "@legion/pi-shared/interface";
 import type { CommandContext, PiApi, SessionContext } from "@legion/pi-shared/pi-types";
@@ -9,7 +10,7 @@ import { legionRoleClaimBridge, RoleNotHeldError } from "@legion/pi-shared/role-
 import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping";
 import { hostAgentRegistryMock } from "@legion/pi-shared/test/host-registry";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
-import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { settled as settledWithin, until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -62,8 +63,7 @@ class ListenerAskedToClaimAgain extends Error {
   readonly details = { status: 503 };
 }
 
-/** What Envoy's one bound instance does with each role claim and notice subscription the
- * controller asks for, in order. */
+/** What Envoy's one bound instance does with each role claim the controller asks for, in order. */
 type EnvoyStep = () => Promise<void>;
 
 /** One message the controller's process handed its session (`pi.sendMessage`), with its options. */
@@ -75,7 +75,6 @@ interface Told {
 /** What `daemonLaunchedController`'s daemon and Envoy answer, each optional. */
 interface DaemonAnswers {
   readonly claims?: readonly EnvoyStep[];
-  readonly subscriptions?: readonly EnvoyStep[];
   readonly subscribe?: (topic: string) => Promise<void>;
   readonly slackChannels?: string;
   readonly ready?: () => Response;
@@ -89,12 +88,11 @@ interface DaemonAnswers {
  * `answers.slackChannels` as its LEGION_SLACK_CHANNELS, none by default), against a daemon that
  * answers its health, its registration and its ready, the last with `answers.ready` (a 204 by
  * default). Envoy's one bound instance answers each role claim with the next of `claims` and each
- * notice subscription with the next of `subscriptions`, or with `subscribe` of its topic where
- * given (all default to landing), recording each. The host's stop is `answers.hostStop`; by
- * default none has begun. Every exit is recorded, in `exits` and as `exit <code>` on
- * `answers.steps`, and `exited` settles at the first. Every line the Oh My Pi log takes, every
- * message the process hands its session (`told`), and every daemon route, role claim and
- * subscription in the order they were asked (`order`) is recorded too.
+ * subscription with `subscribe` of its topic (both default to landing), recording each. The host's
+ * stop is `answers.hostStop`; by default none has begun. Every exit is recorded, in `exits` and as
+ * `exit <code>` on `answers.steps`, and `exited` settles at the first. Every line the Oh My Pi log
+ * takes, every message the process hands its session (`told`), and every daemon route, role claim
+ * and subscription in the order they were asked (`order`) is recorded too.
  */
 function daemonLaunchedController(answers: DaemonAnswers) {
   process.env.LEGION_CONTROLLER = "1";
@@ -140,8 +138,7 @@ function daemonLaunchedController(answers: DaemonAnswers) {
     subscribe: async (_sessionID, topic) => {
       subscriptions.push(topic);
       order.push(`subscribe ${topic}`);
-      if (answers.subscribe !== undefined) return answers.subscribe(topic);
-      await (answers.subscriptions?.[subscriptions.length - 1] ?? (async () => undefined))();
+      await answers.subscribe?.(topic);
     },
     sessionID: () => CONTROLLER_SESSION,
   });
@@ -271,7 +268,10 @@ test("a daemon-launched controller whose session stops while its claim waits aft
 // refuses that subscription naming the stop. The controller exits nothing, writes no line, and
 // reports no ready.
 test("a daemon-launched controller whose controller-topic subscription is refused naming the stop exits nothing, writes no line and reports no ready", async () => {
-  const run = daemonLaunchedController({ subscriptions: [refusedForStop] });
+  const run = daemonLaunchedController({
+    subscribe: (topic) =>
+      topic === "notifications.legion.legion.controller" ? refusedForStop() : Promise.resolve(),
+  });
   try {
     await run.controller.handleSessionStart(run.context);
     await settled();
@@ -436,27 +436,22 @@ test("a daemon-launched controller whose ready the daemon refuses while the host
 // starts no turn.
 
 /** One entry of the registration's `watchedWorkflows`. */
-interface WatchedEntry {
-  readonly owner: string;
-  readonly repo: string;
-  readonly workflow: string;
-  readonly events: readonly string[];
-}
+type WatchedWorkflow = NonNullable<LegionControllerRegistration["watchedWorkflows"]>[number];
 
 /** The entry register-controller.json names: one workflow, two events. */
-const NIGHTLY: WatchedEntry = {
+const NIGHTLY: WatchedWorkflow = {
   owner: "acme",
   repo: "widgets",
   workflow: "nightly.yaml",
   events: ["schedule", "workflow_dispatch"],
 };
-const RELEASE: WatchedEntry = {
+const RELEASE: WatchedWorkflow = {
   owner: "acme",
   repo: "gadgets",
   workflow: "release.yml",
   events: ["push"],
 };
-const watchedTopic = (entry: WatchedEntry, event: string): string =>
+const watchedTopic = (entry: WatchedWorkflow, event: string): string =>
   githubDefaultBranchWorkflowSubject(entry.owner, entry.repo, entry.workflow, "completed", event);
 const NIGHTLY_SCHEDULE = watchedTopic(NIGHTLY, "schedule");
 const NIGHTLY_DISPATCH = watchedTopic(NIGHTLY, "workflow_dispatch");
@@ -474,7 +469,7 @@ const NO_TURN = { deliverAs: "steer", triggerTurn: false };
 
 /** The daemon's registration of the controller (register-controller.json) naming `watched` as the
  * project's watched workflows. */
-function registeredWith(watched: readonly WatchedEntry[]): () => Response {
+function registeredWith(watched: readonly WatchedWorkflow[]): () => Response {
   const registration: unknown = JSON.parse(daemonFixture("register-controller.json"));
   return () => Response.json({ ...(registration as object), watchedWorkflows: watched });
 }
@@ -672,7 +667,7 @@ test("watched workflows: a watched topic Envoy answers 503 is asked again after 
   try {
     await run.controller.handleSessionStart(run.context);
     await turnsUntil(() => run.lines.length > 0, "the 503's log line", ROW_TURNS);
-    for (let spare = 0; spare < 20; spare++) await turn();
+    for (let spare = 0; spare < 20; spare++) await settled();
 
     expect(run.lines).toEqual([
       {
@@ -692,7 +687,7 @@ test("watched workflows: a watched topic Envoy answers 503 is asked again after 
     }
 
     jest.advanceTimersByTime(999);
-    for (let spare = 0; spare < 20; spare++) await turn();
+    for (let spare = 0; spare < 20; spare++) await settled();
     expect(asked(run, NIGHTLY_SCHEDULE)).toBe(1);
     jest.advanceTimersByTime(1);
     await turnsUntil(
@@ -729,7 +724,7 @@ test("watched workflows: each wait of a watched topic Envoy keeps answering 503 
         `was answered 503 at attempt ${index + 1}; subscribing it again in ${wait} ms`
       );
       jest.advanceTimersByTime(wait - 1);
-      for (let spare = 0; spare < 20; spare++) await turn();
+      for (let spare = 0; spare < 20; spare++) await settled();
       expect(asked(run, NIGHTLY_SCHEDULE)).toBe(index + 1);
       jest.advanceTimersByTime(1);
       await turnsUntil(
@@ -770,7 +765,7 @@ test("watched workflows: a watched topic Envoy takes after its 503s is told once
       "the next watched topic asked for",
       ROW_TURNS
     );
-    for (let spare = 0; spare < 20; spare++) await turn();
+    for (let spare = 0; spare < 20; spare++) await settled();
 
     expect(asked(run, NIGHTLY_SCHEDULE)).toBe(3);
     expect(run.lines).toHaveLength(2);
@@ -800,7 +795,7 @@ test("watched workflows: the session's stop while a watched topic waits after a 
     await turnsUntil(() => run.lines.length > 0, "the 503's log line", ROW_TURNS);
     run.controller.stop();
     jest.advanceTimersByTime(120_000);
-    for (let spare = 0; spare < 50; spare++) await turn();
+    for (let spare = 0; spare < 50; spare++) await settled();
 
     expect(asked(run, NIGHTLY_SCHEDULE)).toBe(1);
     expect(asked(run, NIGHTLY_DISPATCH)).toBe(0);

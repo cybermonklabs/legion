@@ -29,6 +29,7 @@ import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
+  type LegionControllerRegistration,
 } from "@legion/contracts/legion-api";
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -71,6 +72,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
@@ -4178,12 +4180,7 @@ interface LaunchedController {
 }
 
 /** One entry of a controller registration's `watchedWorkflows` (contract entry 20261127193422). */
-interface WatchedWorkflow {
-  readonly owner: string;
-  readonly repo: string;
-  readonly workflow: string;
-  readonly events: readonly string[];
-}
+type WatchedWorkflow = NonNullable<LegionControllerRegistration["watchedWorkflows"]>[number];
 
 /** What `launchedController`'s daemon and Envoy answer, and the controller's environment. */
 interface LaunchedControllerOptions {
@@ -6975,12 +6972,6 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         { error: "the project's repositories could not be read", reason: "repositories_unknown" },
         { status: 503 }
       );
-    /** Lets every continuation already queued run. */
-    const settle = (): Promise<void> => {
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setImmediate(resolve);
-      return promise;
-    };
 
     test("watched workflows: the daemon's controller registers each entry's topics while it holds its role, and unregisters them when the role ends", async () => {
       const controller = await daemonController("ses_controller_watched", "", {
@@ -7021,10 +7012,10 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       await second.handlers.get("session_start")?.({}, controller.context("ses_controller_other"));
       for (const tick of ticks) tick();
       await refused.promise;
-      await settle();
+      await turn();
       const requestsBeforeEnd = controller.requests.length;
       for (const tick of ticks) tick();
-      await settle();
+      await turn();
 
       // The role's lane and its watched topics go back to the listener together, and the
       // registration that follows carries none of them.
@@ -7185,7 +7176,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           interestTopics(controller.requests, "/v1/interests/subscribe").length >
           registrationsBefore.length
       );
-      await settle();
+      await turn();
 
       expect(refusedNotices()).toHaveLength(1);
       expect(refusedNotices()[0]).toContain(scheduled);

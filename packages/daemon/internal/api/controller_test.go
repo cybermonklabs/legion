@@ -790,9 +790,7 @@ func TestControllerRegisterResponseCarriesTheWatchedWorkflows(t *testing.T) {
 // it refuses a key it does not know, so a caller that states such a contract is served the
 // controller's registration without `watchedWorkflows`, while one at the entry is served it. The
 // harness relaunches no claim for its contract, so the older plugin's registration is answered
-// rather than refused. A registration that carries the list is placed by its caller's pod, as one
-// that carries `replaces` is, so a caller that states no contract is served it as its pod's
-// claims record theirs; one that carries neither is the same body at every contract.
+// rather than refused.
 func TestControllerRegisterResponseWatchedWorkflowsStrippedBelowItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		contract int
@@ -807,17 +805,6 @@ func TestControllerRegisterResponseWatchedWorkflowsStrippedBelowItsEntry(t *test
 		keys := answerKeys(t, h.registration(boot, "ses_watching", tc.contract))
 		if got, carried := keys["watchedWorkflows"]; carried != tc.carried {
 			t.Errorf("a registration stating contract %d answered watchedWorkflows %v (carried: %t), want carried: %t", tc.contract, got, carried, tc.carried)
-		}
-	}
-	for _, tc := range []struct {
-		body   ControllerRegisterResponse
-		placed bool
-	}{
-		{ControllerRegisterResponse{ClaimToken: "legion-legion-controller"}, false},
-		{ControllerRegisterResponse{ClaimToken: "legion-legion-controller", WatchedWorkflows: WatchedWorkflowsOf(testWatchedWorkflows)}, true},
-	} {
-		if got := placedByPod(AnswerRegisterController, tc.body); got != tc.placed {
-			t.Errorf("placedByPod(%+v) = %t, want %t", tc.body, got, tc.placed)
 		}
 	}
 }

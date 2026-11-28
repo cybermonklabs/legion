@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -150,6 +149,16 @@ type Pod struct {
 	ControllerServiceAccount string
 }
 
+// WatchedWorkflow is one entry of the project's watched_workflows: a workflow file of one
+// repository, and the trigger events whose completed runs on that repository's default branch the
+// controller hears. Its fields are config.WatchedWorkflow's, one for one, as Pod's are
+// config.PodConfig's, since the daemon converts the one into the other.
+type WatchedWorkflow struct {
+	Repository ghrepo.Repository
+	File       string
+	Events     []string
+}
+
 // ProvisionTokens mints the installation token workspace-init clones the repository with, for the
 // repository it clones, which the token names and reaches.
 // The daemon's is appauth; a harness's may be a token file read on every call.
@@ -233,7 +242,7 @@ type Options struct {
 	// its addresses (environmentAddresses, watchedWorkflowsValue), so a daemon restarted with
 	// another list relaunches it, resuming its session, and its new registration answers the new
 	// list.
-	ControllerWatchedWorkflows []config.WatchedWorkflow
+	ControllerWatchedWorkflows []WatchedWorkflow
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod
 	// RoleConfigFiles is the operator's `role_config_files`: absolute paths of Oh My Pi settings

@@ -19,7 +19,6 @@ import (
 	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -81,7 +80,7 @@ func (r *Runtime) environmentAddresses(role claim.Role, enrolled bool) []handedA
 	if role == claim.RoleController {
 		addresses = append(addresses,
 			handedAddress{slackChannelsVariable, r.slackChannelsValue()},
-			handedAddress{watchedWorkflowsAddress, r.watchedWorkflowsValue()})
+			handedAddress{watchedWorkflowsAddress, r.controllerWatchedWorkflows})
 	}
 	return addresses
 }
@@ -102,10 +101,11 @@ func (r *Runtime) slackChannelsValue() string {
 // entries sorted by owner, repository and file, each compared as the file spells it, and
 // space-joined; "" for none. Owner and repository keep their case, since Envoy names a run's topic
 // with GitHub's spelling and a respelled entry subscribes another topic. One list written in
-// another order is one value, so it relaunches nothing.
-func (r *Runtime) watchedWorkflowsValue() string {
-	entries := slices.Clone(r.controllerWatchedWorkflows)
-	slices.SortFunc(entries, func(a, b config.WatchedWorkflow) int {
+// another order is one value, so it relaunches nothing. configureProber computes it once, from
+// Options.ControllerWatchedWorkflows.
+func watchedWorkflowsValue(workflows []WatchedWorkflow) string {
+	entries := slices.Clone(workflows)
+	slices.SortFunc(entries, func(a, b WatchedWorkflow) int {
 		return cmp.Or(
 			strings.Compare(a.Repository.Owner(), b.Repository.Owner()),
 			strings.Compare(a.Repository.Name(), b.Repository.Name()),
@@ -114,8 +114,7 @@ func (r *Runtime) watchedWorkflowsValue() string {
 	})
 	written := make([]string, len(entries))
 	for i, entry := range entries {
-		entry.Events = slices.Sorted(slices.Values(entry.Events))
-		written[i] = entry.String()
+		written[i] = entry.Repository.String() + "/" + entry.File + "@" + strings.Join(slices.Sorted(slices.Values(entry.Events)), ",")
 	}
 	return strings.Join(written, " ")
 }

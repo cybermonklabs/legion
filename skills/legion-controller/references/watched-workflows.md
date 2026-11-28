@@ -25,13 +25,13 @@ A counted run is a clear defect.
 
 ## At every start
 
-8. For each entry, read its repository's default branch and GitHub's spelling of its name:
+8. Read each repository that the entries name, once, for its default branch and GitHub's spelling of its name (entries whose `<owner>/<repo>` differ only in case name one repository):
 
    ```text
    gh api repos/<owner>/<repo> --jq '[.full_name, .default_branch]'
    ```
 
-   When `full_name` differs from the entry's `<owner>/<repo>` (a difference of case counts), name the entry in your summary: its topic never matches a run. Then, for each event of the entry, read its newest completed run on the default branch:
+   Compare its `full_name` with the `<owner>/<repo>` of each entry of that repository. When they differ (a difference of case counts), name that entry in your summary: its topic never matches a run. When the read fails, step 9 applies to each entry of that repository. Then, for each entry and each event of the entry, read its newest completed run on its repository's default branch:
 
    ```text
    gh run list --repo <owner>/<repo> --workflow <file> --branch <default branch> --event <event> --status completed --limit 1 --json databaseId,conclusion,event,headBranch,startedAt,updatedAt,url

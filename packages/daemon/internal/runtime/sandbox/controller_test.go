@@ -20,7 +20,6 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -446,25 +445,25 @@ func TestAChangedSlackChannelListMakesOnlyTheControllerStale(t *testing.T) {
 // moved nothing in any row, and is re-adopted as it is.
 func TestAChangedWatchedWorkflowsListMakesOnlyTheControllerStale(t *testing.T) {
 	t.Parallel()
-	watched := func(list ...config.WatchedWorkflow) func(*Options) {
+	watched := func(list ...WatchedWorkflow) func(*Options) {
 		return func(o *Options) { o.ControllerWatchedWorkflows = list }
 	}
-	entry := func(repository, file string, events ...string) config.WatchedWorkflow {
-		return config.WatchedWorkflow{Repository: ghrepo.MustParse(repository), File: file, Events: events}
+	entry := func(repository, file string, events ...string) WatchedWorkflow {
+		return WatchedWorkflow{Repository: ghrepo.MustParse(repository), File: file, Events: events}
 	}
-	listA := []config.WatchedWorkflow{entry("acme/widgets", "x.yaml", "schedule", "push"), entry("acme/gadgets", "y.yml", "schedule")}
-	listAReordered := []config.WatchedWorkflow{entry("acme/gadgets", "y.yml", "schedule"), entry("acme/widgets", "x.yaml", "push", "schedule")}
-	listB := []config.WatchedWorkflow{entry("acme/widgets", "x.yaml", "schedule")}
+	listA := []WatchedWorkflow{entry("acme/widgets", "x.yaml", "schedule", "push"), entry("acme/gadgets", "y.yml", "schedule")}
+	listAReordered := []WatchedWorkflow{entry("acme/gadgets", "y.yml", "schedule"), entry("acme/widgets", "x.yaml", "push", "schedule")}
+	listB := []WatchedWorkflow{entry("acme/widgets", "x.yaml", "schedule")}
 	const recordedA = "acme/gadgets/y.yml@schedule acme/widgets/x.yaml@push,schedule"
 	for _, tc := range []struct {
 		row string
 		// launched is the list the controller was launched with, and beforeTheList whether its
 		// record is then written as a daemon before the list wrote it, with no watched_workflows.
-		launched      []config.WatchedWorkflow
+		launched      []WatchedWorkflow
 		beforeTheList bool
 		// handed is the list the restarted daemon hands, and stale what the controller's
 		// StaleAddress names, "" for a controller re-adopted Alive.
-		handed []config.WatchedWorkflow
+		handed []WatchedWorkflow
 		stale  string
 	}{
 		{row: "a record from before the list, and none handed now", beforeTheList: true},

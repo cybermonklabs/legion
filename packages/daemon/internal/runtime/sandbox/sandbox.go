@@ -54,7 +54,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/clock"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -127,9 +126,9 @@ type Runtime struct {
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
 	log                     *slog.Logger
-	// controllerWatchedWorkflows is Options.ControllerWatchedWorkflows, which the controller's
-	// address record holds (watchedWorkflowsValue) and no variable carries.
-	controllerWatchedWorkflows []config.WatchedWorkflow
+	// controllerWatchedWorkflows is Options.ControllerWatchedWorkflows as the controller's address
+	// record holds it (watchedWorkflowsValue), computed once; no variable carries it.
+	controllerWatchedWorkflows string
 	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
 	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
 	keptVolumeBound time.Duration
@@ -493,7 +492,7 @@ func configureProber(opts Options) (*Runtime, error) {
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
-		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels), controllerWatchedWorkflows: slices.Clone(opts.ControllerWatchedWorkflows),
+		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels), controllerWatchedWorkflows: watchedWorkflowsValue(opts.ControllerWatchedWorkflows),
 		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, clock: clock.Real(), helloBindBound: apiTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace, gitHubRefresh: cmp.Or(opts.GitHubRefreshInterval, gitHubRefreshInterval),
 		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
