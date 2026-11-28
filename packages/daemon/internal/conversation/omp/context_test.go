@@ -42,7 +42,7 @@ func TestReadReplaysRemoteTailAfterReplayThroughEntry(t *testing.T) {
 		t.Run(boundary, func(t *testing.T) {
 			f := newFixture()
 			request := f.add(userEntry("covered"))
-			answer := f.add(assistantEntry("openai", conversation.OpenAIResponses, "model", "stop", `[{"type":"text","text":"tail"}]`))
+			answer := f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-test", "stop", `[{"type":"text","text":"tail"}]`))
 			through := boundary
 			if boundary == "request" {
 				through = request

@@ -29,14 +29,13 @@ import (
 // the Anthropic Messages API whose base URL is a local server that records each request and
 // answers a canned stream.
 const (
-	standInProvider = "standin"
-	standInModel    = "claude-test"
-	standInGPT      = "gpt-test"
+	standInAnthropic = "anthropic"
+	standInOpenAI    = "openai"
+	standInModel     = "claude-test"
+	standInGPT       = "gpt-test"
 )
 
-// standInEndpoint is how the stand-in's endpoint treats replayed thinking: a reasoning model on an
-// Anthropic-compatible endpoint that is not Anthropic's own API, for which Oh My Pi's compat
-// replays unsigned thinking.
+// standInEndpoint describes the local Anthropic endpoint. It replays unsigned thinking.
 var standInEndpoint = Options{ReplayUnsignedThinking: true}
 
 // standIn is a local model endpoint: it records every request body and answers each with the next
@@ -52,6 +51,11 @@ func newStandIn(t *testing.T, fallback string, replies ...string) *standIn {
 	t.Helper()
 	s := &standIn{replies: replies}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A WebSocket probe must not consume a scripted streaming response.
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		s.requests = append(s.requests, body)
@@ -168,7 +172,11 @@ func newOMPRig(t *testing.T, api string, model *standIn, extraEnv ...string) *om
 
 func newOMPRigForModel(t *testing.T, api, modelID string, model *standIn, extraEnv ...string) *ompRig {
 	t.Helper()
-	return newOMPRigForProviderModel(t, api, standInProvider, modelID, model, extraEnv...)
+	provider := standInAnthropic
+	if api == conversation.OpenAIResponses {
+		provider = standInOpenAI
+	}
+	return newOMPRigForProviderModel(t, api, provider, modelID, model, extraEnv...)
 }
 
 func newOMPRigForProviderModel(t *testing.T, api, provider, modelID string, model *standIn, extraEnv ...string) *ompRig {
@@ -606,7 +614,7 @@ func assertResumeMatches(t *testing.T, before *Session, content []byte, request 
 		wantJSON, _ := json.MarshalIndent(want, "", "  ")
 		t.Errorf("Oh My Pi's resume request:\n%s\nthe reader's conversation and the follow-up:\n%s", gotJSON, wantJSON)
 	}
-	if resumed.Model != standInProvider+"/"+standInModel || resumed.API != conversation.AnthropicMessages {
+	if resumed.Model != standInAnthropic+"/"+standInModel || resumed.API != conversation.AnthropicMessages {
 		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
 	assertBlankedOnly(t, before, resumed)
@@ -677,8 +685,8 @@ func TestThePinnedOhMyPiDropsThinkingOnClaudeResume(t *testing.T) {
 			} else {
 				appendRaw(t, file, fmt.Sprintf(`{"type":"message","id":"d4000001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","content":[{"type":"thinking","thinking":"Foreign reasoning.","thinkingSignature":"Zm9yZWlnbg=="},{"type":"redactedThinking","data":"Zm9yZWlnbg=="},{"type":"text","text":"Another model answered."}],"api":%q,"provider":%q,"model":"claude-sonnet-5","usage":%s,"stopReason":"stop","timestamp":%d}}`+"\n"+
 					`{"type":"model_change","id":"d4000002","parentId":"d4000001","timestamp":%q,"model":%q}`+"\n",
-					first.Leaf, conversation.ISOTime(now), conversation.AnthropicMessages, standInProvider, handWrittenUsage, now.UnixMilli(),
-					conversation.ISOTime(now), standInProvider+"/"+tc.modelID))
+					first.Leaf, conversation.ISOTime(now), conversation.AnthropicMessages, standInAnthropic, handWrittenUsage, now.UnixMilli(),
+					conversation.ISOTime(now), standInAnthropic+"/"+tc.modelID))
 			}
 			before, err := ReadFile(file, standInEndpoint)
 			if err != nil {
@@ -738,7 +746,7 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			return `{"type":"message","id":"1a1a1a1a","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[` +
 				`{"type":"thinking","thinking":"Read it again.","thinkingSignature":"aW50ZXJydXB0ZWQ="},{"type":"redactedThinking","data":"cmVk"},` +
 				`{"type":"text","text":"Reading again."},{"type":"toolCall","id":"toolu_interrupted","name":"read","arguments":{"path":"note.txt"}}],` +
-				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":` +
+				`"api":"anthropic-messages","provider":"` + standInAnthropic + `","model":"` + standInModel + `","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":` +
 				fmt.Sprint(time.Now().UnixMilli()) + `}}` + "\n"
 		}},
 		{"an OpenAI tool call between text blocks", func(entries map[string]string, leaf string) string {
@@ -748,28 +756,28 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				`{"type":"message","id":"d5000002","parentId":"d5000001","timestamp":%q,"runtime":%s,"message":{"role":"toolResult","toolCallId":"call_read|fc_read","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n",
 				leaf, stamp, entries["runtime"], handWrittenUsage, now.UnixMilli(), stamp, entries["runtime"], now.UnixMilli()) +
 				fmt.Sprintf(`{"type":"model_change","id":"d5000003","parentId":"d5000002","timestamp":%q,"model":%q}`+"\n",
-					stamp, standInProvider+"/"+standInModel)
+					stamp, standInAnthropic+"/"+standInModel)
 		}},
 		{"an aborted turn and its result", func(_ map[string]string, leaf string) string {
 			ms := fmt.Sprint(time.Now().UnixMilli())
 			return `{"type":"message","id":"2b2b2b2b","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[` +
 				`{"type":"text","text":"Reading once more."},{"type":"toolCall","id":"toolu_aborted","name":"read","arguments":{"path":"note.txt"}}],` +
-				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"aborted","timestamp":` + ms + `}}` + "\n" +
+				`"api":"anthropic-messages","provider":"` + standInAnthropic + `","model":"` + standInModel + `","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"aborted","timestamp":` + ms + `}}` + "\n" +
 				`{"type":"message","id":"3c3c3c3c","parentId":"2b2b2b2b","timestamp":"` + stamp() + `","message":{"role":"toolResult","toolCallId":"toolu_aborted","toolName":"read","content":[{"type":"text","text":"aborted"}],"isError":true,"timestamp":` + ms + `}}` + "\n"
 		}},
 		{"an errored turn a retry recovered", func(_ map[string]string, leaf string) string {
 			ms := fmt.Sprint(time.Now().UnixMilli())
 			usage := `"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}`
 			return `{"type":"message","id":"7a7a7a7a","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[{"type":"text","text":"Reading it ag"}],` +
-				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `",` + usage + `,"stopReason":"error","errorMessage":"overloaded",` +
+				`"api":"anthropic-messages","provider":"` + standInAnthropic + `","model":"` + standInModel + `",` + usage + `,"stopReason":"error","errorMessage":"overloaded",` +
 				`"retryRecovery":{"kind":"auto-retry","status":"recovered","attempt":1,"recoveredAt":"` + stamp() + `","recovery":"plain","note":"error; retried",` +
-				`"supersededBy":{"timestamp":` + ms + `,"responseId":"resp_x","provider":"` + standInProvider + `","model":"` + standInModel + `"}},"timestamp":` + ms + `}}` + "\n" +
+				`"supersededBy":{"timestamp":` + ms + `,"responseId":"resp_x","provider":"` + standInAnthropic + `","model":"` + standInModel + `"}},"timestamp":` + ms + `}}` + "\n" +
 				`{"type":"message","id":"8b8b8b8b","parentId":"7a7a7a7a","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[{"type":"text","text":"It still says plum."}],` +
-				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `",` + usage + `,"stopReason":"stop","timestamp":` + ms + `}}` + "\n"
+				`"api":"anthropic-messages","provider":"` + standInAnthropic + `","model":"` + standInModel + `",` + usage + `,"stopReason":"stop","timestamp":` + ms + `}}` + "\n"
 		}},
 		{"late model usage", func(entries map[string]string, leaf string) string {
 			return fmt.Sprintf(`{"type":"model_usage","id":"d1000001","parentId":%q,"timestamp":%q,"runtime":%s,"purpose":"title","api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"stop","activeLeafId":%q}`+"\n",
-				entries["assistant"], stamp(), entries["runtime"], conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, leaf)
+				entries["assistant"], stamp(), entries["runtime"], conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, leaf)
 		}},
 		{"a continued retry with its reminder", func(entries map[string]string, leaf string) string {
 			return retryWithReminderRecords(entries["runtime"], leaf, true)
@@ -796,19 +804,19 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			at := now.Add(time.Millisecond)
 			const reasoning = "I should verify that the note still contains the same word before answering."
 			aborted := fmt.Sprintf(`{"type":"message","id":"d3000003","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"The note says"},{"type":"thinking","thinking":%q}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"aborted","errorMessage":"Interrupted by user","timestamp":%d}}`+"\n",
-				leaf, conversation.ISOTime(now), entries["runtime"], reasoning, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+				leaf, conversation.ISOTime(now), entries["runtime"], reasoning, conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, now.UnixMilli())
 			note := "You were saying this but I interrupted you:\n```\n" + reasoning + "\n```"
 			return aborted + fmt.Sprintf(`{"type":"custom_message","customType":"interrupted-thinking","content":%s,"display":false,"details":{"interruptedAt":%d,"provider":%q,"model":%q,"blockCount":1},"attribution":"agent","id":"d3000004","parentId":"d3000003","timestamp":%q,"runtime":%s}`+"\n",
-				quote(note), at.UnixMilli(), standInProvider, standInModel, conversation.ISOTime(at), entries["runtime"])
+				quote(note), at.UnixMilli(), standInAnthropic, standInModel, conversation.ISOTime(at), entries["runtime"])
 		}},
 		{"a continued user interrupt with no continuity note", func(entries map[string]string, leaf string) string {
 			// agent-session.ts:5548–5555,14193–14196 and turn-recovery.ts:1636–1683.
 			now := time.Now()
 			aborted := fmt.Sprintf(`{"type":"message","id":"d3000006","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"The note says"},{"type":"thinking","thinking":"check"}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"aborted","errorMessage":"Interrupted by user","errorId":67108864,"timestamp":%d}}`+"\n",
-				leaf, conversation.ISOTime(now), entries["runtime"], conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+				leaf, conversation.ISOTime(now), entries["runtime"], conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, now.UnixMilli())
 			doneAt := now.Add(time.Millisecond)
 			answer := fmt.Sprintf(`{"type":"message","id":"d3000007","parentId":"d3000006","timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"plum."}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"stop","timestamp":%d}}`+"\n",
-				conversation.ISOTime(doneAt), entries["runtime"], conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, doneAt.UnixMilli())
+				conversation.ISOTime(doneAt), entries["runtime"], conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, doneAt.UnixMilli())
 			patch := fmt.Sprintf(`{"type":"custom","customType":"entry_patch","data":{"patches":[{"entryId":"d3000006","message":{"continued":true}}]},"id":"d3000008","parentId":"d3000007","timestamp":%q,"runtime":%s}`+"\n",
 				conversation.ISOTime(doneAt), entries["runtime"])
 			return aborted + answer + patch
@@ -817,7 +825,7 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 			// anthropic.ts:1416–1421,2971–2996 and turn-recovery.ts:1505–1509.
 			now := time.Now()
 			return fmt.Sprintf(`{"type":"message","id":"d3000005","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"fallback","from":{"model":%q},"to":{"model":"claude-test-fallback"}}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"error","errorMessage":"stream failed after fallback","timestamp":%d}}`+"\n",
-				leaf, conversation.ISOTime(now), entries["runtime"], standInModel, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+				leaf, conversation.ISOTime(now), entries["runtime"], standInModel, conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, now.UnixMilli())
 		}},
 		{"a torn last record", func(_ map[string]string, leaf string) string {
 			return `{"type":"message","id":"4d4d4d4d","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"user","content":[{"type":"text","text":"cut o`
@@ -893,7 +901,7 @@ func retryWithReminderRecords(runtime, leaf string, continued bool) string {
 		"Continue exactly where it stopped. Do not repeat, restate, or summarize what you already wrote.\n" +
 		"Attempt #1/3\n</system-injection>"
 	failed := fmt.Sprintf(`{"type":"message","id":"d2000001","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"The fruit is"}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"error","errorMessage":"rate limited","errorStatus":429,"timestamp":%d}}`+"\n",
-		leaf, stamp, runtime, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli())
+		leaf, stamp, runtime, conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, now.UnixMilli())
 	note := fmt.Sprintf(`{"type":"custom_message","customType":"continue-reminder","content":%s,"display":false,"attribution":"agent","id":"d2000002","parentId":"d2000001","timestamp":%q,"runtime":%s}`+"\n",
 		quote(reminder), stamp, runtime)
 	if !continued {
@@ -901,9 +909,9 @@ func retryWithReminderRecords(runtime, leaf string, continued bool) string {
 	}
 	doneAt := now.Add(time.Millisecond)
 	answer := fmt.Sprintf(`{"type":"message","id":"d2000003","parentId":"d2000002","timestamp":%q,"runtime":%s,"message":{"role":"assistant","content":[{"type":"text","text":"plum."}],"api":%q,"provider":%q,"model":%q,"usage":%s,"stopReason":"stop","timestamp":%d}}`+"\n",
-		conversation.ISOTime(doneAt), runtime, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, doneAt.UnixMilli())
+		conversation.ISOTime(doneAt), runtime, conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, doneAt.UnixMilli())
 	patch := fmt.Sprintf(`{"type":"custom","customType":"entry_patch","data":{"patches":[{"entryId":"d2000001","message":{"retryRecovery":{"kind":"auto-retry","status":"recovered","attempt":1,"recoveredAt":%q,"recovery":"plain","note":"error; retried","supersededBy":{"timestamp":%d,"provider":%q,"model":%q}},"continued":true}}]},"id":"d2000004","parentId":"d2000003","timestamp":%q,"runtime":%s}`+"\n",
-		conversation.ISOTime(doneAt), doneAt.UnixMilli(), standInProvider, standInModel, conversation.ISOTime(doneAt), runtime)
+		conversation.ISOTime(doneAt), doneAt.UnixMilli(), standInAnthropic, standInModel, conversation.ISOTime(doneAt), runtime)
 	return failed + note + answer + patch
 }
 
@@ -949,7 +957,7 @@ func carriedOnce(t *testing.T, turns []wireTurn, match func(wireTurn, wireBlock)
 func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: conversation.AnthropicMessages, Model: standInModel,
+		Provider: standInAnthropic, API: conversation.AnthropicMessages, Model: standInModel,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{
@@ -1055,7 +1063,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 
 func TestThePinnedOhMyPiResumesAnAppendedExchangeWithNoAnswer(t *testing.T) {
 	a := claudeAnswer()
-	a.Provider, a.Model = standInProvider, standInModel
+	a.Provider, a.Model = standInAnthropic, standInModel
 	a.Turns = a.Turns[:1]
 	a.NoAnswer = "The model returned no answer."
 	toolID := a.Turns[0].Results[0].ToolCallID
@@ -1121,7 +1129,7 @@ func resumeAfterFileAppend(t *testing.T, appendTo func(string, *Session) error) 
 func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: conversation.AnthropicMessages, Model: standInModel,
+		Provider: standInAnthropic, API: conversation.AnthropicMessages, Model: standInModel,
 		Turns: []conversation.Turn{
 			{
 				Content:    []conversation.Block{thinking("I cannot tell from here.", "cmVmdXNlZA=="), text(refusedReply)},

@@ -2,7 +2,6 @@ package omp
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
@@ -117,10 +116,7 @@ func responsesResultContent(blocks []conversation.Block) []conversation.Block {
 	return []conversation.Block{{Type: conversation.Text, Text: output.String()}}
 }
 
-var harmonyControlTokens = regexp.MustCompile(`<\|(start|end|message|channel|constrain|return|call)\|>`)
-
-func shapeResponsesHistory(messages []conversation.Message, t target) []conversation.Message {
-	escape := t.demotionClass == "gpt-oss"
+func shapeResponsesHistory(messages []conversation.Message) []conversation.Message {
 	for i := range messages {
 		m := &messages[i]
 		switch m.Role {
@@ -132,25 +128,11 @@ func shapeResponsesHistory(messages []conversation.Message, t target) []conversa
 		for i := range m.Content {
 			b := &m.Content[i]
 			switch b.Type {
-			case conversation.Text:
-				if escape {
-					b.Text = harmonyControlTokens.ReplaceAllString(b.Text, `<\|$1\|>`)
-				}
 			case conversation.ToolCall:
 				b.ToolCallID = responsesCallID(b.ToolCallID)
-				if escape {
-					b.Arguments = harmonyControlTokens.ReplaceAll(b.Arguments, []byte(`<\\|$1\\|>`))
-				}
 			case conversation.ToolResult:
 				b.ToolCallID = responsesCallID(b.ToolCallID)
 				b.Content = responsesResultContent(b.Content)
-				if escape {
-					for i := range b.Content {
-						if b.Content[i].Type == conversation.Text {
-							b.Content[i].Text = harmonyControlTokens.ReplaceAllString(b.Content[i].Text, `<\|$1\|>`)
-						}
-					}
-				}
 			}
 		}
 	}

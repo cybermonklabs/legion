@@ -8,43 +8,29 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
-func TestReplayThinkingPolicy(t *testing.T) {
+func TestAnthropicPrefixBinding(t *testing.T) {
 	for _, tc := range []struct {
-		id                 string
-		classifier, prefix bool
+		id     string
+		prefix bool
 	}{
-		{"claude-opus-5-5", true, true},
-		{"Bedrock/anthropic.claude-sonnet-5.6:0", true, true},
-		{"ANTHROPIC/claude-haiku-5-5", true, true},
-		{"anthropic:claude-fable-5-1", true, true},
-		{"claude-mythos-6-1", true, true},
-		{"claude-sonnet-5-4", true, false},
-		{"claude-opus-6-0", true, false},
-		{"claude-opus-55", true, false},
-		{"claude-fable-5-0", true, false},
-		{"claude-opus-5-5b", true, false},
-		{"claude-test", true, false},
-		{"anthropic/vendored-opus", true, false},
-		{"anthropic/gemini-3", false, false},
-		{"moonshotai/anthropic/alias", false, false},
-		{"claudette-opus-5-5", false, false},
-		{"unrelated-claude-opus-5-5", false, false},
-		{"claude/alias", false, false},
+		{"claude-opus-5-5", true},
+		{"claude-sonnet-5.6", true},
+		{"claude-haiku-5-5", true},
+		{"claude-fable-5-1", true},
+		{"claude-mythos-6-1", true},
+		{"claude-sonnet-5-4", false},
+		{"claude-opus-6-0", false},
+		{"claude-opus-55", false},
+		{"claude-fable-5-0", false},
+		{"claude-opus-5-5b", false},
+		{"claude-test", false},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
-			classifier, prefix := anthropicThinkingPolicy("custom", tc.id, replayModelClass(tc.id))
-			if classifier != tc.classifier || prefix != tc.prefix {
-				t.Errorf("policy = classifier %t, prefix %t; want %t, %t", classifier, prefix, tc.classifier, tc.prefix)
+			if prefix := anthropicPrefixBinding(tc.id); prefix != tc.prefix {
+				t.Errorf("prefix binding = %t; want %t", prefix, tc.prefix)
 			}
 		})
 	}
-	t.Run("nanogpt", func(t *testing.T) {
-		const id = "Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-Derestricted-Lite"
-		classifier, prefix := anthropicThinkingPolicy("nanogpt", id, replayModelClass(id))
-		if !classifier || prefix {
-			t.Errorf("policy = classifier %t, prefix %t; want true, false", classifier, prefix)
-		}
-	})
 }
 
 func TestReadDropsThinkingAfterAPrecedingRewrite(t *testing.T) {
@@ -79,19 +65,19 @@ func TestReadDropsThinkingAfterAPrecedingRewrite(t *testing.T) {
 
 func TestTransformNativeAnthropicBlocks(t *testing.T) {
 	for _, tc := range []struct {
-		name, kind, source, target, api string
-		refused                         bool
+		name, kind, source, provider, api, model string
+		refused                                  bool
 	}{
-		{"server tool across providers", "anthropicServerTool", "first", "second", conversation.AnthropicMessages, false},
-		{"server tool same provider", "anthropicServerTool", "first", "first", conversation.AnthropicMessages, true},
-		{"fallback on Anthropic", "fallback", "first", "first", conversation.AnthropicMessages, true},
-		{"fallback on Responses", "fallback", "first", "second", conversation.OpenAIResponses, false},
+		{"server tool across providers", "anthropicServerTool", "other", "anthropic", conversation.AnthropicMessages, "claude-test", false},
+		{"server tool same provider", "anthropicServerTool", "anthropic", "anthropic", conversation.AnthropicMessages, "claude-test", true},
+		{"fallback on Anthropic", "fallback", "anthropic", "anthropic", conversation.AnthropicMessages, "claude-test", true},
+		{"fallback on Responses", "fallback", "anthropic", "openai", conversation.OpenAIResponses, "gpt-test", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
 			f.add(assistantEntry(tc.source, conversation.AnthropicMessages, "claude-test", "stop", `[{"type":`+quote(tc.kind)+`},{"type":"text","text":"answer"}]`))
 			f.add(userEntry("next"))
-			f.add(assistantEntry(tc.target, tc.api, "claude-test", "stop", `[{"type":"text","text":"next answer"}]`))
+			f.add(assistantEntry(tc.provider, tc.api, tc.model, "stop", `[{"type":"text","text":"next answer"}]`))
 			s, err := Read(f.bytes(), Options{})
 			if tc.refused {
 				if !errors.Is(err, conversation.ErrUnknownFormat) {
@@ -111,9 +97,9 @@ func TestTransformNativeAnthropicBlocks(t *testing.T) {
 func TestTransformToolResultRules(t *testing.T) {
 	const model = "gpt-test"
 	const api = conversation.OpenAIResponses
-	defaultTarget := target{provider: "test", api: api, model: model}
+	defaultTarget := target{provider: "openai", api: api, model: model}
 	turn := func(stop string, blocks ...block) llmMessage {
-		return llmMessage{role: "assistant", provider: "test", api: api, model: model, stopReason: stop, blocks: blocks}
+		return llmMessage{role: "assistant", provider: "openai", api: api, model: model, stopReason: stop, blocks: blocks}
 	}
 	callBlock := func(id string) block { return block{Type: "toolCall", ID: id, Name: "read", Arguments: []byte(`{}`)} }
 	out := func(id, text string) llmMessage {
@@ -121,7 +107,7 @@ func TestTransformToolResultRules(t *testing.T) {
 	}
 	usr := llmMessage{role: "user", blocks: []block{{Type: "text", Text: "next"}}}
 	assistant := func(blocks ...conversation.Block) conversation.Message {
-		return conversation.Message{Role: conversation.Assistant, Provider: "test", API: api, Model: model, Content: blocks}
+		return conversation.Message{Role: conversation.Assistant, Provider: "openai", API: api, Model: model, Content: blocks}
 	}
 	run := func(t *testing.T, input []llmMessage, want ...conversation.Message) {
 		t.Helper()
@@ -173,24 +159,22 @@ func TestTransformToolResultRules(t *testing.T) {
 			out("same", "discard"), out("same", "keep"), turn("toolUse", bad), usr, out("same", "late duplicate")},
 			assistant(call("same", "read", `{}`)), result("same", "read", "keep", false), user("next"))
 	})
-	t.Run("name length follows the target", func(t *testing.T) {
+	t.Run("name length cap", func(t *testing.T) {
 		for _, tc := range []struct {
-			name, provider, api string
-			limit               int
+			name   string
+			target target
 		}{
-			{"Muse Code on Responses", "muse-code", api, 64},
-			{"Muse Code on Messages", "muse-code", conversation.AnthropicMessages, 128},
-			{"default on Responses", "test", api, 128},
-			{"default on Messages", "test", conversation.AnthropicMessages, 128},
+			{"Responses", defaultTarget},
+			{"Messages", ompAnthropicTarget()},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				atLimit, tooLong := callBlock("x"), callBlock("x")
-				atLimit.Name = strings.Repeat("a", tc.limit)
+				atLimit.Name = strings.Repeat("a", 128)
 				tooLong.Name = atLimit.Name + "b"
 				got, err := toRequest([]llmMessage{
 					turn("toolUse", tooLong, atLimit),
 					out("x", "discard"), out("x", "keep"),
-				}, target{provider: tc.provider, api: tc.api, model: model})
+				}, tc.target)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -228,7 +212,7 @@ func TestTransformToolResultRules(t *testing.T) {
 			foreign := turn("toolUse", callBlock(tc.id))
 			foreign.api = conversation.AnthropicMessages
 			run(t, []llmMessage{foreign, out(tc.id, "real")},
-				conversation.Message{Role: conversation.Assistant, Provider: "test", API: conversation.AnthropicMessages, Model: model,
+				conversation.Message{Role: conversation.Assistant, Provider: "openai", API: conversation.AnthropicMessages, Model: model,
 					Content: []conversation.Block{call(tc.want, "read", `{}`)}}, result(tc.want, "read", "real", false))
 		}
 	})
@@ -246,7 +230,7 @@ func TestTransformToolResultRules(t *testing.T) {
 }
 
 func TestTransformAssistantReplayRules(t *testing.T) {
-	const id = "gpt-test"
+	const id = "claude-test"
 	const api = conversation.AnthropicMessages
 	signed := block{Type: "thinking", Thinking: "plan", ThinkingSignature: "c2ln"}
 	redacted := block{Type: "redactedThinking", Data: "cmVk"}
@@ -261,8 +245,7 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 		signing, later              bool
 		want                        []conversation.Block
 	}{
-		{"same deployment preserves signatures", "anthropic", "old", "stop", []block{signed, redacted, answer}, true, true, []conversation.Block{thinking("plan", "c2ln"), redactedBlock, text("answer")}},
-		{"foreign deployment strips signatures", "other", "old", "stop", []block{signed, redacted, answer}, true, false, []conversation.Block{text("<think>\nplan\n</think>"), text("answer")}},
+		{"same model preserves signatures", "anthropic", id, "stop", []block{signed, redacted, answer}, true, true, []conversation.Block{thinking("plan", "c2ln"), redactedBlock, text("answer")}},
 		{"signature enforcement removes visible and redacted thinking", "anthropic", id, "stop", []block{{Type: "thinking", Thinking: "unsigned"}, redacted, answer}, true, false, []conversation.Block{text("answer")}},
 		{"compatible endpoint replays unsigned thinking", "anthropic", id, "stop", []block{{Type: "thinking", Thinking: "unsigned"}, redacted, answer}, false, false, []conversation.Block{thinking("unsigned", ""), redactedBlock, text("answer")}},
 		{"assistant images and blank blocks drop", "anthropic", id, "stop", []block{{Type: "image", MimeType: "image/png", Data: "eA=="}, {Type: "text", Text: " "}, {Type: "redactedThinking", Data: " "}, answer}, true, false, []conversation.Block{text("answer")}},
@@ -294,17 +277,8 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 			result("tool", "read", "No result provided", true),
 		})
 	})
-	t.Run("compatible endpoint drops foreign signature but keeps trace", func(t *testing.T) {
-		foreign := llmMessage{role: "assistant", api: conversation.OpenAIResponses, provider: "openai", model: "gpt-test",
-			stopReason: "stop", blocks: []block{signed, answer}}
-		got, err := toRequest([]llmMessage{foreign}, ompAnthropicTarget())
-		if err != nil {
-			t.Fatal(err)
-		}
-		assertMessages(t, got, []conversation.Message{{Role: conversation.Assistant, API: foreign.api, Provider: foreign.provider, Model: foreign.model,
-			Content: []conversation.Block{thinking("plan", ""), text("answer")}}})
-	})
 	t.Run("same-model Responses encrypted reasoning has no text", func(t *testing.T) {
+		const id = "gpt-test"
 		const responses = conversation.OpenAIResponses
 		const signature = `{"type":"reasoning","id":"rs_1","encrypted_content":"encrypted"}`
 		m := llmMessage{role: "assistant", api: responses, provider: "openai", model: id, stopReason: "stop",
@@ -319,7 +293,7 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 }
 
 func ompAnthropicTarget() target {
-	return target{api: conversation.AnthropicMessages, provider: "custom", model: "gpt-test"}
+	return target{api: conversation.AnthropicMessages, provider: "anthropic", model: "claude-test"}
 }
 
 func TestDemotedThinkingUsesPinnedDialect(t *testing.T) {

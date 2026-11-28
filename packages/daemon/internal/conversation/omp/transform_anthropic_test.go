@@ -37,15 +37,15 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 	}
 	t.Run("partition stable on both encoders for text", func(t *testing.T) {
 		source := assistant(textBlock("Before."), callBlock("x"), textBlock("After."), callBlock("y"))
-		source.api = conversation.OpenAIResponses
+		responses := target
+		responses.api, responses.provider, responses.model = conversation.OpenAIResponses, "openai", "gpt-test"
+		source.api, source.provider, source.model = responses.api, responses.provider, responses.model
 		source.blocks[1].Arguments = []byte(`{}`)
 		source.blocks[3].Arguments = []byte(`{}`)
 		input := []llmMessage{source, toolResult("x", false, textBlock("x")), toolResult("y", false, textBlock("y"))}
 		x, y := call("x", "read", `{}`), call("y", "read", `{}`)
 		xResult, yResult := result("x", "read", "x", false), result("y", "read", "y", false)
 		check(t, input, turn(source, text("Before."), text("After."), x, y), xResult, yResult)
-		responses := target
-		responses.api = conversation.OpenAIResponses
 		got, err := toRequest(input, responses)
 		if err != nil {
 			t.Fatal(err)
@@ -126,7 +126,7 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 	t.Run("mixed signed and unsigned thinking demotes the unsigned part", func(t *testing.T) {
 		source := assistant(block{Type: "thinking", ThinkingSignature: "c2ln"}, block{Type: "thinking", Thinking: "unsigned"},
 			block{Type: "thinking", ThinkingSignature: " "}, textBlock("answer"))
-		check(t, []llmMessage{source}, turn(source, thinking("", "c2ln"), text("<think>\nunsigned\n</think>"), text("answer")))
+		check(t, []llmMessage{source}, turn(source, thinking("", "c2ln"), text("unsigned"), text("answer")))
 	})
 	t.Run("missing signed thinking normalizes a blank signature", func(t *testing.T) {
 		source := assistant(block{Type: "thinking", Thinking: "unsigned", ThinkingSignature: " \t"})

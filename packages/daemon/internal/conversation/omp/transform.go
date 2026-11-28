@@ -16,21 +16,20 @@ type target struct {
 	provider, api, model string
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
-	signing                   bool
-	textOnly                  bool
-	classifier, prefixBinding bool
-	demotionClass             string
+	signing       bool
+	textOnly      bool
+	prefixBinding bool
+	demotionClass string
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
 // message content onto the neutral conversation. Options describes the replay inputs it lacks.
 func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) {
-	if t.api != conversation.AnthropicMessages && t.api != conversation.OpenAIResponses {
-		return nil, conversation.Unknown("the conversation runs on provider API %q, which the reader does not rebuild a request for", t.api)
+	if t.api == conversation.AnthropicMessages {
+		t.prefixBinding = anthropicPrefixBinding(t.model)
 	}
 	t.demotionClass = replayModelClass(t.model)
-	t.classifier, t.prefixBinding = anthropicThinkingPolicy(t.provider, t.model, t.demotionClass)
-	messages = dropMalformedToolCalls(messages, t)
+	messages = dropMalformedToolCalls(messages)
 	latest := -1
 	for i, m := range messages {
 		if m.role == "assistant" && !truncatedThinkingOnly(m) {
@@ -73,7 +72,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	deduplicateToolCalls(out, pairingKey)
 	paired := pairToolResults(messages, out, pairingKey)
 	if t.api == conversation.OpenAIResponses {
-		return shapeResponsesHistory(paired, t), nil
+		return shapeResponsesHistory(paired), nil
 	}
 	return shapeAnthropicHistory(paired, t.textOnly), nil
 }
@@ -174,13 +173,11 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 	anthropicTarget := t.api == conversation.AnthropicMessages
 	anthropicReplay := anthropicTarget && m.api == conversation.AnthropicMessages
 	official := anthropicTarget && t.signing
-	sameDeployment := anthropicReplay && m.provider == t.provider && (official || t.prefixBinding)
-	signingInvolved := (anthropicReplay && m.provider == "anthropic") || official
 	replaysUnsigned := anthropicTarget && !t.signing
 	failed := m.stopReason == "aborted" || m.stopReason == "error"
 	abandonedToolUse := !failed && m.stopReason != "toolUse" && hasToolCall(m.blocks)
 	crossProvider := m.provider != t.provider
-	dropThinking := (t.classifier && !sameModel) || rewritten
+	dropThinking := (anthropicTarget && !sameModel) || rewritten
 
 	// Each source block's replay, nil when it is dropped.
 	converted := make([]*conversation.Block, len(m.blocks))
@@ -198,23 +195,17 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				thinking.Signature = ""
 			}
 			switch {
-			case anthropicReplay && latest && abandonedToolUse && !crossProvider:
+			case anthropicTarget && latest && abandonedToolUse:
 				// Anthropic's latest turn replays byte for byte.
 				thinking.Signature = b.ThinkingSignature
-			case anthropicReplay:
-				stale := !sameDeployment && ((latest && crossProvider) || (!latest && !sameModel))
-				if stale && signingInvolved {
-					thinking.Signature = ""
-				}
-				if (thinking.Signature == "" && blank(thinking.Text)) || (sameModel && t.signing && blank(thinking.Signature)) {
+			case anthropicTarget:
+				if (thinking.Signature == "" && blank(thinking.Text)) || (t.signing && blank(thinking.Signature)) {
 					continue
 				}
 			case sameModel && thinking.Signature != "":
 			case blank(thinking.Text):
 				continue
 			case sameModel:
-			case replaysUnsigned:
-				thinking.Signature = ""
 			default:
 				thinking = conversation.Block{Type: conversation.Text, Text: demotedThinking(t.demotionClass, thinking.Text)}
 			}
@@ -263,10 +254,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 		}
 	}
 	// Redacted thinking replays only on Anthropic, beside the turn's visible thinking.
-	dropsAllVisible := anthropicReplay && sameModel && t.signing && visibleThinking && !survivingThinking
+	dropsAllVisible := t.signing && visibleThinking && !survivingThinking
 	for i, b := range m.blocks {
-		if !dropThinking && b.Type == "redactedThinking" && anthropicReplay && !dropsAllVisible &&
-			(sameModel || sameDeployment || (latest && !crossProvider) || replaysUnsigned) {
+		if !dropThinking && b.Type == "redactedThinking" && anthropicTarget && !dropsAllVisible {
 			converted[i] = &conversation.Block{Type: conversation.RedactedThinking, Data: b.Data}
 		}
 	}
@@ -370,24 +360,9 @@ func sanitizeToolIDChars(id string) string {
 	return b.String()
 }
 
-// anthropicThinkingPolicy uses the taxonomy and provider overrides in
-// catalog/src/compat/rules/taxonomy/anthropic.kdl:1–18. The class rule
-// (classes/anthropic.kdl:26–30) suppresses foreign reasoning.
-func anthropicThinkingPolicy(provider, id, class string) (classifier, prefixBinding bool) {
-	id = strings.ToLower(strings.TrimFunc(id, isJSSpace))
-	bare := id[strings.LastIndexByte(id, '/')+1:]
-	if strings.EqualFold(provider, "nanogpt") {
-		switch bare {
-		case "gemma-4-31b-claude-4.6-opus-reasoning-distilled",
-			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-derestricted",
-			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-derestricted-lite":
-			return true, false
-		}
-	}
-	classifier = class == "anthropic"
-	if !classifier {
-		return false, false
-	}
+// anthropicPrefixBinding applies the pinned Claude family and revision rules.
+func anthropicPrefixBinding(id string) bool {
+	bare := strings.ToLower(strings.TrimFunc(id, isJSSpace))
 	family := ""
 	tied := false
 	for _, candidate := range []string{"opus", "sonnet", "haiku", "fable", "mythos"} {
@@ -400,23 +375,23 @@ func anthropicThinkingPolicy(provider, id, class string) (classifier, prefixBind
 			}
 		}
 	}
-	_, tail, ok := strings.Cut(bare, "claude-")
-	if !ok || tied {
-		return true, false
+	if tied {
+		return false
 	}
+	tail := strings.TrimPrefix(bare, "claude-")
 	first := strings.IndexAny(tail, "0123456789")
 	if first < 0 {
-		return true, false
+		return false
 	}
 	major, minor := revisionComponents(tail[first:])
 	// classes/anthropic.kdl:113–125,247–281. A collapsed 55 is not revision 5.5.
 	switch family {
 	case "fable", "mythos":
-		prefixBinding = major > 5 || (major == 5 && minor >= 1)
+		return major > 5 || (major == 5 && minor >= 1)
 	case "opus", "sonnet", "haiku":
-		prefixBinding = major == 5 && minor >= 5
+		return major == 5 && minor >= 5
 	}
-	return true, prefixBinding
+	return false
 }
 
 // revisionComponents reads the first two components, the only ones these rules compare.
@@ -479,12 +454,11 @@ func truncatedThinkingOnly(m llmMessage) bool {
 
 // dropMalformedToolCalls removes invalid calls, the results paired with those occurrences,
 // and assistant turns left with no blocks (transform-messages.ts:434–493).
-func dropMalformedToolCalls(messages []llmMessage, t target) []llmMessage {
-	limit := toolCallNameLimit(t)
+func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
 	malformed := false
 	for _, m := range messages {
 		for _, b := range m.blocks {
-			if m.role == "assistant" && b.Type == "toolCall" && malformedToolCall(b, limit) {
+			if m.role == "assistant" && b.Type == "toolCall" && malformedToolCall(b) {
 				malformed = true
 			}
 		}
@@ -501,7 +475,7 @@ func dropMalformedToolCalls(messages []llmMessage, t target) []llmMessage {
 			var kept []block
 			for _, b := range m.blocks {
 				if b.Type == "toolCall" {
-					bad := malformedToolCall(b, limit)
+					bad := malformedToolCall(b)
 					queues[b.ID] = append(queues[b.ID], bad)
 					if bad {
 						continue
@@ -533,17 +507,9 @@ func dropMalformedToolCalls(messages []llmMessage, t target) []llmMessage {
 
 var validToolCallName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-func toolCallNameLimit(t target) int {
+func malformedToolCall(b block) bool {
 	// The API default in providers/tool-call-names.kdl:3–5 is 128.
-	// The provider's Responses rule in providers/muse-code.kdl:79–87 takes priority.
-	if t.api == conversation.OpenAIResponses && t.provider == "muse-code" {
-		return 64
-	}
-	return 128
-}
-
-func malformedToolCall(b block, limit int) bool {
-	return blank(b.ID) || len(b.Name) > limit || !validToolCallName.MatchString(b.Name)
+	return blank(b.ID) || len(b.Name) > 128 || !validToolCallName.MatchString(b.Name)
 }
 
 // pairToolResults preserves real results in their order inside a tool-use window.

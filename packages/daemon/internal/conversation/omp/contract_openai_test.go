@@ -165,7 +165,7 @@ func assertResponsesResumeMatches(t *testing.T, before *Session, content, body [
 	if !reflect.DeepEqual(got, wantDecoded) {
 		t.Errorf("Oh My Pi's resume request input:\n%s\nthe reader's conversation and the follow-up:\n%s", observed, wantJSON)
 	}
-	if resumed.Model != standInProvider+"/"+standInGPT || resumed.API != conversation.OpenAIResponses {
+	if resumed.Model != standInOpenAI+"/"+standInGPT || resumed.API != conversation.OpenAIResponses {
 		t.Errorf("the reader's model %q, API %q", resumed.Model, resumed.API)
 	}
 	assertBlankedOnly(t, before, resumed)
@@ -261,7 +261,7 @@ func TestThePinnedOhMyPiResumesAnAppendedOpenAIAnswer(t *testing.T) {
 	item := func(raw string) json.RawMessage { return json.RawMessage(raw) }
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: conversation.OpenAIResponses, Model: standInGPT,
+		Provider: standInOpenAI, API: conversation.OpenAIResponses, Model: standInGPT,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{thinking("Check the note.", ""), call("call_append_1", "read", `{"path":"note.txt"}`)},
@@ -326,7 +326,7 @@ func TestThePinnedOhMyPiResumesAnOpenAIAnswerAskedForAgain(t *testing.T) {
 	item := func(raw string) json.RawMessage { return json.RawMessage(raw) }
 	answer := conversation.Append{
 		QuestionID: "q-1", Question: "Which fruit does the note name?",
-		Provider: standInProvider, API: conversation.OpenAIResponses, Model: standInGPT,
+		Provider: standInOpenAI, API: conversation.OpenAIResponses, Model: standInGPT,
 		Turns: []conversation.Turn{
 			{
 				Content: []conversation.Block{thinking("I cannot tell from here.", ""), text(refusedReply)},
@@ -392,9 +392,9 @@ func TestThePinnedOhMyPiShapesHandWrittenResponsesHistory(t *testing.T) {
 			`{"type":"message","id":"d6000002","parentId":"d6000001","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_fixture|fc_fixture","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n"+
 			`{"type":"message","id":"d6000003","parentId":"d6000002","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"stop","usage":%s,"timestamp":%d,"content":[{"type":"text","text":"Fallback answer."}],"providerPayload":{"type":"openaiResponsesHistory","provider":%q,"dt":true,"items":[{"type":"item_reference","id":"msg_stale"},{"type":"function_call","call_id":"call_bad","name":"bad name","arguments":"{}"},{"type":"function_call_output","call_id":"call_bad","output":"must not replay"},{"type":"image_generation_call","id":"ig_incomplete"},{"type":"function_call","call_id":"call_native","name":"read","arguments":" "},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Native answer.","annotations":[]}],"status":"completed"}]}}}`+"\n"+
 			`{"type":"message","id":"d6000004","parentId":"d6000003","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"stop","usage":%s,"timestamp":%d,"content":[{"type":"thinking","thinking":"Do not replay.","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_hidden\",\"encrypted_content\":\"hidden\"}"},{"type":"text","text":"\t"},{"type":"text","text":"Use visible fallback."}],"providerPayload":{"type":"openaiResponsesHistory","provider":%q,"dt":true,"items":[{"type":"reasoning","id":"rs_hidden","encrypted_content":"hidden","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"\t","annotations":[]}],"status":"completed"}]}}}`+"\n",
-		before.Leaf, stamp, conversation.OpenAIResponses, standInProvider, standInGPT, handWrittenUsage, now.UnixMilli(),
-		stamp, now.UnixMilli(), stamp, conversation.OpenAIResponses, standInProvider, standInGPT, handWrittenUsage, now.UnixMilli(), standInProvider,
-		stamp, conversation.OpenAIResponses, standInProvider, standInGPT, handWrittenUsage, now.UnixMilli(), standInProvider))
+		before.Leaf, stamp, conversation.OpenAIResponses, standInOpenAI, standInGPT, handWrittenUsage, now.UnixMilli(),
+		stamp, now.UnixMilli(), stamp, conversation.OpenAIResponses, standInOpenAI, standInGPT, handWrittenUsage, now.UnixMilli(), standInOpenAI,
+		stamp, conversation.OpenAIResponses, standInOpenAI, standInGPT, handWrittenUsage, now.UnixMilli(), standInOpenAI))
 	rig.run(t, file, "Follow-up.")
 	body := model.last(t)
 	input := requestInput(t, body, sessionContent(t, file))
@@ -560,7 +560,7 @@ func setStandInModalities(t *testing.T, rig *ompRig, textOnly bool) {
 
 func TestThePinnedOhMyPiShapesResponsesAttachments(t *testing.T) {
 	const png = attachmentFixturePNG
-	const id = "gpt-oss-120b"
+	const id = openAIStandInModel
 	for _, tc := range []struct {
 		name     string
 		textOnly bool
@@ -581,16 +581,16 @@ func TestThePinnedOhMyPiShapesResponsesAttachments(t *testing.T) {
 				`{"type":"message","id":"d7000001","parentId":%q,"timestamp":%q,"message":{"role":"user","content":[{"type":"image","mimeType":"image/png","data":%q},{"type":"text","text":" "},{"type":"text","text":"Image A <|start|>."},{"type":"image","mimeType":"image/png","data":%q},{"type":"text","text":"Image B."}],"timestamp":%d}}`+"\n"+
 					`{"type":"message","id":"d7000002","parentId":"d7000001","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"text","text":"Checking <|message|>."},{"type":"toolCall","id":"call_image|fc_image","name":"read","arguments":{"path":"<|channel|>"}}]}}`+"\n"+
 					`{"type":"message","id":"d7000003","parentId":"d7000002","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_image|fc_image","toolName":"read","content":[{"type":"text","text":"Before <|return|>."},{"type":"image","mimeType":"image/png","data":%q},{"type":"text","text":""},{"type":"text","text":"After."}],"timestamp":%d}}`+"\n",
-				before.Leaf, stamp, png, png, now.UnixMilli(), stamp, conversation.OpenAIResponses, standInProvider, id, handWrittenUsage, now.UnixMilli(), stamp, png, now.UnixMilli()))
+				before.Leaf, stamp, png, png, now.UnixMilli(), stamp, conversation.OpenAIResponses, standInOpenAI, id, handWrittenUsage, now.UnixMilli(), stamp, png, now.UnixMilli()))
 			rig.run(t, file, "Follow-up.")
 			input := requestInput(t, model.last(t), sessionContent(t, file))
 			part := func(s string) any { return map[string]any{"type": "input_text", "text": s} }
 			image := map[string]any{"type": "input_image", "image_url": "data:image/png;base64," + png, "detail": "auto"}
-			prompt := []any{part(`Image A <\|start\|>.`), part("Image B."), image, image}
-			var output any = []any{part(`Before <\|return\|>.`), image, part(""), part("After.")}
+			prompt := []any{part("Image A <|start|>."), part("Image B."), image, image}
+			var output any = []any{part("Before <|return|>."), image, part(""), part("After.")}
 			if tc.textOnly {
 				prompt = []any{part(historyImageOmission), prompt[0], part(historyImageOmission), prompt[1]}
-				output = "Before <\\|return\\|>.\n" + historyImageOmission + "\n\nAfter."
+				output = "Before <|return|>.\n" + historyImageOmission + "\n\nAfter."
 			}
 			itemCarriedOnce(t, input, func(item map[string]any) bool {
 				return item["role"] == "user" && reflect.DeepEqual(item["content"], prompt)
@@ -599,11 +599,11 @@ func TestThePinnedOhMyPiShapesResponsesAttachments(t *testing.T) {
 				return item["call_id"] == "call_image" && reflect.DeepEqual(item["output"], output)
 			}, "shaped historical tool output")
 			itemCarriedOnce(t, input, func(item map[string]any) bool {
-				return item["call_id"] == "call_image" && item["arguments"] == `{"path":"<\\|channel\\|>"}`
-			}, "escaped function arguments")
+				return item["call_id"] == "call_image" && item["arguments"] == `{"path":"<|channel|>"}`
+			}, "unchanged function arguments")
 			itemCarriedOnce(t, input, func(item map[string]any) bool {
-				return messageText(item) == `Checking <\|message\|>.`
-			}, "escaped assistant text")
+				return messageText(item) == "Checking <|message|>."
+			}, "unchanged assistant text")
 			if t.Failed() {
 				wire, _ := json.Marshal(input)
 				t.Logf("Pinned Responses input: %s", wire)
@@ -686,7 +686,7 @@ func TestThePinnedOhMyPiReplacesAnthropicHistoryAttachmentsBeforeEncoding(t *tes
 		`{"type":"message","id":"d8000001","parentId":%q,"timestamp":%q,"message":{"role":"user","content":[{"type":"text","text":"First."},%s,%s,{"type":"text","text":"Last."}],"timestamp":%d}}`+"\n"+
 			`{"type":"message","id":"d8000002","parentId":"d8000001","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"toolCall","id":"toolu_image","name":"read","arguments":{"path":"note.txt"}}]}}`+"\n"+
 			`{"type":"message","id":"d8000003","parentId":"d8000002","timestamp":%q,"message":{"role":"toolResult","toolCallId":"toolu_image","toolName":"read","content":[{"type":"text","text":"Before."},%s,{"type":"text","text":"After."}],"timestamp":%d}}`+"\n",
-		before.Leaf, stamp, image, image, now.UnixMilli(), stamp, conversation.AnthropicMessages, standInProvider, standInModel, handWrittenUsage, now.UnixMilli(), stamp, image, now.UnixMilli()))
+		before.Leaf, stamp, image, image, now.UnixMilli(), stamp, conversation.AnthropicMessages, standInAnthropic, standInModel, handWrittenUsage, now.UnixMilli(), stamp, image, now.UnixMilli()))
 	before, err = ReadFile(file, opts)
 	if err != nil {
 		t.Fatal(err)

@@ -89,24 +89,6 @@ func TestResponsesHistoryShaping(t *testing.T) {
 			t.Errorf("Anthropic text phase = %q, item ID = %q, want both empty", got.Phase, got.ItemID)
 		}
 	})
-	t.Run("Harmony escapes transport text and leaves reasoning opaque", func(t *testing.T) {
-		model := model
-		model.model = "gpt-oss-120b"
-		tool := tool
-		tool.model = model.model
-		tool.blocks = []block{{Type: "thinking", ThinkingSignature: `{"type":"reasoning","id":"rs_fixture","encrypted_content":"<|call|>"}`},
-			{Type: "toolCall", ID: "opaque", Name: "read", Arguments: []byte(`{"path":"<|channel|>"}`)}, textBlock("<|message|>")}
-		output := output
-		output.blocks = []block{textBlock("<|constrain|>")}
-		got := run(t, model, llmMessage{role: "user", blocks: []block{textBlock("<|start|>")}}, tool, output)
-		assertMessages(t, got, []conversation.Message{
-			user(`<\|start\|>`),
-			{Role: conversation.Assistant, API: api, Provider: model.provider, Model: model.model, Content: []conversation.Block{
-				thinking("", tool.blocks[0].ThinkingSignature), text(`<\|message\|>`), call("opaque", "read", `{"path":"<\\|channel\\|>"}`),
-			}},
-			result("opaque", "read", `<\|constrain\|>`, false),
-		})
-	})
 }
 
 func TestNativeResponsesHistoryShaping(t *testing.T) {
@@ -161,21 +143,22 @@ func TestResponsesUserCompactionPayloadShaping(t *testing.T) {
 }
 
 func TestResponsesNativeProviderEligibility(t *testing.T) {
-	const api = conversation.OpenAIResponses
-	m := llmMessage{role: "assistant", api: api, provider: "proxy", model: "gpt-test",
-		payload: []byte(`{"type":"openaiResponsesHistory","provider":"proxy","dt":true,"items":[{"type":"message","role":"assistant","content":"answer"}]}`)}
 	for _, tc := range []struct {
-		provider, api, model string
-		keep                 bool
+		name, sourceAPI, sourceModel, payloadProvider string
+		keep                                          bool
 	}{
-		{"proxy", api, "gpt-test", true},
-		{"other", api, "gpt-test", false},
-		{"proxy", conversation.AnthropicMessages, "gpt-test", false},
-		{"proxy", api, "gpt-other", false},
+		{"same target", conversation.OpenAIResponses, "gpt-test", "openai", true},
+		{"different payload provider", conversation.OpenAIResponses, "gpt-test", "proxy", false},
+		{"different source API", "azure-openai-responses", "gpt-test", "openai", false},
+		{"different source model", conversation.OpenAIResponses, "gpt-other", "openai", false},
 	} {
-		native, err := nativeHistory(m, target{api: tc.api, provider: tc.provider, model: tc.model})
-		if err != nil || (native != nil) != tc.keep {
-			t.Errorf("target %+v: native = %+v, error = %v", tc, native, err)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			m := llmMessage{role: "assistant", api: tc.sourceAPI, provider: "openai", model: tc.sourceModel,
+				payload: []byte(`{"type":"openaiResponsesHistory","provider":` + quote(tc.payloadProvider) + `,"dt":true,"items":[{"type":"message","role":"assistant","content":"answer"}]}`)}
+			native, err := nativeHistory(m, target{api: conversation.OpenAIResponses, provider: "openai", model: "gpt-test"})
+			if err != nil || (native != nil) != tc.keep {
+				t.Errorf("native = %+v, error = %v; want native = %t without error", native, err, tc.keep)
+			}
+		})
 	}
 }

@@ -35,7 +35,6 @@ func boundedModelToken(value, token string) bool {
 }
 
 // replayModelClass is the pinned taxonomy's lenient, provider-neutral classification.
-// A provider-specific override that affects Anthropic policy is handled at that policy's call site.
 func replayModelClass(id string) string {
 	id = strings.ToLower(strings.TrimFunc(id, isJSSpace))
 	bare := id[strings.LastIndexByte(id, '/')+1:]

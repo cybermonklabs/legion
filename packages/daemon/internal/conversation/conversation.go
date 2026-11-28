@@ -78,7 +78,7 @@ type Block struct {
 	ToolName string
 	// Arguments is a ToolCall block's JSON arguments. The Claude reader preserves
 	// the recorded input. The Oh My Pi reader uses null for missing or null
-	// Responses arguments and escapes Harmony control tokens on gpt-oss targets.
+	// Responses arguments.
 	// On Anthropic Messages it defaults missing or null arguments to {} and
 	// repairs lone surrogate escapes in string values.
 	Arguments json.RawMessage

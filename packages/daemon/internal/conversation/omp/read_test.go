@@ -394,16 +394,15 @@ func TestReadRestoresCustomRolloverRequests(t *testing.T) {
 // native Responses history belongs to its provider and needs a Responses API.
 // A model that cannot read it resumes from the previous readable compaction.
 func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
-	const providerBound = `{"provider":"openai","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}`
 	for _, tc := range []struct {
-		name, provider, api, preserve string
-		placeholder                   bool
+		name, provider, api, model, preserve string
+		placeholder                          bool
 	}{
-		{"different provider", "other", conversation.OpenAIResponses, providerBound, false},
-		{"different API", "openai", conversation.AnthropicMessages, providerBound, false},
-		{"missing provider on classic compaction", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}],"compactionItem":{"type":"compaction","encrypted_content":"encoded"}}`, false},
-		{"missing provider on compaction summary", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction_summary"}],"compactionItem":{"type":"compaction_summary"}}`, false},
-		{"classic item without encrypted content", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction"}],"compactionItem":{"type":"compaction"}}`, true},
+		{"different provider", "openai", conversation.OpenAIResponses, "gpt-test", `{"provider":"other","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}`, false},
+		{"different API", "anthropic", conversation.AnthropicMessages, "claude-test", `{"provider":"anthropic","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}`, false},
+		{"missing provider on classic compaction", "openai", conversation.OpenAIResponses, "gpt-test", `{"replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}],"compactionItem":{"type":"compaction","encrypted_content":"encoded"}}`, false},
+		{"missing provider on compaction summary", "openai", conversation.OpenAIResponses, "gpt-test", `{"replacementHistory":[{"type":"compaction_summary"}],"compactionItem":{"type":"compaction_summary"}}`, false},
+		{"classic item without encrypted content", "openai", conversation.OpenAIResponses, "gpt-test", `{"replacementHistory":[{"type":"compaction"}],"compactionItem":{"type":"compaction"}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
@@ -411,7 +410,7 @@ func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
 			f.add(`{"type":"compaction","summary":"Readable summary.","firstKeptEntryId":""}`)
 			f.add(userEntry("keep"))
 			f.add(`{"type":"compaction","summary":"Replacement placeholder.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":` + tc.preserve + `}}`)
-			f.add(assistantEntry(tc.provider, tc.api, "model", "stop", `[{"type":"text","text":"answer"}]`))
+			f.add(assistantEntry(tc.provider, tc.api, tc.model, "stop", `[{"type":"text","text":"answer"}]`))
 			s := read(t, f.bytes())
 			if tc.placeholder {
 				if len(s.Messages) != 2 || s.Messages[0].Native != nil ||
@@ -524,30 +523,14 @@ func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
 		})
 	})
 	t.Run("latest Anthropic abandoned tool use", func(t *testing.T) {
-		// Use a non-Claude model on Anthropic Messages so the classifier does not hide the
-		// distinction between restoring and stripping the signature.
-		for _, source := range []string{"anthropic", "other"} {
-			t.Run(source, func(t *testing.T) {
-				const id = "gpt-test"
-				turn := assistantEntry(source, conversation.AnthropicMessages, id, "stop",
-					`[{"type":"thinking","thinking":"plan","thinkingSignature":"c2ln"},{"type":"toolCall","id":"call","name":"read","arguments":{}}]`)
-				f := newFixture()
-				f.add(assistantEntry("anthropic", conversation.AnthropicMessages, id, "stop", `[{"type":"text","text":"earlier"}]`))
-				f.add(userEntry("continue"))
-				f.add(turn)
-				f.add(toolResultEntry("call", "read", "tool not run", true))
-				f.add(`{"type":"model_change","model":"anthropic/gpt-test"}`)
-				want := thinking("plan", "c2ln")
-				if source == "other" {
-					want = text("<think>\nplan\n</think>")
-				}
-				assertMessages(t, read(t, f.bytes()).Messages[2:], []conversation.Message{
-					{Role: conversation.Assistant, Provider: source, API: conversation.AnthropicMessages, Model: id,
-						Content: []conversation.Block{want, call("call", "read", `{}`)}},
-					result("call", "read", "tool not run", true),
-				})
-			})
-		}
+		f := newFixture()
+		f.add(userEntry("request"))
+		f.add(claudeEntry("stop", `[{"type":"thinking","thinking":"plan","thinkingSignature":"c2ln"},{"type":"toolCall","id":"call","name":"read","arguments":{}}]`))
+		f.add(toolResultEntry("call", "read", "tool not run", true))
+		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+			user("request"), claude(thinking("plan", "c2ln"), call("call", "read", `{}`)),
+			result("call", "read", "tool not run", true),
+		})
 	})
 }
 
@@ -871,6 +854,56 @@ func TestReadSkipsATornRecord(t *testing.T) {
 	assertMessages(t, s.Messages, []conversation.Message{user("request"), claude(text("answer"))})
 	if !s.Torn || s.Leaf != f.last {
 		t.Errorf("torn %t, leaf %q; want torn, leaf %q", s.Torn, s.Leaf, f.last)
+	}
+}
+
+func TestReadSupportedTargets(t *testing.T) {
+	for _, tc := range []struct {
+		provider, api, model string
+		refused, mixed       bool
+	}{
+		{"openai", conversation.OpenAIResponses, "gpt-oss-120b", true, false},
+		{"nanogpt", conversation.AnthropicMessages, "claude-opus-5-5", true, false},
+		{"muse-code", conversation.OpenAIResponses, "gpt-6.2-sol", true, false},
+		{"model-gateway", "openai-completions", "kimi-k3.1-pro", true, false},
+		{"anthropic", conversation.AnthropicMessages, "gpt-6.2-sol", true, false},
+		{"anthropic", conversation.AnthropicMessages, "claude-opus-5-5", false, false},
+		{"openai", conversation.OpenAIResponses, "gpt-6.2-sol", false, true},
+	} {
+		t.Run(tc.provider+"/"+tc.model, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("request"))
+			want := []conversation.Message{user("request")}
+			if tc.mixed {
+				const provider, api, model = "model-gateway", "google-generative-ai", "gemini-4-neon"
+				f.add(assistantEntry(provider, api, model, "stop", `[{"type":"thinking","thinking":"Earlier reasoning."},{"type":"text","text":"Earlier answer."}]`))
+				f.add(userEntry("follow-up"))
+				want = append(want, conversation.Message{Role: conversation.Assistant, Provider: provider, API: api, Model: model,
+					Content: []conversation.Block{text("<think>\nEarlier reasoning.\n</think>"), text("Earlier answer.")}}, user("follow-up"))
+			}
+			f.add(assistantEntry(tc.provider, tc.api, tc.model, "stop", `[{"type":"text","text":"answer"}]`))
+			s, err := Read(f.bytes(), Options{})
+			if tc.refused {
+				if !errors.Is(err, conversation.ErrUnknownFormat) {
+					t.Fatalf("Read = %v, want ErrUnknownFormat", err)
+				}
+				for _, field := range []string{tc.provider, tc.api, tc.model} {
+					if !strings.Contains(err.Error(), quote(field)) {
+						t.Errorf("error %v does not name %q", err, field)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Model != tc.provider+"/"+tc.model || s.API != tc.api {
+				t.Errorf("model %q, API %q; want %s/%s, %s", s.Model, s.API, tc.provider, tc.model, tc.api)
+			}
+			want = append(want, conversation.Message{Role: conversation.Assistant, Provider: tc.provider, API: tc.api, Model: tc.model,
+				Content: []conversation.Block{text("answer")}})
+			assertMessages(t, s.Messages, want)
+		})
 	}
 }
 

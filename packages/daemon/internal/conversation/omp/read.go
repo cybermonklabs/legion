@@ -6,7 +6,7 @@
 // reader resolves the active leaf with the rules of resolveSessionLeafId (session-entries.ts).
 // It walks from that leaf to the root and builds the context from the session records
 // (session-context.ts). It projects the pinned Oh My Pi's replay rules onto the neutral model
-// for Anthropic Messages and OpenAI Responses. Options lists the limits of that projection.
+// for Claude on Anthropic Messages and GPT on OpenAI Responses. Options lists the limits.
 // Like Oh My Pi it skips a line that is not JSON, including a torn last record. It refuses a
 // well-formed record it does not know (conversation.ErrUnknownFormat).
 //
@@ -154,14 +154,13 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //     boundary can use it to select thinking. The neutral model cannot carry these blocks.
 //     When the pin drops either block for the target, Read drops it too.
 //
-// Read refuses target APIs other than Anthropic Messages and OpenAI Responses.
+// Read checks the restored target, not the models that wrote earlier turns. It accepts only
+// anthropic with anthropic-messages and a claude- model, or openai with openai-responses and
+// a gpt- model outside the GPT OSS family. Other targets return conversation.ErrUnknownFormat.
 type Options struct {
-	// ReplayUnsignedThinking is true for an Anthropic-compatible reasoning endpoint that
-	// accepts unsigned thinking and does not verify signatures. False assumes the first-party
-	// policy: an official, signing endpoint that does not replay unsigned thinking natively.
-	// It does not describe proxies that verify signatures but are not official endpoints.
-	// The option makes no difference on OpenAI Responses, or on Anthropic Messages history
-	// with no thinking blocks or tool IDs that need normalization.
+	// ReplayUnsignedThinking describes the endpoint used for the supported Anthropic target.
+	// True allows unsigned same-model thinking on endpoints that do not verify signatures.
+	// False assumes the first-party signing policy. This option has no effect on OpenAI Responses.
 	ReplayUnsignedThinking bool
 	// TextOnly is true if the resolved model accepts text but not images. On
 	// both APIs it replaces historical images before the encoder shapes text.
@@ -200,8 +199,8 @@ func Read(content []byte, opts Options) (*Session, error) {
 		return nil, conversation.Unknown("the session names no model it runs on")
 	}
 	s.API = built.api
-	if s.API == "" {
-		return nil, conversation.Unknown("no turn of model %s names its provider API", built.model)
+	if !supportedTarget(provider, s.API, model) {
+		return nil, conversation.Unknown("target provider %q, API %q, model %q is not supported", provider, s.API, model)
 	}
 	s.Messages, err = toRequest(built.messages, target{
 		provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking,
@@ -211,6 +210,12 @@ func Read(content []byte, opts Options) (*Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+func supportedTarget(provider, api, model string) bool {
+	return (provider == "anthropic" && api == conversation.AnthropicMessages && strings.HasPrefix(model, "claude-")) ||
+		(provider == "openai" && api == conversation.OpenAIResponses && strings.HasPrefix(model, "gpt-") &&
+			!strings.HasPrefix(model, "gpt-oss"))
 }
 
 // ReadFile reads the session file at path (file storage).
