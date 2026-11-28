@@ -2655,6 +2655,33 @@ test("a report of model requests refuses a request whose id, session or model is
   }
 });
 
+// Go's time.Time decode keeps nanoseconds and drops every digit after the ninth, so an end whose
+// first nine fractional digits are zeros is Go's zero time to the daemon's EndedAt.IsZero(),
+// whatever digits follow, and the daemon refuses the whole report; the ninth digit is a
+// nanosecond, which the daemon takes.
+test("a report of model requests refuses an end that is Go's zero time once cut to nanoseconds", () => {
+  const report = (endedAt: string) => ({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: CLAIM_SECRET,
+    generation: 3,
+    requests: [{ id: "req-1", session: "ses_implementer_208", model: "standin-model", endedAt }],
+  });
+  for (const endedAt of [
+    "0001-01-01T00:00:00.0000000001Z",
+    "0001-01-01T00:00:00.0000000009+00:00",
+  ]) {
+    expect(
+      LegionModelRequestsRequest.safeParse(report(endedAt)).success,
+      `endedAt ${endedAt} is refused`
+    ).toBeFalse();
+  }
+  expect(
+    LegionModelRequestsRequest.safeParse(report("0001-01-01T00:00:00.000000001Z")).success,
+    "endedAt 0001-01-01T00:00:00.000000001Z is taken"
+  ).toBeTrue();
+});
+
 test("a workflow refusal preserves its stable code and message", () => {
   expect(
     LegionErrorResponse.safeParse({
