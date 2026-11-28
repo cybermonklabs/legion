@@ -164,9 +164,11 @@ host.test(
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: dir });
     const other = spawn(["sleep", "60"], { cwd: dir });
     // A marked process outside the row's proc root: a walk that read the host's /proc and not the
-    // root it was given names it, so the row fails rather than only slowing.
+    // root it was given names it, so the row fails rather than only slowing. It too is walked only
+    // once its exec is done, or a wrong-root walk inside that exec would not name it either.
     const root = rowRoot();
     const outside = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilExecDone(outside, "sleep", waits.end());
     writeFileSync(calls, "");
     // The drivers call it under `set -E` with an ERR trap that prints, and in the bare word split a
     // stage's checks use, where a status of its own would reach that trap.
