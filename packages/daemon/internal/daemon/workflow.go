@@ -1436,6 +1436,31 @@ func (w *workflowRuntime) retroWakeHolds(ctx context.Context, key string) (bool,
 	return stands, nil
 }
 
+// retroAfterCloseHolds answers supervise's Deps.RetroAfterCloseHolds from the record, in one
+// read-only transaction: whether the retro Legion runs after the close of key, on the run the
+// claim's held task names, is still open (record.RunRetro.Open). A todo that takes the issue into a
+// new run ends it as stopped (workflow's EndOpenRetro, from a child's re-entry or a root's
+// re-admission) and stops no claim, so the task still waiting on the retro's agent is dropped
+// here rather than sent into that new run; a retro its report or its bound ended has nothing left
+// to ask either. A run of which the record holds no retro is none open, as the outbox's fence of
+// the retro's start reads it (retroHolds). An issue the record does not hold holds the task, as
+// phaseHolds holds a task of an issue it does not record.
+func (w *workflowRuntime) retroAfterCloseHolds(ctx context.Context, key string, run supervise.RetroRun) (bool, error) {
+	open := true
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := w.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
+		}
+		retro, err := w.records.RunRetro(ctx, tx, key, uint64(run))
+		open = retro != nil && retro.Open()
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read whether the retro after the close of run %d of %s is open: %w", run, key, err)
+	}
+	return open, nil
+}
+
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open
 // phase (workflow.OpenPhaseRole), which the pod start gate puts first among the starts no request
 // raised — deaths, a roles container's restart, a pod an update round replaced

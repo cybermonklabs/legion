@@ -100,12 +100,13 @@ func newRetroOutboxRig(t *testing.T, issues []record.Issue, handlers ...intake.H
 	sup := newSupervisor(ctx, st, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
-		RootHears:      (&workflowRuntime{pool: pool, records: records}).rootHears,
-		RetroWakeHolds: (&workflowRuntime{pool: pool, records: records}).retroWakeHolds,
-		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		RootHears:            (&workflowRuntime{pool: pool, records: records}).rootHears,
+		RetroWakeHolds:       (&workflowRuntime{pool: pool, records: records}).retroWakeHolds,
+		RetroAfterCloseHolds: (&workflowRuntime{pool: pool, records: records}).retroAfterCloseHolds,
+		Limits:               supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:             supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract:       24,
+		RefreshGate:          supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	r := &retroOutboxRig{t: t, ctx: ctx, pool: pool, records: records, st: st, sup: sup, rt: rt, facts: &outboxFactHandler{}}
@@ -1015,6 +1016,95 @@ func TestARetroTaskFollowsTheRunningTurnOfTheSparedAgent(t *testing.T) {
 	takeHeldTask(ctx, t, machine, implementer)
 	if got := machine.Claim(); got.ServingRetro() != 1 || got.Pending == nil || got.Pending.ID != p.ID {
 		t.Fatalf("the implementer's next turn serves retro run %d on %+v, want run 1 on the retro's task %s", got.ServingRetro(), got.Pending, p.ID)
+	}
+}
+
+// A person sets the closed child back to `todo` while the task of its retro after the close waits
+// unsent on the agent's claim (INFRA-5602, the review of #5630): the todo takes the child into its
+// next run and ends that retro, stopped by the todo (workflow's EndOpenRetro), and it stops no
+// claim. The task waits in either of two windows: for the ready of the process the retro's start
+// resumed, or behind a turn of the agent's own. When the window ends the task is dropped rather
+// than sent (workflowRuntime.retroAfterCloseHolds): its text says the issue is closed and the
+// retro moves it nowhere, which the todo made false, and the report it asks for would be refused.
+// No prompt reaches the agent, and the claim, in memory and in the store, holds no task, free for
+// the new run's.
+func TestTheTaskOfARetroATodoEndedIsDroppedRatherThanSent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// before brings the suspended claim to the window in which the retro's start queues its
+		// task; after ends that window, which is where the task is sent or dropped, and leaves the
+		// claim in state free when nothing is sent: ready at its process's ready, idle at the end
+		// of a turn.
+		before, after func(r *retroOutboxRig, machine *supervise.Machine, token claim.Token, conn *fake.Conn)
+		free          supervise.ClaimState
+	}{
+		{name: "waiting for the ready of the process the retro's start resumed", free: supervise.StateReady,
+			before: func(*retroOutboxRig, *supervise.Machine, claim.Token, *fake.Conn) {},
+			after: func(r *retroOutboxRig, machine *supervise.Machine, token claim.Token, _ *fake.Conn) {
+				readyUp(r.ctx, r.t, machine, token)
+			}},
+		{name: "queued behind a turn of the agent's own", free: supervise.StateIdle,
+			before: func(r *retroOutboxRig, machine *supervise.Machine, token claim.Token, conn *fake.Conn) {
+				if err := machine.Handle(r.ctx, supervise.RequestRuleResume{Claim: token, Reason: "a role message to the retro's agent"}); err != nil {
+					r.t.Fatalf("resume %s: %v", token, err)
+				}
+				readyUp(r.ctx, r.t, machine, token)
+				conn.SetStreaming(true)
+				if err := machine.Handle(r.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+					r.t.Fatalf("start the agent's own turn: %v", err)
+				}
+			},
+			after: func(r *retroOutboxRig, machine *supervise.Machine, token claim.Token, conn *fake.Conn) {
+				conn.SetStreaming(false)
+				endTurn(r.ctx, r.t, machine, token)
+				machine.Wait()
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			closed := retroClosedChild()
+			r := newRetroOutboxRig(t, []record.Issue{retroRunningTree(), closed})
+			machine, token := r.claimOf(closed, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByDaemon)
+			conn, _ := r.sup.deps.Conns.Conn(token)
+			run := r.openRetroAfterClose(closed, token)
+			tc.before(r, machine, token, conn.(*fake.Conn))
+
+			if err := r.runner.execute(r.ctx, retroStart(t, closed, claim.RoleImplementer, run, 85)); err != nil {
+				t.Fatalf("the retro start of the closed child = %v, want its task delivered", err)
+			}
+			heldRetroTask(t, machine, 85, closed, run)
+			if p := machine.Claim().Pending; !p.DeliveredAt.IsZero() {
+				t.Fatalf("the retro's task was sent at %s before the todo, want it waiting unsent", p.DeliveredAt)
+			}
+
+			engine := workflow.New(r.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+				Linger: time.Hour}, quietLogger())
+			if _, err := intake.ApplyFact(r.ctx, r.pool, "dispatch", "child-todo", intake.DispatchIssue{Key: closed.Key, ResolvedRepo: "acme/widgets",
+				Seq: closed.LastDispatchSeq + 1, Type: "issue.updated", Status: "todo", Title: closed.Title, Parent: *closed.Parent, Rank: closed.Rank}, engine); err != nil {
+				t.Fatalf("apply the person's todo on %s: %v", closed.Key, err)
+			}
+			if retro := r.runRetro(closed, run); retro == nil || retro.Open() || retro.Outcome != record.RetroOutcomeStopped || retro.EndedBy != record.RetroEndTodo {
+				t.Fatalf("the retro of run %d after the todo = %+v, want it ended stopped by the todo", run, retro)
+			}
+
+			tc.after(r, machine, token, conn.(*fake.Conn))
+			if prompts := r.promptsOf(token); len(prompts) != 0 {
+				t.Fatalf("the agent's process was sent %+v, want nothing: the retro the task is of was ended by the todo", prompts)
+			}
+			if got := machine.Claim(); got.Pending != nil || got.State != tc.free {
+				t.Fatalf("the implementer after the window = %s holding %+v, want it %s holding nothing", got.State, got.Pending, tc.free)
+			}
+			stored, err := r.st.Claims(r.ctx)
+			if err != nil {
+				t.Fatalf("read the stored claims: %v", err)
+			}
+			for _, c := range stored {
+				if c.Token == token && c.Pending != nil {
+					t.Fatalf("the store still holds the implementer's delivery %+v, want it retired", c.Pending)
+				}
+			}
+		})
 	}
 }
 

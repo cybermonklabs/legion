@@ -272,6 +272,93 @@ func TestARetroAndALookOfOneClaimAreServedInTurn(t *testing.T) {
 	})
 }
 
+// The task of the retro Legion runs after an issue's close names no phase, so no phase drops it,
+// and a todo that takes the issue into a new run ends that retro and stops no claim (INFRA-5602,
+// the review of #5630). So the send asks whether the retro the task names is still open
+// (Deps.RetroAfterCloseHolds), of that task alone, and drops a task whose retro is not: no prompt
+// goes out, and the delivery is retired, in memory and in the store, leaving the claim free for
+// its next task. The task waits unsent in either of two windows: for the ready of a process that
+// is launching, or behind the running turn of another task. A task whose retro is still open is
+// sent as before.
+func TestATaskOfARetroAfterACloseIsSentOnlyWhileThatRetroIsOpen(t *testing.T) {
+	const retroTask, retroID = "Continue Closed. Issue: LEGION-209. Phase: retro.", "outbox:31"
+	for _, window := range []struct {
+		name string
+		// before brings the claim to where the retro's task, once delivered, waits unsent, and
+		// answers how many prompts went out on the way; after ends that wait, which leaves the
+		// claim in state free when nothing is sent: ready at its process's ready, idle at the end
+		// of a turn.
+		before func(h *harness) int
+		after  func(h *harness)
+		free   ClaimState
+	}{
+		{name: "waiting for the ready of a process that is launching", before: func(h *harness) int {
+			h.reach(StateRegistered)
+			return 0
+		}, after: func(h *harness) { h.ready() }, free: StateReady},
+		{name: "queued behind the running turn of another task", before: func(h *harness) int {
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing.",
+				Phase: phase.Implementing, Generation: 8, Entry: 2})
+			h.must(StreamTurnStart{Claim: testToken})
+			return 1
+		}, after: func(h *harness) { h.must(StreamTurnEnd{Claim: testToken}) }, free: StateIdle},
+	} {
+		for _, answer := range []struct {
+			name string
+			open bool
+		}{
+			{name: "the retro is open: its task is sent", open: true},
+			{name: "a todo ended the retro: its task is dropped", open: false},
+		} {
+			t.Run(window.name+", "+answer.name, func(t *testing.T) {
+				h := newBareHarness(t)
+				var asked []RetroRun
+				h.deps.RetroAfterCloseHolds = func(_ context.Context, issue string, run RetroRun) (bool, error) {
+					if issue != "LEGION-209" {
+						t.Errorf("asked whether a retro of %s is open, want the claim's issue LEGION-209", issue)
+					}
+					asked = append(asked, run)
+					return answer.open, nil
+				}
+				c := queuedClaim()
+				if err := h.store.PutClaim(h.ctx, c); err != nil {
+					t.Fatal(err)
+				}
+				h.start(c)
+				sent := window.before(h)
+				h.must(RequestDeliver{Claim: testToken, ID: retroID, Task: retroTask, Generation: 7, RetroRun: 7})
+				h.wantPrompts(sent)
+				if p := h.pending(); p.ID != retroID || p.RetroRun != 7 || !p.DeliveredAt.IsZero() {
+					t.Fatalf("the claim holds %+v before the wait ends, want the retro's task %s of run 7, unsent", p, retroID)
+				}
+
+				window.after(h)
+				if answer.open {
+					if last := h.wantPrompts(sent + 1)[sent]; last.DeliveryID != retroID || last.Message != retroTask {
+						t.Fatalf("sent %+v, want the retro's task under %s", last, retroID)
+					}
+				} else {
+					h.wantPrompts(sent)
+					h.wantState(window.free)
+					if p := h.claim().Pending; p != nil {
+						t.Fatalf("the claim still holds %+v, want the retro's task retired", p)
+					}
+					if stored, ok := h.store.delivery(testToken); ok {
+						t.Fatalf("the store still holds the delivery %+v, want it retired", stored)
+					}
+					if lines := h.logs.lines("that retro is no longer open", "delivery="+retroID, "run=7"); len(lines) != 1 {
+						t.Fatalf("the log says of the drop %q, want one line naming the delivery and the run", lines)
+					}
+				}
+				if len(asked) == 0 || slices.ContainsFunc(asked, func(run RetroRun) bool { return run != 7 }) {
+					t.Fatalf("the send asked about retro runs %v, want run 7 alone: only the retro's task is asked about", asked)
+				}
+			})
+		}
+	}
+}
+
 func TestADeliveryToAnIdleClaimIsSentAtOnce(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)

@@ -1238,6 +1238,14 @@ type Deps struct {
 	// the tree runs again or that hour has passed with no retro open: false drops it rather than
 	// sends it. It is asked only about the task of a retro's wake. nil holds every delivery.
 	RetroWakeHolds func(ctx context.Context, issue string) (bool, error)
+	// RetroAfterCloseHolds says whether the retro Legion runs after the close of issue, on the run
+	// the claim's held task names (Delivery.RetroRun), is still open: no report, no bound and no
+	// `todo` has ended it. Such a task names no phase, so no phase drops it, and its text says the
+	// issue is closed and the retro moves it nowhere, which is false once a todo has taken the
+	// issue into a new run (workflow's EndOpenRetro), and once the retro has ended any other way
+	// nothing of it is owed: false drops it rather than sends it. It is asked only about the task
+	// of a retro after a close. nil holds every delivery.
+	RetroAfterCloseHolds func(ctx context.Context, issue string, run RetroRun) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -5365,10 +5373,10 @@ func (m *Machine) forgetSend() {
 // Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and take no deadline: what they
 // wait on is an advisory lock another transaction holds, so a deadline there would fail a launch
 // that was only queued behind its predecessor. So do the reads of the record — PhaseHolds,
-// RetroWakeHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
-// the next write will say rather than hold the row, and whose failure costs the decision and
-// nothing after it. The deadline is what keeps a database that has stopped answering from holding
-// the machine's lock for the length of the outage.
+// RetroWakeHolds, RetroAfterCloseHolds, RootHears, RootTask, DesignNews, TreeClosable — which
+// decide what the next write will say rather than hold the row, and whose failure costs the
+// decision and nothing after it. The deadline is what keeps a database that has stopped answering
+// from holding the machine's lock for the length of the outage.
 //
 // A call the deadline cut short after the database was handed it, while the decision's own context
 // still runs, is made once more, at once, under a fresh deadline (claimWriteTries, cutByBound): one
