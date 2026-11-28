@@ -52,8 +52,7 @@ func TestGhWritesNothingReadsTheLeafAndTheMethod(t *testing.T) {
 // reads from a file; and a query whose text holds neither `mutation` nor `subscription`, in any
 // case and wherever it stands. A call it admits is one TargetOf reads, and still one that does
 // not write nothing by writesNothing's rule, which a caller's guard reads the call by. The rows
-// are ghroutetest.GraphQLQueryCalls, every one of which cmd/legion's
-// TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp also resolves through its keep of gh's help.
+// are ghroutetest.GraphQLQueryCalls.
 func TestGhGraphQLQueryRead(t *testing.T) {
 	t.Parallel()
 	for _, tc := range ghroutetest.GraphQLQueryCalls {

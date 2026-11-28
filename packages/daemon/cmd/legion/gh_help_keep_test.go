@@ -88,16 +88,10 @@ func readHelps(t *testing.T, gh string, env map[string]string) []string {
 // by a new keep of the same state, which reads from the kept copies and from help only for a path
 // whose help help refused, which is never kept. Each must give the target, the refusal text and
 // the files sent that help gives directly. This package's own resolver calls run through it (the
-// rename pair's routing rows, the guard rig's reads), and so does every row of ghroutetest's
-// tables of the rows internal/ghroute's tests hold TargetOf to: its read-rule lists and GraphQL
-// queries (TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp) and its resolver tables
-// (TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp). The rest of internal/ghroute's tests'
-// rows are resolved there alone: those that read the working directory's remotes, since this
-// package cannot build a ghroute.Remote, whose fields are unexported; the rows of its
-// TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead and
-// TestGhTargetOfRefusesRecursionAndUnreadCloneFlags; and its canary rows
-// (ghroutetest.CanaryRows), which this package's TestNoRefusalPathPrintsACanary runs as `legion
-// gh` itself.
+// rename pair's routing rows, the guard rig's reads). internal/ghroute's tests resolve their rows
+// there, through no keep; the keep is held instead to answer every path of gh's saved help as that
+// help does (TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp), and TargetOf reads gh's help only path
+// by path, through its help argument.
 func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help func([]string) (string, error), remotes func() ([]ghroute.Remote, error), dirFor func(owner, name string) (string, error)) (ghroute.Target, error) {
 	t.Helper()
 	want, wantErr := ghroute.TargetOf(argv, env, help, remotes, dirFor)
@@ -140,102 +134,116 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-// Every call internal/ghroute's read-rule rows resolve over ghroutetest's lists (its
-// TestGhWritesNothingReadsTheLeafAndTheMethod and TestGhReadLeafCallsCoverEveryReadLeaf), and
-// every row of its TestGhGraphQLQueryRead (ghroutetest.GraphQLQueryCalls), is decided through a
-// keep as gh's own help decides it (ghTargetOfKept): the calls that write nothing, each read
-// leaf's call among them, the guarded calls and leaf spellings, every gh api cross product of a
-// guarded option or endpoint, and the GraphQL calls, those graphQLQueryRead admits and those it
-// does not. Those rows live beside the resolver, which cannot reach this package's keep.
-func TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp(t *testing.T) {
+// The keep answers every path of gh's saved help as that help does, and so decides every call
+// ghroute.TargetOf resolves under that help as the help decides it, a call that reads the working
+// directory's git remotes included, with no list of calls to keep up to date: TargetOf reads gh's
+// help only through its help argument, a path at a time, and runs no gh itself (it calls no
+// ghroute.ReadHelp). The help is gh 2.98.0's saved help (ghHelpDir) and each release's saved walk
+// (ghHelpWalkDir), each directory read under a state of its own. Its paths are every file's, read
+// as the path ghroutetest.SavedHelp reads it for (gh.txt gh's own help, else the path's words
+// joined by "_"), help topics among them, and, where no file holds them, an unknown command, gh's
+// default alias co, and a subcommand pr does not list, which gh answers with pr's help. A walk
+// saves no gh alias's help, so its saved help refuses co as gh refuses an unknown command;
+// ghHelpDir holds the help gh printed for co. Two files are no path's help and are skipped:
+// VERSION, `gh --version`'s first line, and ghHelpDir's reference.txt, gh's reference, which
+// regenerate-gh-help.sh saves from `gh help reference` (the 2.98.0 walk's reference.txt, the help
+// of the topic reference, holds the same text and is read). A first keep reads every path from gh,
+// whose answer here is the saved help's, as nothing is kept yet, and keeps each help gh printed; a
+// new keep of the same state reads each kept path from its copy, reading nothing from gh, and a
+// refused path from gh again, since a refusal is never kept. Each answer, its text or its error's,
+// is the saved help's. A directory that yields no path fails, and so does a walk of no release.
+func TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp(t *testing.T) {
 	t.Parallel()
-	calls := slices.Concat(
-		ghroutetest.ReadCalls(),
-		ghroutetest.GuardedCalls,
-		ghroutetest.GuardedLeafSpellings,
-		ghroutetest.GuardedAPICrossProducts(),
-	)
-	for _, argv := range calls {
-		if _, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil {
-			t.Errorf("ghroute.TargetOf(%q) = %v", argv, err)
+	dirs := []string{ghHelpDir}
+	releases, err := os.ReadDir(ghHelpWalkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, release := range releases {
+		if release.IsDir() {
+			dirs = append(dirs, filepath.Join(ghHelpWalkDir, release.Name()))
 		}
 	}
-	for _, tc := range ghroutetest.GraphQLQueryCalls {
-		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+	if len(dirs) == 1 {
+		t.Fatalf("%s holds no release's walk", ghHelpWalkDir)
 	}
-	t.Logf("%d read-rule calls and %d GraphQL calls ran through the keep", len(calls), len(ghroutetest.GraphQLQueryCalls))
-}
-
-// Every row of ghroutetest's resolver tables is decided through a keep as gh's own help decides
-// it (ghTargetOfKept): the target, the refusal text and the files sent alike, a help gh refuses
-// among them (an unknown command, a gh alias's help), which is never kept and is read from gh
-// again. The tables hold the rows internal/ghroute's tests hold TargetOf to that read no git
-// remote: TestGhTargetOfFailsClosed's (ghroutetest.FailsClosedCalls; the rows of a -h before the
-// command's name, under gh 2.98.0's help of every command, saved whole,
-// ghroutetest.HBeforeTheCommandCalls; and ghroutetest.RoutedCalls, routed by ghroute.DirFor over
-// the bundle ghroutetest.WriteRoutedBundle writes), and the rows of its
-// TestGhTargetOfNamesTheOneRepositoryEverySelectorNames, TestGhTargetOfRefusalsSayHowToNameTheRepository,
-// TestGhTargetOfReadsTheFilesTheCallWouldSend, TestGhTargetOfRoutesEverySelectorKindOfARead
-// (ghroutetest.SelectorKindReads, each naming octocat and naming sjawhar, under the help of every
-// release ghroutetest.SelectorKindReleases names, a leaf that release's help does not list
-// among them), TestTargetOfNamesTheLeafCommand and TestLegionGhPrintsNoTokenOfASelectorOrAMarker.
-// Each row is read under its own edits of gh's saved help where it names any.
-func TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp(t *testing.T) {
-	t.Parallel()
-	rows := 0
-	walked := ghroutetest.HBeforeTheCommandCalls
-	for _, table := range []struct {
-		calls []ghroutetest.TargetCall
-		help  func([]string) (string, error)
-	}{
-		{calls: ghroutetest.FailsClosedCalls, help: savedGhHelp},
-		{calls: ghroutetest.OneRepositoryCalls, help: savedGhHelp},
-		{calls: walked.Calls, help: savedGhHelpOf(t, walked.Version)},
-	} {
-		for _, tc := range table.calls {
-			ghTargetOfKept(t, tc.Argv, tc.Env, tc.Help(table.help), noGitRepository, ghroutetest.OwnersOwnDirectories)
-			rows++
-		}
-	}
-	for argv := range ghroutetest.RefusalAdvice {
-		ghTargetOfKept(t, strings.Fields(argv), nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
-		rows++
-	}
-	for _, tc := range ghroutetest.SentFileCalls {
-		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
-		rows++
-	}
-	root := ghroutetest.WriteRoutedBundle(t)
-	routed := func(owner, name string) (string, error) { return ghroute.DirFor(root, owner, name) }
-	routedCalls := ghroutetest.RoutedCalls(root)
-	for _, tc := range routedCalls {
-		ghTargetOfKept(t, tc.Argv, tc.Env, savedGhHelp, noGitRepository, routed)
-		rows++
-	}
-	selectorKinds := 0
-	for _, version := range ghroutetest.SelectorKindReleases {
-		help := savedGhHelpOf(t, version)
-		for _, r := range ghroutetest.SelectorKindReads {
-			for _, owner := range []string{"octocat", "sjawhar"} {
-				argv, env := r.Of(owner)
-				ghTargetOfKept(t, argv, env, help, noGitRepository, ghroutetest.ServesAcmeAndSjawhar)
-				selectorKinds++
+	for _, dir := range dirs {
+		t.Run(dir, func(t *testing.T) {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	}
-	rows += selectorKinds
-	for _, tc := range ghroutetest.LeafCommandCalls {
-		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
-		rows++
-	}
-	for _, tc := range ghroutetest.PrintedSelectorCalls {
-		ghTargetOfKept(t, tc.Argv, tc.Env, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
-		rows++
-	}
-	t.Logf("%d rows ran through the keep: %d of ghroutetest.RoutedCalls, %d of %d SelectorKindReads at %d releases with two owners, %d of LeafCommandCalls, %d of PrintedSelectorCalls",
-		rows, len(routedCalls), selectorKinds, len(ghroutetest.SelectorKindReads), len(ghroutetest.SelectorKindReleases), len(ghroutetest.LeafCommandCalls), len(ghroutetest.PrintedSelectorCalls))
-	if rows < 150 {
-		t.Errorf("%d rows ran through the keep, want the tables' whole, at least 150", rows)
+			var paths [][]string
+			for _, entry := range entries {
+				switch name := entry.Name(); {
+				case name == "VERSION" || dir == ghHelpDir && name == "reference.txt":
+				case !entry.Type().IsRegular() || !strings.HasSuffix(name, ".txt"):
+					t.Errorf("%s holds %s, which is no saved help", dir, name)
+				case name == "gh.txt":
+					paths = append(paths, nil)
+				default:
+					paths = append(paths, strings.Split(strings.TrimSuffix(name, ".txt"), "_"))
+				}
+			}
+			files := len(paths)
+			if files == 0 {
+				t.Fatalf("%s holds no saved help", dir)
+			}
+			for _, path := range [][]string{{"frobnicate"}, {"co"}, {"pr", "frobnicate"}} {
+				if !slices.ContainsFunc(paths, func(p []string) bool { return slices.Equal(p, path) }) {
+					paths = append(paths, path)
+				}
+			}
+			saved := ghroutetest.SavedHelp(dir)
+			refused := 0
+			for i, path := range paths {
+				if _, err := saved(path); err != nil {
+					refused++
+					if i < files {
+						t.Errorf("gh's saved help of %q, which %s holds a file for, is the error %q", path, dir, err)
+					}
+				}
+			}
+			if refused == 0 {
+				t.Errorf("%s answers every path read, want one gh refuses", dir)
+			}
+			// The gh the keep is keyed on, which it never runs: the saved help answers in its place.
+			gh := filepath.Join(t.TempDir(), "gh")
+			if err := execfile.Write(gh, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			env := helpKeepEnv(t)
+			const first = "the keep that keeps each help it reads"
+			for _, keeper := range []string{first, "the keep that reads the kept copies"} {
+				keep := newGhHelpKeep(context.Background(), gh, env, nil)
+				if keep.dir == "" {
+					t.Fatalf("a keep for %s keeps nothing", gh)
+				}
+				fromGh := false
+				keep.fresh = func(path []string) (string, error) {
+					fromGh = true
+					return saved(path)
+				}
+				for _, path := range paths {
+					want, wantErr := saved(path)
+					fromGh = false
+					got, err := keep.read(path)
+					if got != want || errorText(err) != errorText(wantErr) {
+						at := 0
+						for at < len(got) && at < len(want) && got[at] == want[at] {
+							at++
+						}
+						t.Errorf("%s answered gh's help of %q otherwise than %s: from byte %d, %q and the error %q, where the saved help holds %q and the error %q",
+							keeper, path, dir, at, got[at:min(len(got), at+40)], errorText(err), want[at:min(len(want), at+40)], errorText(wantErr))
+					}
+					if wantFromGh := keeper == first || wantErr != nil; fromGh != wantFromGh {
+						t.Errorf("%s read gh's help of %q from gh = %v, want %v: nothing is kept before the first keep reads, a refusal is never kept, and every other help is", keeper, path, fromGh, wantFromGh)
+					}
+				}
+			}
+			t.Logf("%s: %d paths read through both keeps, %d of its files and %d no file holds; %d kept and read from their copies, %d refused and read from gh's help again",
+				dir, len(paths), files, len(paths)-files, len(paths)-refused, refused)
+		})
 	}
 }
 

@@ -314,8 +314,7 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // other call naming such an owner is routed and refused as with no R4. The rows that read no git
 // remote are ghroutetest.FailsClosedCalls, read under savedGhHelp, and
 // ghroutetest.HBeforeTheCommandCalls, a -h before the command's name, read under gh 2.98.0's help
-// of every command, saved whole; `legion gh`'s tests also resolve both through its keep of gh's
-// help. The rows below read the working directory's, or a bundle on disk.
+// of every command, saved whole. The rows below read the working directory's, or a bundle on disk.
 func TestGhTargetOfFailsClosed(t *testing.T) {
 	t.Parallel()
 	// A remote URL a CI checkout writes, a made-up token as its user info, built from its parts so
@@ -539,8 +538,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	// fallback (selectors.dir): a write, a GraphQL mutation, a read beside an owner the bundle
 	// serves, a read with no GH_CONFIG_DIR, a read whose remotes were read for it (whether or not
 	// the remote's entry was kept), and a read of a pair's repository. The rows read in a working
-	// directory that is no git repository are ghroutetest.RoutedCalls, which `legion gh`'s tests
-	// also resolve through its keep of gh's help; the rows below read the working directory's.
+	// directory that is no git repository are ghroutetest.RoutedCalls; the rows below read the
+	// working directory's.
 	root := ghroutetest.WriteRoutedBundle(t)
 	routed := func(owner, name string) (string, error) { return DirFor(root, owner, name) }
 	for _, tc := range ghroutetest.RoutedCalls(root) {
@@ -609,8 +608,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 // naming none, one naming two of the one owner, and one where a selector named the owner alone —
 // an `<owner>` argument, orgs/<owner>/ or users/<owner>/, an owner:/org:/user: qualifier, a
 // team, an owner option — name none, and the command runs with the owner's directory all the
-// same. The rows that read no git remote are ghroutetest.OneRepositoryCalls, which `legion gh`'s
-// tests also resolve through its keep of gh's help; the rows below read the working directory's.
+// same. The rows that read no git remote are ghroutetest.OneRepositoryCalls; the rows below read
+// the working directory's.
 func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 	t.Parallel()
 	for _, tc := range ghroutetest.OneRepositoryCalls {
@@ -667,8 +666,8 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 // apiRESTEndpoint admits a relative path alone, and a search endpoint's q given as a field,
 // since apiReadOptions holds neither -f nor -F, and gh sends a call with a field as a POST
 // (gh api's help: "adding request parameters will automatically switch the request method to
-// `POST`"). The rows are ghroutetest.SelectorKindReads, which `legion gh`'s tests also resolve
-// through its keep of gh's help, at each release this reads and with each owner.
+// `POST`"). The rows are ghroutetest.SelectorKindReads, read at each release this reads and with
+// each owner.
 func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
 	t.Parallel()
 	// Each row is octocat's read in acme's pane, whose bundle serves acme and sjawhar and holds no
@@ -796,8 +795,7 @@ func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
 
 // TargetOf names the leaf a command runs as gh's own help names it, a cobra alias read as its
 // command, and none for a command that runs no leaf or only prints its help: a leaf's --help, gh's
-// own help, its version, a group alone. The rows are ghroutetest.LeafCommandCalls, which `legion
-// gh`'s tests also resolve through its keep of gh's help.
+// own help, its version, a group alone. The rows are ghroutetest.LeafCommandCalls.
 func TestTargetOfNamesTheLeafCommand(t *testing.T) {
 	t.Parallel()
 	for _, tc := range ghroutetest.LeafCommandCalls {

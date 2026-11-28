@@ -168,8 +168,7 @@ func GuardedAPICalls() [][]string {
 }
 
 // GuardedAPICrossProducts are the gh api calls with a guarded option or a guarded endpoint that
-// ghroute's TestGhWritesNothingReadsTheLeafAndTheMethod holds to writing and cmd/legion's
-// TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp decides through its keep: APICalls' cross
+// ghroute's TestGhWritesNothingReadsTheLeafAndTheMethod holds to writing: APICalls' cross
 // products of APIGuardedSpellings with APIReadEndpoints, of APIReadSpellings with
 // APIGuardedEndpoints and of APIGuardedSpellings with APIGuardedEndpoints, and GuardedAPICalls.
 func GuardedAPICrossProducts() [][]string {

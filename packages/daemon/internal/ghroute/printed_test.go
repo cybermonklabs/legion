@@ -40,8 +40,7 @@ func ghPrinted(err error) string {
 // a remote names, never reaches it; a remote with a token in its path and no "@", where the URL
 // rule finds no user info, is named by its git name alone; and a marker naming acme/widgets with a
 // token after it, beside an upstream of another owner, prints none of it in the two-owner refusal.
-// The rows that read no git remote are ghroutetest.PrintedSelectorCalls, which `legion gh`'s
-// tests also resolve through its keep of gh's help.
+// The rows that read no git remote are ghroutetest.PrintedSelectorCalls.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	t.Parallel()
 	at := "@"

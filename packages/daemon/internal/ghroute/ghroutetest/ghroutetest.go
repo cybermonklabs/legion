@@ -1,20 +1,21 @@
 // Package ghroutetest holds what the tests of internal/ghroute and the tests of `legion gh`
-// (cmd/legion) both read of gh calls: gh's saved help, answered as the real gh answers it
+// (cmd/legion) read of gh calls: gh's saved help, answered as the real gh answers it
 // (SavedHelp), and that help edited as another gh would print it (EditedHelp); the routing of a
 // bundle that holds every owner's directory and no rename (OwnersOwnDirectories); the git remotes
 // of a working directory that is no repository (NoGitRepository); the resolver tables that read no
 // git remote and the bundle some of them are routed over (targets.go), which ghroute's tests hold
-// TargetOf to and `legion gh`'s tests resolve through its keep of gh's help; the calls that write
-// nothing and the calls that do, and the GraphQL calls (calls.go), which ghroute's tests hold its
-// read rules (ghroute.Target.WritesNothing, graphQLQueryRead) to and `legion gh`'s tests run end
-// to end or resolve through its keep; a port of the pinned shared check's own read of a call
-// (PinnedCheckReads), which ghroute's tests prove the rule against and `legion gh`'s stand-in
-// check answers with; the helper processes ghroute's help-read rows and the signal, git-read and
-// fork-read rows of cmd/legion hold their work with (process.go); the walk of each package's
-// source that finds the places formatting a value without ghroute.Shown, which each holds to a
-// reviewed table of its own, and the refusal paths, the calls of ghroute.Shown (sourcewalk.go);
-// and the canary rows of internal/ghroute's refusal paths that ghroute.TargetOf reaches
-// (canary.go), which ghroute's tests hold its source to and `legion gh`'s tests run end to end.
+// TargetOf to; the calls that write nothing and the calls that do, and the GraphQL calls
+// (calls.go), which ghroute's tests hold its read rules (ghroute.Target.WritesNothing,
+// graphQLQueryRead) to and `legion gh`'s tests run end to end, but for the gh api cross products
+// and the GraphQL calls, which ghroute's tests alone read; a port of the pinned shared check's own
+// read of a call (PinnedCheckReads), which ghroute's tests prove the rule against and `legion gh`'s
+// stand-in check answers with; the helper processes ghroute's help-read rows and the signal,
+// git-read and fork-read rows of cmd/legion hold their work with (process.go); the walk of each
+// package's source that finds the places formatting a value without ghroute.Shown, which each
+// holds to a reviewed table of its own, and the refusal paths, the calls of ghroute.Shown
+// (sourcewalk.go); and the canary rows of internal/ghroute's refusal paths that ghroute.TargetOf
+// reaches (canary.go), which ghroute's tests hold its source to and `legion gh`'s tests run end to
+// end.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/leakguard's

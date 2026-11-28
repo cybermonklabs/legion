@@ -13,12 +13,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
-// The resolver tables ghroute's TargetOf tests read (route_test.go, printed_test.go), every row
-// of which `legion gh`'s tests also resolve through its keep of gh's help (cmd/legion's
-// ghTargetOfKept): a keep that keeps each help it reads, and then a keep that reads the copies,
-// must decide each row as gh's own help does, the refusal text included. A row that reads the
-// working directory's git remotes stays beside the resolver: cmd/legion cannot build the
-// ghroute.Remote values it needs, whose fields are unexported.
+// The resolver tables ghroute's TargetOf tests read (route_test.go, printed_test.go): the rows of
+// those tests that read no git remote. `legion gh` reads gh's help through its keep (cmd/legion's
+// ghHelpKeep), which cmd/legion's TestGhHelpKeepAnswersEveryPathAsGhsSavedHelp holds to answer
+// every path of gh's saved help as that help does. TargetOf reads gh's help only through its help
+// argument, so each row read under that help, one that reads git remotes included, is decided
+// through the keep as it is decided here, with no run through the keep of its own.
 
 // NoGitRepository is the git remotes of a working directory that is no git repository: none. R is
 // ghroute.Remote, which this package cannot name (it imports ghroute not at all), so a caller
