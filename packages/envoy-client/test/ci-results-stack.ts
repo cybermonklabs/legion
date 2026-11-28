@@ -193,11 +193,20 @@ export interface StoredResult {
   readonly id: string;
   readonly seq: number;
   readonly attestation: {
+    readonly subject: readonly { readonly digest: { readonly gitCommit: string } }[];
     readonly predicate: {
       readonly check: string;
+      readonly procedure_digest: string;
       readonly verdict: string;
       readonly observed: string;
-      readonly run: { readonly check_run_id: string };
+      readonly job: string;
+      readonly leg: string;
+      readonly recorded_at: string;
+      readonly run: {
+        readonly run_id: string;
+        readonly attempt: number;
+        readonly check_run_id: string;
+      };
     };
   };
 }

@@ -83,9 +83,7 @@ describe.skipIf(!dispatchStackEnabled)("a long output of a test, as Dispatch kee
       lines: ["seventy-k-output fail exit 0", "three-k-output fail exit 0"],
     });
 
-    const rows = (await stack.results(sha)) as unknown as {
-      attestation: { predicate: { check: string; verdict: string; observed: string } };
-    }[];
+    const rows = await stack.results(sha);
     const kept = Object.fromEntries(
       rows.map(({ attestation: { predicate } }) => [predicate.check, predicate])
     );

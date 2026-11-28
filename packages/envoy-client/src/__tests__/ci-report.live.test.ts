@@ -15,6 +15,7 @@ import {
   type CIResultsStack,
   DISPATCH_HOST,
   type JobRun,
+  type StoredResult,
   startCIResultsStack,
   useCIResultsStackDirectory,
 } from "../../test/ci-results-stack";
@@ -103,28 +104,6 @@ jobs:
 const stackDirectory = useCIResultsStackDirectory();
 const work = temporaryDirectory("ci-report-live");
 
-/** A row of `GET /api/v1/projects/{key}/results`, as these rows read it. */
-interface Row {
-  readonly id: string;
-  readonly seq: number;
-  readonly attestation: {
-    readonly subject: { readonly digest: { readonly gitCommit: string } }[];
-    readonly predicate: {
-      readonly check: string;
-      readonly procedure_digest: string;
-      readonly verdict: string;
-      readonly job: string;
-      readonly leg: string;
-      readonly recorded_at: string;
-      readonly run: {
-        readonly run_id: string;
-        readonly attempt: number;
-        readonly check_run_id: string;
-      };
-    };
-  };
-}
-
 /** A checkout of one commit of the repository: its directory and its commit. */
 interface Checkout {
   readonly dir: string;
@@ -211,8 +190,8 @@ describe.skipIf(!dispatchStackEnabled)(
     }
 
     /** Every stored row at `commit`, as a person reads them, newest first. */
-    async function rowsAt(commit: string): Promise<Row[]> {
-      return (await running().results(commit)) as unknown as Row[];
+    async function rowsAt(commit: string): Promise<StoredResult[]> {
+      return await running().results(commit);
     }
 
     /** The job `run` writing a pass of `check` at its own commit itself, with the real CLI under
@@ -256,7 +235,7 @@ describe.skipIf(!dispatchStackEnabled)(
     }
 
     /** Each row as its check, verdict, job, leg, attempt and commit, oldest first. */
-    function described(rows: readonly Row[]): string[] {
+    function described(rows: readonly StoredResult[]): string[] {
       return [...rows]
         .sort((a, b) => a.seq - b.seq)
         .map(({ attestation: { subject, predicate } }) =>
@@ -274,7 +253,7 @@ describe.skipIf(!dispatchStackEnabled)(
     /** Each row as its check, its check run and the member leg of its predicate as the read gives
      *  it, JSON-quoted, or "no leg" where the read leaves the member out, oldest first. A reader of
      *  the results takes a row with no leg as the leg of no matrix. */
-    function legsOf(rows: readonly Row[]): string[] {
+    function legsOf(rows: readonly StoredResult[]): string[] {
       return [...rows]
         .sort((a, b) => a.seq - b.seq)
         .map(
@@ -478,7 +457,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("each leg of a matrix writes its own result, and a second attempt of one leg leaves the other leg's row as it was", async () => {
       const checkout = checkoutOf("matrix", SPEC, MATRIX_WORKFLOW);
-      const probeRows = async (): Promise<Row[]> =>
+      const probeRows = async (): Promise<StoredResult[]> =>
         (await rowsAt(checkout.sha)).filter((row) => row.attestation.predicate.check === PROBE);
 
       const legA = await lastStep(checkout, legOf(checkout, 601, "a"), "go-test-all-pass.jsonl");
@@ -501,7 +480,9 @@ describe.skipIf(!dispatchStackEnabled)(
       ]);
       expect(new Set(rows.map((row) => row.attestation.predicate.run.run_id)).size).toBe(1);
       expect(before).toBeDefined();
-      expect(rows.find((row) => row.attestation.predicate.leg === "a")).toEqual(before as Row);
+      expect(rows.find((row) => row.attestation.predicate.leg === "a")).toEqual(
+        before as StoredResult
+      );
     }, 180_000);
 
     test("each stored result of a job with no matrix holds the member leg, and it is empty", async () => {
