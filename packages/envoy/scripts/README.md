@@ -165,7 +165,7 @@ own `github-app` secrets mint at, and this script points nothing at that one. It
 profiles file (`BROKER_PROFILES_FILE`, in the kinds form: a `kinds` list of a test kind for each
 stand-in and the `anthropic` kind as the deployment writes it, the `github-app` secret's profile,
 `AIRLOCK_PLAIN_GITHUB` of an untagged copy of that App, and the narrowed anthropic secret's
-profile) and a memory store whose secrets each name their kind in a `proxy` tag, gives the
+profile) and a fake Secrets Manager whose secrets each name their kind in a `proxy` tag, gives the
 `ca` stand the profiles file's hosts as its policy, starts **two** broker processes on a database
 of their own with the whole `BROKER_AIRLOCK_*` block and the proxy chain's settings, puts one TCP
 front
@@ -407,7 +407,7 @@ curl reads the proxy from a config (`-K`) and the header from standard input; an
 git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
-memory store and makes every broker reread it. A control that needs other
+fake Secrets Manager and makes every broker reread it. A control that needs other
 profiles or another proxy setting — `k4`'s, which turns the refusal of a loopback address
 off for one host — is a second broker process on the stack's own database, authority
 and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
@@ -639,6 +639,8 @@ cannot stand in for a new test's.
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
 step skips them by name (`BACKEND_COUNT_TESTS` in `.github/scripts/ci_job_reads.py`).
+On CI the counter also keeps its report in `$RUNNER_TEMP/go-test-events/backend-count-*.jsonl`,
+one file per run for the job's artifact. Locally it deletes the temporary report on exit.
 
 ## database-skips.sh
 
@@ -682,6 +684,9 @@ leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a
 before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
 refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
 `--count-table`, `-run`).
+On CI each test run also keeps an exact copy of its report in
+`$RUNNER_TEMP/go-test-events/database-skips-*.jsonl` for the job's artifact. Locally the
+temporary report is deleted on exit. `--report` writes no events file.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -784,10 +789,11 @@ that version reports is refused before anything is built, so a mistyped point ca
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
 test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
 line).
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
-those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
-an empty `-C`, a module that replaces nats-server), with the fixture package
-`internal/testnats/hooktest/skiponly`.
+
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks seven cases:
+five refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
+an empty `-C`, and a module that replaces nats-server), verbose test output with no appended
+summary, and two packages whose interleaved output keeps both verdicts.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
 the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
 forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
@@ -797,38 +803,9 @@ skipped. Its
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
 
-## store-live-check.sh
-
-Runs one secret store's live contract tests against that store's real service and counts
-what they did, so a live run that ran nothing cannot read as a pass. Run it from
-`packages/envoy`, where its `go test` finds the store's package:
-
-```bash
-BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
-  scripts/store-live-check.sh gcp
-```
-
-The store is named by its registry id. Today the one store with live tests is `gcp`
-(`go test -tags gcplive -run Live ./internal/cipher/secretstore/gcp/`), whose
-`TestGCPLiveRunsTheStoreContract` makes each contract case's fixtures under a random
-`broker-live-<hex>-` prefix of that project and deletes them when the case ends.
-
-It prints `passed=N skipped=M failed=K`, each skipped or failed test's name, how many cases
-of the store's live contract passed, and where the event stream is kept
-(`STORE_LIVE_CHECK_EVENTS`, else a file of its own). It exits 0 only when N is above zero, M
-and K are both zero, and the live contract itself (`TestGCPLiveRunsTheStoreContract` for
-`gcp`) passed with its store's level and at least one case, so a run of some other live test
-alone, the contract renamed or deleted, is no pass. A skip counts as a failure because a
-live test skips when its variables are unset, which is the shape a live run fails in: the
-tests pass, nothing ran, and the run looks green. A run that wrote no event at all prints
-`UNKNOWN: go test wrote no events` and exits 1, so an empty set is never read as a pass, and
-a run whose store variables are unset is refused by name before go test runs.
-`store-live-check.test.sh` holds it to its rows behind a stub `go` on `PATH`, which
-`envoy-go-checks` runs as "Isolation test for store-live-check.sh": a run whose tests all
-passed, with its cases counted and its events kept, also with no events path set; one of
-another live test alone; one of the contract with no case; one with a skip; one with a failed
-case; one that wrote no event; one with the store's variables unset; one naming no store;
-and one naming a store with no live tests.
+The log shows Go's verbose output. Only `go test -json` stdout goes into the events file.
+CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
+the temporary events file on exit.
 
 ## aws-moto-check.sh
 
