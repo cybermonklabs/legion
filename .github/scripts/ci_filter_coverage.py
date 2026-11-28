@@ -325,33 +325,60 @@ def called_workflows(document: dict) -> dict:
     return {path: jobs[0] for path, jobs in workflow_callers(document).items()}
 
 
-# The input a workflow several jobs of ci.yaml call reads to run, under each caller, the job of it
-# named for that caller and no other: ci-job-test.yaml holds `test` and `tooling-checks`, the
-# two halves of what was one job, and ci.yaml's job of each id passes its own id. A file that
-# several jobs call and that holds no job named for any of them (dispatch-browser.yaml, which
-# dispatch-browser, dispatch-browser-pr and dispatch-references call with a lane each) runs every
-# job under every caller.
+# The input a workflow several jobs of ci.yaml call reads to run, under each caller, the jobs of it
+# for that caller and no other: ci-job-test.yaml holds `test` and `tooling-checks`, the two halves
+# of what was one job, ci-job-envoy-e2e-local.yaml holds `envoy-e2e-local` for one caller and
+# `envoy-refill-legs` and `envoy-refill`, which restates the legs' result, for the other, and
+# ci.yaml's job of each id passes its own id. A file that several jobs call and that holds no job
+# named for any of them (dispatch-browser.yaml, which dispatch-browser, dispatch-browser-pr and
+# dispatch-references call with a lane each) runs every job under every caller.
 CALLER_INPUT = "job"
 
 
-def called_job_owners(callers: list, name: str) -> list:
-    """The ci.yaml jobs among `callers` that run job `name` of the workflow they call. A file one
-    job calls runs every job of it under that one. A file several call runs a job named for one of
-    them under that one alone, since its `if:` admits only that caller's CALLER_INPUT
-    (check_called_jobs holds both halves of that), and any other job under every caller."""
-    return [name] if len(callers) > 1 and name in callers else list(callers)
+def caller_ifs(name: str) -> tuple:
+    """The `if:`s, each as squash writes it, that run a job of a file several ci.yaml jobs call
+    under job `name` alone: the bare comparison of CALLER_INPUT with that id, and the same
+    comparison behind `!cancelled()`, which a job that restates the result of jobs it needs
+    carries (envoy-refill of ci-job-envoy-e2e-local.yaml, after its legs), since GitHub skips a
+    job whose needs did not all succeed unless its `if:` calls a status function. No other form is
+    read as admitting one caller, however GitHub would read it: a term beside the comparison, such
+    as an `||`, could admit another."""
+    compare = f"inputs.{CALLER_INPUT} == '{name}'"
+    return compare, f"${{{{ !cancelled() && {compare} }}}}"
+
+
+def called_job_owners(callers: list, name: str, jobs: dict) -> list:
+    """The ci.yaml jobs among `callers` that run job `name` of `jobs`, the jobs of the workflow they
+    call. A file one job calls runs every job of it under that one. A file several call runs a job
+    named for one of them under that one alone, since its `if:` admits only that caller's
+    CALLER_INPUT (check_called_jobs holds both halves of that). Once the file holds a job named for
+    any of its callers, so that each caller passes its own id, another job whose `if:` is one of
+    one caller's caller_ifs runs under that caller alone too, as envoy-refill-legs runs under
+    envoy-refill; any other job runs under every caller."""
+    if len(callers) < 2:
+        return list(callers)
+    if name in callers:
+        return [name]
+    if any(caller in jobs for caller in callers):
+        have_if = squash(str((jobs.get(name) or {}).get("if", "")))
+        alone = [caller for caller in callers if have_if in caller_ifs(caller)]
+        if alone:
+            return alone
+    return list(callers)
 
 
 def check_called_jobs(documents: dict, problems: list[Annotation]) -> None:
     """A workflow several ci.yaml jobs call is read job by job: each job named for one of its
-    callers is read as that caller's alone (called_job_owners), so the rules that hold a job's go
-    commands, its environment and its gated steps to its own gate hold it to that caller's. That
-    reading is sound only while the job really runs under that caller alone. So, once the file
-    holds a job named for any of its callers: each caller must have a job of the file named for
-    it, else no job of the file runs under that caller for this check to hold to its gate; that
-    job's `if:` must be exactly `inputs.job == '<its id>'`; and the caller must pass
-    `job: <its own id>`. A job that ran under a second caller would run go commands and read files
-    that caller's filter is never held to."""
+    callers, and each other job whose `if:` admits one of them alone, is read as that caller's
+    alone (called_job_owners), so the rules that hold a job's go commands, its environment and its
+    gated steps to its own gate hold it to that caller's. That reading is sound only while the job
+    really runs under that caller alone. So, once the file holds a job named for any of its
+    callers: each caller must have a job of the file named for it, else no job of the file runs
+    under that caller for this check to hold to its gate; that job's `if:` must be exactly one of
+    caller_ifs, `inputs.job == '<its id>'` or, after jobs it needs, `${{ !cancelled() &&
+    inputs.job == '<its id>' }}`; and the caller must pass `job: <its own id>`. A job that ran
+    under a second caller would run go commands and read files that caller's filter is never held
+    to."""
     for path, callers in workflow_callers(documents[WORKFLOW]).items():
         if len(callers) < 2:
             continue
@@ -366,11 +393,12 @@ def check_called_jobs(documents: dict, problems: list[Annotation]) -> None:
                                                 f"runs under {name} that this check can hold to {name}'s gate; give the "
                                                 f"file a job named {name}, or call another file"))
                 continue
-            want_if = f"inputs.{CALLER_INPUT} == '{name}'"
+            want_if, after_needs = caller_ifs(name)
             have_if = squash(str((called_jobs[name] or {}).get("if", "")))
-            if have_if != want_if:
+            if have_if not in (want_if, after_needs):
                 problems.append(error(path, f"job {name} of {path}, which jobs {', '.join(callers)} of {WORKFLOW} all "
-                                            f"call, carries `if: {have_if}`: give it `if: {want_if}`, so it runs under "
+                                            f"call, carries `if: {have_if}`: give it `if: {want_if}`, or "
+                                            f"`if: {after_needs}` when it restates jobs it needs, so it runs under "
                                             f"job {name} alone, which is the one caller this check holds its steps to"))
             passed = str((((documents[WORKFLOW].get("jobs") or {}).get(name) or {}).get("with") or {}).get(CALLER_INPUT, ""))
             if passed != name:
@@ -1955,9 +1983,10 @@ def step_holders(documents: dict) -> list:
     units = [(job_id, WORKFLOW, job_id, ci, job or {}) for job_id, job in (ci.get("jobs") or {}).items()]
     for path, callers in workflow_callers(ci).items():
         called = documents.get(path) or {}
+        called_jobs = called.get("jobs") or {}
         units += [(owner, path, name, called, called_job or {})
-                  for name, called_job in (called.get("jobs") or {}).items()
-                  for owner in called_job_owners(callers, name)]
+                  for name, called_job in called_jobs.items()
+                  for owner in called_job_owners(callers, name, called_jobs)]
     return units
 
 
@@ -2684,9 +2713,10 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
             called = documents.get(path) or {}
             callers = workflow_callers(document).get(path, [job_id])
             # Only the jobs of that file this caller runs (called_job_owners): a file several
-            # jobs call holds one job per caller, each reporting under its own caller's id.
-            called_jobs = {name: j for name, j in (called.get("jobs") or {}).items()
-                           if job_id in called_job_owners(callers, name)}
+            # jobs call holds the jobs of each caller, each reporting under its own caller's id.
+            every_job = called.get("jobs") or {}
+            called_jobs = {name: j for name, j in every_job.items()
+                           if job_id in called_job_owners(callers, name, every_job)}
             # The job that reports is the called workflow's job whose last step is the report:
             # always() first, so it runs after a failed step too, and ended only by the call's own
             # condition (docs-site.yaml's input, worker-image.yaml's event). Its `job:` is the

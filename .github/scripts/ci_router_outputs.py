@@ -222,10 +222,12 @@ class Evaluator:
 
     def call(self, function):
         self.take("(")
-        args = [self.either()]
-        while self.peek() == ",":
-            self.take()
+        args = []
+        if self.peek() != ")":
             args.append(self.either())
+            while self.peek() == ",":
+                self.take()
+                args.append(self.either())
         self.take(")")
         function = function.lower()
         if function == "contains" and len(args) == 2:
@@ -235,6 +237,11 @@ class Evaluator:
             return str(item).lower() in str(search).lower()
         if function == "tojson" and len(args) == 1:
             return json.dumps(args[0], indent=2)
+        # No run this reader evaluates is cancelled, so a job behind `!cancelled()` - the job of
+        # ci-job-envoy-e2e-local.yaml that restates envoy-refill's legs - runs where its other terms
+        # hold.
+        if function == "cancelled" and not args:
+            return False
         raise Refused(f"function {function} with {len(args)} arguments is not modelled")
 
     def lookup(self, path):
@@ -427,9 +434,9 @@ def steps_of(workflow, document, job_id, outputs, context, result):
     out = []
     for called_id, job in (called.get("jobs") or {}).items():
         job = job or {}
-        # A file two jobs of ci.yaml call holds one job per caller, each `if: inputs.job == '<id>'`
-        # (.github/ci-notes/ci.md#two-jobs-that-call-one-file): a job this caller does not run
-        # runs none of its steps.
+        # A file two jobs of ci.yaml call runs each of its jobs under one caller, its `if:`
+        # admitting that caller's id alone (.github/ci-notes/ci.md#two-jobs-that-call-one-file):
+        # a job this caller does not run runs none of its steps.
         if not runs(job, evaluator, f"job {called_id} of {called_path.name}"):
             continue
         for index, step in enumerate(job.get("steps") or []):

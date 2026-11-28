@@ -732,6 +732,22 @@ check "and run when it did" "$(is "$(running "$tooling")" "Check the guides' sem
 got=$(steps --event pull_request --verdicts false --verdict test=true --verdict guide_layout=true)
 check "while the test job runs none of its harnesses on guide_layout" "$(is "$(running "$got")" "")"
 
+echo "case: envoy-refill, whose job of the shared file restates its legs behind !cancelled(), is read"
+# ci-job-envoy-e2e-local.yaml runs envoy-refill-legs and envoy-refill under the caller
+# envoy-refill, the second behind `${{ !cancelled() && inputs.job == 'envoy-refill' }}` so it runs
+# after a leg that failed. The reader evaluates that as for a run nobody cancelled, and no step of
+# the file is gated on what the changes job hands it, so each caller reads none, and neither is
+# refused.
+for caller in envoy-refill envoy-e2e-local; do
+  set +e
+  refill=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --steps "$caller" \
+    --event pull_request --verdicts false --verdict envoy_refill=true --verdict envoy_e2e_local=true 2>&1)
+  status=$?
+  set -e
+  check "$caller: the file is read" "$(is "$status" 0)"
+  check "$caller: and gates no step" "$(is "$refill" "")"
+done
+
 echo "case: a list that is not all on a run that selects every job skips every step it gates there"
 broken=$(copy_with "$work/no-all" ci.yaml "steps.scope.outputs.every_job && 'all'" "steps.scope.outputs.every_job && '[]'")
 got=$(steps_of "$broken" --event workflow_dispatch --ref refs/heads/main --verdicts false)

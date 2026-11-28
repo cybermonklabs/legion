@@ -95,7 +95,8 @@ BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 # Each job whose steps are in another job's called file, mapped to that other job: the halves of
 # a job that was split so a pull request runs one and the merge queue the other, and envoy-refill,
-# a job of its own that shares envoy-e2e-local's file. Two jobs share a file because ci.yaml
+# a job of its own whose legs (envoy-refill-legs) and the job that restates their result share
+# envoy-e2e-local's file. Two jobs share a file because ci.yaml
 # already calls as many reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
 # of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).

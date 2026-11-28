@@ -2,11 +2,12 @@ name: CI job envoy-e2e-local
 
 # The steps of two jobs, `.github/workflows/ci.yaml#envoy-e2e-local` and
 # `.github/workflows/ci.yaml#envoy-refill`, in a file of their own.
-# ci.yaml's job of each id calls this file and passes its own id as `job`, and the job of this
-# file named for it runs while the other is skipped. Each caller keeps `needs: changes` and the
-# whole `if:` that decides whether its job runs, so the `if:` here only picks which of the two
-# that is. The two share a file because ci.yaml already calls as many reusable workflows as
-# .github/scripts/check-workflow-files.sh allows it
+# ci.yaml's job of each id calls this file and passes its own id as `job`, and the jobs of this
+# file for it run while the other's are skipped: envoy-e2e-local for the one, envoy-refill-legs
+# and envoy-refill, which restates the legs' result, for the other. Each caller keeps
+# `needs: changes` and the whole `if:` that decides whether its job runs, so the `if:` here only
+# picks which of the two that is. The two share a file because ci.yaml already calls as many
+# reusable workflows as .github/scripts/check-workflow-files.sh allows it
 # (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and both build the same listener and
 # natsd from the go-envoy cache.
 #
@@ -15,14 +16,15 @@ name: CI job envoy-e2e-local
 #
 # Each job's last step reports ci-ok for its caller: on a merge-group run the job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
+# ci.yaml ends, so a failing leg of envoy-refill does not wait for the others to end.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       job:
         description: >-
           The id of ci.yaml's job that calls this file, `envoy-e2e-local` or `envoy-refill`: the
-          job of this file of that id runs, and the other is skipped.
+          jobs of this file for that id run, and the other's are skipped.
         type: string
         required: true
       ci-ok-changes:
@@ -94,19 +96,35 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  # The refill live proof (.github/ci-notes/ci.md#what-the-refill-live-proof-shows).
-  envoy-refill:
+  # The refill live proof (.github/ci-notes/ci.md#what-the-refill-live-proof-shows), one leg per
+  # scenario of packages/envoy/scripts/e2e-refill.sh, all at the same time, each on a runner of its
+  # own with the same rig (Go and the go-envoy cache) and its own build of refillrig, the listener
+  # and natsd. The matrix is the committed list of the script's scenarios, the four its `all`
+  # runs, so each scenario runs in exactly one leg and in the mode the one job ran it in:
+  # interrupt by stop and by restart, recreate-live in both shapes. The job envoy-refill waits for
+  # the legs and passes only when every leg passed.
+  # why: .github/ci-notes/ci.md#what-the-refill-live-proof-shows
+  envoy-refill-legs:
+    name: envoy-refill (${{ matrix.scenario }})
     if: inputs.job == 'envoy-refill'
     runs-on: ubuntu-24.04-arm
-    # The budget: in an agent pod with 2 shared CPUs, the reread scenario took 5 min 26 s and
-    # refuse 3 min 5 s, each with its builds on a warm Go cache. interrupt and recreate-live were
-    # not timed there. They wait mostly on the listener's 30 s self-health tick, and by the
-    # script's own waits each of their four runs takes about 2 to 4 minutes. 40 minutes is about
-    # twice the sum, which leaves room for a cold Go cache. recreate-live runs a shape again when
-    # its verdict is INVALID, up to 3 attempts in all. Timed later in such a pod, one attempt took
-    # 74 to 76 s, so the 4 attempts this can add (2 shapes, 2 more attempts each) take up to about
-    # 5 minutes. The budget adds 6 minutes for them.
-    timeout-minutes: 46
+    strategy:
+      # One leg's failure leaves the others running, so each reports its own scenario.
+      fail-fast: false
+      matrix:
+        scenario: [reread, interrupt, recreate-live, refuse]
+    # The budget of a leg: in an agent pod with 2 shared CPUs, the reread scenario took 5 min 26 s
+    # and refuse 3 min 5 s, each with its builds on a warm Go cache. interrupt and recreate-live
+    # wait mostly on the listener's 30 s self-health tick, and by the script's own waits each of
+    # their two runs takes about 2 to 4 minutes, up to 8 for the leg. recreate-live runs a shape
+    # again when its verdict is INVALID, up to 3 attempts in all; one attempt took 74 to 76 s in
+    # such a pod, so the 4 attempts this can add take up to about 5 minutes more, about 13 for
+    # that leg. On the runner the longest scenario, interrupt, took 2 min 47 s (job
+    # 140854851306). 20 minutes is half again the longest leg in a pod, which leaves room for a
+    # cold Go cache.
+    timeout-minutes: 20
+    env:
+      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,21 +145,62 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      # Every scenario of the proof (INFRA-261): reread, interrupt (stop and restart),
-      # recreate-live (both shapes) and refuse. The script needs curl, flock, go, jq and setsid,
+      # The leg's scenario of the proof (INFRA-261): reread, interrupt (stop and restart),
+      # recreate-live (both shapes) or refuse. The script needs curl, flock, go, jq and setsid,
       # which the runner image carries and setup-go adds. Its evidence directory is the runner's
       # temporary directory, so the upload below finds it.
       - name: Refill live proof
-        run: bash packages/envoy/scripts/e2e-refill.sh --out "$RUNNER_TEMP/envoy-e2e-refill"
-      # Each scenario's listener and NATS logs, polls and judge commands. The binaries the script
-      # built are left out.
+        run: bash packages/envoy/scripts/e2e-refill.sh --scenario "${{ matrix.scenario }}" --out "$RUNNER_TEMP/envoy-e2e-refill"
+      # The scenario's listener and NATS logs, polls and judge commands, under an artifact name of
+      # the leg's own. The binaries the script built are left out.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: envoy-refill-evidence-${{ github.run_attempt }}
+          name: envoy-refill-evidence-${{ matrix.scenario }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/envoy-e2e-refill
             !${{ runner.temp }}/envoy-e2e-refill/bin
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-refill
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The job of the caller's name, which restates the legs' result under the check-run name
+  # `envoy-refill / envoy-refill`, so ci-ok's job map, the merge queue and every reader of that
+  # name read what they read before the legs. A leg's own failure has already posted its early
+  # ci-ok from the leg. `!cancelled()` runs it after a leg that failed, where GitHub would skip a
+  # job whose needs did not all succeed, and the input keeps it skipped, as the legs are, under
+  # envoy-e2e-local (.github/ci-notes/ci.md#two-jobs-that-call-one-file).
+  # why: .github/ci-notes/ci.md#what-the-refill-live-proof-shows
+  envoy-refill:
+    needs: [envoy-refill-legs]
+    if: ${{ !cancelled() && inputs.job == 'envoy-refill' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ needs.envoy-refill-legs.result }}" != success ]; then
+            echo "::error::envoy-refill's legs ended ${{ needs.envoy-refill-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "envoy-refill's legs ended success"
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

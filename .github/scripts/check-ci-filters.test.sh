@@ -41,8 +41,9 @@
 # matches no file is refused, and every spec file the `references)` arm of
 # .github/scripts/dispatch-browser-shard-suite.sh lists in lane_files must be one the
 # dispatch_references filter matches. A script's go command is read under every step of each job
-# that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
-# under that caller alone and reads its other jobs under every caller whose filter is not
+# that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller,
+# and each other job whose if: admits one caller alone (a caller's legs), under that caller alone
+# and reads its other jobs under every caller whose filter is not
 # EXCLUDED, a run that changes a file of the tree, but those its mode writes (the PUSH_WORKFLOWS
 # workflows, generate's output and its .inputs file), fails naming each, as one does that cannot
 # read the tree through git, and the header's run recipe runs the check, or says why it stops.
@@ -3541,8 +3542,10 @@ check "exits 0" "$(is "$status" 0)"
 # tooling-checks), and the check reads each such job as its own caller's alone, holding its go
 # commands, its env and its gated steps to that caller's filter. That reading holds only while the
 # job runs under that caller alone: each caller has a job of the file named for it, that job's
-# `if:` is exactly `inputs.job == '<its id>'`, and the caller passes `job: <its own id>`.
-# check_called_jobs holds all three, and each case below up to the report steps' one breaks one.
+# `if:` is exactly `inputs.job == '<its id>'` (or that comparison behind `!cancelled()`, for a job
+# that restates jobs it needs, as envoy-refill restates its legs), and the caller passes
+# `job: <its own id>`. check_called_jobs holds all three, and each case below up to the report
+# steps' one breaks one.
 
 # shared_file <root> <slow> <fast>: jobs <slow> and <fast> of ci.yaml both call
 # .github/workflows/shared.yaml, as test and tooling-checks call ci-job-test.yaml, each passing its
@@ -3755,6 +3758,74 @@ check "names the gate and the step" \
 check "and names the step that is now gated on a filter no gate of its job declares" \
   "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks step \"Run the tooling-checks steps\" is gated on filter app, but no file of .github/ci-gates declares a gate of app for job tooling-checks's steps in .github/workflows/shared.yaml")"
 check "and those are its two problems" "$(contains "$out" '^::error::2 CI filter problem(s)$')"
+
+# envoy-refill's caller runs two jobs of ci-job-envoy-e2e-local.yaml: envoy-refill-legs, whose
+# `if:` admits that caller alone, and envoy-refill, which restates the legs' result behind
+# `!cancelled()`, so a leg that failed still reaches it. legs_and_restater <root> gives
+# split_callers' fast caller that shape: its go test step moves into tooling-checks-legs, a
+# matrix job under `if: inputs.job == 'tooling-checks'`, and tooling-checks waits for those legs
+# under the second `if:` and reports. The fast gate's citation follows the step into the legs.
+legs_and_restater() {
+  local root=$1
+  replace "$root/.github/workflows/shared.yaml" $'  tooling-checks:\n    if: inputs.job == \'tooling-checks\'\n' \
+    $'  tooling-checks-legs:\n    if: inputs.job == \'tooling-checks\'\n    strategy:\n      matrix:\n        leg: [1, 2]\n'
+  cat >> "$root/.github/workflows/shared.yaml" <<'YAML'
+  tooling-checks:
+    needs: [tooling-checks-legs]
+    if: ${{ !cancelled() && inputs.job == 'tooling-checks' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pass only when every leg passed
+        run: test "${{ needs.tooling-checks-legs.result }}" = success
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tooling-checks
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+YAML
+  replace "$root/.github/ci-gates/fast.py" 'at("tooling-checks", "Run the tooling-checks steps"' \
+    'at("tooling-checks-legs", "Run the tooling-checks steps"'
+}
+
+# The legs' go test is claimed by the fast gate alone, so a reading of the legs under the other
+# caller, test, whose gate claims no go command, would fail it as unclaimed there.
+echo "case: a caller of a shared workflow whose legs admit it alone and whose own job restates them behind !cancelled()"
+root=$(fixture shared-file-legs)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+legs_and_restater "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and counts the legs' step under the fast filter" \
+  "$(contains "$out" '^report: tooling-checks: [0-9][0-9]* files (filter fast)$')"
+run_generate "$root"
+check "the fast filter takes the files the legs' test reads" "$(contains "$(filter_of fast)" '^fixtures/\*\*$')"
+
+echo "case: legs of a shared workflow whose if: could admit another caller"
+root=$(fixture shared-file-legs-either)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+legs_and_restater "$root"
+replace "$root/.github/workflows/shared.yaml" $'  tooling-checks-legs:\n    if: inputs.job == \'tooling-checks\'\n' \
+  $'  tooling-checks-legs:\n    if: inputs.job == \'tooling-checks\' || inputs.job == \'test\'\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "reads the legs under the other caller too, whose gate claims none of their go commands" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks-legs of .github/workflows/shared.yaml, which job test calls step \"Run the tooling-checks steps\" runs \`go test ./cmd/app ./lib\`, which no Run of a gate in .github/ci-gates lists")"
+
+echo "case: a job that restates its legs under always() rather than !cancelled()"
+root=$(fixture shared-file-legs-always)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+legs_and_restater "$root"
+replace "$root/.github/workflows/shared.yaml" "    if: \${{ !cancelled() && inputs.job == 'tooling-checks' }}" \
+  "    if: \${{ always() && inputs.job == 'tooling-checks' }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the if: it carries and the two it may carry" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: \${{ always() && inputs.job == 'tooling-checks' }}\`: give it \`if: inputs.job == 'tooling-checks'\`, or \`if: \${{ !cancelled() && inputs.job == 'tooling-checks' }}\` when it restates jobs it needs")"
 
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)

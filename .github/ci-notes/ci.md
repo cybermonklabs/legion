@@ -2407,16 +2407,25 @@ so a job split in two takes no file of its own for its new half, and a new job t
 either. test and tooling-checks call ci-job-test.yaml, pi-legion and pi-legion-build call
 ci-job-pi-legion.yaml, envoy-infra-go and envoy-infra-build call ci-job-envoy-infra-go.yaml,
 and envoy-e2e-local and envoy-refill, which build the same listener and natsd, call
-ci-job-envoy-e2e-local.yaml. Such a file holds one job per caller and
-takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its id>'`, each
-caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
-id. A call runs the one job named for its caller, and the other reads `skipped` under it.
+ci-job-envoy-e2e-local.yaml. Such a file takes a `job` input and holds the jobs of each caller:
+each caller passes `job: <its own id>`, each job of the file runs under one caller alone, and
+each ends with the ci-ok-report step under its caller's id. The job named for a caller carries
+exactly `if: inputs.job == '<its id>'`, or, where it restates the result of jobs it needs,
+`${{ !cancelled() && inputs.job == '<its id>' }}`, since GitHub skips a job whose needs did not
+all succeed unless its `if:` calls a status function. envoy-refill's caller runs two jobs of its
+file: envoy-refill-legs, one leg per scenario of the refill live proof, under that bare
+comparison, and envoy-refill, which restates the legs' result behind `!cancelled()`
+(.github/ci-notes/ci.md#what-the-refill-live-proof-shows). A call runs its caller's jobs, and
+the other caller's read `skipped` under it.
 
 .github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
 ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it
-named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
-under a second caller would read files that caller's filter is never held to, and a caller with
-no job of its own there runs nothing its filter is held to.
+named for itself, which must carry one of those two `if:`s, and must pass its own id, since a job
+that ran under a second caller would read files that caller's filter is never held to, and a
+caller with no job of its own there runs nothing its filter is held to. Another job of such a
+file whose `if:` is one of those two for one caller, as envoy-refill-legs' is, is read as that
+caller's alone (called_job_owners); any other job is read under every caller. No other form of
+`if:` is read as admitting one caller: a term beside the comparison could admit another.
 `.github/scripts/ci_job_reads.py#SHARED_FILE` maps each new half, and envoy-refill, to the file
 it shares, so its gates find their steps there. Each job keeps a filter of its own, and both name
 the shared file, so a change to it selects both. dispatch-browser.yaml has three callers,
@@ -3384,7 +3393,30 @@ packages/envoy/scripts/e2e-refill.sh, the refill live proof (INFRA-261): on a re
 and a NATS server of its own, the listener keeps its copy of a bucket while it reads the
 bucket again, and refuses its two list routes, with no active-sessions sample, while it cannot
 stand behind that copy. The job runs every scenario of the script: reread, interrupt (stop
-and restart), recreate-live (both shapes) and refuse.
+and restart), recreate-live (both shapes) and refuse, each in a leg of its own.
+
+The four ran one after another in one job of 9.7 minutes, job 140854851306 of run 46104675479
+(2026-11-28, at 0142be30d78e), by the step and log times: the rig (checkout, Go and the
+go-envoy cache) 18 s, the script's builds of refillrig, the listener and natsd 4 s on that warm
+cache, then reread 1 min 36 s, interrupt 2 min 47 s, recreate-live 2 min 27 s and refuse 2 min
+27 s, most of it the 130 s it keeps NATS down, past the listener's 2-minute bound. In three
+unlabelled pull-request runs at that head that changed a comment of the listener (46106674202,
+46106678064 and 46106683286, dispatch://INFRA-5794/comment/749818e1-a5a6-4b84-a907-4f67b3f2b0d2),
+every other job had ended by 7.3 to 7.8 minutes and envoy-refill ran 9.0 to 9.4, so the runs
+ended at 10.4 to 11.0 minutes, above the 9 minutes at the median an unlabelled pull request must
+end within (dispatch://INFRA-5794/spec#b-r5). Each scenario starts a listener and a NATS server
+of its own and needs nothing another left, so they run in legs of one matrix, envoy-refill-legs
+of ci-job-envoy-e2e-local.yaml, each on a runner of its own with the same rig and its own builds.
+The matrix is the committed list of the scenarios the script's `all` runs, in its order, so each
+scenario runs in exactly one leg and in the mode the one job ran it in. By those times the
+longest leg, interrupt, comes to about 3.2 minutes with its rig and builds. A leg that fails
+uploads its evidence under a name of its own, envoy-refill-evidence-<scenario>-<attempt>, and
+posts its own early ci-ok. The job `envoy-refill` of that file waits for the legs and passes
+only when each passed, so the check-run name `envoy-refill / envoy-refill` and ci-ok's reading
+of it are what they were; its error carries the words runner-shutdown.sh reads, so a leg the
+platform killed still reads as a runner shutdown. It runs behind `!cancelled()`, so a leg that
+failed still reaches it, and under its own caller alone
+(.github/ci-notes/ci.md#two-jobs-that-call-one-file).
 
 ## Why a Go test step runs its go test under gotestsum, and a merge group runs a failed test once more
 
