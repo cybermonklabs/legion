@@ -3,7 +3,6 @@
 package testnats
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -20,7 +19,7 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 			seed, public := User(t)
 			config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 			_, uri := StartImageConfig(t, image.Ref, config, []string{"-js"}, false)
-			conn, err := ConnectSeed(t, uri, seed)
+			conn, err := AwaitConnectSeed(t, uri, seed)
 			if err != nil {
 				t.Fatalf("connect with the seed: %v", err)
 			}
@@ -29,8 +28,8 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 			if err != nil {
 				t.Fatalf("JetStream context: %v", err)
 			}
-			waitForJetStream(t, func(ctx context.Context) error {
-				_, err := js.AccountInfo(natsgo.Context(ctx))
+			waitForJetStream(t, func() error {
+				_, err := js.AccountInfo()
 				return err
 			})
 		})
@@ -46,7 +45,7 @@ func TestStartImageConfigRunsNoArgumentItWasNotGiven(t *testing.T) {
 			seed, public := User(t)
 			config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\n", public)
 			_, uri := StartImageConfig(t, image.Ref, config, nil, false)
-			conn, err := ConnectSeed(t, uri, seed)
+			conn, err := AwaitConnectSeed(t, uri, seed)
 			if err != nil {
 				t.Fatalf("connect with the seed: %v", err)
 			}
@@ -70,7 +69,7 @@ func TestStartImageConfigWaitsForAnAnonymousServerToAdmitAClient(t *testing.T) {
 			_, public := User(t)
 			config := fmt.Sprintf("authorization {\n  users: [ { nkey: %q } ]\n}\nno_auth_user: %q\n", public, public)
 			_, uri := StartImageConfig(t, image.Ref, config, nil, true)
-			conn, err := ConnectSeed(t, uri, "")
+			conn, err := AwaitConnectSeed(t, uri, "")
 			if err != nil {
 				t.Fatalf("a client with no credential was refused after the wait: %v", err)
 			}

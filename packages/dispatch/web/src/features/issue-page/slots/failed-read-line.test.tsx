@@ -195,6 +195,30 @@ test("a read that names its failures says each again while its line stays drawn,
   }
 });
 
+// A screen reader says an alert as it is drawn, so a line that stands again for a failure it
+// already said is drawn with no live role: its words and its Retry are drawn as ever. A line
+// drawn with nothing said of it speaks.
+test("a line drawn not to speak carries no live role, and draws its words and Retry", () => {
+  const words = "Couldn't read the statements.";
+  const view = render(
+    <FailedReadLine message={words} onRetry={() => undefined} retrying={false} speaks={false} />
+  );
+  try {
+    expect(view.queryByRole("alert"), "a line drawn not to speak spoke").toBeNull();
+    const line = view.getByText(words);
+    expect(line, "a line drawn not to speak carries a live role").not.toHaveAttribute("role");
+    expect(line, "a line drawn not to speak is a live region").not.toHaveAttribute("aria-live");
+    expect(view.getByRole("button", { name: "Retry" }), "no Retry was drawn").toBeInTheDocument();
+    view.rerender(<FailedReadLine message={words} onRetry={() => undefined} retrying={false} />);
+    expect(view.getByText(words), "a line drawn as ever does not speak").toHaveAttribute(
+      "role",
+      "alert"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /** How a read of `TwoReadsView` stands. */
 type Stands = "failed" | "out" | "answered";
 

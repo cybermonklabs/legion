@@ -1299,6 +1299,7 @@ The daemon reads that refusal as `runtime.ErrSessionFileMissing` (`startRefusal`
 the loss is posted on the issue and told to its architect and to the new agent, as [Cutting over an instance from tmux to pods](#cutting-over-an-instance-from-tmux-to-pods) says.
 A database it cannot reach is asked again with a backoff (half a second, doubling to four seconds) for up to 30 seconds
 — under `postgres` the URL file read afresh each time, since that file is a projection something else may replace — and only then refuses the start.
+Each lookup is one read-only transaction of the session client (`internal/ompsessions`), which opens it with one message that sets each setting the client depends on, and which closes a server connection it cannot repair and runs the transaction again on a new one ([Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on), step 3, says how).
 Neither `workspace-init` looks for a session file, and neither is told to expect one: there is no disk on which a session could be waiting.
 A launch that creates the issue's pod provisions its workspace from the issue's pushed branch and continues its own session from the table;
 a role launched into the pod already running provisions nothing and continues its session in the workspace the roles before it left.
@@ -1343,7 +1344,7 @@ the transcript, `<CLAUDE_CONFIG_DIR>/projects/<dir>/<id>.jsonl`, and the record,
 Every row has a `byte_len` and a `mtime_ms`, the file's mtime when it was saved, so the rows never stop an Oh My Pi process from loading its index.
 The launcher holds one connection to the session database for the generation, through the generation's proxy socket under `cloudsql-iam`.
 It saves a file that grew at most every 2 s, the transcript only up to its last newline.
-Each save is one transaction that appends the new bytes as a part, and only over what that launcher saved last.
+Each save is one transaction that appends the new bytes as a part, and only over what that launcher saved last; it opens, and is run again on a new connection, as the lookups' transactions are.
 When another writer has moved the row, the launcher stops saving that file and logs it.
 It never overwrites the row.
 A save the database refuses is logged and tried again at the next save, and the agent runs on.
@@ -1702,16 +1703,19 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
    It exits 1 on any `failed` or `refused`, on a `missing` of the claims it was asked to copy (another tree's is reported only), and when `--tree` selects no claim of the list, which is a mistyped key.
 
-   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction whose first statement is `SET LOCAL search_path = pg_catalog, pg_temp`, which then sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, and names each table `public.<table>`; a read-only one also sets `row_security` off.
+   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction that one simple-protocol message opens: `OpenRead` for a read, `OpenWrite` for a write (`packages/daemon/internal/ompsessions/open.go`).
+     That message names `ISOLATION LEVEL READ COMMITTED` and `READ ONLY` or `READ WRITE`, sets `application_name` to `legion-session-client` for the transaction, so that the server's log names each statement of the client, pins `search_path = pg_catalog, pg_temp`, sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, sets `row_security` off in a read, and sets back each other setting that the list `LeftSettings` (`leftsettings.go`) marks, which another client can leave on a pooled server connection; each statement names each table `public.<table>`.
      So no function, operator or table that another login planted in `public`, or in a schema named for the login, resolves in those statements; a view another login made at a table's own name fails the statement rather than runs in it, and the import refuses a relation at either name that is no table; and a row-security policy on the tables fails a read rather than runs in it.
      The pin covers name lookup and those relations alone: a trigger, a rule, a default or a constraint that the tables' owner attaches still runs as whoever writes.
-     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter.
+     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter and gives a server connection, with the session settings another client left on it, to the next client.
+     When the server refuses the opening, refuses a statement with SQLSTATE `25006` or `42501`, or ends the connection before the client sent `COMMIT`, the client closes the connection with no `ROLLBACK`, so that the pool closes that server connection too, opens a new connection and runs the whole transaction again, at most 3 times; it runs nothing again once it sent `COMMIT`.
+     A write under a read-only default of the login or the database (`default_transaction_read_only = on`) refuses and writes nothing.
 
 4. **Copy every tree again.**
    Each run must print only `copied before` or `recorded no session` for its tree's claims, and its `missing` lines may name only claims step 5 is to clear: one whose volume was gone before step 3 (the cleared controller's, or a claim of a tree closed earlier), or a `failed` you cannot fix.
    A `refused` here means a writer was still running: the session grew on its volume after step 3 copied it, and the import never overwrites a row it already holds, so it refuses the file it now finds.
    Going on would resume the agent from the older row and lose every turn after it.
-   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction pinned as the import's own are, `BEGIN; SET LOCAL search_path = pg_catalog, pg_temp; SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'; DELETE FROM public.omp_session_files_parts WHERE path = '<path>'; DELETE FROM public.omp_session_files WHERE path = '<path>'; COMMIT;`, and copy again.
+   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction opened as the import's own are, on one `psql` connection: `-c` with the text of `OpenWrite` (`packages/daemon/internal/ompsessions/open.go`) as it stands, then `-c "DELETE FROM public.omp_session_files_parts WHERE path = '<path>'"`, `-c "DELETE FROM public.omp_session_files WHERE path = '<path>'"` and `-c COMMIT`, and copy again.
    Nothing writes a row under SQL storage before the switch, so in this runbook a `refused` has no other cause.
 
 5. **Roll out the new daemon, then clear only sessions the import reported missing.**
@@ -2810,6 +2814,54 @@ Only the daemon's own writes queue one.
 After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
 A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
 Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
+
+#### Rolling back the release that releases a left session's claim
+
+This release releases the Dispatch claim of each session that the daemon leaves behind (dispatch://INFRA-3144).
+Each claim write that moves a claim off a session it recorded queues a `claim_release` row whose payload names that session, `{"session": "<session>"}` (store's `putClaim`).
+The row of a move out of the workflow and the row of the boot pass carry no session, as before (`{}`).
+Its migration `20261127193428_claim_left` adds `issues.claim_left`, null on every issue it finds: why the newest claim release that judged the issue's Dispatch holder left that holder's claim.
+`GET /legion/v1/state`, `GET /legion/v1/issues/{key}/record` and the `legion` tool's `read_record` serve it as `claimLeft` (daemon API contract entry 20261127202231, claim-left).
+
+The release before this one decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`).
+It refuses a `claim_release` row that carries `session` at every attempt, and that row retries for ever on its issue's claim lane.
+A daemon of this release reads `issues.claim_left` in every read of a record (record's `issueColumns`).
+`issues` and `outbox` hold the rows of every project that shares the database.
+So a rollback runs the way back while no daemon of the database runs:
+
+1. Stop every daemon of the database, for every project.
+   A daemon of this release that still runs fails every read of a record once the column is dropped.
+   It can also queue a new row that carries `session` after the delete.
+
+2. Run the way back in one `psql` session.
+   It is the last paragraph of the header of `20261127193428_claim_left.up.sql`:
+
+   ```sh
+   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+   begin;
+   delete from outbox where kind = 'claim_release' and payload ? 'session';
+   alter table issues drop column if exists claim_left;
+   delete from schema_version where version = 20261127193428;
+   commit;
+   SQL
+   ```
+
+3. Start the release before.
+
+The delete is owed to the release before.
+It deletes each `claim_release` row that carries `session`, and keeps each row that carries none, which the release before runs as it always did.
+The drop of the column and the delete of the version row go together.
+The release before needs neither, since it never names the column.
+The delete of the version row makes the version that the store reports, its highest recorded row, the version of the release before again.
+At the roll-forward, the store finds no row of this version and runs the migration again, which adds the column again, null on every issue.
+
+The rollback loses two things:
+
+- The Dispatch claims that the deleted rows were to release.
+  They stay in Dispatch, and the controller releases them by hand, as it did before this release.
+
+- The `claimLeft` entries.
+  The release before serves no `claimLeft`, and after the roll-forward no issue has an entry until a release leaves a claim again.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
@@ -4181,6 +4233,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
+A rollback of a store that the release that releases a left session's claim migrated runs the way back in the header of `20261127193428_claim_left.up.sql` first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, drops `issues.claim_left` and deletes that version's row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 `20261120210000_issue_release_committed.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its column in place and the release before writes none of it (the migration's header).
 `20261126001514_pod_release_give_ups.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its table in place and the release before names it in no statement (the migration's header).
 #4194's release still adds one statement to such a rollback, which changes no schema version: it strips the `wakeDetail` key from each queued start, which the earlier release refuses, after #4194's daemon stops and before the earlier image starts ([Rolling back idle release](#rolling-back-idle-release)).
@@ -4309,6 +4362,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
+20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
