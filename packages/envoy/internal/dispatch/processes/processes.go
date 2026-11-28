@@ -40,6 +40,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -65,7 +66,8 @@ var (
 
 // heartbeatTimeout bounds one heartbeat's transaction, well inside HeartbeatInterval so that a
 // database that has stopped answering costs a heartbeat and not the loop: the next tick tries
-// again.
+// again. It runs on the wall clock whatever the registration's clock is (Instance.Clock), since
+// what it bounds is a round trip to the database.
 const heartbeatTimeout = 2 * time.Second
 
 // registryLock is the transaction advisory lock Register takes before it reads the live rows, so
@@ -90,7 +92,8 @@ const pruneLease = "server-processes"
 var ErrKeySetMismatch = errors.New("this process's signing key set does not match a live server process's")
 
 // Instance is what a process registers: the build it serves, the keys it signs and verifies with,
-// and what the decisions over the fleet read (migration 20261101030537).
+// and what the decisions over the fleet read (migration 20261101030537); and the clock its own
+// timers in the registry run on, which no row holds.
 type Instance struct {
 	// Commit is the legion commit the binary was stamped with, "" for an unstamped build.
 	Commit string
@@ -109,6 +112,11 @@ type Instance struct {
 	EmbedderIdentity string
 	// FileStore is whether the process stores uploaded files in a bucket.
 	FileStore bool
+	// Clock is the clock Register's wait between two admissions and the heartbeat's ticks run on;
+	// nil means clock.Real(). Which rows are live is measured on the database's clock whatever it
+	// is, so a test hands a clocktest.Fake and moves it past Register's give-up while a live peer
+	// stays live by the database's now().
+	Clock clock.Clock
 }
 
 // Process is one row of the registry.
@@ -239,7 +247,9 @@ type Registration struct {
 	instance Instance
 	// pool is the registry's own one-connection pool, which Register opens and Deregister closes
 	// (Register says why it is not the shared pool).
-	pool    *pgxpool.Pool
+	pool *pgxpool.Pool
+	// clock is Instance.Clock, clock.Real() where that is nil: the clock the heartbeat ticks on.
+	clock   clock.Clock
 	stop    context.CancelFunc
 	stopped chan struct{}
 	// lost carries the heartbeat's refusal (Lost); it holds one value and is sent at most once.
@@ -291,20 +301,23 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 		return nil, fmt.Errorf("open the server process registry's pool: %w", err)
 	}
 	id := uuid.NewString()
-	if err := waitForAdmission(ctx, own, id, instance); err != nil {
+	clk := cmp.Or[clock.Clock](instance.Clock, clock.Real())
+	if err := waitForAdmission(ctx, clk, own, id, instance); err != nil {
 		own.Close()
 		return nil, err
 	}
 	beating, stop := context.WithCancel(context.Background())
-	registration := &Registration{ID: id, instance: instance, pool: own, stop: stop, stopped: make(chan struct{}), lost: make(chan error, 1)}
+	registration := &Registration{ID: id, instance: instance, pool: own, clock: clk, stop: stop, stopped: make(chan struct{}), lost: make(chan error, 1)}
 	go registration.heartbeat(beating)
 	return registration, nil
 }
 
 // waitForAdmission is Register's wait: tryRegister every HeartbeatInterval until it admits the
 // process, or until LiveWindow and one HeartbeatInterval have passed since its first refusal, when
-// that last refusal is returned. A refusal naming another process than the one before is logged
-// again, so the log names every process the wait was on.
+// that last refusal is returned. Both spans are read on clk, the registration's clock
+// (Instance.Clock); whether a refusing row is still live is the database's clock's to say. A
+// refusal naming another process than the one before is logged again, so the log names every
+// process the wait was on.
 //
 // ctx ending ends the wait with an error wrapping ctx's error, whether it ends between two tries
 // or during one. A try's own error does not always carry it: when ctx ends while a statement is
@@ -314,7 +327,7 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 // that fails once ctx has ended returns an error wrapping both ctx's error and the try's: a caller
 // tells a stop from a failure by ctx's error - cmd/dispatch logs a SIGTERM during the wait as a
 // clean stop - and the log still reads what the statement hit.
-func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) error {
+func waitForAdmission(ctx context.Context, clk clock.Clock, pool *pgxpool.Pool, id string, instance Instance) error {
 	var giveUp time.Time
 	logged := ""
 	for {
@@ -328,21 +341,22 @@ func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instan
 		if refusal == nil {
 			return nil
 		}
+		now := clk.Now()
 		if giveUp.IsZero() {
-			giveUp = time.Now().Add(LiveWindow + HeartbeatInterval)
+			giveUp = now.Add(LiveWindow + HeartbeatInterval)
 		}
-		if !time.Now().Before(giveUp) {
+		if !now.Before(giveUp) {
 			return refusal
 		}
 		if refusal.Error() != logged {
 			logged = refusal.Error()
 			slog.Warn("dispatch: a live server process refuses this one's signing keys; waiting for its heartbeat to lapse, as a process killed without deregistering lets it, before this one refuses to start",
-				"instance", id, "refusal", refusal, "gives_up_in", time.Until(giveUp).Round(time.Millisecond))
+				"instance", id, "refusal", refusal, "gives_up_in", giveUp.Sub(now).Round(time.Millisecond))
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("register this server process: %w", ctx.Err())
-		case <-time.After(HeartbeatInterval):
+		case <-clk.After(HeartbeatInterval):
 		}
 	}
 }
@@ -429,23 +443,27 @@ func describe(peer Process) string {
 	return fmt.Sprintf("%s, started %s", peer.Build(), peer.StartedAt.UTC().Format(time.RFC3339))
 }
 
-// heartbeat stamps the row's heartbeat_at every HeartbeatInterval until ctx ends. It runs for as
-// long as the process serves, through its HTTP drain, so a draining process counts as live until
-// its last request is answered and Deregister ends it. It ends early, once, when a beat refuses
-// to count this process as live again (beat); Lost delivers that refusal.
+// heartbeat stamps the row's heartbeat_at every HeartbeatInterval of the registration's clock until
+// ctx ends. It runs for as long as the process serves, through its HTTP drain, so a draining
+// process counts as live until its last request is answered and Deregister ends it. It ends early,
+// once, when a beat refuses to count this process as live again (beat); Lost delivers that refusal.
+// Its ticks are a clock.Ticker's, which come as a time.Ticker's do: a beat that overran its period
+// is followed at once by the tick it overran, and only the ones after it are dropped.
 func (r *Registration) heartbeat(ctx context.Context) {
 	defer close(r.stopped)
-	ticker := time.NewTicker(HeartbeatInterval)
-	defer ticker.Stop()
+	ticks := clock.NewTicker(r.clock, HeartbeatInterval, false)
+	defer ticks.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks.C():
+			ticks.Took()
 			if refusal := r.beat(ctx); refusal != nil {
 				r.lost <- refusal
 				return
 			}
+			ticks.Next()
 		}
 	}
 }
