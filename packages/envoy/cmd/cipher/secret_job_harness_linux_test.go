@@ -136,12 +136,13 @@ const setupOutranDeadline = "SETUP_OUTRAN_DEADLINE"
 
 // stallRetries runs scenario in a new shell, and again in another when it answers false: it does
 // so when the helper printed setupOutranDeadline, a run that says nothing of the prompt. A third
-// such run fails the test.
+// such run in a row fails the test: the machine stalled each time, or the prompt reaches its
+// deadline before every first read (a deadline it computes in the past, say).
 func stallRetries(t *testing.T, scenario func(s *promptShell) bool) {
 	t.Helper()
 	for attempt := 1; !scenario(newPromptShell(t)); attempt++ {
 		if attempt == 3 {
-			t.Fatalf("the machine stalled past the value deadline before the prompt's first read in %d runs", attempt)
+			t.Fatalf("the prompt reached the value deadline before its first read in %d runs in a row: the machine stalled each time, or the prompt checks the deadline before it reads", attempt)
 		}
 		t.Logf("run %d: the machine stalled past the value deadline before the prompt's first read; running it again", attempt)
 	}
