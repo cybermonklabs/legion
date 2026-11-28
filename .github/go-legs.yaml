@@ -530,6 +530,7 @@ packages/envoy:
     internal/dispatch/specgraph: envoy-go-build
     cmd/architecture-check: envoy-go-build
     cmd/spec-check: envoy-go-build
+    cmd/ci-report: envoy-go-build
     listenerwire: envoy-go-build
     internal/wirecheck: envoy-go-build
     cmd/dispatch-route-adopt: envoy-go-skips

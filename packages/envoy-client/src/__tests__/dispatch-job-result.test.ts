@@ -1181,12 +1181,18 @@ describe("dispatch result --project, as a CI job writes it", () => {
   /** The headers the airlock proxy writes on an answer of its own. */
   const AIRLOCK_FORWARDED = "Cipher-Proxy-Forwarded";
   const AIRLOCK_CODE = "Cipher-Proxy-Code";
+  /** The line the command prints for a refusal of the airlock proxy before the write left it:
+   *  its status, its code and the words a person reads (`airlockRefused`, job-result.ts). */
+  const airlockLine = (status: number, code: string | null, said: string): string =>
+    `${JSON.stringify({ airlock_refused: { status, code, said } })}\n`;
 
-  // The airlock proxy answers a CONNECT whose password names no live grant with 407, and Bun tells
-  // the caller its status line alone (ERR_PROXY_TUNNEL). Nothing went on to Dispatch, so the write
-  // ends at once and says so, with no write_outcome_unknown: asked again, the proxy answers the
-  // same. The command runs as its own process, with the proxy in the HTTPS_PROXY its step has.
-  test("a CONNECT the proxy refuses with 407 ends the write at once: nothing was sent, no write_outcome_unknown", async () => {
+  // The airlock proxy answers a CONNECT whose password names no live grant with 407 and its code
+  // GRANT_NOT_LIVE, and Bun tells the caller its status line and keeps its headers
+  // (ERR_PROXY_TUNNEL). Nothing went on to Dispatch, so the write ends at once and says so, with
+  // the status and the code a program reads and no write_outcome_unknown: asked again, the proxy
+  // answers the same. The command runs as its own process, with the proxy in the HTTPS_PROXY its
+  // step has.
+  test("a CONNECT the proxy refuses with 407 ends the write at once: its status and code, nothing was sent, no write_outcome_unknown", async () => {
     const proxy = startStubProxy(() => ({
       status: 407,
       reason: "Proxy Authentication Required",
@@ -1205,8 +1211,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
         connects: proxy.connects,
       }).toEqual({
         code: 1,
-        stdout:
-          "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to Dispatch\n",
+        stdout: airlockLine(
+          407,
+          "GRANT_NOT_LIVE",
+          "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to Dispatch"
+        ),
         stderr: "",
         connects: ["dispatch.ci-results.test:443"],
       });
@@ -1219,9 +1228,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   // A 503 at the CONNECT is a connection that never opened, as a refused one is: the write asks
   // again within its bound, on the schedule of every write, and then ends with that refusal, its
-  // status named, and no write_outcome_unknown. It runs on the fake clock, through the proxy as
-  // fetch's own option, the form HTTPS_PROXY takes in a process of its own.
-  test("a CONNECT the proxy refuses with 503 is asked again within the bound, and ends naming 503 and nothing sent", async () => {
+  // status and code named, and no write_outcome_unknown. It runs on the fake clock, through the
+  // proxy as fetch's own option, the form HTTPS_PROXY takes in a process of its own.
+  test("a CONNECT the proxy refuses with 503 is asked again within the bound, and ends naming 503, its code and nothing sent", async () => {
     const proxy = startStubProxy(() => ({
       status: 503,
       reason: "Service Unavailable",
@@ -1243,8 +1252,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
         withinTheBound: ran.ms !== undefined && ran.ms < 5_000,
       }).toEqual({
         code: 1,
-        stdout:
-          "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (503 Service Unavailable); nothing was sent to Dispatch\n",
+        stdout: airlockLine(
+          503,
+          "GRANT_UNREADABLE",
+          "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (503 Service Unavailable); nothing was sent to Dispatch"
+        ),
         stderr: "",
         askedAgain: true,
         withinTheBound: true,
@@ -1302,19 +1314,22 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   // Inside a connection that was open, the proxy answers a request it refuses before it dials
   // anything, and says so (`Cipher-Proxy-Forwarded: false`): the answer reached no service and
-  // stored nothing. It is final, printed with its code and the proxy's words as the client's
-  // excerpt quotes every proxy's own answer: one line, cut to the excerpt's length, each piece of
-  // the placeholder redacted, the word "placeholder" among them, which the placeholder spells. It
-  // is no write_outcome_unknown.
-  test("the airlock's refusal inside an open connection prints its code and its words as the excerpt quotes them, and says nothing was stored", async () => {
+  // stored nothing. It is final, printed with its status and its code, and with the proxy's words
+  // as the client's excerpt quotes every proxy's own answer: one line, cut to the excerpt's
+  // length, each piece of the placeholder redacted, the word "placeholder" among them, which the
+  // placeholder spells. It is no write_outcome_unknown.
+  test("the airlock's refusal inside an open connection prints its status, its code and its words as the excerpt quotes them, and says nothing was stored", async () => {
     const words =
       "airlock: a request to this host carries the grant's placeholder as its one Authorization header, DPoP <placeholder>; this one does not, so nothing was sent (answer 7f3a)";
     dispatchAnswer = airlockRefusal(403, "NO_PLACEHOLDER", `${words} ${PLACEHOLDER}`);
     const { code, stdout, stderr } = await runJob(record, jobEnvironment());
     expect({ code, stdout, stderr, posts: posts() }).toEqual({
       code: 1,
-      stdout:
-        "NO_PLACEHOLDER: airlock: a request to this host carries the grant's [redacted] as its one Authorization header, DPoP ; this one does not…; nothing was stored\n",
+      stdout: airlockLine(
+        403,
+        "NO_PLACEHOLDER",
+        "NO_PLACEHOLDER: airlock: a request to this host carries the grant's [redacted] as its one Authorization header, DPoP ; this one does not…; nothing was stored"
+      ),
       stderr: "",
       posts: 1,
     });
@@ -1397,7 +1412,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
         1,
         (out) =>
           out ===
-          "UPSTREAM_UNREACHABLE: airlock: dispatch.example: dial tcp: connection refused; nothing was stored\n",
+          airlockLine(
+            502,
+            "UPSTREAM_UNREACHABLE",
+            "UPSTREAM_UNREACHABLE: airlock: dispatch.example: dial tcp: connection refused; nothing was stored"
+          ),
         true,
       ],
     ];
@@ -1453,7 +1472,12 @@ describe("dispatch result --project, as a CI job writes it", () => {
         unreadable,
         1,
         (out) =>
-          out === "GRANT_UNREADABLE: airlock: the grant could not be read; nothing was stored\n",
+          out ===
+          airlockLine(
+            503,
+            "GRANT_UNREADABLE",
+            "GRANT_UNREADABLE: airlock: the grant could not be read; nothing was stored"
+          ),
       ],
       [
         "Dispatch's own 503, the control",
@@ -1499,12 +1523,14 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // line, escaped by the rule of Go's runnerlog.Printable (runner-log.ts), so no value starts a
   // line of its own and no line is a workflow command. A row that shows the value also shows it
   // in the form the rule prints it in: as text in a line of words, as JSON in a JSON answer, and
-  // as the client's excerpt of it in a line of words that quotes a proxy's own answer.
+  // as the client's excerpt of it in the words of the airlock's JSON line (`said`), which quote a
+  // proxy's own answer.
   test("no value the call prints starts a line of its own or is a workflow command", async () => {
     const long = "y".repeat(100_000);
     /** A value, and how it prints in a line of words, in a JSON answer, and in a line of words
      *  that quotes it through the client's excerpt (a proxy's own answer, `AirlockRefusedError`):
-     *  on one line, its white space one space, cut to the excerpt's length. */
+     *  on one line, its white space one space, cut to the excerpt's length. The last is printed as
+     *  the `said` of a JSON line, so the output holds it as a JSON string holds it. */
     const values: readonly (readonly [
       name: string,
       value: string,
@@ -1732,7 +1758,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
         const unescaped = [...out.matchAll(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu)]
           .map(([character]) => character)
           .filter((character) => character !== "\n");
-        const shown = shows === "none" || out.includes({ text, json, excerpted }[shows]);
+        const shown =
+          shows === "none" ||
+          out.includes({ text, json, excerpted: JSON.stringify(excerpted).slice(1, -1) }[shows]);
         if (commands.length > 0 || unescaped.length > 0 || !shown) {
           const characters = unescaped.map((character) => character.codePointAt(0)?.toString(16));
           failed.push(

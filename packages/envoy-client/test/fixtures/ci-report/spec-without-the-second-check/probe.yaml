@@ -1,0 +1,21 @@
+---
+type: requirement
+id: the-probe-tests-pass
+kind: behavior
+text:
+  - The two probe tests pass at each commit of a branch.
+---
+type: check
+id: probe-passes
+serves: the-probe-tests-pass
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acme/probe TestProbe
+  job: go-checks
+claim: The probe test passes.
+procedure_text:
+  - The program runs the probe test one time.
+failing_example:
+  - A probe test that fails.

@@ -4,6 +4,7 @@ GATE = harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/
     (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
     (f"{SCRIPTS}/audited_scripts.py", "the readings of the scripts a step runs, which the engine's TAG_RUNS rule reads a step through, linked in beside it"),
     (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+    (f"{SCRIPTS}/ci_report_rule.py", "the report rule the fixtures link in beside it"),
     (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
     (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
     (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),

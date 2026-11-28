@@ -2,9 +2,8 @@
 `if:` must say, what the cache fill workflows (CACHE_WORKFLOWS) must save
 for the entries ci.yaml restores, which packages the daemon fill job's race build must compile
 and what ci-caches.yaml's browser-binaries fill must run, which workspaces
-ci_job_reads.py's WORKSPACES must name, and
-that no other workflow of this repository runs on a merge group.
-None of them
+ci_job_reads.py's WORKSPACES must name,
+and that no other workflow of this repository runs on a merge group. None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
 engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14, 16 and 25, and
 ci_filter_coverage.main()
@@ -19,7 +18,8 @@ root manifest and the WORKSPACES table main() hands it, the race-fill rules over
 and the RACE_FILLS and RACE_FILL_SCRIPTS entries main() hands them the same way, and the
 binaries-fill rule over ci-caches.yaml, the workflow each BINARIES_FILLS entry names and that
 table, since what this module imports is the engine's names, never the data's, and the
-merge-group rule over the workflow directory, which it reads itself.
+merge-group rule over the workflow directory, which it reads itself. Rule 26, the report rule,
+and the reader of a run: script's bash it reads go test commands with are ci_report_rule.py's.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for ci.yaml, ci-caches.yaml and the fill workflows rule 11 reads,
@@ -94,9 +94,12 @@ WORKFLOW_SUFFIXES = (".yaml", ".yml")
 @cache
 def directory_workflows() -> dict:
     """Every workflow of this repository, as {its repository-relative path: the parsed document},
-    in path order. The three rules that walk the directory - the push-condition rule (through
-    ci_only_documents), the cache rule and the merge-group rule - read this one answer: parsing
-    each file for each of them is a second read of every workflow in the repository."""
+    in path order. The five rules that walk the directory - the push-condition rule (through
+    ci_only_documents), the cache rule, the filter-input rule (check_filter_inputs of
+    ci_filter_coverage, rule 21), the merge-group rule and the report rule (check_report_steps of
+    ci_report_rule, rule 26) - read this one answer, the filter-input rule and the report rule as
+    main() hands it to them: parsing each file for each of them is a second read of every workflow
+    in the repository."""
     try:
         paths = sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES)
     except Exception as exc:

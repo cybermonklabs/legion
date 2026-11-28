@@ -1,0 +1,83 @@
+{"ImportPath":"example.com/acme/probe/broken [example.com/acme/probe/broken.test]","Action":"build-output","Output":"# example.com/acme/probe/broken [example.com/acme/probe/broken.test]\n"}
+{"ImportPath":"example.com/acme/probe/broken [example.com/acme/probe/broken.test]","Action":"build-output","Output":"broken/broken_test.go:6:6: undefined: claimOf\n"}
+{"ImportPath":"example.com/acme/probe/broken [example.com/acme/probe/broken.test]","Action":"build-fail"}
+{"Time":"2026-11-28T02:33:36.869290463Z","Action":"start","Package":"example.com/acme/probe/broken"}
+{"Time":"2026-11-28T02:33:36.869459075Z","Action":"output","Package":"example.com/acme/probe/broken","Output":"FAIL\texample.com/acme/probe/broken [build failed]\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:36.869723958Z","Action":"fail","Package":"example.com/acme/probe/broken","Elapsed":0,"FailedBuild":"example.com/acme/probe/broken [example.com/acme/probe/broken.test]"}
+{"Time":"2026-11-28T02:33:37.091908377Z","Action":"start","Package":"example.com/acme/probe/claims"}
+{"Time":"2026-11-28T02:33:37.092077391Z","Action":"start","Package":"example.com/acme/probe/slow"}
+{"Time":"2026-11-28T02:33:37.105823819Z","Action":"start","Package":"example.com/acme/probe/twice"}
+{"Time":"2026-11-28T02:33:37.115385127Z","Action":"run","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds"}
+{"Time":"2026-11-28T02:33:37.115431262Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Output":"=== RUN   TestTheQuickReadEnds\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.115442839Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Output":"    slow_test.go:9: the read ended in 1 ms\n"}
+{"Time":"2026-11-28T02:33:37.115450244Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Output":"--- PASS: TestTheQuickReadEnds (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.115454796Z","Action":"pass","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Elapsed":0}
+{"Time":"2026-11-28T02:33:37.115459805Z","Action":"run","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds"}
+{"Time":"2026-11-28T02:33:37.115461257Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"=== RUN   TestTheSlowReadEnds\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.115466478Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"    slow_test.go:13: the read starts\n"}
+{"Time":"2026-11-28T02:33:37.120895431Z","Action":"run","Package":"example.com/acme/probe/claims","Test":"TestTheClaimStaysAfterARestart"}
+{"Time":"2026-11-28T02:33:37.12093741Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheClaimStaysAfterARestart","Output":"=== RUN   TestTheClaimStaysAfterARestart\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.1209523Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheClaimStaysAfterARestart","Output":"    claims_test.go:6: the daemon read 1 claim after the restart\n"}
+{"Time":"2026-11-28T02:33:37.120957356Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheClaimStaysAfterARestart","Output":"--- PASS: TestTheClaimStaysAfterARestart (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.1209635Z","Action":"pass","Package":"example.com/acme/probe/claims","Test":"TestTheClaimStaysAfterARestart","Elapsed":0}
+{"Time":"2026-11-28T02:33:37.120968335Z","Action":"run","Package":"example.com/acme/probe/claims","Test":"TestTheOwnerStaysAfterARestart"}
+{"Time":"2026-11-28T02:33:37.120970539Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheOwnerStaysAfterARestart","Output":"=== RUN   TestTheOwnerStaysAfterARestart\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.120974178Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheOwnerStaysAfterARestart","Output":"    claims_test.go:10: the owner is \"\" after the restart, want \"the first session\"\n","OutputType":"error"}
+{"Time":"2026-11-28T02:33:37.120986064Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheOwnerStaysAfterARestart","Output":"--- FAIL: TestTheOwnerStaysAfterARestart (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.120988662Z","Action":"fail","Package":"example.com/acme/probe/claims","Test":"TestTheOwnerStaysAfterARestart","Elapsed":0}
+{"Time":"2026-11-28T02:33:37.120991399Z","Action":"run","Package":"example.com/acme/probe/claims","Test":"TestTheWaitIsSkipped"}
+{"Time":"2026-11-28T02:33:37.120993531Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheWaitIsSkipped","Output":"=== RUN   TestTheWaitIsSkipped\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.12099597Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheWaitIsSkipped","Output":"    claims_test.go:14: this machine has no second database\n"}
+{"Time":"2026-11-28T02:33:37.12099827Z","Action":"output","Package":"example.com/acme/probe/claims","Test":"TestTheWaitIsSkipped","Output":"--- SKIP: TestTheWaitIsSkipped (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.121000143Z","Action":"skip","Package":"example.com/acme/probe/claims","Test":"TestTheWaitIsSkipped","Elapsed":0}
+{"Time":"2026-11-28T02:33:37.121003166Z","Action":"output","Package":"example.com/acme/probe/claims","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.12744835Z","Action":"output","Package":"example.com/acme/probe/claims","Output":"FAIL\texample.com/acme/probe/claims\t0.035s\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.127484005Z","Action":"fail","Package":"example.com/acme/probe/claims","Elapsed":0.036}
+{"Time":"2026-11-28T02:33:37.129348192Z","Action":"run","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice"}
+{"Time":"2026-11-28T02:33:37.129428287Z","Action":"output","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Output":"=== RUN   TestTheNameRunsTwice\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.129444959Z","Action":"output","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Output":"    twice_test.go:6: the internal test ran\n"}
+{"Time":"2026-11-28T02:33:37.129459153Z","Action":"output","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Output":"--- PASS: TestTheNameRunsTwice (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.129464857Z","Action":"pass","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Elapsed":0}
+{"Time":"2026-11-28T02:33:37.129472275Z","Action":"run","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice"}
+{"Time":"2026-11-28T02:33:37.129474524Z","Action":"output","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Output":"=== RUN   TestTheNameRunsTwice\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.129477356Z","Action":"output","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Output":"    external_test.go:6: the external test ran\n"}
+{"Time":"2026-11-28T02:33:37.129480975Z","Action":"output","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Output":"--- PASS: TestTheNameRunsTwice (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.129483804Z","Action":"pass","Package":"example.com/acme/probe/twice","Test":"TestTheNameRunsTwice","Elapsed":0}
+{"Time":"2026-11-28T02:33:37.129487495Z","Action":"output","Package":"example.com/acme/probe/twice","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:37.135127246Z","Action":"output","Package":"example.com/acme/probe/twice","Output":"ok  \texample.com/acme/probe/twice\t0.029s\n"}
+{"Time":"2026-11-28T02:33:37.13516565Z","Action":"pass","Package":"example.com/acme/probe/twice","Elapsed":0.029}
+{"Time":"2026-11-28T02:33:42.118004493Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"panic: test timed out after 5s\n"}
+{"Time":"2026-11-28T02:33:42.118053045Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\trunning tests:\n"}
+{"Time":"2026-11-28T02:33:42.11806434Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\t\tTestTheSlowReadEnds (5s)\n"}
+{"Time":"2026-11-28T02:33:42.118067108Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\n"}
+{"Time":"2026-11-28T02:33:42.11807114Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"goroutine 321 [running]:\n"}
+{"Time":"2026-11-28T02:33:42.118073783Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-11-28T02:33:42.118076599Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2961 +0x34a\n"}
+{"Time":"2026-11-28T02:33:42.118078624Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"created by time.goFunc\n"}
+{"Time":"2026-11-28T02:33:42.118080305Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttime/sleep.go:182 +0x2d\n"}
+{"Time":"2026-11-28T02:33:42.118081948Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\n"}
+{"Time":"2026-11-28T02:33:42.118089959Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-11-28T02:33:42.118092039Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.(*T).Run(0xca4240ca008, {0x55900d?, 0xca423fe6aa0?}, 0x6d3d10)\n"}
+{"Time":"2026-11-28T02:33:42.118095798Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2268 +0x4f2\n"}
+{"Time":"2026-11-28T02:33:42.118097621Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.runTests.func1(0xca4240ca008)\n"}
+{"Time":"2026-11-28T02:33:42.118099875Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2744 +0x37\n"}
+{"Time":"2026-11-28T02:33:42.118101368Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.tRunner(0xca4240ca008, 0xca423fe6bc8)\n"}
+{"Time":"2026-11-28T02:33:42.118103462Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2195 +0xea\n"}
+{"Time":"2026-11-28T02:33:42.118105154Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.runTests({0x559fb6, 0x16}, {0x55b638, 0x1b}, 0xca423b060c0, {0x6ef930, 0x2, 0x2}, {0xc2baad4186de8497, 0x12a153bd1, ...})\n"}
+{"Time":"2026-11-28T02:33:42.118109719Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2742 +0x510\n"}
+{"Time":"2026-11-28T02:33:42.118111184Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.(*M).Run(0xca42498c140)\n"}
+{"Time":"2026-11-28T02:33:42.118112688Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2602 +0x6af\n"}
+{"Time":"2026-11-28T02:33:42.118114321Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"main.main()\n"}
+{"Time":"2026-11-28T02:33:42.118116563Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\t_testmain.go:48 +0x9b\n"}
+{"Time":"2026-11-28T02:33:42.118124928Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\n"}
+{"Time":"2026-11-28T02:33:42.118127895Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"goroutine 90 [sleep]:\n"}
+{"Time":"2026-11-28T02:33:42.118131425Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"time.Sleep(0x6fc23ac00)\n"}
+{"Time":"2026-11-28T02:33:42.118133175Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\truntime/time.go:368 +0x165\n"}
+{"Time":"2026-11-28T02:33:42.118135465Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"example.com/acme/probe/slow.TestTheSlowReadEnds(0xca4240ca488?)\n"}
+{"Time":"2026-11-28T02:33:42.118143115Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\texample.com/acme/probe/slow/slow_test.go:14 +0x48\n"}
+{"Time":"2026-11-28T02:33:42.118145841Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"testing.tRunner(0xca4240ca488, 0x6d3d10)\n"}
+{"Time":"2026-11-28T02:33:42.11814846Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2195 +0xea\n"}
+{"Time":"2026-11-28T02:33:42.11815057Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-11-28T02:33:42.118152786Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheSlowReadEnds","Output":"\ttesting/testing.go:2260 +0x4d4\n"}
+{"Time":"2026-11-28T02:33:42.121007005Z","Action":"output","Package":"example.com/acme/probe/slow","Output":"FAIL\texample.com/acme/probe/slow\t5.029s\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:42.121057135Z","Action":"fail","Package":"example.com/acme/probe/slow","Elapsed":5.029}

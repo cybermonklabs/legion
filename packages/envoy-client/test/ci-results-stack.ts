@@ -64,8 +64,9 @@ const { PATH: SHELL_PATH = "" } = process.env;
 const PROJECT = "ACME";
 /** The repository whose runs the result entry takes. */
 const REPOSITORY = "local-org/local-repo";
-/** The workflow the result entry lists, as ci-results.yaml is listed in production. */
-const WORKFLOW = ".github/workflows/ci-results.yaml";
+/** The workflow the result entry lists, as ci-results.yaml is listed in production, and the file
+ *  Dispatch reads at a run's commit to know which job makes a check run. */
+export const WORKFLOW = ".github/workflows/ci-results.yaml";
 /** The workflow file at each commit {@link CIResultsStack.setFiles} sets: the jobs go-checks and
  *  lint, which the probe checks name, each with no matrix, so a check run named exactly the job
  *  is that job's (Dispatch reads the file to know which job makes a check run, spec_results.go
@@ -193,11 +194,20 @@ export interface StoredResult {
   readonly id: string;
   readonly seq: number;
   readonly attestation: {
+    readonly subject: readonly { readonly digest: { readonly gitCommit: string } }[];
     readonly predicate: {
       readonly check: string;
+      readonly procedure_digest: string;
       readonly verdict: string;
       readonly observed: string;
-      readonly run: { readonly check_run_id: string };
+      readonly job: string;
+      readonly leg: string;
+      readonly recorded_at: string;
+      readonly run: {
+        readonly run_id: string;
+        readonly attempt: number;
+        readonly check_run_id: string;
+      };
     };
   };
 }

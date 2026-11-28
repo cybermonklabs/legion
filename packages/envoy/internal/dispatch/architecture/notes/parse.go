@@ -7,7 +7,9 @@
 // GitHub reader (githubapp's Dir and DirFiles) and the architecture-check
 // and spec-check commands (cmd/architecture-check and cmd/spec-check, through
 // ReadSet) call. The package is pure, with no database and no network; the
-// architecture package's importer owns fetching and projection.
+// architecture package's importer owns fetching and projection. Apart from
+// the standard library, it imports only gopkg.in/yaml.v3 and
+// internal/dispatch/text.
 package notes
 
 import (

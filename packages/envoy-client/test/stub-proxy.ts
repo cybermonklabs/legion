@@ -29,8 +29,9 @@ interface Link {
 /**
  * Starts the stub proxy on a free 127.0.0.1 port. `answer(n)` decides the nth CONNECT, from 1.
  * The refusal carries the headers the airlock writes on its own answers (`Cipher-Proxy-Forwarded:
- * false`, `Cipher-Proxy-Code`) and a text body, though a client of the CONNECT reads its status
- * line alone. A request that is not a CONNECT is answered 405, and nothing is ever forwarded.
+ * false`, `Cipher-Proxy-Code`) and a text body. A client of the CONNECT reads its status line and
+ * its `Cipher-Proxy-Code` (`tunnelRefusal`, dispatch-http.ts) and never its body. A request that is
+ * not a CONNECT is answered 405, and nothing is ever forwarded.
  */
 export function startStubProxy(answer: (connect: number) => StubProxyAnswer): StubProxy {
   const connects: string[] = [];

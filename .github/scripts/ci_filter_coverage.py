@@ -2,8 +2,10 @@
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
 read none of that - what no if: condition of ci.yaml may say, what every job's `if:` must say, what
-the cache fill workflows must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
-of this repository running on a merge group - and main() runs them.
+the cache fill workflows must save for the entries ci.yaml restores, and that ci.yaml is the only
+workflow of this repository running on a merge group - and ci_report_rule.py the rule that a job
+running the results action makes its go test -json report with no -v but -json's own test2json,
+with the reader of bash it reads go test commands with; main() runs them all.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py gets these very classes
@@ -4066,6 +4068,7 @@ def check() -> int:
     # own. It is imported here, not at the top, because it imports this module's constants and
     # helpers: by the time main() runs, this module is loaded whole.
     import ci_workflow_rules as rules
+    import ci_report_rule
 
     quantifier = changes_quantifier(document, problems)
     files = repo_files()
@@ -4148,6 +4151,9 @@ def check() -> int:
     rules.check_binaries_fill(data.BINARIES_FILLS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    # Rule 26: a job that runs the results action makes its go test -json report with no -v. Its
+    # line says what it read of the jobs that run the action, zero included.
+    report += ci_report_rule.check_report_steps(rules.directory_workflows(), problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
     report += check_vet_tags(session, data, problems)
     problems += session.problems

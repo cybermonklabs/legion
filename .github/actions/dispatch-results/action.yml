@@ -1,0 +1,76 @@
+name: Report the results of a job's spec checks
+description: >-
+  The last step of a CI job of this repository. It runs packages/envoy's ci-report command over
+  the spec files of .dispatch/spec at the commit of the checkout, which it reads through git and
+  never from the working tree, and the job's go test report. The command writes one result to
+  Dispatch, through the dispatch command, for each check whose test part names the job and whose
+  test ran in the report. A check whose test did not run gets no result. The step writes one JSON
+  line for each check of the job to $RUNNER_TEMP/dispatch-results.jsonl and to the log, and it
+  fails when a call of the dispatch command failed.
+
+  The reporter runs under `agent-secrets result-grant`, which trades the job's own GitHub OIDC
+  token at the secrets broker for the placeholder of a result grant. So the step holds the
+  airlock's placeholder and no Dispatch credential: the broker's airlock proxy puts the run's
+  results token in the placeholder's place, and the grant ends at most 15 minutes after the step
+  starts. The calling job checks out this repository, installs the Go that packages/envoy/go.mod
+  names and runs `bun install`, since the action builds its two commands with go and runs the
+  dispatch command under Bun. The calling step sets DISPATCH_URL, AGENT_SECRETS_URL and
+  AGENT_SECRETS_MACHINE_AUDIENCE, and the job has `id-token: write`, for agent-secrets' exchange.
+
+  The calling step runs after the job's go test step with `if: ${{ !cancelled() }}`: under a
+  step's default `if: success()`, a go test step whose test failed skips this one, and none of
+  the job's results is written, its passes among them. A failed test is a result to write, so it
+  fails no call: the step fails when a call fails, when it cannot read its inputs, when `go build`
+  of its two commands fails, or when agent-secrets' exchange is refused.
+
+inputs:
+  report:
+    description: >-
+      The path of the job's `go test -json` report. A relative path is read from the checkout. The
+      command that makes it passes no -v and no -test.v but the -test.v=test2json that -json passes
+      itself: under any other value a test can print a line that reads as its own pass, and such a
+      report cannot be told from one made without -v, so .github/scripts/check-ci-filters.sh
+      refuses a job that runs this action and such a `go test`.
+    required: true
+  project:
+    description: The key of the Dispatch project that the results are for.
+    required: true
+  job:
+    description: >-
+      The job whose checks the step reports: the value of the job attribute of those checks.
+      Dispatch refuses a result of a check whose job is not the job of the run's check run.
+    default: ${{ github.job }}
+
+runs:
+  using: composite
+  steps:
+    # Both commands are built before any proxy setting exists: agent-secrets result-grant sets the
+    # airlock's proxy in its child's environment alone, where a go command could reach no module
+    # proxy. cmd/cipher builds agent-secrets, so each build names its binary with -o.
+    - id: build
+      name: Build agent-secrets and ci-report
+      shell: bash
+      run: |
+        go build -o "$RUNNER_TEMP/dispatch-results/bin/agent-secrets" ./packages/envoy/cmd/cipher
+        go build -o "$RUNNER_TEMP/dispatch-results/bin/ci-report" ./packages/envoy/cmd/ci-report
+    # The inputs reach the script as environment variables and never as text of `run:`, so no
+    # input can become shell code. Their names leave out the INPUT prefix, which this repository's
+    # Bun pin check reserves for an action's own inputs. AGENT_SECRETS_MACHINE_IDENTITY makes
+    # agent-secrets read the job's own GitHub OIDC token, and agent-secrets gives the reporter no
+    # AGENT_SECRETS_MACHINE_IDENTITY. Under GITHUB_ACTIONS, agent-secrets first prints
+    # `::add-mask::<placeholder>` on standard output, so the runner masks the placeholder in the
+    # log: tee writes every line to the log through descriptor 3, and sed keeps the mask line out
+    # of the file, which holds one line for each check. GitHub runs a `shell: bash` step with
+    # `-eo pipefail`, so the step fails when the command fails, after the lines are written:
+    # ci-report exits 1 for a failed call and 2 for a tree, a report or a commit it could not
+    # read, and agent-secrets exits non-zero, running nothing, when the exchange is refused.
+    - id: report
+      name: Write one result for each check whose test ran
+      shell: bash
+      env:
+        REPORT: ${{ inputs.report }}
+        PROJECT: ${{ inputs.project }}
+        JOB: ${{ inputs.job }}
+        AGENT_SECRETS_MACHINE_IDENTITY: github-actions
+      run: |
+        { "$RUNNER_TEMP/dispatch-results/bin/agent-secrets" result-grant -- "$RUNNER_TEMP/dispatch-results/bin/ci-report" --dir .dispatch/spec --job "$JOB" --report "$REPORT" --project "$PROJECT" --dispatch-cli "bun packages/envoy-client/bin/dispatch.ts" | tee /dev/fd/3 | sed '/^::add-mask::/d' > "$RUNNER_TEMP/dispatch-results.jsonl"; } 3>&1

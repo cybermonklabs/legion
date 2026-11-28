@@ -1642,7 +1642,7 @@ RACE_FILLS = [
 # built from this list, so go-test-step-expansion.py finds no pair the two steps both run and
 # neither step can come to name a package the other does not leave out.
 NOTE_AND_SPEC_PACKAGES = ["internal/dispatch/architecture/notes", "internal/runnerlog", "internal/dispatch/specgraph",
-                          "cmd/architecture-check", "cmd/spec-check"]
+                          "cmd/architecture-check", "cmd/spec-check", "cmd/ci-report"]
 NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their commands"
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
@@ -2634,6 +2634,7 @@ STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 CI_RESULTS_STEP = "A CI job's result through the real broker and a real Dispatch"
 CI_RESULTS_REFUSAL_STEP = "A CI job's refused result prints no workflow command"
+CI_REPORT_STEP = "The fixture CI job's results through ci-report, the real broker and a real Dispatch"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"

@@ -57,6 +57,16 @@ function outcomeCode(error: unknown): string {
   return last instanceof Error ? last.name : String(last);
 }
 
+/** The line `{"airlock_refused": {"status", "code", "said"}}` that `jobResultCommand` prints for a
+ *  refusal of the airlock proxy before the write left it: the answer's status, 0 where it named
+ *  none, its `Cipher-Proxy-Code`, null where it named none, and `said`, the words a person reads,
+ *  as a `printableLine`. A program reads the status and the code, and never the words. */
+function airlockRefused(status: number, code: string | undefined, said: string): string {
+  return printableJson(
+    JSON.stringify({ airlock_refused: { status, code: code ?? null, said: printableLine(said) } })
+  );
+}
+
 /**
  * `dispatch result --project`, a CI job's record of its result of a check of the spec files. The
  * job runs it under `agent-secrets result-grant`, and writes with the proxy placeholder of its
@@ -70,26 +80,31 @@ function outcomeCode(error: unknown): string {
  * and exits 0: the result is stored, and a results token reads nothing back. A write that may
  * have reached Dispatch while no answer says whether it stored the result (`writeOutcomeUnknown`)
  * prints `{"write_outcome_unknown": <code>}` and exits 1, as the write is not confirmed: the
- * result may be stored, and a second run is safe, since Dispatch keeps each result. A tunnel the
- * airlock proxy refused prints `AIRLOCK_TUNNEL_REFUSED: …` with its status, and an answer the proxy
- * gave itself before the write left it (`Cipher-Proxy-Forwarded: false`) prints its
- * `Cipher-Proxy-Code` and its words as the client's excerpt quotes them (`AirlockRefusedError`),
- * each saying that nothing reached Dispatch, and exits 1; a 5xx of either is asked again within
- * the bound first, as a connection that never opened is. An answer the proxy gave itself after the
- * write may have left it (`Cipher-Proxy-Forwarded: unknown`) is asked again under the same key, as
- * a reset is, and ends `{"write_outcome_unknown": <code>}` with exit 1 if no answer settles it. A
- * call Dispatch's check of the run's token turns away before anything is stored (`notNow`) is
- * asked again inside the call's one bound (`ResultBound`), and ends with the last such answer, its
- * code named, and exit 1. No credential reaches what it prints: the proxy's and Dispatch's words
- * name none, and the placeholder is named by its variable.
+ * result may be stored, and a second run is safe, since Dispatch keeps each result. A refusal of
+ * the airlock proxy before the write left it prints `{"airlock_refused": {"status": <status>,
+ * "code": <code>, "said": <line>}}` (`airlockRefused`) and exits 1, so a program reads its status
+ * and its code and never its words: a tunnel it refused at the CONNECT
+ * (`AirlockTunnelRefusedError`), with the tunnel's status and the answer's `Cipher-Proxy-Code`,
+ * null where it named none, and an answer it gave itself inside an open connection
+ * (`Cipher-Proxy-Forwarded: false`, `AirlockRefusedError`), with its status and its code. `said`
+ * is the line a person reads, saying that nothing reached Dispatch: `AIRLOCK_TUNNEL_REFUSED: …`
+ * with the tunnel's status, or the answer's code and its words as the client's excerpt quotes
+ * them. A 5xx of either is asked again within the bound first, as a connection that never opened
+ * is. An answer the proxy gave itself after the write may have left it
+ * (`Cipher-Proxy-Forwarded: unknown`) is asked again under the same key, as a reset is, and ends
+ * `{"write_outcome_unknown": <code>}` with exit 1 if no answer settles it. A call Dispatch's check
+ * of the run's token turns away before anything is stored (`notNow`) is asked again inside the
+ * call's one bound (`ResultBound`), and ends with the last such answer, its code named, and exit
+ * 1. No credential reaches what it prints: the proxy's and Dispatch's words name none, and the
+ * placeholder is named by its variable.
  *
  * What it prints goes into a GitHub Actions runner's log, which reads workflow commands from it,
  * so each text it did not write (an argument, a variable, an answer of the airlock proxy or of
  * Dispatch) is printed by runnerlog.Printable's rule (runner-log.ts): a problem of its arguments
- * as `printable` text, Dispatch's and the proxy's refusals as a `printableLine`, and the dry run,
- * the stored result and the outcome line as `printableJson`. No value starts a line of its own,
- * and no line is a workflow command. The landed line holds no such text: its code is one of the
- * client's three constants.
+ * as `printable` text, Dispatch's refusals and the airlock's `said` as a `printableLine`, and the
+ * dry run, the stored result and each JSON line as `printableJson`. No value starts a line of its
+ * own, and no line is a workflow command. The landed line holds no such text: its code is one of
+ * the client's three constants.
  */
 export async function jobResultCommand(
   parsed: Extract<ParsedCommand, { readonly kind: "call" }>,
@@ -161,13 +176,22 @@ export async function jobResultCommand(
         );
       }
       // The airlock proxy refused the tunnel, or answered the request itself: nothing reached
-      // Dispatch, and its line says so. Its words come from outside this command.
+      // Dispatch, and its line says so, with the status and the code a program reads. Its words
+      // come from outside this command.
       if (error instanceof AirlockTunnelRefusedError) {
-        return refuse(printableLine(`${error.code}: ${error.message}`), REFUSED, parsed.tool);
+        return refuse(
+          airlockRefused(error.status, error.proxyCode, `${error.code}: ${error.message}`),
+          REFUSED,
+          parsed.tool
+        );
       }
       if (error instanceof AirlockRefusedError) {
         return refuse(
-          printableLine(`${error.code}: ${error.body}; nothing was stored`),
+          airlockRefused(
+            error.status,
+            error.code,
+            `${error.code}: ${error.body}; nothing was stored`
+          ),
           REFUSED,
           parsed.tool
         );

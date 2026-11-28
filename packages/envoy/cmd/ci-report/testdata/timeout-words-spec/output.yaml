@@ -1,0 +1,54 @@
+---
+type: requirement
+id: the-outcome-is-the-tests
+kind: behavior
+text:
+  - Each result holds the outcome that its test reported.
+---
+type: check
+id: passes-saying-timeout
+serves: the-outcome-is-the-tests
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acc/output TestSaysTimedOut
+  job: go-checks
+claim: The test that quotes the words of a timeout passes.
+procedure_text:
+  - The program runs the test one time.
+  - It must find no failure.
+failing_example:
+  - A test that fails.
+---
+type: check
+id: fails-saying-timeout
+serves: the-outcome-is-the-tests
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acc/output TestFailsSayingTimedOut
+  job: go-checks
+claim: The test that quotes the words of a timeout and fails passes.
+procedure_text:
+  - The program runs the test one time.
+  - It must find no failure.
+failing_example:
+  - A test that fails.
+---
+type: check
+id: slow-test
+serves: the-outcome-is-the-tests
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: example.com/acc/slow TestSlow
+  job: go-checks
+claim: The slow test ends before the time limit.
+procedure_text:
+  - The program runs the slow test one time.
+  - It must find no failure.
+failing_example:
+  - A test that waits for 60 seconds.

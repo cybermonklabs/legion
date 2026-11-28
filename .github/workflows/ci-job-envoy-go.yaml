@@ -145,8 +145,8 @@ jobs:
       # integration step tests, and internal/textcheck, whose tests are the text-check job's: that
       # job runs them in a job with no database and no Bun, and a change to only what they read must
       # not start this one. So are internal/dispatch/architecture/notes, internal/runnerlog,
-      # internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, which
-      # envoy-go-build tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
+      # internal/dispatch/specgraph, cmd/architecture-check, cmd/spec-check and cmd/ci-report,
+      # which envoy-go-build tests on every push (NOTE_AND_SPEC_PACKAGES), and listenerwire and
       # internal/wirecheck, which envoy-go-build tests in their place (LISTENERWIRE_PACKAGES):
       # listenerwire's clients test type-checks daemon packages, so a change to only those daemon
       # packages starts no job with a database. go_legs.py prints the leg's packages only once

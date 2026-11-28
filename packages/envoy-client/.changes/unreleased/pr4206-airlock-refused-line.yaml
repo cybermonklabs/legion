@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `dispatch result --project` prints a refusal of the airlock proxy before the write left it, a
+  tunnel it refused at the CONNECT or an answer it gave itself inside an open connection, as one
+  JSON line, `{"airlock_refused":{"status":<status>,"code":<code>,"said":"<words>"}}`, and exits 1
+  as before. `code` is the answer's `Cipher-Proxy-Code`, which Bun keeps on a refused CONNECT, and
+  null where it names none; `said` is the line it printed before, such as `AIRLOCK_TUNNEL_REFUSED:
+  the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to
+  Dispatch`. A program reads the status and the code, and never the words: `ci-report` names the
+  end of a result grant from the code `GRANT_NOT_LIVE`, where it read a 407 out of those words.

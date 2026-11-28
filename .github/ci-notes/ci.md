@@ -768,8 +768,8 @@ envoy's Go build, vet, format, generated-code and migration checks (envoy-go-bui
 format, generated-contract and pmdoc checks, the vet of the module as darwin compiles it,
 the edited-migrations check, and the build and pack of the envoy commands,
 with the tests of internal/dispatch/architecture/notes, internal/runnerlog,
-internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one
-run this is (envoy-go's unit step leaves them out), the architecture-note check over
+internal/dispatch/specgraph, cmd/architecture-check, cmd/spec-check and cmd/ci-report,
+whose one run this is (envoy-go's unit step leaves them out), the architecture-note check over
 this repository's own notes through the composite action
 .github/actions/architecture-check, and the spec-file check over its .dispatch/spec
 through the composite action .github/actions/spec-check. gofmt -l . walks every .go
@@ -1008,8 +1008,9 @@ ci_job_reads.py's reads for this gate: its rules read every
 workflow of it - ci_workflow_rules.check_one_merge_group_workflow refuses any but
 this one that runs on merge_group, check_cache_round_trip holds every workflow's
 restore of a family a fill workflow fills (ci-caches.yaml, ci-caches-changes.yaml) to
-the fill's key, and ci_only_documents reads them all to find the files only this one
-calls - and a rule that reads a
+the fill's key, ci_only_documents reads them all to find the files only this one
+calls, and ci_report_rule.check_report_steps holds a job of any of them that runs
+the results action to a go test -json report with no -v - and a rule that reads a
 workflow has to run on the change that adds or edits one, which a list of the
 names already there cannot select.
 
@@ -3061,10 +3062,11 @@ envoy's Go build, vet, format, generated-code and migration checks: the Go forma
 two generated-code checks, the vet of the module as darwin compiles it, the check that no
 migration a database may have run is edited, and the build and pack of the envoy commands. It
 also runs the tests of internal/dispatch/architecture/notes, internal/runnerlog,
-internal/dispatch/specgraph, cmd/architecture-check and cmd/spec-check, whose one run this is
-(envoy-go's unit step leaves them out), the architecture-note check over this repository's own
-.dispatch/architecture through the composite action .github/actions/architecture-check, and the
-spec-file check over its .dispatch/spec through the composite action .github/actions/spec-check,
+internal/dispatch/specgraph, cmd/architecture-check, cmd/spec-check and cmd/ci-report, whose
+one run this is (envoy-go's unit step leaves them out), the architecture-note check over this
+repository's own .dispatch/architecture through the composite action
+.github/actions/architecture-check, and the spec-file check over its .dispatch/spec through the
+composite action .github/actions/spec-check,
 both of which other repositories can call. These come back on every push; the slow half, the
 envoy-go job (the module's unit tests, the container-backed NATS matrix and the integration
 suite), and the script tests, envoy-go-checks, are slow suites
@@ -3616,7 +3618,8 @@ run compiles it. One step after another, only the first suite that built each pa
 Queued in the pool, the four Dispatch suites of 2026-11-27 started within 16 s of each other and
 each compiled ./cmd/dispatch again (66.8, 31.2, 16.3 and 16.6 s of CPU, job 140590752284), and a
 compile beside the suites shares the processors with rows that read real clocks. So the job
-compiles each command once, before the pool starts any suite.
+compiles each command once, before the pool starts any suite, ./cmd/ci-report and ./cmd/spec-check
+among them, which the fixture CI job's suite builds beside the CI-result stack's four.
 
 The suites are queued longest first by each suite's wall in the pool after that build, so that
 the shorter ones fill the other cores around the longest. For ten of them that wall is the
@@ -3626,7 +3629,10 @@ the session state rig 88 s, claude-envoy's stall 77 s, the broker credential tes
 mention 17 s, the design-gate advice 9 s, the keyed resend 8 s and the moved-approval advice 7 s.
 The three that joined the job after that probe are placed by their walls in job 140859710731:
 the CI-result suite 56.3 s, queued after claude-envoy's stall, and the role topics 16.4 s and the
-refused result 17.0 s, queued after the comment mention.
+refused result 17.0 s, queued after the comment mention. The fixture CI job's suite
+(ci-report.live.test.ts and ci-report-long-output.live.test.ts in one bun test) took 30 s as a
+step after the CI-result suite in run 46101801634, and is queued after the broker credential
+tests.
 
 ## What the refill live proof shows
 
