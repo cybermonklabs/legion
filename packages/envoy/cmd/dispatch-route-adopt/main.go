@@ -1,6 +1,7 @@
 // Command dispatch-route-adopt carries a branch made before Dispatch's routes moved into a file
 // each across main's change. A merge of main into such a branch leaves routes_table.go in
-// conflict, and routes_shapes.go only where the branch changed it too.
+// conflict, routes_shapes.go only where the branch changed it too, and read_classes.go where the
+// branch changed readClasses.
 //
 // Before the change (main at 80bccafa8c18) every route of internal/dispatch/api was one row of
 // routes() in routes_table.go, and what else was known of it stood beside the table, keyed
@@ -61,14 +62,14 @@
 //     one the merge base held, and is named among what is left where the other side has changed
 //     it since.
 //
-// routes_table.go and routes_shapes.go are then taken whole from the new side. An edit the
-// old-layout side made to either outside the moved entries - a type, a helper, a comment,
-// routes() itself - is printed as a diff for the person to carry by hand, since nothing can place
-// it mechanically. testdata/routes.txt, which the new layout no longer commits, is removed. Every
-// file it writes or removes is staged; it changes no other file. It ends by listing what is left:
-// route files merged with conflicts, edits to carry by hand, the other paths git still holds in
-// conflict, and every line of package api's other files that still names a declaration the old
-// layout had.
+// routes_table.go, routes_shapes.go and read_classes.go are then taken whole from the new side, and
+// read_classes.go is removed where the new side removed it. An edit the old-layout side made to any
+// of them outside the moved entries - a type, a helper, a comment, routes() itself - is printed as
+// a diff for the person to carry by hand, since nothing can place it mechanically.
+// testdata/routes.txt, which the new layout no longer commits, is removed. Every file it writes or
+// removes is staged; it changes no other file. It ends by listing what is left: route files merged
+// with conflicts, edits to carry by hand, the other paths git still holds in conflict, and every
+// line of package api's other files that still names a declaration the old layout had.
 //
 // The built binary exits 0 when nothing is left, 2 when it resolved what it could and something
 // is left for the person, and 1 when it could not run. Through `go run`, as the usage above runs
