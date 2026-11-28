@@ -310,6 +310,26 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 	}
 }
 
+// TestALaterCommitTrailerCorrectsAnEarlierOne: two commits each carry a `Dispatch:` trailer, the
+// first naming one issue of this repository and a later one naming another, and nothing else
+// names an issue. The later trailer is the correction, as in a pull request whose agent fixed a
+// wrong trailer in a new commit, so it should win. The trailer keys rank in commit order
+// (dispatchTrailer), so the earlier, wrong trailer wins instead: this test is red until a person
+// decides how a later trailer ranks against an earlier one, which no approved rule says yet.
+func TestALaterCommitTrailerCorrectsAnEarlierOne(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	wrong := seedGadgetsIssue(t, ctx, pool, 48)
+	corrected := seedGadgetsIssue(t, ctx, pool, 49)
+	wantAttributedEachWay(t, ctx, pool, 410, firstSourcePull{
+		title: "feat: the work", body: "No key here.", branch: "topic",
+		commits: []string{
+			"Document the work\n\nDispatch: " + wrong,
+			"Correct the trailer of the commit before\n\nDispatch: " + corrected,
+		},
+	}, corrected, sourceCommitMessage, true)
+}
+
 // refreshMergeMention writes the head row of pull request 4028 of acme/gadgets through the
 // reconcile's refresh (RefreshPullRequestHead), in the shape of a production pull request that was
 // credited to an issue only its merge commit mentions. Its body ends with `Dispatch: <declared>`
