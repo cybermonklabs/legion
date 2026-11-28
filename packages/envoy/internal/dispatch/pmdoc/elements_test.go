@@ -182,13 +182,45 @@ func TestMeasureDocumentCountsWhatAnUploadCounts(t *testing.T) {
 		{"tables with no body row", repeated("| a |\n| - |\n\n")},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
+			t.Parallel()
 			uploads := func(units int) bool {
 				_, err := ParseForWrite(shape.build(units), nil)
 				return !errors.Is(err, ErrTooManyElements)
 			}
-			low, high := 1, 1
-			for uploads(high) {
-				low, high = high, high*2
+			// Measure a few units to estimate the fixed cost and the cost per
+			// repeat. Only upload refusals decide the bracket and the boundary.
+			const sample = 4
+			a, b := MeasureDocument(shape.build(sample)), MeasureDocument(shape.build(2*sample))
+			if !a.Counted || !b.Counted || b.Elements <= a.Elements {
+				t.Fatalf("cannot estimate a repeat's weight from %d and %d units: %+v, %+v", sample, 2*sample, a, b)
+			}
+			const last = MaxDocumentElements + 1
+			guess := max(1, min(last-1, sample+(MaxDocumentElements-a.Elements)*sample/(b.Elements-a.Elements)))
+			var low, high int
+			if uploads(guess) {
+				low = guess
+				for step := 1; ; step *= 2 {
+					high = min(last, guess+step)
+					if !uploads(high) {
+						break
+					}
+					if high == last {
+						t.Fatalf("an upload of %d units still fits the element limit", high)
+					}
+					low = high
+				}
+			} else {
+				high = guess
+				for step := 1; ; step *= 2 {
+					low = max(1, guess-step)
+					if uploads(low) {
+						break
+					}
+					if low == 1 {
+						t.Fatal("an upload of one unit exceeds the element limit")
+					}
+					high = low
+				}
 			}
 			for high-low > 1 {
 				if middle := (low + high) / 2; uploads(middle) {

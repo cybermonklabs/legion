@@ -11,24 +11,30 @@
 import { writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-const [output] = process.argv.slice(2);
-if (!output) {
-  console.error("usage: bun entity-names.ts <out.txt>");
-  process.exit(2);
+/** Loads the names from the same dependency that the engine uses. */
+export async function engineEntityNames(): Promise<string[]> {
+  let from = createRequire(import.meta.path).resolve("@legion/proof-editor");
+  for (const name of [
+    "remark-parse",
+    "mdast-util-from-markdown",
+    "micromark",
+    "decode-named-character-reference",
+    "character-entities",
+  ]) {
+    from = createRequire(from).resolve(name);
+  }
+  // The path is known only at run time, so a static import cannot name it.
+  const { characterEntities } = (await import(from)) as {
+    characterEntities: Record<string, string>;
+  };
+  return Object.keys(characterEntities);
 }
 
-let from = createRequire(import.meta.path).resolve("@legion/proof-editor");
-for (const name of [
-  "remark-parse",
-  "mdast-util-from-markdown",
-  "micromark",
-  "decode-named-character-reference",
-  "character-entities",
-]) {
-  from = createRequire(from).resolve(name);
+if (import.meta.main) {
+  const [output] = process.argv.slice(2);
+  if (!output) {
+    console.error("usage: bun entity-names.ts <out.txt>");
+    process.exit(2);
+  }
+  writeFileSync(output, `${(await engineEntityNames()).join("\n")}\n`);
 }
-// The path is the one resolved above, known only at run time, so a static import cannot name it.
-const { characterEntities } = (await import(from)) as {
-  characterEntities: Record<string, string>;
-};
-writeFileSync(output, `${Object.keys(characterEntities).join("\n")}\n`);

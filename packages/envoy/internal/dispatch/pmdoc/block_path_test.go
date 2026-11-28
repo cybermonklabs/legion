@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -187,6 +188,7 @@ func TestBlockPathsPlacesEveryBlockAsBlockPathOfDoes(t *testing.T) {
 	t.Parallel()
 	for name, doc := range placementDocuments(t) {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			paths, _, err := BlockPathsAndTableRows(doc)
 			if err != nil {
 				t.Fatal(err)
@@ -201,14 +203,23 @@ func TestBlockPathsPlacesEveryBlockAsBlockPathOfDoes(t *testing.T) {
 			if len(ids) == 0 {
 				t.Fatal("the document carries no block id")
 			}
-			for id := range ids {
-				want, err := BlockPathOf(doc, id)
-				if err != nil {
-					t.Fatalf("BlockPathOf(%q): %v", id, err)
-				}
-				if got, ok := paths[id]; !ok || !reflect.DeepEqual(got, want) {
-					t.Fatalf("paths[%q] = %#v (present %t), want BlockPathOf's %#v", id, got, ok, want)
-				}
+			// Each lookup walks the document. Group the IDs so the wide table can
+			// share the work across test workers without a subtest per block.
+			batch := 0
+			for group := range slices.Chunk(slices.Sorted(maps.Keys(ids)), 64) {
+				batch++
+				t.Run(fmt.Sprintf("blocks %d", batch), func(t *testing.T) {
+					t.Parallel()
+					for _, id := range group {
+						want, err := BlockPathOf(doc, id)
+						if err != nil {
+							t.Fatalf("BlockPathOf(%q): %v", id, err)
+						}
+						if got, ok := paths[id]; !ok || !reflect.DeepEqual(got, want) {
+							t.Fatalf("paths[%q] = %#v (present %t), want BlockPathOf's %#v", id, got, ok, want)
+						}
+					}
+				})
 			}
 			for id := range paths {
 				if !ids[id] {

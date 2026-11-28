@@ -16,18 +16,14 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // engineReadings reads each markdown as the browser editor imports a document, with the fork's
 // headless engine (gen/differential.ts), each short table body row padded as Parse pads it.
 func engineReadings(t *testing.T, markdowns []string) []*Node {
 	t.Helper()
-	if _, err := exec.LookPath("bun"); err != nil {
-		if os.Getenv("CI") == "" {
-			t.Skip("bun is not on PATH; the engine's reading is required in CI")
-		}
-		t.Fatalf("bun is required in CI: %v", err)
-	}
 	dir := t.TempDir()
 	var lines []string
 	for index, markdown := range markdowns {
@@ -38,14 +34,30 @@ func engineReadings(t *testing.T, markdowns []string) []*Node {
 	if err := os.WriteFile(in, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if output, err := genScript("differential.ts", in, out, "md").CombinedOutput(); err != nil {
+	return runEngineReadings(t, in, out)
+}
+
+// runEngineReadings runs the engine once and reads its output in input order. In names mode the
+// engine writes the list of names to in, rather than reading that file.
+func runEngineReadings(t *testing.T, in, out string, flags ...string) []*Node {
+	t.Helper()
+	if _, err := exec.LookPath("bun"); err != nil {
+		if os.Getenv("CI") == "" {
+			t.Skip("bun is not on PATH; the engine's reading is required in CI")
+		}
+		t.Fatalf("bun is required in CI: %v", err)
+	}
+	args := append([]string{"run", "differential.ts"}, flags...)
+	cmd := exec.CommandContext(testwait.Context(t), "bun", append(args, in, out, "md")...)
+	cmd.Dir = "gen"
+	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("differential.ts: %v\n%s", err, output)
 	}
 	raw, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	readings := make([]*Node, 0, len(markdowns))
+	var readings []*Node
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		var read struct {
 			MD *diffReading `json:"md"`
@@ -582,7 +594,15 @@ var referenceRows = []string{
 // Go's trees, nil where Go's reading failed or parted from the engine's.
 func parseAsTheEngine(t *testing.T, markdowns []string) []*Node {
 	t.Helper()
-	readings := engineReadings(t, markdowns)
+	return compareEngineReadings(t, markdowns, engineReadings(t, markdowns))
+}
+
+// compareEngineReadings checks Go's parse against the engine's reading of each input.
+func compareEngineReadings(t *testing.T, markdowns []string, readings []*Node) []*Node {
+	t.Helper()
+	if len(readings) != len(markdowns) {
+		t.Fatalf("the engine returned %d readings for %d inputs", len(readings), len(markdowns))
+	}
 	trees := make([]*Node, len(markdowns))
 	for index, markdown := range markdowns {
 		doc, err := Parse(markdown)
@@ -749,16 +769,22 @@ func TestGeneratedEscapesAndReferencesReadAsTheEngineReadsThem(t *testing.T) {
 // read as a paragraph of its own, and Go must read it as the engine does, which decodes each.
 func TestEveryNameTheEngineKnowsReadsAsTheEngineReadsIt(t *testing.T) {
 	t.Parallel()
-	raw := genResult(t, "entity-names.ts")
+	dir := t.TempDir()
+	namesPath := filepath.Join(dir, "names.txt")
+	readings := runEngineReadings(t, namesPath, filepath.Join(dir, "out.jsonl"), "--entity-names")
+	raw, err := os.ReadFile(namesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	names := strings.Fields(string(raw))
 	if len(names) <= 2000 {
-		t.Fatalf("entity-names.ts wrote %d names, want the more than 2,000 of character-entities", len(names))
+		t.Fatalf("the engine supplied %d names, want the more than 2,000 of character-entities", len(names))
 	}
 	markdowns := make([]string, len(names))
 	for index, name := range names {
 		markdowns[index] = "&" + name + ";\n"
 	}
-	for index, doc := range parseAsTheEngine(t, markdowns) {
+	for index, doc := range compareEngineReadings(t, markdowns, readings) {
 		if doc == nil {
 			continue
 		}

@@ -833,6 +833,7 @@ func TestFindMarksMatchesFindMarkOnRealSizeDocuments(t *testing.T) {
 	for _, size := range realSizeDocuments {
 		for _, count := range []int{12, 47, 80} {
 			t.Run(fmt.Sprintf("%s/%d", size.name, count), func(t *testing.T) {
+				t.Parallel()
 				doc := parseRealSize(t, size.bytes, size.seed)
 				refs := placeAnchorMarks(doc, count, size.seed*1000+int64(count))
 				if found := assertFindMarksMatchesOracle(t, size.name, doc, refs); found != len(refs) {

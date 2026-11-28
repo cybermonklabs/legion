@@ -197,43 +197,46 @@ func TestYTextRangesMatchesFrozenOnDocuments(t *testing.T) {
 		documents = append(documents, document{name: size.name, markdown: realSizeMarkdown(size.bytes, size.seed), realSize: true})
 	}
 	for _, document := range documents {
-		for _, marked := range []bool{false, true} {
-			name := document.name
-			if marked {
-				name += " marked"
-			}
-			tree, err := Parse(document.markdown)
-			if err != nil {
-				t.Fatalf("%s: %v", name, err)
-			}
-			if marked {
-				placeAnchorMarks(tree, 47, 47)
-			}
-			_, frag := writeTree(t, tree)
-			ranges, err := assertYTextRangesMatchFrozen(t, name, frag)
-			if err != nil {
-				t.Fatalf("%s: a document Update wrote is refused: %v", name, err)
-			}
-			if !document.realSize || !marked {
-				continue
-			}
-			// A marked text is several delta operations, the case where a Yjs text spans several
-			// located runs.
-			formatted := false
-			for _, current := range ranges {
-				delta, err := yTextDeltaInTransaction(current.text)
+		t.Run(document.name, func(t *testing.T) {
+			t.Parallel()
+			for _, marked := range []bool{false, true} {
+				name := document.name
+				if marked {
+					name += " marked"
+				}
+				tree, err := Parse(document.markdown)
 				if err != nil {
-					t.Fatal(err)
+					t.Fatalf("%s: %v", name, err)
 				}
-				if len(delta) >= 2 {
-					formatted = true
-					break
+				if marked {
+					placeAnchorMarks(tree, 47, 47)
+				}
+				_, frag := writeTree(t, tree)
+				ranges, err := assertYTextRangesMatchFrozen(t, name, frag)
+				if err != nil {
+					t.Fatalf("%s: a document Update wrote is refused: %v", name, err)
+				}
+				if !document.realSize || !marked {
+					continue
+				}
+				// A marked text is several delta operations, the case where a Yjs text spans several
+				// located runs.
+				formatted := false
+				for _, current := range ranges {
+					delta, err := yTextDeltaInTransaction(current.text)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(delta) >= 2 {
+						formatted = true
+						break
+					}
+				}
+				if !formatted {
+					t.Fatalf("%s: no Yjs text holds two delta operations", name)
 				}
 			}
-			if !formatted {
-				t.Fatalf("%s: no Yjs text holds two delta operations", name)
-			}
-		}
+		})
 	}
 }
 
