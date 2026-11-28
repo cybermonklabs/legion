@@ -54,7 +54,7 @@ jobs:
     # dev box, and this job took 32 minutes 48 seconds, past the 30 minutes it had.
     #
     # Budget (ci-budgets.md's Budgets note): 5400 s, the 90 minutes main's #4444 gives this job,
-    # above both the 76 the sentence above derives and its 32 minutes 48 seconds measured, plus
+    # above both the 77 the sentence above derives and its 32 minutes 48 seconds measured, plus
     # its slowest retried step alone — the ci-ok report, 2460 s (ci-budgets.md's Budgets note,
     # "The ci-ok report"), above packages/envoy's `go mod download` at 5 x 180 + 150 = 1050 s.
     # 5400 + 2460 = 7860 s, a whole number of minutes, so the budget is the next one strictly
