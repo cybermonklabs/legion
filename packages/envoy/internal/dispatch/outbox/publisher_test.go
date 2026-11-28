@@ -19,11 +19,13 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -160,7 +162,18 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		default:
 			answer = dest.forward.send(ctx, deps, sender, routed, newKeptHandovers())
 		}
-		if err := <-answer; err != nil && !errors.Is(err, bus.ErrRefused) {
+		var answerErr error
+		if err := testwait.InHelper("publish", "the answer to "+dest.subject, func() bool {
+			select {
+			case answerErr = <-answer:
+				return true
+			default:
+				return false
+			}
+		}); err != nil {
+			return err
+		}
+		if err := answerErr; err != nil && !errors.Is(err, bus.ErrRefused) {
 			failures = append(failures, fmt.Errorf("%s %q: %w", dest.label, dest.id, err))
 		}
 	}
@@ -1833,7 +1846,8 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	// test binary's deadline less testwait's margin turns that into a named failure instead of a
 	// package timeout.
 	ctx := testwait.Context(t)
-	holding(t, Deps{Store: database, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
+	clock, frozen := frozenDatabaseClock(t, database)
+	holding(t, Deps{Store: clock, Publisher: publisher, Broker: broker}).scan(ctx, unfenced{})
 	if ctx.Err() != nil {
 		t.Fatal("scan did not return before the test binary's deadline: the failed rows keep refilling every batch")
 	}
@@ -1852,6 +1866,9 @@ func TestAFullBatchOfFailingEventsHoldsBackOnlyItsOwnIssue(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("the first failing event counted %d attempts, want 1", attempts)
+	}
+	if want := frozen.Add(retry.Delay(1)); !first.Equal(want) {
+		t.Fatalf("the first failing event retries at %s, want %s", first, want)
 	}
 	var held, heldAttempts int
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -1938,7 +1955,10 @@ func TestRunReplacesOverflowedSubscriptionWithoutBusyLoop(t *testing.T) {
 		Payload:  model.Message{ID: "message-1", IssueKey: new("T-1"), Body: "Retry me"},
 	})
 	publisher := &blockingFailPublisher{started: make(chan struct{}), release: make(chan struct{})}
-	stop := run(t, database, publisher, broker)
+	outbox := outboxOn(database, publisher, broker)
+	outbox.clock = clocktest.New(time.Time{})
+	atRest := restReading(t, outbox)
+	stop := runOn(t, outbox)
 	defer stop()
 
 	testwait.Receive(t, "the initial outbox scan starting", publisher.started)
@@ -1946,7 +1966,7 @@ func TestRunReplacesOverflowedSubscriptionWithoutBusyLoop(t *testing.T) {
 		broker.Publish(model.Event{})
 	}
 	close(publisher.release)
-	time.Sleep(100 * time.Millisecond)
+	atRest("the holder to rest after its overflowed subscription is replaced")
 	if calls := publisher.calls.Load(); calls > 70 {
 		t.Fatalf("overflowed subscription caused %d scans, want a bounded number", calls)
 	}
@@ -2210,9 +2230,6 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 // only makes the same reading come later, but for these bounds, each kept on purpose because it
 // tells a correct outbox from a broken one, and each set from the product's own value it tells
 // apart, with the slack that leaves for load:
-//   - TestAnOwnerOfTheStalledHoldersBatchIsReleasedBeforeTheBatchEnds and
-//     TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents: 60 s
-//     (hangGuard), while the acknowledgement clock is never moved;
 //   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
 //     notification and the scan it wakes must arm the back-off's timer, millisecond work;
 //   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):

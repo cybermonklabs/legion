@@ -135,7 +135,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	after := time.Now()
 
-	if forwards := recv.received(); len(forwards) != 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",
 			holder, forwards)
 	}
@@ -217,7 +217,7 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
-	if forwards := recv.received(); len(forwards) != 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while a live unpinned mention of the comment named no session and no key stood for it, want nothing: the sender can pin that mention to this very holder, and this copy would carry a key its host never claimed",
 			holder, forwards)
 	}

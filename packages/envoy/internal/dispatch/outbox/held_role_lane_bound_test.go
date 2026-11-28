@@ -41,6 +41,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
@@ -71,10 +72,7 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	seedDelivery(t, rig.database, commentID, "role:"+second, "", "resumed")
 	_, later := comment("and one more thing")
 
-	// Within the bound: the attempts are half the bound old, their claims this moment's. The scan
-	// below must read them inside 60 s, model.DeliveryClaimLapse, before their claims lapse and
-	// before the attempts reach the bound; it follows at once, millisecond work against 60 s of
-	// slack (TestMain names this bound).
+	// The SQL clock is frozen, so this fixture remains within the bound until the test ages it.
 	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound/2)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	if got := recv.receivedNow(t, rig.client); len(got) != 1 {

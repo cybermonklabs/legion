@@ -69,8 +69,8 @@ func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *te
 	// because only the sender's own resolution learns which session holds the role.
 	if _, err := rig.database.Pool.Exec(ctx, `
 		insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, state, created_at, claimed_at)
-		values ($1, $2, 1, 'steer', null, 'pending', now(), now())
-	`, commentID, target); err != nil {
+		values ($1, $2, 1, 'steer', null, 'pending', now() + $3::interval, now() + $3::interval)
+	`, commentID, target, stagedAhead); err != nil {
 		t.Fatalf("create the unpinned attempt of %s: %v", target, err)
 	}
 

@@ -13,6 +13,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -26,9 +27,11 @@ import (
 // trip after it was sent.
 type heldPublisher struct {
 	publishOnly
-	mu      sync.Mutex
-	topics  []string
-	answers []chan error
+	mu       sync.Mutex
+	topics   []string
+	answers  []chan error
+	answered int
+	after    []int
 }
 
 func (p *heldPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
@@ -41,6 +44,7 @@ func (p *heldPublisher) PublishAsync(item contracts.Envelope) <-chan error {
 	answer := make(chan error, 1)
 	p.topics = append(p.topics, item.Topic)
 	p.answers = append(p.answers, answer)
+	p.after = append(p.after, p.answered)
 	return answer
 }
 
@@ -55,6 +59,13 @@ func (p *heldPublisher) sent() []string {
 	return slices.Clone(p.topics)
 }
 
+// answeredBefore records how many answers had been given when each send was made.
+func (p *heldPublisher) answeredBefore() []int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.after)
+}
+
 // accept answers the publishes numbered from through to-1, in send order, as accepted.
 func (p *heldPublisher) accept(from, to int) {
 	p.mu.Lock()
@@ -62,6 +73,19 @@ func (p *heldPublisher) accept(from, to int) {
 	for _, answer := range p.answers[from:to] {
 		answer <- nil
 	}
+	p.answered += to - from
+}
+
+// taken reports whether the batch read each of the answers already given.
+func (p *heldPublisher) taken(from, to int) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, answer := range p.answers[from:to] {
+		if len(answer) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // An issue's events go to each destination one at a time, in id order: the second event is sent
@@ -83,22 +107,20 @@ func TestAnIssuesEventsGoToEachDestinationOneAtATime(t *testing.T) {
 	defer stop()
 
 	firstTopics := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
-	waitFor(t, "the first event's destinations sent", func() bool { return len(publisher.sent()) == 3 })
-	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); !slices.Equal(got, firstTopics) {
-		t.Fatalf("sent %v before any answer, want only the first event's destinations %v", got, firstTopics)
+	waitFor(t, "the first event's destinations sent", func() bool { return len(publisher.sent()) >= 3 })
+	if got := publisher.sent()[:3]; !slices.Equal(got, firstTopics) {
+		t.Fatalf("sent %v first, want the first event's destinations %v", got, firstTopics)
 	}
 
 	publisher.accept(0, 1)
-	waitFor(t, "the second event's topic sent once the first's was answered", func() bool { return len(publisher.sent()) == 4 })
-	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); len(got) != 4 || got[3] != "notifications.dispatch.issue.T-1.message.created" {
-		t.Fatalf("sent %v, want the second event's issue topic next, and its role route still held", got)
+	waitFor(t, "the second event's topic sent once the first's was answered", func() bool { return len(publisher.sent()) >= 4 })
+	if got, after := publisher.sent(), publisher.answeredBefore(); got[3] != "notifications.dispatch.issue.T-1.message.created" || after[3] != 1 {
+		t.Fatalf("sent %v with %v answers before each, want the second event's issue topic fourth and after the first topic's answer", got, after)
 	}
 	publisher.accept(1, 3)
-	waitFor(t, "the second event's role route sent", func() bool { return len(publisher.sent()) == 5 })
-	if got := publisher.sent()[4]; got != roleTopic {
-		t.Fatalf("the fifth send went to %s, want the role route", got)
+	waitFor(t, "the second event's role route sent", func() bool { return len(publisher.sent()) >= 5 })
+	if got, after := publisher.sent(), publisher.answeredBefore(); got[4] != roleTopic || after[4] != 3 {
+		t.Fatalf("sent %v with %v answers before each, want the role route fifth and after the first role's answer", got, after)
 	}
 	for _, event := range []model.Event{first, second} {
 		if publishedAt(t, database, event.ID) != nil {
@@ -116,6 +138,9 @@ func TestAnIssuesEventsGoToEachDestinationOneAtATime(t *testing.T) {
 	if destinations, _ := publishedDestinations(t, database, first.ID); !slices.Equal(destinations, firstTopics) {
 		t.Fatalf("published_destinations = %v, want %v", destinations, firstTopics)
 	}
+	if got := publisher.sent(); len(got) != 5 {
+		t.Fatalf("sent %v, want the two events' five destinations once each", got)
+	}
 }
 
 // An outbox that stops with a batch's answers still coming records what NATS already accepted and
@@ -132,10 +157,11 @@ func TestAnOutboxStoppedMidBatchMarksTheAnsweredAndReleasesTheRest(t *testing.T)
 	})
 	publisher := &heldPublisher{}
 	stop := run(t, database, publisher, broker)
+	defer stop()
 	waitFor(t, "the first event sent", func() bool { return len(publisher.sent()) == 3 })
 	publisher.accept(0, 3)
 	waitFor(t, "the second event sent", func() bool { return len(publisher.sent()) == 5 })
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, "the batch to read the first event's three answers", func() bool { return publisher.taken(0, 3) })
 	stop()
 
 	if publishedAt(t, database, first.ID) == nil {
@@ -174,10 +200,7 @@ func destinationFamily(subject string) string {
 // in for no message here and a message lost on a destination still fails.
 func assertStreamInOrderPerDestination(t *testing.T, url string, want int) {
 	t.Helper()
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	bySubject, _ := streamOrder(t, reader)
 	byFamily := map[string][]int64{}
@@ -212,10 +235,7 @@ func assertStreamInOrderPerDestination(t *testing.T, url string, want int) {
 // which is the order the next holder of the role is handed them in.
 func assertKeptLaneInOrder(t *testing.T, url, role string, seeded []model.Event, want int) {
 	t.Helper()
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	issueOf := make(map[int64]string, len(seeded))
 	for _, event := range seeded {
@@ -262,7 +282,7 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seeded := seedThroughputBacklog(t, database, broker, issues, count)
@@ -327,7 +347,7 @@ func TestOneIssuesEventsReachItsSubjectInSeqOrderWhileAnotherIssueCommitsAcrossT
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
@@ -407,12 +427,9 @@ func TestOneIssuesEventsReachItsSubjectInSeqOrderWhileAnotherIssueCommitsAcrossT
 // them in stream order.
 func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 	t.Helper()
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -525,7 +542,7 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seeded := seedThroughputBacklog(t, database, broker, issues, count)

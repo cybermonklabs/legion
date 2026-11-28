@@ -65,7 +65,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		t.Fatalf("the batch left the claimant's held copy settled=%v published=%v, want the unpublished row the lapsed attempt's state owes every key of this comment",
 			row.settled, row.published)
 	}
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %v by the batch, want nothing: its copy is the row's", holder, keysOf(got))
 	}
 
@@ -104,9 +104,8 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
-	if got := keysOf(claimant.received()); !slices.Equal(got, want) {
+	if got := keysOf(claimant.receivedNow(t, rig.client)); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once both unnamed mentions had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",
 			holder, got, want)
 	}

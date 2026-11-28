@@ -83,6 +83,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	roleTopic := contracts.RoleTopicPrefix + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
 	recv := rig.receiver(t, holder)
@@ -160,8 +161,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 		t.Fatalf("the role row is settled %v, published %v and attempts %d while a send of the comment's unnamed mentions is still owed, want it waiting with none counted: the row waits for that send as every other copy of the comment does",
 			row.settled, row.published, row.attempts)
 	}
-	waitFor(t, "the owner's later event at the holder", func() bool { return len(recv.received()) > 0 })
-	if copies := recv.received(); len(copies) != 1 || copies[0].SourceEventID != fmt.Sprint(later.ID) {
+	if copies := recv.receivedNow(t, rig.client); len(copies) != 1 || copies[0].SourceEventID != fmt.Sprint(later.ID) {
 		t.Fatalf("%s was sent %+v past the bound, want the later event (%d) alone: the comment's copy is the row's now, and the order to this one holder is what the bound gives up",
 			holder, copies, later.ID)
 	}

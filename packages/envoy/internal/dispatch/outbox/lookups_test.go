@@ -160,7 +160,7 @@ func TestARefusedConnectionOrAFailingServerIsNoRefusedStatement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("split the server's address: %v", err)
 	}
-	_, refusedConnection := pgconn.Connect(ctx, fmt.Sprintf("host=%s port=%s user=outbox database=dispatch sslmode=disable connect_timeout=5", host, port))
+	_, refusedConnection := pgconn.Connect(testwait.Context(t), fmt.Sprintf("host=%s port=%s user=outbox database=dispatch sslmode=disable", host, port))
 	var connect *pgconn.ConnectError
 	var carried *pgconn.PgError
 	if !errors.As(refusedConnection, &connect) || !errors.As(refusedConnection, &carried) || carried.Code != "53300" {

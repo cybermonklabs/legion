@@ -863,7 +863,7 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 // the handover behind it run on a goroutine of their own, and the record of what those handovers
 // delivered is shared between them (handed, keptHandovers).
 func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, item contracts.Envelope, handed *keptHandovers) <-chan error {
-	keptAt := time.Now()
+	keptAt := deps.now()
 	item.MentionDedupeKeys = f.settledKeys
 	stored := sender.PublishStoredAsync(bus.KeptRoleSubject(f.keptFor), item, bus.KeptAttemptMsgID(item.DedupeKey, f.keptFor, f.keepAttempt))
 	answer := make(chan error, 1)

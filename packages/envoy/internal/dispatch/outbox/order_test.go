@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -168,7 +169,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
 	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -420,9 +421,9 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -809,13 +810,15 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
 	session := contracts.LegacyAgentSubject("S")
-	waitFor(t, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
-	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); !slices.Equal(got, []string{topic}) {
-		t.Fatalf("sent %v before any answer, want only the first event's topic send: the second event's copy for S went while that send had no answer", got)
+	waitFor(t, "the first event's topic sent", func() bool { return len(publisher.sent()) >= 1 })
+	if got := publisher.sent()[0]; got != topic {
+		t.Fatalf("sent %s first, want the first event's topic %s", got, topic)
 	}
 	publisher.accept(0, 1)
-	waitFor(t, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) == 3 })
+	waitFor(t, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) >= 3 })
+	if after := publisher.answeredBefore(); after[1] != 1 || after[2] != 1 {
+		t.Fatalf("the second event's sends saw %v answers, want both after the first topic's answer", after[1:3])
+	}
 	if got := publisher.sent()[1:]; !slices.Contains(got, topic) || !slices.Contains(got, session) {
 		t.Fatalf("sent %v once the first event's topic send was answered, want the second event's to the topic family and to %s", got, session)
 	}
@@ -823,24 +826,29 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 	waitFor(t, "both events marked published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil
 	})
+	if got := publisher.sent(); len(got) != 3 {
+		t.Fatalf("sent %v, want the three destinations once each", got)
+	}
 }
 
-// shiftedClock moves database's clock an hour ahead of the pod's, as a database host whose clock
-// disagrees with the pod's has it, and returns a store whose connections read it: every now() they
-// call answers an hour later than the pod's clock.
-func shiftedClock(t *testing.T, database *store.Store) *store.Store {
+// frozenDatabaseClock answers a fixed now() on a second pool. An hour of skew also
+// distinguishes a database stamp from a stamp on the process clock.
+func frozenDatabaseClock(t *testing.T, database *store.Store) (*store.Store, time.Time) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
+	var frozen time.Time
+	if err := database.Pool.QueryRow(t.Context(), `select pg_catalog.now() + interval '1 hour'`).Scan(&frozen); err != nil {
+		t.Fatalf("read the moment to freeze on the database: %v", err)
+	}
+	if _, err := database.Pool.Exec(t.Context(), fmt.Sprintf(`
 		create schema testclock;
 		create function testclock.now() returns timestamptz language sql stable
-			as $$ select pg_catalog.now() + interval '1 hour' $$;
-		do $$ begin
-			execute format('alter database %I set search_path = testclock, pg_catalog, public', current_database());
-		end $$;
-	`); err != nil {
-		t.Fatalf("shift the database's clock: %v", err)
+			as $$ select '%s'::timestamptz $$;
+	`, frozen.UTC().Format(time.RFC3339Nano))); err != nil {
+		t.Fatalf("freeze the database's clock: %v", err)
 	}
-	return storetest.SecondProcess(t, database)
+	return storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["search_path"] = "testclock, pg_catalog, public"
+	}), frozen
 }
 
 // NATS that does not acknowledge an event's envelope on a connection still current backs it off:
@@ -882,36 +890,22 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
-		shifted := shiftedClock(t, database)
+		shifted, frozen := frozenDatabaseClock(t, database)
 		counter := &sendCounter{}
 		outbox := holding(t, Deps{Store: shifted, Publisher: countingClient{Client: client, counter: counter}})
-		// The database's clock as the scan starts, and again once the back-off is recorded. The
-		// record sets next_attempt_at to its own transaction's now() plus the first attempt's
-		// back-off (backOffAttempt: retry.Delay(1), which is retry.BaseDelay), and that now() falls
-		// between the two readings, so next_attempt_at does too, shifted by that back-off, however
-		// long a loaded machine takes between them.
-		var before time.Time
-		if err := shifted.Pool.QueryRow(context.Background(), `select now()`).Scan(&before); err != nil {
-			t.Fatalf("read the database's clock: %v", err)
-		}
 		outbox.scan(context.Background(), unfenced{})
 
 		backedOff(t, database, event, "no responders")
-		var after, nextAttempt time.Time
+		var nextAttempt time.Time
 		if err := shifted.Pool.QueryRow(context.Background(),
-			`select now(), next_attempt_at from events where id = $1`, event.ID).Scan(&after, &nextAttempt); err != nil {
+			`select next_attempt_at from events where id = $1`, event.ID).Scan(&nextAttempt); err != nil {
 			t.Fatalf("read the event's next attempt: %v", err)
 		}
-		firstBackOff := retry.Delay(1)
-		if nextAttempt.Before(before.Add(firstBackOff)) || nextAttempt.After(after.Add(firstBackOff)) {
-			t.Fatalf("the next attempt is at %s, want it the first back-off (%s) after the database's now() of the record, which fell between %s and %s",
-				nextAttempt, firstBackOff, before, after)
-		}
-		if until := time.Until(nextAttempt); until < 50*time.Minute {
-			t.Fatalf("the next attempt is %v past the pod's clock, want it on the database's, an hour ahead", until)
+		if want := frozen.Add(retry.Delay(1)); !nextAttempt.Equal(want) {
+			t.Fatalf("the next attempt is at %s, want %s on the frozen database clock", nextAttempt, want)
 		}
 		sent, _ := counter.of(event.ID)
 		outbox.scan(context.Background(), unfenced{})
@@ -927,7 +921,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
 		// The window waits five seconds for an acknowledgement the frozen server never sends, and
@@ -946,7 +940,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()

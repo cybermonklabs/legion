@@ -133,10 +133,14 @@ func TestABatchWhoseRecordWriteFailsIsLeftAsItWasRead(t *testing.T) {
 		t.Fatalf("make the record write fail: %v", err)
 	}
 	publisher := &countingPublisher{}
-	stop := run(t, database, publisher, broker)
+	outbox := outboxOn(database, publisher, broker)
+	outbox.clock = clocktest.New(time.Time{})
+	atRest := restReading(t, outbox)
+	stop := runOn(t, outbox)
 	defer stop()
 
 	waitFor(t, "the event's three destinations sent", func() bool { return len(publisher.attempted()) >= 3 })
+	atRest("the holder to rest after the failing record write")
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if len(destinations) != 0 || attempts != 0 || publishedAt(t, database, event.ID) != nil {
 		t.Fatalf("published_destinations = %v, attempt_count = %d, published = %v, though the record write failed",

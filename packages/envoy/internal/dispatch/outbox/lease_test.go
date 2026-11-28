@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -143,6 +144,12 @@ func (c *sendCounter) of(event int64) (total, most int) {
 	return total, most
 }
 
+func (c *sendCounter) forSubject(event int64, subject string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sends[fmt.Sprint(event)+" "+subject]
+}
+
 // countingClient is a bus client whose windows count every envelope they send.
 type countingClient struct {
 	*bus.Client
@@ -161,6 +168,11 @@ type countingSender struct {
 func (s countingSender) PublishAsync(item contracts.Envelope) <-chan error {
 	s.counter.add(item)
 	return s.Sender.PublishAsync(item)
+}
+
+func (s countingSender) Request(subject string, item contracts.Envelope, opts bus.RequestOptions) <-chan error {
+	s.counter.add(item)
+	return s.Sender.Request(subject, item, opts)
 }
 
 // startProcess runs an outbox on database's own outbox pool, publishing through a client of its own
@@ -184,7 +196,7 @@ func startProcessWith(t *testing.T, name string, database *store.Store, url stri
 	if err != nil {
 		t.Fatalf("connect %s's NATS client: %v", name, err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open %s's outbox pool: %v", name, err)
@@ -794,6 +806,51 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	})
 	t.Logf("the working process published the event %s after the silence", time.Since(frozenAt).Round(time.Millisecond))
 	requireNoTakeBackWhileSilent(t, recorder, silent, working, probes)
+}
+
+// A killed holder cannot notify the standby. The standby must arm its own timer
+// to the lapse it reads and try again when that timer fires.
+func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *testing.T) {
+	t.Parallel()
+	database, frozen := frozenDatabaseClock(t, storetest.Open(t))
+	ctx := testwait.Context(t)
+	killed := uuid.New()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into duty_holds (name, holder, expires_at) values ($1, $2, $3)
+	`, publisherHold, killed, frozen.Add(stagedAhead)); err != nil {
+		t.Fatalf("write the killed holder's last renewal: %v", err)
+	}
+	outbox := New(Deps{Store: database, Publisher: &recordingPublisher{}})
+	timers := clocktest.New(time.Time{})
+	outbox.clock = timers
+	stop := runOn(t, outbox)
+	defer stop()
+
+	deadline := timers.Now().Add(stagedAhead)
+	timers.AwaitArmedAt(t, "the standby's timer to the killed holder's lapse", deadline)
+	if outbox.Publishing() {
+		t.Fatal("the standby took the publisher hold while the killed holder's row was live")
+	}
+	// Change only the row. An UPDATE does not send the hold-release notification.
+	if _, err := database.Pool.Exec(ctx, `
+		update duty_holds set expires_at = now() where name = $1 and holder = $2
+	`, publisherHold, killed); err != nil {
+		t.Fatalf("lapse the killed holder's row: %v", err)
+	}
+	timers.Set(deadline.Add(-time.Nanosecond))
+	timers.AwaitArmedAt(t, "the lapse timer still armed one tick short", deadline)
+	if outbox.Publishing() {
+		t.Fatal("the standby took the hold before its lapse timer fired")
+	}
+	timers.Set(deadline)
+	waitFor(t, "the standby taking the lapsed hold when its timer fires", outbox.Publishing)
+	var holder uuid.UUID
+	if err := database.Pool.QueryRow(ctx, `select holder from duty_holds where name = $1`, publisherHold).Scan(&holder); err != nil {
+		t.Fatalf("read the publisher hold's holder: %v", err)
+	}
+	if holder != outbox.instance {
+		t.Fatalf("the hold names %s after the lapse timer fired, want the standby %s", holder, outbox.instance)
+	}
 }
 
 // A standby waits for the publisher hold to be released or to lapse, or for its NATS connection to

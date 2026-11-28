@@ -49,11 +49,10 @@ func seedMentionDelivery(t *testing.T, database *store.Store, commentID, session
 // its sender leave it, inserting the comment and the mention row first when no test seeded them.
 // sessionID is the session the attempt names, "" for none: an unanswered mention's attempt names
 // none until its sender resolves it. outcome is the attempt's state - "sent", "failed", or
-// "pending" for a send its sender claimed just now - or "resumed" for a pending attempt whose
-// sender's claim lapsed half a lease ago (its sender died with the send in flight; the API's
-// delivery sweep resends it), "queued" for a pending attempt created just now that no sender has
-// claimed yet, and "backlogged" or "abandoned" for one created past model.MentionSweepWindow ago
-// that no sender ever claimed, which the delivery sweep will never send. "" records no attempt.
+// "pending" for a send that remains live through the test; "resumed" for a pending attempt
+// whose sender's claim already lapsed; "queued" for a live attempt no sender has claimed; and
+// "backlogged" or "abandoned" for one created past model.MentionSweepWindow ago that no sender
+// ever claimed. "" records no attempt.
 //
 // A resumed attempt is staged past the lease the outbox waits a send out for
 // (model.MentionResumedSQL) and within unnamedForwardBound, the bound a role route's forward
@@ -68,10 +67,12 @@ func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessio
 	}
 	state, age, claimed := outcome, time.Duration(0), true
 	switch outcome {
+	case "pending":
+		age = -stagedAhead
 	case "resumed":
 		state, age = "pending", model.DeliveryClaimLapse+model.DeliveryClaimLapse/2
 	case "queued":
-		state, claimed = "pending", false
+		state, age, claimed = "pending", -stagedAhead, false
 	case "backlogged", "abandoned":
 		state, age, claimed = "pending", model.MentionSweepWindow+time.Minute, false
 	}
@@ -100,6 +101,16 @@ func seedDelivery(t *testing.T, database *store.Store, commentID, target, sessio
 	`, commentID, target, sessionID, state, age, claimed); err != nil {
 		t.Fatalf("seed %s delivery of the mention of %s: %v", outcome, target, err)
 	}
+}
+
+// databaseNow brackets a stamp written by a transaction on the database's clock.
+func databaseNow(t *testing.T, database *store.Store) time.Time {
+	t.Helper()
+	var moment time.Time
+	if err := database.Pool.QueryRow(testwait.Context(t), `select clock_timestamp()`).Scan(&moment); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return moment
 }
 
 // TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions: the route and an author a new
@@ -860,8 +871,10 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 			}
 			publisher := &recordingPublisher{}
 			deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
-			publishing := func() error {
-				return publish(ctx, deps, event, "", routing{route: new("session:s1")}, map[string]struct{}{})
+			publishing := func(through *store.Store) error {
+				on := deps
+				on.Store = through
+				return publish(ctx, on, event, "", routing{route: new("session:s1")}, map[string]struct{}{})
 			}
 
 			var err error
@@ -875,16 +888,35 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 					t.Fatalf("take the comment's owner lock: %v", err)
 				}
 				if _, err := claim.Exec(context.Background(), `
-					update comment_deliveries set claimed_at = now() where comment_id = $1
-				`, commentID); err != nil {
+					update comment_deliveries set claimed_at = now() + $2::interval where comment_id = $1
+				`, commentID, stagedAhead); err != nil {
 					t.Fatalf("claim the attempt: %v", err)
 				}
+				through := storetest.SingleConnection(t, database)
+				var pid uint32
+				if err := through.Pool.QueryRow(t.Context(), `select pg_backend_pid()`).Scan(&pid); err != nil {
+					t.Fatalf("read the publisher's backend: %v", err)
+				}
 				published := make(chan error, 1)
-				go func() { published <- publishing() }()
-				if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database,
-					"the outbox settling the abandoned attempt", published); answered {
-					t.Fatalf("the publish answered %v while the claim held the comment's owner lock", early)
-				} else if holdingXid != 0 {
+				go func() { published <- publishing(through) }()
+				waitFor(t, "the outbox's backend to queue behind the claim's owner lock", func() bool {
+					select {
+					case early := <-published:
+						t.Fatalf("the publish answered %v while the claim held the comment's owner lock", early)
+					default:
+					}
+					queued, err := storetest.QueuedBehind(t.Context(), claim, pid)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return queued
+				})
+				var holdingXid bool
+				if err := database.Pool.QueryRow(t.Context(),
+					`select backend_xid is not null from pg_stat_activity where pid = $1`, pid).Scan(&holdingXid); err != nil {
+					t.Fatalf("read the blocked publisher's transaction ID: %v", err)
+				}
+				if holdingXid {
 					t.Fatalf("the outbox waits on the comment's owner lock with a transaction id already open: it " +
 						"settled the attempt before it took that lock")
 				}
@@ -893,7 +925,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				}
 				err = testwait.Receive(t, "the publish to return once the claim committed", published)
 			} else {
-				err = publishing()
+				err = publishing(database)
 			}
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("publish returned %v, want %v", err, tc.wantErr)
@@ -1306,11 +1338,11 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 				want, *row.due, want, retry.Delay(want))
 		}
 		if want == 1 {
-			// A pass before the backoff has passed leaves the row alone.
+			backoff := notDueAhead(t, database, commentID, sessionTopic)
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-			if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 1 || !again.due.Equal(*row.due) {
+			if again := readHeldCopy(t, database, commentID, sessionTopic); again.attempts != 1 || again.due == nil || !again.due.Equal(backoff) {
 				t.Fatalf("a pass inside the backoff left the held copy attempts=%d next_attempt_at=%v, want 1 and %v",
-					again.attempts, again.due, *row.due)
+					again.attempts, again.due, backoff)
 			}
 		}
 	}
@@ -1341,6 +1373,19 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 		t.Fatalf("NATS saw %d denied publishes and accepted %#v, want %d denials and the issue topic, then the copy once",
 			denials, accepted, denied)
 	}
+}
+
+func notDueAhead(t *testing.T, database *store.Store, commentID, destination string) time.Time {
+	t.Helper()
+	var due time.Time
+	if err := database.Pool.QueryRow(testwait.Context(t), `
+		update comment_fallback_copies set next_attempt_at = now() + $3::interval
+		where comment_id = $1 and destination = $2 and settled_at is null
+		returning next_attempt_at
+	`, commentID, destination, stagedAhead).Scan(&due); err != nil {
+		t.Fatalf("stage the fallback copy's retry ahead: %v", err)
+	}
+	return due
 }
 
 // TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold: NATS being unreachable

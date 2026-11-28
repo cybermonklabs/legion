@@ -42,7 +42,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("pass 1 sent claimant %+v", got)
 	}
 
@@ -113,7 +113,6 @@ func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(500 * time.Millisecond)
 	if _, err := rig.database.Pool.Exec(ctx, `update comment_deliveries set state = 'failed', error = 'no live session' where comment_id = $1 and target = $2`,
 		firstID, target); err != nil {
 		t.Fatal(err)

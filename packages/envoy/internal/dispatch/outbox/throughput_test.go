@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -48,7 +49,9 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 		t.Fatalf("open the busy shared pool: %v", err)
 	}
 	busy := &store.Store{Pool: store.NewPool(pool)}
-	t.Cleanup(busy.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the busy pool's connections to come back and its pool to close", busy.Pool.Close)
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	var callers sync.WaitGroup
 	for range 2 * busyPoolSize {
@@ -265,7 +268,7 @@ func unpublishedCount(t *testing.T, database *store.Store) int {
 // of the stream the checks of what it holds share (streamOrder, assertKeptLaneInOrder).
 func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -469,7 +472,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration, fake *clocktest.Fake) *th
 	if err != nil {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
 	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {

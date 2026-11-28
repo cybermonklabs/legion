@@ -78,7 +78,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: holding the author's copy as a row costs the comment's own response no destination",
 			reached, issueTopic)
 	}
-	if got := wrote.received(); slices.Contains(reached, authorSubject) || len(got) != 0 {
+	if got := wrote.receivedNow(t, rig.client); slices.Contains(reached, authorSubject) || len(got) != 0 {
 		t.Fatalf("the comment reached %v and %s was sent %v in the pass that read the event, want %s not among them and nothing sent: a resend of the mention of %s is still owed and can pin this very author, so a copy under the event's own key %q would stand beside that mention's own send under %q",
 			reached, author, keysOf(got), authorSubject, target, eventKey, mentionKey)
 	}
@@ -116,9 +116,8 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
 	want := []string{eventKey}
-	if got := keysOf(wrote.received()); !slices.Equal(got, want) {
+	if got := keysOf(wrote.receivedNow(t, rig.client)); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once the resend had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",
 			author, got, want)
 	}

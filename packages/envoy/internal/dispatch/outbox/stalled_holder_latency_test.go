@@ -33,10 +33,9 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	const (
 		stalledRole, stalledHolder = "stalled-reviewer", "ses_never_acknowledged"
 		liveRole, liveHolder       = "live-reviewer", "ses_acknowledged"
-		// The acknowledgement clock is never moved, so the stalled forward cannot time out.
-		hangGuard = 60 * time.Second
 	)
-	rig := newRoleRigWithClient(t, clocktest.New(time.Time{}))
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithClient(t, ack)
 	rig.claim(t, stalledRole, stalledHolder, session.SessionEntry{SelfSubscribed: true})
 	rig.claim(t, liveRole, liveHolder, session.SessionEntry{SelfSubscribed: true})
 	// The stream stores and acknowledges the live holder's forwards alone, so the stalled
@@ -53,27 +52,13 @@ func TestAForwardTheStreamDoesNotAcknowledgeDoesNotDelayAnotherIssuesEvents(t *t
 	held := rig.routedEvent(t, "T-1", stalledRole, model.Actor{Kind: "user", ID: "alice"})
 	testwait.Receive(t, "the stalled holder's forward", stalled.arrived)
 
-	// That forward's wait for an acknowledgement is now running. Another issue's event is
-	// committed in it.
-	time.Sleep(200 * time.Millisecond)
-	committed := time.Now()
+	// Arm the stalled forward's wait before committing the other issue's first event.
+	ack.AwaitArmedAt(t, "the stalled forward waiting for the stream's acknowledgement", ack.Now().Add(roleForwardAckTimeout))
 	rig.routedEvent(t, "T-2", liveRole, model.Actor{Kind: "user", ID: "alice"})
-	select {
-	case <-live.arrived:
-		// T-2's forward counts only while the stalled forward is still outstanding: one that
-		// arrived after that send had settled would prove nothing about what its wait holds back.
-		if settled, state := settledState(t, rig.database, held.ID); settled {
-			t.Fatalf("the stalled holder's event %d had been settled when T-2's forward arrived (%s), so "+
-				"T-2 followed that send rather than going out beside it: the acknowledgement wait "+
-				"should still have been running", held.ID, state)
-		}
-		// Logged, not asserted: how long T-2's forward took is as much a measure of the machine
-		// as of the outbox.
-		t.Logf("the live holder received T-2's forward %s after its commit",
-			time.Since(committed).Round(time.Millisecond))
-	case <-time.After(hangGuard):
-		t.Fatalf("the live holder never received T-2's forward within %s, while the stalled "+
-			"forward's acknowledgement wait was still running: that wait held back another "+
-			"issue's send", hangGuard)
+	testwait.Receive(t, "T-2's forward while the stalled forward still waits for its acknowledgement", live.arrived)
+	if settled, state := settledState(t, rig.database, held.ID); settled {
+		t.Fatalf("the stalled holder's event %d had been settled when T-2's forward arrived (%s), so "+
+			"T-2 followed that send rather than going out beside it: the acknowledgement wait "+
+			"should still have been running", held.ID, state)
 	}
 }

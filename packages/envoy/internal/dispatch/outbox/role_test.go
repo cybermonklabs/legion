@@ -115,7 +115,7 @@ func newRoleRigWithClient(t *testing.T, acknowledgement *clocktest.Fake) *roleRi
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	return newRoleRigOn(t, url, client, testnats.Connect(t, url))
 }
 
@@ -200,7 +200,7 @@ func (r *roleRig) claimRegisteredAt(t *testing.T, role, holder string, age time.
 // write records through.
 func (r *roleRig) sessionBucket(t *testing.T) (natsgo.KeyValue, error) {
 	t.Helper()
-	js, err := r.conn.JetStream()
+	js, err := r.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -287,6 +287,7 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 	t.Helper()
 	arrived := subscribe(t, r.conn, subject)
 	t.Cleanup(func() {
+		flushSubscriber(t, r.conn)
 		select {
 		case message := <-arrived:
 			t.Errorf("%s carried %s, want nothing", subject, message.Data)
@@ -327,7 +328,7 @@ func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 		t.Fatalf("subscribe to %s: %v", holder, err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := r.conn.Flush(); err != nil {
+	if err := r.conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return recv
@@ -404,7 +405,7 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 // and the keeper would add them back.
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
-	js, err := r.conn.JetStream()
+	js, err := r.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -530,7 +531,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 		t.Fatalf("attempt_count %d, publish_error %v, published_destinations %v: want no attempt, no error and the role route recorded",
 			attempts, failure, destinations)
 	}
-	if got := len(recv.received()); got != 1 {
+	if got := len(recv.receivedNow(t, rig.client)); got != 1 {
 		t.Fatalf("the holder received %d forwards, want the one", got)
 	}
 	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 1 {
@@ -882,8 +883,8 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
-	conn, err := testnats.ConnectSeed(t, url, seed)
+	t.Cleanup(func() { bustest.Close(t, client) })
+	conn, err := testnats.AwaitConnectSeed(t, url, seed)
 	if err != nil {
 		t.Fatalf("connect the test's connection: %v", err)
 	}
@@ -898,20 +899,20 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 		seeded[index] = rig.routedEvent(t, fmt.Sprintf("T-%d", index+1), role, model.Actor{Kind: "user", ID: "alice"})
 	}
 
-	holding(t, rig.deps()).scan(context.Background(), unfenced{})
+	counter := &sendCounter{}
+	deps := rig.deps()
+	deps.Publisher = countingClient{Client: client, counter: counter}
+	holding(t, deps).scan(context.Background(), unfenced{})
 
 	for index, event := range seeded {
 		attempts, failure, _ := eventState(t, rig.database, event.ID)
 		if index == denied {
-			// One scan claims due rows until none is left, and the denied event's first back-off
-			// (retry.Delay(1)) is a second: a scan of 50 forwards slower than that, as one beside
-			// the package's other tests can be, reads it again once it falls due and is denied
-			// again. So the row holds the denial and no publication, not how many denials fit in
-			// the scan.
-			if publishedAt(t, rig.database, event.ID) != nil || attempts < 1 || failure == nil ||
+			// A slow scan may retry; every denied forward must count exactly one attempt.
+			denials := counter.forSubject(event.ID, contracts.RoleTopicPrefix+fmt.Sprintf("lane-%02d", index))
+			if publishedAt(t, rig.database, event.ID) != nil || denials == 0 || attempts != denials || failure == nil ||
 				!strings.Contains(*failure, bus.ErrPublishDenied.Error()) {
-				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %q; want it backed off with the denial",
-					publishedAt(t, rig.database, event.ID) != nil, attempts, publishFailure(failure))
+				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %q; want one attempt per denied send (%d)",
+					publishedAt(t, rig.database, event.ID) != nil, attempts, publishFailure(failure), denials)
 			}
 			continue
 		}
@@ -1054,7 +1055,7 @@ func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	rig := newRoleRigOn(t, url, client, testnats.Connect(t, url))
 	const role, holder = "reviewer", "ses_stream_full"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -1880,6 +1881,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 	heldBy := func(t *testing.T, outcome string) (*roleRig, *receiver, Deps, string, model.Event) {
 		t.Helper()
 		rig := newRoleRig(t)
+		if outcome == "resumed" {
+			rig.database, _ = frozenDatabaseClock(t, rig.database)
+		}
 		rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
 		recv := rig.receiver(t, holder)
@@ -1891,11 +1895,11 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
-		before := time.Now()
+		before := databaseNow(t, rig.database)
 		holding(t, deps).scan(ctx, unfenced{})
-		after := time.Now()
+		after := databaseNow(t, rig.database)
 
-		if forwards := recv.received(); len(forwards) > 0 {
+		if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
 				holder, len(forwards), forwards[0].DedupeKey)
 		}
@@ -2054,9 +2058,9 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 			comment.Notify)
 	}
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -2089,7 +2093,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the holder's own mention", at)
 	}
-	if forwards := recv.received(); len(forwards) > 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 		t.Fatalf("%s was sent %+v while its own mention of the comment was still being sent, want nothing: the forward waits for that mention and the claimant copy is left to it",
 			holder, forwards)
 	}
@@ -2261,10 +2265,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
 				reached, contracts.LegacyAgentSubject(bystander))
 		}
-		waitFor(t, "the other owner's claimant copy", func() bool {
-			return len(other.received()) > 0
-		})
-		copies := other.received()
+		copies := other.receivedNow(t, rig.client)
 		if len(copies) != 1 || copies[0].EventID != fmt.Sprintf("dispatch-%d", apart.ID) ||
 			copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", apart.ID) {
 			t.Fatalf("%s was sent %+v, want the claimant copy of event %d alone, under the event's own key",
@@ -2289,7 +2290,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 				reached, holderSubject, holder, target, comment.ID)
 		}
 		claimantCopyOf(t, rig, other, apart)
-		for _, item := range pinned.received() {
+		for _, item := range pinned.receivedNow(t, rig.client) {
 			t.Fatalf("%s was sent %+v, want nothing of the comment: its mention of %s delivered it, and every copy of the comment bound for that session's own topic is left to that mention (want no copy, or one under %q)",
 				holder, item, target, mentionKey(commentID))
 		}
@@ -2311,10 +2312,11 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the comment reached %v, want %s among them: the mention of %s failed, so the session it was pinned to is owed the outbox's copy and nothing else delivers it",
 				reached, holderSubject, target)
 		}
-		waitFor(t, "the copy owed to the session whose mention failed", func() bool {
-			return len(pinned.received()) > 0
-		})
-		for _, item := range pinned.received() {
+		copies := pinned.receivedNow(t, rig.client)
+		if len(copies) == 0 {
+			t.Fatal("the session whose mention failed received no copy")
+		}
+		for _, item := range copies {
 			if item.DedupeKey != mentionKey(commentID) {
 				t.Fatalf("%s was sent a copy keyed %q, want its failed mention's own key %q: a send that landed before its attempt failed gave that host this key, which is what has it drop the copy",
 					holder, item.DedupeKey, mentionKey(commentID))
@@ -2584,6 +2586,9 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 	heldFor := func(ctx context.Context, t *testing.T, outcome string) (*roleRig, *receiver, Deps, string) {
 		t.Helper()
 		rig := newRoleRig(t)
+		if outcome == "resumed" {
+			rig.database, _ = frozenDatabaseClock(t, rig.database)
+		}
 		rig.claim(t, role, second, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
 		recv := rig.receiver(t, second)
@@ -2596,11 +2601,11 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID := heldFor(ctx, t, "pending")
 
-		before := time.Now()
+		before := databaseNow(t, rig.database)
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := time.Now()
+		after := databaseNow(t, rig.database)
 
-		if forwards := recv.received(); len(forwards) > 0 {
+		if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 			t.Fatalf("the pass sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
 				second, len(forwards), forwards[0].DedupeKey)
 		}

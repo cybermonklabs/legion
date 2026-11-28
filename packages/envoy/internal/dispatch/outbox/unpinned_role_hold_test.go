@@ -73,7 +73,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	after := time.Now()
 
-	if forwards := recv.received(); len(forwards) > 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 		t.Fatalf("the batch forwarded %s %d copies of the comment, the first under %q, while the mention of %s was live and pinned to no session yet, want none: that mention is on its way to the same host, so this copy shows it the comment twice",
 			holder, len(forwards), forwards[0].DedupeKey, target)
 	}
@@ -174,8 +174,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
 	}
-	waitFor(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
-	copies := wrote.received()
+	copies := wrote.receivedNow(t, rig.client)
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",
 			author, copies, comment.ID)
@@ -184,7 +183,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session holds the role the comment mentions, and its mention is on its way to the same host",
 			reached, contracts.LegacyAgentSubject(holder))
 	}
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing", holder, got, target)
 	}
 }
