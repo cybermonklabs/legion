@@ -7,6 +7,7 @@
 // DELETE, both deployment-scoped; the route stores a base URL and never calls the host, so these
 // specs need no daemon to be reachable.
 import { baseUrl, userHeaders } from "./api";
+import { listTrigger, pickFromList } from "./filters";
 import { LEGION_PROJECT, seedLegionDaemon, seedLegionProject } from "./legion-seed";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -25,9 +26,7 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Legion" })).toBeVisible();
     await page.getByLabel("Legion daemon state URL").fill(DAEMON_URL);
-    await page
-      .getByRole("combobox", { exact: true, name: "Legion project" })
-      .selectOption(LEGION_PROJECT);
+    await pickFromList(listTrigger(page, "Legion project"), new RegExp(`^${LEGION_PROJECT} · `));
     const saved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
@@ -86,9 +85,7 @@ test("the Settings page refuses a state URL that is not a daemon's, and its Remo
       }
     });
     await page.getByLabel("Legion daemon state URL").fill(bad);
-    await page
-      .getByRole("combobox", { exact: true, name: "Legion project" })
-      .selectOption(LEGION_PROJECT);
+    await pickFromList(listTrigger(page, "Legion project"), new RegExp(`^${LEGION_PROJECT} · `));
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     await expect(page.getByRole("alert")).toHaveText(refused.error);
     expect(wrote).toBe(false);

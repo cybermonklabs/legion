@@ -50,7 +50,7 @@ const SHARED_MARKS: readonly Mark[] = [
     pattern: /type\s*[:=]\s*(?:\{\s*)?["'`]search["'`]|role=(?:\{\s*)?["'`]searchbox["'`]/,
   },
   {
-    what: "writes a `<table>` of its own — draw `components/DataTable.tsx`",
+    what: "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     pattern:
       /<table(?![\w-])|\bcreateElement\(\s*["'`]table["'`]|role=(?:\{\s*)?["'`](?:table|grid)["'`]/,
   },
@@ -253,10 +253,7 @@ const FEATURE_FILES = collectFeatureFiles(FEATURES_ROOT).map(
  *  converted since is no failure, so a piece that converts one need not edit this list; the last
  *  piece empties it. */
 const NOT_YET_CONVERTED: ReadonlySet<string> = new Set([
-  "features/credentials/RevocableList.tsx",
   "features/delivery/DeliveryPage.tsx",
-  "features/delivery/MeasuresPanel.tsx",
-  "features/delivery/PipelinePage.tsx",
   "features/delivery/PRList.tsx",
   "features/inbox/fills-viewport.ts",
   "features/inbox/Inbox.tsx",
@@ -275,11 +272,6 @@ const NOT_YET_CONVERTED: ReadonlySet<string> = new Set([
   "features/project/issues-table-rows.tsx",
   "features/project/issues-table-view.ts",
   "features/project/ProjectPage.tsx",
-  "features/settings/AgentTokensSection.tsx",
-  "features/settings/ArchitectureSourcesSection.tsx",
-  "features/settings/LegionDaemonsSection.tsx",
-  "features/settings/ProjectsSection.tsx",
-  "features/steps/StepsTab.tsx",
 ]);
 
 /** The feature files the scans below read: every one but those `NOT_YET_CONVERTED` lists. */
@@ -360,7 +352,7 @@ describe("no page builds a control or an address of its own", () => {
       ");",
     ].join("\n");
     expect(refusals("features/inbox/Probe.tsx", source)).toEqual([
-      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/DataTable.tsx`",
+      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     ]);
   });
 
@@ -499,7 +491,7 @@ describe("no page builds a control or an address of its own", () => {
     ].join("\n");
     expect(refusals("features/inbox/Upload.tsx", source)).toEqual([
       'features/inbox/Upload.tsx:4 writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
-      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/DataTable.tsx`",
+      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     ]);
   });
 
@@ -610,7 +602,8 @@ describe("no page builds a control or an address of its own", () => {
   });
 
   test('the table mark catches `createElement("table")` and a div table\'s role', () => {
-    const what = "writes a `<table>` of its own — draw `components/DataTable.tsx`";
+    const what =
+      "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`";
     for (const source of [
       'export const T = () => createElement("table");',
       'export const T = () => <div role="table" />;',
@@ -726,7 +719,7 @@ describe("the shared controls are defined once, under components/", () => {
    *  that holds the `data-control` value it sets: the key in PascalCase is the component's name
    *  and its file's. The table's controls join as the pieces that carry them land. */
   const SHARED_CONTROLS = (
-    ["chip", "controlRow", "displayMenu", "panelTrigger", "searchBox"] as const
+    ["chip", "controlRow", "displayMenu", "panelTrigger", "searchBox", "tableShell"] as const
   ).map((key) => [`${key.charAt(0).toUpperCase()}${key.slice(1)}`, key] as const);
 
   test.each(SHARED_CONTROLS)(

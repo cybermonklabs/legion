@@ -11,7 +11,7 @@ import {
   type ScrollBox,
 } from "../__tests__/scroll-box";
 import { scrollFadeTrailing } from "../theme/classes";
-import { useScrollFadeTrailing } from "./useScrollFadeTrailing";
+import { useScrollEnds } from "./useScrollEnds";
 
 // Each strip here is sized by its test, and the observer stub is the box changing: what the strip
 // observes, and what a narrower viewport fires.
@@ -28,7 +28,7 @@ afterEach(() => {
 /** A strip laid out before the hook first measures it, as a browser lays out before the layout
  *  effect runs. */
 function Strip({ box }: { box: ScrollBox }) {
-  const { fade, ref } = useScrollFadeTrailing();
+  const { fade, ref } = useScrollEnds();
   const sized = useCallback(
     (element: HTMLDivElement | null) => {
       if (element !== null) {
