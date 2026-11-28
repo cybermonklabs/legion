@@ -295,8 +295,8 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room string, update []byte) error {
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped, and nothing in Dispatch stores it later
-		// (room_appends.go, "What a nil return means"), but its class is taken all the same, so
-		// the work the record counts for it ends here (dropUpdate).
+		// (room_appends.go, "What a nil return means"), but its class, when the record still holds
+		// one, is taken all the same, so the work the record counts for it ends here (dropUpdate).
 		a.dropUpdate(room, update)
 		return nil
 	}

@@ -286,10 +286,12 @@ func foldAppended(base int64, versions []persistence.Version) int64 {
 // flush rolls back and stores nothing of the run - neither the prefix nor the writer's own
 // update, which it would otherwise derive from a room state holding a keystroke the store
 // refused. The prefix rule is the room's own batch path's (appendRoomTx): the room stores what
-// it took in time and meets the gate again on the rest, which refuses it and closes the room for
-// its issue. A run this stores whole is recorded on flush, and the transaction's commit marks
-// those classes stored and lands their credits (markStored); a transaction that rolls back marks
-// nothing, and the room's persistence stores them later.
+// it took in time, and the rest meet the gate again on their own calls, which refuse them and
+// close the room for its issue - but for the update whose call ran that batch, when the gate cut
+// it: its class leaves the queue as its call ends, so nothing stores it later. A run this stores
+// whole is recorded on flush, and the transaction's commit marks those classes stored and lands
+// their credits (markStored); a transaction that rolls back marks nothing, and the room's
+// persistence stores them later.
 //
 // Every flush runs on a transaction or a session that already holds the room's advisory lock,
 // taken before the head it is gated on was read: the room's own persistence worker holds the
