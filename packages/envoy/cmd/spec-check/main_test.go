@@ -441,15 +441,6 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 // checkout was reached.
 func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...string) result {
 	t.Helper()
-	return startBinaryIn(t, binary, dir, extra, args...)()
-}
-
-// startBinaryIn starts binary as runBinaryIn runs it, and answers a function that waits for it to
-// end and answers its exit status and output as runBinaryIn does. The caller calls that function
-// once, on the test goroutine. Runs started this way run at once: a test starts each of them, then
-// waits for each.
-func startBinaryIn(t *testing.T, binary, dir string, extra []string, args ...string) func() result {
-	t.Helper()
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
 	cmd.Env = childEnv(extra...)
@@ -462,18 +453,12 @@ func startBinaryIn(t *testing.T, binary, dir string, extra []string, args ...str
 	}
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
+	err := cmd.Run()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
 		t.Fatal(err)
 	}
-	return func() result {
-		t.Helper()
-		err := cmd.Wait()
-		var exit *exec.ExitError
-		if err != nil && !errors.As(err, &exit) {
-			t.Fatal(err)
-		}
-		return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
-	}
+	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
 }
 
 // childEnv is this process's environment without GITHUB_ACTIONS, then GOMAXPROCS=1, then extra.

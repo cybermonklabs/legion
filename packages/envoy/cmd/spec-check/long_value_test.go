@@ -44,11 +44,12 @@ type longRow struct {
 // bytes as its first and its last 50 bytes with … between them, so the line stays under lineBound
 // and names the start and the end of the value. The table has a row for each kind of problem that
 // specgraph gives (ProblemKinds: the reader's, Validate's, Compare's and bad-approved-document), so
-// a new kind fails the test until it has a row; a row runs the three subcommands at once over its
-// files and its approved spec, and requires each line of each run under the bound, and the kind's
-// line where the row says, holding each part of shows. The rows of no-node and of a value that JSON
-// cannot hold name no value of the input: they hold only the bound. Then a valid id longer than the
-// bound: state and print match it whole, and each line shows it cut.
+// a new kind fails the test until it has a row; a row writes its files and its approved spec, and
+// runs each of the three subcommands over them in a parallel subtest of its own, since each run only
+// reads them; each run requires each of its lines under the bound, and the kind's line where the row
+// says, holding each part of shows. The rows of no-node and of a value that JSON cannot hold name no
+// value of the input: they hold only the bound. Then a valid id longer than the bound: state and
+// print match it whole, and each line shows it cut.
 func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -207,45 +208,46 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 			if row.approved != nil {
 				editApproved(t, approved, row.approved)
 			}
-			lines := func(run string, wait func() result) []string {
-				r := wait()
-				all := strings.Split(strings.TrimSuffix(r.stdout+r.stderr, "\n"), "\n")
-				for _, line := range all {
-					if len(line) > lineBound {
-						t.Errorf("%s: a line of %d bytes, more than %d: %.150q … %q", run, len(line), lineBound, line, line[len(line)-150:])
-					}
-				}
-				return all
-			}
-			// The three runs only read this row's files, so they run at once.
-			waitTree := startBinaryIn(t, binary, "", nil, "tree", "--dir", dir, "--retired", retired)
-			waitCompare := startBinaryIn(t, binary, "", nil, "compare", "--dir", dir, "--approved", approved)
-			waitState := startBinaryIn(t, binary, "", nil, "state", "--scenario", scenario)
-			tree := lines("tree", waitTree)
-			compare := lines("compare", waitCompare)
-			state := lines("state", waitState)
-			want := map[string][]string{}
+			// want names each run whose output must hold the kind's line.
+			want := map[string]bool{}
 			switch row.in {
 			case "", "retired":
-				want["tree"] = tree
+				want["tree"] = true
 				if row.in == "" {
-					want["state"] = state
+					want["state"] = true
 				}
 				if row.effect == specgraph.LosesNode {
-					want["compare"] = compare
+					want["compare"] = true
 				}
 			case "compare":
-				want["compare"] = compare
+				want["compare"] = true
 			case "approved":
-				want["compare"], want["state"] = compare, state
+				want["compare"], want["state"] = true, true
 			}
 			start, _, _ := strings.Cut(row.kind, "%")
-			for run, output := range want {
-				if !slices.ContainsFunc(output, func(line string) bool {
-					return strings.Contains(line, start) && !slices.ContainsFunc(row.shows, func(part string) bool { return !strings.Contains(line, part) })
-				}) {
-					t.Errorf("%s prints no line of %q that shows %q of the value; it prints %.600q", run, start, row.shows, output)
-				}
+			// Each run only reads this row's files, so each is a parallel subtest of the row, named by
+			// its subcommand. Each run is held to the bound, whether or not want names it.
+			for _, args := range [][]string{
+				{"tree", "--dir", dir, "--retired", retired},
+				{"compare", "--dir", dir, "--approved", approved},
+				{"state", "--scenario", scenario},
+			} {
+				run := args[0]
+				t.Run(run, func(t *testing.T) {
+					t.Parallel()
+					r := runBinary(t, binary, "", args...)
+					output := strings.Split(strings.TrimSuffix(r.stdout+r.stderr, "\n"), "\n")
+					for _, line := range output {
+						if len(line) > lineBound {
+							t.Errorf("%s: a line of %d bytes, more than %d: %.150q … %q", run, len(line), lineBound, line, line[len(line)-150:])
+						}
+					}
+					if want[run] && !slices.ContainsFunc(output, func(line string) bool {
+						return strings.Contains(line, start) && !slices.ContainsFunc(row.shows, func(part string) bool { return !strings.Contains(line, part) })
+					}) {
+						t.Errorf("%s prints no line of %q that shows %q of the value; it prints %.600q", run, start, row.shows, output)
+					}
+				})
 			}
 		})
 	}
@@ -279,59 +281,76 @@ func ruleFormat(t *testing.T, start string, parts ...string) string {
 // statement and the check by their cut forms; print writes the statement's approved document, the
 // whole id in the file, and names it cut. state --json and checks hold each id whole, since a JSON
 // line is data for a program: the one kind of line of the command that holds a long value whole.
+// Each run is a parallel subtest of its own. state, state --json and checks only read the scenario,
+// so they share one; print takes the lock of its directory and writes its staging files beside it,
+// so it gets a scenario of its own, made the same way.
 func testALongIDMatchesAndPrintsCut(t *testing.T, binary, carry, statement, check string) {
 	const statementID, checkID = "a-stored-message-survives-a-restart", "a-restart-loses-no-message"
 	cut := func(id string) string { return id[:50] + "…" + id[len(id)-50:] }
-	scenario := copyOf(t, carry)
-	err := filepath.WalkDir(scenario, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		content, err := os.ReadFile(path)
+	// longScenario is a copy of carry, in a temporary directory of t, with each id replaced by its
+	// long id in each file.
+	longScenario := func(t *testing.T) string {
+		t.Helper()
+		scenario := copyOf(t, carry)
+		err := filepath.WalkDir(scenario, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(path, []byte(strings.NewReplacer(statementID, statement, checkID, check).Replace(string(content))), 0o644)
+		})
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
-		return os.WriteFile(path, []byte(strings.NewReplacer(statementID, statement, checkID, check).Replace(string(content))), 0o644)
-	})
-	if err != nil {
-		t.Fatal(err)
+		return scenario
 	}
+	scenario := longScenario(t)
 	wantBytes, err := os.ReadFile(filepath.Join(carry, "want.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(scenario, "files", "c2")
-	// state, state --json and checks only read the scenario, so they run at once; print takes the
-	// lock of dir and writes beside it, so it runs after them.
-	waitState := startBinaryIn(t, binary, "", nil, "state", "--scenario", scenario)
-	waitJSON := startBinaryIn(t, binary, "", nil, "state", "--scenario", scenario, "--json")
-	waitChecks := startBinaryIn(t, binary, "", nil, "checks", "--dir", dir, "--job", "go-checks")
-	expect(t, waitState(),
-		result{stdout: strings.NewReplacer(statementID, cut(statement), checkID, cut(check)).Replace(string(wantBytes))})
-
-	r := waitJSON()
-	if r.code != 0 || !strings.Contains(r.stdout, `"`+statement+`"`) || !strings.Contains(r.stdout, `"`+check+`"`) {
-		t.Errorf("state --json: exit %d, stdout of %d bytes, stderr %q; want exit 0 and each id whole in the JSON", r.code, len(r.stdout), r.stderr)
-	}
-	r = waitChecks()
-	if r.code != 0 || !strings.Contains(r.stdout, `"id":"`+check+`"`) {
-		t.Errorf("checks: exit %d, stdout of %d bytes, stderr %q; want exit 0 and the check's id whole in the JSON", r.code, len(r.stdout), r.stderr)
-	}
-
-	before, err := os.ReadFile(filepath.Join(dir, "spec.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r = runBinary(t, binary, "", "print", "--approved", filepath.Join(scenario, "approved.json"), "--id", statement, "--dir", dir)
-	printed := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
-	if r.code != 0 || printed[0] != "spec-check: wrote "+cut(statement)+" to "+filepath.Join(dir, "spec.yaml")+":25" || slices.ContainsFunc(printed, func(l string) bool { return len(l) > lineBound }) {
-		t.Errorf("print --id <the long id>: exit %d, stdout %.300q, stderr %.300q; want exit 0 and a first line that names the id cut", r.code, r.stdout, r.stderr)
-	}
-	after, err := os.ReadFile(filepath.Join(dir, "spec.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) || !strings.Contains(string(after), "id: "+statement+"\n") {
-		t.Errorf("print changed spec.yaml, or it does not hold the whole id: %d bytes before, %d after", len(before), len(after))
-	}
+	t.Run("state", func(t *testing.T) {
+		t.Parallel()
+		expect(t, runBinary(t, binary, "", "state", "--scenario", scenario),
+			result{stdout: strings.NewReplacer(statementID, cut(statement), checkID, cut(check)).Replace(string(wantBytes))})
+	})
+	t.Run("state --json", func(t *testing.T) {
+		t.Parallel()
+		r := runBinary(t, binary, "", "state", "--scenario", scenario, "--json")
+		if r.code != 0 || !strings.Contains(r.stdout, `"`+statement+`"`) || !strings.Contains(r.stdout, `"`+check+`"`) {
+			t.Errorf("state --json: exit %d, stdout of %d bytes, stderr %q; want exit 0 and each id whole in the JSON", r.code, len(r.stdout), r.stderr)
+		}
+	})
+	t.Run("checks", func(t *testing.T) {
+		t.Parallel()
+		r := runBinary(t, binary, "", "checks", "--dir", dir, "--job", "go-checks")
+		if r.code != 0 || !strings.Contains(r.stdout, `"id":"`+check+`"`) {
+			t.Errorf("checks: exit %d, stdout of %d bytes, stderr %q; want exit 0 and the check's id whole in the JSON", r.code, len(r.stdout), r.stderr)
+		}
+	})
+	t.Run("print", func(t *testing.T) {
+		t.Parallel()
+		scenario := longScenario(t)
+		dir := filepath.Join(scenario, "files", "c2")
+		before, err := os.ReadFile(filepath.Join(dir, "spec.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := runBinary(t, binary, "", "print", "--approved", filepath.Join(scenario, "approved.json"), "--id", statement, "--dir", dir)
+		printed := strings.Split(strings.TrimSuffix(r.stdout, "\n"), "\n")
+		if r.code != 0 || printed[0] != "spec-check: wrote "+cut(statement)+" to "+filepath.Join(dir, "spec.yaml")+":25" || slices.ContainsFunc(printed, func(l string) bool { return len(l) > lineBound }) {
+			t.Errorf("print --id <the long id>: exit %d, stdout %.300q, stderr %.300q; want exit 0 and a first line that names the id cut", r.code, r.stdout, r.stderr)
+		}
+		after, err := os.ReadFile(filepath.Join(dir, "spec.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(before) || !strings.Contains(string(after), "id: "+statement+"\n") {
+			t.Errorf("print changed spec.yaml, or it does not hold the whole id: %d bytes before, %d after", len(before), len(after))
+		}
+	})
 }
