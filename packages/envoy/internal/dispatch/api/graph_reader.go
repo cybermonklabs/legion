@@ -43,4 +43,7 @@ func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Act
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
 //     and handed to the next reader whose request names the same pair, so an answer read for
 //     one person would be served to another.
+//   - the judgment of the form of The Spec (approvedSpecTexts) reads the approved documents under
+//     a root alike for each person whose request or approval it judges, and a reopen keeps its
+//     findings as the reason of a request that every reader of the issue reads.
 var everyReader = model.Actor{}

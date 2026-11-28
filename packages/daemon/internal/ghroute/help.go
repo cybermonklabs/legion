@@ -1,4 +1,4 @@
-package main
+package ghroute
 
 import (
 	"fmt"
@@ -38,7 +38,7 @@ type ghSlot struct {
 // cobra aliases it lists for itself; for a group of subcommands, every subcommand and help topic it
 // lists, and the gh aliases and extensions among them; and, for a leaf, its options, its arguments,
 // whether its USAGE passes on the arguments after `--`, and whether what it passes on are git
-// clone's flags (`[-- <gitflags>...]`: repo clone, repo fork, gist clone), which ghCloneGitFlags
+// clone's flags (`[-- <gitflags>...]`: repo clone, repo fork, gist clone), which cloneGitFlags
 // judges.
 type ghCommand struct {
 	path                          []string
@@ -205,7 +205,7 @@ func parseGhHelp(requested []string, what, text string) (ghCommand, error) {
 var ghPassedOnRule = regexp.MustCompile(`\[--[\s\[]+(<[^>]*>)`)
 
 // ghPassedOnPlaceholders are what a passthrough leaf of gh 2.98.0's and 2.104.0's may pass on
-// after `--`, with whether it is git clone's flags, which ghCloneGitFlags judges: `<gitflags>`
+// after `--`, with whether it is git clone's flags, which cloneGitFlags judges: `<gitflags>`
 // (repo clone, repo fork, gist clone), `<ssh-flags>` (codespace ssh) and `<scp flags>` (codespace
 // cp). A leaf whose help names any other, or none, is refused, so a later gh that renames
 // `<gitflags>` cannot make a clone's flags pass unread.
@@ -213,7 +213,7 @@ var ghPassedOnPlaceholders = map[string]bool{"<gitflags>": true, "<ssh-flags>": 
 
 // ghCloneLeaves are the leaves that hand git clone what they pass on, whatever their help calls
 // it (cli/cli v2.104.0 pkg/cmd/repo/clone/clone.go, repo/fork/fork.go, gist/clone/clone.go): a
-// later gh's help that renames `<gitflags>` keeps them judged by ghCloneGitFlags.
+// later gh's help that renames `<gitflags>` keeps them judged by cloneGitFlags.
 var ghCloneLeaves = map[string]bool{"repo clone": true, "repo fork": true, "gist clone": true}
 
 // ghUsageNamesSubcommands says whether the arguments of a USAGE line, after the command's path,
@@ -223,7 +223,7 @@ func ghUsageNamesSubcommands(args string) bool {
 }
 
 // ghHelpTarget reads the words of `gh help <words>` as the path of the command whose help it asks
-// for, refusing what ghTargetOf refuses running it directly (ghWalk.check): gh runs `gh help
+// for, refusing what TargetOf refuses running it directly (ghWalk.check): gh runs `gh help
 // <extension>` as `gh <extension> --help`, which runs the extension on gh's token. gh's own help, a
 // command's and a help topic's, sends nothing, and is not named. A word past a leaf is that leaf's
 // argument, which gh's help ignores; an option, which `gh help` takes none of, is an error.
@@ -231,7 +231,7 @@ func ghHelpTarget(words []string, help func(path []string) (string, error)) erro
 	walk := ghWalk{help: help}
 	for i, word := range words {
 		if strings.HasPrefix(word, "-") {
-			return cannotPlace(ghShown(word, "an option given to gh help"), "is refused: `gh help` takes only the names of commands", false)
+			return cannotPlace(Shown(word, "an option given to gh help"), "is refused: `gh help` takes only the names of commands", false)
 		}
 		if err := walk.check(word); err != nil {
 			return err
@@ -277,7 +277,7 @@ func (w *ghWalk) check(word string) error {
 	}
 	if len(w.path) == 0 && !w.parent.listed[word] {
 		return fmt.Errorf("cannot tell which repository the command targets: %s is no command gh's own help lists, and gh may answer it by installing an extension, so it sends no token; run gh's own commands, with -R <owner>/<repo>",
-			ghShown(word, "the command's first word"))
+			Shown(word, "the command's first word"))
 	}
 	return nil
 }
@@ -299,14 +299,14 @@ func (w *ghWalk) read(word string) (ghCommand, error) {
 // named is the command read reads next, the walk's path and word, as a refusal names it: the path
 // as gh's help spelled it, and word, a subcommand's slot, quoted only where the help of the path
 // lists it, which no credential is. A word that help does not list, a cobra alias of a subcommand
-// among them, is named by its place (ghShown), and so is every word when gh's help could not be
+// among them, is named by its place (Shown), and so is every word when gh's help could not be
 // read.
 func (w *ghWalk) named(word string) string {
 	path := "`" + strings.Join(append([]string{"gh"}, w.path...), " ") + "`"
 	if w.parent.listed[word] {
 		return path + " and " + strconv.Quote(word)
 	}
-	return path + " and " + ghShown(word, "a subcommand its help does not list")
+	return path + " and " + Shown(word, "a subcommand its help does not list")
 }
 
 // mayRead refuses word as a subcommand of the group c when c's help lists it as a gh alias, whose
