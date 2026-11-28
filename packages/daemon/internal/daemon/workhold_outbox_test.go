@@ -727,6 +727,69 @@ func heldParentAtTheClose(t *testing.T) *workHoldRig {
 	return r
 }
 
+// childInDispatch writes ownersChild as the daemon's mirror of Dispatch reads it at seq: filed
+// under the root in status by its architect and never released, so the daemon holds no record of
+// it. Such a child sends the daemon no event, so what Dispatch shows of it reaches the mirror
+// alone, which no settle of the engine reads and the admission pass does (admit's childrenWaits).
+func (r *workHoldRig) childInDispatch(status string, seq int64) {
+	r.t.Helper()
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: ownersChild, Project: r.tree.project, Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(r.tree.key), Blockers: record.Carry[[]string](nil)})
+	})
+}
+
+// heldForAFiledChildAtTheClose is heldParentAtTheClose's tree with no issue beneath its root: the
+// root is held before its retro for ownersChild, filed under it in Dispatch and still at todo
+// (childInDispatch), when the close at version 4 has just closed the gate. The root's architect
+// is at work, and its implementer, released before the close, is the one worker the close stops,
+// its stop queued and not made yet. The child's close reaches the mirror alone, so the admission
+// pass that reads it next is what starts the root's retro (admit's childrenWaits,
+// workflow.Engine.StartHeldRetro).
+func heldForAFiledChildAtTheClose(t *testing.T) *workHoldRig {
+	t.Helper()
+	r := newWorkHoldRig(t, legionTree(phase.Reviewing, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.released(claim.RoleImplementer)
+	r.planned(r.tree.key, record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning, "implementer", "reviewer")
+	held := r.issue()
+	held.Phase, held.Hold = phase.Held, &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
+	r.inTx(func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, held) })
+	r.childInDispatch("todo", 1)
+	r.close(4)
+	return r
+}
+
+// awaitingChildrenAtTheClose is a tree under `work` whose root the admission pass's stop moved out
+// of the middle of its testing into awaiting_children (workflow.Engine.StopForChildren), holding
+// the start of testing for ownersChild, filed under it in Dispatch and still at todo
+// (childInDispatch), when the close at version 4 has just closed the gate: the root's architect is
+// at work, and its tester, released before the close, is the one worker the close stops, its stop
+// queued and not made yet. The child's close reaches the mirror alone, so the admission pass that
+// reads it next is what takes the root back to testing, the first step of today's line after the
+// implementer's (record.ReturnStep), and starts the tester (admit's childrenWaits,
+// workflow.Engine.ReturnFromChildren).
+func awaitingChildrenAtTheClose(t *testing.T) *workHoldRig {
+	t.Helper()
+	r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.released(claim.RoleTester)
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleTester, Claim: r.token(claim.RoleTester), Entry: 1})
+	})
+	r.childInDispatch("todo", 1)
+	stopped := r.issue()
+	r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
+		moved, err := r.engine.StopForChildren(ctx, tx, stopped, []record.OpenChild{{Key: ownersChild, Status: "todo"}}, nil)
+		if err == nil && !moved {
+			err = fmt.Errorf("the admission pass's stop left %s in %s, want it moved into awaiting_children", stopped.Key, stopped.Phase)
+		}
+		return err
+	})
+	r.close(4)
+	return r
+}
+
 // cutoverMergerAtTheClose is a tree in merging under `work` whose merger the `awaiting_merge`
 // cutover left released, level with the entry its phases row names, that row holding the READY
 // head its completion named (workflow's cutoverMergerRepair), when the close at version 4 has just
@@ -877,6 +940,16 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			held: []claim.Role{claim.RoleImplementer}, starts: claim.RoleImplementer, act: func(r *workHoldRig) {
 				r.apply("child-done", intake.DispatchIssue{Key: ownersChild, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated",
 					Status: "done", Title: "a child still at work", Parent: r.tree.key, Rank: "V"})
+			}},
+		{name: "StartHeldRetro, which admission's pass makes once the filed child that held the parent closes", rig: heldForAFiledChildAtTheClose,
+			held: []claim.Role{claim.RoleImplementer}, starts: claim.RoleImplementer, act: func(r *workHoldRig) {
+				r.childInDispatch("done", 2)
+				r.apply("tick", intake.ControllerTick{})
+			}},
+		{name: "ReturnFromChildren into testing, which admission's pass makes once the last open child closes", rig: awaitingChildrenAtTheClose,
+			held: []claim.Role{claim.RoleTester}, starts: claim.RoleTester, act: func(r *workHoldRig) {
+				r.childInDispatch("done", 2)
+				r.apply("tick", intake.ControllerTick{})
 			}},
 		{name: "the silence repair", writesNone: claim.RoleTester, act: func(r *workHoldRig) {
 			r.apply("silent", intake.WorkerSilent{Issue: r.tree.key, Role: claim.RoleTester, Generation: 1,
