@@ -42,11 +42,13 @@ const winitHelper = workspace.GitHubCredentialHelper
 
 // fakeJJ is the jj first on the issue volume's PATH. It records every invocation as one line,
 // "<WINIT_TAG> <argv>" without the runner's leading --config pin, and runs the real jj with that
-// pin — with WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
+// pin and with WINIT_GIT_STARTER=jj, which each git that jj starts records (fakeGit) — with
+// WINIT_HOLD set, the `jj git init --colocate` that completes the directly filled clone
 // opens the directory's `release` fifo, writes its pid to its `held` fifo, waits on `release` until
 // the test closes its end there, and exits without initializing. A fresh provisioning's first jj
-// command is that init, so a process held there is mid-provisioning. WINIT_HOLD is empty for every
-// other case, which therefore holds nowhere.
+// command is that init, so a process held there is mid-provisioning. With WINIT_CUT_CHECKOUT set,
+// `jj sparse reset` runs that stand-in script instead of the real jj, to simulate a checkout that
+// was cut short. Both are empty for every other case.
 const fakeJJ = `#!/bin/sh
 pin=
 case "$1" in --config=*) pin=$1; shift ;; esac
@@ -57,7 +59,10 @@ if [ -n "$WINIT_HOLD" ] && [ "$1 $2 $3" = "git init --colocate" ]; then
 	read _ <&3
 	exit 1
 fi
-PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
+if [ -n "$WINIT_CUT_CHECKOUT" ] && [ "$1 $2" = "sparse reset" ]; then
+	exec "$WINIT_CUT_CHECKOUT" "$@"
+fi
+PATH="${PATH#*:}" WINIT_GIT_STARTER=jj exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 `
 
 // fakeGit maps GitHub to the fixture remote while recording the one-shot provisioning credential:
@@ -69,8 +74,22 @@ PATH="${PATH#*:}" exec "$WINIT_REAL_JJ" ${pin:+"$pin"} "$@"
 // then counts itself in that directory's `attempts`, and an attempt whose number names a file there
 // fails as git does: it writes the file to stderr with @TOKEN@ replaced by the token it was handed,
 // and exits with the status the directory's `status` file holds. Every other invocation is the real
-// git's.
+// git's. With WINIT_GIT_CONFIG_LOG set, every invocation first appends one line to that file, in
+// one write: who started it (WINIT_GIT_STARTER, "jj" for fakeJJ's children, else workspace-init),
+// GIT_CONFIG_COUNT, each GIT_CONFIG_KEY_<i>=GIT_CONFIG_VALUE_<i> pair in order, and its argv,
+// separated by tabs (gitConfigCalls). jj's own git children reach this git too: the runner hands jj
+// --config=git.executable-path=<this git>, and fakeJJ passes that flag on.
 const fakeGit = `#!/bin/sh
+if [ -n "$WINIT_GIT_CONFIG_LOG" ]; then
+	tab=$(printf '\t')
+	line="${WINIT_GIT_STARTER:-workspace-init}$tab${GIT_CONFIG_COUNT-unset}"
+	i=0
+	while [ "$i" -lt "${GIT_CONFIG_COUNT:-0}" ]; do
+		eval "line=\"\$line\$tab\${GIT_CONFIG_KEY_$i-}=\${GIT_CONFIG_VALUE_$i-}\""
+		i=$((i + 1))
+	done
+	printf '%s\t%s\n' "$line" "$*" >> "$WINIT_GIT_CONFIG_LOG"
+fi
 while [ "$1" = "-c" ]; do
 	shift 2
 done
@@ -176,6 +195,9 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"WINIT_FETCH_SLEEP":    "",
 		"WINIT_TAG":            "",
 		"WINIT_HOLD":           "",
+		"WINIT_CUT_CHECKOUT":   "",
+		"WINIT_GIT_CONFIG_LOG": "",
+		"WINIT_GIT_STARTER":    "",
 		"JJ_USER":              "Legion test",
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),
@@ -808,14 +830,15 @@ func TestWorkspaceInitProvisionsTheIssueWorkspace(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
 
 	p := v.start(t, "", "LEGION-42")
-	code, lines := p.wait(t)
+	code, printed := p.wait(t)
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, p.stderr.String())
 	}
 	workspace := v.workspace("LEGION-42")
 	const fill = "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub ("
+	lines := slices.DeleteFunc(slices.Clone(printed), stepLine.MatchString)
 	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from main"; len(lines) != 2 || !strings.HasPrefix(lines[0], fill) || lines[1] != want {
-		t.Fatalf("stdout %q, want the fill line then %q", lines, want)
+		t.Fatalf("stdout %q, want the fill line then %q, besides the step lines", printed, want)
 	}
 	if listed := v.jj(t, "workspace", "list", "-R", v.clone()); !strings.Contains(listed, "legion-42:") {
 		t.Fatalf("the clone's workspaces are %q, want legion-42 among them", listed)
@@ -863,7 +886,7 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	workspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + workspace + " on legion/LEGION-42 from release/v7.1\n"; !strings.HasSuffix(stdout, want) || !strings.HasPrefix(stdout, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+	if want, logged := "workspace-init: "+workspace+" on legion/LEGION-42 from release/v7.1\n", withoutStepLines(stdout); !strings.HasSuffix(logged, want) || !strings.HasPrefix(logged, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
 		t.Fatalf("stdout %q, want the fill line then %q", stdout, want)
 	}
 	head := v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "refs/heads/release/v7.1")
@@ -917,7 +940,7 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 	provisionedWorkspace := v.workspace("LEGION-42")
-	if want := "workspace-init: " + provisionedWorkspace + " on legion/LEGION-42 from main\n"; !strings.HasSuffix(stdout, want) || !strings.HasPrefix(stdout, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
+	if want, logged := "workspace-init: "+provisionedWorkspace+" on legion/LEGION-42 from main\n", withoutStepLines(stdout); !strings.HasSuffix(logged, want) || !strings.HasPrefix(logged, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
 		t.Fatalf("stdout %q, want the fill line then %q", stdout, want)
 	}
 	if _, err := os.Stat(filepath.Join(provisionedWorkspace, "tree.txt")); err != nil {
@@ -1293,7 +1316,8 @@ func (v *issueVolume) holder(t *testing.T) *initProcess {
 
 // fifo opens one end of a fifo — which blocks until the holder opens the other — reads it to EOF
 // when reading, and closes it, bounded by the test binary's deadline less 30 s and by the holder's
-// staying alive and silent.
+// staying alive and printing no line but its step lines (stepLine), which a provision prints as
+// each step before the hold ends.
 func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 	t.Helper()
 	type opened struct {
@@ -1313,18 +1337,23 @@ func fifo(t *testing.T, path string, flag int, holder *initProcess) string {
 		result.err = err
 		done <- result
 	}()
-	select {
-	case result := <-done:
-		if result.err != nil {
-			t.Fatalf("%s: %v", path, result.err)
+	deadline := time.After(testwait.Bounded(t, 1<<60, 30*time.Second))
+	for {
+		select {
+		case result := <-done:
+			if result.err != nil {
+				t.Fatalf("%s: %v", path, result.err)
+			}
+			return string(result.read)
+		case line, ok := <-holder.lines:
+			if ok && stepLine.MatchString(line) {
+				continue
+			}
+			t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
+		case <-deadline:
+			t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
 		}
-		return string(result.read)
-	case line, ok := <-holder.lines:
-		t.Fatalf("the holder printed %q (open: %v) before reaching %s; stderr %q", line, ok, path, holder.stderr.String())
-	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
-		t.Fatalf("nothing opened the other end of %s before the test binary's deadline", path)
 	}
-	return ""
 }
 
 // holdsNoToken fails when any file under dir contains the provisioning token.
@@ -1599,7 +1628,7 @@ func TestWorkspaceInitProvisionStreamsANarrowedRepositoryCache(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, stderr)
 	}
 	line := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(notServedLine) + `workspace-init: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) + ` in .+, its history verified in .+; [0-9,]+ bytes from GitHub for the delta \([0-9]+ refs\)$`)
-	match := line.FindStringSubmatch(stdout)
+	match := line.FindStringSubmatch(withoutStepLines(stdout))
 	if match == nil {
 		t.Fatalf("stdout %q, want /tar as the source, then the cache stream and GitHub delta", stdout)
 	}
@@ -1747,7 +1776,7 @@ func TestWorkspaceInitProvisionWritesNoURLCredentials(t *testing.T) {
 	shown := redact.URLCredentials(cacheURL)
 	// The ask is GET <cache>/healthz (internal/workspace's cacheNotReady), and Go's error quotes
 	// that URL, so the rule is given the line as the product writes it, the route included.
-	if want := redact.URLCredentials("workspace-init: waiting for the repository cache " + cacheURL + " to be ready: Get \"" + cacheURL + "/healthz\": "); !strings.HasPrefix(stdout, want) {
+	if want := redact.URLCredentials("workspace-init: waiting for the repository cache " + cacheURL + " to be ready: Get \"" + cacheURL + "/healthz\": "); !strings.HasPrefix(withoutStepLines(stdout), want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}
 	if want := "the repository cache " + shown + " was not ready within " + workspace.CacheWaitTimeout.String(); code != workspace.InitExitOutsideVolume || !strings.Contains(stderr, want) {
@@ -1789,7 +1818,7 @@ func TestWorkspaceInitProvisionRetriesATransientFetchFailure(t *testing.T) {
 	}
 	want := "workspace-init: fetch attempt 1 failed; retrying in 5s: error: RPC failed; curl 92 HTTP/2 stream 7 was not closed cleanly: CANCEL (err 8) | fatal: early EOF | fatal: fetch-pack: invalid index-pack output\n" +
 		"workspace-init: fetch attempt 2 failed; retrying in 15s: error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408 | fatal: expected 'packfile'\n"
-	rest, retried := strings.CutPrefix(stdout, want)
+	rest, retried := strings.CutPrefix(withoutStepLines(stdout), want)
 	if !retried || !strings.HasPrefix(rest, "workspace-init: no repository cache named: fetched the default branch of acme/widgets from GitHub (") {
 		t.Fatalf("stdout %q, want %q then the fill from GitHub", stdout, want)
 	}
@@ -1842,8 +1871,8 @@ func TestWorkspaceInitProvisionLogsNoToken(t *testing.T) {
 	if strings.Contains(stdout+stderr, "x-access-token") {
 		t.Fatalf("provision logged the URL's user name:\nstdout %q\nstderr %q", stdout, stderr)
 	}
-	if want := redact.URLCredentials("workspace-init: fetch attempt 1 failed; retrying in 5s: " + scrubbed(unreachable)); stdout != want {
-		t.Fatalf("stdout %q, want %q", stdout, want)
+	if want := redact.URLCredentials("workspace-init: fetch attempt 1 failed; retrying in 5s: " + scrubbed(unreachable)); withoutStepLines(stdout) != want {
+		t.Fatalf("stdout %q, want %q besides the step lines", stdout, want)
 	}
 	for _, says := range []string{scrubbed(invalid), redact.URLCredentials(scrubbed(refused))} {
 		if !strings.Contains(stderr, says) {

@@ -1279,7 +1279,8 @@ type plan struct {
 	// adds none.
 	recordedRepository func(ctx context.Context, issue string) (string, error)
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
-	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
+	// missing, not checked out, or still carrying a checkout marker (workflowRuntime.ensureWorkspace);
+	// nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
 	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the

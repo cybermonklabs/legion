@@ -377,6 +377,149 @@ func TestRemoveLetsTheStoreLockGoBeforeItDeletesTheWorkspace(t *testing.T) {
 	lock.mu.Unlock()
 }
 
+// lockWatch is a store lock that runs onLock each time it is asked for, before it is taken, and
+// onUnlock each time it is let go, before it is free.
+type lockWatch struct {
+	heldLock
+	onLock, onUnlock func()
+}
+
+func (l *lockWatch) Lock()   { l.onLock(); l.heldLock.Lock() }
+func (l *lockWatch) Unlock() { l.onUnlock(); l.heldLock.Unlock() }
+
+// Provision deletes a workspace directory renamed aside (removingPath) with the store lock let go,
+// as Remove does: that delete's time follows what the directory holds, and it touches nothing of
+// the shared clone's, so the provisions and removals of the repository's other issues do not wait
+// for it. A workspace-reset renames a marked workspace whose checkout was cut short aside under the
+// lock; the directory is still there when the provision lets the lock go, and gone once it returns,
+// deleted in its workspace-delete step before its checkout. A directory a stopped workspace-reset
+// or Remove left aside, or a link left there to a directory outside the volume or to nothing, is
+// gone before the provision asks for the lock, deleted in a workspace-delete step that is the first
+// it begins, without following the link. Every command on the shared clone runs under the lock all
+// the same, and the provision returns with it free.
+func TestProvisionDeletesWhatIsRenamedAsideWithTheStoreLockLetGo(t *testing.T) {
+	t.Parallel()
+	// watched is a provision whose store lock recorded, as it was asked for and as it was let go,
+	// whether the workspace's directory aside was there, and the steps the provision logged.
+	type watched struct {
+		working          Workspace
+		atLock, atUnlock []bool
+		steps            []string
+	}
+	provision := func(t *testing.T, base *recordingRunner, req Request) watched {
+		t.Helper()
+		location, err := Location(req.StateDir, req.Repo, req.Issue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aside := removingPath(location.Dir)
+		there := func() bool {
+			_, err := os.Lstat(aside)
+			return err == nil
+		}
+		var w watched
+		lock := &lockWatch{
+			onLock:   func() { w.atLock = append(w.atLock, there()) },
+			onUnlock: func() { w.atUnlock = append(w.atUnlock, there()) },
+		}
+		run := &lockReadingRunner{recordingRunner: base, lock: &lock.heldLock}
+		req.StoreLock = lock
+		req.Steps = NewSteps(newTestClock(), func(line string) { w.steps = append(w.steps, line) })
+		w.working, err = Provision(context.Background(), run, req)
+		if err != nil {
+			t.Fatalf("Provision: %v", err)
+		}
+		for _, line := range run.seen {
+			held, argv, _ := strings.Cut(line, " ")
+			if isCheckout(strings.Fields(argv)) == (held == "true") {
+				t.Errorf("ran %q with the store lock held=%s; want it held for every command but the checkout", argv, held)
+			}
+		}
+		if _, err := os.Lstat(aside); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("after Provision, %s lstat = %v, want ErrNotExist", aside, err)
+		}
+		if lock.held.Load() || !lock.mu.TryLock() {
+			t.Fatal("Provision returned with the store lock held")
+		}
+		lock.mu.Unlock()
+		return w
+	}
+
+	t.Run("a workspace-reset's", func(t *testing.T) {
+		t.Parallel()
+		base := newLocalRunner(t)
+		pushTreeFiles(t, base.remote, "main", markedCheckoutTree)
+		req := provisionRequest(t)
+		cutShortCheckout(t, base, req)
+		w := provision(t, base, req)
+		if !slices.Equal(w.atLock, []bool{false}) || !slices.Equal(w.atUnlock, []bool{true}) {
+			t.Errorf("the directory renamed aside was there %v as the provision asked for the store lock and %v as it let it go; want [false], then [true]: renamed under the lock and deleted once it was let go", w.atLock, w.atUnlock)
+		}
+		want := []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration", "workspace-delete"}
+		if names := stepNames(w.steps); len(names) < len(want) || !slices.Equal(names[len(names)-len(want):], want) {
+			t.Errorf("the provision logged the steps %q, want %q last, the checkout after them", names, want)
+		}
+		requireWholeTree(t, w.working, markedCheckoutTree)
+	})
+
+	for _, stale := range []struct {
+		name string
+		// leave leaves what is at aside before the provision; outside is a directory off the
+		// workspace's volume, holding precious.txt.
+		leave func(t *testing.T, aside, outside string)
+	}{
+		{"a directory a stopped removal left", func(t *testing.T, aside, _ string) {
+			if err := os.MkdirAll(filepath.Join(aside, ".jj"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(aside, "half.txt"), []byte("first half\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a link to a directory outside", func(t *testing.T, aside, outside string) {
+			if err := os.Symlink(outside, aside); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"a link to nothing", func(t *testing.T, aside, outside string) {
+			if err := os.Symlink(filepath.Join(outside, "gone"), aside); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run("a stale one, "+stale.name, func(t *testing.T) {
+			t.Parallel()
+			base := newLocalRunner(t)
+			pushTreeFiles(t, base.remote, "main", markedCheckoutTree)
+			req := provisionRequest(t)
+			location, err := Location(req.StateDir, req.Repo, req.Issue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(location.Dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outside := t.TempDir()
+			precious := filepath.Join(outside, "precious.txt")
+			if err := os.WriteFile(precious, []byte("keep\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			stale.leave(t, removingPath(location.Dir), outside)
+			w := provision(t, base, req)
+			if !slices.Equal(w.atLock, []bool{false}) || !slices.Equal(w.atUnlock, []bool{false}) {
+				t.Errorf("the stale %s was there %v as the provision asked for the store lock and %v as it let it go; want [false] both times: deleted before the lock", removingPath(location.Dir), w.atLock, w.atUnlock)
+			}
+			if names := stepNames(w.steps); len(names) < 2 || !slices.Equal(names[:2], []string{"inputs", "workspace-delete"}) || slices.Contains(names[2:], "workspace-delete") {
+				t.Errorf("the provision logged the steps %q, want workspace-delete once, right after inputs", names)
+			}
+			requireWholeTree(t, w.working, markedCheckoutTree)
+			if body, err := os.ReadFile(precious); err != nil || string(body) != "keep\n" {
+				t.Errorf("after Provision, %s = %q, %v; want it kept", precious, body, err)
+			}
+		})
+	}
+}
+
 // Remove renames the workspace aside and deletes the aside once the store lock is let go. The
 // workspace's parent directory is on the issue's volume, which a role can swap for a fifo, and a
 // plain os.RemoveAll of the aside then opens that fifo plainly and waits for a writer for as long

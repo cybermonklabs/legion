@@ -7266,6 +7266,56 @@ Its launcher's command then adds `--microvm`, and, where the deployment sets `ru
 The image probe runs as a Sandbox of its own, `legion-probe-<project>-<digest12>`, with `shutdownPolicy: Delete`, its one container carrying the probe's own fixed reservation
 — 500m and 1Gi, over a 5Gi disk bound and a 1Gi disk request (`probeReservation`, `internal/daemon/kubernetes.go`), none of an issue pod's, since `legion probe-image` starts one Oh My Pi at a time and runs no lane, and a probe sized as an issue pod could keep the daemon from booting on a full pool ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes), [Issue sizing](#issue-sizing-one-reservation-per-pod)).
 
+#### Provision step times
+
+`workspace-init` logs the time of each step of the provision as it ends:
+`workspace-init: step <name> took <seconds>s`, in seconds with one decimal, and once the last has ended `workspace-init: steps took <seconds>s`, just before its last line, `workspace-init: <dir> on <bookmark> from <default branch>`.
+One clock in the process times every step (`workspace.Steps`), and each instant of the run belongs to one step, so the steps add up to the total but for each line's rounding to a tenth.
+A provision that fails logs `workspace-init: step <name> failed after <seconds>s` for the step it failed in, then its error, which stays the log's last line, the one the daemon's quote of the failed container ends with.
+A refusal of the provision's input, before it touches the volume, logs nothing on stdout.
+While a provision runs, the step it is in is the one after the last step its log names.
+
+A new clone runs these steps, in this order:
+
+- `inputs`, the checks of the provision's flags, variables, token and tools;
+
+- `stale-locks`, the removal of the stale git locks a killed process left;
+
+- `workspace-delete`, only where a stopped removal or `workspace-reset` (below) left the issue's workspace directory renamed aside to `<dir>.removing`: its delete, without following a link, before the rest of the provision;
+
+- `clone-stage`, the clone's staging directory beside it, the removal of a stale one, and its `git init`;
+
+- where a cache is named, `cache-wait`, the wait for a ready cache; `bucket-attempt`, the bucket's `/packs`, downloads and refs, which ends at once where the cache serves no `/packs`; where the bucket did not fill the clone, `cache-transfer`, the removal of what the bucket's attempt wrote and the stream from `/tar`; then `pack-check`, the packs' checksums (or `git index-pack` for a pack the tar sent without its index), and `history-check`, `git fsck --connectivity-only`.
+  A bucket attempt whose own check fails logs its `pack-check`, and its `history-check` where its packs passed, before `cache-transfer`;
+
+- `github-delta`, GitHub's `HEAD`, the origin's configuration and the fetch, with its retries;
+
+- `ref-pruning`, the local default branches, the removal of every ref but the default branches' and the issue's, and `origin/HEAD`;
+
+- `jj-init` (`jj git init --colocate`), `jj-clone-working-copy` (the clone's sparse clear and the abandon of its working-copy commit) and `jj-track` (the default branches' tracking and the clone's rename into place);
+
+- `jj-configuration`, the clone's jj settings;
+
+- `workspace-registration`, the issue workspace's `jj workspace add` and its checkout marker (below);
+
+- `configuration`, the git worktree's lock and the clone's git configuration;
+
+- `checkout`, the wait for a checkout's place and `jj sparse reset`.
+
+On a clone that is already there, the provision runs `workspace-delete` after `stale-locks` where a directory is left aside, as on a new clone, and `update-stale` (`jj workspace update-stale`) where the issue's workspace is there, and then `jj-configuration`, `github-delta`, `ref-pruning`, `jj-import` (`jj git import`) and `jj-track`; then, for a workspace that was there, `checkout-check`, whether its checkout finished, and `workspace-reset` where it did not and the workspace still carries the checkout marker (below); then `workspace-registration`, which restores the workspace's git worktree where the workspace is there and adds it where not; then `configuration`; then, after a `workspace-reset`, `workspace-delete`, the delete of the old workspace's directory; and where the workspace is new or holds no sparse pattern, `checkout`.
+
+Within `workspace-registration`, right after `jj workspace add` registers a fresh workspace and before any later step of the provision, `Provision` writes `.jj/legion-checkout` without following a link, and the marker stays until a `jj sparse reset` succeeds, after which `Provision` removes it.
+A stop between the checkout's end and that removal leaves the marker on a whole workspace, which `checkout-check` removes at the next pod start, before any role starts; a tmux launch likewise provisions a whole workspace that still carries the marker before its pane starts.
+On a retry after a provision failed or stopped anywhere between that add and the checkout's end, the workspace holds no sparse pattern and `.jj/legion-checkout` is still there.
+No role has started in such a workspace, since the roles start only once `workspace-init` succeeds.
+So `workspace-reset` takes it away under the store lock: it deletes the issue's bookmark `legion/<KEY>` where the stopped provision set it on the workspace's working-copy commit, renames the workspace directory aside to `<dir>.removing`, forgets the workspace in the shared clone and removes its git worktree entry.
+`workspace-registration` then adds the workspace again from nothing, as a first provision does: at `origin`'s `legion/<KEY>` as GitHub has it then, or at the default branch with `legion/<KEY>` set on its working-copy commit, with a new creation record and marker.
+With the store lock let go, `workspace-delete` deletes `<dir>.removing` without following a link, so the space the old workspace held is free before `checkout` checks out the whole tree, and on the tmux runtime the provisions of the repository's other issues do not wait for that delete.
+Whatever the stopped provision left goes with the old workspace: a creation record that is missing, empty, unreadable or no regular file, a bookmark it never set, and a half-written checkout.
+A provision stopped after `workspace-reset`'s rename and before `workspace-delete` ended leaves `<dir>.removing`, which the next provision's `workspace-delete` after `stale-locks` deletes.
+Where that stop came before the new workspace's registration, no workspace is left at `<dir>`, so the next provision runs no `checkout-check` or `workspace-reset`, and its `workspace-registration` adds the workspace again, forgetting the old registration first where `workspace-reset` stopped before its forget.
+Where a workspace holds no sparse pattern and no marker (an agent cleared its patterns, or an earlier release registered the workspace, as on a microVM pod's kept volume), `workspace-reset` does not run and `checkout` writes no marker, so the workspace's untracked files stay.
+
 ### The repository cache
 
 Each repository a live record of the project names has a cache of its own, and so does a repository a launch works:
@@ -10445,6 +10495,10 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   tar, whose verification has one `workspace.FetchTimeout`, fetches the GitHub delta under another,
   all within `workspace.FetchBudget`, builds the colocated clone and jj workspace under
   `workspace.CloneTimeout`, and checks out the issue's workspace under `workspace.CheckoutTimeout`.
+  Its log (`kubectl -n legion logs <pod> -c workspace-init`) has one line for each step as the
+  step ends, `workspace-init: step <name> took <seconds>s`, so a pod long in `Pending` is in the
+  step after the last one named there, in the order
+  [Provision step times](#provision-step-times) lists them.
   It waits on no other issue pod and takes no lock, since the clone it provisions is on the
   issue's own volume.
   The launch that created the pod waits for the role's launcher, which starts only once the init

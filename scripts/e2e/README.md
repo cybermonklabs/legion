@@ -294,6 +294,15 @@ Each item below names a script, then what it proves.
   build hold one clone of `tmux/tmux`, with no legacy repository directory or mount, narrow refs,
   no tags and a default-branch-only repository cache
 
+- `issue-pod-start-kind.sh`
+
+  on two throwaway kind clusters with Agent Sandbox v1.0.3 and gVisor, made one after the other on one GitHub-hosted runner at a branch's head alone, the second of two issue pods of `rust-lang/crates.io-index` that Legion's own loader, `sandboxOptions` and Sandbox runtime build runs its `workspace-init` in at most half the time at the head that it takes at the base, the head's merge base with `main`, each arm on its own commit's worker image;
+  at the head that pod's log gives each step's duration, and the durations add up to the run within 10 s, and in both arms its workspace holds the whole tree of a tip of the default branch with no change
+
+- `issue-pod-start-small-kind.sh`
+
+  `issue-pod-start-kind.sh` on `tmux/tmux`, where the head's `workspace-init` runs at most 10 s longer than the base's: a pod of a small repository starts no slower
+
 - `dispatch-claimant-delivery.sh`
 
   Dispatch's outbox delivers a person's answer, comment or untargeted message on an issue a session has claimed to that session's own `notifications.agent.<session>`, driven over HTTP through the real `envoy-dispatch` against a loopback PostgreSQL the caller names and a NATS of the run's own:
@@ -709,7 +718,7 @@ gh run download <run id>    # every evidence directory the run uploaded
 ```
 
 Each job writes its evidence to one directory and uploads it as `e2e-<script>-<run id>-<run attempt>`, on a pass and on a failure.
-The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
+The job sets the evidence variable of the script it runs (`BEHIND_ENTRY_FENCE_EVIDENCE_DIR`, `CHILD_ADOPTION_EVIDENCE_DIR`, `CLAIM_COMPACTION_EVIDENCE_DIR`, `CONFLICT_MERGER_EVIDENCE_DIR`, `CONFLICT_NO_TAKEOVER_EVIDENCE_DIR`, `EXPERIMENT_EVIDENCE_DIR`, `HANDOFF_RECORDS_EVIDENCE_DIR`, `ISSUE_POD_START_EVIDENCE_DIR`, `ISSUE_POD_START_SMALL_EVIDENCE_DIR`, `LATE_COMPLETION_EVIDENCE_DIR`, `MERGE_WAIT_READABLE_EVIDENCE_DIR`, `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR`, `OWNER_STEPS_CLIENT_EVIDENCE_DIR`, `OWNER_STEPS_EVIDENCE_DIR`, `PHASE_ENTRY_CONVERGE_EVIDENCE_DIR`, `PLAN_RATINGS_EVIDENCE_DIR`, `PROVIDER_ERROR_RETRY_EVIDENCE_DIR`, `REFUSAL_FALLBACK_EVIDENCE_DIR`, `REVIEW_RANGE_EVIDENCE_DIR`, `ROLE_PROMPT_RULE_EVIDENCE_DIR`, `SHARED_CLONE_EVIDENCE_DIR`, `STEP_RECORDS_EVIDENCE_DIR`, `SUB_ARCHITECT_EVIDENCE_DIR`), as `.github/e2e-scripts.json` names each, so that script writes its transcript and its logs there.
 It also keeps the run's own output as `output.log` in the same directory, which is what `stage1-skeleton.sh`, `dispatch-claimant-delivery.sh`, `dispatch-broker.sh` and `verification-results.sh` leave a reader:
 they take no evidence variable, and that output names the path of what each keeps: a work directory of its own, or each test's tables under `TMPDIR` for `dispatch-broker.sh`.
 
@@ -2006,7 +2015,9 @@ Each item below names a check, then what it does and what it requires.
   (`legion-<project>-cache-<owner>-<repo>-<hash>`, recorded for teardown first).
   Once the cache is Ready, the root's provision log carries `workspace-init: <n> bytes from the
   repository cache http://<cache>.<namespace>.svc:8418 in <d>, its history verified in <d>; <m>
-  bytes from GitHub for the delta (<k> refs)`, with `<m>` under 1 MiB.
+  bytes from GitHub for the delta (<k> refs)`, with `<m>` under 1 MiB, among the provision's step
+  lines (`workspace-init: step <name> took <seconds>s`, which `docs/kubernetes.md` lists), which
+  the check reads past.
 
 - `gvisor`
 
@@ -4235,6 +4246,70 @@ What the proof stands in for lies outside the clone, as `burstable-kind.sh`'s do
 the agent is a sleep stub, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
 The loader, the runtime, Agent Sandbox's pod, the repository cache, the init containers, git, jj and gVisor are the real ones.
 `SHARED_CLONE_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript, the `legion.yaml` and both issue pods' manifests.
+
+## issue-pod-start-kind.sh
+
+```sh
+bash scripts/e2e/issue-pod-start-kind.sh     # → "issue pod start kind e2e: PASS in <n>s", exit 0
+bash scripts/e2e/issue-pod-start-small-kind.sh     # → "issue pod start small kind e2e: PASS in <n>s", exit 0
+gh workflow run e2e.yaml --repo cybermonklabs/legion --ref <branch> -f script=issue-pod-start-kind     # the first, on a GitHub-hosted runner, at the branch's head
+gh workflow run e2e.yaml --repo cybermonklabs/legion --ref <branch> -f script=issue-pod-start-small-kind     # the second, the same way
+```
+
+Where an issue pod of a large repository spends its start, and whether the head halves it.
+Runs on an amd64 (x86_64) Linux host only, with `docker`, `go`, `git`, `kubectl`, `curl`, `jq`, `zstd` and a tar that supports `--zstd`, from a checkout whose `HEAD` is pushed to `cybermonklabs/legion`;
+it installs kind and takes its node image as `shared-clone-kind.sh` does.
+`.github/e2e-scripts.json` lists both scripts as hosted proofs, `dispatch_only`, for `shared-clone-kind.sh`'s reason:
+each arm runs the worker image of its own commit, and the head's exists for a branch's head, never for the `e2e` label's merge commit.
+
+The run has two arms, `base` and then `head`, on the one host, so the ratio compares one machine with itself.
+Each arm is a cluster of [`lib/kind-sandbox.sh`](#libkind-sandboxsh)'s of its own, `legion-issue-pod-start-<pid>-<arm>`, made and deleted in turn, and deleted on any exit.
+`head` is the checkout's commit, and `base` its merge base with `main`, which GitHub's anonymous compare answer names (`https://api.github.com/repos/cybermonklabs/legion/compare/main...<head>`, `.merge_base_commit.sha`), the run's one call to `api.github.com`:
+a 403 or a 429 there, the anonymous rate limit, ends the run void, exit 2, naming the answer.
+Each arm's pods run `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of its commit>` by digest, and the run fails naming the tag when the registry has none:
+`worker-image.yaml` publishes the head's for a pull request's head, and `release.yaml` builds a `main` commit's only for a push whose paths call it, so a base without one needs `gh workflow run worker-image.yaml --repo cybermonklabs/legion --ref <a branch at the base>`.
+Both arms run this checkout's script and driver, which build the same pod for both images, since the pod template, the init container's flags and its environment are the same at both commits.
+The driver's `legion.yaml` gives the issue pod a CPU limit of 4 and a memory limit of 12Gi, requesting 500m and 2Gi, and the repository cache 2 CPUs and 4Gi, requesting 500m and 1Gi, the same in both arms (`issuePodStartLiveResources`, `internal/daemon/issue_pod_start_kind_test.go`):
+the requests only place the pods on the runner's one node, and the memory limit leaves room for the tree the checkout writes, which gVisor counts as the pod's memory.
+
+The node's local-path volumes, the cache's clone and each issue pod's clone and checkout, go to a host directory with at least 30 GB free, through `kind_sandbox_create`'s `VOLUMES`:
+`/mnt/legion-e2e`, made with `sudo`, on a GitHub-hosted runner (`RUNNER_ENVIRONMENT=github-hosted`), and a directory of the run's work directory elsewhere.
+Before each arm the run reads that directory's free space, and it ends void, exit 2, naming the bytes it needs and has, below 30 GB.
+After each arm's cluster is deleted, the run removes the arm's own subdirectory, which `kind delete cluster` leaves, by its exact path and with a busybox container, since the node and the pods wrote it as their own users.
+
+|check|what it holds|
+|:---|:---|
+|`prerequisites`|an amd64 host, the tools, kind, and the volumes' host directory|
+|`arms`|the head is `git rev-parse HEAD`, the base is GitHub's merge base of `main` and the head, and the registry has a worker image of each|
+|`binaries`|a static test binary of `TestTwoIssuePodsStartLive` (`internal/daemon/issue_pod_start_live_test.go`, `-tags e2e`), which both arms run|
+|`<arm>-disk`|the volumes' host directory has 30 GB free|
+|`<arm>-cluster`, `<arm>-agent-sandbox`, `<arm>-gvisor`|as `burstable-kind.sh`'s, through the lib, with the arm's volumes on the host directory|
+|`<arm>-images`|the arm's worker image, pulled into the node's containerd|
+|`<arm>-launch`|the driver writes the `legion.yaml` and launches the first issue root through the runtime's `Spawn` under `runtimeClassName: gvisor`; once the repository cache that launch made is Ready, it reads the volume the first pod's claim is bound to and ends the first pod through the runtime's `ReleaseIssue`; the script reads GitHub's tip of the default branch with `git ls-remote` (T0), the driver launches the second root, and the script reads the tip again once the driver returns (T1); each launch and the cache have 30 minutes; a container the kernel killed for memory (`OOMKilled`) fails the run, naming it, and so does a second pod whose `workspace-init` the kubelet restarted|
+|`<arm>-provision`|the second pod has one `workspace-init=0` init-container status|
+|`<arm>-times`|the run of the second pod's `workspace-init`, its `finishedAt` less its `startedAt`, and the time from the pod's creation to its `roles` container's start, which the driver reads from the pod as the API server holds it, in whole seconds|
+|`<arm>-log`|`kubectl logs <pod> -c workspace-init` ends with its workspace line; at the head every step line has a duration, and the durations add up to the run within 10 s; at the base, the summary line's two durations, the transfer's and the history check's|
+|`<arm>-workspace`|in the workspace, as the launched architect: `jj sparse list --ignore-working-copy` prints `.`, `jj diff --summary`, the one jj command that snapshots the working copy, prints nothing, `jj diff --stat --ignore-working-copy` prints only `0 files changed, 0 insertions(+), 0 deletions(-)`, `git status --porcelain --untracked-files=no` prints nothing, and `git ls-files \| wc -l`, `git ls-tree -r --name-only HEAD \| wc -l` and the count of files and links `find` lists outside `.git` and `.jj` are equal|
+|`<arm>-start-commit`|`@-` is the clone's `origin/<default branch>`, and it is T1, or T0 is an ancestor of it and it an ancestor of T1, by `git merge-base --is-ancestor` in a scratch repository of the run's that fetched T1 with `git fetch --filter=tree:0`|
+|`<arm>-refs`|outside `refs/jj/`, the second pod's clone holds its issue's bookmark `refs/heads/legion/START-2`, the default branch, `refs/remotes/origin/HEAD` and `refs/remotes/origin/<default branch>` alone|
+|`<arm>-volumes`|the two pods' claims are bound to two different volumes|
+|`<arm>-teardown`|the arm's cluster is deleted and its volumes' subdirectory removed|
+|`verdict`|prints, for each arm, `ARM <base\|head> commit=<sha> image=<image by digest> run=<s>s create-to-roles=<s>s` and the second pod's `workspace-init` log, then the ratio of the two runs; the head's run is at most half of the base's|
+
+What the proof stands in for lies outside the start, as `shared-clone-kind.sh`'s does:
+the agent is a sleep stub, the store answers for an issue's first launch, the repository is public, and the roles' gh files hold a placeholder token.
+The loader, the runtime, Agent Sandbox's pod, the repository cache, the init containers, git, jj and gVisor are the real ones.
+`issue_pod_start_kind_test.go`, untagged, builds the proof's `legion.yaml` through the loader and its runtime through `sandboxOptions` and `sandbox.New` on every `go test`, and holds both pods' reservations, the providers Secret and the runtime's leak check reader as `burstable_kind_test.go` does;
+what the cluster holds only the live run sees.
+`ISSUE_POD_START_EVIDENCE_DIR` (default a fresh `/tmp` directory, kept and printed) keeps the transcript and, for each arm, the `legion.yaml`, the driver's result, the second pod's manifest and its `workspace-init` log, and on a failure what the cluster held.
+
+A head that adds the step lines alone runs its `workspace-init` in about the base's time, so a run at such a commit fails its `verdict`:
+that run is the proof's negative control.
+
+### issue-pod-start-small-kind.sh
+
+It runs `issue-pod-start-kind.sh --small`: the same arms and checks on `tmux/tmux` (`master`), whose verdict is that the head's run is at most the base's plus 10 s, the before-merge reading of a pod of a small repository that starts no slower.
+`ISSUE_POD_START_SMALL_EVIDENCE_DIR` is its evidence directory, which keeps what `ISSUE_POD_START_EVIDENCE_DIR` keeps for the large run.
 
 ## dispatch-claimant-delivery.sh
 
@@ -7542,7 +7617,7 @@ a file it can open takes both, which still reach the reader, and a file whose di
 A proof's last line, and the mark it rests on: the one rule for every script here whose `EXIT` trap prints PASS.
 Sourced by each of them, never run.
 Every other `EXIT` trap here that prints a verdict prints FAIL only, from a mark of its own, and its script does not source the lib.
-[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh` and `hook-prompt-two-builds.sh` source it themselves.
+[`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) and [`lib/two-builds.sh`](#libtwo-buildssh) source it for the proofs that make their runs, and `burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh`, `issue-pod-start-kind.sh`, `dispatch-claimant-delivery.sh`, `verification-results.sh`, `plan-pointer-drive.sh`, `refusal-fallback-omp.sh`, `dispatch-session-settings.sh`, `clean-session-stop-tmux.sh`, `envoy-session-states.sh` and `hook-prompt-two-builds.sh` source it themselves.
 
 ```sh
 . "$root/scripts/e2e/lib/run-verdict.sh"     # sourced, never run
@@ -8533,7 +8608,7 @@ The watchdog runs under the caller's `errexit`, so every command on that path th
 ## lib/kind-sandbox.sh
 
 A throwaway kind cluster running Agent Sandbox's controller under gVisor, for a live proof of the Sandbox runtime on an amd64 Linux host.
-`burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh` and `shared-clone-kind.sh` source it.
+`burstable-kind.sh`, `controller-sweep-kind.sh`, `share-volumes-kind.sh`, `shared-clone-kind.sh` and `issue-pod-start-kind.sh` source it.
 
 ```sh
 . "$root/scripts/e2e/lib/kind-sandbox.sh"     # sourced, never run
@@ -8547,12 +8622,14 @@ Each item below names a function, then what it does.
 - `kind_sandbox_install_kind WORK`
 
   downloads kind v0.33.0 into `WORK`, checks it against its sha256 and makes it the kind the lib runs (`kind_bin`), with that release's default node image, `kindest/node:v1.37.0`, as `.github/ci-images.yaml` copies it by digest (`kind_node_image`), which `kind_sandbox_create` then names;
-  `shared-clone-kind.sh`, which e2e.yaml runs on a GitHub-hosted runner, calls it, and the other kind proofs use the kind on `PATH` and its default node image
+  `shared-clone-kind.sh` and `issue-pod-start-kind.sh`, which e2e.yaml runs on a GitHub-hosted runner, call it, and the other kind proofs use the kind on `PATH` and its default node image
 
-- `kind_sandbox_create NAME WORK`
+- `kind_sandbox_create NAME WORK [VOLUMES]`
 
   creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
-  creates the `legion` namespace and checks kind's `standard` storage class
+  creates the `legion` namespace and checks kind's `standard` storage class.
+  `VOLUMES`, where given, is a host directory that holds the node's local-path volumes, the ones that class makes: a kind `extraMounts` entry puts it at `/var/local-path-provisioner`, where kind's provisioner writes each volume, so a proof whose volumes outgrow the disk of docker's own storage puts them on a disk with room (`issue-pod-start-kind.sh`).
+  `kind delete cluster` leaves the volumes' files there, for the caller to remove; without `VOLUMES` the cluster is made with no configuration file, and its volumes are on the node's own disk
 
 - `kind_k ARGS…`
 
@@ -8574,6 +8651,19 @@ Each item below names a function, then what it does.
 - `kind_sandbox_internal_kubeconfig FILE`
 
   writes the kubeconfig a container on the kind network reads, whose server is the node's address on that network
+
+- `kind_sandbox_on_kind NAME WORK OPTION… -- COMMAND…`
+
+  runs `COMMAND`, a static binary of `WORK`, in a busybox container named `<the cluster>-NAME` on the kind network beside the node, with `--cpus 2 --memory 2g`, `WORK` mounted at its own path, the caller's user and each `docker run` `OPTION`:
+  the pods reach the kind network's containers, while a host firewall can drop what they send the host at the network's gateway.
+  The container is busybox as `.github/ci-images.yaml` copies it by digest (`kind_busybox`), and the caller's `EXIT` trap removes it by its name;
+  `shared-clone-kind.sh` and `issue-pod-start-kind.sh` run their launch drivers in it
+
+- `kind_sandbox_worker_image COMMIT`
+
+  prints the worker image of `COMMIT` by digest: the digest the registry gives `ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of COMMIT>`, which `worker-image.yaml` publishes, read with an anonymous pull token that reaches `curl` on its standard input, never on an argv.
+  It fails where ghcr.io gives no token, and returns 1, printing nothing, where the registry has no such tag, so the caller fails naming the tag and what publishes it:
+  `shared-clone-kind.sh` asks it for `HEAD` where `LEGION_E2E_IMAGE` is unset, and `issue-pod-start-kind.sh` for each arm's commit
 
 - `kind_sandbox_teardown STATUS EVIDENCE`
 

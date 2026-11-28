@@ -180,9 +180,16 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 			return err
 		}
 	}
-	// Recorded the moment the add has made the workspace, ahead of anything that can still fail:
-	// a provisioning that failed after it finds the workspace there next time and adds it no more,
-	// so only this one can record when it was created (Created).
+	// The checkout marker goes on the workspace first, the moment the add has made it and before
+	// any of its files is written: a provisioning that fails or stops anywhere after this, up to
+	// its checkout's end, leaves the workspace marked, so the next one removes it and adds it again
+	// from nothing (Provision, checkoutMarkerFile, resetUnfinishedWorkspace).
+	if err := writeCheckoutMarker(workspace.Dir); err != nil {
+		return err
+	}
+	// Recorded next, the moment closest to the add: a provisioning that stops before or after this
+	// leaves the workspace marked, and the workspace the next one adds again records its own
+	// creation (Created).
 	if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
 		return err
 	}
@@ -432,13 +439,14 @@ func ownCommitsRevset(workspaceName string) string {
 	return "::" + workspaceName + "@ ~ ::(working_copies() ~ " + workspaceName + "@) ~ ::(bookmarks() | remote_bookmarks() | tags())"
 }
 
-// removingSuffix marks a workspace directory Remove has renamed aside, about to delete: a sibling
-// name in the same parent directory, so the rename is one atomic same-filesystem operation
-// regardless of how large the directory is, unlike the removal that follows it
-// (rolefile.RemoveTree), which a kill can interrupt partway through a large tree.
+// removingSuffix marks a workspace directory Remove, or a provision's resetUnfinishedWorkspace, has
+// renamed aside, about to delete: a sibling name in the same parent directory, so the rename is one
+// atomic same-filesystem operation regardless of how large the directory is, unlike the removal
+// that follows it (rolefile.RemoveTree), which a kill can interrupt partway through a large tree.
 const removingSuffix = ".removing"
 
-// removingPath is where Remove renames workspace.Dir to before deleting it.
+// removingPath is where Remove and resetUnfinishedWorkspace rename workspace.Dir to so its delete
+// can run with the store lock let go (Remove, Provision).
 func removingPath(dir string) string { return dir + removingSuffix }
 
 // Remove ports workspace.ts's removeIssueWorkspace, with one addition: the workspace directory is
@@ -455,7 +463,7 @@ func removingPath(dir string) string { return dir + removingSuffix }
 // git worktree entry's removal, and lets it go before it deletes the aside directory: that delete's
 // time follows the workspace's size, and it touches nothing of the clone's, so the provisions of the
 // repository's other issues do not wait for it. An aside directory a crash left before its delete
-// is cleared by the issue's next Remove, before it takes the lock.
+// is cleared by the issue's next provision or Remove, before either takes the lock.
 func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Locker) error {
 	if !located(workspace) {
 		return fmt.Errorf("workspace to remove (%#v) is not a workspace Location names", workspace)
@@ -482,15 +490,9 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 	registered := false
 	var commits []string
 	if cloneExists {
-		listed, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "list", "-T", `name ++ "\n"`)
+		registered, err = workspaceRegistered(ctx, run, cloneDir, workspaceName)
 		if err != nil {
 			return err
-		}
-		for _, name := range nonEmptyLines(listed.Stdout) {
-			if name == workspaceName {
-				registered = true
-				break
-			}
 		}
 	}
 	if registered {
@@ -527,4 +529,14 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 		return fmt.Errorf("remove workspace directory: %w", err)
 	}
 	return nil
+}
+
+// workspaceRegistered reports whether workspaceName is currently registered in the shared clone at
+// cloneDir (`jj workspace list`).
+func workspaceRegistered(ctx context.Context, run Runner, cloneDir, workspaceName string) (bool, error) {
+	out, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "list", "-T", `name ++ "\n"`)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(nonEmptyLines(out.Stdout), workspaceName), nil
 }

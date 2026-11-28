@@ -248,7 +248,7 @@ func TestWorkspaceInitProvisionReportsPackSource(t *testing.T) {
 			t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
 		}
 		objects, size := v.cacheObjectLines(t)
-		lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+		lines := strings.Split(strings.TrimSuffix(withoutStepLines(stdout), "\n"), "\n")
 		first := slices.Index(lines, "workspace-init: source=bucket")
 		if first < 0 || len(lines) < first+len(objects)+2 {
 			t.Fatalf("stdout %q, want the bucket as the source, a line for each of its %d objects, and the summary", stdout, len(objects))
@@ -293,7 +293,7 @@ func TestWorkspaceInitProvisionReportsPackSource(t *testing.T) {
 		}
 		reason := regexp.QuoteMeta("workspace-init: source=/tar reason=failed download: acme/widgets/objects/pack/") +
 			`pack-[0-9a-f]{40}\.(?:pack|idx)` + regexp.QuoteMeta(": the bucket answered 403 Forbidden (ExpiredToken)\n")
-		if !regexp.MustCompile(`(?m)^` + reason + tarSummaryLine(cache.base)).MatchString(stdout) {
+		if !regexp.MustCompile(`(?m)^` + reason + tarSummaryLine(cache.base)).MatchString(withoutStepLines(stdout)) {
 			t.Fatalf("stdout %q, want /tar as the source for the refused download, then /tar's line", stdout)
 		}
 		if got := cache.double.Count(fakegcs.RouteDownload); got.Requests == 0 || got.WithAuthorization != 0 {
@@ -308,7 +308,7 @@ func TestWorkspaceInitProvisionReportsPackSource(t *testing.T) {
 		v.env[cacheURLEnv] = cache.base
 		code, stdout, stderr := v.answered(t, "workspace-init provision from a cache with no bucket", v.args("LEGION-42"))
 		t.Logf("the provision printed %q", stdout)
-		if code != 0 || !regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(notServedLine)+tarSummaryLine(cache.base)).MatchString(stdout) {
+		if code != 0 || !regexp.MustCompile(`(?m)^`+regexp.QuoteMeta(notServedLine)+tarSummaryLine(cache.base)).MatchString(withoutStepLines(stdout)) {
 			t.Fatalf("exit %d, stdout %q, stderr %q; want /tar as the source, /packs not served, then /tar's line", code, stdout, stderr)
 		}
 		if requests := cache.double.Requests(); len(requests) != 0 {

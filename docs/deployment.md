@@ -1217,11 +1217,11 @@ issue a jj workspace of it at `<state_dir>/workspaces/<owner>/<repo>/<issue, low
 bookmark `legion/<ISSUE>`. The first provision of a repository clones it with the implement App's
 installation token, handed to git through a one-shot 0600 credential helper under the state
 directory. Every launch first makes sure its issue's workspace is there: a claim resumed,
-relaunched or recovered, as well as a new one, is provisioned when its directory is missing or its
-checkout never finished (it holds no sparse pattern, read with `jj sparse list
---ignore-working-copy`; a workspace an agent narrowed keeps its patterns), checking out
-`legion/<ISSUE>` when GitHub has it. A launch waits for a provision or removal of the same issue
-that is under way.
+relaunched or recovered, as well as a new one, is provisioned when its directory is missing, when
+its checkout never finished (it holds no sparse pattern, read with `jj sparse list
+--ignore-working-copy`; a workspace an agent narrowed keeps its patterns), or when its checkout
+finished and the checkout marker below is still on it, checking out `legion/<ISSUE>` when GitHub
+has it. A launch waits for a provision or removal of the same issue that is under way.
 
 Provisions of different issues run side by side. Everything a provision does to the shared clone
 runs under the clone's one store lock: a fetch of the default branch and the issue's branch alone,
@@ -1229,11 +1229,25 @@ the workspace's registration with no files (`jj workspace add --sparse-patterns 
 bookmark, and the clone's git configuration. The checkout of the working copy (`jj sparse reset`
 in the new workspace) writes only that workspace and runs with the lock released; at most 16
 checkouts run at once, and a provision waiting on its repository's store lock holds no place
-among them. A workspace whose checkout never finished is checked out by its next provision, which
-its next launch runs. A removal takes the issue's turn and holds the store lock only for its jj
-commands on the clone and the move of the workspace aside to `<dir>.removing`; the directory is
-deleted after the lock is released, and a `<dir>.removing` a crash left is cleared by the issue's
-next removal.
+among them. Right after `jj workspace add` registers a fresh workspace, before any later step of
+the provision, `Provision` writes `.jj/legion-checkout` without following a link, and removes it
+once a `jj sparse reset` succeeds. A daemon stopped between the checkout's end and that removal
+leaves the marker on a whole workspace; the next launch provisions that workspace before its pane
+starts, and the provision removes the marker and nothing else, so no pane works beside a marker.
+A workspace whose provision failed or was cut short anywhere between that add and its checkout's
+end holds no sparse pattern and keeps that marker; no pane starts before `Provision` returns, so
+its next provision takes the workspace away under the store lock (deleting `legion/<KEY>` where
+the stopped provision set it on the working-copy commit, renaming the directory aside to
+`<dir>.removing`, forgetting the workspace in the shared clone and removing its git worktree
+entry — logged as `workspace-reset` on Kubernetes), adds it again from nothing
+(`workspace-registration`), and, with the lock released, deletes `<dir>.removing` without
+following a link (`workspace-delete`) before checking out (`jj sparse reset`). A workspace with no
+sparse patterns and no marker (one whose patterns an agent cleared, or one an earlier release
+registered) keeps its untracked files and gets no marker. A removal takes the issue's turn and
+holds the store lock only for its jj commands on the clone and the move of the workspace aside to
+`<dir>.removing`; the directory is deleted after the lock is released. A `<dir>.removing` a crash
+left (from a removal, or a provision stopped after its `workspace-reset` renamed the directory
+aside) is deleted by the issue's next provision or removal before either takes the lock.
 
 A store may be made before the daemon's first boot, with the same jj the daemon uses, as the
 daemon's user: a colocated `jj git clone https://github.com/<owner>/<repo>` into the clone path,

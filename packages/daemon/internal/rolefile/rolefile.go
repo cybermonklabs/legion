@@ -91,6 +91,16 @@ func Openat(dirfd int, name string, flag int, perm uint32) (int, error) {
 	}
 }
 
+// Unlinkat is unix.Unlinkat, asked again when a signal interrupted it, as Openat asks.
+func Unlinkat(dirfd int, name string, flags int) error {
+	for {
+		err := unix.Unlinkat(dirfd, name, flags)
+		if !errors.Is(err, unix.EINTR) {
+			return err
+		}
+	}
+}
+
 // directoryOpen is the open OpenDirectory makes, Openat outside tests. It is a seam with two uses.
 // The kernel Legion's pods run, gVisor, has releases that follow a link under
 // O_DIRECTORY|O_NOFOLLOW, which Linux never does, so a removal that asked for O_DIRECTORY (as
@@ -250,7 +260,7 @@ type walkError struct {
 // directory's names ends that walk and is answered at once. The entry's own node is made only once
 // its unlink fails: most entries go at once.
 func removeAt(parent int, dir *node, name string) *walkError {
-	unlinkErr := unlinkat(parent, name, 0)
+	unlinkErr := Unlinkat(parent, name, 0)
 	if unlinkErr == nil || errors.Is(unlinkErr, unix.ENOENT) {
 		return nil
 	}
@@ -319,7 +329,7 @@ func removeAt(parent int, dir *node, name string) *walkError {
 			break
 		}
 	}
-	removeErr := unlinkat(parent, at.name, unix.AT_REMOVEDIR)
+	removeErr := Unlinkat(parent, at.name, unix.AT_REMOVEDIR)
 	if removeErr == nil || errors.Is(removeErr, unix.ENOENT) {
 		return nil
 	}
@@ -327,16 +337,6 @@ func removeAt(parent int, dir *node, name string) *walkError {
 		return walkErr
 	}
 	return &walkError{op: "unlinkat", at: at, err: removeErr}
-}
-
-// unlinkat is unix.Unlinkat, asked again when a signal interrupted it.
-func unlinkat(dirfd int, name string, flags int) error {
-	for {
-		err := unix.Unlinkat(dirfd, name, flags)
-		if !errors.Is(err, unix.EINTR) {
-			return err
-		}
-	}
 }
 
 // isDirectoryAt is whether name under the directory dirfd is a directory, read without following

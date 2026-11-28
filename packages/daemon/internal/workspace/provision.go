@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -20,9 +21,34 @@ import (
 // adding, and leaves pane credentials on the clone. The clone and fetch reach the repository
 // through request.Source: GitHub for tmux, and the cache-plus-GitHub issue-pod source for
 // Kubernetes. An issue with no branch starts at request.DefaultBranch, which the request must name.
-// Every command on the shared clone runs under request.StoreLock; only the checkout (`jj sparse
+// Every command on the shared clone runs under request.StoreLock. The checkout (`jj sparse
 // reset`), which writes the issue's own working copy and nothing of the clone, runs with the lock
-// let go, holding one of request.CheckoutSlot's places instead.
+// let go, holding one of request.CheckoutSlot's places instead. The delete of a workspace
+// directory renamed aside (removingPath), which touches nothing of the clone's either, runs
+// outside the lock and holds no place. It begins its steps on request.Steps where each starts —
+// workspace-delete, update-stale, checkout-check, workspace-reset, workspace-registration,
+// configuration, workspace-delete again and checkout — and hands the step clock to the issue pod's
+// fill, which begins the fill's.
+//
+// A workspace that is there and holds no sparse pattern has not finished a checkout. Where it
+// carries checkoutMarkerFile, the provision that added it stopped somewhere from its `jj workspace
+// add` to its checkout's end, and no role has started in it: a role starts only once its provision
+// returns. So it is taken away under the store lock (resetUnfinishedWorkspace, step
+// workspace-reset), its directory renamed aside, and provisioned again from nothing, as a workspace
+// that was never there: its bookmark, creation record, marker and checkout (createWorkspace). Once
+// the store lock is let go, and before the checkout writes the new tree, the directory renamed aside
+// is deleted (step workspace-delete), as Remove deletes its own, so the provisions and removals of
+// the repository's other issues do not wait for a delete whose time follows what a cut-short
+// checkout wrote. Where it carries no marker (an agent cleared its patterns, or an earlier release
+// registered it), it keeps its files and is checked out where it stands. A whole workspace that
+// still carries the marker, which a stop between the checkout's end and the marker's removal
+// leaves, has the marker removed and nothing else.
+//
+// A directory a stopped workspace-reset or Remove left renamed aside is deleted before the store
+// lock is taken (step workspace-delete, the first the provision begins), as Remove clears one, so
+// what a cut-short checkout or a removed workspace wrote does not stay on the volume until the
+// issue's removal, and no other issue's provision waits for its delete. A fresh provision finds
+// nothing there and begins no such step.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
 	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
 	if err != nil {
@@ -48,6 +74,17 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 
+	// Lstat, so a link left at the aside path is found, and removed rather than followed.
+	aside := removingPath(workspace.Dir)
+	if _, err := os.Lstat(aside); err == nil {
+		request.Steps.Begin("workspace-delete")
+		if err := rolefile.RemoveTree(aside); err != nil {
+			return Workspace{}, fmt.Errorf("provision workspace %s: clear a stale removal-in-progress directory: %w", workspace.Dir, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return Workspace{}, fmt.Errorf("provision workspace %s: read whether a removal-in-progress directory is there: %w", workspace.Dir, err)
+	}
+
 	store := &storeLock{locker: request.StoreLock}
 	store.lock()
 	defer store.unlock()
@@ -56,6 +93,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 	if exists {
+		request.Steps.Begin("update-stale")
 		if _, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "workspace", "update-stale"}); err != nil {
 			return Workspace{}, err
 		}
@@ -64,6 +102,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	if err != nil {
 		return Workspace{}, err
 	}
+	source.steps = request.Steps
 	defer func() {
 		_ = source.remove()
 	}()
@@ -77,15 +116,9 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 
+	checkout, marked := !exists, false
 	if exists {
-		if err := restoreGitWorktree(ctx, run, workspace, request.Log); err != nil {
-			return Workspace{}, err
-		}
-	} else if err := createWorkspace(ctx, run, workspace, request.Log); err != nil {
-		return Workspace{}, err
-	}
-	checkout := !exists
-	if exists {
+		request.Steps.Begin("checkout-check")
 		// A workspace whose checkout never finished — registered with no files, then the checkout
 		// failed or the daemon stopped — is checked out now, or its pane would start in an empty
 		// working copy.
@@ -94,7 +127,41 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 			return Workspace{}, err
 		}
 		checkout = !whole
+		if whole {
+			// A crash between the checkout's end and the marker's removal can leave the marker
+			// behind on a finished workspace; remove it so it never marks a later sparse clear. A
+			// tmux launch sends such a workspace here before its pane starts (the daemon's
+			// outbox.unprovisioned), as an issue pod's start does every workspace.
+			err = removeCheckoutMarker(workspace.Dir)
+		} else {
+			marked, err = HasCheckoutMarker(workspace.Dir)
+		}
+		if err != nil {
+			return Workspace{}, err
+		}
 	}
+	if marked {
+		request.Steps.Begin("workspace-reset")
+		if err := resetUnfinishedWorkspace(ctx, run, workspace); err != nil {
+			return Workspace{}, err
+		}
+		exists = false
+	}
+
+	request.Steps.Begin("workspace-registration")
+	if exists {
+		if err := restoreGitWorktree(ctx, run, workspace, request.Log); err != nil {
+			return Workspace{}, err
+		}
+	} else {
+		// createWorkspace marks the workspace (checkoutMarkerFile) as soon as its `jj workspace
+		// add` has registered it with no file, so a provision stopped anywhere from there to the
+		// checkout's end leaves it marked.
+		if err := createWorkspace(ctx, run, workspace, request.Log); err != nil {
+			return Workspace{}, err
+		}
+	}
+	request.Steps.Begin("configuration")
 	// Every workspace provisioning touches has its git worktree entry locked, one added before
 	// provisioning locked any included, so a bare `git worktree prune` that cannot see it skips it.
 	if err := lockGitWorktree(workspace.Clone, workspace.Dir); err != nil {
@@ -150,7 +217,16 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// alone takes CheckoutTimeout (request.checkoutBound), and every provisioning command but it
 	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
+	// A workspace-reset renamed the old workspace aside; delete it before the checkout, so the
+	// space it held is free before the new tree is written.
+	if marked {
+		request.Steps.Begin("workspace-delete")
+		if err := rolefile.RemoveTree(aside); err != nil {
+			return Workspace{}, fmt.Errorf("reset workspace %s: remove its directory: %w", workspace.Dir, err)
+		}
+	}
 	if checkout {
+		request.Steps.Begin("checkout")
 		release, err := request.checkoutPlace(ctx)
 		if err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: wait for a checkout's place: %w", workspace.Dir, err)
@@ -158,6 +234,11 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		_, err = runCheckedInWithin(ctx, run, workspace, request.checkoutBound(), []string{"jj", "sparse", "reset"})
 		release()
 		if err != nil {
+			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
+		}
+		// A workspace that carried no marker (an agent cleared its patterns) has none to remove,
+		// which removeCheckoutMarker takes as done.
+		if err := removeCheckoutMarker(workspace.Dir); err != nil {
 			return Workspace{}, fmt.Errorf("check out workspace %s: %w", workspace.Dir, err)
 		}
 	}

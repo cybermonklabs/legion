@@ -19,7 +19,8 @@ import (
 type workspaceProcess struct {
 	environ []string
 	// clock is what the fill of `provision` reads and sleeps on: its polls of a repository cache
-	// that is not ready and its backoff between transfers from GitHub (workspace.ForIssuePod).
+	// that is not ready and its backoff between transfers from GitHub (workspace.ForIssuePod), and
+	// what the provision's step clock reads at each step's boundary (workspace.NewSteps).
 	clock workspace.Clock
 	// fetchBound is the time each clocked stage of that fill gets — the check of what the
 	// repository cache streamed, and each transfer from GitHub (workspace.ForIssuePod's bound).

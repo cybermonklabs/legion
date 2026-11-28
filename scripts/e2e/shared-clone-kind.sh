@@ -81,40 +81,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# on_kind NAME OPTION… -- COMMAND… runs COMMAND, a static binary of the work directory, in a
-# busybox container (kind_busybox) on the kind network beside the node, with each docker run
-# OPTION, as share-volumes-kind.sh's does: the pods reach the kind network's containers, while a
-# host firewall can drop what they send the host at the network's gateway.
-on_kind() {
-  local name=$1 options=()
-  shift
-  while [ "$1" != -- ]; do
-    options+=("$1")
-    shift
-  done
-  shift
-  docker run --rm --name "$cluster-$name" --cpus 2 --memory 2g --network kind --user "$(id -u):$(id -g)" \
-    -v "$work:$work" -e HOME=/tmp "${options[@]}" "$kind_busybox" "$@"
-}
-
-# worker_image is the image the run's pod runs: LEGION_E2E_IMAGE, or the digest the registry gives
-# the checkout's own commit's sha- tag.
+# worker_image is the image the run's pod runs: LEGION_E2E_IMAGE, or the worker image of the
+# checkout's own commit (lib/kind-sandbox.sh's kind_sandbox_worker_image).
 worker_image() {
   if [ -n "${LEGION_E2E_IMAGE:-}" ]; then
     echo "$LEGION_E2E_IMAGE"
     return
   fi
-  local tag token digest
-  tag=sha-$(git -C "$root" rev-parse HEAD | cut -c1-12)
-  token=$(curl -fsS "https://ghcr.io/token?scope=repository:cybermonklabs/legion-worker:pull" | jq -er .token) ||
-    fail "no anonymous pull token for ghcr.io/cybermonklabs/legion-worker"
-  # The pull token goes to curl on standard input, never as an argument every process can read.
-  digest=$(printf 'Authorization: Bearer %s\n' "$token" | curl -fsSI -H @- \
-    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
-    "https://ghcr.io/v2/cybermonklabs/legion-worker/manifests/$tag" | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" {print $2}') || true
-  [[ $digest == sha256:* ]] ||
-    fail "ghcr.io/cybermonklabs/legion-worker has no $tag; set LEGION_E2E_IMAGE to the worker image of $(git -C "$root" rev-parse HEAD), by digest, or run worker-image.yaml on it"
-  echo "ghcr.io/cybermonklabs/legion-worker@$digest"
+  local head
+  head=$(git -C "$root" rev-parse HEAD)
+  kind_sandbox_worker_image "$head" ||
+    fail "ghcr.io/cybermonklabs/legion-worker has no sha-${head:0:12}; set LEGION_E2E_IMAGE to the worker image of $head, by digest, or run worker-image.yaml on it"
 }
 
 begin prerequisites
@@ -158,7 +135,7 @@ pass
 begin launch
 result=$work/result
 # shellcheck disable=SC2016 # expanded by the driver container's shell
-on_kind driver \
+kind_sandbox_on_kind driver "$work" \
   -e LEGION_E2E_KUBECONFIG="$work/kubeconfig-internal" -e LEGION_E2E_KUBE_CONTEXT="$kind_context" \
   -e LEGION_E2E_IMAGE="$image" -e LEGION_E2E_WORK="$work" -e LEGION_E2E_RESULT="$result" -- \
   sh -c 'LEGION_E2E_STREAM_HOST=$(ip -4 -o addr show eth0 | awk "{print \$4}" | cut -d/ -f1) exec "$0" -test.count=1 -test.timeout=45m -test.v -test.run "^TestAnIssuePodGetsOneRepositoryLive\$"' "$work/shared-clone.test" ||

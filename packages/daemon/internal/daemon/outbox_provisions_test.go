@@ -4,14 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -237,7 +241,9 @@ func TestTwoLaunchesThatFindOneWorkspaceMissingProvisionItOnce(t *testing.T) {
 			if err != nil {
 				return workspace.Workspace{}, err
 			}
-			return located, os.MkdirAll(located.Dir, 0o700)
+			// The stand-in leaves the workspace's .jj, as a registration does, with no checkout
+			// marker in it.
+			return located, os.MkdirAll(filepath.Join(located.Dir, ".jj"), 0o700)
 		},
 		// The stand-in provision leaves the workspace checked out.
 		checkedOut: func(context.Context, workspace.Workspace) (bool, error) { return true, nil },
@@ -284,8 +290,9 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 		supervisor: &supervisor{deps: supervise.Deps{Runtime: fake.NewRuntime(), RefreshGate: supervise.NewRefreshGate(0)}},
 		provision: func(_ context.Context, request workspace.Request) (workspace.Workspace, error) {
 			provisions++
-			// The registration makes the workspace's directory; the checkout writes its files.
-			if err := os.MkdirAll(located.Dir, 0o700); err != nil {
+			// The registration makes the workspace's directory and its .jj, with no checkout marker
+			// in it; the checkout writes its files.
+			if err := os.MkdirAll(filepath.Join(located.Dir, ".jj"), 0o700); err != nil {
 				return workspace.Workspace{}, err
 			}
 			if provisions == 1 {
@@ -335,6 +342,166 @@ func TestALaunchProvisionsAWorkspaceWhoseCheckoutFailed(t *testing.T) {
 	}
 	if provisions != 2 {
 		t.Errorf("a launch into the whole workspace provisioned it again (%d provisions in all), want none", provisions)
+	}
+}
+
+// A provision stopped after its checkout ended and before it removed the workspace's checkout
+// marker — a daemon killed there — leaves .jj/legion-checkout on a whole workspace. The next launch
+// sends that workspace through workspace.Provision rather than start its pane beside the marker
+// (unprovisioned), and the provision removes the marker and nothing else: the workspace keeps its
+// creation record and a file a role wrote, and nothing resets it. So when an agent later clears the
+// workspace's sparse patterns and leaves a file the tree does not hold, the launch after that finds
+// a workspace that is not checked out and carries no marker, and its provision checks the tree out
+// where the workspace stands, keeping the agent's file, rather than reset the workspace as one whose
+// checkout never finished. Every provision is the real one, against a local bare remote standing in
+// for GitHub (localGitHubRunner).
+func TestALaunchSendsAWholeWorkspaceWithALeftoverCheckoutMarkerThroughProvision(t *testing.T) {
+	t.Parallel()
+	home, stateDir := t.TempDir(), t.TempDir()
+	repo := ghrepo.MustParse("acme/widgets")
+	run := newLocalGitHubRunner(t, home, repo, "tracked.txt", "tracked\n")
+	provisions := 0
+	r := &outbox{
+		stateDir: stateDir, tokens: outboxTokens{}, log: quietLogger(),
+		supervisor: &supervisor{deps: supervise.Deps{Runtime: fake.NewRuntime(), RefreshGate: supervise.NewRefreshGate(0)}},
+		provision: func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
+			provisions++
+			return workspace.Provision(ctx, run, request)
+		},
+		checkedOut: func(ctx context.Context, working workspace.Workspace) (bool, error) {
+			return workspace.CheckedOut(ctx, run, working)
+		},
+	}
+	ctx := context.Background()
+	located, err := workspace.Location(stateDir, repo, "WIDGETS-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jj := func(args ...string) string {
+		t.Helper()
+		return fixturegit.Isolated(t, home).Run(located.Dir, append([]string{"jj"}, args...)...)
+	}
+	marker := filepath.Join(located.Dir, ".jj", "legion-checkout")
+	requireFile := func(when, path, want string) {
+		t.Helper()
+		if body, err := os.ReadFile(path); err != nil || string(body) != want {
+			t.Errorf("%s, %s = %q, %v; want %q", when, path, body, err, want)
+		}
+	}
+	requireWhole := func(when string) {
+		t.Helper()
+		if listed := jj("sparse", "list", "--ignore-working-copy", "-R", located.Dir); listed != "." {
+			t.Errorf("%s, the workspace's sparse patterns are %q, want the whole tree (.)", when, listed)
+		}
+		requireFile(when, filepath.Join(located.Dir, "tracked.txt"), "tracked\n")
+		if _, err := os.Lstat(marker); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("%s, %s lstat = %v, want ErrNotExist", when, marker, err)
+		}
+	}
+
+	// The issue's first provision, a new claim's, checks the workspace out whole.
+	if err := r.provisionIn(ctx, "WIDGETS-7", repo, "main", false); err != nil {
+		t.Fatalf("the issue's first provision: %v", err)
+	}
+	requireWhole("after the issue's first provision")
+	created, ok, err := workspace.Created(located.Dir)
+	if err != nil || !ok {
+		t.Fatalf("the first provision's creation record = %s, %t, %v; want one", created, ok, err)
+	}
+	// What a role wrote, and the marker a daemon killed between the checkout's end and the
+	// marker's removal leaves.
+	work := filepath.Join(located.Dir, "work.txt")
+	const wantWork = "a role's work\n"
+	if err := os.WriteFile(work, []byte(wantWork), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.ensureWorkspace(ctx, "WIDGETS-7", repo, "main"); err != nil {
+		t.Fatalf("the launch into the whole workspace that kept its marker: %v", err)
+	}
+	if provisions != 2 {
+		t.Fatalf("the launch into the whole workspace that kept its marker left %d provisions in all, want a second that removes the marker", provisions)
+	}
+	requireWhole("after the launch into the whole workspace that kept its marker")
+	requireFile("after the launch into the whole workspace that kept its marker", work, wantWork)
+	if at, ok, err := workspace.Created(located.Dir); err != nil || !ok || !at.Equal(created) {
+		t.Errorf("the creation record after the launch's provision = %s, %t, %v; want the first provision's %s, as no reset rewrote it", at, ok, err, created)
+	}
+
+	// An agent clears the workspace's sparse patterns and leaves a file the tree does not hold.
+	jj("sparse", "set", "--clear", "-R", located.Dir)
+	notes := filepath.Join(located.Dir, "notes.txt")
+	const wantNotes = "agent notes\n"
+	if err := os.WriteFile(notes, []byte(wantNotes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ensureWorkspace(ctx, "WIDGETS-7", repo, "main"); err != nil {
+		t.Fatalf("the launch after the agent's sparse clear: %v", err)
+	}
+	if provisions != 3 {
+		t.Fatalf("the launch after the agent's sparse clear left %d provisions in all, want a third that checks the workspace out", provisions)
+	}
+	requireWhole("after the launch that followed the agent's sparse clear")
+	requireFile("after the launch that followed the agent's sparse clear", notes, wantNotes)
+	requireFile("after the launch that followed the agent's sparse clear", work, wantWork)
+	if at, ok, err := workspace.Created(located.Dir); err != nil || !ok || !at.Equal(created) {
+		t.Errorf("the creation record after the agent's sparse clear and the next launch = %s, %t, %v; want the first provision's %s, as no reset rewrote it", at, ok, err, created)
+	}
+}
+
+// localGitHubRunner is a workspace.Runner for a real workspace.Provision on the daemon's host that
+// reaches a local bare remote wherever the provision names GitHub: the production runner
+// (workspace.NewRunnerIn) under fixtureenv.Isolated of a home of the test's, so neither the
+// provision's jj nor its git reads the configuration of the user who runs the tests, with the real
+// git and jj each wrapped to add git's file transport to the https-only allow-list the runner sets,
+// and the repository's GitHub URL in a command's argv (the shared clone's `jj git clone`) replaced
+// by the remote's path, which the clone's origin then names.
+type localGitHubRunner struct {
+	workspace.Runner
+	gitHub, remote string
+}
+
+func (r localGitHubRunner) Run(ctx context.Context, command workspace.Command) (workspace.Result, error) {
+	actual := command
+	actual.Argv = slices.Clone(command.Argv)
+	for i, arg := range actual.Argv {
+		if arg == r.gitHub {
+			actual.Argv[i] = r.remote
+		}
+	}
+	return r.Runner.Run(ctx, actual)
+}
+
+// newLocalGitHubRunner is a localGitHubRunner for repo under home, whose remote holds one commit on
+// main, its default branch, adding file with body.
+func newLocalGitHubRunner(t *testing.T, home string, repo ghrepo.Repository, file, body string) localGitHubRunner {
+	t.Helper()
+	root := t.TempDir()
+	fixture := fixturegit.Isolated(t, home)
+	remote, seed := filepath.Join(root, "remote.git"), filepath.Join(root, "seed")
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
+	if err := os.WriteFile(filepath.Join(seed, file), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(seed, "git", "add", file)
+	fixture.Run(seed, "git", "commit", "--quiet", "-m", "add "+file)
+	fixture.Run(seed, "git", "push", "--quiet", remote, "main")
+	tools := map[string]string{}
+	for name, path := range map[string]string{"git": fixturegit.CompiledGit(t), "jj": fixturegit.CompiledJJ(t)} {
+		wrapper := filepath.Join(root, name)
+		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
+		if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		tools[name] = wrapper
+	}
+	return localGitHubRunner{
+		Runner: workspace.NewRunnerIn(fixtureenv.Isolated(home), workspace.CommandTimeout, tools),
+		gitHub: workspace.GitHubURL(repo), remote: remote,
 	}
 }
 
