@@ -446,17 +446,24 @@ export function readAfterRoomWrite(client: QueryClient, issue: string, node: str
   else chain.reads = true;
 }
 
+/** Whether `node` is one of the read's context nodes that end a page: a context node under no
+ *  parent. */
+function endsPage(node: TreeAnswerNode): boolean {
+  return node.role === "context" && node.parent === null;
+}
+
 /** The index after the subtree of `nodes[at]` in the walk: past the last node after it that
- *  stands under it, as every parent comes before its children. On a read of several pages the
- *  subtree can go on to the next page, past the read's context nodes that end each page, which
- *  are no part of it; the subtree ends at the first other node. */
+ *  stands under it, as every parent comes before its children, a context node under a node of the
+ *  subtree too, such as a comment on a block's text. On a read of several pages the subtree can go
+ *  on to the next page, past the read's context nodes under no parent that end each page
+ *  (`endsPage`), which are no part of it; the subtree ends at the first other node. */
 function subtreeEnd(nodes: readonly TreeAnswerNode[], at: number): number {
   const inside = new Set([nodes[at]?.id]);
   let end = at + 1;
   for (let next = at + 1; next < nodes.length; next += 1) {
     const node = nodes[next];
     if (node === undefined) break;
-    if (node.role === "context") continue;
+    if (endsPage(node)) continue;
     if (node.parent === null || !inside.has(node.parent.id)) break;
     inside.add(node.id);
     end = next + 1;
@@ -465,17 +472,18 @@ function subtreeEnd(nodes: readonly TreeAnswerNode[], at: number): number {
 }
 
 /** The subtree of `nodes[at]`, on every page it stands on (`subtreeEnd`), and `nodes` without it:
- *  the read's context nodes that end a page inside the subtree's run stay where they stand. */
+ *  the read's context nodes under no parent that end a page inside the subtree's run (`endsPage`)
+ *  stay where they stand, and a context node under a node of the subtree is part of it. */
 function cutSubtree(
   nodes: readonly TreeAnswerNode[],
   at: number
 ): { readonly rest: TreeAnswerNode[]; readonly subtree: TreeAnswerNode[] } {
   const end = subtreeEnd(nodes, at);
   const run = nodes.slice(at, end);
-  const context = run.filter((node) => node.role === "context");
+  const context = run.filter(endsPage);
   return {
     rest: [...nodes.slice(0, at), ...context, ...nodes.slice(end)],
-    subtree: run.filter((node) => node.role !== "context"),
+    subtree: run.filter((node) => !endsPage(node)),
   };
 }
 
@@ -569,8 +577,8 @@ function lacksPlace(held: TreeAnswer, node: string, place: Place): boolean {
  *  pages held before a next page merged into it, where that page holds the node too: the subtree
  *  of the node's first place (`cutSubtree`), where that stands before `before`, the length of the
  *  answer held before the page was read, and the node stands again at or past it. The read's
- *  context nodes stay. Undefined where `held` holds no such copy. No other node held twice is
- *  touched: a node placed in two places is held twice. */
+ *  context nodes that end a page stay (`endsPage`). Undefined where `held` holds no such copy. No
+ *  other node held twice is touched: a node placed in two places is held twice. */
 function withoutMovedCopy(held: TreeAnswer, node: string, before: number): TreeAnswer | undefined {
   const nodes = held.nodes ?? [];
   const first = nodes.findIndex((each) => each.id === node);

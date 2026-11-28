@@ -27,7 +27,12 @@ import { KEY } from "../decisions-filter/decisions-fixtures";
 import { waitInAct } from "../outline-fixtures";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { mergeTreePages } from "../tree-read/tree-nodes";
-import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
+import {
+  outlineQuery,
+  readNextTreePage,
+  type TreeAnswer,
+  type TreeAnswerNode,
+} from "../tree-read/tree-read";
 import { fixture, nodeOf, renamed, signedIn } from "./graph-edit-fixtures";
 import {
   drawNewRow,
@@ -1590,7 +1595,7 @@ test("a taken move to a place the held pages lack reads the next page before R7'
     await waitFor(() =>
       expect(reads.cursors, "the reads after the outdent").toEqual([firstPage.cursor, null])
     );
-    const ids = (heldRead(client, KEY)?.nodes ?? []).map((node) => node.id);
+    const ids = heldIds(client);
     expect(
       ids.filter((id) => id === PAGED),
       "the held read holds the paragraph but once"
@@ -1626,7 +1631,7 @@ test("a move queued behind a move to a page not loaded is planned after that pag
   answerRequests(
     http.patch(`/api/v1/issues/${KEY}/nodes/:id`, async ({ request }) => {
       // Capture the held nodes when the PATCH arrives, before its answer or a refresh can change them.
-      const ids = (heldRead(client, KEY)?.nodes ?? []).map((node) => node.id);
+      const ids = heldIds(client);
       patches.push({ body: await request.json(), ids, ifMatch: request.headers.get("If-Match") });
       return Response.json(
         patches.length === 1
@@ -1863,6 +1868,46 @@ test("a taken move of a block whose children go on to the next page takes all of
     "the criterion's whole subtree stands right after the decision's reading"
   ).toEqual(placedAfter(twoPageIds, subtree, "<reading>"));
   expect(heldNode(client, "<criterion>")?.parent?.id).toBe(KEY);
+});
+
+/** The read id of the fixture's comment on the statement, which is on the statement's text. */
+const COMMENT_ON_TEXT = "<comment-on-statement-3>";
+
+/** The fixture's two pages with the statement's comment on its text as the read gives one that
+ *  no person wrote in: that comment and its block are context nodes under the statement, in the
+ *  middle of the first page, right before the context nodes that end it. */
+const commentOnText: TreeAnswer = {
+  ...twoPages,
+  nodes: (twoPages.nodes ?? []).map(
+    (node): TreeAnswerNode =>
+      node.id === COMMENT_ON_TEXT || node.parent?.id === COMMENT_ON_TEXT
+        ? { ...node, role: "context" }
+        : node
+  ),
+};
+
+// Outdent on the statement goes under the question, after the criterion, on a read whose
+// comment on the statement's text is context under the statement. That comment and its block are
+// part of the statement's subtree, so they move with it, right after the criterion's last block
+// on the second page; only the context nodes that end the first page stay where they stand.
+test("a taken move takes along the context nodes under the moved block, such as a comment on its text", async () => {
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  const parent = "ask/<question>";
+  const patches = answerPatches({
+    body: { after: "<criterion>", parent, placement_seq: "<seq:statement-3>@2" },
+    status: 200,
+  });
+  const { client, writes } = mount(commentOnText);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move(STATEMENT, "outdent");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(patches.calls.map((call) => call.body)).toEqual([{ after: "<criterion>", parent }]);
+  expect(
+    heldIds(client),
+    "the comment on the statement's text stands with the statement, after the criterion's last block"
+  ).toEqual(placedAfter(twoPageIds, STATEMENT_SUBTREE, UNDER_CRITERION));
 });
 
 const STATEMENT_SEQ = "<seq:statement-3>@3";
