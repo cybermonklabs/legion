@@ -36,13 +36,13 @@ var (
 		func(s string) string { return bashDouble(bashSingle(s)) }, func(s string) string { return bashDouble(bashDouble(s)) }}
 )
 
-// bashScripts is each command of bashNames, bashBetween and bashSubs after each of bashPrefixes,
-// and the same commands after each of bashNestedBy inside each of bashWrappings (bashShapes). It
+// bashCommands is each command of bashNames, bashBetween and bashSubs, which
+// TestCIFilesThatCompareNamesEachComparisonThatBashRuns writes in each shape of bashShapeList. It
 // leaves out a command where a backslash and a line break right after the command's name, with
 // blanks after them, meet another backslash and line break in the name or in the subcommand: one
 // reading of the rule keeps the blanks and the other removes them, and neither reads both
 // (TestCIFilesThatCompareLeavesAFormOutsideTheClaim).
-func bashScripts() []string {
+func bashCommands() []string {
 	var commands []string
 	for _, name := range bashNames {
 		for _, between := range bashBetween {
@@ -54,30 +54,17 @@ func bashScripts() []string {
 			}
 		}
 	}
-	return bashShapes(commands)
+	return commands
 }
 
-// bashShapes is each of commands in each shape of bashShapeList, one shape after another: after
-// each of bashPrefixes, and after each of bashNestedBy inside each of bashWrappings; the shapes of
-// bashScripts.
-func bashShapes(commands []string) []string {
-	var scripts []string
-	for _, shape := range bashShapeList() {
-		for _, command := range commands {
-			scripts = append(scripts, shape.of(command))
-		}
-	}
-	return scripts
-}
-
-// bashShape is a shape of bashShapes: its name in plain words, and the script that it makes of a
-// command.
+// bashShape is a shape that TestCIFilesThatCompareNamesEachComparisonThatBashRuns writes each
+// command of bashCommands in: its name in plain words, and the script that it makes of a command.
 type bashShape struct {
 	name string
 	of   func(command string) string
 }
 
-// bashShapeList is each shape of bashShapes, in its order: after each of bashPrefixes, then after
+// bashShapeList is each bashShape, in its order: after each of bashPrefixes, then after
 // each of bashNestedBy inside each of bashWrappings. The name of a wrapping shows it around an
 // ellipsis.
 func bashShapeList() []bashShape {
@@ -93,52 +80,48 @@ func bashShapeList() []bashShape {
 	return shapes
 }
 
-// The test asks Bash itself. Each script of bashScripts runs in bash three ways: as a script, as a
-// workflow's run: | block and as a folded run: > value, the value that YAML reads from the file.
-// spec-check is a shell function that records its first argument, and a spec-check on PATH and in
-// ./bin does the same for a nested sh and for a path. Whenever Bash runs spec-check with compare
-// as its first argument, directly or in a nested shell, the guard names the file; a miss fails the
-// test. Only a file that the guard names no line of can be a miss, so Bash runs those
-// (expectEachComparisonNamed), with the controls: spec-check compare --dir a, and spec-check tree
-// --dir a, of the name spec-check and of ./bin/spec-check, in each shape of bashScripts. Each shape
-// of bashShapeList runs as three parallel subtests, each with a third of the files of that shape and
-// the four controls in that shape, so that a part of the slowest shapes, those inside two shells,
-// is short too.
+// The test asks Bash itself. Each command of bashCommands, in each shape of bashShapeList, is a
+// script, which runs in bash three ways: as a script, as a workflow's run: | block and as a folded
+// run: > value, the value that YAML reads from the file. spec-check is a shell function that
+// records its first argument, and a spec-check on PATH and in ./bin does the same for a nested sh
+// and for a path. Whenever Bash runs spec-check with compare as its first argument, directly or in
+// a nested shell, the guard names the file; a miss fails the test. Only a file that the guard
+// names no line of can be a miss, so Bash runs those (expectEachComparisonNamed), with the
+// controls: spec-check compare --dir a, and spec-check tree --dir a, of the name spec-check and of
+// ./bin/spec-check, in each shape of bashShapeList. The test makes the files and the controls of
+// each shape from that shape, so a group holds the files of its shape alone, whatever the order
+// of the shapes and the commands. Each shape runs as three parallel subtests, each with a third of
+// the files of that shape and the four controls in that shape, so that a part of the slowest
+// shapes, those inside two shells, is short too.
 func TestCIFilesThatCompareNamesEachComparisonThatBashRuns(t *testing.T) {
 	t.Parallel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		skipOutsideCI(t, fmt.Sprintf("bash is not on PATH, so no script can run in it: %v", err))
 	}
-	var files []bashFile
-	for _, script := range bashScripts() {
-		files = append(files, bashFile{"script", script, script})
-		for _, style := range []string{"|", ">"} {
-			raw := workflowSteps + "      - run: " + style + "\n          " + strings.ReplaceAll(script, "\n", "\n          ") + "\n"
-			var workflow struct {
-				Jobs map[string]struct{ Steps []struct{ Run string } }
+	commands := bashCommands()
+	var parts []bashGroup
+	for _, shape := range bashShapeList() {
+		g := bashGroup{name: shape.name}
+		for _, command := range commands {
+			script := shape.of(command)
+			g.files = append(g.files, bashFile{"script", script, script})
+			for _, style := range []string{"|", ">"} {
+				raw := workflowSteps + "      - run: " + style + "\n          " + strings.ReplaceAll(script, "\n", "\n          ") + "\n"
+				var workflow struct {
+					Jobs map[string]struct{ Steps []struct{ Run string } }
+				}
+				if err := yaml.Unmarshal([]byte(raw), &workflow); err != nil {
+					t.Fatalf("YAML cannot read %q: %v", raw, err)
+				}
+				g.files = append(g.files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 			}
-			if err := yaml.Unmarshal([]byte(raw), &workflow); err != nil {
-				t.Fatalf("YAML cannot read %q: %v", raw, err)
-			}
-			files = append(files, bashFile{"run: " + style, raw, workflow.Jobs["spec"].Steps[0].Run})
 		}
-	}
-	// bashShapes writes each of its commands in one shape of bashShapeList, then each in the next,
-	// so the files of bashScripts, three to a script, fall into runs of one shape each, in the order
-	// of bashShapeList.
-	shapes := bashShapeList()
-	groups := make([]bashGroup, len(shapes))
-	for k, run := range inRuns(t, files, len(shapes)) {
-		groups[k] = bashGroup{name: shapes[k].name, files: run}
 		for _, sub := range []string{"compare", "tree"} {
 			for _, command := range []string{"spec-check " + sub + " --dir a", "./bin/spec-check " + sub + " --dir a"} {
-				groups[k].controls = append(groups[k].controls, bashControl{shapes[k].of(command), sub == "compare"})
+				g.controls = append(g.controls, bashControl{shape.of(command), sub == "compare"})
 			}
 		}
-	}
-	var parts []bashGroup
-	for _, g := range groups {
 		parts = append(parts, g.inParts(3)...)
 	}
 	for _, g := range parts {
