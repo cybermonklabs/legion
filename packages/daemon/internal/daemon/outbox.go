@@ -471,7 +471,9 @@ const outboxErrorInFull = "outbox row's error in full; the row and the lines abo
 // its wait rather than by its attempts (logWait, dispatch://INFRA-4131/spec#b-r-logged-once): once
 // when the wait starts, once when it has waited 30 minutes, at Debug between, and once when it
 // ends (finish, finishRefused). The wait's start and its 30-minute line are kept on the row
-// through its retry. Every other wait and failure keeps the lines below.
+// through its retry. A role wait whose publish the listener refused for the message itself
+// (messageRefused) takes no wait: it is a failure no retry repairs, finished refused at that run
+// with its one line at Error and no wait line. Every other wait and failure keeps the lines below.
 //
 // A run's error is a far side's text, which can carry a relayed command's whole stderr. Every
 // line about it carries it as the row keeps it (storetext.FarSideError, record.Store.RetryOutbox),
@@ -484,12 +486,14 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 	if err != nil {
 		r.noteLimit(row, err)
 		kept := storetext.FarSideError(err.Error())
-		// A failure no retry repairs is not logged as the row failing: once its finish commits,
-		// finishRefused's own line says what became of the row, and a finish that does not commit
-		// is logged below with it as the cause.
+		// A failure no retry repairs is not logged as the row failing, nor as a wait where it is
+		// one, as the listener's refusal of a role's message itself is (messageRefused): once its
+		// finish commits, finishRefused's own line says what became of the row, and a finish that
+		// does not commit is logged below with it as the cause.
 		permanent := permanentRefusal(row, err)
 		switch {
-		case !permanent && roleWaitRun(row.Kind, err):
+		case permanent:
+		case roleWaitRun(row.Kind, err):
 			row.Wait = r.logWait(ctx, row, err, kept)
 		case errors.Is(err, wait.ErrWaiting):
 			// A wait is not a failure (wait.ErrWaiting). The waits that reach here are those whose
@@ -508,7 +512,7 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 			}
 			r.log.Log(ctx, level, waitsLine, "row", row.ID, "kind", row.Kind, "issue", row.Issue,
 				"attempts", row.Attempts, "error", kept)
-		case !permanent:
+		default:
 			r.log.Error("outbox row failed", "row", row.ID, "kind", row.Kind, "error", kept)
 		}
 		storetext.LogWhole(r.log, outboxErrorInFull, err.Error(), "row", row.ID, "kind", row.Kind, "issue", row.Issue)
@@ -566,10 +570,10 @@ func (r *outbox) noteLimit(row record.OutboxRow, err error) {
 // end line: where the delete already removed the row, ErrOutboxLeaseLost ends quietly without
 // logging again, and the delete made due what the row's end makes due.
 //
-// The same transaction makes due every row that waits for this row's end (finishedWaits,
-// record.Store.ExpediteWaits, dispatch://INFRA-4131/spec#b-r-wait-event): a close or a release
-// behind a role stop, a teardown behind its workspace check, a child architect's first start
-// behind the child's branch, and a notice behind an earlier notice to its architect.
+// The same transaction makes due every row that waits for this row's end (expediteFinished,
+// finishedWaits, record.Store.ExpediteWaits, dispatch://INFRA-4131/spec#b-r-wait-event): a close
+// or a release behind a role stop, a teardown behind its workspace check, a child architect's
+// first start behind the child's branch, and a notice behind an earlier notice to its architect.
 func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if !row.Wait.WaitSince.IsZero() {
@@ -583,12 +587,7 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 		} else if err := r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
 			return err
 		}
-		if keys := finishedWaits(row); len(keys) > 0 {
-			if _, err := r.records.ExpediteWaits(ctx, tx, keys, r.now().UTC()); err != nil {
-				return err
-			}
-		}
-		return nil
+		return r.expediteFinished(ctx, tx, row)
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
@@ -617,7 +616,9 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // nothing else would: the message is the daemon's only word on the issue for what it carries. A
 // hook prompt that ends undelivered (keptRoleMessageEnded) is named in the message on the issue
 // for its role's undelivered prompts, one held for an hour from the first of them
-// (tellHookPromptUndelivered), since their words reach no session otherwise.
+// (tellHookPromptUndelivered), since their words reach no session otherwise. A row of a kind that
+// waits for its role whose publish the listener refused for the message itself (messageRefused),
+// a hook prompt's among them, takes none of those follow-ups: it ends with its one line at Error.
 // Each of those rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, store.OnCommit), so the notice's lane is woken as the
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
@@ -626,13 +627,29 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // a fact reads, so it runs in a plain transaction (store.Transact) and waits behind no fact. Each
 // line says the refusal as the row and the notice keep it (storetext.FarSideError); settle logged
 // it whole. A row that was waiting, a hook prompt whose role never took it among them, logs the
-// end of its wait once the finish commits (waitEndedOnCommit).
+// end of its wait once the finish commits (waitEndedOnCommit), and the finish makes due every row
+// that waits for its end, as finish does (finishedWaits): a notice refused for itself ends the
+// wait of the next notice to its architect.
 func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause error) error {
+	kept := storetext.FarSideError(cause.Error())
+	if messageRefused(row.Kind, cause) {
+		// Nobody is told, and the line is what says the message is lost: the listener answers
+		// the same message the same way however often it is sent, so the daemon wrote a message
+		// to a role that no session of it will ever be handed, a fault of the daemon's own that
+		// the issue's architect cannot repair. So none of the kind's own follow-ups runs, not the
+		// message on the issue a hook prompt that ends undelivered writes either, and the line is
+		// at Error. It names what the row's wait lines name (waitFields): the role, or the topic
+		// held to no claim of this daemon, and the listener's refusal as its answer.
+		return r.endRefused(ctx, row, nil, func() {
+			r.log.Error("outbox row's message refused by the listener and dropped; no retry of the same message is taken, since the listener refuses it however often it is sent",
+				append(append([]any{"row", row.ID, "kind", row.Kind, "issue", row.Issue, "attempts", row.Attempts}, waitFields(cause)...),
+					"error", kept)...)
+		}, false)
+	}
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 	}
-	kept := storetext.FarSideError(cause.Error())
 	// follow is what the transaction does beside the finish, handed the transaction's ctx, and told
 	// the line logged once it commits, as its hook. dropsFence is whether follow deletes a
 	// hand-over's fence.
@@ -742,7 +759,8 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// opens the message also tells the issue's architect, once a message. The message row and
 		// the notice are written in the finish's own transaction, so the prompt ends and the
 		// message names it together, or neither.
-		// permanentRefusal ended a hook prompt's row only on a *keptRoleMessageUndelivered, so
+		// permanentRefusal ends a hook prompt's row on a *keptRoleMessageUndelivered, and on the
+		// listener's refusal of its message itself, which ended above (messageRefused), so
 		// undelivered is set.
 		var undelivered *keptRoleMessageUndelivered
 		errors.As(cause, &undelivered)
@@ -757,6 +775,15 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 				"hook", value.Hook, "role", value.Role, "message_posts_at", posts, "error", kept)
 		}
 	}
+	return r.endRefused(ctx, row, follow, told, dropsFence)
+}
+
+// endRefused is finishRefused's transaction: follow, where set, then the finish of row while its
+// lease holds (FinishLeasedOutbox), the rows that wait for its end made due (expediteFinished),
+// told logged once it commits, and the end of row's wait, where it waited (waitEndedOnCommit). It
+// takes the lock every fact applies under (settling) where dropsFence says follow deletes a
+// hand-over's fence, and is a plain transaction otherwise.
+func (r *outbox) endRefused(ctx context.Context, row record.OutboxRow, follow func(context.Context, pgx.Tx) error, told func(), dropsFence bool) error {
 	finish := func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
 		return store.Transact(ctx, r.pool, write)
 	}
@@ -772,6 +799,9 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		if err := r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
 			return err
 		}
+		if err := r.expediteFinished(ctx, tx, row); err != nil {
+			return err
+		}
 		if told != nil {
 			store.OnCommit(ctx, told)
 		}
@@ -781,6 +811,18 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
 	return nil
+}
+
+// expediteFinished makes due, in tx, the transaction that deletes row, every row that waits for
+// row's end (finishedWaits, record.Store.ExpediteWaits), however row ended: delivered (finish) or
+// refused (endRefused).
+func (r *outbox) expediteFinished(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	keys := finishedWaits(row)
+	if len(keys) == 0 {
+		return nil
+	}
+	_, err := r.records.ExpediteWaits(ctx, tx, keys, r.now().UTC())
+	return err
 }
 
 // recordDropped is the one line that says Dispatch refused a record of the record lane for good
@@ -1003,7 +1045,17 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 // Dispatch that has no route for a record's or the role holders' write never reaches this: execute
 // makes it a wait (waitsForTheRoute), which wraps nothing of it. For every other kind it is the
 // coded 404 it says.
+//
+// A row of any of the nine kinds that wait for their role (record.OutboxKind.WaitsForRole) ends on
+// the listener's refusal of its message itself (messageRefused, notify.ErrMessageRefused), which
+// its executor hands back inside its role wait: the listener answers that message the same way
+// however often it is sent, so the row would wait on the capped backoff for ever and no claim
+// could take it. It is read before the kinds' own rules, so a hook prompt keeps its end on a
+// *keptRoleMessageUndelivered beside it.
 func permanentRefusal(row record.OutboxRow, err error) bool {
+	if messageRefused(row.Kind, err) {
+		return true
+	}
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
@@ -2329,7 +2381,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // the role, so the message is kept for it rather than dropped as a message to a role nobody holds
 // (dispatch://INFRA-392). Every other failed publish (publishFailed), any other refusal or 5xx of
 // the listener's and a publish that did not reach the listener or could not read its answer, waits
-// for the role the same way, since a later attempt can go through.
+// for the role the same way, since a later attempt can go through, but for the listener's refusal
+// of the message itself, a 400 or a 413 with its own error (notify.ErrMessageRefused): no retry of
+// the same message changes that answer, so settle ends the row undelivered at that run, with one
+// line at Error and no wait (messageRefused, permanentRefusal, finishRefused), a row a pause holds
+// included.
 //
 // A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
 // says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
@@ -2425,6 +2481,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 			"row", row.ID, "issue", row.Issue, "role", payload.Role, "denial", denied.Message)
 		return nil
 	case err != nil:
+		// A wait, but for the listener's refusal of the message itself, which settle ends the row
+		// on at this run (messageRefused).
 		return r.roleWait(topic, gate.view, err, wait.Errorf("%s's role message for %s waits for its role to take it: %w",
 			row.Issue, payload.Role, err))
 	}
@@ -2510,7 +2568,10 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 // (notify.ErrNotDelivered) can take it on the next attempt, a holder that does not advertise the
 // delivery mode (notify.ErrRefusedByHolder) can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies (notify.ErrPublishDenied) goes through once an
-// operator changes that grant.
+// operator changes that grant. The listener's refusal of the message itself, a 400 or a 413 with
+// its own error (notify.ErrMessageRefused), is the one answer no later attempt changes, so settle
+// ends the row undelivered at that run, with one line at Error and no wait (messageRefused,
+// permanentRefusal, finishRefused).
 func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload record.PhaseEnded) error {
 	if r.notices == nil {
 		return errors.New("phase-ended executor has no Envoy publisher")
@@ -2586,10 +2647,13 @@ func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, pa
 // still come within keptRoleMessageHoldBound of the row's making, or while a wake of the role is
 // coming. Its end, a claim that failed or was retired or an hour that passed with no wake coming
 // (keptRoleMessageEnded), is a failure no retry repairs, which finishes the row undelivered with a
-// message on the issue (permanentRefusal, finishRefused, tellHookPromptUndelivered). A released
-// role's woken session is the next holder either way: the row's first attempt wakes the pod and
-// waits, and the attempts after the resume has launched publish, the first of them before the
-// woken session has claimed the role.
+// message on the issue (permanentRefusal, finishRefused, tellHookPromptUndelivered). So is the
+// listener's refusal of the prompt itself, a 400 or a 413 with its own error
+// (notify.ErrMessageRefused), which finishes the row undelivered at that run with one line at
+// Error, no wait and no message on the issue (messageRefused). A released role's woken session is
+// the next holder either way: the row's first attempt wakes the pod and waits, and the attempts
+// after the resume has launched publish, the first of them before the woken session has claimed
+// the role.
 //
 // The hook wrote its words for this round, and nothing repeats them: the move back they were
 // written for has been made, and no later task of the daemon's carries them, so the kept copy or
@@ -2680,8 +2744,11 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // unresponsive, one that did not confirm in time, one that does not advertise the delivery mode, a
 // forward the listener's own NATS grant denies, any other refusal or 5xx of the listener's, and a
 // publish that did not reach the listener or could not read its answer can each go through on a
-// later attempt. A mark the store did not take keeps the outbox's retry, whose next attempt writes
-// it and publishes nothing.
+// later attempt. The listener's refusal of the ask itself, a 400 or a 413 with its own error
+// (notify.ErrMessageRefused), is the one failed publish no later attempt changes: settle ends the
+// row undelivered at that run with nothing marked, with one line at Error and no wait
+// (messageRefused, permanentRefusal, finishRefused). A mark the store did not take keeps the
+// outbox's retry, whose next attempt writes it and publishes nothing.
 func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload record.UpdateAsk) error {
 	if r.notices == nil {
 		return errors.New("update ask executor has no Envoy publisher")
@@ -2721,7 +2788,8 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	var roleErr roleWaiting
 	switch {
 	case errors.As(err, &roleErr):
-		// The gate's wait, or the failed publish the callback made a role wait.
+		// The gate's wait, or the failed publish the callback made a role wait, which settle ends
+		// the row on where the listener refused the ask itself (messageRefused).
 		return err
 	case errors.Is(err, supervise.ErrMachineBusy):
 		// The lock's holder tells the claim's change hook of this refusal when it lets the lock go
@@ -2880,7 +2948,10 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // claim's name lets the next attempt through. Every other failed publish (publishFailed), a
 // refusal or a 5xx of the listener's or a publish that did not reach it, waits the same way, since
 // a later attempt can go through. Each wait is logged by its wait rather than by its attempts,
-// never as an Error at every attempt; controllerHolds says how.
+// never as an Error at every attempt; controllerHolds says how. The one refusal that does not wait
+// is the listener's refusal of the notice itself, a 400 or a 413 with its own error
+// (notify.ErrMessageRefused), which no later attempt changes: settle ends the row undelivered at
+// that run, with one line at Error and no wait (messageRefused, permanentRefusal, finishRefused).
 //
 // The topic the daemon published controller notices to before dispatch://INFRA-1585,
 // notifications.legion.<project>.controller, is still readable at the listener for the daemons of
@@ -2935,7 +3006,9 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	case err != nil:
 		// Every other failed publish (publishFailed) waits the same way, whether a claim of this
 		// daemon holds the topic (`controller: daemon`) or not (`controller: operator`), since a
-		// later attempt can go through (dispatch://INFRA-4131/spec#b-r-capped).
+		// later attempt can go through (dispatch://INFRA-4131/spec#b-r-capped), but for the
+		// listener's refusal of the notice itself, which settle ends the row on at this run
+		// (messageRefused).
 		return r.roleWait(topic, gate.view, err,
 			wait.Errorf("the controller notice for %s waits for the controller to take it: %w", row.Issue, err))
 	}

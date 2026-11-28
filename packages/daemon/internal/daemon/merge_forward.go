@@ -39,15 +39,23 @@ import (
 // deliverHeld's, as it is a merge-queue removal's.
 //
 // A row of an ask ends in a transaction of its own that holds the fact lock (endMergeForwardAsk),
-// whether it ends undelivered or delivered, because the ready of a launch of the asked role sends
-// the ask only where no row of it is queued, and leaves the ask to such a row (the workflow's
-// askAgainAtLaunch). Every read this attempt ends the row on is made before the end lands - the
-// rule above, the claim deliverHeld reads failed, the launch the publish reached - and the role
-// can be relaunched and its new launch come ready in between. So the end reads the claim again
-// under that lock, and the workflow sends the ask to a launch the row did not reach
-// (workflow.MergeForwardAskEnded). The row is the workflow's, and the executor writes no row of
-// the ask and no launch of the record's ask: it deletes its own row and hands the workflow what
+// whether it ends undelivered or delivered, but for the one end below, because the ready of a
+// launch of the asked role sends the ask only where no row of it is queued, and leaves the ask to
+// such a row (the workflow's askAgainAtLaunch). Every read this attempt ends the row on is made
+// before the end lands - the rule above, the claim deliverHeld reads failed, the launch the publish
+// reached - and the role can be relaunched and its new launch come ready in between. So the end
+// reads the claim again under that lock, and the workflow sends the ask to a launch the row did not
+// reach (workflow.MergeForwardAskEnded). The row is the workflow's, and the executor writes no row
+// of the ask and no launch of the record's ask: it deletes its own row and hands the workflow what
 // it read. The other steps end as they always did: no ready leaves anything to them.
+//
+// The one end of an ask's row that does not go through endMergeForwardAsk is the listener's
+// refusal of the ask itself, a 400 or a 413 with its own error (notify.ErrMessageRefused): settle
+// ends that row through finishRefused, with one line at Error (messageRefused, permanentRefusal).
+// endMergeForwardAsk would hand the workflow an undelivered row, which records no launch, so the
+// workflow would send the same ask again to the launch it reads under the lock (askAgain), and the
+// listener would refuse that row as it refused this one, for as long as the ask is owed. The ready
+// of the role's next launch still sends the ask, as it sends any ask no launch was told.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")

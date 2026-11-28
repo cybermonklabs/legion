@@ -212,7 +212,11 @@ type heldMessage struct {
 // (notify.ErrRefusedByHolder), a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied), any other refusal or 5xx of the listener's, and a publish that did
 // not reach the listener or could not read its answer, which its wait's lines name as the
-// listener's last answer.
+// listener's last answer. The one exception is a message the listener refuses for itself, a 400
+// or a 413 with its own error (notify.ErrMessageRefused): no retry of the same message changes
+// that answer, so settle ends the row undelivered at that run, with one line at Error and no wait
+// (messageRefused, permanentRefusal, finishRefused), and m.end, a merge-forward ask's, does not
+// run: its end would send the same ask again to the launch it reads (workflow.MergeForwardAskEnded).
 //
 // Each message is for the session of the role's current launch, and the listener's word is the one
 // evidence of who took it: its 200 names the session it stored the message for

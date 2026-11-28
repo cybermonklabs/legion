@@ -157,8 +157,13 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // other failed publish (publishFailed): any other refusal or 5xx of the listener's, and a publish
 // that did not reach the listener or could not read its answer. Each is logged as the wait it is
 // (settle's logWait), naming the architect and the listener's last answer, not as an error line
-// per attempt. A role no session holds is held for its architect while that architect's claim can
-// hold it again (errNoticeWaits, a role wait too), and finishes undelivered once nobody will.
+// per attempt. The one refusal among them that does not wait is the listener's refusal of the
+// notice itself, a 400 or a 413 with its own error (notify.ErrMessageRefused): no retry of the
+// same notice changes that answer, so settle ends the row undelivered at that run, with one line at
+// Error and no wait (messageRefused, permanentRefusal, finishRefused), and the next notice to the
+// architect is due at once. A role no session holds is held for its architect while that
+// architect's claim can hold it again (errNoticeWaits, a role wait too), and finishes undelivered
+// once nobody will.
 func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, payload record.Notice,
 	tree treeSnapshot, architect claim.Token, view supervise.ClaimView, published error,
 ) error {
@@ -217,7 +222,9 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 				row.Issue, architect, published))
 	case !errors.Is(published, notify.ErrNoHolder):
 		// Any other failed publish (publishFailed): a refusal or a 5xx the listener gave, or a
-		// publish that did not reach it, which the next attempt can get through.
+		// publish that did not reach it, which the next attempt can get through. Its refusal of
+		// the notice itself (notify.ErrMessageRefused) is in this wait too, and settle ends the
+		// row on it at this run (messageRefused).
 		return r.roleWait(notify.RoleTopicPrefix+string(architect), view, published,
 			wait.Errorf("the notice for %s waits for its architect %s to take it: %w", row.Issue, architect, published))
 	}

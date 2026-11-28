@@ -56,9 +56,10 @@ const (
 // #b-r-capped): what the row's run read of the role's claim and what its publish answered, which
 // decide when the row runs again (roleWaitNext), what it waits for (record.OutboxWait.WaitFor) and
 // how its wait is logged (logWait). Every executor of a kind that waits for its role
-// (record.OutboxKind.WaitsForRole) returns one, through roleWait, for each failed publish that
-// keeps its row (publishFailed), and controllerNotice for each wait of its read of the role's
-// holder (controllerHolds), which publishes nothing.
+// (record.OutboxKind.WaitsForRole) returns one, through roleWait, for each failed publish that does
+// not end its row in the executor (publishFailed), and controllerNotice for each wait of its read
+// of the role's holder (controllerHolds), which publishes nothing. One such wait ends its row
+// rather than wait: a publish the listener refused for the message itself (messageRefused).
 type roleWaiting struct {
 	// topic is the topic the row publishes to, and token the claim it is held to
 	// (outbox.heldTopic): the claim the role topic names, the project's controller claim for the
@@ -476,20 +477,40 @@ func (r *outbox) expediteWaits(ctx context.Context, keys []string, released func
 // wait with the failure as the listener's last answer (dispatch://INFRA-4131/spec#b-r-capped and
 // #b-r-logged-once; the architect's ruling,
 // dispatch://INFRA-4131/comment/19e7d9e9-97a3-42a1-b0eb-38aaa8e2f502): whether the next publish
-// meets the same failure, the claim record cannot show. A failure that is no publish, a store read
-// or a Dispatch read the executor makes before or after the publish, stays the row's failure.
+// meets the same failure, the claim record cannot show. The one failed publish that does not wait
+// is the listener's refusal of the message itself (messageRefused), whose role wait settle ends at
+// that run. A failure that is no publish, a store read or a Dispatch read the executor makes
+// before or after the publish, stays the row's failure.
 func publishFailed(err error) bool {
 	var unheld unheldSession
 	return err != nil && !errors.As(err, &unheld)
+}
+
+// messageRefused is whether err, what a run of a row of kind ended in, is a role wait whose publish
+// the listener refused for the message itself (notify.ErrMessageRefused): a 400 or a 413 carrying
+// the listener's own error, a field or a topic it does not take or a message larger than NATS takes
+// whole, which it answers the same way however often the same message is sent. No claim, ready or
+// session can take such a row, so it ends undelivered at that run, after that one publish, rather
+// than wait on the capped backoff for ever (permanentRefusal, finishRefused): it takes no wait and
+// writes no wait line, and its end is one line at Error (dispatch://INFRA-4131/spec#b-r-capped; the
+// architect's ruling, dispatch://INFRA-4131/comment/a6f3961a-6c17-45d2-ba41-d7f7d30ce2d4). Every
+// executor of the nine kinds (record.OutboxKind.WaitsForRole) carries that refusal as its role
+// wait's answer (roleWait), which is where this reads it.
+func messageRefused(kind record.OutboxKind, err error) bool {
+	var role roleWaiting
+	var refused notify.ErrMessageRefused
+	return kind.WaitsForRole() && errors.As(err, &role) && errors.As(role.answer, &refused)
 }
 
 // roleWaitRun is whether the run of a row of kind that ended in err is a wait of R1, R2 or R6
 // (dispatch://INFRA-4131/spec#b-r-wait-ready, #b-r-capped and #b-r-wait-event): its run returned a
 // role wait or an event wait, or its kind waits for its role (record.OutboxKind.WaitsForRole) and
 // its run waited. Such a row runs again on the capped backoff of its own wait (roleWaitNext), and
-// is logged by its wait rather than by its attempts (logWait). A failed publish that keeps its row
-// is a role wait already (publishFailed), so what such a kind's run returns as a plain error is no
-// publish's failure. Every other run keeps the outbox's backoff (record.RetryBackoff) and its lines.
+// is logged by its wait rather than by its attempts (logWait), unless settle ends it first as a
+// failure no retry repairs (permanentRefusal): a role wait whose publish the listener refused for
+// the message itself (messageRefused) is one. A failed publish that keeps its row is a role wait
+// already (publishFailed), so what such a kind's run returns as a plain error is no publish's
+// failure. Every other run keeps the outbox's backoff (record.RetryBackoff) and its lines.
 func roleWaitRun(kind record.OutboxKind, err error) bool {
 	var role roleWaiting
 	var event eventWaiting

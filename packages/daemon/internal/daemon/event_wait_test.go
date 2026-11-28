@@ -339,6 +339,7 @@ func TestEventWaitListed(t *testing.T) {
 		{"E18 an update ask waits for its claim's machine lock", eventWaitMachineBusy},
 		{"E19 a notice waits behind an earlier notice to its architect", eventWaitEarlierNotice},
 		{"E19b three notices behind a held one drain in three runs once it ends", eventWaitEarlierNotices},
+		{"E19c a notice behind an earlier notice the listener refuses for itself runs at that end", eventWaitEarlierNoticeRefused},
 		{"E20 a suspend waits for the turn its suspension is held for", eventWaitSuspendHeld},
 		{"O1 a write waits for a Dispatch that serves its route", eventWaitNoRoute},
 		{"O2 a claim release waits for Dispatch to apply it", eventWaitClaimRelease},
@@ -849,6 +850,37 @@ func eventWaitEarlierNotices(t *testing.T) {
 				t.Fatalf("the end of notice row %d made row %d due too, want only the notice right behind it due", row.id, later.id)
 			}
 		}
+	}
+}
+
+// E19c: a notice waits behind an earlier notice to its architect that another lane holds, as in
+// E19, and the listener refuses that notice's publish for the message itself (a 400 with its own
+// error, notify.ErrMessageRefused). That refusal ends the earlier row undelivered at its run
+// (messageRefused, finishRefused), and the end makes the waiting notice due at once, as the earlier
+// row's delivered finish does: a refused end is an end of the row it waits for (finishedWaits,
+// dispatch://INFRA-4131/spec#b-r-wait-event).
+func eventWaitEarlierNoticeRefused(t *testing.T) {
+	h, earlier, held := heldEarlierNotice(t)
+	later := h.queue("LEGION-208", record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, h.clock.Now())
+	publisher := h.runner.notices.(*outboxPublisher)
+
+	later.waitsOnToTheCap(record.WaitForRow(earlier.id))
+	later.dueAtItsEvent(func() {
+		// The lane that holds the earlier notice runs it and settles what it came to, as runRow
+		// does, against a listener that refuses the message itself, then takes publishes again.
+		publisher.refuseWith(messageRefusal(t, http.StatusBadRequest))
+		h.runner.settle(h.ctx, held, h.runner.execute(h.ctx, held))
+		publisher.refuseWith(nil)
+		if got := earlier.state(); got.queued {
+			t.Fatalf("the earlier notice row %d the listener refused for itself still waits for %q at step %d, want it ended at that run",
+				earlier.id, got.key, got.step)
+		}
+	})
+	if got := later.state(); got.queued {
+		t.Fatalf("notice row %d still waits for %q after its run, want it published and ended", later.id, got.key)
+	}
+	if keys := publisher.keys(); len(keys) != 2 || keys[0] != record.OutboxKey(earlier.id) || keys[1] != record.OutboxKey(later.id) {
+		t.Fatalf("the listener was handed %v, want the earlier notice's refused publish, then the later notice's", keys)
 	}
 }
 

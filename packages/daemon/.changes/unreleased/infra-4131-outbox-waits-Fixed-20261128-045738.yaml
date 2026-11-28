@@ -13,7 +13,12 @@ body: |-
   because no session holds the role yet runs again at that turn, or 30 seconds after the ready.
   Each failed publish that the claim record cannot explain, a refusal of the listener's, a 5xx, or
   a publish that does not reach the listener, runs again on a backoff that doubles from 1
-  second and stops at 5 minutes, so a row runs at most 12 times an hour. Every publish of a row
+  second and stops at 5 minutes, so a row runs at most 12 times an hour. The one exception is a
+  message the listener refuses for itself, a 400 or a 413 with the listener's own error, which no
+  retry of the same message changes: its row ends at that attempt, takes no wait, and writes one
+  line at ERROR, `outbox row's message refused by the listener and dropped; no retry of the same
+  message is taken, since the listener refuses it however often it is sent`, naming the issue,
+  the row, its kind, the role, its attempts and the listener's refusal. Every publish of a row
   carries the row's own key. A notice and a role message that no pause holds end with no publish
   when their role has no claim, where before they ended after one publish. An update ask ends
   there with no publish, as before.
