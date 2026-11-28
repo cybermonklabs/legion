@@ -1431,19 +1431,23 @@ func queueSupervise(t *testing.T, st *Store, req record.SuperviseRequest) int64 
 // starts the role in the pod that comes back. A phase's start of the same role names its phase
 // and is the pod given work, so it still cancels the release. Here the implementer's stop is the
 // boundary and has recorded its claim, an agent message wakes the implementer, and the
-// architect's stop comes after the wake.
+// architect's stop comes after the wake. A wake's start the release before queued names no claim
+// (record.SuperviseRequest.Claim), and the teardown reads it by its role, as it reached the claim
+// of that role (startNamesClaim): it cancels the teardown no more than a start naming the claim.
 func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// woken is a wake of the implementer taken after its stop recorded it, with the start
-		// the wake queued; phase is a phase's start of the implementer queued beside them.
-		woken, phase bool
-		want         ReleaseAct
-		cause        ReleaseCause
+		// the wake queued; unnamed is that start naming no claim, as the release before queued
+		// it; phase is a phase's start of the implementer queued beside them.
+		woken, unnamed, phase bool
+		want                  ReleaseAct
+		cause                 ReleaseCause
 	}{
 		{name: "no wake since the record", want: ReleaseActs},
 		{name: "a wake of the role the release recorded", woken: true, want: ReleaseActs},
+		{name: "a wake of the role the release recorded, whose start names no claim", woken: true, unnamed: true, want: ReleaseActs},
 		{name: "that wake and a phase's start of the same role", woken: true, phase: true,
 			want: ReleaseCancel, cause: ReleaseCauseOvertaken},
 	} {
@@ -1463,7 +1467,12 @@ func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *test
 					pods.WakeAgentMessage, at, 0); err != nil || !taken {
 					t.Fatalf("take the wake after the record = %t, %v; want it taken", taken, err)
 				}
-				queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
+				if tc.unnamed {
+					queueStartPayload(t, st, claim.RoleImplementer, fmt.Sprintf(`{"op":"start","tree":%q,"role":%q,"generation":1,"task":"the wake's task","wakeKind":%q,"wakeDetail":"the wake's detail"}`,
+						rootIssue, claim.RoleImplementer, pods.WakeAgentMessage))
+				} else {
+					queueWakeStart(t, st, claim.RoleImplementer, pods.WakeAgentMessage)
+				}
 			}
 			if tc.phase {
 				queueStart(t, st, claim.RoleImplementer, "implementing")

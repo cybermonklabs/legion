@@ -91,21 +91,21 @@ type DeliveryWake struct {
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
 // wakeForDelivery) in a transaction of its own: the wake for a notice, a phase-ended message, a
 // hook prompt, a merge-queue removal, a merge holds change or a merge forward's message that found
-// the role it is for released. While a release mark of issue stands, it writes nothing and answers
-// InRelease. While the role has no open resume and a start that brings it back at generation is
+// the claim it is for released. While a release mark of issue stands, it writes nothing and answers
+// InRelease. While the claim has no open resume and a start that brings it back at generation is
 // queued, it writes nothing and answers StartQueued. Otherwise it takes the wake as
 // PodRecords.TakePodWake does, held by the pause PodRecords.PauseOfWake reads, and answers whether
 // this call took it.
 //
 // The delivery wake waits for any release of the issue that still stands, not only for one that
-// recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
+// recorded the claim. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
 // waits behind the teardown row (record's outboxInOrder), as a workflow wake's `start` does. A
-// resume while the release stands would launch the role in the pod the teardown is about to take.
-// The role on the mark does not show that in time. A release's stop suspends the claim as
-// `released` first, and records the role on the mark after it, in a transaction of its own
-// (ReleaseSuspendedClaim). A wake in that gap reads the role as not recorded and resumes it. The
-// record then names the role, and the release, which no wake of a recorded role cancels
-// (releaseOvertaken), tears the pod down under the resumed role.
+// resume while the release stands would launch the claim in the pod the teardown is about to take.
+// The claim on the mark does not show that in time. A release's stop suspends the claim as
+// `released` first, and records the claim on the mark after it, in a transaction of its own
+// (ReleaseSuspendedClaim). A wake in that gap reads the claim as not recorded and resumes it. The
+// record then names the claim, and the release, which no wake of a recorded claim cancels
+// (releaseOvertaken), tears the pod down under the resumed claim.
 //
 // The mark is read with the take's own lock (lockReleaseMark), in the take's own transaction, so
 // nothing can come between the read and the take. A release's record or cancel that has not
@@ -118,18 +118,19 @@ type DeliveryWake struct {
 // resumes (CancelIssueRelease). The claim reads `released` until that start runs, but its pod
 // never went away. A wake taken then would record a resume, paired with the newest release
 // recorded before it, for a pod that no release took, and the records would count that pod's
-// return. So the call reads, after the mark, whether a start that brings the role back is queued,
-// and takes nothing while one is. The cancel committed before this read began, so the read sees
-// the cancel's start. The row waits, the start resumes the role in the pod that stayed, and the
-// row's next attempt finds the claim live and hands its delivery over. The read is made only for a
-// role with no open resume, which is the cancel's case: the cancel deleted the wakes taken under
-// its mark. A role with an open resume refuses the take whatever is queued, so the take records
-// nothing, and the caller resumes the role in process as it always did (internal/daemon's
+// return. So the call reads, after the mark, whether a start that brings the claim back is queued
+// (startQueued: a start that names the claim, or one an earlier daemon queued naming none for its
+// role), and takes nothing while one is. The cancel committed before this read began, so the read
+// sees the cancel's start. The row waits, the start resumes the claim in the pod that stayed, and
+// the row's next attempt finds the claim live and hands its delivery over. The read is made only
+// for a claim with no open resume, which is the cancel's case: the cancel deleted the wakes taken
+// under its mark. A claim with an open resume refuses the take whatever is queued, so the take
+// records nothing, and the caller resumes the claim in process as it always did (internal/daemon's
 // wakeForDelivery): the pause's held wake, whose start is queued for the pause's resume, and a
 // workflow wake whose start has not run. Both are normal, and the call answers what that open
 // resume is for them: the pause that held it (OpenResumePause), and whether a wake's own start of
-// the role is queued (wakeStartQueued, WakeStartQueued). It reads both after the refusal, under
-// the lock it holds on the claim's row, so a resume another wake of the role took while this take
+// the claim is queued (wakeStartQueued, WakeStartQueued). It reads both after the refusal, under
+// the lock it holds on the claim's row, so a resume another wake of the claim took while this take
 // waited for that lock is what they name. The caller can then tell such a wake from a resume with
 // no start behind it, with no read of its own.
 //
@@ -252,7 +253,7 @@ const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 's
 // PauseWakeRow). A root architect's entry start and a production check's look have the shape of
 // resumeStartRow and carry no kind: they are work the pod is given, not a wake. Four reads of the
 // wakes taken while a release stands read this shape. The teardown passes over a wake's own start
-// of a role the release recorded (IssueRelease). A cancel deletes that start
+// of a claim the release recorded (IssueRelease). A cancel deletes that start
 // (dropWakesUnderRelease). The release's record and a cancel rewrite its task
 // (retellWakesUnderRelease, retellWakesOf). One more read is the delivery wake's, which tells an
 // open resume whose start has not run from one with no start behind it (wakeStartQueued).

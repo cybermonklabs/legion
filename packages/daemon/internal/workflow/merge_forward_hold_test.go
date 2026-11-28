@@ -377,7 +377,7 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 // rather than to work at that head now, which words of its own say apart.
 func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	t.Parallel()
-	pool := testerStartedWhileTheSecondMergeIsAsked(t)
+	pool := testerStartedWhileTheSecondMergeIsAsked(t, "implementer", "reviewer", "tester")
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
 	fence, fenced := mergedForwardRefusal(issue, claim.RoleTester, phase.Testing, conflictHead, &pr)
 	if !fenced || fence.Role != claim.RoleTester || !fence.Wait || fence.Head != forwardHead || fence.Base != "main" ||
@@ -402,16 +402,58 @@ func TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge(t *testing.T) {
 	}
 }
 
+// The agent of a key that runs the tester's step and is the implementer the open merge was asked
+// of is told that merge is its own to make (dispatch://INFRA-4112). In `implementer:a reviewer
+// tester:a` key a's agent, `…-implementer`, ran the implementer's step and runs the tester's, so
+// the second merge forward, asked of the implementer, is its own, and no hold reached it
+// (holdStartedWorker). Its completion of testing at the head the first merge replaced is refused,
+// and the refusal tells it to make that merge and push it (mergedForwardFence.Own), in place of
+// the wait for a landing nobody else brings. The control is `implementer reviewer tester`, whose
+// tester the hold reached, and whose refusal tells it to wait (Wait).
+func TestARefusalTellsAKeyedAgentTheOpenMergeIsItsOwnToMake(t *testing.T) {
+	t.Parallel()
+	implementer := seededClaim(t, claim.RoleImplementer)
+	for _, tc := range []struct {
+		name   string
+		steps  []string
+		tester claim.Token
+		wait   bool
+		own    claim.Role
+	}{
+		{name: "key a's agent on the implementer's and the tester's steps", steps: []string{"implementer:a", "reviewer", "tester:a"}, tester: implementer,
+			own: claim.RoleImplementer},
+		{name: "control: the tester on a step of no key", steps: []string{"implementer", "reviewer", "tester"}, tester: seededClaim(t, claim.RoleTester), wait: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := testerStartedWhileTheSecondMergeIsAsked(t, tc.steps...)
+			if row := storedPhaseRow(t, pool, "LEGION-208", claim.RoleTester); row.Claim != tc.tester || row.StepTask == "" {
+				t.Fatalf("the tester's row names %s on the step of task %q, want %s on a step of the plan", row.Claim, row.StepTask, tc.tester)
+			}
+			result := applyFacts(t, pool, readsAfter(7*time.Minute))("the tester at the first replaced head", intake.HandoffComplete{Generation: 1,
+				Issue: "LEGION-208", Role: claim.RoleTester, Claim: tc.tester, Summary: "tested", Verdict: "pass", Commit: conflictHead,
+				HandoffRecord: "test-1", HandoffVersion: 1})
+			want := mergedForwardFence{Issue: "LEGION-208", Role: claim.RoleTester, Reported: phase.Testing, Number: 42, Head: forwardHead, Base: "main",
+				Replaced: conflictHead, Landed: forwardHead, Wait: tc.wait, Own: tc.own}
+			if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" || result.Refusal.Message != want.Message() {
+				t.Errorf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD with the refusal of the fence %+v, %q",
+					conflictHead, code, result.Refusal, want, want.Message())
+			}
+		})
+	}
+}
+
 // testerStartedWhileTheSecondMergeIsAsked is the issue of
-// TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge on the steps implementer, reviewer,
-// tester: a first merge forward landed, the head it left conflicts in its turn and a second merge
-// forward of that head is asked in reviewing, and the reviewer's approval of that head started the
-// tester, in testing, while the second merge has not landed. It fails the test unless the issue
-// stands in testing and the record holds that second ask.
-func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
+// TestARefusalTellsATesterHeldAtItsStartToWaitForTheOpenMerge on steps, the steps implementer,
+// reviewer, tester, each with or without a key: a first merge forward landed, the head it left
+// conflicts in its turn and a second merge forward of that head is asked in reviewing, and the
+// reviewer's approval of that head started the tester, in testing, while the second merge has not
+// landed. It fails the test unless the issue stands in testing and the record holds that second
+// ask.
+func testerStartedWhileTheSecondMergeIsAsked(t *testing.T, steps ...string) *pgxpool.Pool {
 	t.Helper()
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
-	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), "implementer", "reviewer", "tester")
+	pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), steps...)
 	confirmsConflict(t, pool, requiresCI)
 	landsMergeForward(t, pool)
 	again := conflictingRead(requiresCI)
@@ -436,7 +478,7 @@ func testerStartedWhileTheSecondMergeIsAsked(t *testing.T) *pgxpool.Pool {
 // a landed message that cannot come (mergedForwardFence.Wait).
 func TestARefusalOnAClosedPullRequestTellsNoWorkerToWait(t *testing.T) {
 	t.Parallel()
-	pool := testerStartedWhileTheSecondMergeIsAsked(t)
+	pool := testerStartedWhileTheSecondMergeIsAsked(t, "implementer", "reviewer", "tester")
 	applyRefusingNothing(t, pool, readsAfter(8*time.Minute), closedAt(forwardHead, firstConflictRead.Add(8*time.Minute)))
 	issue, pr := storedIssue(t, pool, "LEGION-208"), recordedPR(t, pool, "LEGION-208")
 	if pr.State != record.PullRequestClosed || pr.MergeForward == nil || pr.MergeForward.Head != forwardHead || issue.Phase != phase.Testing {

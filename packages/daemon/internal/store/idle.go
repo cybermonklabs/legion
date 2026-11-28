@@ -94,8 +94,8 @@ const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' an
 //
 // All three reads take this one rule, so the rule that holds a pod and the rules that cancel its
 // release never disagree. The teardown passes over one start of this predicate: a wake's own
-// start of a role the release recorded, with a wake since the mark (wakeStartRow, IssueRelease).
-// That start waits for the teardown and starts the role in the pod that comes back.
+// start of a claim the release recorded, with a wake since the mark (wakeStartRow, IssueRelease).
+// That start waits for the teardown and starts the claim in the pod that comes back.
 func idleWaitingRow(prefix string) string {
 	return `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
 	and not (` + slotWaitingStart + `)
@@ -410,7 +410,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			turned = &newest
 		}
 		// The newest wake this pod has had: a wake recorded above it is one this release never
-		// saw. It cancels the release, unless it is a wake of a role this release has since
+		// saw. It cancels the release, unless it is a wake of a claim this release has since
 		// recorded as `released` (releaseOvertaken).
 		var wake int64
 		if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from pod_resumes where project = $1 and issue = $2`,

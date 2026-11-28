@@ -872,16 +872,20 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 }
 
 // listedPhaseColumns is the columns of a phases row that AllPhases reads, in scanListedPhase's
-// order: the columns the state route reads of a row (projection.Project, projection.Observe).
-const listedPhaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, backward_moves, decision, entry`
+// order: the columns the state route reads of a row (projection.Project, projection.Observe),
+// with the ones the claim of a role's worker is read from (WorkerClaim: the claim and the step's
+// task).
+const listedPhaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, backward_moves, decision, entry, step_task`
 
 // AllPhases is the phases rows of project's issues, by issue, in one statement. Each issue's rows
 // are the rows Phases answers for that issue, in the same order (by role), with the columns the
 // state route reads (listedPhaseColumns): the issue, the role, the claim, the handoff commit, the
 // pass, the handoff record and its version, the rounds, the counts of the moves back, the review
-// decision and the entry. Every other field of a row is zero. An issue with no row has no entry,
-// which reads as the empty list Phases answers for it. The state route reads it in place of one
-// statement for each issue it lists.
+// decision, the entry and the task of the step the row runs, which with the claim names the
+// worker on the role's step (WorkerClaim), whose given entry and handshake an issue's view shows.
+// Every other field of a row is zero. An issue with no row has no entry, which reads as the empty
+// list Phases answers for it. The state route reads it in place of one statement for each issue
+// it lists.
 //
 // The database is shared by every project's daemon, and a row is keyed by an issue, so the
 // project of a row is the project of the issue record it is keyed by: the statement keeps the
@@ -1048,7 +1052,7 @@ func scanListedPhase(row scanner) (PhaseRow, error) {
 	var role, token string
 	var decision, backwardMoves []byte
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds,
-		&backwardMoves, &decision, &phase.Entry); err != nil {
+		&backwardMoves, &decision, &phase.Entry, &phase.StepTask); err != nil {
 		return PhaseRow{}, err
 	}
 	var err error

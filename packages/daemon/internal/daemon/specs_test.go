@@ -385,7 +385,10 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 		}
 		return spec.Prompt.Addressing
 	}
-	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners."
+	// A worker is told the reach of its own App's owners whose directory its gh holds
+	// (workerRepositoriesClause), and the correction's sentences follow it.
+	const reach = "your role's GitHub App is installed on the owners acme, zeta, and its token reaches every repository of those owners whose directory your gh holds: " +
+		"in an issue pod, an owner the Apps of your pod's roles were installed on after the pod was created has none until the update round that install opens replaces the pod."
 	const sentences = "The daemon changed your issue's repository from acme/widgets at 2026-11-12T07:30:00Z. " +
 		"Your issue's branch and your issue's pull request are on acme/widgets. " +
 		"Your work on this issue is on zeta/tools now."

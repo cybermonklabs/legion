@@ -449,13 +449,14 @@ func listedPullRequest(t *testing.T, pr record.PullRequest) string {
 
 // listedPhases is rows with only the columns AllPhases reads (record.Postgres.AllPhases): the
 // issue, the role, the claim, the handoff commit, the pass, the handoff record and its version,
-// the rounds, the counts of the moves back, the review decision and the entry.
+// the rounds, the counts of the moves back, the review decision, the entry and the task of the
+// step the row runs.
 func listedPhases(rows []record.PhaseRow) []record.PhaseRow {
 	listed := make([]record.PhaseRow, len(rows))
 	for i, row := range rows {
 		listed[i] = record.PhaseRow{Issue: row.Issue, Role: row.Role, Claim: row.Claim, HandoffCommit: row.HandoffCommit,
 			Pass: row.Pass, HandoffRecord: row.HandoffRecord, HandoffVersion: row.HandoffVersion, Rounds: row.Rounds,
-			BackwardMoves: row.BackwardMoves, Decision: row.Decision, Entry: row.Entry}
+			BackwardMoves: row.BackwardMoves, Decision: row.Decision, Entry: row.Entry, StepTask: row.StepTask}
 	}
 	return listed
 }

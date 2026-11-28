@@ -28,7 +28,7 @@ import (
 // The row that takes the wake is this test's own transaction, which holds the claim's row and the
 // wake's uncommitted resume until the notice's take waits on it, so the notice's take reads
 // before that commit whatever it waits on: the claim's row, or the index that keeps one open
-// resume a role (pod_resumes_one_open_per_role).
+// resume a claim (pod_resumes_one_open_per_claim).
 func TestANoticeOvertakenByAPauseHeldWakeDoesNotWarnOfAStuckResume(t *testing.T) {
 	t.Parallel()
 	const stuck = `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`

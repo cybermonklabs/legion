@@ -101,10 +101,29 @@ func (s projectionStore) StartsWaitingForPod(context.Context, pgx.Tx, string) (m
 }
 
 // AllPhases is every issue's phases rows, by issue, as the real store answers them in one
-// statement for the project's issues (record.Postgres.AllPhases). Every issue of this store is
-// the project's.
+// statement for the project's issues (record.Postgres.AllPhases): each row with only the columns
+// that statement reads (listedPhase), so a reader of a column it leaves out reads the zero value
+// here as it does there. Every issue of this store is the project's.
 func (s projectionStore) AllPhases(context.Context, pgx.Tx, string) (map[string][]record.PhaseRow, error) {
-	return s.phases, nil
+	all := make(map[string][]record.PhaseRow, len(s.phases))
+	for issue, rows := range s.phases {
+		listed := make([]record.PhaseRow, len(rows))
+		for i, row := range rows {
+			listed[i] = listedPhase(row)
+		}
+		all[issue] = listed
+	}
+	return all, nil
+}
+
+// listedPhase is row with only the columns record.Postgres.AllPhases reads (its
+// listedPhaseColumns): the issue, the role, the claim, the handoff commit, the pass, the handoff
+// record and its version, the rounds, the counts of the moves back, the review decision, the
+// entry and the task of the step the row runs. Every other field is zero.
+func listedPhase(row record.PhaseRow) record.PhaseRow {
+	return record.PhaseRow{Issue: row.Issue, Role: row.Role, Claim: row.Claim, HandoffCommit: row.HandoffCommit, Pass: row.Pass,
+		HandoffRecord: row.HandoffRecord, HandoffVersion: row.HandoffVersion, Rounds: row.Rounds, BackwardMoves: row.BackwardMoves,
+		Decision: row.Decision, Entry: row.Entry, StepTask: row.StepTask}
 }
 
 // PullRequestsOf is the pull request of each of issues this store holds, by issue, as the real

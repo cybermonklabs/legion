@@ -173,6 +173,7 @@ func TestStaleEntryRefusalsNameAZeroEntryAsNoRun(t *testing.T) {
 // Entry numbers identify runs on the issue-wide counter. Their difference is not a count of
 // entries missed by this role, so a refusal reports the two identities without another number.
 func TestAStaleCompletionReportsItsTwoEntryIdentities(t *testing.T) {
+	t.Parallel()
 	refusal := StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, nil, "the completion was refused")
 	if refusal.Status != http.StatusConflict || refusal.Code != StaleEntryCode {
 		t.Fatalf("stale completion refusal = %+v, want 409 %s", refusal, StaleEntryCode)
@@ -189,6 +190,7 @@ func TestAStaleCompletionReportsItsTwoEntryIdentities(t *testing.T) {
 }
 
 func TestAStaleEntryClauseReportsItsTwoEntryIdentities(t *testing.T) {
+	t.Parallel()
 	for _, report := range []string{"completion", "move back"} {
 		t.Run(report, func(t *testing.T) {
 			clause := StaleEntryClause("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, report)

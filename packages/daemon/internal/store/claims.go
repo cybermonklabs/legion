@@ -316,16 +316,17 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // by any source but the idle release's — or comes back to them. The idle release's suspension and
 // a pause's stop, which both suspend as released, keep the session and its role, and so does the
 // launch that resumes that session, so none of them queues a publication. The state event is
-// queued when the write moves the state the state route serves at c's issue's role, or lists c's
-// issue first (storedClaim.unlisted, queueClaimState). The release of a left session's Dispatch
-// claim is queued when the write moves the claim off a session the stored row names — a fresh
-// session that clears it, or a new session written over it — as one claim_release row of c's
-// issue that names that session (enqueueLeftSessionRelease): while c's issue runs, no move's row
-// and no boot row releases the Dispatch claim that session holds (left_sessions.go says why). All
-// three are read against the row the write replaces, read under its lock (lockedClaim). The three
-// switches (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so
-// putClaim reads them inside tx before it takes that lock: a write for which all three are off
-// writes the row without reading it first (upsertClaim) and queues nothing. A write that changes
+// queued when the write moves c's state or its role, naming the state under each role of c's issue
+// whose step c works (workedRoles), or lists c's issue first (storedClaim.unlisted,
+// queueClaimState). The release of a left session's Dispatch claim is queued when the write moves
+// the claim off a session the stored row names — a fresh session that clears it, or a new session
+// written over it — as one claim_release row of c's issue that names that session
+// (enqueueLeftSessionRelease): while c's issue runs, no move's row and no boot row releases the
+// Dispatch claim that session holds (left_sessions.go says why). All three are read against the
+// row the write replaces, read under its lock (lockedClaim). The three switches
+// (queuesRoleHolders, queuesState, queuesLeftSessionRelease) depend on no stored row, so putClaim
+// reads them inside tx before it takes that lock: a write for which all three are off writes the
+// row without reading it first (upsertClaim) and queues nothing. A write that changes
 // none queues nothing either. A write of a claim of another project's issue queues no publication
 // and no release, since only that project's daemon runs a row keyed by its issue
 // (queuesRoleHolders, queuesLeftSessionRelease).
@@ -375,15 +376,16 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 }
 
 // storedClaim is what the row of a claim holds before a write replaces it (lockedClaim): its state,
-// the source of its suspension and its session, all empty for a claim the store does not hold yet.
-// unlisted is whether the write is the first to list the claim's issue in the state route at all:
-// the issue has no issues row of the daemon's Dispatch project, so the route serves it for its
-// claims alone, at phase unrecorded (internal/projection's Project, over the issues
+// its role, the source of its suspension and its session, all empty for a claim the store does not
+// hold yet. unlisted is whether the write is the first to list the claim's issue in the state route
+// at all: the issue has no issues row of the daemon's Dispatch project, so the route serves it for
+// its claims alone, at phase unrecorded (internal/projection's Project, over the issues
 // internal/daemon's projectRecords keeps), and no claim of the claim's project names it yet. It is
 // false for a claim the store holds a row of, since that row names the issue already, and it is
 // read only with the state events on (PublishState).
 type storedClaim struct {
 	state       supervise.ClaimState
+	role        claim.Role
 	suspendedBy supervise.SuspendSource
 	session     string
 	unlisted    bool
@@ -399,9 +401,9 @@ type storedClaim struct {
 // and the claims table has no index on the issue.
 func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
 	var stored storedClaim
-	var storedState, by, session *string
-	err := tx.QueryRow(ctx, `select state, suspended_by, session from claims where token = $1 for update`,
-		string(c.Token)).Scan(&storedState, &by, &session)
+	var storedState, role, by, session *string
+	err := tx.QueryRow(ctx, `select state, role, suspended_by, session from claims where token = $1 for update`,
+		string(c.Token)).Scan(&storedState, &role, &by, &session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if state == nil {
 			return stored, nil
@@ -418,6 +420,9 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 	}
 	if storedState != nil {
 		stored.state = supervise.ClaimState(*storedState)
+	}
+	if role != nil {
+		stored.role = claim.Role(*role)
 	}
 	if by != nil {
 		stored.suspendedBy = supervise.SuspendSource(*by)

@@ -28,8 +28,8 @@ func TestMessageWakePacingUpgradeAndWayBack(t *testing.T) {
 		launch_failures, prompt_failures, prompt_retires, uncertain_streak)
 		values ('legion-legion-legion-208-implementer', 'legion', 'LEGION-208', 'LEGION-208', 'implementer', 1,
 		'session', '/session.jsonl', 'suspended', 0, 0, 0, 0)`)
-	exec(`insert into pod_resumes (project, issue, role, claim, kind, at)
-		values ('legion', 'LEGION-208', 'implementer', 'legion-legion-legion-208-implementer', 'delivery', now())`)
+	exec(`insert into pod_resumes (project, issue, role, kind, at)
+		values ('legion', 'LEGION-208', 'implementer', 'delivery', now())`)
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}

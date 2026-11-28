@@ -175,10 +175,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// (record.Store.AllPhases beside Phases, PullRequestsOf beside PullRequest, Gates beside
 	// GatesOf), and leaves the rest out: the phase rows are read for the issues of project alone,
 	// as the assignments above are, with only the columns this state reads of them
-	// (record.Store.AllPhases), and PullRequestsOf loads none of what each pull request remembers
-	// of its settled heads, since the state shows none of it and writes no record back. An issue
-	// holding no row has no entry, which reads as the empty list, the nil pull request and the
-	// empty gates.
+	// (record.Store.AllPhases), the claim and the step's task among them, which name the worker on
+	// each role's step (record.WorkerClaim, below), and PullRequestsOf loads none of what each
+	// pull request remembers of its settled heads, since the state shows none of it and writes no
+	// record back. An issue holding no row has no entry, which reads as the empty list, the nil
+	// pull request and the empty gates.
 	phases, err := in.Store.AllPhases(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err

@@ -42,7 +42,7 @@ func askRowEnds(t *testing.T, pool *pgxpool.Pool, engine *Engine, delivered bool
 		if err := json.Unmarshal(payload, &ask); err != nil {
 			return err
 		}
-		_, err := MergeForwardAskEnded(ctx, engine.store, tx, "LEGION-208", ask, ask.Claim, delivered, told, launch, engine.now())
+		_, err := MergeForwardAskEnded(ctx, engine.store, tx, engine.cfg.Deployment, "LEGION-208", ask, ask.Claim, delivered, told, launch, engine.now())
 		return err
 	})
 }

@@ -396,3 +396,46 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 		}
 	})
 }
+
+// The state route shows, as the claim of each role of an issue, the claim of the worker on that
+// role's step (record.WorkerClaim), and Dispatch observes each role's claim from it
+// (`claim.<role>`), so a claim's state event names its state under each role whose step it works,
+// and under no other (workedRoles). In the plan `implementer:a reviewer:a` key a's agent,
+// `…-implementer`, works the implementer's step and the reviewer's, whose phases rows name it on a
+// step of task a, so a write of its state names both roles. The reviewer's own claim, of an
+// earlier version of the plan, works no step: a write of its state names no role, where it would
+// otherwise overwrite what Dispatch observes of the reviewer with the state of a claim the route
+// shows among `otherClaims`. The key's agent takes the role of the step it works next with its
+// state as it was (supervise's Rerole), and that write names its state under each role it works,
+// though the state did not move. The tester's own claim, which no row names, names the tester.
+func TestAClaimsStateEventNamesEachRoleWhoseStepItWorks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const issue = "LEGION-306"
+	s := migratedStore(t)
+	wakes := publishStates(t, s)
+	recordIssue(t, s, issue, stateProject)
+	openTree(t, s, issue)
+	keyed := stateClaim(t, issue, claim.RoleImplementer, supervise.StateIdle)
+	if err := Transact(ctx, s.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleImplementer, Claim: keyed.Token, StepTask: "a", StepPlace: 1, Entry: 1}); err != nil {
+			return err
+		}
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleReviewer, Claim: keyed.Token, StepTask: "a", StepPlace: 2, Entry: 1})
+	}); err != nil {
+		t.Fatalf("seed the phases rows of %s: %v", issue, err)
+	}
+	put := func(c supervise.Claim) func() error { return func() error { return s.PutClaim(ctx, c) } }
+
+	queues(t, s, wakes, "a write of the reviewer's own claim", put(stateClaim(t, issue, claim.RoleReviewer, supervise.StateIdle)), issue)
+	queues(t, s, wakes, "a write of key a's agent", put(keyed), issue,
+		claimMoved(claim.RoleImplementer, "", supervise.StateIdle), claimMoved(claim.RoleReviewer, "", supervise.StateIdle))
+	queues(t, s, wakes, "the retirement of the reviewer's own claim", put(stateClaim(t, issue, claim.RoleReviewer, supervise.StateRetired)), issue)
+	reroled := keyed
+	reroled.Role = claim.RoleReviewer
+	queues(t, s, wakes, "key a's agent taking the reviewer's role", put(reroled), issue,
+		claimMoved(claim.RoleImplementer, supervise.StateIdle, supervise.StateIdle), claimMoved(claim.RoleReviewer, supervise.StateIdle, supervise.StateIdle))
+	queues(t, s, wakes, "a write of the tester's own claim", put(stateClaim(t, issue, claim.RoleTester, supervise.StateIdle)), issue,
+		claimMoved(claim.RoleTester, "", supervise.StateIdle))
+}

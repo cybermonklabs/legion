@@ -265,10 +265,10 @@ type outboxNotices interface {
 // for a stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open
 // resume that refuses one, a project pause's stop of a role and which pause stopped a role, and
 // the end of a pause's hold of a pod a deletion took. The delivery wake's take waits for any
-// release of the issue that still stands, not only for one that recorded the role
+// release of the issue that still stands, not only for one that recorded the claim
 // (store.Store.TakeDeliveryWake): the delivery wake resumes its claim in process, and that resume
 // does not wait for the release's teardown, as a workflow wake's `start` does. It takes nothing
-// either while a start that brings the role back is queued, such as a cancel's resume.
+// either while a start that brings the claim back is queued, such as a cancel's resume.
 type outboxTrees interface {
 	Pool() *store.Pool
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)

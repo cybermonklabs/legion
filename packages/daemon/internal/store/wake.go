@@ -470,10 +470,12 @@ func (s *Store) OpenPodResume(ctx context.Context, project, issue string, token 
 	return id, pause, found, err
 }
 
-// openPodResume is OpenPodResume inside a transaction: OpenPodResume's own, or the transaction of
-// a cancel of a release made while the project is paused, which reads by it whether a wake
-// already owes a claim the release stopped its launch (stopReleasedForPause). Two claims can hold
-// one role, and the wake brought back one of them, so the resume is read for the claim
+// openPodResume is OpenPodResume inside a transaction: OpenPodResume's own; the delivery wake's
+// (TakeDeliveryWake), which reads by it whether the claim has an open resume before it reads a
+// queued start, and the pause of the resume that refused its take; and the transaction of a
+// cancel of a release made while the project is paused, which reads by it whether a wake already
+// owes a claim the release stopped its launch (stopReleasedForPause). Two claims can hold one
+// role, and the wake brought back one of them, so the resume is read for the claim
 // (pod_resumes.claim).
 func openPodResume(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token) (id, pause int64, found bool, err error) {
 	err = tx.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes

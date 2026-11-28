@@ -214,6 +214,46 @@ func TestTheWorkerDiedOfARoleTheMergeIsOwedToNamesTheMergeLast(t *testing.T) {
 	}
 }
 
+// The worker-died notice of the implementer's failed claim, while the merge of the head is owed to
+// it, says that merge is that agent's own to make where it works the step of the worker the merge
+// would hold too, and names no worker held (dispatch://INFRA-4112): in `implementer:a tester:a`
+// key a's agent, `…-implementer`, ran the implementer's step and runs the tester's, and no hold
+// reaches the claim the merge is asked of (holdStartedWorker), so "the tester is held for it" would
+// be false. The control is `implementer tester`, whose tester is held.
+func TestTheWorkerDiedOfAKeyedAgentTheMergeIsOwedToSaysTheMergeIsItsOwn(t *testing.T) {
+	t.Parallel()
+	owed := ". The merge of main forward onto head " + conflictHead + " is owed to the implementer, and its ask is sent again " +
+		"when the implementer starts again"
+	implementer := seededClaim(t, claim.RoleImplementer)
+	for _, tc := range []struct {
+		name   string
+		steps  []string
+		tester claim.Token
+		held   string
+	}{
+		{"key a's agent on the implementer's and the tester's steps", []string{"implementer:a", "tester:a"}, implementer,
+			"; the tester's step is that agent's too, so the merge is its own to make and no worker is held for it"},
+		{"control: the tester on a step of no key", []string{"implementer", "tester"}, seededClaim(t, claim.RoleTester), "; the tester is held for it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := plannedConflictIssue(t, phase.Testing, settledGreen("lint"), tc.steps...)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 1, Entry: 1})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: tc.tester, StepTask: "a", StepPlace: 2, Entry: 1})
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			asksDelivered(t, pool, 1)
+			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer, Cause: supervise.CauseDied})
+			died := noticesOfKind(t, pool, "LEGION-208", "worker-died")
+			if len(died) != 1 {
+				t.Fatalf("the worker-died notices of LEGION-208 are %+v, want one", died)
+			}
+			if want := "the implementer does not work LEGION-208's phase testing; nothing is held" + owed + tc.held; died[0].Reason != want {
+				t.Errorf("the worker-died reads %q, want %q", died[0].Reason, want)
+			}
+		})
+	}
+}
+
 // On the default steps the merger is asked in merging, its row is delivered to its launch 1, and
 // its claim fails, which holds the issue. The architect's retry starts the merger again and sends
 // nothing itself: the ready of the merger's launch 2, which no row reaches, asks it again, once.

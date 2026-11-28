@@ -2195,7 +2195,9 @@ type PhaseEnded struct {
 	To     phase.Phase `json:"to"`
 	Reason string      `json:"reason"`
 	// MergeForward is the merge forward the move into awaiting_children dropped while it was still
-	// open and not withdrawn (PullRequest.MergeForward, workflow's openAsk), nil where it dropped none.
+	// open and not withdrawn (PullRequest.MergeForward, workflow's openAsk), nil where it dropped
+	// none, and nil where Claim is also the claim of the worker on the step of the role it was asked
+	// of, one agent on both steps, which a role message tells of it (workflow's awaitChildren).
 	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
 }
 

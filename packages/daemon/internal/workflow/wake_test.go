@@ -922,7 +922,7 @@ func roleMessageTokens(t *testing.T, pool *pgxpool.Pool) []string {
 	return tokens
 }
 
-// Every wake reads the start the outbox already holds for its role (wakeReleased,
+// Every wake reads the start the outbox already holds for its claim (wakeReleased,
 // Pods.StartQueued). A cancelled release queues a start for each claim it suspended, and the claim
 // reads `released` until that start runs; the pod never went away. So a CI settlement and a
 // backstop of such a role take no wake, record no resume and queue no second start, as a

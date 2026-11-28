@@ -126,7 +126,7 @@ func (r *outbox) endMergeForwardAsk(ctx context.Context, row record.OutboxRow, p
 			launch = held.Generation
 		}
 		var err error
-		asked, err = workflow.MergeForwardAskEnded(ctx, r.records, tx, row.Issue, payload, token, delivered, told, launch, r.now().UTC())
+		asked, err = workflow.MergeForwardAskEnded(ctx, r.records, tx, r.deployment, row.Issue, payload, token, delivered, told, launch, r.now().UTC())
 		return err
 	}); err != nil {
 		return fmt.Errorf("end the merge-forward ask of %s to its %s: %w", row.Issue, payload.Role, err)

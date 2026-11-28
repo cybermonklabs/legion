@@ -758,10 +758,11 @@ func credentialIn(text string) string {
 // quotes the word, however long the word is: the word is read whole through the URL rule
 // (redact.URLCredentials) before it is cut to MostQuotedBytes, so the cut, and the length its mark
 // gives, are of what the rule left. Each place that quotes a word is given plantedURL: a need, a
-// role nobody defines, a role block's id, a key, a role at two steps and a step read before the
-// implementer, each a reason of its task or of the whole plan, and one id on two blocks, a task id
-// outside the form and a step outside the grammar, each an error of the read, which the route
-// answers as a reason of the whole plan. Each case holds the reason's task, the quote of
+// role nobody defines, a role block's id, a key acceptance does not take (a step of another role
+// may name any key, and acceptance takes owner alone), a role at two steps and a step read before
+// the implementer, each a reason of its task or of the whole plan, and one id on two blocks, a
+// task id outside the form and a step outside the grammar, each an error of the read, which the
+// route answers as a reason of the whole plan. Each case holds the reason's task, the quote of
 // redactedURL cut and marked, and no run of six bytes of plantedUser, and each error of the read
 // names no length of plantedURL, which would give away the length of its credential, where the
 // rule leaves neither a part nor the length of one (redact.URLCredentials). The fault is a cut
@@ -786,7 +787,7 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 		{"a need", Validate(planOf(t, 1, taskNeeding("a", plantedURL)), d), "a", quote},
 		{"a role nobody defines", Validate(withSteps(implementer, Step{Role: plantedURL}), d), "a", quote},
 		{"a role block's id", Supported(Plan{RoleBlocks: []string{plantedURL}, Tasks: []Task{{ID: "a", Steps: []Step{implementer}}}}, d), "", quote},
-		{"a key", Supported(withSteps(implementer, Step{Role: "reviewer", Key: plantedURL}), d), "a", quote},
+		{"a key acceptance does not take", Supported(withSteps(implementer, Step{Role: "acceptance", Key: plantedURL}), d), "a", quote},
 		{"a role at two steps", Supported(withSteps(implementer, Step{Role: plantedURL}, Step{Role: plantedURL}), d), "a", quote},
 		{"a step read before the implementer", Supported(withSteps(Step{Role: "tester", Key: plantedURL}, implementer), d), "a", cut("tester:" + redactedURL)},
 	} {

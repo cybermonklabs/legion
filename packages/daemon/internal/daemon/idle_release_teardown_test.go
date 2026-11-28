@@ -611,7 +611,7 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 //
 // The negative control is the close without its reading of a give-up (the `exists` over
 // pod_release_give_ups in ClosePodGoneResume): the stale resume refuses the take
-// (pod_resumes_one_open_per_role), so no start is queued and that resume stays open.
+// (pod_resumes_one_open_per_claim), so no start is queued and that resume stays open.
 func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)

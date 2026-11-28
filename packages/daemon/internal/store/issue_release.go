@@ -516,7 +516,7 @@ func (s *Store) IssueReleaseCheck(ctx context.Context, project, issue string, ro
 // it released has moved on, the issue has left the workflow or its
 // tree lingers (each of which is a close's business, not a release's), when the tree's cleanup is
 // reserved, which deletes the Sandbox this release would, or when the pod went on working after
-// the mark: a claim started, resumed or holding a process now. A wake of a role this release has
+// the mark: a claim started, resumed or holding a process now. A wake of a claim this release has
 // recorded as `released`, and the start that wake queued, are not such work: the teardown runs to
 // its end, and the start waits for it (releaseOvertaken). It waits while the release's own
 // workspace check or one of its role stops is unfinished, or a stored claim of the issue may still
@@ -630,13 +630,15 @@ func (s *Store) issueRelease(ctx context.Context, project string, release IssueR
 		//
 		// The one start passed over is a wake's own: a start that names no phase, waits for no
 		// slot and carries the wake's kind (wakeStartRow), of a claim in the mark's suspended set
-		// that has a wake recorded since the mark (workflow's wakeRow, which names the claim). That
-		// wake came after this release recorded the claim (releaseOvertaken), and its start waits
-		// for this row (record's outboxInOrder), so it starts the claim in the pod that comes back.
-		// A phase's start of the same claim names its phase, and it still cancels the release. So
-		// do a root architect's entry start and a production check's look of that claim: they name
-		// no phase either, but they are work the pod was given, not a wake's start, and they carry
-		// no wake's kind.
+		// that has a wake recorded since the mark (workflow's wakeRow, which names the claim). A
+		// wake's start an earlier daemon queued names no claim, and it is read by its role, as it
+		// reached the claim of that role (startNamesClaimIn, startNamesClaim). That wake came
+		// after this release recorded the claim (releaseOvertaken), and its start waits for this
+		// row (record's outboxInOrder), so it starts the claim in the pod that comes back. A
+		// phase's start of the same claim names its phase, and it still cancels the release. So do
+		// a root architect's entry start and a production check's look of that claim: they name no
+		// phase either, but they are work the pod was given, not a wake's start, and they carry no
+		// wake's kind.
 		overtaken, err := releaseOvertaken(ctx, tx, project, release.Issue, mark)
 		if err != nil {
 			return err
@@ -645,9 +647,9 @@ func (s *Store) issueRelease(ctx context.Context, project string, release IssueR
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and `+idleWaitingRow("$5")+` and (id < $4 or id > $3)
 					and kind = 'supervise' and payload->>'op' = 'start'
-					and not (`+wakeStartRow+` and payload->>'claim' = any(coalesce($6::text[], '{}'))
+					and not (`+wakeStartRow+` and `+startNamesClaimIn("coalesce($6::text[], '{}')")+`
 						and exists (select 1 from pod_resumes woken where woken.project = $7 and woken.issue = $1
-							and woken.id > $8 and woken.claim = outbox.payload->>'claim')))`,
+							and woken.id > $8 and `+startNamesClaim("woken.claim", "woken.role")+`)))`,
 				release.Issue, idleWaitingKinds, mark.last, mark.first, pods.StartWaitsForPodPrefix, mark.suspended, project, mark.wake).Scan(&overtaken); err != nil {
 				return err
 			}

@@ -115,9 +115,14 @@ type childrenHold struct {
 //     (record.DroppedMergeForward.RoleMessageBody), addressed as mergeForward addresses its ask
 //     (addressRoles). The phase-ended message of any other worker carries it too, and tells that
 //     worker to write and push nothing more, since the role asked may be merging in the
-//     workspace they share (record.PhaseEnded.Message). A merge forward that landed, one on a
-//     pull request that closed, and one withdrawn are dropped with no word of it: a role told to
-//     merge nothing for the head, or a pull request that takes no push, leaves no merge to finish.
+//     workspace they share (record.PhaseEnded.Message). Where that worker's claim is the claim
+//     the role message reaches (childrenHold.EndedClaim), one agent on both steps as the steps of
+//     one key make it, the role message tells it the dropped merge forward, and its phase-ended
+//     message carries none, so it tells that agent to commit and push what it has, as the role
+//     message does of a merge it has begun: the merging is its own (dispatch://INFRA-4112). A
+//     merge forward that landed, one on a pull request that closed, and one withdrawn are dropped
+//     with no word of it: a role told to merge nothing for the head, or a pull request that takes
+//     no push, leaves no merge to finish.
 //
 // A released role gets nothing of that role message, which the outbox ends with no publish and no
 // wake as it ends every role message to a released role (the daemon's outbox.roleMessage).
@@ -191,6 +196,13 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err := e.notice(ctx, tx, issue.Key, awaitingChildrenNotice(issue.Key, from, hold, w.childrenReturn(hold.Start))); err != nil {
 		return err
 	}
+	// oneAgent is whether the claim the dropped merge forward was asked of is the claim whose phase
+	// the move ends (hold.EndedClaim), one agent on both steps as the steps of one key make it, so
+	// that agent is told the dropped merge forward by the role message alone, and its phase-ended
+	// message tells it to commit and push what it has, as to a worker no merge forward was asked of:
+	// the other form would tell it to write nothing because the role asked, itself, may be merging
+	// (dispatch://INFRA-4112).
+	oneAgent := false
 	if dropped != nil && hold.Ended != dropped.Role {
 		addressed, err := e.addressRoles(ctx, tx, issue.Project, []roleRecipient{{issue: issue.Key, role: dropped.Role, row: issue.Key}}, nil)
 		if err != nil {
@@ -200,13 +212,17 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: dropped.RoleMessageBody(issue.Key)}); err != nil {
 				return err
 			}
+			oneAgent = oneAgent || (hold.EndedClaim != "" && to.token == hold.EndedClaim)
 		}
 	}
 	if hold.Ended == "" {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.PhaseEnded{Role: hold.Ended, Claim: hold.EndedClaim, From: from, To: phase.AwaitingChildren, Reason: reason,
-		MergeForward: dropped})
+	ended := record.PhaseEnded{Role: hold.Ended, Claim: hold.EndedClaim, From: from, To: phase.AwaitingChildren, Reason: reason, MergeForward: dropped}
+	if oneAgent {
+		ended.MergeForward = nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, ended)
 }
 
 // endsAcceptedBases ends, before awaitChildren's status write to status, every step of another

@@ -290,12 +290,12 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // row waits on its backoff, and its next attempt reads the park.
 //
 // A released claim is not woken while any release of its issue still stands, whether or not that
-// release has recorded this role (store.Store.TakeDeliveryWake). The resume here runs in process,
+// release has recorded this claim (store.Store.TakeDeliveryWake). The resume here runs in process,
 // so it does not wait for the release's teardown as a workflow wake's `start` does (record's
-// outboxInOrder), and it would launch the role in the pod the teardown is about to take. The
-// role's record on the mark comes too late to tell: the release's stop suspends the claim as
-// `released` first and records the role after it, in a transaction of its own (store's
-// ReleaseSuspendedClaim). A wake in that gap would resume the role, and the record would then make
+// outboxInOrder), and it would launch the claim in the pod the teardown is about to take. The
+// claim's record on the mark comes too late to tell: the release's stop suspends the claim as
+// `released` first and records the claim after it, in a transaction of its own (store's
+// ReleaseSuspendedClaim). A wake in that gap would resume the claim, and the record would then make
 // the release pass over that wake (store's releaseOvertaken) and tear the pod down under it. The
 // store reads the mark under the take's own lock, in the take's own transaction, so nothing comes
 // between the read and the take. While a mark stands, the call takes nothing and answers, as its
@@ -307,11 +307,11 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // store.Store.SettleUnrecordedRelease). It resumes the role in the new pod. A cancel clears the
 // mark too, but it resumes no claim itself. It queues a start for each claim it resumes
 // (store.Store.CancelIssueRelease), and the claim reads released until that start runs, though its
-// pod never went away. While such a start is queued and the role has no open resume, the call
+// pod never went away. While such a start is queued and the claim has no open resume, the call
 // takes nothing and answers the same routine wait, whose text names the start: a wake taken then
 // would record a resume of a pod that no release took, and the records would count that pod's
-// return. The start resumes the role in the same pod, and the row's next attempt finds the claim
-// live and publishes. A role with an open resume refuses the take whatever is queued, and the
+// return. The start resumes the claim in the same pod, and the row's next attempt finds the claim
+// live and publishes. A claim with an open resume refuses the take whatever is queued, and the
 // call resumes it below. A claim the cancel did not resume is still released with no start
 // queued, and the attempt wakes it in the same pod.
 //

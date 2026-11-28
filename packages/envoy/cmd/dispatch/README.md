@@ -6913,11 +6913,11 @@ Each item below names a path with its method and identity, then its purpose.
   The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, claim, works_step, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name, the sessions of one role by session.
 
   - **The change event.**
-    A write that changes the set appends one issue event, `issue.role_holders_changed`, in the transaction that stores it.
-    Its payload is `{key, holders, previous_holders}`: the set the write stored and the set it replaced, each in the order the answer names them (Legion's six in workflow order, then each role the deployment defines by name) and each pair `{role, session, recorded_at}`.
+    A write that changes which session holds which role appends one issue event, `issue.role_holders_changed`, in the transaction that stores it.
+    Its payload is `{key, holders, previous_holders}`: the set the write stored and the set it replaced, each in the order the answer names them (Legion's six in workflow order, then each role the deployment defines by name) and each holder `{role, session, claim, works_step, recorded_at}`.
     The event's actor and `created_at` are the write's actor, the daemon's session, and the time of the write.
     `GET /api/v1/issues/{key}/events` serves it, so the issue's log says which session held each role at a past time; the log holds no change made before the release that writes the event.
-    A write that stores the set already stored, as the daemon's publication at each boot does, appends nothing.
+    A write that keeps each role with the sessions that held it appends nothing: one that stores the set already stored, as the daemon's publication at each boot does, and one that changes only a holder's `claim` or `works_step`.
     The event is quiet (`events.Quiet`): it wakes nobody, and the daemon's intake reads no fact from it.
 
   - **Two writes of one issue.**

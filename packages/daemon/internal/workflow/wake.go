@@ -475,7 +475,7 @@ func (e *Engine) markMessage(ctx context.Context, tx pgx.Tx, token claim.Token, 
 
 // listenerWakeReleased wakes the released claim a listener's report names. It reads the issue and
 // hands it to wakeReleased, so the wake reads the issue once, and wakeReleased reads every gate,
-// the start the outbox already holds for the role among them (Pods.StartQueued). The report's own
+// the start the outbox already holds for the claim among them (Pods.StartQueued). The report's own
 // time (fact.At) is not the resume's time: wakeReleased records the take's.
 func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string) error {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
@@ -729,15 +729,16 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // which the caller read and hands in. It reads every gate of a wake, on that one issue: the claim
 // the caller read is released, its issue is one this daemon records (the caller reads no record of
 // another project's issue, and then does not call this), its tree is live — neither the issue nor
-// its root has left the workflow and neither lingers (pods.InWorkflowNotLingering) — and the role
-// is not already coming back on a start the outbox holds (Pods.StartQueued). A pod in any other
-// state is a close's to stop or an operator's to resume, never a wake's.
+// its root has left the workflow and neither lingers (pods.InWorkflowNotLingering) — and the claim
+// is not already coming back on a start the outbox holds for it (Pods.StartQueued, which reads a
+// start by the claim it names, and by its role for one an earlier daemon queued naming none). A
+// pod in any other state is a close's to stop or an operator's to resume, never a wake's.
 //
 // The start the outbox holds is read for every kind of wake: a listener's report, a CI settlement
 // and a backstop. A cancelled release queues a start for each claim it suspended, and the claim
 // reads `released` until that start runs (store.CancelIssueRelease). The pod never went away, so a
 // wake taken then would record a resume of a pod no release took and queue a second start for a
-// role that needs neither. A start a wake already queued is such a start too, and so is an
+// claim that needs neither. A start a wake already queued is such a start too, and so is an
 // architect's start, but not an architect's start queued for news alone, which can finish without
 // acting (Pods.StartQueued). Such a wake takes nothing and answers false, and what each kind owes
 // the role still reaches it. A listener's report is of a message Envoy keeps or stores for the

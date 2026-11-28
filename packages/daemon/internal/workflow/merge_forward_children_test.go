@@ -142,6 +142,65 @@ func TestAMergeForwardNobodyOwesIsDroppedByAWaitOnChildrenUnnamed(t *testing.T) 
 	}
 }
 
+// One agent whose phase a wait on children ends, and of whose claim the dropped merge forward was
+// asked in another role, is told to finish that merge and push it, and is not told to write
+// nothing while that role merges (dispatch://INFRA-4112). In the plan `implementer:a tester:a`
+// key a's agent, `…-implementer`, ran the implementer's step and runs the tester's, so the ask of
+// the implementer made in testing is that agent's. The admission pass's stop for an open child ends
+// the tester's phase: its phase-ended message names no dropped merge forward, so it tells the
+// agent to commit and push what it has, and the role message of the dropped merge forward reaches
+// the same claim, so the agent finishes the merge it began and pushes it. The control is the plan
+// `implementer tester`: the implementer's claim gets the role message, and the tester's claim gets
+// the phase-ended message that names the dropped merge forward, which tells it to write and push
+// nothing more while the implementer may be merging.
+func TestAKeyedAgentWhosePhaseAWaitOnChildrenEndsIsToldToFinishTheMergeItOwes(t *testing.T) {
+	t.Parallel()
+	dropped := record.DroppedMergeForward{Head: conflictHead, Base: "main", Role: claim.RoleImplementer}
+	implementer := seededClaim(t, claim.RoleImplementer)
+	for _, tc := range []struct {
+		name   string
+		steps  []string
+		tester claim.Token
+		// named is the dropped merge forward the tester's phase-ended message names.
+		named *record.DroppedMergeForward
+	}{
+		{name: "key a's agent on the implementer's and the tester's steps", steps: []string{"implementer:a", "tester:a"}, tester: implementer},
+		{name: "control: the tester on a step of no key", steps: []string{"implementer", "tester"}, tester: seededClaim(t, claim.RoleTester), named: &dropped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pool := plannedConflictIssue(t, phase.Testing, settledGreen("lint"), tc.steps...)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 1, Entry: 1})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: tc.tester, StepTask: "a", StepPlace: 2, Entry: 1})
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Head != conflictHead || mf.Asked() != claim.RoleImplementer {
+				t.Fatalf("the record's merge forward = %+v, want the implementer's open ask of %s", mf, conflictHead)
+			}
+			messages := len(issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindRoleMessage)))
+			ends := len(cwPhaseEnded(t, pool, "LEGION-208"))
+
+			stopsForChild(t, pool)
+
+			var told []record.RoleMessage
+			for _, row := range issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindRoleMessage))[messages:] {
+				var message record.RoleMessage
+				if err := json.Unmarshal(row.payload, &message); err != nil {
+					t.Fatalf("decode role-message row %d: %v", row.id, err)
+				}
+				told = append(told, message)
+			}
+			if want := []record.RoleMessage{{Role: string(implementer), Body: dropped.RoleMessageBody("LEGION-208")}}; !reflect.DeepEqual(told, want) {
+				t.Errorf("the role messages the stop sent are %+v, want %+v: the claim the merge forward was asked of told of its drop", told, want)
+			}
+			ended := cwPhaseEnded(t, pool, "LEGION-208")[ends:]
+			if len(ended) != 1 || ended[0].Role != claim.RoleTester || ended[0].Claim != tc.tester || !reflect.DeepEqual(ended[0].MergeForward, tc.named) {
+				t.Errorf("the phase-ended messages the stop sent are %+v, want one to the tester's claim %s naming the dropped merge forward %+v",
+					ended, tc.tester, tc.named)
+			}
+		})
+	}
+}
+
 // unwithdrawn is pool with the withdrawal mark taken off the record's ask, the one field that
 // stands between that ask and an open one nobody was told to leave.
 func unwithdrawn(t *testing.T, pool *pgxpool.Pool) *pgxpool.Pool {

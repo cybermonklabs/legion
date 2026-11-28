@@ -342,12 +342,14 @@ const IssueRoleHolderEventRecordSchema = z
 
 /**
  * `issue.role_holders_changed`: the Legion daemon's publication of an issue's role holders
- * (`PUT /api/v1/issues/{key}/role-holders`) changed the set. `holders` is the set it stored and
- * `previous_holders` the set it replaced, each in the route's order (Legion's six in workflow
- * order, then each role the deployment defines by name); the event's actor is the
- * daemon's session and its `created_at` the time of the write, so the issue's log says which
- * session held each role at a past time. A publication that stores the set already stored appends
- * none, and the log holds no change made before the release that writes the event. Quiet: it
+ * (`PUT /api/v1/issues/{key}/role-holders`) changed which session holds which role. `holders` is
+ * the set it stored and `previous_holders` the set it replaced, each in the route's order
+ * (Legion's six in workflow order, then each role the deployment defines by name), each holder
+ * `{role, session, claim, works_step, recorded_at}`; the event's actor is the daemon's session and
+ * its `created_at` the time of the write, so the issue's log says which session held each role at
+ * a past time. A publication that keeps each role with the sessions that held it appends none:
+ * one that stores the set already stored, and one that changes only a holder's `claim` or
+ * `works_step`. The log holds no change made before the release that writes the event. Quiet: it
  * wakes nobody. Strict: the Go writer (`issueRoleHoldersChange` in
  * `packages/envoy/internal/dispatch/api/issue_role_holders.go`) emits exactly these three fields,
  * each holder as `IssueRoleHolderEventRecordSchema` reads it.
