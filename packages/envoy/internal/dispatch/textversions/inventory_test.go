@@ -27,6 +27,7 @@ import (
 // log holds (testdata/production_event_types.txt, written by `testdata/capture.sh types`) is a
 // member of the union, so the fill meets no event of a type the rules were never sorted for.
 func TestEveryEventTypeIsSortedForTheKeywordFill(t *testing.T) {
+	t.Parallel()
 	members := make(map[string]bool, len(contracts.DispatchEventTypes))
 	var neither, both []string
 	for _, typ := range contracts.DispatchEventTypes {
@@ -116,6 +117,7 @@ func productionEventTypes(t *testing.T) []string {
 // to what jq read of it. That body is where a version holds an ask's question, so the question is
 // held through it alone.
 func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
+	t.Parallel()
 	names := payloadFixtures(t)
 	database := storetest.Open(t)
 	var noRule []string
@@ -179,6 +181,7 @@ func expectedAskBody(t *testing.T, database *store.Store, name string, want expe
 // fill, and not errUnreadablePayload, which the fill takes for a payload a person wrote and stops
 // at.
 func TestAnAskEventReadWithNoBodyIsAFillBug(t *testing.T) {
+	t.Parallel()
 	_, started, err := versionOf(event(readFixtureEvent(t, "ask.opened-1")))
 	switch {
 	case err == nil:
@@ -215,6 +218,7 @@ var fillTypesLine = regexp.MustCompile(`(?m)^fill_types="([^"]*)"$`)
 // reads that it left out would get no fixture under testdata/payloads, and
 // TestEveryProductionPayloadShapeGivesItsVersion would pass with that type's shapes untested.
 func TestTheCaptureScriptCapturesEveryRuleType(t *testing.T) {
+	t.Parallel()
 	script, err := os.ReadFile(captureScript)
 	if err != nil {
 		t.Fatalf("read %s: %v", captureScript, err)

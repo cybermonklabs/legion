@@ -154,7 +154,7 @@ func (f *filler) rereadBatch(ctx context.Context, tx pgx.Tx, started time.Time, 
 	if err := tx.Commit(ctx); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: commit the re-read's batch: %w", err)
 	}
-	result.took = time.Since(started)
+	result.took = f.clock.Now().Sub(started)
 	switch {
 	case raise:
 		f.reread = rereadProgress{}

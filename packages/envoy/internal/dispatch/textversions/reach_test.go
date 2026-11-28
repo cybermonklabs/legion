@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -18,6 +19,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// reachMargin is the margin the reach tests compute the reach with, on their store and on their
+// fill (store.Store.TextVersionsReachMargin, filler.reachMargin): 50 ms where every serving
+// process computes it with 1 s, so their waits on the database's clock pass it sooner. It is a
+// span on the database's clock, which no clock of the module reaches, and no verdict reads it:
+// each test waits until that clock has passed it (pastTheMargin), and then asserts which
+// transaction or event holds the reach back.
+const reachMargin = 50 * time.Millisecond
+
 // TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent holds the reach before the start of a
 // transaction that wrote an event and is still open: transaction A writes an event and stays open
 // while B's later event commits. The horizon stands below A's event, so a pass of the fill writes
@@ -25,13 +34,15 @@ import (
 // commits and before the fill writes its event they still do. Once the fill runs, the reach passes
 // both starts and both events have their rows.
 func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
+	t.Parallel()
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
 	a, aStart := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = a.Rollback(context.Background()) }()
-	pastTheMargin(t, database, aStart)
+	begun := beginComment(t, database)
+	pastTheMargin(t, database, begun.startedAt)
 	aEvent := appendCommentEvent(t, a, broker, "comment.created", uuid.NewString(), "The audit starts on Tuesday.", aStart)
-	b := commitComment(t, database, broker, otherIssue)
+	b := begun.commit(t, broker, otherIssue)
 	if _, err := fill.pass(ctx); err != nil {
 		t.Fatalf("a pass of the fill while A is open: %v", err)
 	}
@@ -58,12 +69,14 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 // the reach still does. Once the fill runs, the reach passes both starts and both events have
 // their rows.
 func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T) {
+	t.Parallel()
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
 	a, aStart := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = a.Rollback(context.Background()) }()
-	pastTheMargin(t, database, aStart)
-	b := commitComment(t, database, broker, otherIssue)
+	begun := beginComment(t, database)
+	pastTheMargin(t, database, begun.startedAt)
+	b := begun.commit(t, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while A is open: %v", err)
 	}
@@ -89,12 +102,14 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 // and the reach a read computes stay before A's start, which no transaction holds open any more.
 // Once the fill runs, the reach passes both starts and both events have their rows.
 func TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten(t *testing.T) {
+	t.Parallel()
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
 	a, aStart := textversionstest.BeginTransaction(t, database)
 	defer func() { _ = a.Rollback(context.Background()) }()
-	pastTheMargin(t, database, aStart)
-	b := commitComment(t, database, broker, otherIssue)
+	begun := beginComment(t, database)
+	pastTheMargin(t, database, begun.startedAt)
+	b := begun.commit(t, broker, otherIssue)
 	safe, err := fill.horizon.Await(ctx)
 	if err != nil {
 		t.Fatalf("await the horizon: %v", err)
@@ -130,6 +145,7 @@ func TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten(t *testing.T) {
 // writes them, and the reach stays before that transaction's start; once it ends, the reach
 // passes it.
 func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
+	t.Parallel()
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
 	group := createRole(t, database, "writers", "nologin")
@@ -154,8 +170,9 @@ func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
 	member := storeAs(t, database, login, password)
 	held, heldStart := textversionstest.BeginTransaction(t, member)
 	defer func() { _ = held.Rollback(context.Background()) }()
-	pastTheMargin(t, database, heldStart)
-	b := commitComment(t, database, broker, otherIssue)
+	begun := beginComment(t, database)
+	pastTheMargin(t, database, begun.startedAt)
+	b := begun.commit(t, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while the member's transaction is open: %v", err)
 	}
@@ -170,10 +187,12 @@ func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
 // TestTheReachHoldsForATransactionWhoseStartItCannotRead: the reach is read by a role that cannot
 // read another role's transaction start, one without pg_read_all_stats and in no role of the
 // other's, as a deployment's Dispatch role may be. While a role that may insert into events holds
-// a transaction open, the reach that reader computes does not move, though time passes; once that
-// role may insert no more and holds a transaction open again, the reach moves. The test creates
-// both login roles; a database that refuses it fails the test, naming why.
+// a transaction open, the reach that reader computes does not move, though the database's clock
+// passes that transaction's start by the margin; once that role may insert no more and holds a
+// transaction open again, the reach moves. The test creates both login roles; a database that
+// refuses it fails the test, naming why.
 func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
+	t.Parallel()
 	database, _, _ := reachFixture(t)
 	ctx := t.Context()
 	writer, writerPassword := createLoginRole(t, database, "writer", "")
@@ -202,7 +221,7 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 		t.Fatal("the caught-up fill stored no reach")
 	}
 
-	held, _ := textversionstest.BeginTransaction(t, asWriter)
+	held, heldStart := textversionstest.BeginTransaction(t, asWriter)
 	defer func() { _ = held.Rollback(context.Background()) }()
 	var shownStart *time.Time
 	if err := asReader.Pool.QueryRow(ctx, `
@@ -215,8 +234,9 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 		t.Fatalf("the reader reads the writer's transaction start %s; want it hidden", shownStart)
 	}
 	first := reachAs(t, asReader)
-	// A reach computed after a second would be past the first, which T0 - 1 s bounds.
-	time.Sleep(1100 * time.Millisecond)
+	// Past the margin, a reach computed would be past the writer's start, which T0 − margin
+	// bounds.
+	pastTheMargin(t, database, heldStart)
 	second := reachAs(t, asReader)
 	if !first.Equal(*stored) || !second.Equal(*stored) {
 		t.Fatalf("while the writer's transaction is open the reader reads the reach %s, then %s; want the stored %s both times",
@@ -229,9 +249,9 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `revoke insert on events from `+writer); err != nil {
 		t.Fatalf("revoke the writer's insert: %v", err)
 	}
-	idle, _ := textversionstest.BeginTransaction(t, asWriter)
+	idle, idleStart := textversionstest.BeginTransaction(t, asWriter)
 	defer func() { _ = idle.Rollback(context.Background()) }()
-	time.Sleep(1100 * time.Millisecond)
+	pastTheMargin(t, database, idleStart)
 	if third := reachAs(t, asReader); !third.After(second) {
 		t.Fatalf("while a role that may not insert into events holds a transaction open the reader reads the reach %s; want it past %s",
 			third, second)
@@ -240,10 +260,11 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 
 // reachFixture is a database holding textversionstest.Issue and otherIssue, a broker, and a fill
 // on it caught up with one event, so it has stored a reach from a cursor at the log's newest
-// event.
+// event. The store and the fill compute the reach with reachMargin.
 func reachFixture(t *testing.T) (*store.Store, *events.Broker, *filler) {
 	t.Helper()
 	database := storetest.Open(t)
+	database.TextVersionsReachMargin = reachMargin
 	textversionstest.SeedIssue(t, database)
 	seedOtherIssue(t, database)
 	broker := events.NewBroker()
@@ -255,23 +276,51 @@ func reachFixture(t *testing.T) (*store.Store, *events.Broker, *filler) {
 	return database, broker, fill
 }
 
-// pastTheMargin waits until the database's clock is more than a second past start. A reach is
-// never later than T0 - 1 s (store.ComputeTextVersionsReach), so a reach read within a second of
-// start stays before it whatever the computation reads; past that margin only start's own
-// transaction, or an event that carries it, holds the reach before start, which is what the
-// reach tests prove. The wait is Eventually's minute at a pace of its own, 100 ms, since each
-// read of the clock is a statement to the database.
+// openComment is the transaction of a comment.created that commitComment begins and commits at
+// once, begun by beginComment and committed later (commit), so a test can begin it before a wait.
+type openComment struct {
+	tx        pgx.Tx
+	startedAt time.Time
+}
+
+// beginComment begins an openComment on database, rolled back once the test ends where it has not
+// committed.
+func beginComment(t *testing.T, database *store.Store) openComment {
+	t.Helper()
+	tx, startedAt := textversionstest.BeginTransaction(t, database)
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	return openComment{tx: tx, startedAt: startedAt}
+}
+
+// commit appends the comment.created of a new comment on issue in c's transaction, as
+// commitComment does, and commits it.
+func (c openComment) commit(t *testing.T, broker *events.Broker, issue string) committedEvent {
+	t.Helper()
+	id := appendComment(t, c.tx, broker, issue, c.startedAt)
+	if err := c.tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the comment.created of %s: %v", issue, err)
+	}
+	return committedEvent{id: id, startedAt: c.startedAt}
+}
+
+// pastTheMargin waits until the database's clock is past start by 1.1 × reachMargin, main's ratio
+// of its wait to its margin. A reach is never later than T0 − reachMargin
+// (store.ComputeTextVersionsReach), so a reach read before then stays before start whatever the
+// computation reads; past it only start's own transaction, or an event that carries it, holds the
+// reach at or before start, which is what the reach tests prove. A test that begins B's
+// transaction before the wait passes B's start, the later one, so the margin holds back neither
+// start once the wait is over. Its one bound is the shared wait's.
 func pastTheMargin(t *testing.T, database *store.Store, start time.Time) {
 	t.Helper()
-	past := start.Add(time.Second + 100*time.Millisecond)
-	testwait.WithinPolling(t, testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond,
-		fmt.Sprintf("the database's clock to pass %s", past.Format(time.RFC3339Nano)), func() bool {
-			var now time.Time
-			if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
-				t.Fatalf("read the database's clock: %v", err)
-			}
-			return now.After(past)
-		})
+	past := start.Add(reachMargin * 11 / 10)
+	testwait.Until(t, fmt.Sprintf("the database's clock to pass %s, 1.1 × the reach's margin after %s",
+		past.Format(time.RFC3339Nano), start.Format(time.RFC3339Nano)), func() (time.Time, bool) {
+		var now time.Time
+		if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		return now, now.After(past)
+	})
 }
 
 // requireReachBefore holds the reach the fill stored, and the reach a read computes now
@@ -292,24 +341,21 @@ func requireReachBefore(t *testing.T, database *store.Store, at time.Time, when 
 }
 
 // awaitReachPast waits until the reach a read computes is past every one of times, which it is
-// once a second has passed since the last of them and no transaction holds it back.
+// once the margin has passed since the last of them and no transaction or unwritten event holds it
+// back. Its one bound is the shared wait's, whose failure names the reach it read last.
 func awaitReachPast(t *testing.T, database *store.Store, times ...time.Time) {
 	t.Helper()
-	var reach time.Time
-	var reached bool
-	if !testwait.Holds(15*time.Second, 100*time.Millisecond, func() bool {
-		var err error
-		if reach, reached, err = database.TextVersionsReach(t.Context()); err != nil {
+	testwait.Until(t, fmt.Sprintf("the reach to pass %v", times), func() (string, bool) {
+		reach, reached, err := database.TextVersionsReach(t.Context())
+		if err != nil {
 			t.Fatalf("read the reach: %v", err)
 		}
 		past := reached
 		for _, at := range times {
 			past = past && reach.After(at)
 		}
-		return past
-	}) {
-		t.Fatalf("the reach is %s (reached: %t) 15 s on; want it past %v", reach, reached, times)
-	}
+		return fmt.Sprintf("%s (reached: %t)", reach, reached), past
+	})
 }
 
 // reachAs reads the reach as database's role, which must have reached a time.
@@ -354,11 +400,15 @@ func createLoginRole(t *testing.T, database *store.Store, kind, options string) 
 }
 
 // storeAs is a store on database's own database that connects as role, closed once the test
-// ends, before role is dropped.
+// ends, before role is dropped. It computes the reach with database's margin
+// (store.Store.TextVersionsReachMargin), which storetest.Reopened, building a store of its pool
+// alone, leaves at zero.
 func storeAs(t *testing.T, database *store.Store, role, password string) *store.Store {
 	t.Helper()
-	return storetest.Reopened(t, database, func(config *pgxpool.Config) {
+	reopened := storetest.Reopened(t, database, func(config *pgxpool.Config) {
 		config.ConnConfig.User, config.ConnConfig.Password = role, password
 		config.MinConns, config.MinIdleConns = 0, 0
 	})
+	reopened.TextVersionsReachMargin = database.TextVersionsReachMargin
+	return reopened
 }

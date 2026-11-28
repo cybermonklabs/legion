@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -87,7 +88,7 @@ func BenchmarkTheRulesReRead(b *testing.B) {
 			update search_text_versions_fill set rules = 1 where id = 1`); err != nil {
 			b.Fatalf("put the seeded keyword rows back: %v", err)
 		}
-		fill := newFiller(traced.Pool, nil)
+		fill := newFiller(traced.Pool, nil, clock.Real(), 0)
 		b.StartTimer()
 		for {
 			result, err := fill.batch(ctx, newest)

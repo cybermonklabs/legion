@@ -157,12 +157,14 @@ This includes an event that a transaction still open will commit.
 
 3. B, the oldest `created_at` of the events above the cursor, read in a later statement with its own snapshot, which checks the cursor against the newest event again.
 
-4. The reach: the earliest of A, B and T0 less 1 s, less 1 µs.
+4. The reach: the earliest of A, B and T0 less the margin, 1 s, less 1 µs.
 
 A transaction open at step 2 is in A.
 A transaction that commits after step 2 and before step 3 is in B.
 A transaction that starts after step 2 started after T0.
-The 1 s covers the moment between the start of a transaction and its report of `xact_start`.
+The margin covers the moment between the start of a transaction and its report of `xact_start`.
+It is a parameter of `ComputeTextVersionsReach`: zero is 1 s, which every serving process uses.
+A test may pass a shorter one, through `Store.TextVersionsReachMargin` and the fill's own field, so its waits on the database's clock pass it sooner; no deployment sets either.
 No value is computed, and the stored reach stands, while a backend that can write an event is in a transaction whose start this role cannot read.
 The same is true while the cursor is more than 5,000 events behind the newest event, and while it is past the newest event after a reset of the log that the fill has not found yet.
 The fill stores the reach in each batch's transaction and never lowers it, and a reset of the event log sets it to null.

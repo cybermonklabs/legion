@@ -19,6 +19,7 @@ import (
 // same body again. The message's create starts its first version, the first edit a version of its
 // new body, which its event carries whole, and the second edit none.
 func TestAnEditedMessageStartsAVersionOfItsNewBody(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -47,6 +48,7 @@ func TestAnEditedMessageStartsAVersionOfItsNewBody(t *testing.T) {
 // three versions, the last the delete's, of the empty body from its event, whose row's vector is
 // the post's own search column after the delete, the vector of the empty body.
 func TestAnEditedThenDeletedPostEndsWithAnEmptyVersion(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -81,6 +83,7 @@ func TestAnEditedThenDeletedPostEndsWithAnEmptyVersion(t *testing.T) {
 // gives no body, rather than the one another change kept. A post's changes are counted from its
 // create, whether an earlier batch wrote the create's row or the batch decides it too.
 func TestACutBodyIsReadWholeFromThePostsBodyHistory(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()

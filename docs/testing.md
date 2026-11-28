@@ -796,22 +796,25 @@ test that asserts which deadline a wait meets sets a `clocktest.Fake` as the run
 
 ## A test in Dispatch's smaller packages runs beside the others
 
-Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
+Every top-level test of these 20 packages of `packages/envoy` calls `t.Parallel()` as its first
 statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
 
 - `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
   `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
   `internal/dispatch/horizontest`, `internal/dispatch/processes`, `internal/dispatch/redeliver`,
-  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`;
+  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`,
+  `internal/dispatch/textversions`;
 - `internal/cmdtest`, `internal/contracts`, `internal/integration`, `internal/pglisten`,
   `internal/testport`, `internal/textcheck`;
 - `natsversion`, `natsversion/cmd/natsfloor`.
 
-The ten of them whose tests open a database (architecture, duty, events, files, processes,
-redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
-`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
+The eleven of them whose tests open a database (architecture, duty, events, files, processes,
+redeliver, routes, sessionanswers, startup, textversions and pglisten) run 4 at once: each
+`TestMain` calls `storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
 `storetest.DefaultParallel` says why it is 4. Each test has a database of its own
 (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+In textversions the first test to open a database also stays serial, with its comment: it builds
+the template the others clone, before any parallel test runs, so none of them waits in that build.
 
 `internal/dispatch/refs` follows the same rule and runs 4 at once through the same
 `storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar

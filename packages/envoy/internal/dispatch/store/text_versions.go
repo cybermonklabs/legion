@@ -145,9 +145,10 @@ func (s *Store) TextVersionsAt(ctx context.Context, cut time.Time) (TextVersions
 // reached is false while the fill has written no cursor row, while that row records rules earlier
 // than TextVersionsRules, and while it has stored no reach and none can be computed now.
 //
-// It reads the cursor row and computes the reach again (ComputeTextVersionsReach) in one
-// read-only READ COMMITTED transaction, and answers the greater of the stored reach and the
-// computed one, so the reach it answers is never earlier than the one the fill stored.
+// It reads the cursor row and computes the reach again (ComputeTextVersionsReach), with the
+// store's TextVersionsReachMargin, in one read-only READ COMMITTED transaction, and answers the
+// greater of the stored reach and the computed one, so the reach it answers is never earlier than
+// the one the fill stored.
 func (s *Store) TextVersionsReach(ctx context.Context) (reach time.Time, reached bool, err error) {
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -158,7 +159,7 @@ func (s *Store) TextVersionsReach(ctx context.Context) (reach time.Time, reached
 	if err != nil || !found {
 		return time.Time{}, false, err
 	}
-	computed, ok, err := ComputeTextVersionsReach(ctx, tx, cursor)
+	computed, ok, err := ComputeTextVersionsReach(ctx, tx, cursor, s.TextVersionsReachMargin)
 	if err != nil {
 		return time.Time{}, false, err
 	}
@@ -231,6 +232,11 @@ select n.near,
        case when n.near then (select min(e.created_at) from public.events e where e.id > $1 and e.id <= $1 + $2) end
   from (select coalesce(max(id), 0) between $1 and $1 + $2 as near from public.events) n`
 
+// textVersionsReachMargin is the margin the keyword table's reach stays before T0
+// (ComputeTextVersionsReach): 1 s, which covers the moment between a transaction's start and its
+// report of xact_start. A margin of zero, which every serving process passes, is this one.
+const textVersionsReachMargin = time.Second
+
 // ComputeTextVersionsReach computes the keyword table's reach for a fill whose cursor is cursor,
 // on tx, which must be a READ COMMITTED transaction: the latest time T such that every event whose
 // created_at is at or before T has its rows, an event a transaction still open will commit
@@ -251,15 +257,21 @@ select n.near,
 //  3. In a later statement, with a snapshot of its own: whether the cursor is still in the
 //     window, and B, the oldest created_at of the committed events above the cursor
 //     (textVersionsUnwrittenQuery).
-//  4. The reach: least(A, B, T0 − 1 s) − 1 µs.
+//  4. The reach: least(A, B, T0 − margin) − 1 µs.
 //
 // The order is what makes it safe. An event's created_at is the start of the transaction that
 // wrote it. A transaction open at step 2 is in A; one that commits after step 2 and before step
-// 3's snapshot is in B; one that starts after step 2 started after T0. The one-second margin
-// covers the moment between a transaction's start and its report of xact_start.
+// 3's snapshot is in B; one that starts after step 2 started after T0. The margin covers the
+// moment between a transaction's start and its report of xact_start: zero is
+// textVersionsReachMargin, 1 s, and only a test passes a shorter one
+// (Store.TextVersionsReachMargin, and the fill's own), so its waits on the database's clock pass
+// it sooner.
 //
 // The fill calls it inside each batch's transaction, and TextVersionsReach inside its own.
-func ComputeTextVersionsReach(ctx context.Context, tx pgx.Tx, cursor int64) (time.Time, bool, error) {
+func ComputeTextVersionsReach(ctx context.Context, tx pgx.Tx, cursor int64, margin time.Duration) (time.Time, bool, error) {
+	if margin == 0 {
+		margin = textVersionsReachMargin
+	}
 	var t0 time.Time
 	var isolation string
 	var near bool
@@ -292,7 +304,7 @@ func ComputeTextVersionsReach(ctx context.Context, tx pgx.Tx, cursor int64) (tim
 	if !near {
 		return time.Time{}, false, nil
 	}
-	reach := t0.Add(-time.Second)
+	reach := t0.Add(-margin)
 	for _, bound := range []*time.Time{oldestOpen, oldestUnwritten} {
 		if bound != nil && bound.Before(reach) {
 			reach = *bound

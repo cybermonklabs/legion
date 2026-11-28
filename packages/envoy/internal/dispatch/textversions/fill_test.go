@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,6 +34,7 @@ import (
 // every event has exactly the rows it starts, none twice and none missing, and the cursor row says
 // this build's rules version (RulesVersion) wrote them.
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
@@ -91,22 +94,31 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 // the horizon passes an event to the event's rows, where nothing announces the moment the horizon
 // moves: with the fill caught up, an event write stays open while three events commit, so the
 // horizon stands below them, and then rolls back, which sends no notification. The fill reads the
-// horizon again on its own, 1 s and then up to 8 s apart, and the three events have their rows
-// within 60 s of the moment Horizon.Await answers an id at or above them: under the fill's hold,
-// and with no holder.
+// horizon again on its own, on its clock (filler.clock), here a fake the test moves: while the
+// transaction holds the horizon, each pass writes no row and arms the next read exactly 1 s, 2 s,
+// 4 s and then 8 s (rereadMax) after it, never longer. Once the horizon has passed the three
+// events, the pass of the read armed before it, at most rereadMax ahead, so within 60 s, writes
+// their rows, and the fill returns with nothing armed: under the fill's hold, and with no holder.
 func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
+	t.Parallel()
+	// The longest wait between two reads of the horizon is the one bound between the horizon
+	// passing an event and the pass that writes its rows; the rows below read that schedule
+	// exactly.
+	if rereadMax > time.Minute {
+		t.Fatalf("rereadMax is %v: the fill may write an event's rows more than 60 s after the horizon passed it", rereadMax)
+	}
 	for _, held := range []bool{true, false} {
 		name := "under its hold"
 		if !held {
 			name = "with no holder"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			textversionstest.SeedIssue(t, database)
 			broker := events.NewBroker()
 			horizon := events.NewHorizon(database.Pool)
 			fill := testFiller(database, horizon, io.Discard)
-			fill.rest = sleep
 			holder := uuid.Nil
 			if held {
 				holder = takeFillHold(t, database)
@@ -117,6 +129,11 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 			if err := fill.toHorizon(ctx); err != nil {
 				t.Fatalf("catch the fill up: %v", err)
 			}
+			// From here the fill waits on a fake, as newFiller on it makes it wait: its reads of the
+			// horizon again, and its rest after a batch for the batch's time on the fake, which
+			// stands still while a batch runs.
+			fake := clocktest.New(fakeStart)
+			fill.clock, fill.rest = fake, fake.Sleep
 
 			holding, _ := textversionstest.BeginTransaction(t, database)
 			defer func() { _ = holding.Rollback(context.Background()) }()
@@ -132,12 +149,28 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() { done <- fill.toHorizon(ctx) }()
-			// The fill reads the horizon below the three events and reads it again, at 1 s and then
-			// 2 s, while the transaction holds it there.
-			time.Sleep(3 * time.Second)
-			if rows := textversionstest.RowsOf(t, database, ids...); rows != 0 {
-				t.Fatalf("the fill wrote %d rows of events the horizon had not passed", rows)
+
+			// While the transaction holds the horizon below the three events, each pass finds them
+			// above it, writes none of their rows, and arms its next read of the horizon, alone on
+			// the fill's clock.
+			due := fakeStart
+			awaitReread := func(wait time.Duration) {
+				t.Helper()
+				due = due.Add(wait)
+				armed := fake.AwaitArmedAt(t, fmt.Sprintf("the fill's next read of the horizon, %v after its last pass", wait), due)
+				if len(armed) != 1 {
+					t.Fatalf("the fill's clock holds %v; want its next read of the horizon at %s alone", armed, due)
+				}
+				if rows := textversionstest.RowsOf(t, database, ids...); rows != 0 {
+					t.Fatalf("the fill wrote %d rows of events the horizon had not passed", rows)
+				}
 			}
+			for _, wait := range []time.Duration{rereadFirst, 2 * time.Second, 4 * time.Second, rereadMax, rereadMax} {
+				awaitReread(wait)
+				fake.Set(due)
+			}
+			awaitReread(rereadMax)
+
 			if err := holding.Rollback(ctx); err != nil {
 				t.Fatalf("end the transaction that holds the horizon: %v", err)
 			}
@@ -148,20 +181,27 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 			if safe < ids[2] {
 				t.Fatalf("Await answered %d, below the third event %d", safe, ids[2])
 			}
-			passed := time.Now()
-			if !testwait.Holds(time.Minute, 50*time.Millisecond, func() bool {
-				return textversionstest.RowsOf(t, database, ids...) >= len(ids)
-			}) {
-				t.Fatalf("the three events had %d rows a minute after the horizon passed them", textversionstest.RowsOf(t, database, ids...))
-			}
-			t.Logf("the rows came %s after the horizon passed the events", time.Since(passed).Round(time.Millisecond))
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("the fill: %v", err)
+			// The horizon has passed the three events. The read armed before it did is the first
+			// after it: its pass writes their rows, and the fill returns with no wait armed.
+			fake.Set(due)
+			var returned error
+			if armed := testwait.Until(t, "the fill to return, or to arm another wait, once its read of the horizon past the three events ran", func() ([]time.Time, bool) {
+				select {
+				case returned = <-done:
+					return nil, true
+				default:
 				}
-			case <-time.After(time.Minute):
-				t.Fatal("the fill did not return once the horizon passed every event it saw")
+				armed := fake.Armed()
+				return armed, len(armed) > 0
+			}); armed != nil {
+				t.Fatalf("after its read of the horizon past the three events the fill wrote %d of their rows and armed %v on its clock; want their rows written by that read's pass and the fill returned",
+					textversionstest.RowsOf(t, database, ids...), armed)
+			}
+			if returned != nil {
+				t.Fatalf("the fill: %v", returned)
+			}
+			if rows := textversionstest.RowsOf(t, database, ids...); rows != len(ids) {
+				t.Fatalf("the fill returned with %d rows of the three events the horizon passed; want %d", rows, len(ids))
 			}
 			if got := readCursorRow(t, database); got.eventID != ids[2] || got.holder != holderText(holder) {
 				t.Fatalf("the cursor row is at event %d naming holder %q; want event %d and holder %q",
@@ -178,6 +218,7 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 // event. The fill finds the reset, empties the table and its cursor and writes the new log from
 // its first event: no row of the old log is left, and the new events have exactly their rows.
 func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
+	t.Parallel()
 	for _, form := range []struct {
 		name  string
 		reset []string
@@ -190,6 +231,7 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 		{name: "delete and restart the sequence", reset: []string{`delete from events`, `alter sequence events_id_seq restart`}, issues: 9, pastCursor: true},
 	} {
 		t.Run(form.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			textversionstest.SeedProject(t, database)
 			broker := events.NewBroker()
@@ -269,6 +311,7 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 // duty_holds no longer names its holder and writes nothing: no row and no move of the cursor,
 // which still names the first holder, and the fill answers duty.ErrHoldLost.
 func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
@@ -324,6 +367,7 @@ func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
 // before it and stops there, with an error that names it: the cursor stands at the event before,
 // and no event after it has a row, so none is passed by.
 func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
@@ -359,6 +403,7 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 // name "" as the issue's primary_artifact_id. Each starts a version that names no document
 // version, and the fill writes both and moves its cursor past them.
 func TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
@@ -401,6 +446,7 @@ func TestAnIssueWithAnEmptyPrimaryDocumentIDHasVersionsThatNameNone(t *testing.T
 // brace and a parenthesis). A whole post's id, which the fill never casts, need not be a uuid: its
 // version is written, and the fill moves past it.
 func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
+	t.Parallel()
 	const canonical = "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
 	key := otherIssue
 	actor := model.Actor{Kind: "user", ID: "alice"}
@@ -446,6 +492,7 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 	}
 
 	t.Run("Postgres reads as a uuid each id the rules pass", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		ids := []string{canonical, strings.ToUpper(canonical), "a0EEbc99-9C0b-4eF8-Bb6d-6bB9bd380A11"}
 		for _, id := range ids {
@@ -468,6 +515,7 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 	})
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			database := storetest.Open(t)
 			textversionstest.SeedProject(t, database)
 			broker := events.NewBroker()
@@ -509,10 +557,15 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 // batch reads at most 2 MB of it; each batch commits under its statement_timeout (a batch that
 // runs past it fails the fill), and every event has its rows.
 //
-//   - 24 issues created with a primary document of about 1 MiB, each then retitled, which
-//     carries that version forward, and 4 of them given a new version of about 1 MiB: each of
-//     their 52 rows reads about 1 MiB of markdown. A count of their payloads alone, as the fill
-//     counted at a5078553, puts the 48 issue events in one batch.
+//   - One issue created with a primary document of about 700 KB (specBytes), then retitled, which
+//     carries that version forward, then given a new version of about 700 KB, then retitled
+//     again: each of its 4 rows reads about 700 KB of markdown, so two of them fit in a batch and
+//     three do not, and the fill writes them in two batches of two. These are the fewest issues and
+//     events, and the smallest document, that give more than one batch of more than one event with
+//     a retitle and a new version. A count of their payloads alone, as the fill counted at
+//     a5078553, puts the 4 issue events in one batch, which reads about 2.8 MB. (Until INFRA-6353
+//     the log held 24 issues with a document of about 1 MiB, each retitled and 4 of them given a
+//     new version: 52 rows reading about 52 MB of markdown.)
 //   - A comment of 10 KB, carried whole, and 400 comment.edited events that leave it as it was,
 //     so they start no row: their payloads still count, about 4 MB, so they take two batches at
 //     least.
@@ -522,31 +575,31 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 //     where the comment's row holds the few words; a count of the row's body puts them in one
 //     batch.
 func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
+	t.Parallel()
 	t.Run("the markdown each issue row reads", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedProject(t, database)
 		broker := events.NewBroker()
-		const issueCount, newVersions = 24, 4
-		var want []textversionstest.Written
-		issues := make([]textversionstest.WrittenIssue, 0, issueCount)
-		for n := 1; n <= issueCount; n++ {
-			issue, created := writeSpecIssue(t, database, broker, n)
-			issues, want = append(issues, issue), append(want, created)
-		}
-		retitles := make([]model.Event, 0, len(issues))
-		for _, issue := range issues {
-			retitles = append(retitles, issue.Event("issue.updated", issue.Title+", then audit the verifiers"))
-		}
-		for _, id := range textversionstest.CommitEvents(t, database, broker, retitles...) {
+		issue, created := writeSpecIssue(t, database, broker, 1)
+		want := []textversionstest.Written{created}
+		retitle := func(title string) {
+			t.Helper()
+			id := textversionstest.CommitEvents(t, database, broker, issue.Event("issue.updated", title))[0]
 			want = append(want, textversionstest.Written{ID: id, Versions: 1})
 		}
-		for _, issue := range issues[:newVersions] {
-			want = append(want, writeSpecVersion(t, database, broker, issue, 2))
+		retitle(issue.Title + ", then audit the verifiers")
+		want = append(want, writeSpecVersion(t, database, broker, issue, 2))
+		retitle(issue.Title + ", then audit the verifiers twice")
+		batches := fillWithinTheBound(t, database, want)
+		if len(batches) < 2 || slices.ContainsFunc(batches, func(b logLine) bool { return b.Events < 2 }) {
+			t.Fatalf("the fill wrote the issue's %d events in the batches %+v; want two batches at least, each of more than one event, the case this log is made for",
+				len(want), batches)
 		}
-		fillWithinTheBound(t, database, want)
 	})
 
 	t.Run("the payload of an event that starts no row", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		broker := events.NewBroker()
@@ -568,6 +621,7 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 	})
 
 	t.Run("the revision 1 a cut comment reads", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		broker := events.NewBroker()
@@ -605,6 +659,7 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 // anything else, so every event has its rows, and raises the version. After a reset of the event
 // log the fill writes the cursor row again, with this build's version.
 func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
@@ -662,12 +717,11 @@ func fillWithinTheBound(t *testing.T, database *store.Store, want []textversions
 	t.Helper()
 	var logs logtest.Buffer
 	fill := testFiller(database, events.NewHorizon(database.Pool), &logs)
-	started := time.Now()
 	if err := fill.toHorizon(t.Context()); err != nil {
 		t.Fatalf("the fill, which a batch past its statement_timeout fails: %v", err)
 	}
 	batches := batchLines(t, &logs)
-	t.Logf("the fill wrote %d events in %d batches in %s", len(want), len(batches), time.Since(started).Round(time.Millisecond))
+	t.Logf("the fill wrote %d events in %d batches", len(want), len(batches))
 	textversionstest.RequireOnlyRowsOf(t, database, want)
 	var measured int
 	for _, b := range batches {
@@ -711,9 +765,10 @@ func batchText(t *testing.T, database *store.Store, first, last int64) int64 {
 	return read
 }
 
-// specBytes is about the size of each primary document version specMarkdown makes: about 1 MiB,
-// under pmdoc.MaxDocumentBytes, so two of them fit in a batch's 2 MB and three do not.
-const specBytes = 1_000_000
+// specBytes bounds the size of each primary document version specMarkdown makes: a third of a
+// batch's 2 MiB (batchBytes) and more than a paragraph more, so each version is over a third of
+// the bound, and two of them fit in a batch and three do not; under pmdoc.MaxDocumentBytes.
+const specBytes = batchBytes/3 + 1_000
 
 // specMarkdown is version number of issue n's primary document: a heading and paragraphs of
 // words, up to specBytes.
@@ -793,10 +848,16 @@ func holderText(holder uuid.UUID) string {
 	return holder.String()
 }
 
+// fakeStart is the moment a test's clocktest.Fake stands at when it is made. No verdict reads it
+// but as the start of the waits the code arms on the fake.
+var fakeStart = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+
 // testFiller is a fill on database's shared pool up to horizon, logging to logs at debug level,
-// that does not rest between batches, so a test of many batches is not twice their length.
+// that does not rest between batches, so a test of many batches is not twice their length. Its
+// waits run on the wall clock, and its batches compute the reach with database's margin
+// (store.Store.TextVersionsReachMargin), so the reach it stores and the one database reads agree.
 func testFiller(database *store.Store, horizon *events.Horizon, logs io.Writer) *filler {
-	fill := newFiller(database.Pool, horizon)
+	fill := newFiller(database.Pool, horizon, clock.Real(), database.TextVersionsReachMargin)
 	fill.logger = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	fill.rest = func(context.Context, time.Duration) error { return nil }
 	return fill
@@ -829,18 +890,25 @@ func commitComment(t *testing.T, database *store.Store, broker *events.Broker, i
 	var committed committedEvent
 	textversionstest.Commit(t, database, func(tx pgx.Tx) {
 		startedAt := textversionstest.TransactionStart(t, tx)
-		actor := model.Actor{Kind: "user", ID: "alice"}
-		appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
-			Payload: model.CommentEventPayload{Comment: model.Comment{
-				ID: uuid.NewString(), IssueKey: &issue, Author: actor, Body: "The signing keys rotate on Monday.", CreatedAt: startedAt,
-				Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
-			}}})
-		if err != nil {
-			t.Fatalf("append a comment.created of %s: %v", issue, err)
-		}
-		committed = committedEvent{id: appended.ID, startedAt: startedAt}
+		committed = committedEvent{id: appendComment(t, tx, broker, issue, startedAt), startedAt: startedAt}
 	})
 	return committed
+}
+
+// appendComment appends a comment.created event of a new comment on issue in tx, which began at
+// startedAt, the event appended through the broker, and answers its id.
+func appendComment(t *testing.T, tx pgx.Tx, broker *events.Broker, issue string, startedAt time.Time) int64 {
+	t.Helper()
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
+		Payload: model.CommentEventPayload{Comment: model.Comment{
+			ID: uuid.NewString(), IssueKey: &issue, Author: actor, Body: "The signing keys rotate on Monday.", CreatedAt: startedAt,
+			Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
+		}}})
+	if err != nil {
+		t.Fatalf("append a comment.created of %s: %v", issue, err)
+	}
+	return appended.ID
 }
 
 // countRows counts the keyword table's rows.
