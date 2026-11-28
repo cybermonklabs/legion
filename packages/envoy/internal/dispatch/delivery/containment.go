@@ -188,8 +188,7 @@ func ContainingRun(pr DeliveryPullRequest, deployRepo string, applies []Apply) *
 // time of a binary search where FirstShippingApply reads every apply: the applies by creation, and
 // for each the earliest-completing (compareApplies) of it and every apply created after it, which
 // is FirstShippingApply's answer for a merge before that apply's creation and at or after the
-// creation of the one before it. The day-row refresher's rewrite of a settings change (evals'
-// rewriteSettings) ships every pull request of the history with one.
+// creation of the one before it.
 type ShippingIndex struct {
 	byCreated []Apply
 	first     []int

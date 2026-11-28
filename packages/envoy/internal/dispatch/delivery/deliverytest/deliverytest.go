@@ -1,8 +1,7 @@
 // Package deliverytest seeds deliveryseed's delivery history into a test's database. It is an
 // ordinary package rather than a _test.go file so that every package whose tests need such a
 // history can import it (Go cannot share test-only code across packages), and only test files
-// import it (internal/textcheck). A command writes the same history through deliveryseed.Write,
-// the one writer of it, which Seed calls too.
+// import it (internal/textcheck). Seed calls deliveryseed.Write, the one writer of that history.
 package deliverytest
 
 import (

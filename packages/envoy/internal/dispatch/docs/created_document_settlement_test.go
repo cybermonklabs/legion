@@ -110,12 +110,11 @@ func (f *createdDocuments) armed(room string) bool {
 	return armed
 }
 
-// A document CreateDocument creates whose tree a settlement has nothing to write into - every
-// block given its id by the parse, no ask block, no check block carrying `ci_check`, as a
-// project's `evals-md` is on every project create - owes no settlement (seedOwesSettlement). Its
-// commit leaves no pending-settlement row and no record of its room, and the version
-// CreateDocument wrote stands holding the seeded markdown. Nothing settles it afterwards, so no
-// settlement takes its room: not settleOwedNow, not a load of the room, not Shutdown. The same
+// A document CreateDocument creates owes no settlement if every block has a unique ID and its
+// tree has no ask block or check block carrying `ci_check` (seedOwesSettlement). Its commit
+// leaves no pending-settlement row or room record, and the first version holds the seeded
+// markdown. Nothing settles it afterwards, so no settlement takes its room: not settleOwedNow,
+// not a load of the room, not Shutdown. The same
 // create of a document holding an ask block still owes its settlement, which runs as before: the
 // row and the room's record stand after the commit, and settleOwedNow takes the room, opens the
 // ask and deletes the row. Red where the seed owes a settlement whatever its tree holds: the plain
@@ -214,8 +213,8 @@ func TestACreatedDocumentOwesASettlementOnlyWhereItsTreeNeedsOne(t *testing.T) {
 // serves every document, and a later write that gives the tree what a settlement writes into owes
 // that settlement as any write does. Each case creates a document that owes none, then makes one
 // such write through a write path that changes an existing document on the server, as bob:
-//   - an ops edit inserting an ask block into a project document, as the eval registry's write
-//     of a method into `evals-md` and the edit route make it (ApplyOps, then SnapshotVersion);
+//   - an ops edit inserting an ask block into a project document, using the edit route's
+//     sequence (ApplyOps, then SnapshotVersion);
 //   - an upload replacing an issue document's whole text (WriteDocumentText), which gives a
 //     check block that the seed wrote without `ci_check` a `ci_check`.
 //
@@ -275,7 +274,7 @@ func TestACreatedDocumentOwesTheSettlementOfALaterEditThatNeedsOne(t *testing.T)
 				if len(edit.AddedAskBlocks) != 1 || edit.AddedAskBlocks[0].ID != "ship" {
 					t.Errorf("the ops edit answered that it added the ask blocks %+v, want ship alone", edit.AddedAskBlocks)
 				}
-				// The edit route and the eval registry schedule a settlement for every batch that applied.
+				// The edit route schedules a settlement for every batch that applied.
 				return edit.Applied > 0
 			},
 			settled: func(t *testing.T, document string) {

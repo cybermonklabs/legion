@@ -424,7 +424,7 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 // GitHub spells the repository (`Acme/Widgets`) and lowercased, as Dispatch stores a GitHub link,
 // and the link source compares both lowercased. So every reader of the ranked list — one pull
 // request's pick (resolveStoredIssueKey), the stored rows' pick (AttributePullRequests) and the
-// list the evals' owner keys are made of (ResolvedCandidates) — answers alike for two pull requests
+// full list (ResolvedCandidates) — answers alike for two pull requests
 // whose links were stored in opposite orders, as two databases holding the same links may hold
 // them.
 func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn(t *testing.T) {

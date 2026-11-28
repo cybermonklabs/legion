@@ -336,7 +336,7 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 // planner took over a fresh database's tables no ANALYZE had read. The deploy runs here all failed
 // their production job, so no day's bound finds a deploy that shipped after the day, and each walks
 // every later run and probes its jobs, as the bounds did while a fixture's jobs were not yet
-// committed in the eval day-row refresher's snapshot (dispatch://INFRA-2916). The read answers the
+// committed in the read's snapshot (dispatch://INFRA-2916). The read answers the
 // runs its control answers: the statement as it stood, the days' lists inside the IN of the read of
 // the runs, which must break the rule under the custom plan, since it built every day's lists again
 // for each deploy run.

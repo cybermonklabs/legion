@@ -1,10 +1,8 @@
 // Package deliveryseed writes one delivery history into a Dispatch database and answers what it
-// wrote. The delivery and CI measures (GET /api/v1/delivery/measures, GET /api/v1/delivery/pipeline,
-// and the day parts dispatch://INFRA-2916 folds them from) count thousands of pull requests, runs
-// and jobs at once, and a check that compares two computations of them compares nothing until a
-// history that size exists. Write is the one writer of that history: the tests of several packages
-// seed it through deliverytest.Seed, which only test files may import, and the eval fixture loader
-// (evals/evalfixture) writes it for its command, so this package is no test support.
+// wrote. The Delivery measures and Pipeline routes count thousands of pull requests, runs and
+// jobs at once. A check that compares two computations of those measures needs a history of that
+// size. Write is the one writer of that history. Tests in several packages call it through
+// deliverytest.Seed, which only test files may import.
 //
 // Write stores the rows GitHub intake and the reconcile leave behind: the one delivery_settings
 // row, two projects and the issues the pull requests name, the first project's default repository
@@ -13,8 +11,8 @@
 // runs of that same repository (the one repository whose runs Dispatch reads), each run with its
 // jobs. Every value comes from one math/rand/v2 PCG source seeded by Spec.Seed and every time from
 // Spec.Now, so one spec writes the same history on every run. Each table is one statement that
-// unnests its columns as arrays, as legionseed writes its tables: a history of eighty thousand
-// jobs written a statement per row takes minutes against a real Postgres.
+// unnests its columns as arrays. Inserting eighty thousand jobs one statement per row takes
+// minutes against a real Postgres database.
 //
 // Containment (delivery/containment.go) ships a pull request of the deploy repository with the
 // earliest-completing successful production job of a deploy run on main that GitHub created after
@@ -154,8 +152,7 @@ const smokeTimeout = 30 * time.Minute
 //
 // IssueOffset, zero by default, is how many of the project's issue numbers another history took
 // already: the project's issues are numbered from IssueOffset+1, so this history can be written
-// beside that one (a legionseed history of the same project, say). It takes the same random
-// draws, so only the project's issue keys move.
+// beside that one. It takes the same random draws, so only the project's issue keys move.
 type Spec struct {
 	Project     string    `json:"project"`
 	Now         time.Time `json:"now"`
@@ -220,8 +217,7 @@ type Fixture struct {
 	Deployed, Waiting, ShippedNone int
 }
 
-// Summary is one line naming the history and its counts, which deliverytest.Seed logs and a
-// command prints.
+// Summary is one line naming the history and its counts, which deliverytest.Seed logs.
 func (f Fixture) Summary() string {
 	jobs, deployRuns := 0, 0
 	for _, run := range f.Runs {

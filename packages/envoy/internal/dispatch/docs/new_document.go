@@ -15,15 +15,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// This file is the write of a new artifact's row and of a markdown document's whole text, which
-// an upload (api's storeArtifact) makes over a request and the eval registry
-// (internal/dispatch/evals) makes with none: a project's `evals-md` document is created by the
-// first eval write that needs it. Both packages call these functions, so a document either of
-// them creates is stored by the same statements. They live here, beside the document service
-// whose transaction they join, because api's eval routes call the registry, so the registry
-// cannot import api. Each of them runs in the read phase of a transaction joined with the
-// document service (Join) and queues its writes on that transaction's ledger, which its Commit
-// sends as the write phase's one batch (Ledger).
+// The artifact upload handler (api's storeArtifact) and CreateDocument share the functions that
+// insert an artifact row and write a markdown document's whole text. CreateDocument makes those
+// writes without an upload request. The functions run in the read phase of a transaction joined
+// with the document service (Join). They queue writes on the ledger, which Commit sends as one
+// batch in the write phase.
 
 // ArtifactColumns is the canonical artifact column list ScanArtifact reads. role is read through
 // coalesce because model.Artifact carries it as "" when the document plays no role.
@@ -71,12 +67,9 @@ type NewArtifact struct {
 // for the rest of tx, as api's lockAgentArtifacts does a conversation's. A project's upload
 // otherwise locks no row before it looks its artifact up by name or slug and takes a new slug, so
 // two uploads at once - `plan.md` and `plan-md` - could each miss the other and leave two
-// documents that one reference names; the eval registry's create of `evals-md` takes the same
-// lock, so it and an upload of `evals.md` cannot both create one, and api's title correction and
-// removal of a project document take it before they read the row again (beginArtifactWrite).
-// Only those writes take it. Each takes it before any row, room or the document's owner lock,
-// which comes after it in every taker, and the registry takes it after the eval's own lock
-// (evals' lockEval), which no holder of this lock waits on, so it joins no lock cycle.
+// documents that one reference names. The API also takes this lock before rereading the row for
+// a title correction or removal of a project document (beginArtifactWrite). These writes take
+// the project lock before any row lock, room lock or document owner lock.
 func LockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
 		return fmt.Errorf("lock the project's documents: %w", err)
@@ -228,9 +221,9 @@ type WrittenText struct {
 // left the document owing a settlement (WrittenText.OwesSettlement): a replacement does, and so
 // does a seed, unless CreateDocument made it and its tree needs no settlement (SeedText).
 //
-// It appends no event, and so states none of Blocks: an upload appends its own event, after the
-// approval moves a replacement makes, and the eval registry appends the creation's, and each
-// appends Blocks under it.
+// It appends no event and does not write Blocks to the store. The caller appends Blocks under
+// the event that records the write. An upload appends its event after any approval moves the
+// replacement makes.
 func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown string, actor model.Actor, summary *string, created bool, precondition *model.EditPrecondition) (WrittenText, error) {
 	ledger := ledgerFrom(ctx)
 	tx, joined := txFromContext(ctx)
@@ -281,10 +274,9 @@ func WriteDocumentText(ctx context.Context, documents API, artifactID, markdown 
 // seedOwesSettlement). Its first version is the one written here, at the head the seed leaves, so
 // a settlement of a tree it has nothing to write into would store nothing but the delete of the
 // pending-settlement row the seed left, and would load the document's room to do it, a room that
-// then stays resident until the idle sweep takes it: on every project create, whose `evals-md`
-// this creates (internal/dispatch/evals). Such a seed records nothing owed (SeedText), so no
-// settlement runs for it: none is scheduled, and neither the resumption, nor a load of the room,
-// nor Shutdown finds one owed.
+// then stays resident until the idle sweep removes it. Such a seed records nothing owed
+// (SeedText). No settlement is scheduled, and neither resumption, a room load nor Shutdown
+// finds one owed.
 func CreateDocument(ctx context.Context, documents API, row NewArtifact, markdown string) (model.Artifact, WrittenText, error) {
 	ledger := ledgerFrom(ctx)
 	if _, joined := txFromContext(ctx); !joined {

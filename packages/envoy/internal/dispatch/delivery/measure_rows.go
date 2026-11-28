@@ -17,17 +17,14 @@ import (
 
 // The rows the delivery and CI measures count, read by one function for every reader that counts
 // them: the delivery routes (api's readDeliveryRows and readPipelinePopulation) read their
-// window's (ReadWindowRows), and the eval registry's day rows (the refresher's read of the days a
-// page names, evals' readDeliveryDays) each UTC day's, every day of a page at once
-// (ListPullRequestsOnDays, and ReadDaysDeploys and ReadCIDays of each repository the rows are kept
-// for as the deploy repository), each day's part what ListPullRequestsInWindow, ReadDeploys and
-// ReadCIRows read of the day, so a route and a day row count the same rows by the same rules, and a
-// deploy's shipped pull requests by the same rule (Deploys.ShippedBy).
+// window's rows (ReadWindowRows). A caller that reads several UTC days at once uses
+// ListPullRequestsOnDays, and ReadDaysDeploys and ReadCIDays for each deploy repository.
+// Each day's results match the same day's reads by ListPullRequestsInWindow, ReadDeploys and
+// ReadCIRows, within the pull request bound. Both callers count a deploy's shipped pull requests
+// by the same rule (Deploys.ShippedBy).
 //
-// The reads an answer makes from the evals' day rows (api's evals items) take q, the pool or a
-// read-only transaction whose one snapshot the answer reads (evals.Store.BeginSnapshot). A read of
-// several statements runs them side by side on the pool and one after the other in a transaction
-// (readAll).
+// Reads that take q can use either the pool or a read-only transaction with a fixed snapshot.
+// readAll runs statements side by side on the pool and sequentially in a transaction.
 
 // readAll runs reads, the reads of one answer in q: on the pool side by side, each on a connection
 // of its own (store.ReadSideBySide), and in a transaction one after the other, since its one
@@ -95,10 +92,10 @@ func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 
 // ApplyRows is MergedRows' apply runs and their jobs read once from a moment on (ReadApplyRows),
 // for a reader of many windows that start at or after it, each of which takes its own part
-// (Since): the refresher's walk over the days, whose every day's read would otherwise read every
-// deploy run created from that day to now again. The apply runs of a page's days (ReadDaysDeploys)
-// are read the bounded way the routes read a window's (windowApplyRunsCreated) instead, every
-// day's window in one statement, and only those days take a part of them (windows).
+// (Since). This avoids rereading the deploy runs from each day onward. ReadDaysDeploys instead
+// uses the same upper bound for each day that the routes use for a window (windowApplyRunsCreated).
+// It reads the apply runs for all requested days in one statement. Only those days can take
+// their part (windows).
 type ApplyRows struct {
 	from time.Time
 	// windows is each day whose window's apply runs a read of several days holds
@@ -222,17 +219,14 @@ func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 	return rows, nil
 }
 
-// HistoryRows is what every day of the eval registry's delivery and CI day rows reads but its CI
-// runs, read once over the whole history: every population pull request merged before a moment,
-// in ListPullRequestsInWindow's order, and, for each repository asked for as the deploy
-// repository, every deploy run on main of it, whatever its event, oldest start first and those
-// started in one instant by run id (listRunsStartedIn's order), with its jobs of the names asked
-// for, each run's in ListRunJobs' order. A day's deploys, its apply runs and its deploy cards'
-// push runs are all among those runs, so a reader that builds every day at once (the day-row
-// refresher's rewrite of a settings change, evals' rewriteSettings) gives each day its part, where
-// a read of each day would read every deploy run created from that day on again. No limit bounds
-// it, as one bounds a window's reads (maxPullRequestsPerWindow, maxRunsPerWindow): the whole
-// history is what such a reader builds, and a limit would cut it short without a word.
+// HistoryRows holds every population pull request merged before a moment, in
+// ListPullRequestsInWindow's order. For each requested deploy repository it holds every deploy
+// run on main, regardless of event, oldest start first and ties by run ID (listRunsStartedIn).
+// It includes each run's jobs of the requested names in ListRunJobs' order.
+// A caller can take each day's deploys, apply runs and push runs from this one read, without
+// rereading the deploy runs from each day onward. It does not include PR-checks runs.
+// Unlike a window read (maxPullRequestsPerWindow, maxRunsPerWindow), this read has no limit:
+// a limit would silently omit part of the history.
 type HistoryRows struct {
 	PullRequests []DeliveryPullRequest
 	// Deploys is each repository's deploy runs and their jobs, by the repository.
@@ -455,8 +449,8 @@ func deploysOf(ctx context.Context, q Querier, settings DeliverySettings, from t
 // window (ReadMergedRows or ReadWindowRows of d's window) and those merged before it, of
 // d.Earlier, each list in that order. A deploy is one with pull requests when it ships one,
 // whenever the pull request merged (dispatch://INFRA-2916): the deploy-frequency measure's
-// with_prs (measures.Run.ShippedPRs) is this rule on the delivery routes and on the eval day rows
-// alike. The pointers are into window's and d.Earlier's lists.
+// with_prs (measures.Run.ShippedPRs) uses this rule on the delivery routes.
+// The pointers are into window's and d.Earlier's lists.
 func (d Deploys) ShippedBy(window MergedRows, settings DeliverySettings) map[int64][]*DeliveryPullRequest {
 	production := settings.Production()
 	// The two listings hold no run in common (Earlier's were created before the window, window's
@@ -506,15 +500,13 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 	return rows, nil
 }
 
-// The reads of several UTC days at once, the day-row refresher's read of the days a page names
-// (evals' readDeliveryDays): each read one day of the page needs is made once for every day of
-// the page rather than once a day, so a page naming N days makes as many statements of each as a
-// page naming one, and each answers, for each day, what the read of that day alone answers:
-// ListPullRequestsOnDays what ListPullRequestsInWindow answers, ReadDaysDeploys what ReadDeploys
-// answers and the apply runs each day takes its part of (DaysDeploys.Applies), and ReadCIDays what
-// ReadCIRows answers. A day is the window [day, day+1) of a UTC midnight, and the days are given in
-// order, each once; each answer is index-aligned with them. A read of several days answers what
-// the day's own read answers only up to the bound of a window's pull requests
+// These functions batch reads across UTC days. They run each batched statement once for the whole
+// request instead of once per day. ReadCIDays reads PR-checks jobs separately for each day.
+// ListPullRequestsOnDays answers what ListPullRequestsInWindow answers for each day.
+// ReadDaysDeploys answers what ReadDeploys answers, with optional apply runs (DaysDeploys.Applies).
+// ReadCIDays answers what ReadCIRows answers. A day is the window [day, day+1) from a UTC midnight.
+// Give the days in order, each once. Each answer is index-aligned with the days.
+// A read of several days matches each day's own read only up to the bound on pull requests
 // (maxPullRequestsPerWindow), past which the day's own read answers its oldest pull requests up to
 // the bound: a day whose window, or the window of the earlier rows of its deploys
 // (Deploys.Earlier), holds more is refused alone, ListPullRequestsOnDays and ReadDaysDeploys
@@ -548,9 +540,8 @@ func (w RefusedWindow) String() string {
 
 // daysSideBySide is how many days' reads of their own the reads of several days run at once, each
 // on a connection of its own: ReadCIDays' read of every job of each day's PR-checks runs, the one
-// read of a day whose rows grow with the day's runs rather than with the page's days (24,000 jobs a
-// day at ten times the stated run rate), which one statement for every day would read on one
-// connection.
+// read that returns rows in proportion to the runs on each day (24,000 jobs a day at ten times
+// the stated run rate). One statement for every day would read all those jobs on one connection.
 const daysSideBySide = 4
 
 // dayWindows is the window of each of days, [day, day+1), as the two lists of their starts and
@@ -617,10 +608,9 @@ func ListPullRequestsOnDays(ctx context.Context, q Querier, days []time.Time) ([
 // answers the oldest maxPullRequestsPerWindow: its list is empty, and the second answer, aligned
 // with the windows, holds its refusal, naming the window and the bound, and nil for every window
 // answered. No window answers part of its rows, so which of a window's rows the statement takes
-// does not matter: it answers them only where they are every one of the window's. A refusal costs
-// its own window alone, so the other windows, each another day's, are answered whatever one day
-// holds: a refusal of the whole read failed every day of the refresher's page with the one day
-// that held more, in every pass, so a day under the bound was never written either
+// does not matter: it answers them only where they are every one of the window's. A refusal
+// affects only its window. When the whole read was refused, every attempt failed for all days,
+// including those under the bound
 // (dispatch://INFRA-2916/comment/0d936c90-6b07-4049-bca2-7b08ea901db3). A limit the windows shared
 // (maxPullRequestsPerWindow times their number) let a window take the share another left unused,
 // and past it kept the oldest of every window's together without a word, leaving out a window's
@@ -746,8 +736,8 @@ func listDeployRunsCreatedInWindows(ctx context.Context, q Querier, repo string,
 // for each run. A bound that finds no production job succeeded after its day walks every later run
 // and probes its jobs, so with the jobs not yet committed in the read's snapshot and their probe
 // planned while delivery_run_jobs was nearly empty (the repository's jobs read for each probe) the
-// read of 278 runs over 17 days probed the jobs 77,284 times and took 29 s, the eval day-row
-// refresher's pass waiting on it (dispatch://INFRA-2916).
+// read of 278 runs over 17 days probed the jobs 77,284 times and took 29 s
+// (dispatch://INFRA-2916).
 var daysRunsQuery = `
 		with listed_runs as materialized (` + daysRunsListed + `
 		)
