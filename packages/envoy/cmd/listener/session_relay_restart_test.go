@@ -12,10 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -50,14 +50,10 @@ func failCreates(t *testing.T, rig *relayRig, sessionID string, n int) <-chan st
 	return failed
 }
 
-// awaitCreateFailure waits up to 10 s for the next failure failCreates reports.
+// awaitCreateFailure waits for the next create failure reported by failCreates.
 func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-failed:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the relay's restart never reached its create")
-	}
+	testwait.Receive(t, "the relay's restart to reach its create", failed)
 }
 
 // requireNoConsumer fails the test unless sessionID has no consumer.
@@ -71,10 +67,11 @@ func requireNoConsumer(t *testing.T, consumers *bus.SessionConsumers, sessionID 
 // sessionWithAHeldFrame registers a session in consumer mode on a new relay rig, has it write one
 // frame (done) and then hold the next unwritten (received, no done), as a session mid-turn does,
 // so its consumer has a message awaiting an ack and the relay's next restart deletes and creates
-// it. It returns the rig, the session, its stand-in, the held message and the ack floor.
-func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *sessionStandIn, contracts.Envelope, uint64) {
+// it. It returns the rig and its fake clock, the session, its stand-in, the held frame and the
+// ack floor.
+func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, *clocktest.Fake, string, *sessionStandIn, contracts.Envelope, uint64) {
 	t.Helper()
-	rig := newRelayRig(t)
+	rig, fake := newRelayRigOnFakeClock(t)
 	sessionID := prefix + id.New()
 	agent := contracts.LegacyAgentSubject(sessionID)
 	var holdNext atomic.Bool
@@ -86,16 +83,16 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 	})
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	written, floor := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), written)
+	requireFrames(t, standIn.receive(t, 1), written)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 	holdNext.Store(true)
 	held, _ := rig.storeEvent(t, agent)
-	requireFrames(t, standIn.collect(t, 1, 5*time.Second), held)
+	requireFrames(t, standIn.receive(t, 1), held)
 	awaitAckState(t, rig.consumers, sessionID, 1, floor)
 	// Every caller's next step restarts the relay at the ack floor, which deletes the consumer
 	// holding that message and creates it again.
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
-	return rig, sessionID, standIn, held, floor
+	return rig, fake, sessionID, standIn, held, floor
 }
 
 // A restart whose create fails after its delete succeeded loses nothing: the relay, retrying while
@@ -105,7 +102,7 @@ func sessionWithAHeldFrame(t *testing.T, prefix string) (*relayRig, string, *ses
 // consumer and paused the relay until the next heartbeat, whose create started at the stream's end.
 func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t *testing.T) {
 	t.Parallel()
-	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_create_failed_")
+	rig, fake, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_create_failed_")
 	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// The relay's first create and its first retry's (1 s on) fail; its second retry, 3 s on,
@@ -120,9 +117,18 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 		item, _ := rig.storeEvent(t, agent)
 		missed = append(missed, item)
 	}
-	requireFrames(t, standIn.collect(t, 4, 10*time.Second), missed...)
-	standIn.none(t, time.Second)
-	info, err := rig.consumers.Info(context.Background(), sessionID)
+	first := fake.Now().Add(relayRetryFirst)
+	fake.AwaitArmedAt(t, "the relay's first retry after the failed create", first)
+	fake.Set(first)
+	awaitCreateFailure(t, failed)
+	requireNoConsumer(t, rig.consumers, sessionID)
+	second := first.Add(2 * relayRetryFirst)
+	fake.AwaitArmedAt(t, "the relay's second retry after the failed create", second)
+	fake.Set(second)
+
+	requireFrames(t, standIn.receive(t, len(missed)), missed...)
+	rig.noneThroughMarker(t, standIn, sessionID)
+	info, err := rig.consumers.Info(testwait.Context(t), sessionID)
 	if err != nil {
 		t.Fatalf("read the consumer the relay created again: %v", err)
 	}
@@ -136,7 +142,7 @@ func TestSessionConsumerRestartWhoseCreateFailsRecreatesTheConsumerAtTheFloor(t 
 // point), so the session receives the held message and the messages stored meanwhile.
 func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFloor(t *testing.T) {
 	t.Parallel()
-	rig, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_registered_in_gap_")
+	rig, fake, sessionID, standIn, held, floor := sessionWithAHeldFrame(t, "ses_registered_in_gap_")
 	agent := contracts.LegacyAgentSubject(sessionID)
 
 	failed := failCreates(t, rig, sessionID, 1)
@@ -148,9 +154,12 @@ func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFlo
 		item, _ := rig.storeEvent(t, agent)
 		backlog = append(backlog, item)
 	}
-	// The session's next heartbeat, well inside the relay's first retry wait (1 s).
+	// The heartbeat creates the missing consumer while the relay's first retry is still armed.
+	// The clock stays put; only the heartbeat's wake can end the retry wait.
+	retry := fake.Now().Add(relayRetryFirst)
+	fake.AwaitArmedAt(t, "the relay's first retry before the next heartbeat", retry)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	info, err := rig.consumers.Info(context.Background(), sessionID)
+	info, err := rig.consumers.Info(testwait.Context(t), sessionID)
 	if err != nil {
 		t.Fatalf("read the consumer the registration created: %v", err)
 	}
@@ -158,8 +167,8 @@ func TestSessionConsumerRegistrationWhileARestartLeftNoConsumerCreatesItAtTheFlo
 		t.Fatalf("the registration created the consumer at %d, want the floor's next sequence %d, not the stream's end", info.Config.OptStartSeq, floor+1)
 	}
 
-	requireFrames(t, standIn.collect(t, 4, 10*time.Second), backlog...)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.receive(t, len(backlog)), backlog...)
+	rig.noneThroughMarker(t, standIn, sessionID)
 }
 
 // burstSessions is how many sessions TestSessionConsumerBurstOfRestartsDeliversEveryBacklog
@@ -336,16 +345,23 @@ func TestRetriedRefusalTakesTheBusAndConsumerRefusalsAlone(t *testing.T) {
 	}
 }
 
-// awaitPulled waits until every session's consumer has a pull request waiting: the listener's
-// relay has restarted it and pulls it.
+// awaitPulled waits until it has seen a waiting pull on each session's consumer.
+// It stops reading a consumer once it has seen its pull.
 func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []string) {
 	t.Helper()
-	for _, sessionID := range sessionIDs {
-		testwait.Until(t, "the consumer of "+sessionID+" to have a pull waiting", func() (string, bool) {
-			info, err := consumers.Info(context.Background(), sessionID)
-			return fmt.Sprintf("%+v, %v", info, err), err == nil && info.NumWaiting > 0
-		})
-	}
+	ctx := testwait.Context(t)
+	remaining := sessionIDs
+	testwait.Until(t, "every session's consumer to have a pull waiting", func() (string, bool) {
+		for len(remaining) > 0 {
+			sessionID := remaining[0]
+			info, err := consumers.Info(ctx, sessionID)
+			if err != nil || info.NumWaiting == 0 {
+				return fmt.Sprintf("%d without a pull (first: %s): %+v, %v", len(remaining), sessionID, info, err), false
+			}
+			remaining = remaining[1:]
+		}
+		return "every consumer has had a pull waiting", true
+	})
 }
 
 // A listener killed (SIGKILL) while it relays many sessions restarts every one of their consumers
@@ -387,7 +403,7 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	if err := listener.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the listener: %v", err)
 	}
-	<-listener.Exited
+	testwait.Receive(t, "the killed listener to exit", listener.Exited)
 	publisher := connectPublisher(t, uri)
 	want := map[string][]string{}
 	for i := range perSession {

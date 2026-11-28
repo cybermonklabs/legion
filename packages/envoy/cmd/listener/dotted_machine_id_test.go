@@ -3,7 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -54,8 +53,8 @@ func TestADottedMachineIDStartsAndDelivers(t *testing.T) {
 
 		item := newEnvelope("agent", contracts.LegacyAgentSubject(sessionID), "a message for a session on a machine with a dotted id")
 		publish(t, publisher, item)
-		requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
-		standIn.none(t, 2*time.Second)
+		requireFrames(t, standIn.receive(t, 1), item)
+		standIn.noneThroughPublishedMarker(t, publisher, item.Topic, "end of the dotted machine delivery check")
 	})
 
 	t.Run("a machine id that would encode as the dotted one is refused at start", func(t *testing.T) {

@@ -181,6 +181,7 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
+	reconnect relayReconnect
 	// stream is the client whose verdict decides which topics /v1/interests/subscribe adds to a
 	// session's row (splitUncapturedTopics, bus.Client.ReachesNoSession): every topic but one
 	// neither the deployed stream, as the client last read its subjects, nor this build captures.
@@ -203,10 +204,11 @@ type sessionDelivery struct {
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.
 	now func() time.Time
-	// clock is what a registration's consumer calls are bounded on (sessionConsumerCallTimeout in
-	// consumerFor). It is nil in production and clk reads it as clock.Real then; a test that holds
-	// the registration route's own bounds on a clocktest.Fake (listenerDeps.clock) hands the same
-	// fake here, so how long a loaded machine takes over those calls is not what answers it.
+	// clock bounds a registration's consumer calls (consumerFor), a fenced filter write
+	// (storedFilterWrite), and a consumer delete after it has the lock (deleteConsumer).
+	// It also measures the time left for the shutdown drain (drain). Tests that set both
+	// listenerDeps.clock and this clock give them the same clock so the bounds agree.
+	// In production clk uses the wall clock.
 	clock clock.Clock
 	// beforeRegister runs at the top of each register call, before the session's lock is taken and
 	// the consumer's filter set; nil unless a test sets it. The window between a registration's
@@ -367,7 +369,10 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // credential, as a hub that has yet to reload a new nkey on every server makes, is waited out
 // under the start's bound before it fails; any other failure ends the start as before.
 func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
+	delivery := &sessionDelivery{stream: stream, logger: logger, now: time.Now}
+	// A caller's start check takes precedence. If it adds one, it must also register the hook.
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(),
+		append([]bus.ConnectOption{bus.WithStartCheck(delivery.reconnect.register)}, options...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +407,8 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	return &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now}, nil
+	delivery.consumers = consumers
+	return delivery, nil
 }
 
 // close closes the session-consumer connection, if one is open.
@@ -412,8 +418,7 @@ func (m *sessionDelivery) close() {
 	}
 }
 
-// clk is the clock a registration's consumer calls are bounded on: the one a test gave m, and
-// clock.Real otherwise, which every production listener is.
+// clk returns the delivery's clock, or the wall clock if none was set.
 func (m *sessionDelivery) clk() clock.Clock {
 	if m.clock == nil {
 		return clock.Real()
@@ -711,7 +716,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	timeout := sessionConsumerDrain
 	if deadline, ok := ctx.Deadline(); ok {
-		timeout = min(timeout, time.Until(deadline))
+		timeout = min(timeout, deadline.Sub(m.clk().Now()))
 	}
 	if timeout <= 0 {
 		m.consumers.Close()

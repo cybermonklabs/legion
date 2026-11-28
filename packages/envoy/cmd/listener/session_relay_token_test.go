@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/base32"
 	"math/big"
@@ -69,6 +68,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	if err := reader.Flush(); err != nil {
 		t.Fatalf("flush the relay subjects' subscription: %v", err)
 	}
+	ctx := testwait.Context(t)
 	var seq uint64
 	// publish relays one message to sessions[i] as a frame answered through acker and returns the
 	// token of the frame's reply subject, the subject token after the session's id, as the session
@@ -76,8 +76,6 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 	publish := func(i int, acker bus.SessionAcker) string {
 		t.Helper()
 		seq++
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		msg := bus.SessionMessage{
 			Subject:      contracts.LegacyAgentSubject(sessions[i]),
 			Data:         []byte(`{}`),
@@ -89,7 +87,7 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 		if err := relays.publishFrame(ctx, runs[i], msg, "stream", false, "", ""); err != nil {
 			t.Fatalf("publish frame %d: %v", seq, err)
 		}
-		frame, err := sent.NextMsg(5 * time.Second)
+		frame, err := sent.NextMsgWithContext(ctx)
 		if err != nil {
 			t.Fatalf("read frame %d on the relay subjects: %v", seq, err)
 		}
@@ -165,9 +163,9 @@ func TestARelayReplyTokenCannotBeGuessed(t *testing.T) {
 		t.Helper()
 		acker := &tokenRowAcker{}
 		done(victimReply(publish(1, acker)))
-		if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return acker.acks.Load() == 1 }) {
-			t.Fatalf("the relay did not acknowledge the barrier frame's done within 5s")
-		}
+		testwait.Eventually(t, "the relay to acknowledge the barrier frame's done", func() bool {
+			return acker.acks.Load() == 1
+		})
 	}
 	open := func(token string) bool {
 		relays.framesMu.Lock()

@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A relay whose session's record lapsed hands the messages it held to the consumer that stands,
@@ -33,9 +34,7 @@ func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testin
 
 	requireHandOverOfAGoneSession(t, rig, sessionID, "lapsed")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := rig.consumers.Info(ctx, sessionID); err != nil {
+	if _, err := rig.consumers.Info(testwait.Context(t), sessionID); err != nil {
 		t.Fatalf("read the consumer of %s after the hand-over: %v; want it standing, which is what a lapse leaves and what holds the naked message", sessionID, err)
 	}
 
@@ -48,5 +47,5 @@ func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testin
 	// the message given back and creates it again.
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	awaitRelayFrame(t, returned, stored, 20*time.Second)
+	waitForRelayEvent(t, returned, stored)
 }

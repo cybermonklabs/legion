@@ -48,18 +48,23 @@ func newSessionConsumerRig(t *testing.T, sessionOptions ...session.SessionRegist
 
 func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
 	t.Helper()
+	return newSessionConsumerRigWithConnections(t, client, url, url, nil, nil, sessionOptions...)
+}
+
+func newSessionConsumerRigWithConnections(t *testing.T, client *bus.Client, observerURL, deliveryURL string, observerOptions, deliveryOptions []bus.ConnectOption, sessionOptions ...session.SessionRegistryOption) *sessionConsumerRig {
+	t.Helper()
 	harness := newListenerDeliveryHarnessOn(t, client, sessionOptions...)
 	// The connection is opened with the threshold this listener's own windows derive, as main
 	// opens it (inactiveThresholdFor), so every consumer the rig creates carries what a
 	// deployment with these windows would give it.
-	delivery, err := connectSessionDelivery([]string{url},
+	delivery, err := connectSessionDelivery([]string{deliveryURL},
 		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		client, harness.config.logger)
+		client, harness.config.logger, deliveryOptions...)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
 	t.Cleanup(delivery.close)
-	observer, err := bus.ConnectSessionConsumers([]string{url}, 0, nil)
+	observer, err := bus.ConnectSessionConsumers([]string{observerURL}, 0, nil, observerOptions...)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -205,36 +210,27 @@ func (rig *sessionConsumerRig) awaitHeld(t *testing.T, sessionID string, want ui
 	rig.awaitCount(t, sessionID, want, true)
 }
 
-// awaitCount is the one wait of awaitPending and awaitHeld: it reads sessionID's consumer every
-// 20 ms, a gap no verdict reads, until its count is want, and fails the test naming both counts
-// when that has not come by listenerWaitBound, the package's bound of a wait for a fact the
-// server reports. The count is the pending one, plus the delivered and not acked one where
+// awaitCount waits for the consumer's pending count, plus the delivered and unacked count when
 // withDelivered is set.
 func (rig *sessionConsumerRig) awaitCount(t *testing.T, sessionID string, want uint64, withDelivered bool) {
 	t.Helper()
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for {
-		info, err := rig.consumers.Info(context.Background(), sessionID)
+	what := fmt.Sprintf("the consumer of %s to have %d pending", sessionID, want)
+	if withDelivered {
+		what += " or delivered and unacked"
+	}
+	ctx := testwait.Context(t)
+	testwait.Until(t, what, func() (string, bool) {
+		info, err := rig.consumers.Info(ctx, sessionID)
 		if err != nil {
-			t.Fatalf("read the consumer of %s: %v", sessionID, err)
+			return err.Error(), false
 		}
 		count := info.NumPending
 		if withDelivered {
 			count += uint64(info.NumAckPending)
 		}
-		if count == want {
-			return
-		}
-		if time.Now().After(deadline) {
-			if withDelivered {
-				t.Fatalf("the consumer of %s holds %d messages (%d pending, %d delivered and not acked), want %d (start %d, delivered %d, filters %v)",
-					sessionID, count, info.NumPending, info.NumAckPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects)
-			}
-			t.Fatalf("the consumer of %s has %d messages pending, want %d (start %d, delivered %d, delivered and not acked %d, filters %v)",
-				sessionID, info.NumPending, want, info.Config.OptStartSeq, info.Delivered.Stream, info.NumAckPending, info.Config.FilterSubjects)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d pending, %d delivered and unacked (start %d, delivered %d, filters %v)",
+			info.NumPending, info.NumAckPending, info.Config.OptStartSeq, info.Delivered.Stream, info.Config.FilterSubjects), count == want
+	})
 }
 
 // store stores an envelope on subject and returns its stream sequence.
@@ -398,6 +394,7 @@ func TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap(t *testin
 	subscribe := `{"session_id":"` + sessionID + `","self_subscribed":true,
 		"topics":["` + followed + `","` + added + `"],"delivery":{"consumer":true,"epoch":"e"}}`
 	rig.subscribe(t, heartbeat)
+	freezeRegistrationBudgets(rig.deps)
 
 	// S runs whole inside H's window, between H's plan and H's own consumer call: it plans at the
 	// revision H planned at, filters on {T, C} and stores them. Once only, so H's second pass
@@ -462,6 +459,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 	}
 	registration := `{"session_id":"` + sessionID + `","self_subscribed":true,"topics":["` + kept + `"],
 		"delivery":{"consumer":true,"epoch":"e","resume":{"stream_id":"` + rig.streamID(t) + `","seq":` + jsonUint(gone[0]) + `}}}`
+	freezeRegistrationBudgets(rig.deps)
 
 	// The unsubscribe lands between the first pass's plan and its write, which is what refuses
 	// that write. Once: the second pass must run against a settled row.
@@ -503,6 +501,8 @@ func TestSessionConsumerRefusesARegistrationEveryPlanOfWhichIsOutrun(t *testing.
 	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_plan_exhausted"
+	freezeRegistrationBudgets(rig.deps)
+
 	// Every pass's plan is outrun: the writer stores another topic between the plan and its
 	// write, so that write is refused the revision its plan read.
 	passes := 0
@@ -613,12 +613,12 @@ func TestSessionConsumerResumePointAtZeroOfTheCurrentStreamDeliversFromTheFirstS
 	if start := rig.entry(t, sessionID).ConsumerStart; start != 1 {
 		t.Fatalf("the session entry of %s records consumer start %d, want 1", sessionID, start)
 	}
-	frames := standIn.collect(t, len(stored), 5*time.Second)
+	frames := standIn.receive(t, len(stored))
 	requireFrames(t, frames, stored...)
 	if frames[0].seq != 1 {
 		t.Fatalf("the first frame carries stream sequence %d, want 1: %v", frames[0].seq, frameEvents(frames))
 	}
-	standIn.none(t, time.Second)
+	rig.noneThroughMarker(t, standIn, sessionID)
 }
 
 // A registration with no resume point it can use creates the session's consumer at the first
@@ -694,9 +694,8 @@ func TestSessionConsumerABrandNewSessionReceivesAMessageStoredForItBeforeItRegis
 		t.Fatalf("answer %s, want delivery mode consumer", answer.raw)
 	}
 
-	frames := standIn.collect(t, 1, 5*time.Second)
-	requireFrames(t, frames, stored)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.receive(t, 1), stored)
+	rig.noneThroughMarker(t, standIn, sessionID)
 }
 
 func jsonUint(n uint64) string {
@@ -971,21 +970,13 @@ func lockUsers(locks *sessionLocks, sessionID string) int {
 	return 0
 }
 
-// awaitLockUsers waits for exactly n callers to hold or wait for sessionID's consumer lock: a test
-// that holds it learns that the call it started waits for it (2), and that the call is done with
-// it (0). The wait ends on the count, bounded by listenerWaitBound like the package's other waits:
-// a lock a caller reaches a moment later under load is the same lock, so no span of this helper's
-// own decides the row, and over three instrumented whole-package runs no wait of this kind reached
-// a second. Its failure prints the count it last read.
+// awaitLockUsers waits for exactly n callers to hold or wait for sessionID's consumer lock.
 func awaitLockUsers(t *testing.T, locks *sessionLocks, sessionID string, n int) {
 	t.Helper()
-	var users int
-	if !testwait.Holds(listenerWaitBound(t), testwait.Poll, func() bool {
-		users = lockUsers(locks, sessionID)
-		return users == n
-	}) {
-		t.Fatalf("%d callers hold or wait for the consumer lock of %s, want %d", users, sessionID, n)
-	}
+	testwait.Until(t, fmt.Sprintf("%d callers to hold or wait for the consumer lock of %s", n, sessionID), func() (int, bool) {
+		users := lockUsers(locks, sessionID)
+		return users, users == n
+	})
 }
 
 // followWhileLocked stores topic as sessionID's interest and sets its consumer's filter to it, as a
@@ -1033,20 +1024,18 @@ func TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock(t *t
 	const sessionID = "ses_register_stale"
 	const followed = "notifications.dispatch.issue.REGISTERSTALE.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	// The test holds the session's consumer lock while it stores a newer row and writes its
-	// filter (followWhileLocked), two bus calls of its own: the registration waiting for the lock
-	// is given the test's deadline (budgetsUntilTheDeadline), or the hold spends the route's 3.5 s
-	// and the registration answers 503 for the machine's speed, as main did in 5 of 40 runs at a
-	// load of 1,262.
-	budgetsUntilTheDeadline(t, rig.deps)
+	// Neither the route budget nor its consumer call budget runs down while the test holds
+	// the lock to write a newer row and filter.
+	freezeRegistrationBudgets(rig.deps)
 
-	unlock := rig.deps.consumers.locks.lock(sessionID)
+	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
+	defer unlock()
 	answered := postAsync(rig, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 	// The registration has stored its topics, none, and waits for the lock to write its filter.
 	awaitLockUsers(t, &rig.deps.consumers.locks, sessionID, 2)
 	followWhileLocked(t, rig, sessionID, followed)
 	unlock()
-	if status := <-answered; status != http.StatusOK {
+	if status := testwait.Receive(t, "the registration waiting for the consumer lock to answer", answered); status != http.StatusOK {
 		t.Fatalf("the registration answered %d, want 200", status)
 	}
 
@@ -1063,14 +1052,16 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 	const dropped = "notifications.dispatch.issue.REFOLLOWDROPPED.>"
 	const followed = "notifications.dispatch.issue.REFOLLOWSTALE.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", dropped))
+	freezeRegistrationBudgets(rig.deps)
 
-	unlock := rig.deps.consumers.locks.lock(sessionID)
+	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
+	defer unlock()
 	answered := postAsync(rig, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
 	// The unsubscribe has removed its topic and waits for the lock to write the filter.
 	awaitLockUsers(t, &rig.deps.consumers.locks, sessionID, 2)
 	followWhileLocked(t, rig, sessionID, followed)
 	unlock()
-	if status := <-answered; status != http.StatusOK {
+	if status := testwait.Receive(t, "the unsubscribe waiting for the consumer lock to answer", answered); status != http.StatusOK {
 		t.Fatalf("the unsubscribe answered %d, want 200", status)
 	}
 
@@ -1097,6 +1088,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 	const sessionID = "ses_register_row_lock"
 	const followed = "notifications.dispatch.issue.ROWLOCK.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	freezeRegistrationBudgets(rig.deps)
 
 	// The restart runs on a goroutine of its own because under the fix it waits for the lock this
 	// hook is called under, which a call made here would wait for for ever.
@@ -1109,30 +1101,18 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 		started = true
 		go func() {
 			defer close(restarted)
-			if _, pull, _ := rig.relays.restart(context.Background(), &relayRun{sessionID: sessionID}); pull != nil {
+			if _, pull, _ := rig.relays.restart(testwait.Context(t), &relayRun{sessionID: sessionID}); pull != nil {
 				pull.Stop()
 			}
 		}()
 		// The registration leaves this window only once the restart has reached it: waiting for
 		// the lock (two callers) with the fix, and done with it without one, which is the drop
 		// this case is about.
-		deadline := time.Now().Add(listenerWaitBound(t))
-		for lockUsers(&rig.deps.consumers.locks, sessionID) != 2 {
-			select {
-			case <-restarted:
-				return
-			default:
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("in the time it was given the restart of %s neither waits for the consumer lock nor is done with it", sessionID)
-				return
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		awaitLockWaitOrDone(t, &rig.deps.consumers.locks, sessionID, restarted, "the relay restart")
 	}
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 	rig.deps.consumers.afterRegisterFilter = nil
-	<-restarted
+	testwait.Receive(t, "the relay restart to finish", restarted)
 
 	requireFilters(t, rig.sessionConsumerRig, sessionID, followed)
 	// A message on the topic the restart would have dropped is the consumer's to deliver. The
@@ -1140,27 +1120,6 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 	// consumer holds, pending or delivered (awaitHeld), not its pending count.
 	rig.store(t, "notifications.dispatch.issue.ROWLOCK.comment")
 	rig.awaitHeld(t, sessionID, 1)
-}
-
-// subscribeExceptionLanes subscribes over core NATS to every exception lane, through conn.
-func subscribeExceptionLanes(t *testing.T, conn *natsgo.Conn) *natsgo.Subscription {
-	t.Helper()
-	exceptions, err := conn.SubscribeSync(bus.ExceptionTopicPrefix + ">")
-	if err != nil {
-		t.Fatalf("subscribe to the exception lanes: %v", err)
-	}
-	t.Cleanup(func() { _ = exceptions.Unsubscribe() })
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush the exception subscription: %v", err)
-	}
-	return exceptions
-}
-
-func requireNoException(t *testing.T, exceptions *natsgo.Subscription, what string) {
-	t.Helper()
-	if msg, err := exceptions.NextMsg(300 * time.Millisecond); err == nil {
-		t.Fatalf("%s raised an exception on %s: %s", what, msg.Subject, msg.Data)
-	}
 }
 
 func deliveredMetrics(t *testing.T, harness listenerDeliveryHarness) string {
@@ -1181,14 +1140,7 @@ func deliveredMetrics(t *testing.T, harness listenerDeliveryHarness) string {
 func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	t.Parallel()
 	rig := newSessionConsumerRig(t)
-	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
-	control := listenerTestEnvelope("notifications.dispatch.issue.R.control", "probe-control")
-	if err := publishDeliveryException(rig.harness.client, control, "delivery_failed", "ses_probe_control"); err != nil {
-		t.Fatalf("publish the probe's control exception: %v", err)
-	}
-	if _, err := exceptions.NextMsg(2 * time.Second); err != nil {
-		t.Fatalf("the exception lanes did not carry the probe's own control exception: %v", err)
-	}
+	exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+">")
 	if err := rig.harness.sessions.Put("ses_core_only", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
 		t.Fatalf("write the entry of a session the previous build left on the core path: %v", err)
 	}
@@ -1198,7 +1150,9 @@ func TestSessionConsumerMessageRaisesNoExceptionOnTheDurablePath(t *testing.T) {
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope(contracts.LegacyAgentSubject("ses_relayed"), "relayed-agent"))})
 	rig.harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, listenerTestEnvelope("notifications.dispatch.issue.R.comment", "relayed-topic"))})
 
-	requireNoException(t, exceptions, "a consumer-delivery session's message")
+	if got := exceptionFramesThroughMarker(t, rig.harness.client, exceptions, "notifications.dispatch.issue.R.control"); len(got) != 0 {
+		t.Fatalf("the handler raised %d exceptions for consumer-delivery messages, want none: %+v", len(got), got)
+	}
 	if body := deliveredMetrics(t, rig.harness); !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 3`) {
 		t.Fatalf("delivery metrics %s, want three skipped", body)
 	}
@@ -1231,17 +1185,16 @@ func listenerGrantBeforeSessionConsumers() []string {
 // reports one as live. The grant is the negative control: the same registration on a hub that
 // carries session consumers is answered consumer (the tests above).
 func TestSessionConsumerWithoutTheGrantIsRefusedAndWritesNothing(t *testing.T) {
-	// Not parallel: it sets an environment variable of the whole process (t.Setenv of
-	// NATS_NKEY_SEED).
+	t.Parallel()
 	seed, public := testnats.User(t)
 	grant := testnats.StartNkeyGranted(t, public, listenerGrantBeforeSessionConsumers()...)
-	t.Setenv("NATS_NKEY_SEED", seed)
-	client, err := bus.ConnectOwningStream([]string{grant.URL}, bus.WithReplicas(1))
+	credentials := []bus.ConnectOption{bus.WithEnvironment(testnats.SeedOnly(seed))}
+	client, err := bus.ConnectOwningStream([]string{grant.URL}, bus.WithReplicas(1), credentials[0])
 	if err != nil {
 		t.Fatalf("connect the listener's user: %v", err)
 	}
 	t.Cleanup(client.Close)
-	rig := newSessionConsumerRigOn(t, client, grant.URL)
+	rig := newSessionConsumerRigWithConnections(t, client, grant.URL, grant.URL, credentials, credentials)
 
 	first := rig.refusedSubscribe(t, `{"session_id":"ses_ungranted","self_subscribed":true,"topics":["notifications.dispatch.issue.U.>"],"delivery":{"consumer":true,"epoch":"e"}}`)
 	second := rig.refusedSubscribe(t, `{"session_id":"ses_ungranted_too","self_subscribed":true,"topics":[],"delivery":{"consumer":true,"epoch":"e"}}`)
@@ -1377,39 +1330,37 @@ func TestSessionConsumerPortlessSessionIsDeliveredByItsRelayAlone(t *testing.T) 
 	agentSubject := contracts.LegacyAgentSubject(sessionID)
 	topic := "notifications.dispatch.issue.PORTLESS-" + id.New() + ".comment"
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
-	exceptions := subscribeExceptionLanes(t, rig.harness.client.Conn)
+	exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+">")
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
 	// The rig's one client holds one subscription, so the durable of this test reads the agent
 	// subject off the stream, bound before the message is stored as the listener's own durable
 	// is, and the followed topic's copy is handed to the same handler below.
-	bindTestDurable(t, rig, "listener-portless-"+id.New(), agentSubject)
+	durable := "listener-portless-" + id.New()
+	bindTestDurable(t, rig, durable, agentSubject)
 
-	agent, _ := rig.storeEvent(t, agentSubject)
+	agent, agentSeq := rig.storeEvent(t, agentSubject)
 	followed, _ := rig.storeEvent(t, topic)
 	rig.harness.handler(&natsgo.Msg{Subject: topic, Data: marshalListenerEnvelope(t, followed)})
 
-	requireFrames(t, standIn.collect(t, 2, 5*time.Second), agent, followed)
+	requireFrames(t, standIn.receive(t, 2), agent, followed)
 	awaitSkipped(t, rig.harness, 2)
-	requireNoException(t, exceptions, "a relayed session's stored message")
-	standIn.none(t, time.Second)
+	// The skip metric can be visible before the durable finishes publishing an exception.
+	// The server's ack floor proves the asynchronous handler has finished before the marker.
+	awaitFanoutFinished(t, rig, durable, agentSeq)
+	if got := exceptionFramesThroughMarker(t, rig.harness.client, exceptions, topic); len(got) != 0 {
+		t.Fatalf("the durable path raised %d exceptions for a relayed session, want none: %+v", len(got), got)
+	}
+	rig.noneThroughMarker(t, standIn, sessionID)
 }
 
-// awaitSkipped waits until the durable path has acknowledged want stored messages with nothing
-// pushed and nothing reported, and fails the test when it has not within 5 s.
+// awaitSkipped waits for the durable path to count want messages as skipped.
 func awaitSkipped(t *testing.T, harness listenerDeliveryHarness, want int) {
 	t.Helper()
 	line := fmt.Sprintf(`test_messages_delivered{delivery_status="skipped"} %d`, want)
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for {
+	testwait.Until(t, "delivery metrics to contain "+line, func() (string, bool) {
 		body := deliveredMetrics(t, harness)
-		if strings.Contains(body, line) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("delivery metrics %s, want %s", body, line)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return body, strings.Contains(body, line)
+	})
 }
 
 // The threshold the server removes an idle session consumer after is the deployment's own, not

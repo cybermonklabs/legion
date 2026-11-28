@@ -6,10 +6,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// drainDeadline supplies the shutdown deadline without arming a timer in the test.
+// drain uses only the deadline to choose whether to drain or close.
+type drainDeadline struct {
+	context.Context
+	at time.Time
+}
+
+func (d drainDeadline) Deadline() (time.Time, bool) { return d.at, true }
 
 // The session-consumer connection's drain at shutdown gets what is left of the HTTP stop's window,
 // and a shutdown that spent the window before it closes the connection without a drain. That close
@@ -19,12 +30,12 @@ func TestTheSessionConsumerDrainSaysWhenTheShutdownLeftItNoTime(t *testing.T) {
 	t.Parallel()
 	const undrained = "session consumer connection closed without a drain"
 	for _, test := range []struct {
-		name string
-		left time.Duration
-		want bool
+		name      string
+		remaining time.Duration
+		want      bool
 	}{
-		{name: "the window spent", left: -time.Second, want: true},
-		{name: "time left", left: time.Minute},
+		{name: "the window spent", remaining: -time.Second, want: true},
+		{name: "time left", remaining: time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, uri := testnats.Start(t)
@@ -34,10 +45,11 @@ func TestTheSessionConsumerDrainSaysWhenTheShutdownLeftItNoTime(t *testing.T) {
 				t.Fatalf("connect the session-consumer connection: %v", err)
 			}
 			t.Cleanup(delivery.close)
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(test.left))
-			defer cancel()
-
-			delivery.drain(ctx)
+			// Both deadlines are in the wall clock's past. Only the delivery's clock
+			// sees time left in the second case.
+			fake := clocktest.New(time.Unix(0, 0))
+			delivery.clock = fake
+			delivery.drain(drainDeadline{Context: testwait.Context(t), at: fake.Now().Add(test.remaining)})
 			if got := strings.Contains(logs.String(), undrained); got != test.want {
 				t.Fatalf("the drain logged %q: %v, want %v:\n%s", undrained, got, test.want, logs.String())
 			}

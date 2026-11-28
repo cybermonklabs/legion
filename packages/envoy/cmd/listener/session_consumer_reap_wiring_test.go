@@ -1,11 +1,10 @@
 package main
 
 import (
-	"context"
-	"errors"
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -21,17 +20,17 @@ import (
 // through its /v1 as a plugin's heartbeat does, and leaves that session to reach the gone
 // horizon.
 //
-// The windows come from the environment rather than from a clock a test moves, which another
-// process has none of: a session is gone two seconds after its registration and a pass runs every
-// 200 ms. The bucket's maximum age is left at its default, minutes longer than that, so the
-// record is taken away by the pass and never by the bucket's own backstop.
+// The registration reports consumer mode and its start only after it creates the consumer.
+// That answer proves the consumer existed even if the child reaps it before the test next runs.
+// The short windows only shorten the wait for the reaper. The bucket keeps its default maximum
+// age, so it cannot delete the record before the reaper does.
 func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t *testing.T) {
 	t.Parallel()
 	_, uri := testnats.Start(t)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumer-reap-wiring",
-		"ENVOY_SESSION_LIVE_WINDOW=1s",
-		"ENVOY_SESSION_GONE_HORIZON=2s",
-		"ENVOY_SESSION_REAP_INTERVAL=200ms",
+		"ENVOY_SESSION_LIVE_WINDOW=100ms",
+		"ENVOY_SESSION_GONE_HORIZON=700ms",
+		"ENVOY_SESSION_REAP_INTERVAL=50ms",
 	)
 	listener.waitHealthy(t)
 	// The test's own view of the session consumers, so what it reads of them is what the server
@@ -43,11 +42,16 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	t.Cleanup(consumers.Close)
 
 	const sessionID = "ses_reap_wiring"
-	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "e"))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := consumers.Info(ctx, sessionID); err != nil {
-		t.Fatalf("the consumer of %s after its registration: %v; want the stream holding it", sessionID, err)
+	status, body := callListener(t, listener.port, http.MethodPost, "/v1/interests/subscribe", consumerRegistration(sessionID, "e"))
+	if status != http.StatusOK {
+		t.Fatalf("register %s: status %d: %s", sessionID, status, body)
+	}
+	var answer subscribeAnswer
+	if err := json.Unmarshal([]byte(body), &answer); err != nil {
+		t.Fatalf("decode the registration of %s: %v: %s", sessionID, err, body)
+	}
+	if answer.Delivery == nil || answer.Delivery.Mode != deliveryModeConsumer || answer.Delivery.ConsumerStart == 0 {
+		t.Fatalf("the registration of %s did not report a consumer and its start: %s", sessionID, body)
 	}
 
 	// The record delete is the pass's own work and is logged by the pass itself, so a consumer
@@ -57,16 +61,5 @@ func TestTheSessionReaperAStartedListenerRunsDeletesTheReapedSessionsConsumer(t 
 	if output := listener.Output.String(); !strings.Contains(output, `"session_id":"`+sessionID+`"`) {
 		t.Fatalf("the pass the listener ran names no record of %s:\n%s", sessionID, output)
 	}
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for {
-		info, err := consumers.Info(ctx, sessionID)
-		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the consumer of %s is still on the stream after the pass deleted its record: %+v, %v; want the reaper the listener itself starts deleting it with the record",
-				sessionID, info, err)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	awaitConsumerGone(t, consumers, sessionID, "after the reaper deleted its record")
 }

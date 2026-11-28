@@ -441,7 +441,7 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing
 		// hands one on: with the listener's connections cut, no reply reaches it any other way.
 		rig.relays.onReply(&natsgo.Msg{Subject: frames[0].msg.Reply, Data: []byte(relayReplyDone)})
 		rig.relays.setOwned(false)
-		awaitLogLine(t, rig, handOverFailed, 15*time.Second)
+		awaitLogLine(t, rig, handOverFailed)
 		proxy.Restore()
 		reconnected(t)
 		rig.relays.setOwned(true)

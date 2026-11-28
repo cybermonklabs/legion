@@ -146,8 +146,8 @@ func (m *sessionDelivery) deleteAfterAnswer(ctx context.Context, d *listenerDeps
 // nothing, and the registration's own read, which is after that entry write and so after this
 // delete took the consumer, finds the consumer gone and creates it again itself.
 //
-// One budget covers the record read, the delete and the resume record it writes first, and the
-// record read and create that may follow them, as one budget covers a registration's whole pass.
+// One budget on the delivery's clock covers the record read, the delete and the resume record it
+// writes first, and the record read and create that may follow them.
 //
 // A listener whose NATS user may not manage session consumers deletes nothing while its refusal
 // episode stands (grantRefused): the delete would be refused, and the episode's one warning has
@@ -164,7 +164,7 @@ func (m *sessionDelivery) deleteConsumer(ctx context.Context, d *listenerDeps, s
 	// to the sweep.
 	unlock := m.locks.lock(sessionID)
 	defer unlock()
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := m.clk().WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	switch _, err := d.sessions.RefreshFromLeader(ctx, sessionID); {
 	case errors.Is(err, nats.ErrKeyNotFound):

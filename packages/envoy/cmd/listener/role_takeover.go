@@ -1094,7 +1094,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 	// The id the relay's lines name; one that is not a string reads as none.
 	eventID, _ := fieldText("event_id", frame.eventID)
 	giveBack := func(why string, err error) bool {
-		nakErr := msg.NakWithDelay(relayNakDelayFor(msg.Delivered))
+		nakErr := msg.NakWithDelay(relayNakDelayFor(m.nakDelay, msg.Delivered))
 		m.logger.Warn("listener session relay gave a role message back to the server: "+why,
 			slog.String("session_id", sessionID),
 			slog.String("role", role),

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -353,9 +354,7 @@ func TestHealthzReportsTheSessionMaxAgeInUseAndFollowsAChangeWithinOnePass(t *te
 	if _, err := bus.SetKeyValueMaxAge(t.Context(), d.client.Conn, js, bus.SessionBucket, 90*time.Minute); err != nil {
 		t.Fatalf("another process raising the bucket's maximum age: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	d.sessions.ReapSessions(ctx, session.SessionReaper{})
+	d.sessions.ReapSessions(testwait.Context(t), session.SessionReaper{})
 	if got, want := maxAge(), (90 * time.Minute).String(); got != want {
 		t.Fatalf("session_max_age after one pass = %s, want the %s another process set", got, want)
 	}

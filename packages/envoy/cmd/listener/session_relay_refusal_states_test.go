@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A message on a followed topic that is refused -- its delivery mode cannot be read, which any
@@ -25,8 +26,7 @@ import (
 // its own resolution succeeded and it is the path that would deliver the message, and none where
 // the resolution failed or the session's own consumer holds the message (fanoutRefusalOutcome).
 func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window in which no second delivery exception for the
-	// session may arrive (deliveryExceptionsFor).
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// beforeTheRefusal leaves the session's entry in the state the fan-out judges the refused
@@ -85,14 +85,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 			relayed := "ses_refused_state_" + id.New()
 			topic := "notifications.github.acme.refused-state-" + id.New() + ".mention"
-			exceptions, err := rig.harness.client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + topic)
-			if err != nil {
-				t.Fatalf("subscribe to the topic's exception lane: %v", err)
-			}
-			t.Cleanup(func() { _ = exceptions.Unsubscribe() })
-			if err := rig.harness.client.Conn.Flush(); err != nil {
-				t.Fatalf("flush the exception probe: %v", err)
-			}
+			exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+topic)
 
 			standIn := startSessionStandIn(t, rig.url, relayed, answerDone)
 			registration := consumerRegistration(relayed, "epoch-1", topic)
@@ -113,7 +106,7 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("store the unreadable-mode message: %v", err)
 			}
-			awaitLogLine(t, rig, "listener delivery mode cannot be read unambiguously", 15*time.Second)
+			awaitLogLine(t, rig, "listener delivery mode cannot be read unambiguously")
 			awaitFanoutFinished(t, rig, durable, first.Sequence)
 			if got := rig.harness.config.attemptCache.Seen(unreadable.DedupeKey, relayed); got != tc.wantAttempt {
 				t.Fatalf("an attempt record of %s is there: %t, want %t", relayed, got, tc.wantAttempt)
@@ -139,8 +132,8 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 			// refused one: the refusal is the fan-out's to report and nothing about it may stop
 			// the session's consumer.
 			rig.relays.setOwned(true)
-			awaitRelayFrame(t, standIn, later, 20*time.Second)
-			reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second)
+			waitForRelayEvent(t, standIn, later)
+			reasons := deliveryExceptionsFor(t, rig.harness.client, exceptions, topic, relayed)
 			if len(reasons) != 1 || reasons[0] != "delivery_failed" {
 				t.Fatalf("the exception lane of %s carried %v, want one delivery_failed for the one refused message", relayed, reasons)
 			}
@@ -148,9 +141,21 @@ func TestARefusalIsReportedOnceWhateverTheSessionsEntrySaid(t *testing.T) {
 	}
 }
 
+// waitForRelayEvent waits for the relay to reach item, regardless of which messages precede it.
+func waitForRelayEvent(t *testing.T, standIn *sessionStandIn, item contracts.Envelope) {
+	t.Helper()
+	for {
+		frame := testwait.Receive(t, "the relay frame carrying "+item.EventID, standIn.frames)
+		if frame.item.EventID == item.EventID {
+			return
+		}
+	}
+}
+
 // relayFrameArrives reports whether the frame carrying item reaches the session's stand-in within
 // the bound. A relay publishes every frame unjudged, so the frames before it are the ones the relay
 // refused nothing of.
+// The bounded diagnostic in edge_replica_claim_test.go keeps this legacy form.
 func relayFrameArrives(standIn *sessionStandIn, item contracts.Envelope, within time.Duration) bool {
 	deadline := time.After(within)
 	for {
@@ -162,14 +167,5 @@ func relayFrameArrives(standIn *sessionStandIn, item contracts.Envelope, within 
 		case <-deadline:
 			return false
 		}
-	}
-}
-
-// awaitRelayFrame waits for the frame carrying item, failing the test when none arrives within the
-// bound.
-func awaitRelayFrame(t *testing.T, standIn *sessionStandIn, item contracts.Envelope, within time.Duration) {
-	t.Helper()
-	if !relayFrameArrives(standIn, item, within) {
-		t.Fatalf("the frame carrying %s never reached the session within %s", item.EventID, within)
 	}
 }

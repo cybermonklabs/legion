@@ -70,6 +70,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
@@ -569,6 +570,8 @@ type edgeTopicHold struct {
 	projects     []string
 	repositories *edgeRepositories
 	logger       *logging.Logger
+	clock        clock.Clock
+	budgetEnds   time.Time
 	// answered is the repositories the registration's fresh read named, once read is set.
 	answered []string
 	read     bool
@@ -576,13 +579,14 @@ type edgeTopicHold struct {
 
 // newEdgeTopicHold is the hold of r's registration of sessionID, nil for a request no edge
 // listener admitted. logger names the cause of a read that gave no whole answer, which the
-// client's 503 does not (answerRepositoryOutage).
-func newEdgeTopicHold(r *http.Request, repositories *edgeRepositories, sessionID string, logger *logging.Logger) *edgeTopicHold {
+// client's 503 does not (answerRepositoryOutage). The budget end is passed explicitly because
+// a fake clock's context reports the parent's deadline, not the registration budget's end.
+func newEdgeTopicHold(r *http.Request, repositories *edgeRepositories, sessionID string, logger *logging.Logger, clk clock.Clock, budgetEnds time.Time) *edgeTopicHold {
 	projects, held := heldProjects(r)
 	if !held {
 		return nil
 	}
-	return &edgeTopicHold{sessionID: sessionID, projects: projects, repositories: repositories, logger: logger}
+	return &edgeTopicHold{sessionID: sessionID, projects: projects, repositories: repositories, logger: logger, clock: clk, budgetEnds: budgetEnds}
 }
 
 // edgeTopicRule is the edge's rule for one topic of sessionID's under projects, so far as it
@@ -665,9 +669,9 @@ func (h *edgeTopicHold) refused(ctx context.Context, topics []string) ([]string,
 
 // answer is the repositories the broker's answer for the hold's projects names, read fresh within
 // ctx the first time a topic asks and kept for the rest of the registration. The read ends
-// edgeRegistrationReserve before ctx does, so a broker that does not answer leaves the
-// registration the time its own writes need: the renewal of the session's entry a refused
-// registration still makes (renewThroughOutage).
+// edgeRegistrationReserve before the earlier of the registration budget's end and the request's
+// deadline, so the registration can still renew the session's entry (renewThroughOutage).
+// The deadline uses the listener's clock so a test can advance it.
 func (h *edgeTopicHold) answer(ctx context.Context) ([]string, error) {
 	if h.read {
 		return h.answered, nil
@@ -676,9 +680,12 @@ func (h *edgeTopicHold) answer(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("%w: this listener reads no repository answer", errRepositoriesUnknown)
 	}
 	readCtx := ctx
-	if deadline, bounded := ctx.Deadline(); bounded {
+	if end := h.budgetEnds; !end.IsZero() {
+		if deadline, bounded := ctx.Deadline(); bounded && deadline.Before(end) {
+			end = deadline
+		}
 		var cancel context.CancelFunc
-		readCtx, cancel = context.WithDeadline(ctx, deadline.Add(-edgeRegistrationReserve))
+		readCtx, cancel = h.clock.WithDeadline(ctx, end.Add(-edgeRegistrationReserve))
 		defer cancel()
 	}
 	answered, err := h.repositories.readFresh(readCtx, h.projects)

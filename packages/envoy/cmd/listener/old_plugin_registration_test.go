@@ -1,17 +1,16 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // oldPluginRegistration is the registration body a published @sjawhar/pi-envoy 16.x sends for a
@@ -83,7 +82,7 @@ func TestANewOldPluginSessionRegistersAfterAFailedFirstPass(t *testing.T) {
 	t.Parallel()
 	for _, version := range []string{"16.49.2", "16.36.1"} {
 		t.Run("@sjawhar/pi-envoy "+version+" is given a consumer", func(t *testing.T) {
-			rig := newRelayRig(t)
+			rig, fake := newRelayRigOnFakeClock(t)
 			sessionID := "ses_pi_envoy_" + strings.ReplaceAll(version, ".", "_")
 			registration := oldPluginRegistration(sessionID, "@sjawhar/pi-envoy", version)
 			requireConsumer := func(t *testing.T, answer subscribeAnswer) {
@@ -99,17 +98,21 @@ func TestANewOldPluginSessionRegistersAfterAFailedFirstPass(t *testing.T) {
 			// The first pass: NATS is down, so nothing subscribes the relay subject yet.
 			requireConsumer(t, rig.subscribe(t, registration))
 			stored, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+			// Let the relay send to the closed subject, then expire only that receipt wait.
+			// Its backoff stays pending until the next registration wakes the relay.
+			expireReceiptWait(t, fake)
+			fake.AwaitArmedAt(t, "the relay's pause after the unanswered frame", fake.Now().Add(relayPauseFirst))
 
 			// NATS is back: the next pass opens the relay subject and registers again, still with
 			// no delivery field.
 			standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 			requireConsumer(t, rig.subscribe(t, registration))
 
-			requireFrames(t, standIn.collect(t, 1, 15*time.Second), stored)
+			requireFrames(t, standIn.receive(t, 1), stored)
 			awaitAcked(t, rig.consumers, sessionID, seq)
 			// The heartbeat after it sends the same body, and the message does not come again.
 			requireConsumer(t, rig.subscribe(t, registration))
-			standIn.none(t, 2*time.Second)
+			rig.noneThroughMarker(t, standIn, sessionID)
 		})
 	}
 
@@ -142,7 +145,7 @@ func TestANewOldPluginSessionRegistersAfterAFailedFirstPass(t *testing.T) {
 					t.Fatalf("refusal %q names no %q", refusal.Error, want)
 				}
 			}
-			if _, err := rig.consumers.Info(context.Background(), sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+			if _, err := rig.consumers.Info(testwait.Context(t), sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
 				t.Fatalf("consumer of %s: %v, want none", sessionID, err)
 			}
 			rig.requireNothingWritten(t, sessionID)

@@ -1218,7 +1218,8 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			}
 			conditions.NotRegisteredAfter = millis
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		// Use the listener's clock so a test can hold the request budget open.
+		ctx, cancel := d.clk().WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		// Whether the delete removes an entry is read before it runs: Delete is idempotent and
 		// EntryDeleted counts a key that was already absent, so neither answer tells a stop from
@@ -3647,14 +3648,15 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// consumer calls: each pass's create or update and the repair after the entry
 		// (sendRequestBudget, which says why it is shorter than the client's attempt, or a test's
 		// registrationBudget).
-		budgetEnds := d.clk().Now().Add(d.registrationBudgetOr())
-		ctx, cancel := d.clk().WithDeadline(r.Context(), budgetEnds)
+		clk := d.clk()
+		budgetEnds := clk.Now().Add(d.registrationBudgetOr())
+		ctx, cancel := clk.WithDeadline(r.Context(), budgetEnds)
 		defer cancel()
 		// At the edge each topic the registration names is held to the token's projects, and a
 		// GitHub topic to the repositories their issues resolve to, read fresh for it within this
 		// route's budget, before anything is planned or stored; each plan's topics, the stored
 		// row's among them, are held the same way below (edgeTopicHold).
-		hold := newEdgeTopicHold(r, d.repositories, body.SessionID, logger)
+		hold := newEdgeTopicHold(r, d.repositories, body.SessionID, logger, clk, budgetEnds)
 		topicRefusal, err := hold.refusal(ctx, body.Topics)
 		if err != nil {
 			hold.answerRepositoryOutage(ctx, w, d.registry, d.sessions, machineID, err)
@@ -4118,11 +4120,11 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 			return
 		}
 		logger.Info("listener unsubscribe", slog.String("session_id", body.SessionID), slog.Any("topics", body.Topics))
-		// The removal runs within sendRequestBudget of the request's own context, as subscribe's
-		// write does, and store work that did not answer is the bus-unavailable 503. The
-		// consumer's filter update after it runs on the same context, as a registration's
-		// consumer calls do, since the client waits for it too.
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		// The removal runs within sendRequestBudget on the listener's clock, as subscribe's
+		// write does. Store work that did not answer is the bus-unavailable 503. The
+		// consumer's filter update after it runs within the same request budget, since the
+		// client waits for it too.
+		ctx, cancel := d.clk().WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		// The role claims released are the ones this process holds, never the whole session's:
 		// a session id names no process, and a second process that resumed this one's id hands

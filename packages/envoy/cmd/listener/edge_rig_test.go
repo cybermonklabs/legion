@@ -179,9 +179,12 @@ func newEdgeRig(t *testing.T) *edgeRig {
 
 // newEdgeRigServing is the rig of a listener serving projects, whatever the test's environment
 // says: none is a listener in no edge mode, which the rows that hold every listener use.
-func newEdgeRigServing(t *testing.T, projects []string) *edgeRig {
+func newEdgeRigServing(t *testing.T, projects []string, configureRelay ...func(*sessionRelays)) *edgeRig {
 	t.Helper()
 	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	for _, configure := range configureRelay {
+		configure(rig.relays)
+	}
 	// The publish route forwards a role message to its holder through the delivery config main
 	// wires and records each confirmation, so the rows that publish to a held role need both.
 	withPublishRoute(t, rig.deps)
