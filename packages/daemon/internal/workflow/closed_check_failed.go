@@ -19,7 +19,7 @@ import (
 // issue's notice. A retraction, a pass, a pull request's move and a deploy carry no fail and tell
 // nothing.
 func (e *Engine) tellClosedCheckFailed(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchResultChanged) error {
-	if fact.Verdict != "fail" || issue.ClosedOnChecksAt == nil {
+	if fact.Verdict != "fail" {
 		return nil
 	}
 	reason := fmt.Sprintf("%s closed on its checks, and check %s then recorded a fail: result %s. Legion opens and reopens nothing for it. "+
