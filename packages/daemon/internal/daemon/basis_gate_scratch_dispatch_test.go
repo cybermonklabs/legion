@@ -536,10 +536,13 @@ func (r *personHandoverRig) waitInLine(key string, titles ...string) []scratchIs
 // "not supervised"), an answer the rig, whose Envoy address nothing serves, never gives, so the row
 // is read here as queued with no claim to deliver it to. Where parent came back with its
 // architect's claim suspended, the row waits for that claim, and is the row still queued once the
-// resume brings the claim back. A person's done on free, a root of the case's own holding a slot,
-// then frees the slot whose promotion admits parent and starts its architect, whose start task
-// names root, and parent's architect registers parent's own gate on its approval, as step 6 does,
-// so that root plans and parent stands where the first case's parent stands.
+// resume brings the claim back. Such a claim keeps the task of parent's first admission until the
+// task of the start a slot brings takes its place, at the relaunched process's registration. The
+// wait for the start task therefore looks for a task other than that one. A person's done on free,
+// a root of the case's own holding a slot, then frees the slot whose promotion admits parent and
+// starts its architect, whose start task names root, and parent's architect registers parent's own
+// gate on its approval, as step 6 does, so that root plans and parent stands where the first
+// case's parent stands.
 func (r *personHandoverRig) openWhileWaiting(held *outboxHold, grant string, root, parent scratchIssue, approval scratchReview, reason string,
 	free scratchIssue, suspended bool,
 ) {
@@ -564,6 +567,9 @@ func (r *personHandoverRig) openWhileWaiting(held *outboxHold, grant string, roo
 	}
 	held.release(parent.Key)
 	architect := r.architectToken(parent.Key)
+	// first is the task the suspended claim of parent holds from parent's first admission, and nil
+	// where no claim holds one.
+	var first *api.DeliveryView
 	if suspended {
 		testwait.Eventually(t, "the outbox to try the resting-root row of "+parent.Key, func() bool { return r.restingAttempts(parent.Key) > 0 })
 		if rows, state := r.notices(parent.Key, "resting-root"), r.d.claim(architect).State; len(rows) != 1 || state != string(supervise.StateSuspended) {
@@ -571,6 +577,7 @@ func (r *personHandoverRig) openWhileWaiting(held *outboxHold, grant string, roo
 				parent.Key, rows, state)
 		}
 		t.Logf("the resting-root row of %s waits for its suspended architect claim", parent.Key)
+		first = r.d.claim(architect).Pending
 	} else {
 		if slices.ContainsFunc(r.d.claims(), func(c api.OperatorClaim) bool { return c.Token == architect }) {
 			t.Fatalf("the daemon lists an architect claim of %s while %s waits in the line for its first slot, want none", parent.Key, parent.Key)
@@ -587,7 +594,7 @@ func (r *personHandoverRig) openWhileWaiting(held *outboxHold, grant string, roo
 	var started api.OperatorClaim
 	testwait.Eventually(t, "the architect of "+parent.Key+" to hold its start task", func() bool {
 		started = r.d.claim(architect)
-		return started.Pending != nil
+		return started.Pending != nil && (first == nil || started.Pending.ID != first.ID)
 	})
 	if !strings.Contains(started.Pending.Task, startTask) {
 		t.Fatalf("the start task of %s's architect at its admission = %q, want it naming %q", parent.Key, started.Pending.Task, startTask)
