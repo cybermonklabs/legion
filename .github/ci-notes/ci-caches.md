@@ -65,13 +65,13 @@ A dispatch-builds run has a group of its own, so it never replaces a waiting pus
 families it would not fill; it can run beside a push fill, and dispatch-builds-superseded deletes no
 main entry newer than the one it keeps, so neither run's deletes take the other's new entry.
 
-## Why three jobs alone may delete entries
+## Why four jobs alone may delete entries
 
-Reading the tree and the caches is all ci-caches.yaml does but in three jobs: the cache scope needs
+Reading the tree and the caches is all ci-caches.yaml does but in four jobs: the cache scope needs
 no token scope of its own, and nothing in it reports a check or writes an artifact. The
-refill-superseded, envoy-infra-superseded and dispatch-builds-superseded jobs alone take
-`actions: write`, to delete the entries a fill replaced or this repository keeps no more, and build
-nothing.
+refill-superseded, envoy-infra-superseded, dispatch-builds-superseded and bun-superseded jobs
+alone take `actions: write`, to delete the entries a fill replaced or this repository keeps no
+more, and build nothing.
 
 ## The Go families, their readers and their runners
 
@@ -519,12 +519,14 @@ whose key is the content of the Lean toolchain the model names rather than a Go 
 `save: 'true'` on a push to main: the bun job is the one caller that does, the family's one saving
 job as each Go family has one. The key names the runner's architecture, so each architecture needs
 an entry and a saving job of its own, and the bun job runs a leg on each runner the action's callers
-run on, ubuntu-24.04 and ubuntu-24.04-arm. And the two earlier Dispatch builds dispatch-two-builds
-restores, each keyed on a release commit and the hash of the script that builds it, which the
-dispatch-builds job fills (.github/ci-notes/ci-caches.md#the-two-dispatch-builds). The changes
-job's two entries are ci-caches-changes.yaml's, which runs once per commit rather than one run at a
-time (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores). Two more went with
-the jobs that read them.
+run on, ubuntu-24.04 and ubuntu-24.04-arm; the bun-superseded job then deletes each leg's entries
+under any other version (.github/ci-notes/ci-caches.md#what-bun-superseded-deletes). And the two
+earlier Dispatch builds dispatch-two-builds restores, each keyed on a release commit and the hash
+of the script that builds it, which the dispatch-builds job fills
+(.github/ci-notes/ci-caches.md#the-two-dispatch-builds). The changes job's two entries are
+ci-caches-changes.yaml's, which runs once per commit rather than one run at a time
+(.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores). Two more went with the
+jobs that read them.
 
 ## The two entries that went with the jobs that read them
 
@@ -595,10 +597,11 @@ actions/cache/restore warns and the job goes on, compiling what the entry would 
 slower but not failed. An entry of another runner or another Go is no such entry and stays. None
 is deleted unless the new key is among this ref's entries, so a save that did not land leaves
 the old entries in place. It is a job of its own, so the token that may delete caches is in no
-job that builds code. Its legs, and those of envoy-infra-superseded, dispatch-builds-superseded
-and ci-caches-changes.yaml's superseded job, run .github/scripts/cache-superseded.sh, which took
-the three step bodies out of ci-caches.yaml when that file came near its 64,000 bytes (a file at
-that size moves its bodies to .github/scripts, main's #5649). A cache key is text any build that
+job that builds code. Its legs, and those of envoy-infra-superseded, dispatch-builds-superseded,
+bun-superseded and ci-caches-changes.yaml's superseded job, run
+.github/scripts/cache-superseded.sh, which took the three step bodies out of ci-caches.yaml when
+that file came near its 64,000 bytes (a file at that size moves its bodies to .github/scripts,
+main's #5649). A cache key is text any build that
 saves on this ref chose, so the script never splits or prints one raw: the list stays JSON, jq
 selects the numeric ids to delete, and each id is checked to be a number before `gh cache
 delete` gets it. One leg per family and architecture, each keeping the key that fill's leg saved,
@@ -758,6 +761,56 @@ what is left. The step's own budget is 300 + 3 x 300 = 1200 s, a whole number of
 takes the minute above, 21; the job's is 300 s, the 5 minutes main's #5182 gave it, plus that one
 retried step, 300 + 1200 = 1500 s -> 26 min.
 
+## What bun-superseded deletes
+
+It deletes the bun entries a raise of .bun-version superseded, once the bun job has saved or
+restored the pinned version's. The bun key is the runner's OS and architecture, the build variant
+and the version (.github/actions/setup-bun's bun-pin and bun-cache steps), and an entry is written
+once and never replaced, so a raise gives each architecture a new key and leaves a whole Bun binary
+under the old one. No run of a tree that pins the new version reads it, since the restore has no
+restore-keys; left alone it would hold its space until GitHub drops it after seven days unread, and
+over the repository's cache limit GitHub evicts the least recently used entries, which can be
+another family's live one. A pull request whose tree still pins the older version restores that
+entry until it is gone, and downloads the release asset after: slower, not failed.
+
+The bun job's outputs name the key each leg looked up under that leg's architecture, bun-x64 and
+bun-arm64, as the Go fills' outputs do. The key comes from the `key` output of
+.github/actions/setup-bun, the key its bun-cache step looked up and its save writes, so it is
+worked out in that action alone. One leg of bun-superseded per architecture keeps that key and
+runs the version mode of .github/scripts/cache-superseded.sh (#the-refill-superseded-job): it
+deletes this ref's entries whose key is the kept key's prefix up to its version (bun, the OS, the
+architecture and the variant) followed by a dotted version, other than the kept key, whatever
+their age. The kept key is the pinned version's whether the leg's restore hit or its save wrote
+it, so a run after the raise deletes the old entries either way. A kept key of another shape fails
+the step and deletes nothing. None is deleted unless the kept key is among this ref's entries, so
+a leg whose restore missed and whose save did not land (a dispatched run saves nothing) leaves the
+old entries in place, and a leg whose bun job failed before it named its key skips its steps. The
+safety of envoy-infra-superseded, for the same reasons: a job of its own, the list kept as JSON, jq
+selecting numeric ids, each id checked to be a number before `gh cache delete` gets it.
+
+The architecture and the variant are kept apart because each leg names one key, its own: an
+arm64 Bun runs on no x64 runner, and an x64 runner restores the baseline build where it has no
+avx2 and the other build where it does. A leg deletes its own architecture's old entries only once
+its own new key is listed, so an arm64 leg that failed leaves arm64's old entry for the next run,
+as refill-superseded leaves a family's. The x64 leg fills the variant of the runner it lands on
+and names nothing of the other: a rule that reached the other variant's entries would have to
+work that variant's key out a second time, beside the bun-pin step that works it out now, so they
+stay until an x64 leg lands on a runner of that variant, or GitHub drops them.
+
+oven-sh/setup-bun's own cache, which this repository's jobs wrote before they passed that action
+`no-cache: true` on every ref, is keyed bun- and the base64 SHA-1 of the release asset's URL (its
+getCacheKey). Such a key names no OS, architecture, variant or version to read a prefix off, so the
+version mode neither lists nor selects it, and refuses it as a kept key; no job reads those entries
+any more, so they are left to GitHub's eviction, seven days after they were last read.
+
+A leg deletes three entries at most, in the script's loop over three literal passes, as
+refill-superseded does and for its reason (#the-refill-superseded-job): a raise supersedes one
+entry per architecture and variant, the one the version before it left. Any more stay, a warning
+says how many, and the next run deletes them. The step's own budget is 300 + 3 x 300 = 1200 s, a
+whole number of minutes, so it takes the minute above, 21; the job's is 300 s, the 5 minutes each
+other *-superseded job carries for the same one list and three deletes, plus that one retried step,
+300 + 1200 = 1500 s -> 26 min.
+
 ## The elan home
 
 The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build` needs.
@@ -883,7 +936,8 @@ most over the 482 calls in those runs that restored the entry. A miss adds the r
 51,794,595 bytes and the save of what it installed. 600 s holds that with room, and the Budgets
 note of `.github/ci-budgets.md` adds the job's one retried step, setup-bun's two `ci_tools_fetch`
 calls, 2 x 1708 = 3416 s (that note's terms). 600 + 3416 = 4016 s -> 67 min, above that step's own
-57.
+57. The step after it names the key setup-bun looked up by the leg's architecture, for
+bun-superseded; it runs in a moment and fetches nothing, so neither term moves.
 
 ## The dispatch-builds job's budget
 

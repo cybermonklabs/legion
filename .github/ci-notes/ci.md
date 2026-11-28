@@ -1395,7 +1395,9 @@ existing installation and downloads the 51,794,595-byte release asset on a miss 
 'true'` and the run is a push to main, and one job passes it: ci-caches.yaml's bun job, which
 runs on every push to main, as each Go family has one saving job there. The key names the
 runner's architecture, so each architecture needs an entry and a saving job of its own, and the
-bun job runs one leg on ubuntu-24.04 and one on ubuntu-24.04-arm. No job here passes the input,
+bun job runs one leg on ubuntu-24.04 and one on ubuntu-24.04-arm; ci-caches.yaml's
+bun-superseded job then deletes each leg's entries under any other version
+(.github/ci-notes/ci-caches.md#what-bun-superseded-deletes). No job here passes the input,
 and no run of this workflow is a push, so no job here writes a bun entry at all. The restore is
 made in every job but tool-fallback and
 tool-fallback-arm: that action reads the id of the job that called it and holds its restore

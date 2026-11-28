@@ -27,8 +27,8 @@ concurrency:
   group: ci-caches-${{ github.ref }}-${{ inputs.only || 'all' }}
   cancel-in-progress: false
 
-# Read-only, but for the three *-superseded jobs, which take `actions: write` to delete entries.
-# why: .github/ci-notes/ci-caches.md#why-three-jobs-alone-may-delete-entries
+# Read-only, but for the four *-superseded jobs, which take `actions: write` to delete entries.
+# why: .github/ci-notes/ci-caches.md#why-four-jobs-alone-may-delete-entries
 permissions:
   contents: read
 
@@ -1098,15 +1098,69 @@ jobs:
     # why: .github/ci-notes/ci-caches.md#the-bun-jobs-budget
     # 600 + 3416 = 4016 s -> 67 min.
     timeout-minutes: 67
+    outputs:
+      # The key each leg saved or restored, named by its architecture as the Go fills' are.
+      bun-x64: ${{ steps.saved.outputs.bun-x64 }}
+      bun-arm64: ${{ steps.saved.outputs.bun-arm64 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Fill the bun family for this runner's architecture
+        id: setup-bun
         uses: ./.github/actions/setup-bun
         # why: .github/ci-notes/ci-caches.md#the-bun-jobs-budget
         # 2 x 1708 = 3416 s -> 57 min.
         timeout-minutes: 57
         with:
           save: 'true'
+
+      - name: Name the key this leg saved or restored by its architecture
+        id: saved
+        env:
+          KEY: ${{ steps.setup-bun.outputs.key }}
+        run: echo "bun-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
+
+  # This ref's bun entries of each architecture and variant under any other version, deleted once
+  # the bun job has saved or restored the pinned one, three a leg at most, each read and each
+  # delete through the one retry at 30 s an attempt.
+  # why: .github/ci-notes/ci-caches.md#what-bun-superseded-deletes
+  # Budget (the Budgets note of .github/ci-budgets.md): 300 s, the 5 minutes each other
+  # *-superseded job carries for the same one list and three deletes, plus its one retried step,
+  # 300 + 3 x 300 = 1200 s. 300 + 1200 = 1500 s -> 26 min, the whole minute above a sum that is
+  # itself a whole number of minutes.
+  bun-superseded:
+    needs: bun
+    if: ${{ !cancelled() && inputs.only != 'dispatch-builds' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 26
+    env:
+      JOB_TIMEOUT_MINUTES: 26 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      actions: write
+    steps:
+      # For .github/scripts/cache-superseded.sh and the ci-retry.sh and gh-read.sh it sources: this
+      # repository is public, so the checkout needs no scope beyond the one the deletes need.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.bun.outputs[format('bun-{0}', matrix.arch)] != ''
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Delete this ref's bun entries of this architecture and variant under another version
+        if: needs.bun.outputs[format('bun-{0}', matrix.arch)] != ''
+        # Its own retry arithmetic, which is cache-superseded.sh's: the list and the three deletes
+        # a run makes at most, 300 + 3 x 300 = 1200 s -> 21 min, the whole minute above a sum that
+        # is itself a whole number of minutes.
+        timeout-minutes: 21
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEEP: ${{ needs.bun.outputs[format('bun-{0}', matrix.arch)] }}
+          REF: ${{ github.ref }}
+          STEP_TIMEOUT_MINUTES: 21 # this step's timeout-minutes, which gh-read.sh's wait stays within as it does the job's
+        run: .github/scripts/cache-superseded.sh version bun

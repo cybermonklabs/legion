@@ -359,6 +359,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"cancel_started_act_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/cancel-started-act.test.sh .github/scripts/cancel-started-act.test.sh
 
+      - name: Test the cache-superseded version mode's deletes (a stand-in gh)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"cache_superseded_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/cache-superseded.test.sh .github/scripts/cache-superseded.test.sh
+
       - name: Test the main bypass check's decision
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"main_bypass_check_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/main-bypass-check.test.sh .github/scripts/main-bypass-check.test.sh

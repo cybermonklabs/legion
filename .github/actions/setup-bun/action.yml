@@ -36,7 +36,12 @@ description: >-
   reads what the leg of its architecture left. An x86_64 runner without avx2 reads the baseline
   build's key, which the x64 leg fills only when it lands on such a runner itself, so such a job
   downloads the release asset when no entry is there, as any job does on a miss (review of
-  dispatch://INFRA-1545 read this description against the callers).
+  dispatch://INFRA-1545 read this description against the callers). The `key` output is the key
+  the bun-cache step looked up, the one that save writes: each leg of the bun job names it by its
+  architecture, and `.github/workflows/ci-caches.yaml#bun-superseded` then deletes that ref's
+  entries of the same architecture and variant under any other version, so each architecture and
+  variant keeps one entry, the pinned version's
+  (.github/ci-notes/ci-caches.md#what-bun-superseded-deletes).
 
   ci.yaml's tool-fallback and tool-fallback-arm jobs restore nothing: both prove what an install
   reads when the release asset serves nothing, and a Bun the Actions cache restored would be
@@ -87,6 +92,15 @@ inputs:
       runner architecture; every other caller leaves it 'false' and only restores.
     required: false
     default: 'false'
+
+outputs:
+  key:
+    description: >-
+      The key the bun-cache step looked up, which the bun-cache-save step writes on a miss: bun,
+      the runner's OS and architecture, the build variant and the pinned version. Empty where
+      that step did not run. `.github/workflows/ci-caches.yaml#bun` job names it by architecture
+      for the bun-superseded job, which keeps it.
+    value: ${{ steps.bun-cache.outputs.cache-primary-key }}
 
 runs:
   using: composite

@@ -15,19 +15,28 @@
 #                    Deletes every other entry of REF of the family whose key is KEEP but for that
 #                    hash, whatever its age: the same runner and Go, other module files, the
 #                    hashless key included.
+#   version <family> bun-superseded: KEEP is the key a leg of the bun job saved or restored, the
+#                    family, the runner's OS and architecture, a build variant where there is one
+#                    and a dotted version: bun-Linux-X64-1.4.4, bun-Linux-X64-baseline-1.4.4.
+#                    Deletes every other entry of REF whose key is KEEP's prefix up to the version
+#                    followed by a dotted version, whatever its age: the same OS, architecture and
+#                    variant under another version. Another variant's, another architecture's and
+#                    any key of another shape stay. A KEEP of any other shape exits 1, deleting
+#                    nothing.
 #   build            dispatch-builds-superseded: KEEP is a Dispatch build's key, the build, the
 #                    runner's OS and architecture, the script's 64-hex hash and the 40-hex commit.
 #                    Deletes REF's entries of that build, OS and architecture created before
 #                    KEEP's, and every one of any other ref, whatever its age.
 #
 # Its environment: KEEP; REF, the ref whose new entry is kept (github.ref), whose entries alone the
-# commit and hash modes read, where build mode reads every ref's; SHA (commit mode, github.sha);
-# and GH_TOKEN and GH_REPO for gh. None is deleted unless KEEP is among REF's entries, so a save
-# that did not land leaves the old entries in place. A cache key is text any build that saves on a
-# ref chose, so no key is split or printed raw: the list stays JSON, jq selects the numeric ids to
-# delete, and each id is checked to be a number before `gh cache delete` gets it, so a key holding
-# a newline cannot add a line of its own, such as `--all`, to that list. A mode it does not know, or
-# one missing its family, exits 2 naming the usage.
+# commit, hash and version modes read, where build mode reads every ref's; SHA (commit mode,
+# github.sha); and GH_TOKEN and GH_REPO for gh. None is deleted unless KEEP is among REF's entries,
+# so a save that did not land leaves the old entries in place. A cache key is text any build that
+# saves on a ref chose, so no key is split or printed raw: the list stays JSON, jq selects the
+# numeric ids to delete, and each id is checked to be a number before `gh cache delete` gets it, so
+# a key holding a newline cannot add a line of its own, such as `--all`, to that list. A mode it
+# does not know, or one missing its family, exits 2 naming the usage. cache-superseded.test.sh tests
+# the version mode, and through it the rules every mode shares; ci.yaml's test job runs it.
 #
 # Each gh call is a ladder of .github/scripts/ci-retry.sh at 30 s an attempt, the bound the Retries
 # note of .github/ci-budgets.md gives a `gh` read of the API, run through gh-read.sh's
@@ -47,9 +56,9 @@ source "$(dirname "$0")/gh-read.sh"
 mode=${1:-}
 family=${2:-}
 case "$mode:$family" in
-  commit:?* | hash:?* | build:) ;;
+  commit:?* | hash:?* | version:?* | build:) ;;
   *)
-    echo "::error::usage: cache-superseded.sh commit|hash <family>, or cache-superseded.sh build" >&2
+    echo "::error::usage: cache-superseded.sh commit|hash|version <family>, or cache-superseded.sh build" >&2
     exit 2
     ;;
 esac
@@ -86,6 +95,21 @@ case "$mode" in
       .[] | select(.ref == $ref and (.key | startswith($base)) and .key != $keep
                    and (.key | stripped) == ($keep | stripped)) | .id'
     why="which the new entry supersedes"
+    ;;
+  version)
+    # The family, the OS, the architecture, the variant where there is one and the version, as
+    # .github/actions/setup-bun's bun-cache step writes them.
+    if ! [[ $KEEP == "$family"-* && ${KEEP#"$family"-} =~ ^[A-Za-z]+-[A-Za-z0-9]+(-[a-z]+)?-[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "::error::the kept key does not have the shape <family>-<OS>-<architecture>[-<variant>]-<version>, so nothing is deleted" >&2
+      exit 1
+    fi
+    # The family, OS, architecture and variant: the key without its version.
+    base=${KEEP%-*}-
+    list=(--ref "$REF" --limit 100)
+    name=$family
+    select='.[] | select(.ref == $ref and .key != $keep and (.key | startswith($base))
+                         and (.key | ltrimstr($base) | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))) | .id'
+    why="which the kept version supersedes"
     ;;
   build)
     if ! [[ $KEEP =~ ^dispatch-(previous|first-rollout)-build-[A-Za-z0-9]+-[A-Za-z0-9]+-[0-9a-f]{64}-[0-9a-f]{40}$ ]]; then
