@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
-import { pressHeld } from "../../__tests__/held-press";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -332,9 +332,7 @@ test("group actions are held while a save is pending", async () => {
 
     for (const name of ["Rename", "Add selected", "Remove Planner two", "Delete group"]) {
       const button = within(group).getByRole("button", { name }) as HTMLButtonElement;
-      expect(`${name}: ${button.getAttribute("aria-disabled")} ${button.disabled}`).toBe(
-        `${name}: true false`
-      );
+      expect(heldNotDisabled(button, name), `${name} is held`).toBe(true);
     }
     settle(crew);
   } finally {
@@ -470,8 +468,7 @@ async function landAndDraw(
 ): Promise<void> {
   await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
   await afterFrameAndTasks();
-  expect(pressed).toHaveAttribute("aria-disabled", "true");
-  expect(pressed.disabled).toBe(false);
+  expect(heldNotDisabled(pressed, named(pressed))).toBe(true);
   expect(named(document.activeElement)).toBe(named(pressed));
   editor.draw(next);
   await afterFrameAndTasks();
@@ -588,8 +585,8 @@ test("Delete group of the only group keeps the focus, held, until its live updat
     await user.click(deleting);
     await landAndDraw(deleting, [], editor);
 
-    const createGroup = screen.getByRole("button", { name: "Create group" });
-    expect(createGroup.getAttribute("aria-disabled")).toBe("true");
+    const createGroup = screen.getByRole("button", { name: "Create group" }) as HTMLButtonElement;
+    expect(heldNotDisabled(createGroup, "Create group")).toBe(true);
   } finally {
     restoreFocus();
     cleanup();

@@ -13,7 +13,7 @@ import { createRef, type ReactNode, type RefObject, useRef, useState } from "rea
 import { disarm } from "../__tests__/armed-press";
 import { SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { FootFloat } from "../__tests__/foot-float";
-import { nextFrame } from "../__tests__/frames";
+import { afterTask, nextFrame } from "../__tests__/frames";
 import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import { DOCUMENT_SCROLL_ATTRIBUTE, footPassNow, MARK_ATTRIBUTE } from "../hooks/useFootInset";
 import type { ControlSize } from "./control-names";
@@ -53,9 +53,6 @@ test("nothing is drawn while no row is selected", () => {
 test("the count and the actions are drawn, over the list rather than in it", async () => {
   const user = userEvent.setup();
   const presses: string[] = [];
-  const style = document.createElement("style");
-  style.textContent = PLACEMENT_CSS;
-  document.head.appendChild(style);
   const view = render(
     <SelectionBar count={3} label="Selected rows">
       <button onClick={() => presses.push("clear")} type="button">
@@ -69,13 +66,12 @@ test("the count and the actions are drawn, over the list rather than in it", asy
     expect(bar.textContent).toContain("3 selected");
     // Over the list: a bar drawn in the page would push every row of the list down as the first
     // row was marked.
-    expect(getComputedStyle(bar).position).toBe("fixed");
+    expect(withCss(PLACEMENT_CSS, () => getComputedStyle(bar).position)).toBe("fixed");
 
     await user.click(screen.getByRole("button", { name: "Clear selection" }));
     expect(presses).toEqual(["clear"]);
   } finally {
     view.unmount();
-    style.remove();
   }
 });
 
@@ -123,7 +119,7 @@ test("the bar's box takes the page's size: the comfortable padding by default, t
   const padding = () =>
     sizeUnder(screen.getByRole("toolbar", { name: "Selected rows" }), SIZE_CSS).padding;
   try {
-    // With no size the bar is drawn comfortable, the size the Inbox passes (`BAR_SIZE`).
+    // With no size the bar is drawn comfortable, its default.
     expect(padding()).toBe("8px 16px 8px 16px");
     view.rerender(bar("comfortable"));
     expect(padding()).toBe("8px 16px 8px 16px");
@@ -168,8 +164,7 @@ function windowWidth(width: number): () => void {
 // By the architect's ruling of 2026-11-27 18:42Z (INFRA-3135): the compact line, the project
 // List's, wraps at every width, in its groups, and nothing in it scrolls sideways, which the
 // layout rule reads as a breach; from `sm` up its bar stands at the foot, where the List keeps
-// room for its whole height. The comfortable line, the Inbox's, keeps one line that scrolls
-// sideways.
+// room for its whole height. The comfortable line keeps one line that scrolls sideways.
 test("the compact bar's line wraps at every width and scrolls nowhere sideways, and the comfortable line keeps one line that scrolls", () => {
   const lineAt = (size: ControlSize) => {
     const view = render(
@@ -207,8 +202,8 @@ function placeUnder(bar: Element, css: string): string {
 }
 
 // Every bar stands under the header below `sm`, over the top of the page, and at the foot of the
-// screen from `sm` up: the compact bar, the project List's, as the comfortable bar, the Inbox's,
-// and the toolbar size's do.
+// screen from `sm` up: the compact bar, the project List's, as the comfortable bar and the toolbar
+// size's do.
 test("every bar stands under the header below sm and at the foot from sm up, the compact bar as the comfortable one", () => {
   const placeAt = (size: ControlSize) => {
     const view = render(
@@ -236,7 +231,8 @@ test("every bar stands under the header below sm and at the foot from sm up, the
 // From `sm` up the room the project List keeps at its end is the compact bar's band in the foot
 // inset: how far above the screen's bottom edge the bar's top stands, its whole height and the
 // 1rem under it, published while the bar is drawn (`SELECTION_BAR_TOP_PROPERTY`), so a bar that
-// wraps onto three lines gives the List room of that height. The Inbox's bar publishes nothing.
+// wraps onto three lines gives the List room of that height. The comfortable bar publishes
+// nothing.
 test("from sm up the compact bar publishes how far above the screen's foot its top stands while it is drawn, the room of its whole height, and the comfortable bar publishes nothing", () => {
   const restoreWidth = windowWidth(640);
   const property = () =>
@@ -430,15 +426,16 @@ test("the bar going while the focus is outside it moves nothing", () => {
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(filter).toHaveFocus();
-    // On the body, where the reader had left it before the bar went: the bar never held it, so
-    // it is not the bar's to hand on.
+    // On the body, where the reader had left it before the bar went: nothing armed the bar's
+    // hand-off, and the bar never held the focus, so it is not the bar's to hand on.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
     act(() => filter.blur());
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(document.activeElement).toBe(document.body);
     expect(asked).toBe(0);
-    // The same going with the focus inside the bar does hand it on: what kept it still above is
-    // that the bar did not hold it.
+    // The same going after the reader's press on Clear selection, which arms the bar's hand-off
+    // and leaves the focus in the bar, does hand it on: what kept it still above is that no press
+    // was armed, and the bar did not hold the focus either.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
     pressInBar("Clear selection");
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
@@ -531,8 +528,9 @@ test("a control the reader moved the focus off moves nothing when it later goes 
     expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
     expect(document.activeElement).toBe(document.body);
     expect(asked).toBe(0);
-    // The same going with the focus still on Select all does hand it on: what kept it still
-    // above is that the reader had moved the focus off.
+    // The same going after the reader's press on Select all, which arms the bar's hand-off and
+    // leaves the focus on it, does hand it on: what kept it still above is that no press was
+    // armed, and the reader had moved the focus off besides.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} selectAll={selectAll} />);
     pressInBar("Select all");
     view.rerender(<MarkedList count={3} returnFocus={returnFocus} />);
@@ -544,19 +542,22 @@ test("a control the reader moved the focus off moves nothing when it later goes 
 });
 
 // INFRA-3135's review round 1, R10: the bar's hand-off keeps its sight rule. The bar's line of
-// actions scrolls sideways, and the reader had scrolled it so far that the focused Clear selection
-// was out of their sight when a refetch emptied the selection and took the bar away. The bar
-// hands the focus to no row, so the list is not scrolled to one the reader did not pick.
-test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", () => {
+// actions scrolls sideways, and the reader pressed Clear selection, then, while the press's write
+// was out, scrolled the line so far that the focused Clear selection was out of their sight when
+// the selection emptied and took the bar away. The bar hands the focus to no row, so the list is
+// not scrolled to one the reader did not pick.
+test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", async () => {
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
     return rowBox("CORE-2");
   };
   const view = render(<MarkedList count={2} returnFocus={returnFocus} />);
+  let answered: () => void = () => undefined;
   try {
-    const clear = screen.getByRole("button", { name: "Clear selection" });
-    act(() => clear.focus());
+    const clear = pressInBar("Clear selection");
+    // The host holds the press through its write, as the project List's actions hold theirs.
+    answered = holdHandOff();
     // The line 300 px wide at the foot of the window, scrolled until Clear selection is 400 px
     // past its left edge.
     const line = clear.parentElement as HTMLElement;
@@ -565,12 +566,16 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
     act(() => {
       line.dispatchEvent(new Event("scroll"));
     });
+    // The armed press reads what the reader can see of the focused control at each frame.
+    await act(nextFrame);
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);
     expect(asked).toBe(0);
   } finally {
+    answered();
+    disarm();
     view.unmount();
   }
 });
@@ -1041,7 +1046,7 @@ const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`
  *  row nested in it, as an Inbox row draws an ask card. With `dismissals`, each row draws a Dismiss
  *  of its own after its mark, as an Inbox row does (`DismissControl`). `head` is the list's sticky
  *  head, as the List names its table's. Its `returnFocus` ends at the list's own stop where the
- *  hand-off moves nothing, as the Inbox's does. */
+ *  hand-off moves nothing (`focusListStop`). */
 function PlacedList({
   cards = false,
   count,
@@ -1255,7 +1260,7 @@ test("the hand-off owes its landing while the press's rows are still listed, and
   let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
-    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    // The host holds the press through its write, as the project List's actions hold theirs.
     answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
@@ -1352,11 +1357,6 @@ test("a wheel of the reader's own leaves the focus on the parked mark of a leavi
     laidOut();
   }
 });
-
-/** Resolves after a task, once a `setTimeout(…, 0)` queued before it has run. */
-function afterTask(): Promise<void> {
-  return new Promise((settle) => setTimeout(settle, 0));
-}
 
 // INFRA-3135, round 29 (the architect's red team of 2026-11-26 07:3xZ, F2): where the reader's act
 // left the focus is read once the act has been answered, and nothing moves the focus before then.
@@ -2597,7 +2597,7 @@ test.each([
 
 // INFRA-3135, round 29 (the architect's rulings of 2026-11-26 04:0xZ): a landing is owed only
 // until the reader's own next action (`READER_ACTS`), which is the invariant that keeps this
-// hand-off from being the app-wide rescue this pull request removes. The reader acts while the
+// hand-off from being an app-wide rescue of every focus a page drops. The reader acts while the
 // press's rows are still listed, and the act ends what is owed at once, so the commit that takes
 // those rows away lands nothing. Where the act left the focus is read once it has been answered:
 // a task after its keyup, its pointerup, or the wheel. Here the act leaves the focus on the body,
@@ -2679,7 +2679,7 @@ test("a landing is read against the box the commit leaves, so a mark the room le
   let answered: () => void = () => undefined;
   try {
     pressInBar("Dismiss");
-    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    // The host holds the press through its write, as the project List's actions hold theirs.
     answered = holdHandOff();
     view.rerender(
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
@@ -2781,7 +2781,7 @@ test("the row marked last still listed under the list's sticky head takes the fo
   }
 });
 
-test("Clear selection at the window's bottom edge scrolls just the cut, without the root's scroll padding", () => {
+test("the bar's Dismiss with the row marked last at the window's bottom edge scrolls just the cut, without the root's scroll padding", () => {
   const view = render(<PlacedList count={1} last="CORE-1" listed={["CORE-1"]} />);
   const mark = rowBox("CORE-1");
   let top = window.innerHeight - 6;
@@ -3182,8 +3182,8 @@ test.each([
  *  for `open`, the one row the list holds, and is given to the hand-off as that row (`MarkedList`'s
  *  `row`) only where `gives` says so; the bar is handed what the hand-off answers of its rows
  *  (`MarkedPlace`'s `rows`). CORE-1 is the row marked last. Where `held` is given, the view's mark
- *  is ticked and the view draws a Dismiss of its own, which the bar's Dismiss holds while `held`,
- *  as the Inbox's bar Snooze holds the Snooze in the view's head. */
+ *  is ticked and the view draws a Dismiss of its own, which the bar's Dismiss holds while
+ *  `held`. */
 function OpenRowView({
   count,
   gives,
@@ -3271,11 +3271,11 @@ test.each([
 // A press on a control the bar's running action holds in a marked row counts as the bar's own
 // press, and the row is the element the list gives (`MarkedList`'s `row`) where no row marker
 // makes it one: the bar hands the press it arms at its root the rows the hand-off answers
-// (`MarkedPlace`'s `rows`), as the Inbox's bar Snooze holds the Snooze in the head of its reading
-// view. The view's own mark, its first checkbox, is ticked. One press on the held control, after
-// which the engine leaves the focus on the body, as WebKit does after a click on a button, takes
-// nothing but the hold, and the bar's press stays the cause: once the write lands and the bar goes
-// with the row, the focus lands on the next row's mark in the view.
+// (`MarkedPlace`'s `rows`), such as a reading view a page draws for the row it shows. The view's
+// own mark, its first checkbox, is ticked. One press on the held control, after which the engine
+// leaves the focus on the body, as WebKit does after a click on a button, takes nothing but the
+// hold, and the bar's press stays the cause: once the write lands and the bar goes with the row,
+// the focus lands on the next row's mark in the view.
 test("a press on a control the bar's action holds in a marked row the list gives, with no row marker, counts as the bar's press, and the landing is made on the next row's mark once the row goes", async () => {
   const view = render(<OpenRowView count={1} gives held={false} marker={false} open="CORE-1" />);
   let answered: () => void = () => undefined;

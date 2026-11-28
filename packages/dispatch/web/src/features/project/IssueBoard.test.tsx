@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { installCountingStorage } from "../../__tests__/counting-storage";
+import { blurOnRemoval, metaKeyDown, pressFor100ms } from "../../__tests__/engine-acts";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -1404,10 +1405,9 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   }
 });
 
-// What `IssueFilters.test.tsx` proved about the Board's filter strip, now that the Board draws
-// that strip itself as the one shared control row (INFRA-3135): the trigger over the filter
-// panel, the chips of the narrowings that are on, and the open-or-closed state the reader's
-// browser keeps under `project.issue-filters`.
+// The Board's control row (`ControlRow`): the trigger over the filter panel, the chips of the
+// narrowings that are on, and the open-or-closed state the reader's browser keeps under
+// `project.issue-filters`.
 function LocationSearch(): ReactNode {
   return <output data-testid="location-search">{useLocation().search}</output>;
 }
@@ -1573,9 +1573,9 @@ test("restores every filter from the URL and writes changes back to it", async (
     );
     await user.click(screen.getByRole("button", { name: "Remove Search: guid filter" }));
 
-    // Clicking into the search box closed the label picker, as it does in a browser, and the
-    // press on the chip beside it closed the filter panel the picker was in; Clear labels is
-    // inside that panel, so the reader opens it again.
+    // Clicking into the search box, a press outside the filter panel, closed the panel and the
+    // label picker in it, as it does in a browser; Clear labels is inside that panel, so the
+    // reader opens it again.
     await openFilters();
     await user.click(screen.getByRole("button", { name: "Labels · 2" }));
     await user.click(screen.getByRole("button", { name: "Clear labels" }));
@@ -2094,54 +2094,6 @@ function boardFocus(): string {
   const column = focused.closest<HTMLElement>("[data-board-column]")?.dataset.boardColumn;
   const name = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? focused.tagName;
   return column === undefined ? name : `${name} in ${column}`;
-}
-
-/** Makes the test's document drop the focus from a control taken out of the page as Chromium and
- *  WebKit do, with a `blur` and a `focusout` on it as it goes. happy-dom, as Firefox does, sends
- *  neither. Answers what gives happy-dom its own removal back. */
-function blurOnRemoval(): () => void {
-  const remove = Node.prototype.removeChild;
-  const removal = spyOn(Node.prototype, "removeChild").mockImplementation(function <T extends Node>(
-    this: Node,
-    child: T
-  ): T {
-    const focused = document.activeElement;
-    if (focused instanceof HTMLElement && child.contains(focused)) focused.blur();
-    return remove.call(this, child) as T;
-  });
-  return () => removal.mockRestore();
-}
-
-/** A key pressed with Meta as macOS sends one, ⌘C say: Meta's keydown and the key's, on `target`,
- *  and no keyup, which Chromium and WebKit do not send for a key released while Meta is held. */
-function metaKeyDown(target: Element, key: string, code: string): void {
-  act(() => {
-    target.dispatchEvent(
-      new KeyboardEvent("keydown", { bubbles: true, code: "MetaLeft", key: "Meta", metaKey: true })
-    );
-    target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code, key, metaKey: true }));
-  });
-}
-
-/** A pointer press on `target` as an engine sends one a hand holds for 100 ms: its `pointerdown`
- *  and the focus it moves, onto `focus`, or off what holds it onto the body where `focus` is null;
- *  then its `pointerup` and its `click`, or its `pointercancel` and no click. */
-async function pressFor100ms(
-  target: Element,
-  focus: HTMLElement | null,
-  end: "pointercancel" | "pointerup"
-): Promise<void> {
-  act(() => {
-    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-    const focused = document.activeElement;
-    if (focus !== null) focus.focus();
-    else if (focused instanceof HTMLElement) focused.blur();
-  });
-  await act(() => Bun.sleep(100));
-  act(() => {
-    target.dispatchEvent(new PointerEvent(end, { bubbles: true }));
-    if (end === "pointerup" && target instanceof HTMLElement) target.click();
-  });
 }
 
 /** A keyboard move the rule's dry run checks first, as the reader's act is handed it while that

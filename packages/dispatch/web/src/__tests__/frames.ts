@@ -9,6 +9,13 @@ export async function nextFrame(): Promise<void> {
   await done.promise;
 }
 
+/** Resolves after a task, once a `setTimeout(…, 0)` queued before it has run. */
+export function afterTask(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+}
+
 /** A frame and then two zero-delay turns of the event loop: past what a component defers to a
  *  frame and a task after a press or a loss, as a component's armed hand-off ends a frame and a
  *  task after the last thing that keeps it live (`focus-place.ts`'s `afterComponents`). The turns
