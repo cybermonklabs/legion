@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/dpopproof/dpopprooftest"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // The grant the stand-in broker answers: its placeholder, its id and the one host its entry binds.
@@ -106,8 +109,15 @@ func runnerTokenEndpoint(t *testing.T) *httptest.Server {
 // job, with extra on top, and answers its stdout, its stderr and its exit status.
 func runResultGrant(t *testing.T, broker *resultBroker, extra ...string) (string, string, int) {
 	t.Helper()
+	return runResultGrantCommand(t, broker, []string{"env"}, extra...)
+}
+
+// runResultGrantCommand runs the built `agent-secrets result-grant -- COMMAND` as runResultGrant
+// does, with argv as COMMAND.
+func runResultGrantCommand(t *testing.T, broker *resultBroker, argv []string, extra ...string) (string, string, int) {
+	t.Helper()
 	runner := runnerTokenEndpoint(t)
-	command := exec.Command(buildAgentSecrets(t), "result-grant", "--", "env")
+	command := exec.Command(buildAgentSecrets(t), append([]string{"result-grant", "--"}, argv...)...)
 	command.Env = append([]string{
 		"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir(),
 		"AGENT_SECRETS_URL=" + broker.URL, "AGENT_SECRETS_MACHINE_IDENTITY=github-actions",
@@ -200,6 +210,33 @@ func TestResultGrantsCommandGetsNoOIDCRequest(t *testing.T) {
 	for _, name := range []string{cipherclient.ActionsIDTokenRequestURLVar, cipherclient.ActionsIDTokenRequestTokenVar} {
 		if _, ok := childVar(stdout, name); ok {
 			t.Errorf("the child holds %s, so it could ask GitHub for the run's token itself", name)
+		}
+	}
+}
+
+// TestAGitTheCommandRunsGetsNoOIDCRequest: the command's own children inherit the environment
+// result-grant gave it. ci-report, the action's command, runs `git` from the job's PATH with its
+// own environment, so a git it runs gets no OIDC token request either. The command here is a shell
+// that runs `git`, and the git first on PATH prints its environment.
+func TestAGitTheCommandRunsGetsNoOIDCRequest(t *testing.T) {
+	bin := t.TempDir()
+	if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec env\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skipf("no /bin/sh: %v", err)
+	}
+	broker := startResultBroker(t, http.StatusOK, placeholderGrant(t))
+	stdout, stderr, exit := runResultGrantCommand(t, broker, []string{"sh", "-c", "git rev-parse HEAD"}, "PATH="+bin+":/usr/bin:/bin")
+	if exit != 0 {
+		t.Fatalf("result-grant exited %d: %s", exit, stderr)
+	}
+	if got, _ := childVar(stdout, oauthwire.AirlockResultsName); got != resultPlaceholder {
+		t.Fatalf("the git's %s = %q, want the placeholder, so the output is not the git's environment", oauthwire.AirlockResultsName, got)
+	}
+	for _, name := range []string{cipherclient.ActionsIDTokenRequestURLVar, cipherclient.ActionsIDTokenRequestTokenVar} {
+		if _, ok := childVar(stdout, name); ok {
+			t.Errorf("the git the command ran holds %s, so it could ask GitHub for the run's token", name)
 		}
 	}
 }
