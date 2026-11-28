@@ -766,19 +766,18 @@ func (plan deletePlan) marks(key string, anchored []string) []string {
 // dryRunNodeDelete is the dry run of request: the count the delete would take, in a transaction
 // that writes nothing and takes no write lock, after every refusal the delete reads before it
 // writes, in the same order (findDeleteRoot, planNodeDelete), and last the refusal of a text the
-// delete would leave holding a block with no block of its own, read off each document's tree with
-// no lock, through the transaction the document service joins (docs.Service.PlanDeleteBlocksText,
-// containerWouldEmpty), since a read from the pool beside the transaction's own connection would
-// deadlock it. It reads neither If-Match nor expected_count, and never answers 409
-// PARENT_CONTENDED.
+// delete would leave holding a block with no block of its own, read off each document's live tree
+// once that transaction has ended (docs.Service.PlanDeleteBlocksText, containerWouldEmpty): a read
+// of a room joined to a transaction takes the room's owner lock (docs' joinRead), the write lock
+// the delete takes, and one that joins none takes no lock; the transaction ended, the read holds no
+// connection of the pool beside its own. It reads neither If-Match nor expected_count, and never
+// answers 409 PARENT_CONTENDED.
 func (s *server) dryRunNodeDelete(ctx context.Context, request nodeDeleteRequest) (int, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
-	defer ledger.Discard()
 	root, err := findDeleteRoot(ctx, tx, request)
 	if err != nil {
 		return 0, err
@@ -787,7 +786,10 @@ func (s *server) dryRunNodeDelete(ctx context.Context, request nodeDeleteRequest
 	if err != nil {
 		return 0, err
 	}
-	if err := containerWouldEmpty(root, plan.takes, s.deps.Docs.PlanDeleteBlocksText(documentCtx, plan.documents())); err != nil {
+	if err := tx.Rollback(ctx); err != nil {
+		return 0, fmt.Errorf("end the dry run's reads of %s: %w", root.named, err)
+	}
+	if err := containerWouldEmpty(root, plan.takes, s.deps.Docs.PlanDeleteBlocksText(ctx, plan.documents())); err != nil {
 		return 0, err
 	}
 	return plan.count, nil

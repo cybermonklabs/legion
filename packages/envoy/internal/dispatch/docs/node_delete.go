@@ -95,8 +95,9 @@ func takenBlocks(ids []string) map[string]bool {
 }
 
 // PlanDeleteBlocksText is the dry run of DeleteBlocksText over taken: it reads each document's tree
-// as a read of its text reads it (documentTree), with no lock taken and nothing written, in the order
-// the delete writes them, and takes the taken blocks out of a copy of it
+// as a read of its text reads it (documentTree), with nothing written and, where ctx joins no
+// transaction, no lock taken (a read joined to one takes the room's owner lock, joinRead), in the
+// order the delete writes them, and takes the taken blocks out of a copy of it
 // (pmdoc.ValidDocument.DeleteNodeText). It answers the pmdoc.ContainerEmptiedError the delete's
 // write would answer at the first document it would leave holding a block with no block of its own,
 // and nil where the write would leave none, so the dry run refuses what the delete refuses.
