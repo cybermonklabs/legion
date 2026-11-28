@@ -43,6 +43,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -208,12 +209,11 @@ type Intake struct {
 	// settingsWake is signalled on each write of a Legion setting (SettingsChannel); nil reads the
 	// settings only at each take-over.
 	settingsWake <-chan struct{}
-	// now is Dispatch's clock: a whole read's rows are stamped by it, and an owed read's retry is
-	// spaced by it. after runs f once, d from now on that clock (time.AfterFunc): the deferred
-	// starting point of a wake or a take-over that found the starting read not due runs on it
-	// (startLater). A test moves both.
-	now   func() time.Time
-	after func(d time.Duration, f func())
+	// clock is Dispatch's clock: a whole read's rows are stamped by its Now, and an owed read's
+	// retry is spaced by it, and the deferred starting point of a wake or a take-over that found the
+	// starting read not due runs on its AfterFunc (startLater). clock.Real, which newIntake sets; a
+	// test hands it the module's fake (clocktest), which it moves.
+	clock timeSource
 	// handBackAfter hands a message that holds its project's owed read back to the stream, to come
 	// round again after a delay (deliver), and reports whether the hand-back was admitted:
 	// delivery.HeldMessage.HandBackAfter, which newIntake sets. A test answers it on its own clock.
@@ -240,6 +240,10 @@ type Intake struct {
 	// project's runner and the durable took it, with the project, so a test counts the calls
 	// queued. Nil outside tests.
 	callQueued func(project string)
+	// wakeHandled, when set, runs each time Run's wake loop has handled a signal of settingsWake,
+	// once SettingsChanged has returned, so each configured project's starting point is queued by
+	// then: a test knows from it that a wake it sent has been handled. Nil outside tests.
+	wakeHandled func()
 
 	mu sync.Mutex
 	// reported is when each line of reportEvery was last logged for each project, for the lines
@@ -279,13 +283,21 @@ func NewIntake(natsClient *bus.Client, pool *store.Pool, leases delivery.Durable
 }
 
 // newIntake is an intake on pool, reading the settings again on each signal of settingsWake, with
-// every field NewIntake makes but the durable: the wall clock, its deferred calls, the hand-back,
-// the retry waits and every map. NewIntake completes it with the durable, and ReadWhole uses it as
-// it is: its read runs on no runner of a durable.
+// every field NewIntake makes but the durable: the wall clock, the hand-back, the retry waits and
+// every map. NewIntake completes it with the durable, and ReadWhole uses it as it is: its read runs
+// on no runner of a durable.
 func newIntake(pool *store.Pool, settingsWake <-chan struct{}) *Intake {
-	return &Intake{pool: pool, settingsWake: settingsWake, now: time.Now, after: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
+	return &Intake{pool: pool, settingsWake: settingsWake, clock: clock.Real(),
 		handBackAfter: delivery.HeldMessage.HandBackAfter, firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
 		reported: map[reportKey]time.Time{}, calling: map[string]bool{}, waiting: newWaitingCounts(""), reading: map[string]readInFlight{}}
+}
+
+// timeSource is the part of clock.Clock the intake reads (Intake.clock): Now, and AfterFunc for the
+// deferred starting point. It is a narrowing of clock.Clock, with Clock's own signatures, so
+// clock.Real and the module's fake both fit it.
+type timeSource interface {
+	Now() time.Time
+	AfterFunc(d time.Duration, f func()) clock.Timer
 }
 
 // ReserveLeases reserves the intake's callers of the lease pool: three, as every held durable's
@@ -338,6 +350,9 @@ func (in *Intake) Run(ctx context.Context) {
 					return
 				case <-in.settingsWake:
 					in.SettingsChanged(ctx)
+					if in.wakeHandled != nil {
+						in.wakeHandled()
+					}
 				}
 			}
 		})
@@ -416,7 +431,7 @@ func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) 
 		if !current.follows(setting.StateURL) {
 			reason = ReadReasonStart
 		}
-		answer := current.readFor(reason, in.now(), 0, false, nil)
+		answer := current.readFor(reason, in.clock.Now(), 0, false, nil)
 		if !answer.read {
 			if wake && answer.later > 0 {
 				in.startLater(project, answer.later)
@@ -441,13 +456,14 @@ func (in *Intake) startingPoint(ctx context.Context, project string, wake bool) 
 }
 
 // startLater queues project's starting point on the project's runner once more, d from now on
-// the intake's clock (after): the call of a wake or a take-over that found the starting read not
-// due and held by no message (startingPoint). The deferred call defers no further call, and makes
-// no read where a message holds the starting read by the time it runs (cursor.readFor). A process
-// that no longer delivers from the durable when d ends queues nothing (delivery.HeldDurable.Queue),
-// and the process that took the durable over has queued the starting point of its own take-over.
+// the intake's clock (Intake.clock's AfterFunc): the call of a wake or a take-over that found the
+// starting read not due and held by no message (startingPoint). The deferred call defers no further
+// call, and makes no read where a message holds the starting read by the time it runs
+// (cursor.readFor). A process that no longer delivers from the durable when d ends queues nothing
+// (delivery.HeldDurable.Queue), and the process that took the durable over has queued the starting
+// point of its own take-over.
 func (in *Intake) startLater(project string, d time.Duration) {
-	in.after(d, func() {
+	in.clock.AfterFunc(d, func() {
 		in.durable.Queue(project, func(ctx context.Context) { in.startingPoint(ctx, project, false) })
 	})
 }
@@ -675,7 +691,7 @@ func (in *Intake) inProgress(msg *natsgo.Msg) {
 // would grow with every name ever published: each entry older than dropLogEvery is deleted when an
 // entry is written, and the map holds only the lines and projects logged in the last dropLogEvery.
 func (in *Intake) reportEvery(line, project string, attributes ...any) {
-	now := in.now()
+	now := in.clock.Now()
 	key := reportKey{line: line, project: project}
 	in.mu.Lock()
 	last, logged := in.reported[key]
@@ -710,7 +726,7 @@ func logValue[T any](value *T) any {
 // pruneHourly prunes legion_reads (PruneReads) after a message the intake took, at most once per
 // pruneEvery in this process.
 func (in *Intake) pruneHourly(ctx context.Context) {
-	now := in.now()
+	now := in.clock.Now()
 	in.mu.Lock()
 	if !in.pruned.IsZero() && now.Sub(in.pruned) < pruneEvery {
 		in.mu.Unlock()

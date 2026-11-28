@@ -132,7 +132,7 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	attempt.reason = reason
 	// made: a message on the crowded key never makes a read, as a delivery that made one already.
 	flight := in.inFlight(project, attempt.seq)
-	answer := current.readFor(reason, in.now(), attempt.seq, true, flight)
+	answer := current.readFor(reason, in.clock.Now(), attempt.seq, true, flight)
 	if err := owe(ctx, tx, project, answer, attempt.seq); err != nil {
 		return outcomeDone, err
 	}

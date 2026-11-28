@@ -41,7 +41,7 @@ import (
 // ReadRetryAfter, so each call queued behind it would find the read due again and make one more,
 // back to back on the project's runner.
 func (in *Intake) callRead(project string, current cursor) {
-	if !current.readFor("", in.now(), 0, false, nil).read {
+	if !current.readFor("", in.clock.Now(), 0, false, nil).read {
 		return
 	}
 	in.mu.Lock()
@@ -221,7 +221,7 @@ func refusedForGood(err error) *pgconn.PgError {
 // (applyBatch), or the pool (readRefused). The caller sets the message's answer from it afterwards
 // (messageAttempt.answered).
 func (in *Intake) answerRead(ctx context.Context, db Execer, attempt *messageAttempt, current cursor, reason string) (readAnswer, error) {
-	answer := current.readFor(reason, in.now(), attempt.seq, attempt.readMade, nil)
+	answer := current.readFor(reason, in.clock.Now(), attempt.seq, attempt.readMade, nil)
 	if answer.read {
 		if reason == ReadReasonStore {
 			answer.store = attempt.message.StateID

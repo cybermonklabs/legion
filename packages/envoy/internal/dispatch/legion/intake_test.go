@@ -21,6 +21,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -35,17 +37,26 @@ import (
 // listener does, the lease pool reservation the intake takes its durable's hold on, the settings
 // wake, the intake's clock and the log every intake of the test writes, through a logger of the
 // rig's own (Intake.log), so the test reads the lines of its own intakes alone. That is what lets
-// the read rule's seeds, the package's only parallel tests, hold a rig each and run at once; the
-// package's other tests have a rig each too and still run alone.
+// the package's parallel tests, the read rule's seeds among them, hold a rig each and run at once;
+// the package's other tests have a rig each too and still run alone.
+//
+// Each intake the rig starts reads the module's fake clock and defers its calls on it
+// (Intake.clock, intakeClock), hands its messages back on that fake (park), and tells the rig when
+// its take-over's callback has run (awaitTakeOver) and when it has handled a wake (wakeUp). The
+// fake moves only when the test moves it, so a deferred call or a hand-back comes due only once the
+// test moves the clock past it (intakeClock.advance, runUntil), never by wall time.
 type intakeRig struct {
 	t         *testing.T
 	database  *store.Store
 	publisher *bus.Client
 	leases    delivery.DurableLeases
-	wake      chan struct{}
-	clock     *intakeClock
-	logs      *logtest.Buffer
-	logger    *slog.Logger
+	// wake is the settings wake of every intake the rig starts (Intake.settingsWake). A test
+	// signals it through wakeUp, which counts the wake so that quiet waits for the intake to have
+	// handled it; a wake sent on the channel itself is one quiet cannot see.
+	wake   chan struct{}
+	clock  *intakeClock
+	logs   *logtest.Buffer
+	logger *slog.Logger
 	// stateOptions are the options each intake the rig starts calls its daemons with
 	// (Intake.stateOptions): none, or the window a test gives its daemons' answers (windowed).
 	stateOptions []Option
@@ -54,85 +65,129 @@ type intakeRig struct {
 	// published numbers the rig's messages, so each has an id and a dedupe key of its own.
 	published int
 	// firstRetry and lastRetry are the retry waits a test shrinks before it starts an intake
-	// (Intake.firstRetry, Intake.lastRetry): startOn gives them to each intake the rig starts
-	// where firstRetry is set, and leaves NewIntake's otherwise.
+	// (Intake.firstRetry, Intake.lastRetry): begin gives them to each intake the rig starts where
+	// firstRetry is set, and leaves NewIntake's otherwise.
 	firstRetry, lastRetry time.Duration
+	// stopBudget is the budget of the stop of each intake the rig starts from here on
+	// (delivery.HeldDurable.SetStopBudget), which a test sets before it starts one: 0 leaves
+	// production's intakeStopBudget, and a budget below 0 gives the handlers up the moment the
+	// stop begins.
+	stopBudget time.Duration
+	// barred, when set, runs once quiet's barrier on settingsKey has queued a barrier on each
+	// configured project's runner, before quiet waits for them (drainedAll). The rig's own test
+	// (TestQuietWaitsForTheStartingPointQueuedBehindAHeldRead) lets work it holds on a runner go
+	// from there, so that the work runs between the barriers' queueing and their run.
+	barred func()
+
+	// mu guards the counts of the wakes, wakesSent, the wakes wakeUp put on wake, and
+	// wakesHandled, the wakes the rig's intakes have handled (Intake.wakeHandled); the hand-backs
+	// the rig holds parked (backs) and how many it has parked, every intake's counted from 1
+	// (handBacks); each test's request to withhold a hand-back the rig has not parked yet, in the
+	// order made (withholds); and each intakeRun's stopping.
+	mu                      sync.Mutex
+	wakesSent, wakesHandled int
+	backs                   map[*parkedHandBack]struct{}
+	handBacks               int
+	withholds               []*withheldHandBack
 
 	// intake is the intake running now, stop stops it, subject is the deliver subject its
-	// take-over bound the durable to, and client is its NATS client, whose connection a test closes
-	// to have the client replace it.
+	// take-over bound the durable to, client is its NATS client, whose connection a test closes
+	// to have the client replace it, and current is the rig's record of it.
 	intake  *Intake
 	stop    func()
 	subject string
 	client  *bus.Client
+	current *intakeRun
 }
 
-// intakeClock is the intake's clock (Intake.now): the wall clock, moved forward by what the test
-// has advanced it, and by jump more at each reading once the test sets a jump (jumps).
+// intakeRun is the rig's record of one intake it started. stopping is set, under the rig's mu,
+// once the rig has begun to stop the intake: the rig refuses its hand-backs from then on (park).
+// tookOver is closed once the body of its first take-over's callback (takenOver) has run.
+type intakeRun struct {
+	stopping bool
+	tookOver chan struct{}
+	once     sync.Once
+}
+
+// intakeClock is the rig's clock: the module's fake (clocktest.Held, since the intake stamps rows
+// that the database compares with its own now()), which every intake the rig starts reads and
+// defers its calls on (Intake.clock), and on which the rig arms its hand-backs (park). It moves only
+// when the test moves it (advance, runUntil), or at each reading the intake makes once the test
+// sets a jump (jumps), and no timer armed on it fires by wall time. It counts the calls the
+// intakes defer on it (deferrals).
 type intakeClock struct {
-	mu     sync.Mutex
-	offset time.Duration
-	jump   time.Duration
-	// deferred counts the calls after has deferred, every intake of the test's included, and made
-	// those of them it has begun to make (deferrals).
+	*clocktest.Fake
+	mu   sync.Mutex
+	jump time.Duration
+	// deferred counts the calls the intakes deferred (AfterFunc), every intake of the test's
+	// included, and made those of them whose call has returned.
 	deferred, made int
-	// done ends with the test (testing.T.Context), and with it every call after still waits to make.
-	done <-chan struct{}
 }
 
+// newIntakeClock is a fake clock at the wall clock's moment, with nothing armed on it.
+func newIntakeClock() *intakeClock {
+	return &intakeClock{Fake: clocktest.Held()}
+}
+
+// Now is the intake's reading of the clock (Intake.clock): the fake's moment, after the clock has
+// moved forward by the jump, where the test set one (jumps).
+func (c *intakeClock) Now() time.Time {
+	c.mu.Lock()
+	jump := c.jump
+	c.mu.Unlock()
+	if jump > 0 {
+		c.Fake.Advance(jump)
+	}
+	return c.Fake.Now()
+}
+
+// AfterFunc is the intake's deferred call (Intake.clock, Intake.startLater): f armed on the fake d
+// from its moment, counted as deferred, and as made once f has returned (deferrals). The move that
+// fires it waits for f to return, so the call is counted made when that move returns, and the
+// starting point f queues is on its project's runner by then.
+func (c *intakeClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	c.mu.Lock()
+	c.deferred++
+	c.mu.Unlock()
+	return c.Fake.AfterFunc(d, func() {
+		f()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.made++
+	})
+}
+
+// now is the intake's reading of the clock (Now).
 func (c *intakeClock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.offset += c.jump
-	return time.Now().Add(c.offset)
+	return c.Now()
 }
 
+// advance moves the clock by, firing every call deferred and every hand-back parked that is due by
+// then (clocktest.Fake.Advance). A test that aims at a moment the clock has passed already moves it
+// back (by below 0), which fires nothing.
 func (c *intakeClock) advance(by time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.offset += by
+	if by < 0 {
+		c.Fake.SetWhen(func(now time.Time, _ []time.Time) (time.Time, bool) { return now.Add(by), true })
+		return
+	}
+	c.Fake.Advance(by)
 }
 
-// jumps has each reading of the clock from here on move it forward by jump first. A whole read's
-// time is one reading, and the read rule's decision after the read is the next (readFor), so a
-// jump of ReadRetryAfter less holdAtLeast sends a message that holds a read that failed back to the
-// stream for holdAtLeast rather than a minute, and the read is due again at its redelivery.
+// jumps has each reading of the clock the intake makes from here on move it forward by jump first,
+// firing what is due by then (Now). A whole read's time is one reading, and the read rule's
+// decision after the read is the next (readFor), so a jump of ReadRetryAfter less holdAtLeast sends
+// a message that holds a read that failed back to the stream for holdAtLeast rather than a minute,
+// and the read is due again at its redelivery. A jump of 0 ends the jumps.
 func (c *intakeClock) jumps(jump time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.jump = jump
 }
 
-// after runs f on a goroutine of its own once the clock reads d past its reading now: once the wall
-// clock and the test's advances together have moved it that far. It is the rig's Intake.after, so
-// a starting point a wake deferred (Intake.startLater) runs when the test moves the clock past the
-// minute. It reads the clock without its jump, so it moves nothing. A call still waiting when the
-// test ends (done) is never made, so no deferred call reaches an intake its test stopped. It counts
-// each call it defers, and each it makes as it begins to make it (deferrals).
-func (c *intakeClock) after(d time.Duration, f func()) {
-	c.mu.Lock()
-	c.deferred++
-	c.mu.Unlock()
-	at := c.peek().Add(d)
-	go func() {
-		for c.peek().Before(at) {
-			select {
-			case <-c.done:
-				return
-			case <-time.After(10 * time.Millisecond):
-			}
-		}
-		c.mu.Lock()
-		c.made++
-		c.mu.Unlock()
-		f()
-	}()
-}
-
-// deferrals is how many calls the clock has deferred (after), and how many of them it has begun to
-// make. A call made queues its starting point on the project's runner, where its intake still
-// delivers from the durable (Intake.startLater), so whatever that starting point does follows the
-// count of made calls.
+// deferrals is how many calls the intakes deferred on the clock (AfterFunc), and how many of them
+// it has made: a call is counted made once it has returned, and it has queued its starting point on
+// the project's runner by then, where its intake still delivers from the durable
+// (Intake.startLater), so whatever that starting point does follows the count of made calls.
 func (c *intakeClock) deferrals() (deferred, made int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -147,9 +202,181 @@ func (c *intakeClock) deferredCalls() int {
 
 // peek is the clock's reading without the jump (jumps).
 func (c *intakeClock) peek() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return time.Now().Add(c.offset)
+	return c.Fake.Now()
+}
+
+// nextDue is the earliest deadline armed on the clock (clocktest.Fake.Armed): a call deferred and
+// not yet made, or a hand-back parked and not withheld. It answers false where none is armed.
+func (c *intakeClock) nextDue() (time.Time, bool) {
+	armed := c.Fake.Armed()
+	if len(armed) == 0 {
+		return time.Time{}, false
+	}
+	return armed[0], true
+}
+
+// parkedHandBack is a hand-back the rig parked (park): the message, its stream sequence, when it
+// is due on the rig's clock, the intake that handed it back, the timer it is armed with on the
+// clock, nil while a test withholds it, and the test's request that withholds it (withhold), nil
+// for none.
+type parkedHandBack struct {
+	message  delivery.HeldMessage
+	seq      uint64
+	due      time.Time
+	run      *intakeRun
+	timer    clock.Timer
+	withheld *withheldHandBack
+}
+
+// park is the rig's Intake.handBackAfter for the intake run (begin): in place of NATS's delay, it
+// arms the hand-back on the rig's clock, back from the clock's moment, and answers true, as
+// delivery does for a hand-back it admits; once the test moves the clock past that deadline, the
+// rig hands the message back with no delay (handBack), a real hand-back that NATS redelivers at
+// once. Once the rig has begun to stop run (stopping), it arms nothing and answers false, logging
+// nothing, as delivery's own hand-back refuses once a stop has begun (handBackOwn). A test's request
+// to withhold a hand-back (withhold) that m is arms nothing until the test lets it go (release).
+func (r *intakeRig) park(run *intakeRun, m delivery.HeldMessage, back time.Duration) bool {
+	seq, _ := deliveryOf(m.Msg)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if run.stopping {
+		return false
+	}
+	r.handBacks++
+	parked := &parkedHandBack{message: m, seq: uint64(seq), due: r.clock.peek().Add(back), run: run}
+	for i, w := range r.withholds {
+		if (w.nth != 0 && w.nth == r.handBacks) || (w.nth == 0 && w.seq == parked.seq) {
+			parked.withheld, w.parked = w, parked
+			r.withholds = slices.Delete(r.withholds, i, i+1)
+			close(w.taken)
+			break
+		}
+	}
+	r.backs[parked] = struct{}{}
+	if parked.withheld == nil {
+		parked.timer = r.clock.Fake.AfterFunc(back, func() { r.handBack(parked) })
+	}
+	return true
+}
+
+// handBack hands parked's message back with no delay (delivery.HeldMessage.HandBackAfter), so NATS
+// redelivers it at once: the function of its timer on the rig's clock. It hands nothing back once a
+// stop has dropped parked (stopping).
+func (r *intakeRig) handBack(parked *parkedHandBack) {
+	r.mu.Lock()
+	_, still := r.backs[parked]
+	delete(r.backs, parked)
+	r.mu.Unlock()
+	if still {
+		parked.message.HandBackAfter(0)
+	}
+}
+
+// stopping marks run as an intake the rig has begun to stop, so its hand-backs are refused from here
+// on (park), and drops each hand-back it parked, withheld ones included, stopping its timer: the next
+// take-over redelivers their messages from the durable's ack floor.
+func (r *intakeRig) stopping(run *intakeRun) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run.stopping = true
+	for parked := range r.backs {
+		if parked.run != run {
+			continue
+		}
+		if parked.timer != nil {
+			parked.timer.Stop()
+		}
+		delete(r.backs, parked)
+	}
+}
+
+// parked is the stream sequence of each hand-back the rig holds parked, withheld ones included, and
+// when it is due on the rig's clock.
+func (r *intakeRig) parked() map[uint64]time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	parked := make(map[uint64]time.Time, len(r.backs))
+	for back := range r.backs {
+		parked[back.seq] = back.due
+	}
+	return parked
+}
+
+// withheldHandBack is a test's request that the rig hold one hand-back until the test lets it go
+// (withhold, withholdOf, release): the nth hand-back the rig parks, or, where nth is 0, the next of
+// the message at stream sequence seq. taken is closed once the rig has parked the hand-back it
+// holds, which is parked from then on.
+type withheldHandBack struct {
+	rig    *intakeRig
+	nth    int
+	seq    uint64
+	taken  chan struct{}
+	parked *parkedHandBack
+}
+
+func (w *withheldHandBack) String() string {
+	if w.nth != 0 {
+		return fmt.Sprintf("hand-back %d", w.nth)
+	}
+	return fmt.Sprintf("the next hand-back of stream sequence %d", w.seq)
+}
+
+// withhold has the rig hold the nth hand-back it parks, every intake's of the test counted from 1,
+// until the test lets it go (release): it is armed on no clock meanwhile, so no move of the clock
+// brings it back, and a step the test takes meanwhile, a stop, a take-over or a write of the
+// setting, lands between the hand-back and its redelivery by order. A stop drops it, as it drops
+// every hand-back its intake parked, and the next take-over redelivers the message.
+func (r *intakeRig) withhold(nth int) *withheldHandBack {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if nth <= r.handBacks {
+		r.t.Fatalf("withhold hand-back %d: the rig has parked %d hand-backs already", nth, r.handBacks)
+	}
+	w := &withheldHandBack{rig: r, nth: nth, taken: make(chan struct{})}
+	r.withholds = append(r.withholds, w)
+	return w
+}
+
+// withholdOf is withhold for the next hand-back of the message at stream sequence seq.
+func (r *intakeRig) withholdOf(seq uint64) *withheldHandBack {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w := &withheldHandBack{rig: r, seq: seq, taken: make(chan struct{})}
+	r.withholds = append(r.withholds, w)
+	return w
+}
+
+// await waits for the rig to have parked the hand-back w holds, and answers its stream sequence
+// and when it is due on the rig's clock.
+func (w *withheldHandBack) await() (seq uint64, due time.Time) {
+	w.rig.t.Helper()
+	testwait.Receive(w.rig.t, fmt.Sprintf("the rig to park %s, which the test withholds", w), w.taken)
+	w.rig.mu.Lock()
+	defer w.rig.mu.Unlock()
+	return w.parked.seq, w.parked.due
+}
+
+// release lets the hand-back w holds go from here on as any parked one: it is armed on the rig's
+// clock for its due time, and comes back once the test moves the clock past it, or at once where
+// the clock is past it already. A hand-back a stop dropped is not armed: the take-over has
+// delivered its message again. A request whose hand-back the rig has not parked yet is withdrawn.
+func (w *withheldHandBack) release() {
+	r := w.rig
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	parked := w.parked
+	if parked == nil {
+		r.withholds = slices.DeleteFunc(r.withholds, func(other *withheldHandBack) bool { return other == w })
+		return
+	}
+	if parked.withheld == nil {
+		return
+	}
+	parked.withheld = nil
+	if _, still := r.backs[parked]; still {
+		parked.timer = r.clock.Fake.AfterFunc(parked.due.Sub(r.clock.peek()), func() { r.handBack(parked) })
+	}
 }
 
 // newIntakeRig opens the test's database and NATS account, and sends the lines of every intake it
@@ -174,38 +401,81 @@ func newIntakeRig(t *testing.T) *intakeRig {
 	}
 	return &intakeRig{
 		t: t, database: database, publisher: publisher, leases: leases, wake: make(chan struct{}, 1),
-		clock: &intakeClock{done: t.Context().Done()}, logs: logs, logger: logger, run: rigRun,
+		clock: newIntakeClock(), logs: logs, logger: logger, run: rigRun, backs: map[*parkedHandBack]struct{}{},
 	}
 }
 
 // start runs an intake on a NATS client of its own until the test ends or stop is called, and
-// waits for its take-over to have bound the durable on a deliver subject of its own.
+// returns once its take-over has bound the durable on a deliver subject of its own, the body of
+// the take-over's callback has run (takenOver), and so has the settings read that body queued on
+// settingsKey (drained): each configured project's starting point is queued on its runner by then,
+// so a setting written after start is not one the take-over's settings read saw.
 func (r *intakeRig) start() {
 	r.t.Helper()
-	r.startOn(r.clock.now)
+	r.begin(r.clock, nil)
+	r.awaitTakeOver()
+	r.drained(settingsKey)
 }
 
-// startOn is start with now as the intake's clock rather than the rig's. The intake's deferred
-// calls (Intake.after) run on the rig's clock either way, and it retries a failed database step
-// after the rig's waits where a test set them (firstRetry, lastRetry), and NewIntake's otherwise.
+// startOn is start with now as the intake's reading of the clock (clocktest.WithNow over the
+// rig's clock), and without start's wait for the take-over's settings read: it returns once the
+// body of the take-over's callback has run, which queued that read on settingsKey. A test that holds
+// the settings read back, locking legion_settings before the start, starts with it. The intake's
+// deferred calls and hand-backs are armed on the rig's clock either way, and it retries a failed
+// database step after the rig's waits where a test set them (firstRetry, lastRetry), and
+// NewIntake's otherwise.
 func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Helper()
-	r.begin(now, nil)
+	r.begin(clocktest.WithNow(r.clock, now), nil)
+	r.awaitTakeOver()
 }
 
 // startHeld is start for a test that sets the intake's hooks (Intake.takeOverHook,
 // Intake.callQueued): set runs on the intake before its Run starts, since the take-over's first
-// runs as Run starts. It returns once the take-over has bound the durable, as start does, and waits
-// for nothing of takenOver's body, which the test's take-over hook may hold back.
+// runs as Run starts. It returns once the take-over has bound the durable, and waits for nothing of
+// takenOver's body, which the test's take-over hook may hold back.
 func (r *intakeRig) startHeld(set func(*Intake)) {
 	r.t.Helper()
-	r.begin(r.clock.now, set)
+	r.begin(r.clock, set)
 }
 
-// begin runs an intake on a NATS client of its own, with now as its clock and, where set is not
-// nil, set run on it before its Run starts, until the test ends or stop is called, and returns once
-// its take-over has bound the durable on a deliver subject of its own.
-func (r *intakeRig) begin(now func() time.Time, set func(*Intake)) {
+// startHandingBackOnNATS is start for the one test that keeps production's hand-back
+// (TestAFailedWholeReadSetsNoRun): the intake's handBackAfter records the delay it is called with,
+// in order, and then calls delivery.HeldMessage.HandBackAfter unchanged, so the real NAK with that
+// delay goes to NATS, which redelivers the message once the delay has passed. It answers a reading
+// of the delays recorded. Such a hand-back is armed on no clock of the rig's: quiet counts its
+// message among the messages not acknowledged and not parked until NATS redelivers it.
+func (r *intakeRig) startHandingBackOnNATS() (delays func() []time.Duration) {
+	r.t.Helper()
+	var mu sync.Mutex
+	var recorded []time.Duration
+	r.begin(r.clock, func(in *Intake) {
+		in.handBackAfter = func(m delivery.HeldMessage, back time.Duration) bool {
+			mu.Lock()
+			recorded = append(recorded, back)
+			mu.Unlock()
+			return delivery.HeldMessage.HandBackAfter(m, back)
+		}
+	})
+	r.awaitTakeOver()
+	r.drained(settingsKey)
+	return func() []time.Duration {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(recorded)
+	}
+}
+
+// begin runs an intake on a NATS client of its own, with source as its clock (Intake.clock), until
+// the test ends or stop is called, and returns once its take-over has bound the durable on a deliver
+// subject of its own. The intake hands its messages back on the rig's clock (park) and tells the
+// rig of each wake it handles (handledWake); it runs its durable with the rig's stop budget where a
+// test set one, and, where set is not nil, set runs on it before its Run starts and may replace any
+// of those hooks. begin wraps the take-over hook set leaves, so the rig learns when the take-over's
+// body has run whoever runs it (awaitTakeOver). stop marks the intake as stopping (stopping) before
+// it cancels the intake's context, the moment from which delivery's own hand-back refuses, so the
+// rig refuses the intake's hand-backs from then on and drops those it parked.
+func (r *intakeRig) begin(source timeSource, set func(*Intake)) {
 	r.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(r.t)})
 	if err != nil {
@@ -213,13 +483,31 @@ func (r *intakeRig) begin(now func() time.Time, set func(*Intake)) {
 	}
 	r.t.Cleanup(client.Close)
 	intake := NewIntake(client, r.database.Pool, r.leases, r.wake)
-	intake.now, intake.after = now, r.clock.after
+	run := &intakeRun{tookOver: make(chan struct{})}
+	intake.clock = source
+	intake.handBackAfter = func(m delivery.HeldMessage, back time.Duration) bool { return r.park(run, m, back) }
+	intake.wakeHandled = r.handledWake
 	intake.log, intake.stateOptions = r.logger, r.stateOptions
 	if r.firstRetry != 0 {
 		intake.firstRetry, intake.lastRetry = r.firstRetry, r.lastRetry
 	}
+	if r.stopBudget != 0 {
+		intake.durable.SetStopBudget(r.stopBudget)
+	}
 	if set != nil {
 		set(intake)
+	}
+	hook := intake.takeOverHook
+	intake.takeOverHook = func(body func()) {
+		ran := func() {
+			body()
+			run.once.Do(func() { close(run.tookOver) })
+		}
+		if hook != nil {
+			hook(ran)
+			return
+		}
+		ran()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -230,6 +518,7 @@ func (r *intakeRig) begin(now func() time.Time, set func(*Intake)) {
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
+			r.stopping(run)
 			cancel()
 			<-done
 		})
@@ -241,7 +530,251 @@ func (r *intakeRig) begin(now func() time.Time, set func(*Intake)) {
 		info, err = r.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchLegionStateDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous
 	}, func() string { return fmt.Sprintf("the intake never bound its durable: %+v, %v", info, err) })
-	r.intake, r.stop, r.subject, r.client = intake, stop, info.Config.DeliverSubject, client
+	r.intake, r.stop, r.subject, r.client, r.current = intake, stop, info.Config.DeliverSubject, client, run
+}
+
+// awaitTakeOver waits for the body of the running intake's first take-over's callback (takenOver)
+// to have run: the settings read that body queues on settingsKey is queued by then.
+func (r *intakeRig) awaitTakeOver() {
+	r.t.Helper()
+	testwait.Receive(r.t, "the take-over's callback (takenOver) to run its body", r.current.tookOver)
+}
+
+// wakeUp signals the settings wake, as the shared listener does on a write of a Legion setting
+// (SettingsChannel, pglisten.Hub), and counts it: the intake's Run hears it on its wake loop, reads
+// the settings (SettingsChanged) and tells the rig (Intake.wakeHandled), so quiet and awaitWakes
+// wait for it to be handled. As the listener's, a wake that finds one still waiting to be heard
+// adds none: the one waiting reads the settings after both.
+func (r *intakeRig) wakeUp() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	select {
+	case r.wake <- struct{}{}:
+		r.wakesSent++
+	default:
+	}
+}
+
+// handledWake is each intake's Intake.wakeHandled: it counts a wake the intake has handled.
+func (r *intakeRig) handledWake() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.wakesHandled++
+}
+
+// wakes is how many wakes wakeUp sent, and how many the rig's intakes have handled.
+func (r *intakeRig) wakes() (sent, handled int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.wakesSent, r.wakesHandled
+}
+
+// awaitWakes waits for the rig's intakes to have handled every wake wakeUp sent: the starting
+// point of each configured project those wakes queue is queued on its runner by then.
+func (r *intakeRig) awaitWakes() {
+	r.t.Helper()
+	testwait.Until(r.t, "the intake to handle every wake the test sent", func() (string, bool) {
+		sent, handled := r.wakes()
+		return fmt.Sprintf("%d wakes sent, %d handled", sent, handled), handled >= sent
+	})
+}
+
+// queue queues work on key's runner of the running intake (delivery.HeldDurable.Queue), a
+// project's or settingsKey, behind whatever that runner has waiting, and fails the test where the
+// durable takes no work: the intake delivers nothing from the durable, or its stop has begun.
+func (r *intakeRig) queue(key string, work func(context.Context)) {
+	r.t.Helper()
+	if !r.intake.durable.Queue(key, work) {
+		r.t.Fatalf("the intake took no work on the runner of %q: it delivers nothing from the durable, or its stop has begun", key)
+	}
+}
+
+// drained queues a no-op on key's runner (queue) and waits for it to run: everything queued on
+// that runner before it has run by then, so a count read after it is final.
+func (r *intakeRig) drained(key string) {
+	r.t.Helper()
+	ran := make(chan struct{})
+	r.queue(key, func(context.Context) { close(ran) })
+	testwait.Receive(r.t, fmt.Sprintf("the work queued on the runner of %q before a barrier to run", key), ran)
+}
+
+// drainedAll queues a barrier on settingsKey that, once it runs, queues a barrier on the runner of
+// each project with a Legion setting (ListSettings), and waits for the last of them to run: a
+// settings read queued on settingsKey before it (SettingsChanged) has queued each project's
+// starting point before those barriers, and everything queued on a project's runner before its
+// barrier has run by then. barred, where a test set it, runs once the projects' barriers are
+// queued.
+func (r *intakeRig) drainedAll() {
+	r.t.Helper()
+	type queued struct {
+		ran []<-chan struct{}
+		err error
+	}
+	in, barred := r.intake, r.barred
+	listed := make(chan queued, 1)
+	r.queue(settingsKey, func(ctx context.Context) {
+		settings, err := ListSettings(ctx, in.pool)
+		var barriers []<-chan struct{}
+		for _, setting := range settings {
+			ran := make(chan struct{})
+			if !in.durable.Queue(setting.Project, func(context.Context) { close(ran) }) {
+				err = fmt.Errorf("the intake took no work on the runner of %s", setting.Project)
+				break
+			}
+			barriers = append(barriers, ran)
+		}
+		if barred != nil {
+			barred()
+		}
+		listed <- queued{ran: barriers, err: err}
+	})
+	barriers := testwait.Receive(r.t, "the barrier on the settings read's runner to run", listed)
+	if barriers.err != nil {
+		r.t.Fatalf("queue a barrier on each configured project's runner: %v", barriers.err)
+	}
+	for _, ran := range barriers.ran {
+		testwait.Receive(r.t, "the barrier on a configured project's runner to run", ran)
+	}
+}
+
+// holdRunner queues work on key's runner that holds the runner until the release it answers is
+// called, which the test's end calls too: a message keyed to the runner meanwhile waits behind it,
+// and so does the work queued after it, in the order each reached the runner.
+func (r *intakeRig) holdRunner(key string) (release func()) {
+	r.t.Helper()
+	gate := make(chan struct{})
+	release = sync.OnceFunc(func() { close(gate) })
+	r.t.Cleanup(release)
+	r.queue(key, func(ctx context.Context) {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+	})
+	return release
+}
+
+// rigState is what quiet reads of the rig before and after its barriers: the durable's counts of
+// the messages not yet delivered (pending) and of those delivered and not acknowledged
+// (ackPending), and its delivered and acknowledged consumer sequences, which each delivery and
+// each acknowledgement moves; whether the running intake has a message waiting on a runner, a call
+// queued for an owed read or a whole read in flight (busy); the hand-backs the rig holds parked and
+// how many it has parked; the deadlines armed on the rig's clock; the calls deferred and made; the
+// wakes sent, handled and waiting to be heard; and the log's length.
+type rigState struct {
+	pending                               uint64
+	ackPending                            int
+	delivered, acknowledged               uint64
+	busy                                  bool
+	parked, handBacks, armed              int
+	deferred, made                        int
+	wakesSent, wakesHandled, wakesWaiting int
+	logged                                int
+}
+
+// idle reports whether s is a state quiet answers true for, once it holds across the barriers:
+// every message delivered, the only messages not acknowledged the hand-backs the rig holds parked,
+// nothing in hand, and every wake sent handled.
+func (s rigState) idle() bool {
+	return s.pending == 0 && s.ackPending == s.parked && !s.busy && s.wakesHandled == s.wakesSent && s.wakesWaiting == 0
+}
+
+// state reads the rig's state (rigState) as it stands. It fails the test where the rig's intakes
+// handled more wakes than wakeUp sent: a wake sent on the rig's wake itself is one quiet cannot
+// wait for.
+func (r *intakeRig) state() rigState {
+	r.t.Helper()
+	info := r.consumerInfo()
+	s := rigState{pending: info.NumPending, ackPending: info.NumAckPending, delivered: info.Delivered.Consumer,
+		acknowledged: info.AckFloor.Consumer, armed: len(r.clock.Armed()), logged: r.logs.Len()}
+	s.deferred, s.made = r.clock.deferrals()
+	in := r.intake
+	in.mu.Lock()
+	s.busy = len(in.calling) > 0 || len(in.reading) > 0
+	for _, waiting := range in.waiting.projects {
+		s.busy = s.busy || waiting > 0
+	}
+	in.mu.Unlock()
+	r.mu.Lock()
+	s.parked, s.handBacks = len(r.backs), r.handBacks
+	s.wakesSent, s.wakesHandled, s.wakesWaiting = r.wakesSent, r.wakesHandled, len(r.wake)
+	r.mu.Unlock()
+	if s.wakesHandled > s.wakesSent {
+		r.t.Fatalf("the rig's intakes handled %d wakes, more than the %d wakeUp sent: a wake sent on the rig's wake itself is one quiet cannot wait for; send it with wakeUp",
+			s.wakesHandled, s.wakesSent)
+	}
+	return s
+}
+
+// quiet reports whether the rig is quiet: every message of the stream delivered, the only messages
+// not acknowledged the hand-backs the rig holds parked, withheld ones included, no message waiting
+// on a runner, no call queued for an owed read and no whole read in flight, every wake wakeUp sent
+// handled, and no work queued on a runner that has not run yet. The work a settings read, a
+// take-over, a deferred call or callRead queues shows in none of those counts until it starts, so
+// where the counts say quiet, quiet queues a barrier on settingsKey that queues one on each
+// configured project's runner (drainedAll), waits for the last of them to run, and answers true
+// only where the counts are still those it read before the barriers.
+func (r *intakeRig) quiet() bool {
+	r.t.Helper()
+	before := r.state()
+	if !before.idle() {
+		return false
+	}
+	r.drainedAll()
+	return r.state() == before
+}
+
+// runUntil runs the rig until cond holds, and answers true then. Each time the shared wait asks
+// (testwait), it answers whether cond holds, and where it does not and the rig is quiet (quiet), it
+// moves the rig's clock to its earliest armed deadline (nextDue), a parked hand-back or a deferred
+// call, with no gap between the reading and the move (clocktest.Fake.SetWhen), as long as the moves
+// it makes itself add up to jumps at the most; the clock's other moves, a test's or a stalled
+// read's, are not counted. It moves the clock only while nothing runs, which keeps the order a wait
+// in real time gives. It answers false where the rig is quiet with no deadline armed within what is
+// left of jumps. deadline is the wall-clock deadline of the wait runUntil replaces, which it hands
+// to the shared wait's bounded form (testwait.Holds, clamped to the binary's deadline by
+// testwait.Bounded), and it answers false once that passes; with 0 the wait is the shared one
+// (testwait.Until), whose give-up at the binary's deadline fails the test.
+func (r *intakeRig) runUntil(cond func() bool, jumps, deadline time.Duration) bool {
+	r.t.Helper()
+	var jumped time.Duration
+	held, reading := false, "the rig has not been read"
+	step := func() bool {
+		if cond() {
+			held = true
+			return true
+		}
+		if !r.quiet() {
+			reading = "the condition does not hold and the rig is not quiet"
+			return false
+		}
+		var by time.Duration
+		armed, moved := r.clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			if len(armed) == 0 {
+				return now, false
+			}
+			by = max(armed[0].Sub(now), 0)
+			if jumped+by > jumps {
+				return now, false
+			}
+			return now.Add(by), true
+		})
+		if !moved {
+			reading = fmt.Sprintf("the rig is quiet, and the deadlines armed on its clock, %v, are not within the %s of jumps left", armed, jumps-jumped)
+			return true
+		}
+		jumped += by
+		reading = fmt.Sprintf("the rig was quiet, and its clock moved %s to its earliest armed deadline", by)
+		return false
+	}
+	if deadline > 0 {
+		testwait.Holds(testwait.Bounded(r.t, deadline, testwait.Margin), testwait.Poll, step)
+		return held
+	}
+	testwait.Until(r.t, "the condition runUntil waits for, or the rig quiet with nothing armed within its jumps", func() (string, bool) {
+		return reading, step()
+	})
+	return held
 }
 
 // waitFor polls done until it holds, and fails the test with failure's message when within passes.
@@ -665,6 +1198,55 @@ func (r *intakeRig) requireWholeReadLines(project string, reasons ...string) []m
 		}
 	}
 	return lines
+}
+
+// TestQuietWaitsForTheStartingPointQueuedBehindAHeldRead: the rig is quiet (intakeRig.quiet) only
+// once no work waits on a runner, work that no count shows included. INFRA's take-over starting
+// read reaches its daemon, which holds its answer, a refusal. Behind that read on INFRA's runner
+// the test queues work that holds the runner (holdRunner), and behind that a settings read's
+// starting point (SettingsChanged), and moves the intake's clock past the read's minute. While the
+// read is held the rig is not quiet. The daemon then answers: the read fails and is recorded, and
+// the runner moves on to the held work, so no message, read in flight or call due shows the
+// starting point waiting behind it. quiet queues its barriers behind that starting point, and the
+// held work is let go once they are queued (barred): the starting point finds the read owed for
+// retry and due, held by no message, and reads INFRA's daemon again. The first time quiet answers
+// true, that read has been made and recorded.
+//
+// A quiet that read the counts alone, with no barrier, would answer true while the starting point
+// still waited behind the held work, with one read served.
+func TestQuietWaitsForTheStartingPointQueuedBehindAHeldRead(t *testing.T) {
+	t.Parallel()
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, "")
+	daemon.refuses(http.StatusServiceUnavailable)
+	answer := daemon.holds(t)
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	testwait.Until(t, "the take-over's starting read to reach INFRA's daemon", func() (int, bool) {
+		served := daemon.served()
+		return served, served >= 1
+	})
+	rig.barred = rig.holdRunner("INFRA")
+	rig.intake.SettingsChanged(t.Context())
+	rig.clock.advance(ReadRetryAfter + time.Second)
+	if rig.quiet() {
+		t.Fatalf("the rig is quiet while INFRA's starting read is held at its daemon")
+	}
+
+	answer()
+	testwait.Until(t, "the rig to be quiet once INFRA's daemon has answered", func() (string, bool) {
+		return fmt.Sprintf("INFRA's daemon served %d reads", daemon.served()), rig.quiet()
+	})
+	if served := daemon.served(); served != 2 {
+		t.Fatalf("the rig was quiet with INFRA's daemon having served %d reads, want 2, the starting read and the read of the starting point queued behind it: quiet answered while that starting point still waited on INFRA's runner",
+			served)
+	}
+	reads := wholeReadsOf(t, rig.database, "INFRA")
+	if len(reads) != 2 {
+		t.Fatalf("INFRA's whole reads once the rig was quiet are %v, want the starting read and the retry the starting point queued behind it made", reads)
+	}
+	requireWholeRead(t, reads[0], ReadReasonStart, false)
+	requireWholeRead(t, reads[1], ReadReasonRetry, false)
 }
 
 // TestAnEventLeavesEveryFieldItDoesNotNameAsItWas: an event names only what moved and writes a row
@@ -3117,14 +3699,16 @@ func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 		t.Fatalf("after a read that timed out the message went back for %s, want holdAtLeast (%s): the read began RequestTimeout (%s) before, and the minute counts from the read's start",
 			time.Duration(delay), holdAtLeast, RequestTimeout)
 	}
+	// Each hand-back is armed on the rig's clock for holdAtLeast: runUntil moves the clock to it
+	// once the rig is quiet.
 	var info *natsgo.ConsumerInfo
-	rig.waitFor(time.Minute, func() bool {
+	if !rig.runUntil(func() bool {
 		info = rig.consumerInfo()
 		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
-	}, func() string {
-		return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d reads and %d hand-backs: %+v",
+	}, stateMaxHolds*holdAtLeast, time.Minute) {
+		t.Fatalf("the message that holds INFRA's read is not acknowledged after %d reads and %d hand-backs: %+v",
 			daemon.served()-1, len(rig.logRecords(heldLine)), info)
-	})
+	}
 	held := rig.clock.now().Sub(from)
 
 	if served := daemon.served(); served != 1+failures {

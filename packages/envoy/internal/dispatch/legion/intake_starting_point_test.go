@@ -114,7 +114,9 @@ func TestAFailedWholeReadSetsNoRun(t *testing.T) {
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
-	rig.start()
+	// The message's hand-back is production's, a NAK with its delay, which NATS redelivers by
+	// itself (startHandingBackOnNATS).
+	rig.startHandingBackOnNATS()
 	rig.awaitStartingRead("INFRA")
 
 	// A gap whose read the daemon refuses: the read is owed under the rig's run, and the message
@@ -560,9 +562,11 @@ func TestAGapFoundRightAfterAGoodStartingReadIsReadWhenItsMinuteEnds(t *testing.
 	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return daemon.served() > 1 }) {
 		t.Fatalf("INFRA's daemon served %d reads within the starting read's minute, want the starting read alone", daemon.served())
 	}
-	rig.waitFor(70*time.Second, func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
-		return fmt.Sprintf("the gap read was not made once the starting read's minute ended: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
-	})
+	// The hand-back is armed on the rig's clock for what is left of the minute: runUntil moves the
+	// clock to it once the rig is quiet.
+	if !rig.runUntil(func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, 50*time.Second, 70*time.Second) {
+		t.Fatalf("the gap read was not made once the starting read's minute ended: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	}
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	requireWholeRead(t, reads[1], ReadReasonGap, true)
 	if apart := lastReadStartedAt(t, rig, "INFRA").Sub(started); apart < ReadRetryAfter || apart > ReadRetryAfter+10*time.Second {

@@ -36,8 +36,9 @@ func TestMain(m *testing.M) {
 // reads, counting the reads it served. delay is how long each answer waits, as a daemon reading a
 // state of several MB does (slows), held a gate each answer waits on until the test releases it
 // (holds), refusals how many of the next reads it refuses with refusalStatus (refusesFor), stall
-// what each read runs before it waits, never to answer, until the client hangs up (stalls), and
-// lag what the next read runs before it answers as it would otherwise (lagsNext).
+// what each read runs before it ends with no answer (stalls), stallWaits whether such a read then
+// waits for the client to hang up rather than end at once (stallsUntilHungUp), and lag what the
+// next read runs before it answers as it would otherwise (lagsNext).
 type fakeDaemon struct {
 	*httptest.Server
 	mu            sync.Mutex
@@ -49,22 +50,28 @@ type fakeDaemon struct {
 	refusals      int
 	refusalStatus int
 	stall         func()
+	stallWaits    bool
 	lag           func()
 }
 
 // refusalBody is the body of every read a fakeDaemon refuses.
 const refusalBody = `{"error":"the daemon is restarting"}`
 
+// newFakeDaemon is a fakeDaemon serving body until the test ends. It serves with keep-alives off,
+// so each read reaches it on a connection of its own: Go's transport sends a bodyless GET again
+// only where it reused the connection the read failed on (net/http's shouldRetryRequest), so a
+// read a stall ends at once (stalls) is never sent twice, and each read the intake makes is one
+// read served.
 func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 	t.Helper()
 	daemon := &fakeDaemon{body: body, status: http.StatusOK}
-	daemon.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	daemon.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != StatePath {
 			http.NotFound(w, r)
 			return
 		}
 		daemon.mu.Lock()
-		body, status, delay, held, stall, lag := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall, daemon.lag
+		body, status, delay, held, stall, stallWaits, lag := daemon.body, daemon.status, daemon.delay, daemon.held, daemon.stall, daemon.stallWaits, daemon.lag
 		if daemon.refusals > 0 {
 			daemon.refusals--
 			body, status = refusalBody, daemon.refusalStatus
@@ -77,6 +84,11 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 		}
 		if stall != nil {
 			stall()
+			if !stallWaits {
+				// The server closes the connection with no answer, and logs nothing for this
+				// panic: the client's read fails at once.
+				panic(http.ErrAbortHandler)
+			}
 			<-r.Context().Done()
 			return
 		}
@@ -96,6 +108,8 @@ func newFakeDaemon(t *testing.T, body string) *fakeDaemon {
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 	}))
+	daemon.Config.SetKeepAlivesEnabled(false)
+	daemon.Start()
 	t.Cleanup(daemon.Close)
 	return daemon
 }
@@ -133,12 +147,26 @@ func (d *fakeDaemon) slows(delay time.Duration) {
 	d.delay = delay
 }
 
-// stalls has each read from here on run stall and then never answer: the read waits until the
-// client hangs up, at the end of the client's window or of its context.
+// stalls has each read from here on run stall and then end with no answer at once: the server
+// closes the connection (http.ErrAbortHandler), so the read fails as soon as stall has run. A
+// test's stall moves the intake's clock RequestTimeout on, so the read lasts the production window
+// on the intake's clock and fails at its end, as a read of a daemon that never answers does; the
+// intake records it as a failed read, as it records a read the window ended (fetchWhole). A nil
+// stall ends the stalls.
 func (d *fakeDaemon) stalls(stall func()) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.stall = stall
+	d.stall, d.stallWaits = stall, false
+}
+
+// stallsUntilHungUp is stalls for a test that reads the failed read's error: each read from here
+// on runs stall and then never answers, and waits until the client hangs up, at the end of the
+// client's window (the rig's windowed) or of its context, so the read's failure is the client's
+// own timeout.
+func (d *fakeDaemon) stallsUntilHungUp(stall func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stall, d.stallWaits = stall, true
 }
 
 // lagsNext has the next read the daemon serves run lag first, and then answer as it would

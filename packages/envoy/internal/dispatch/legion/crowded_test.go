@@ -237,12 +237,14 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 	}
 
 	release()
-	rig.waitFor(left+15*time.Second, func() bool {
+	// 31's hand-back is armed on the rig's clock for left: runUntil moves the clock to it once the
+	// rig is quiet.
+	if !rig.runUntil(func() bool {
 		return currentValues(t, rig.database, "INFRA")["INFRA-1/phase"] == `"reviewing"`
-	}, func() string {
-		return fmt.Sprintf("after the starting read at 30 INFRA-1's phase is %s and INFRA's cursor is %s: the events past the cap were never read",
+	}, left, left+15*time.Second) {
+		t.Fatalf("after the starting read at 30 INFRA-1's phase is %s and INFRA's cursor is %s: the events past the cap were never read",
 			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"))
-	})
+	}
 	rig.settled()
 	reads := wholeReadsOf(t, rig.database, "INFRA")
 	if len(reads) != 2 {
@@ -490,25 +492,6 @@ func queuedCalls(in *Intake) <-chan string {
 	return calls
 }
 
-// holdRunner queues work on project's runner that holds the runner until the release it answers is
-// called, which the test's end calls too: a message keyed to the runner meanwhile waits behind it,
-// and so does the work queued after it, in the order each reached the runner.
-func holdRunner(t *testing.T, rig *intakeRig, project string) (release func()) {
-	t.Helper()
-	gate := make(chan struct{})
-	release = sync.OnceFunc(func() { close(gate) })
-	t.Cleanup(release)
-	if !rig.intake.durable.Queue(project, func(ctx context.Context) {
-		select {
-		case <-gate:
-		case <-ctx.Done():
-		}
-	}) {
-		t.Fatalf("control: the intake took no work on %s's runner", project)
-	}
-	return release
-}
-
 // waitingOn is how many of project's messages the running intake counts as waiting on the
 // project's runner (Intake.waiting): messageKey counts a message up as it keys it there, and
 // deliver counts it down as it returns.
@@ -644,10 +627,10 @@ func TestACallForTheOwedReadQueuedBeforeTheTakeOversCallbackRanIsQueuedOnce(t *t
 	var bodies <-chan func()
 	var calls <-chan string
 	rig.startHeld(func(in *Intake) { bodies, calls = heldTakeOver(in), queuedCalls(in) })
-	letFirst := holdRunner(t, rig, "INFRA")
+	letFirst := rig.holdRunner("INFRA")
 	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
 	awaitWaiting(t, rig, "INFRA", 1)
-	letSecond := holdRunner(t, rig, "INFRA")
+	letSecond := rig.holdRunner("INFRA")
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 	awaitWaiting(t, rig, "INFRA", 2)
 
@@ -720,10 +703,10 @@ func TestAReplacedConnectionKeepsTheCountsAndTheCallOfTheSubscriptionItBindsAgai
 	for seq := 12; seq < 12+stateMaxWaiting-1; seq++ {
 		rig.publish("LINUX", change(seq, "LINUX-1", moved("phase", "implementing")))
 	}
-	letFirst := holdRunner(t, rig, "INFRA")
+	letFirst := rig.holdRunner("INFRA")
 	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
 	awaitWaiting(t, rig, "INFRA", 1)
-	letSecond := holdRunner(t, rig, "INFRA")
+	letSecond := rig.holdRunner("INFRA")
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 	awaitWaiting(t, rig, "INFRA", 2)
 	awaitWaiting(t, rig, "LINUX", stateMaxWaiting)

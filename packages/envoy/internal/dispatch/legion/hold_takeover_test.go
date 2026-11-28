@@ -589,9 +589,11 @@ func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
 	due := cut.Add(ReadRetryAfter)
 	rig.clock.advance(due.Add(-left).Sub(rig.clock.now()))
 	rig.start()
-	rig.waitFor(left+15*time.Second, func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
-		return fmt.Sprintf("INFRA was not read again once the minute after the read the stop cut short ended: its cursor is %s", cursorOf(t, rig.database, "INFRA"))
-	})
+	// The redelivered message's hand-back is armed on the rig's clock for left: runUntil moves the
+	// clock to it once the rig is quiet.
+	if !rig.runUntil(func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, left, left+15*time.Second) {
+		t.Fatalf("INFRA was not read again once the minute after the read the stop cut short ended: its cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	}
 	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[1], ReadReasonGap, true)
 	if started := lastReadStartedAt(t, rig, "INFRA"); started.Before(due) {
 		t.Errorf("the read after the take-over began %s after the read the stop cut short, on the intake's clock, want at least %s",
