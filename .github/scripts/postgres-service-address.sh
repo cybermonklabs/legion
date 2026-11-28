@@ -5,10 +5,11 @@
 #   .github/scripts/postgres-service-address.sh <container id>
 #
 # It prints `address=<ip>`, the line a step writes to $GITHUB_OUTPUT, and nothing else; the caller
-# adds the port (ci-job-dispatch-memory.yaml's URL puts `:5432` after it). It fails with an
-# ::error:: on stderr, naming the container, when docker inspect fails or reports no address or
-# more than one: a job that cannot read one address fails here rather than running its tests
-# against a URL with no host in it.
+# adds the port (ci-job-dispatch-memory.yaml's URL puts `:5432` after it). Every refusal is one
+# ::error:: line on stderr: exit 2 when it is given no argument, more than one, or an empty one,
+# and exit 1, naming the container, when docker inspect fails or reports no address or more than
+# one. A job that cannot read one address fails here rather than running its tests against a URL
+# with no host in it.
 #
 # Why not localhost:5432: docker serves a published port (`ports:`) on localhost through a
 # userland proxy (docker-proxy), a process that copies every byte of every connection in both
@@ -37,13 +38,20 @@
 # that container for its settings (postgres-service-settings.sh) and its connection ceiling
 # (pg-connection-ceiling.sh), so nothing here depends on a network name or a subnet staying what
 # it is today. A runner whose services stop being reachable this way fails the job at this script
-# or at the first connection, and never skips the tests: they skip only when
-# DISPATCH_TEST_DATABASE_URL is unset or empty, the test step sets it to a URL that is never
-# empty, and a failure of this script stops the job before that step runs.
+# or at the first connection, and never skips the tests for want of a database: the tests that
+# open the store skip only when DISPATCH_TEST_DATABASE_URL is unset or empty (storetest.go's
+# `ready`), the test step sets it to a URL that is never empty, and a failure of this script stops
+# the job before that step runs.
 set -euo pipefail
 
-if [ "$#" -ne 1 ] || [ -z "$1" ]; then
-  echo "usage: postgres-service-address.sh <container id>" >&2
+if [ "$#" -ne 1 ]; then
+  echo "::error::postgres-service-address.sh: it takes one argument, the service's container id" \
+    "(\${{ job.services.<service id>.id }}), and was given $# arguments" >&2
+  exit 2
+fi
+if [ -z "$1" ]; then
+  echo "::error::postgres-service-address.sh: the container id is empty, which is what the" \
+    "runner gives a step for a service id the job does not declare" >&2
   exit 2
 fi
 container="$1"
