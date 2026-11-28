@@ -14,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listArtifactReviews,
 	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/reviews"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []artifactReviewRead{}},
 })

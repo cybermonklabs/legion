@@ -14,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getUserState,
 	Successor:   successorIs(http.MethodGet, "/me/marks?kind=issue"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: userState{}},
 })

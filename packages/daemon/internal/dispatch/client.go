@@ -24,12 +24,8 @@ const requestTimeout = 10 * time.Second
 // neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
 const unstampedUserAgent = "legion-daemon/(devel)"
 
-// dispatchServer is how a request's error names Dispatch when its address does not parse
-// (redact.RequestError).
 const dispatchServer = "Dispatch"
 
-// HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
-// transport it was made with (New). Every write names as its actor the session actor answers.
 type HTTPClient struct {
 	baseURL    string
 	userAgent  string
@@ -40,7 +36,6 @@ type HTTPClient struct {
 	session string
 }
 
-// Option sets one thing of the client New makes.
 type Option func(*HTTPClient)
 
 // WritesAs makes every write of the client name session as its actor, on an issue of any project.
@@ -62,12 +57,6 @@ func Release(release string) Option {
 	}
 }
 
-// New creates a client for one Dispatch server whose every request goes through transport, which
-// presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
-// under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
-// client sets no Authorization of its own. Every request names the daemon in its User-Agent,
-// `legion-daemon/(devel)` unless Release names the build it runs. Each option sets one thing of the
-// client (WritesAs, Release).
 func New(baseURL string, transport http.RoundTripper, options ...Option) *HTTPClient {
 	c := &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
@@ -159,7 +148,6 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 	return issues, nil
 }
 
-// GetIssue reads GET /api/v1/issues/{key}.
 func (c *HTTPClient) GetIssue(ctx context.Context, key string) (Issue, error) {
 	var response issueResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key), nil, &response); err != nil {
@@ -473,13 +461,6 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 	}
 }
 
-// EventLogError is the error for an event of an issue's Dispatch event log that the daemon cannot
-// read. EventsAfter gives it for an event of a page that it cannot read: an event that does not
-// decode, or whose seq is not above the sequence read before it. The intake's walk of the log
-// (walkIssueEvents in internal/intake) gives it for an event that it cannot decode. Event is the
-// event's place in the log read, counted from 1. Seq is the event's sequence where the event
-// decoded, and 0 where it did not. Err names the cause and, from EventsAfter, the issue; Error
-// returns its text.
 type EventLogError struct {
 	Event int
 	Seq   int64
@@ -788,9 +769,6 @@ func (c *HTTPClient) ApprovedVersionBefore(ctx context.Context, artifactID strin
 	return approved, nil
 }
 
-// documentNotFound is Dispatch's 404 ARTIFACT_NOT_FOUND, err, as the reads of one document answer
-// it: ErrDocumentNotFound wrapped around Dispatch's own refusal, so errors.Is finds it and the
-// message keeps what Dispatch said.
 func documentNotFound(err error) error {
 	return fmt.Errorf("%w: %w", ErrDocumentNotFound, err)
 }
@@ -887,9 +865,6 @@ func TransportRefusal(err error) bool {
 		errors.Is(err, http.ErrSchemeMismatch)
 }
 
-// transportFailure wraps err as a TransientError unless it is a refusal of the transport no wait
-// fixes (TransportRefusal): TransientError says Dispatch gave no answer a later attempt may get,
-// which no refusal of the transport is.
 func transportFailure(err error) error {
 	if TransportRefusal(err) {
 		return err
@@ -908,8 +883,6 @@ func DaemonSession(key string) string {
 	return "legion-daemon:" + project
 }
 
-// actor is the actor a write on key names: the session the client writes as (WritesAs), or, for a
-// client made with no option, the session of the key's project (DaemonSession).
 func (c *HTTPClient) actor(key string) actor {
 	if c.session != "" {
 		return actor{Kind: "session", ID: c.session}

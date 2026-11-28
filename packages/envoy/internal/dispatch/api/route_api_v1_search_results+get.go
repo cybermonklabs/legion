@@ -13,7 +13,7 @@ var _ = declareRoute(routeDecl{
 	Description: searchDescription(searchDeclaresTen),
 	Handler:     (*server).search,
 	Successor:   successorIs(http.MethodGet, "/search-results"),
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfSearchAtACut},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchResultsRouteQuery{},
 	},

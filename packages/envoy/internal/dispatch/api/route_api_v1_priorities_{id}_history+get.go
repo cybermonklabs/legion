@@ -14,7 +14,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).priorityHistory,
 	Successor:   successorIs(http.MethodGet, "/priorities/{id}/acts"),
 	ID:          &idRoute{Reason: "a priority id, a slug of its own and no uuid at all"},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	// The history is a bare list, newest act first: the acts are the whole answer, and the
 	// priority they belong to is the id the path already names (priorities.go).
 	Shape: routeShape{Status: http.StatusOK, Response: []model.PriorityAct{}},

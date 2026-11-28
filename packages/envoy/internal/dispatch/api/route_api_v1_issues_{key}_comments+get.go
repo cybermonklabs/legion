@@ -13,7 +13,7 @@ var _ = declareRoute(routeDecl{
 		"?person=in keeps each thread with an entry a person wrote, and each thread on text, whoever wrote it: its first comment has an anchor, or one of its comments is a reply that stores a quote; the route takes no other person value. With ?order=activity, ?artifact= keeps each thread whose first comment is anchored in that document, with all its replies, and the page's ETag hashes every parameter of the request, If-None-Match answering 304 as for the list."),
 	Handler:   (*server).listComments,
 	Successor: successorIs(http.MethodGet, "/issues/{key}/comments"),
-	Read:      readEntry{Writes: readWritesNothing},
+	Read:      readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfCommentListAtACut + " " + asOfThreadPageAtACut},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
 		Also: []routeAnswer{{Status: http.StatusOK, Body: commentThreadPage{}}},

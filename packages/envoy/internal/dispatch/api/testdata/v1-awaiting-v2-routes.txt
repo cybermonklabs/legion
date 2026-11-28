@@ -10,5 +10,6 @@
 # Successor, both ways: a route file that names none and is not here fails it, and so does a line
 # here that is no such route. The /api/v2 route that answers one is added with its Successor, and
 # the line is taken out of this list, in the same commit.
+GET /api/v1/artifacts/{id}/spec-form # #4179, refuse an approval request that breaks the form of The Spec (post-freeze, awaiting /api/v2)
 GET /api/v1/projects/{key}/results # #4184, a CI run's token writes its project's results and nothing else (post-freeze, awaiting /api/v2)
 POST /api/v1/projects/{key}/results # #4184, a CI run's token writes its project's results and nothing else (post-freeze, awaiting /api/v2)

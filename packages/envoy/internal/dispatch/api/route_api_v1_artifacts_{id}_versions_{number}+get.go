@@ -14,9 +14,9 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getArtifactVersion,
 	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/versions/{number}"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut a version made after the cut is 404, as JSON and as a download."},
 	Shape: routeShape{
-		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},
+		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionAsOfQuery{},
 		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
 		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
 	},

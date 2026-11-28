@@ -14,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getNearCopyCheck,
 	Successor:   successorIs(http.MethodGet, "/near-copy-checks/{id}"),
 	ID:          &idRoute{Reason: "a near-copy check id: one answer of the near-copy gate"},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.NearCopyCheck{}},
 })

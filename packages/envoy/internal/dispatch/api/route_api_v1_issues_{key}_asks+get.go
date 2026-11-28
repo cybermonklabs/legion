@@ -13,7 +13,7 @@ var _ = declareRoute(routeDecl{
 		"The route takes no ?person=."),
 	Handler:   (*server).listIssueAsks,
 	Successor: successorIs(http.MethodGet, "/issues/{key}/asks"),
-	Read:      readEntry{Writes: readWritesNothing},
+	Read:      readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route lists the asks that existed then, each at its newest state event at or before the cut, with its newest reply at the cut. ?thread=1 gives each thread as it stood at the cut. " + asOfThreadPageAtACut},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: []issueAskRow{}, Params: issueAsksQuery{},
 		Also: []routeAnswer{{Status: http.StatusOK, Body: askThreadPage{}}},

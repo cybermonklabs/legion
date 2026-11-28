@@ -185,8 +185,24 @@ function codeList(names: readonly string[]): string {
   return spans.length === 1 ? spans[0] : `${spans.slice(0, -1).join(", ")} and ${spans.at(-1)}`;
 }
 
-/** The sections both pages open with: who may call a route and the scopes it can need. */
-function callerSections(): string[] {
+/** How the /api/v1 page's routes answer a read at a past time. */
+const PAST_TIME_V1 =
+  "A GET route that answers `as_of` takes an RFC 3339 time and answers what existed at that time, the cut. Its answer names the cut in the `Dispatch-As-Of` header, and names each member that it leaves out in `Dispatch-As-Of-Absent` where it leaves out any. Every other route below refuses `as_of` `400 AS_OF_NOT_SERVED`. The description of each GET route below says which of the two it does, and how it answers a read-only token that carries a cut.";
+
+/** How the /api/v2 page's routes answer a read at a past time: none answers one, since /api/v2
+ *  stands where it was frozen, before Dispatch answered reads at a past time. unbound names the
+ *  routes that keep their /api/v1 answers (unboundPaths), which refuse as_of as /api/v1 does. */
+function pastTimeV2(unbound: string): string {
+  const unboundRefusal =
+    unbound === ""
+      ? ""
+      : `, and the routes at ${unbound} refuse it \`400 AS_OF_NOT_SERVED\`, as they do under \`/api/v1\``;
+  return `No route below answers \`as_of\`: \`/api/v2\` stands where it was frozen, before Dispatch answered reads at a past time. A route whose query the server reads refuses \`as_of\` \`400 QUERY_KEY_UNKNOWN\`, as it refuses every key it does not declare${unboundRefusal}. A read-only token that carries a cut is refused \`403 AS_OF_TOKEN_NOT_SERVED\` on every read but \`GET /api/v2/me\`, which names the cut.`;
+}
+
+/** The sections both pages open with: who may call a route, the scopes it can need, and how the
+ *  page's routes answer a read at a past time (pastTime). */
+function callerSections(pastTime: string): string[] {
   return [
     "## Who may call a route",
     "",
@@ -198,9 +214,13 @@ function callerSections(): string[] {
     "",
     ...Object.entries(SCOPES).map(([scope, meaning]) => `- \`${scope}\`: ${meaning}`),
     "",
-    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve` or `p0`. Dispatch serves it only on the GET routes it classes as reads (each route's `Read` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. It refuses a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami` and `GET /api/v2/me`. The route index does not carry the read class, so this page does not mark those routes.",
+    "A read-only token is any token that holds `read`: one the secrets broker minted from a read entry or narrowed because its trade asked for `read`, or a personal token minted with `read`. It holds `person` at most, never `approve` or `p0`. Dispatch serves it only on the GET routes it classes as reads (each route's `Read` in the source), and refuses it `403 READ_ONLY_TOKEN` on every other route, with no challenge header, before it reads the route's scopes. A read-only token that carries a cut reads as of its cut on each route that answers `as_of`, and `GET /api/v1/whoami` and `GET /api/v2/me` name the cut. Every other read refuses it `403 AS_OF_TOKEN_NOT_SERVED`. The route index does not carry the read class, so this page does not mark those routes.",
     "",
     "Path parameters are the `{name}` segments of a path.",
+    "",
+    "## Reads at a past time",
+    "",
+    pastTime,
     "",
   ];
 }
@@ -302,7 +322,7 @@ function renderV2(routes: RouteV2[]): string {
           `The routes at ${unbound} keep the shape and the answers they have at the same path under \`/api/v1\`, so none of these rules binds them, and they name nothing of what they serve below.`,
           "",
         ]),
-    ...callerSections(),
+    ...callerSections(pastTimeV2(unbound)),
     "## What a route serves",
     "",
     "Each route below names the resource it serves and what kind of thing that is:",
@@ -321,7 +341,7 @@ function renderV1(routes: Route[]): string {
     "",
     `Dispatch serves ${routes.length} routes under \`/api/v1\`. A running server lists the same table at \`GET /api/v1\`, which needs no credential.`,
     "",
-    ...callerSections(),
+    ...callerSections(PAST_TIME_V1),
     ...groupedRoutes(routes, () => []),
   ].join("\n");
 }

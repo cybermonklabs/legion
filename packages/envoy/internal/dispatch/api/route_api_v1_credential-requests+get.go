@@ -15,7 +15,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listCredentialPending,
 	Successor:   successorIs(http.MethodGet, "/credential-requests"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	// A relay route: Dispatch writes the broker's bytes unparsed (relayBrokerResponse), so the
 	// Response names the shape the broker's own handler answers with, declared in
 	// internal/cipher/wire and matched through the cipher.Client method the handler calls.

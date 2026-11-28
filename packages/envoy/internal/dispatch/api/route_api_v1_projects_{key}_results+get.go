@@ -13,7 +13,7 @@ var _ = declareRoute(routeDecl{
 	// No Successor: a merge on main added this route after /api/v2's freeze, and it awaits its
 	// /api/v2 route (testdata/v1-awaiting-v2-routes.txt), so its answers link GET /api/v2.
 
-	Read: readEntry{Writes: readWritesNothing},
+	Read: readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: specCheckResults{}, Params: specCheckResultsQuery{},
 	},

@@ -11,7 +11,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/asks/{id}/answer",
 	Auth:        authAny,
-	Description: "Answer an ask with selected options and/or text.",
+	Description: "Answer an ask with selected options and/or text. An Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec.",
 	Handler:     (*server).answerAsk,
 	Successor:   successorIs(http.MethodPut, "/asks/{id}/state"),
 	WriteClass:  scopeProject,
@@ -23,5 +23,8 @@ var _ = declareRoute(routeDecl{
 	ApproveOnly:         true,
 	ApproveState:        "answered",
 	ApproveApprovalAsks: true,
-	Shape:               routeShape{Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{}},
+	Shape: routeShape{
+		Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{},
+		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
+	},
 })

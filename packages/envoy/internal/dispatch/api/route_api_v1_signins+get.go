@@ -15,7 +15,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listSignIns,
 	Successor:   successorIs(http.MethodGet, "/me/signins"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		// GET /v1/person-signins (cipher.Client.SignIns).
 		Status: http.StatusOK, Response: wire.PersonSignInsResponse{},

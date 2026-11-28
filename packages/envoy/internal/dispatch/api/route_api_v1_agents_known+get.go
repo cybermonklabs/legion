@@ -16,7 +16,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listKnownSessions,
 	Successor:   successorIs(http.MethodGet, "/known-sessions"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: knownSessions{}, Params: knownSessionsQuery{},
 	},

@@ -37,10 +37,10 @@ import (
 // always was. The one layer that reads the decision before the route resolves its caller is the
 // limited-token gate inside it (refuseLimitedToken), which verifies no broker-issued token
 // itself: it answers a read-only token on every route outside the read class, and one that
-// carries a cut on every read but GET /api/v1/whoami and GET /api/v2/me (readAnswersCut), a
-// results token on every route the results list does not name, and an approve-only token on
-// every route the approve list does not name. A personal token is the gate's own to resolve, and
-// the gate carries that result, its refusal included, as this carries its decision.
+// carries a cut on every read that holds no past answer, a results token on every route the
+// results list does not name, and an approve-only token on every route the approve list does not
+// name. A personal token is the gate's own to resolve, and the gate carries that result, its
+// refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := ciphertoken.Presented(r); !presented {
@@ -147,9 +147,10 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // (model.Credential.Cut), and refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route
 // outside the read class (routeDecl.Read, v2ReadClasses) and on GET /ws/live, ahead of the scope
 // gate, the sign-in check, an account entry's write as its account and everything else the route
-// does. While no build answers a read at a past time, it answers one that carries a cut 403
-// AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami and GET /api/v2/me. On a read it
-// serves, it is the session it names, reading as that session does.
+// does. A token that carries a cut is answered as of its cut on every read of kind answers
+// (asOfGate), and GET /api/v1/whoami and GET /api/v2/me name the cut (asOfCaller); every other
+// read and GET /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED. On a read it serves, it is the
+// session it names, reading as that session does.
 //
 // A results token is held to its list the same way: the scope results alone, the project scope
 // results, a person, one project and the CI run it was minted for (ciphertoken.Caller.ResultsOnly,

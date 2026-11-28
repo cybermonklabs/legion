@@ -278,6 +278,8 @@ WAIT_INPUT 400
 
 # Added on main after c8a44f97.
 APPROVE_ONLY_TOKEN 403 # #5239, an approve-only token calls only the routes the approve list names, and answers only an approval request
+AS_OF_NOT_SERVED 400 # #4639, read routes answer as they stood at a past time
+AS_OF_SEARCH_NOT_FILLED 409 # #4639, read routes answer as they stood at a past time
 AS_OF_TOKEN_NOT_SERVED 403 # #4557, a read at a cut is not served by this build
 BROWSER_SIGN_IN_REQUIRED 403 # #4631, closing descendants needs a browser sign-in
 CHECK_CONTENDED 409 # #2468, a write holds its transaction id only for its database statements
@@ -294,6 +296,7 @@ DEPLOY_NOT_NEWEST 409 # #5416, a deploy older than the program's current one is 
 DOCUMENT_WRITER_NOT_ARCHITECT 403 # #4725, only a person or an architect of its tree writes the spec or Verification document of an issue Legion runs
 FILES_UNREADABLE 503 # #4184, a CI run's token writes its project's results and nothing else
 FOREIGN_CHILD_OPEN 409 # #4884, an acceptance write waits for an open child of another project
+INVALID_AS_OF 400 # #4639, read routes answer as they stood at a past time
 INVALID_REPOSITORY 400 # #4457, each project has an optional default repository, and Dispatch writes no repository mapping
 INVALID_ROLE_HOLDER 400 # #4228, the Legion daemon publishes the session of each role of an issue
 LEGION_NOT_CONFIGURED 404 # #2731, a project's Legion board from its daemon's recorded state
@@ -318,10 +321,12 @@ ROLE_HOLDER_FORBIDDEN 403 # #4228, the Legion daemon publishes the session of ea
 ROLE_HOLDER_NOT_PROVEN 403 # #4725, a project's proven-sessions setting takes a role-holder publication only on a credential that proves the daemon's session
 SEARCH_COVERAGE_TIMEOUT 503 # #4378, the search coverage route reads two indexes under a 10 s bound
 SPEC_FILES_REFUSED 409 # #4184, a CI run's token writes its project's results and nothing else
+SPEC_FORM 409 # #4179, refuse an approval request that breaks the form of The Spec
 STATUS_CHANGE_INPUT 400 # #4631, an invalid status-change request
 STEP_INPUT 400 # #4400, record each phase of an issue as a step
 STEP_OTHER_ISSUE 409 # #4400, record each phase of an issue as a step
 STEP_WRITER 403 # #4400, record each phase of an issue as a step
+VERSION_NOT_FOUND 404 # #4179, refuse an approval request that breaks the form of The Spec
 WORKFLOW_NOT_SHOWN 409 # #4184, a CI run's token writes its project's results and nothing else
 WORKFLOW_UNREADABLE 503 # #4184, a CI run's token writes its project's results and nothing else
 

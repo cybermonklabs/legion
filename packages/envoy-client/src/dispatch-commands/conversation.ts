@@ -6,7 +6,7 @@ import {
   type MessageDeliveryMode,
 } from "@legion/contracts";
 import { commandLine } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import {
   dispatchChildRef,
   dispatchIssueRef,
@@ -104,14 +104,16 @@ export async function resolveCommentArgument(
  * the caller took the value from, which the refusal of a value naming no message names:
  * `argumentProblems` refuses a correction's `message` before the call, while a history read's
  * `ref` is checked there for its kind alone and reaches this refusal. `session` is the host
- * session the thread is read as, empty or undefined for a caller with none.
+ * session the thread is read as, empty or undefined for a caller with none. A history read at a
+ * cut resolves the message among the messages that stood at that cut (`read`).
  */
 export async function resolveMessageArgument(
   tool: string,
   argument: "message" | "ref",
   reference: string,
   client: DispatchClient,
-  session: string | undefined
+  session: string | undefined,
+  read: AsOfRead = {}
 ): Promise<string> {
   const named = messageArgumentId(reference);
   if (named === undefined) throw new ToolInputError(tool, [messageArgumentProblem(argument)]);
@@ -119,7 +121,7 @@ export async function resolveMessageArgument(
   if (ref === undefined) return named.id;
   const issueKey = ref.owner.issue;
   const id = await resolveIdPrefix(tool, "message", named.id, issueKey, async () =>
-    (await client.issueMessages(issueKey)).flatMap((thread) => [
+    (await client.issueMessages(issueKey, read)).flatMap((thread) => [
       thread.message,
       ...(thread.replies ?? []),
     ])
@@ -127,11 +129,11 @@ export async function resolveMessageArgument(
   // The thread the message belongs to, read by its id alone, names the issue it is really on:
   // the listing above resolves a prefix among this issue's messages, but a full uuid names a
   // message of any issue. A message is on an issue or on none, so no document is read for it.
-  const read = await client
-    .getMessageThread(id, session === "" ? undefined : session)
+  const thread = await client
+    .getMessageThread(id, session === "" ? undefined : session, read)
     .catch(async (error: unknown) => {
       throw await refuseMissingOfRef(error, "message", id, ref.owner, issueKey, () =>
-        client.getIssue(issueKey)
+        client.getIssue(issueKey, read)
       );
     });
   await refuseItemOffRef(
@@ -139,7 +141,7 @@ export async function resolveMessageArgument(
     "message",
     ref,
     reference,
-    { id, issue_key: read.message.issue_key },
+    { id, issue_key: thread.message.issue_key },
     async () => ""
   );
   return id;

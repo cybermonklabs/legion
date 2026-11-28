@@ -14,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listArtifactComments,
 	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/comments"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
-	Read:        readEntry{Writes: readWritesNothing},
-	Shape:       routeShape{Status: http.StatusOK, Response: []shapedComment{}},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfCommentListAtACut},
+	Shape:       routeShape{Status: http.StatusOK, Response: []shapedComment{}, Params: asOfQuery{}},
 })

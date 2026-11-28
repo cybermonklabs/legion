@@ -15,6 +15,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listAgentArtifacts,
 	Successor:   successorIs(http.MethodGet, "/agents/{session_id}/artifacts"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []artifactRead{}},
 })

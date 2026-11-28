@@ -8,13 +8,14 @@ import type {
   IssueComponentsInput,
   IssueDetails,
   IssueRouteStatus,
+  IssueSummary,
   SearchResultKind,
-  SpecCheckResult,
 } from "@legion/contracts";
 import { DEFAULT_ISSUE_PAGE_LIMIT, issueStatusOptionsOf } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { commandLine, fieldFlag } from "../dispatch-command";
 import {
+  AnswerCut,
   type DispatchClient,
   DispatchServiceError,
   DispatchWriteLandedError,
@@ -23,7 +24,6 @@ import {
 import { dispatchChildRef, dispatchIssueRef, issueTopic } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { relatedCheckLines } from "../related-check";
-import { printable, printableJson } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
 import {
@@ -38,6 +38,7 @@ import {
   optionalPriorityFilter,
   optionalString,
   optionalStringArray,
+  type ReadingContext,
   stringArg,
 } from "./context";
 import {
@@ -50,10 +51,17 @@ import {
   writeMayHaveLanded,
 } from "./failures";
 import { linkFor } from "./links";
-import { observedAsKept } from "./observed-text";
-import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
+import {
+  claimText,
+  holdsSession,
+  type LiveAgents,
+  liveAgents,
+  progressText,
+  routeText,
+} from "./render-issue";
 import { formatCheckResults } from "./render-results";
 import { notSubscribed } from "./results";
+import { specCheckResultCommand, specCheckResultsCommand } from "./spec-check-results";
 import { issuesBeforeStatusChange, statusChangeCommand } from "./status-change";
 
 /** The change line after a components write: what the issue's own attachment became. */
@@ -561,9 +569,12 @@ export async function claimCommand(context: CommandContext): Promise<DispatchToo
   };
 }
 
-/** `dispatch search`: the issues, documents and items matching one query. */
-export async function searchCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, linkBase } = context;
+/** `dispatch search`: the issues, documents and items matching one query; at a cut, the text each
+ *  item had then. */
+export async function searchCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, linkBase, reading } = context;
   const query = stringArg(args, "query");
   const project = optionalString(args, "project");
   const limit = optionalNumber(args, "limit");
@@ -571,13 +582,17 @@ export async function searchCommand(context: CommandContext): Promise<DispatchTo
   // The schema holds the vocabulary (`SEARCH_KINDS`), and Dispatch refuses a kind outside it,
   // so the values are passed on as they were written rather than checked twice.
   const kind = optionalStringArray(args, "kind") as SearchResultKind[] | undefined;
-  const search = await client.search(query, {
-    ...(project === undefined ? {} : { project }),
-    ...(limit === undefined ? {} : { limit }),
-    ...(offset === undefined ? {} : { offset }),
-    ...(kind === undefined ? {} : { kind }),
-  });
-  return searchAnswer(search, query, offset, linkBase);
+  const search = await client.search(
+    query,
+    {
+      ...(project === undefined ? {} : { project }),
+      ...(limit === undefined ? {} : { limit }),
+      ...(offset === undefined ? {} : { offset }),
+      ...(kind === undefined ? {} : { kind }),
+    },
+    reading.cut
+  );
+  return searchAnswer(search, query, offset, linkBase, reading.cut?.asOf);
 }
 
 /** `dispatch related`: the issues a title and text look like, before one more is opened. */
@@ -641,6 +656,81 @@ function rowPart(value: string): string {
   );
 }
 
+/** A member of a `dispatch issues` row's details: `{ [name]: value }`, null where Dispatch
+ *  answered none, or nothing at all where a listing at a cut left the member out, since its null
+ *  says something of the present (no route, nobody holds it, no reason) that the cut does not. */
+function listedMember<K extends string>(
+  name: K,
+  value: string | null | undefined,
+  atCut: boolean
+): Partial<Record<K, string | null>> {
+  if (value === undefined && atCut) return {};
+  return { [name]: value ?? null } as Record<K, string | null>;
+}
+
+/** One issue of `dispatch issues` as the call's details carry it. A listing Dispatch answered at a
+ *  cut (`atCut`), as it answers a token that carries one, leaves out where each route reaches
+ *  (`Dispatch-As-Of-Absent`), and the row leaves those members out too (`listedMember`). */
+function issueListingRow(row: IssueSummary, atCut: boolean) {
+  return {
+    key: row.key,
+    title: row.title,
+    status: row.status,
+    priority: row.priority,
+    parent: row.parent,
+    labels: row.labels ?? [],
+    open_asks: row.open_asks,
+    claim: row.claim ?? null,
+    route: row.route ?? null,
+    ...listedMember("route_status", row.route_status, atCut),
+    ...listedMember("route_holder", row.route_holder, atCut),
+    ...listedMember("route_status_reason", row.route_status_reason, atCut),
+    updated_at: row.updated_at,
+    progress: row.progress,
+  };
+}
+
+/**
+ * What a line of `dispatch issues` says of the issue's route. A route that reaches a live session
+ * changes nothing about the line; one that reaches nobody, or cannot be judged, is what the owner
+ * audit reads. A listing read with a token that carries a cut answers as of that cut, and leaves
+ * out where each route reaches (`Dispatch-As-Of-Absent`): its state is then absent, not null, and
+ * the line names the route and says that the listing does not say whether it reaches anyone, so
+ * it never reads as a route that reaches a live session.
+ */
+function listingRouteText(row: IssueSummary): string {
+  const route = row.route ?? null;
+  const status: string | null | undefined = row.route_status;
+  if (route === null || status === "live" || status === null) return "";
+  if (status === undefined) {
+    return ` · route ${route} (the listing does not say whether it reaches anyone)`;
+  }
+  return ` · route ${routeText(row, { name: rowPart })}`;
+}
+
+/** One issue of `dispatch issues` as a line: its key, status, priority and title, its parent and
+ *  labels, its open asks, its claim, its progress, and its route (`listingRouteText`). Each title,
+ *  label and holder that could split the row is quoted (`rowPart`). */
+function issueListingLine(row: IssueSummary, agents: LiveAgents | undefined): string {
+  const claim = row.claim ?? null;
+  const progress = progressText(row.progress, " · ");
+  const labels = row.labels ?? [];
+  return (
+    `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
+    rowPart(row.title) +
+    // The help says each row carries its parent and labels: a root names no parent, so a reader
+    // of the text tells the open roots from their children.
+    (row.parent ? ` · child of ${row.parent}` : "") +
+    (labels.length === 0 ? "" : ` · labels ${labels.map(rowPart).join(", ")}`) +
+    (row.open_asks === 0
+      ? ""
+      : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
+    (claim === null ? "" : ` · claimed by ${claimText(claim, agents, { name: rowPart })}`) +
+    (progress === "" ? "" : ` · ${progress}`) +
+    listingRouteText(row)
+  );
+}
+
 /** Whether the whole output of a call is one JSON object a program reads: `dispatch issues
  *  --json`. The CLI prints such an output whole, also on a host that cuts long output, since a cut
  *  object is no JSON object, and prints its own notes on standard error. */
@@ -674,79 +764,55 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
   // array; argumentProblems has already refused it beside --limit or --offset. Everything
   // else pages exactly as before, the tool's schema having refused a limit outside
   // 1..MAX_ISSUE_PAGE_LIMIT and a negative or fractional offset.
+  // A token that carries a cut is answered at its cut whatever this read sends, and the listing
+  // learns that cut from the answer (`AnswerCut`).
+  const cut = new AnswerCut();
   const page =
     optionalBoolean(args, "all") === true
-      ? await client.listAllIssues(filters).then((issues) => ({
+      ? await client.listAllIssues(filters, cut).then((issues) => ({
           issues,
           total: issues.length,
           limit: issues.length,
           offset: 0,
         }))
-      : await client.listIssuePage(filters, {
-          limit: optionalNumber(args, "limit") ?? DEFAULT_ISSUE_PAGE_LIMIT,
-          offset: optionalNumber(args, "offset") ?? 0,
-        });
+      : await client.listIssuePage(
+          filters,
+          {
+            limit: optionalNumber(args, "limit") ?? DEFAULT_ISSUE_PAGE_LIMIT,
+            offset: optionalNumber(args, "offset") ?? 0,
+          },
+          cut
+        );
   const { total, limit, offset } = page;
-  const rows = (page.issues ?? []).map((row) => ({
-    key: row.key,
-    title: row.title,
-    status: row.status,
-    priority: row.priority,
-    parent: row.parent,
-    labels: row.labels ?? [],
-    open_asks: row.open_asks,
-    claim: row.claim ?? null,
-    route: row.route ?? null,
-    route_status: row.route_status ?? null,
-    route_holder: row.route_holder ?? null,
-    route_status_reason: row.route_status_reason ?? null,
-    updated_at: row.updated_at,
-    progress: row.progress,
-  }));
-  const listing = { issues: rows, total, offset, limit };
+  const issues = page.issues ?? [];
+  const atCut = cut.cut !== undefined;
+  const listing = {
+    issues: issues.map((row) => issueListingRow(row, atCut)),
+    total,
+    offset,
+    limit,
+  };
   if (printsJson(input.tool, args)) {
     return { text: JSON.stringify(listing), details: listing };
   }
   const agents = await liveAgents(
     client,
-    rows.some((row) => holdsSession(row.claim))
+    issues.some((row) => holdsSession(row.claim))
   );
-  const isPartial = offset !== 0 || rows.length !== total;
+  const isPartial = offset !== 0 || issues.length !== total;
   const showing = !isPartial
     ? ""
-    : rows.length === 0
+    : issues.length === 0
       ? `showing 0-0 of ${total}`
-      : pageSummaryText(offset, rows.length, total);
+      : pageSummaryText(offset, issues.length, total);
   return {
     text:
-      rows.length === 0
+      issues.length === 0
         ? `No issues in ${project}.${isPartial ? ` (${showing})` : ""}`
         : [
-            `${rows.length} ${rows.length === 1 ? "issue" : "issues"} in ${project}` +
+            `${issues.length} ${issues.length === 1 ? "issue" : "issues"} in ${project}` +
               (isPartial ? ` (${showing})` : ""),
-            ...rows.map((row) => {
-              const progress = progressText(row.progress, " · ");
-              return (
-                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
-                rowPart(row.title) +
-                // The help says each row carries its parent and labels: a root names no parent, so
-                // a reader of the text tells the open roots from their children.
-                (row.parent ? ` · child of ${row.parent}` : "") +
-                (row.labels.length === 0 ? "" : ` · labels ${row.labels.map(rowPart).join(", ")}`) +
-                (row.open_asks === 0
-                  ? ""
-                  : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
-                (row.claim === null
-                  ? ""
-                  : ` · claimed by ${claimText(row.claim, agents, {}, rowPart)}`) +
-                (progress === "" ? "" : ` · ${progress}`) +
-                // A route that reaches a live session changes nothing about the row; one
-                // that reaches nobody, or cannot be judged, is what the owner audit reads.
-                (row.route === null || row.route_status === "live" || row.route_status === null
-                  ? ""
-                  : ` · route ${routeText(row, undefined, rowPart)}`)
-              );
-            }),
+            ...issues.map((row) => issueListingLine(row, agents)),
           ].join("\n"),
     details: listing,
   };
@@ -764,75 +830,6 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
 export function dryRunAsksDispatch(tool: string, args: Readonly<Record<string, unknown>>): boolean {
   const { retract, project } = args;
   return tool === "dispatch_result" && retract === undefined && project === undefined;
-}
-
-/**
- * `dispatch result --project`: a CI job's record of its result of one check of the spec files,
- * printed back as the stored result whole, as JSON: the in-toto statement of the run, which a
- * reader keeps, whose recorder is the run and no person. It sends what a result keeps of observed
- * (`observedAsKept`). The job runs it with its own identity and no session (`runDispatchCli`), and
- * a session's call reaches it through `resultCommand`.
- */
-export async function specCheckResultCommand(
-  client: DispatchClient,
-  args: Record<string, unknown>
-): Promise<DispatchToolResult> {
-  const project = stringArg(args, "project");
-  const observed = optionalString(args, "observed");
-  const stored = await client.recordSpecCheckResult(project, {
-    commit: stringArg(args, "commit"),
-    check: stringArg(args, "check"),
-    verdict: stringArg(args, "verdict"),
-    ...(observed === undefined ? {} : { observed: observedAsKept(observed) }),
-  });
-  const { predicate } = stored.attestation;
-  return {
-    text: JSON.stringify(stored, null, 2),
-    details: {
-      project,
-      result: stored.id,
-      seq: stored.seq,
-      check: predicate.check,
-      verdict: predicate.verdict,
-    },
-  };
-}
-
-/** One stored result of a check of the spec files, as `dispatch results --project` lists it:
- *  Dispatch's record number, the check, the verdict, the job, the leg, the run, its attempt and
- *  the commit. Each of them is a CI job's or the stored statement's text, so it prints by the rule
- *  of a runner's log (`printable`, runner-log.ts): a listing read in a job's log starts no line of
- *  its own and names no workflow command. */
-function specCheckResultLine(result: SpecCheckResult): string {
-  const { predicate, subject } = result.attestation;
-  const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
-  // biome-ignore lint/complexity/useLiteralKeys: digest is an index signature, and claude-envoy's tsconfig refuses dot access on one.
-  const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
-  return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
-}
-
-/** `dispatch results --project`: every result CI jobs stored for checks of the project's spec
- *  files at one commit, one line each, newest first as Dispatch serves them, or the stored
- *  results as JSON with `json`, each by the rule of a runner's log (runner-log.ts). */
-async function specCheckResultsCommand(
-  client: DispatchClient,
-  args: Record<string, unknown>
-): Promise<DispatchToolResult> {
-  const project = stringArg(args, "project");
-  const commit = stringArg(args, "commit");
-  const check = optionalString(args, "check");
-  const results = (await client.specCheckResults(project, commit, check)).results ?? [];
-  const what = check === undefined ? project : `check ${printable(check)} of ${project}`;
-  const text =
-    optionalBoolean(args, "json") === true
-      ? printableJson(JSON.stringify(results, null, 2))
-      : results.length === 0
-        ? `No result of ${what} is stored at ${printable(commit)}.`
-        : [
-            `Results of ${what} at ${printable(commit)}, newest first:`,
-            ...results.map(specCheckResultLine),
-          ].join("\n");
-  return { text, details: { project, commit, results: results.length } };
 }
 
 /** `dispatch result`: record one result of one check of an issue's Verification document, or,
@@ -918,16 +915,22 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
 }
 
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it, or, with `project`, the results CI jobs stored for checks of the spec files. */
-export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
+ *  against it, and at a cut the checks and results recorded by then; or, with `project`, the
+ *  results CI jobs stored for checks of the spec files, of which Dispatch keeps no history, so
+ *  `--as-of` with `project` is refused before any request (`resultsProblem`). `--at` is refused
+ *  with a cut before this runs: beside `--as-of` before any request (`check.ts`), and under a
+ *  token's cut right after whoami (`readAtCut`). */
+export async function resultsCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, reading } = context;
   if (optionalString(args, "project") !== undefined) {
     return await specCheckResultsCommand(client, args);
   }
   const issue = stringArg(args, "issue");
   const at = optionalString(args, "at");
   const brief = optionalBoolean(args, "brief") === true;
-  const results = await client.issueResults(issue, at);
+  const results = await client.issueResults(issue, at, reading.cut);
   const checks = results.checks ?? [];
   // A basis omits the issue's own repository. Resolve it only for the two answers that name
   // that repository, once per check owner, including a check inherited from an ancestor.
@@ -948,7 +951,7 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
     })
   );
   return {
-    text: formatCheckResults(results, brief, repositories),
+    text: formatCheckResults(results, { brief, repositories, asOf: reading.cut?.asOf }),
     details: {
       issue,
       checks: checks.length,

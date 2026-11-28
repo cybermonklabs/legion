@@ -16,7 +16,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getMessageHistory,
 	Successor:   successorIs(http.MethodGet, "/messages/{id}/corrections"),
 	ID:          &idRoute{Kind: "message", NotFound: apicode.NotFound},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfPostHistoryAtACut("message")},
 	Shape: routeShape{
 		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
 	},

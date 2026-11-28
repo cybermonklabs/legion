@@ -30,7 +30,13 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	// At a cut each ask leaves out what the records at the cut do not give of it.
+	trees := wantsDisplayTrees(r)
+	if _, err := s.askFieldsAtTheCut(r.Context(), asks, elementsOf(""), trees); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	reader := s.readDisplayTrees(r.Context(), trees)
 	reads := shapedAsks(asks, reader)
 	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
@@ -88,6 +94,10 @@ func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	events, err := s.readEvents(r.Context(), who, owner, options)
 	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if err := eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

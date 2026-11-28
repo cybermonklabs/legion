@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -72,6 +73,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -1154,12 +1156,13 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval when its text is the approved text again and
 		// its decision blocks are as their rows have them, as every version the document service
-		// writes does (docs.carryApproval): an exact undo uploaded is the approved document. It
-		// runs where the route's other document work runs, so the open approval request and the
-		// ask rows it reads are as this transaction's own queued writes leave them, its own
-		// writes join the queue, and its events reach the ledger beside the move's.
+		// writes does (docs.carryApproval): an exact undo uploaded is the approved document,
+		// unless its text breaks the form of The Spec (carryBreaksForm). It runs where the route's
+		// other document work runs, so the open approval request and the ask rows it reads are as
+		// this transaction's own queued writes leave them, its own writes join the queue, and its
+		// events reach the ledger beside the move's.
 		if err := docs.CarryRestoredApproval(
-			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, s.deps.SpecForm.carryBreaksForm, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -1314,6 +1317,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	read := artifactRead{Artifact: artifact}
 	read.shape(reader)
 	reader.resolve()
+	approvalAtTheCut(r.Context(), artifact.Approval, "")
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -1389,13 +1393,22 @@ func (s *server) artifactTextBody(r *http.Request, artifactID string) (artifactT
 // reads documentBlocks instead (artifactRowsV2). The markdown, the token and the blocks come from
 // one rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot
 // leave a listing's byte ranges indexing markdown they were not computed over; nil blocks for a
-// read that asked for none, which pays for none of that rendering. The version is read once the
-// markdown is rendered, by that markdown: no database read holds a room's tree, so the version
-// cannot come from the tree's read, and a version another session writes between the two stores
-// other text, so it is not named over this one.
+// read that asked for none, which pays for none of that rendering. At a cut they come from the
+// document's newest version then, and the live document is not read (artifactTextAtTheCut). The
+// version is read once the markdown is rendered, by that markdown: no database read holds a
+// room's tree, so the version cannot come from the tree's read, and a version another session
+// writes between the two stores other text, so it is not named over this one.
 func (s *server) documentText(ctx context.Context, artifactID string, withBlocks bool) (artifactText, error) {
 	var text artifactText
-	if withBlocks {
+	_, atCut := asof.CutFrom(ctx)
+	switch {
+	case atCut:
+		markdown, token, blocks, err := s.artifactTextAtTheCut(ctx, artifactID, withBlocks)
+		if err != nil {
+			return artifactText{}, err
+		}
+		text = artifactText{Markdown: markdown, Token: token, Blocks: blocks}
+	case withBlocks:
 		markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(ctx, artifactID)
 		if err != nil {
 			return artifactText{}, err
@@ -1409,7 +1422,7 @@ func (s *server) documentText(ctx context.Context, artifactID string, withBlocks
 			blocks = []model.ArtifactBlock{}
 		}
 		text = artifactText{Markdown: markdown, Token: token, Blocks: &blocks}
-	} else {
+	default:
 		markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifactID)
 		if err != nil {
 			return artifactText{}, err
@@ -1435,6 +1448,17 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, r, apicode.NotDocument, "artifact is not a document")
+		return
+	}
+	// At a cut the blocks are those of the document's newest version then, and the live document
+	// is not read (artifactBlocksAtTheCut).
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		blocks, err := s.artifactBlocksAtTheCut(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, blocks)
 		return
 	}
 	blocks, err := s.documentBlocks(r.Context(), artifact.ID)
@@ -1672,7 +1696,6 @@ func (s *server) serveArtifactVersion(w http.ResponseWriter, r *http.Request, ar
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
 			// JSON's `markdown` field holds, with no display tree read.
 			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
 			w.Header().Set("Cache-Control", downloadCacheControl)
 			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))
@@ -2249,7 +2272,8 @@ func listedArtifacts(ctx context.Context, q queryer, query string, args ...any) 
 // as a read shape carrying the display trees the caller asked for. A list route is therefore its
 // own authorization, its own statement and this call: a project's list and an agent
 // conversation's differ in nothing else, and a route added later says what it reads and who may
-// read it rather than repeating how a list is read.
+// read it rather than repeating how a list is read. At a cut each artifact's approval leaves out
+// what the records at the cut do not give of it (approvalsAtTheCut); at no cut that names nothing.
 func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query string, args ...any) {
 	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, query, args...)
 	if err != nil {
@@ -2259,6 +2283,7 @@ func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -2303,15 +2328,16 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 // (readIssueDetails), and a read of its own sends them as a batch of its own (loadArtifactDetails).
 // The apply fills the versions first, since an approval's state reads them (applyApprovals), and
 // leaves an artifact with no version a non-nil empty list (applyVersions). No artifact queues
-// nothing and its apply fills nothing.
-func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing and its apply fills nothing. ctx is the read's: a read at a cut reads the open approval
+// requests as they stood then (queueApprovals).
+func queueArtifactDetails(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
 		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
-	approvals := queueApprovals(b, artifacts)
+	approvals := queueApprovals(ctx, b, artifacts)
 	return func() {
 		applyVersions(artifacts, versions)
 		approvals()
@@ -2325,7 +2351,7 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // nothing else reads the database in between.
 func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueArtifactDetails(batch, artifacts)
+	apply := queueArtifactDetails(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}

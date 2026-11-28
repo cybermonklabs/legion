@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -420,6 +421,13 @@ type postHistoryTally struct {
 // through the same partial index under the same order and limit, and a post that kept none
 // answers one row with every history column null. A counted read counts the post's kept bodies
 // in a lateral of its own, over the same index, in the same snapshot.
+//
+// At a cut the page is read from the rows that the post's edit and delete events at the cut wrote
+// (decision 17 of INFRA-4620's plan): the first of its rows in the order they were written, as
+// many as the post has such events at the cut (asof.CommentHistoryRowsAtCut), paged and counted
+// as the present read pages and counts them. The post's row is its shadow, whose mark is the
+// present one, so a post deleted after the cut answers as its present read answers a deleted
+// post.
 func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string, window postHistoryWindow) (postHistoryRead, postHistoryTally, error) {
 	items, column, err := postHistoryOwner(kind)
 	if err != nil {
@@ -431,6 +439,38 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 	}
 	bounded := `($2::timestamptz is null or (edited_at, id) < ($2::timestamptz, coalesce($3::bigint, 0)))` +
 		` and ($4::timestamptz is null or (edited_at, id) > ($4::timestamptz, $5::bigint))`
+	// The kept bodies the page and the tally read: every one the post kept, or at a cut the first
+	// rows its edit and delete events at the cut wrote.
+	page := `
+			select id, body, edited_by, edited_at
+			from post_body_history
+			where ` + column + ` = p.id and ` + bounded + `
+			order by ` + order + `
+			limit $6 offset $7`
+	tallyRows := `post_body_history
+			where ` + column + ` = p.id`
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		rowsAtCut := asof.CommentHistoryRowsAtCut
+		if kind == refs.ItemMessage {
+			rowsAtCut = asof.MessageHistoryRowsAtCut
+		}
+		kept := `(
+				select id, body, edited_by, edited_at
+				from (
+					select id, body, edited_by, edited_at, row_number() over (order by edited_at, id) as place
+					from post_body_history
+					where ` + column + ` = p.id
+				) numbered
+				where numbered.place <= ` + rowsAtCut + `
+			) kept`
+		page = `
+			select id, body, edited_by, edited_at
+			from ` + kept + `
+			where ` + bounded + `
+			order by ` + order + `
+			limit $6 offset $7`
+		tallyRows = kept
+	}
 	tally, tallied := `, null::bigint, null::boolean`, ``
 	if window.counted {
 		tally = `, c.total, c.reached`
@@ -439,8 +479,7 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 			select count(*) filter (where ` + bounded + `) as total,
 			       $4::timestamptz is null
 			       or coalesce(bool_or((edited_at, id) >= ($4::timestamptz, $5::bigint)), false) as reached
-			from post_body_history
-			where ` + column + ` = p.id
+			from ` + tallyRows + `
 		) c on true`
 	}
 	beforeAt, beforeID := window.before.args()
@@ -451,12 +490,7 @@ func (s *server) postHistory(ctx context.Context, kind refs.ItemKind, id string,
 		select p.deleted_at, p.deleted_by,
 		       case when p.deleted_at is null then h.body else '' end, h.edited_by, h.edited_at, h.id`+tally+`
 		from `+items+` p
-		left join lateral (
-			select id, body, edited_by, edited_at
-			from post_body_history
-			where `+column+` = p.id and `+bounded+`
-			order by `+order+`
-			limit $6 offset $7
+		left join lateral (`+page+`
 		) h on true`+tallied+`
 		where p.id = $1
 	`, id, beforeAt, beforeID, afterAt, afterID, window.limit, window.offset)

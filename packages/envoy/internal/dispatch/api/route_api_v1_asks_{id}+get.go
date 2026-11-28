@@ -16,6 +16,6 @@ var _ = declareRoute(routeDecl{
 	// The read goes through loadAsk or loadAskOwner, whose missing row is writeHandlerError's
 	// NOT_FOUND.
 	ID:    &idRoute{Kind: "ask", NotFound: apicode.NotFound},
-	Read:  readEntry{Writes: readWritesNothing, WriteNote: "The ask's anchor block is read through the document service. " + docsCompactionNote},
-	Shape: routeShape{Status: http.StatusOK, Response: askRead{}},
+	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route reads the ask at its newest state event at or before the cut, with the replies, the edits, the answers and the followers that it had then.", WriteNote: "The ask's anchor block is read through the document service. " + docsCompactionNote},
+	Shape: routeShape{Status: http.StatusOK, Response: askRead{}, Params: asOfQuery{}},
 })

@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getHandoff,
 	Successor:   successorIs(http.MethodGet, "/handoffs/{id}"),
 	ID:          &idRoute{Reason: "a handoff id: one phase's record on an issue"},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: handoffRead{}},
 })

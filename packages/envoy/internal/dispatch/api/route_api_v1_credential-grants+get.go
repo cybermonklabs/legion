@@ -15,7 +15,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listCredentialGrants,
 	Successor:   successorIs(http.MethodGet, "/credential-grants"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		// GET /v1/grants (cipher.Client.Grants).
 		Status: http.StatusOK, Response: wire.ApproverGrantsResponse{}, Params: credentialApproverQuery{},

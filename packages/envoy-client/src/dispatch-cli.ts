@@ -609,6 +609,7 @@ export async function runDispatchCli(
         userAgent: io.userAgent,
       });
       const result = await sendApiCall(args, env, client);
+      for (const warning of result.warnings ?? []) io.stderr(`${warning}\n`);
       if (result.body === undefined) print(result.text);
       else writeBody(result.body);
       return OK;

@@ -126,6 +126,15 @@ func deletedPostError(kind refs.ItemKind) *apiError {
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err error) {
+	// A refusal of the form of The Spec carries every finding beside its words, so it is written
+	// whole, at 409 SPEC_FORM (spec_form.go), under the name and the status r's version answers it
+	// with.
+	var formRefusal *specFormRefusal
+	if errors.As(err, &formRefusal) {
+		code, status := refusalPair(r, apicode.SpecForm)
+		WriteJSON(w, status, formRefusal.body(code))
+		return
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		if apiErr.retryAfter > 0 {

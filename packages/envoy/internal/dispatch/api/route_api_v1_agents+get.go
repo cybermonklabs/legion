@@ -11,6 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Live sessions with roles, capabilities, open asks, and last activity, from Dispatch's copy of the Envoy listener's session list, at most 5 s old.",
 	Handler:     (*server).listAgents,
 	Successor:   successorIs(http.MethodGet, "/agents"),
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []agentResponse{}},
 })

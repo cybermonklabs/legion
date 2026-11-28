@@ -15,7 +15,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listMachineLogins,
 	Successor:   successorIs(http.MethodGet, "/machine-logins"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{
 		// GET /v1/launcher-credentials (cipher.Client.MachineLogins).
 		Status: http.StatusOK, Response: wire.LauncherCredentialsResponse{},

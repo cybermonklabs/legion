@@ -403,13 +403,16 @@ var (
 	SessionRequired                = both("SESSION_REQUIRED", http.StatusBadRequest)
 	// SessionScope refuses a caller whose credential proved one session a write addressed to
 	// another session's own rows.
-	SessionScope       = both("SESSION_SCOPE", http.StatusForbidden)
-	ShuttingDown       = both("SHUTTING_DOWN", http.StatusServiceUnavailable)
-	SlowWriteCutOff    = both("SLOW_WRITE_CUT_OFF", http.StatusServiceUnavailable)
-	SnoozeInput        = both("SNOOZE_INPUT", http.StatusBadRequest)
-	SourceAccess       = both("SOURCE_ACCESS", http.StatusConflict)
-	SourceInput        = both("SOURCE_INPUT", http.StatusBadRequest)
-	SourceNotFound     = both("SOURCE_NOT_FOUND", http.StatusNotFound)
+	SessionScope    = both("SESSION_SCOPE", http.StatusForbidden)
+	ShuttingDown    = both("SHUTTING_DOWN", http.StatusServiceUnavailable)
+	SlowWriteCutOff = both("SLOW_WRITE_CUT_OFF", http.StatusServiceUnavailable)
+	SnoozeInput     = both("SNOOZE_INPUT", http.StatusBadRequest)
+	SourceAccess    = both("SOURCE_ACCESS", http.StatusConflict)
+	SourceInput     = both("SOURCE_INPUT", http.StatusBadRequest)
+	SourceNotFound  = both("SOURCE_NOT_FOUND", http.StatusNotFound)
+	// SpecForm is an approval request or an approval whose document breaks the form of The Spec
+	// (spec_form.go), written whole with its findings (writeHandlerError).
+	SpecForm           = both("SPEC_FORM", http.StatusConflict)
 	StateStale         = both("STATE_STALE", http.StatusConflict)
 	StreamUnavailable  = both("STREAM_UNAVAILABLE", http.StatusServiceUnavailable)
 	SubscriberNotFound = both("SUBSCRIBER_NOT_FOUND", http.StatusNotFound)
@@ -428,7 +431,12 @@ var (
 	TurnRequiresAsk    = both("TURN_REQUIRES_ASK", http.StatusBadRequest)
 	Unauthorized       = both("UNAUTHORIZED", http.StatusUnauthorized)
 	UnknownCheck       = both("UNKNOWN_CHECK", http.StatusBadRequest)
-	WaitInput          = both("WAIT_INPUT", http.StatusBadRequest)
+	// VersionNotFound is a version of a document that it does not have: the 404 of a /api/v2 path
+	// that names one (dispatch://INFRA-4071/spec R7), and, since #4179 on main, of the form of The
+	// Spec's read of a version in either version (spec_form.go), which /api/v1 answers under the
+	// same name.
+	VersionNotFound = both("VERSION_NOT_FOUND", http.StatusNotFound)
+	WaitInput       = both("WAIT_INPUT", http.StatusBadRequest)
 )
 
 // The codes the contracts package names for its clients, whose names are those constants, so a
@@ -450,6 +458,11 @@ var (
 	// request (approveOnlyAnswerRefusal, gateApproveOnlyAskAnswer).
 	ApproveOnlyToken   = both(contracts.DispatchApproveOnlyToken, http.StatusForbidden)
 	AsOfTokenNotServed = both(contracts.DispatchAsOfTokenNotServed, http.StatusForbidden)
+	// AsOfNotServed is an as_of sent to a row that holds no history (asOfGate): a /api/v1 route
+	// that does not answer as_of, and a row of the INFRA-979 tree at either path, whose query the
+	// decoder does not read. Every other /api/v2 row refuses as_of as it refuses any key it does
+	// not declare (QueryKeyUnknown).
+	AsOfNotServed = both(contracts.DispatchAsOfNotServed, http.StatusBadRequest)
 	// The refusals of a write of a step record (steps.go), which the Legion daemon reads to end a
 	// row on.
 	StepInput      = both(contracts.StepInputCode, http.StatusBadRequest)
@@ -572,7 +585,6 @@ var (
 	// ids answer the broker's own 404 as one of these.
 	AskNotFound               = v2Only("ASK_NOT_FOUND", http.StatusNotFound)
 	AgentTokenNotFound        = v2Only("AGENT_TOKEN_NOT_FOUND", http.StatusNotFound)
-	VersionNotFound           = v2Only("VERSION_NOT_FOUND", http.StatusNotFound)
 	DeliveryNotFound          = v2Only("DELIVERY_NOT_FOUND", http.StatusNotFound)
 	CredentialRequestNotFound = v2Only("CREDENTIAL_REQUEST_NOT_FOUND", http.StatusNotFound)
 	CredentialGrantNotFound   = v2Only("CREDENTIAL_GRANT_NOT_FOUND", http.StatusNotFound)
@@ -686,6 +698,14 @@ var (
 var (
 	// APIV1Ended is every /api/v1 path once the deployment's end of /api/v1 has passed (R3.4).
 	APIV1Ended = v1Only("API_V1_ENDED", http.StatusGone)
+
+	// The refusals of a read at a past time that answers as_of, which only a /api/v1 route is:
+	// /api/v2 stands at main's freeze, which answered no read at a past time
+	// (dispatch://INFRA-4071/spec R2). InvalidAsOf is an as_of the gate cannot read, one sent more
+	// than once, or a cut later than the database's present time (asOfGate); AsOfSearchNotFilled
+	// is a search at a cut that the keyword table's fill has not reached (writeSearchNotFilled).
+	InvalidAsOf         = v1Only(contracts.DispatchInvalidAsOf, http.StatusBadRequest)
+	AsOfSearchNotFilled = v1Only(contracts.DispatchAsOfSearchNotFilled, http.StatusConflict)
 
 	// The refusals of POST /api/v1/projects/{key}/results, a CI job's write of the result of a
 	// check of the spec files (spec_results.go): a route a merge on main added after /api/v2's

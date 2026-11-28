@@ -15,6 +15,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listArtifactEvents,
 	Successor:   successorIs(http.MethodGet, "/artifacts/{id}/events"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route pages only the events written at or before the cut. " + asOfEventLogAtACut},
 	Shape:       routeShape{Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
 })

@@ -16,7 +16,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).streamGoingAnswer,
 	Successor:   successorIs(http.MethodGet, "/going-requests/{id}/stream"),
 	ID:          &idRoute{Reason: "a going request's run id, which the route reads for its own author alone and answers for itself"},
-	Read:        readEntry{Writes: readWritesState, WriteNote: "When the run is past its ends_at and holds no terminal frame, the read inserts the run's end frame, the error that its answer did not arrive, into going_events on the request's context (endGoingRun), doing nothing on conflict when another writer ended the run first."},
+	Read:        readEntry{Writes: readWritesState, AsOf: asOfNoHistory, WriteNote: "When the run is past its ends_at and holds no terminal frame, the read inserts the run's end frame, the error that its answer did not arrive, into going_events on the request's context (endGoingRun), doing nothing on conflict when another writer ended the run first."},
 	Shape: routeShape{
 		Status:             http.StatusOK,
 		Opaque:             "the run's answer is a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",

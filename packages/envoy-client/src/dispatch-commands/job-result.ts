@@ -24,7 +24,7 @@ import { messageFor } from "../errors";
 import { printable, printableJson, printableLine } from "../runner-log";
 import { ToolInputError } from "../tool-input-errors";
 import { OK, REFUSED, USAGE } from "./exit-codes";
-import { specCheckResultCommand } from "./issues";
+import { specCheckResultCommand } from "./spec-check-results";
 
 /** What `jobResultCommand` reads of the command's `DispatchCliIo` (dispatch-cli.ts). */
 export interface JobResultIo {

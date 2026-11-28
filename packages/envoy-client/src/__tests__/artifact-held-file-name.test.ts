@@ -8,6 +8,7 @@ import { keyedLayer } from "../../test/keyed-layer";
 import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // `dispatch artifact` under a name its owner already holds is refused before the upload is sent,
 // and the refusal names only a remedy Dispatch takes and prints no token. The command checks a
@@ -232,6 +233,8 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
 const answerDispatch = async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
+  // Every read command reads whoami first (`whoami-stand-in.ts`).
+  if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
   if (request.method === "GET" && pathname === "/api/v1/issues/DSP-1/artifacts") {
     return Response.json(held.map(artifactOf));
   }

@@ -1,5 +1,5 @@
 import type { Artifact } from "@legion/contracts";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { shownPictureLine } from "../dispatch-picture-tools";
 import {
   oversizePictureText,
@@ -33,7 +33,8 @@ import type { DispatchToolResult } from "./context";
  * artifact's version list, so no other read is made for them, and a Dispatch or a version that
  * states none prints no line: such a Dispatch takes no token on a file's upload. A file carries no
  * anchors or approval, so nothing else is read. A picture is shown whatever `shown` holds, and
- * joins it under its address, so the session's later reads name it instead of sending it.
+ * joins it under its address, so the session's later reads name it instead of sending it. At
+ * `read`'s cut, the version is the one that stood then.
  */
 export async function readUploadedFile(
   client: DispatchClient,
@@ -41,7 +42,8 @@ export async function readUploadedFile(
   details: Record<string, unknown>,
   requested: number | undefined,
   owner: string,
-  shown: Set<string> | undefined
+  shown: Set<string> | undefined,
+  read: AsOfRead = {}
 ): Promise<DispatchToolResult> {
   const versions = artifact.versions ?? [];
   const latest = Math.max(0, ...versions.map((version) => version.number));
@@ -71,7 +73,7 @@ export async function readUploadedFile(
   ) {
     return tooLarge(stated.mime ?? "image", stated.size);
   }
-  const file = await client.fileVersion(artifact.id, number);
+  const file = await client.fileVersion(artifact.id, number, read);
   const size = `${file.bytes.length.toLocaleString("en-US")} bytes`;
   if (artifact.kind === "image") {
     const image = toolImage(file.bytes);

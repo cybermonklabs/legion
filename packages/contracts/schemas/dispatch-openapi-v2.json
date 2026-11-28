@@ -209,7 +209,7 @@
     },
     "/api/v2/_test/artifacts/rooms": {
       "get": {
-        "description": "Test hook: list the documents this process holds a room of.",
+        "description": "Test hook: list the documents this process holds a room of. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2TestArtifactsRooms",
         "parameters": [
           {
@@ -301,7 +301,7 @@
     },
     "/api/v2/_test/artifacts/{id}/live-write-pauses/{point}": {
       "get": {
-        "description": "Test hook: wait until a live write parks at the armed pause.",
+        "description": "Test hook: wait until a live write parks at the armed pause. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2TestArtifactsByIdLiveWritePausesByPoint",
         "parameters": [
           {
@@ -551,7 +551,7 @@
     },
     "/api/v2/_test/artifacts/{id}/room-counters": {
       "get": {
-        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now.",
+        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2TestArtifactsByIdRoomCounters",
         "parameters": [
           {
@@ -681,7 +681,7 @@
     },
     "/api/v2/_test/messages/queued": {
       "get": {
-        "description": "Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS.",
+        "description": "Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2TestMessagesQueued",
         "parameters": [
           {
@@ -7913,7 +7913,7 @@
     },
     "/api/v2/delivery/measures": {
       "get": {
-        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy (flags_source says whether stored flags fed it), time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met; 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too.",
         "operationId": "getApiV2DeliveryMeasures",
         "parameters": [
           {
@@ -8053,7 +8053,7 @@
     },
     "/api/v2/delivery/pipeline": {
       "get": {
-        "description": "The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The Pipeline page: over the seven UTC days ending today (now, or ?at= for a fixed day), by the day each run started, the PR-checks workflow's run wall time and success, its five slowest jobs (50 timed results to rank) and the jobs that failed in the last 24 hours, the duration and result of the staging end-to-end, staging deploy and production deploy jobs the settings name in push runs on main, and merge-to-production and PR-open-to-merge per merge day against their targets; not filtered by the timeline's window or facets; 400 INVALID_QUERY for a malformed at, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too.",
         "operationId": "getApiV2DeliveryPipeline",
         "parameters": [
           {
@@ -8099,7 +8099,7 @@
     },
     "/api/v2/delivery/timeline": {
       "get": {
-        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.",
+        "description": "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED. As a GET that writes, it refuses every read-only token with 403 READ_ONLY_TOKEN, a token that carries a cut too.",
         "operationId": "getApiV2DeliveryTimeline",
         "parameters": [
           {
@@ -8691,7 +8691,7 @@
     },
     "/api/v2/going-actions": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 25 of the 45 tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name (action), its own description, the arguments it takes (request), each with the bounds its spec states, min and max (a text's length in UTF-16 units, a list's count of items or a number's value, both left out where it states none), with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {\"state\": \"resolved\"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. Every action is on one page unless the request names a limit (any of 1 or more) or an offset; {items, total, limit, offset}.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 25 of the 46 tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name (action), its own description, the arguments it takes (request), each with the bounds its spec states, min and max (a text's length in UTF-16 units, a list's count of items or a number's value, both left out where it states none), with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {\"state\": \"resolved\"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. Every action is on one page unless the request names a limit (any of 1 or more) or an offset; {items, total, limit, offset}.",
         "operationId": "getApiV2GoingActions",
         "parameters": [
           {
@@ -19728,7 +19728,7 @@
     },
     "/api/v2/projects/{key}/legion/board": {
       "get": {
-        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in awaiting_children, the open children the daemon lists it as blocked on), what it waits on from a person, its tree root and how many issues of its tree that have not started, on no card of their own, have it as the nearest card above them (children); and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "The Legion board of the project its path names, from what Dispatch recorded of that project's daemon: twelve columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_children, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in awaiting_children, the open children the daemon lists it as blocked on), what it waits on from a person, its tree root and how many issues of its tree that have not started, on no card of their own, have it as the nearest card above them (children); and a header with the slots in use, the slot cap, the daemon's own number of P0 holders (p0_holders, which hold their slots outside the cap; null, never 0, where the daemon's newest recorded state gives none), the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2ProjectsByKeyLegionBoard",
         "parameters": [
           {
@@ -19775,7 +19775,7 @@
     },
     "/api/v2/projects/{key}/legion/daemon": {
       "get": {
-        "description": "The Legion daemon this project's state is read from, with the actor that first named it and when it was last written; null when the project names none. With NATS, Dispatch records the state events that daemon publishes, and reads its `GET /legion/v1/state` whole only where the events cannot carry the state. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.",
+        "description": "The Legion daemon this project's state is read from, with the actor that first named it and when it was last written; null when the project names none. With NATS, Dispatch records the state events that daemon publishes, and reads its `GET /legion/v1/state` whole only where the events cannot carry the state. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2ProjectsByKeyLegionDaemon",
         "parameters": [
           {
@@ -21764,7 +21764,7 @@
     },
     "/api/v2/settings/delivery": {
       "get": {
-        "description": "The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set.",
+        "description": "The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV2SettingsDelivery",
         "parameters": [
           {
@@ -42225,6 +42225,7 @@
       "ASK_REVISION_REQUIRED": 400,
       "ASK_STATE_INVALID": 500,
       "ASSIGNEE_NOT_ALLOWED": 400,
+      "AS_OF_NOT_SERVED": 400,
       "AS_OF_TOKEN_NOT_SERVED": 403,
       "AUTHOR_SESSION_OR_PROJECT_CONFLICT": 400,
       "AUTHOR_SESSION_OR_PROJECT_REQUIRED": 400,
@@ -42483,6 +42484,7 @@
       "SOURCE_ACCESS": 409,
       "SOURCE_INPUT": 400,
       "SOURCE_NOT_FOUND": 404,
+      "SPEC_FORM": 409,
       "STATE_INPUT": 400,
       "STATE_INVALID": 400,
       "STATE_STALE": 409,

@@ -14,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getDeliveryRun,
 	Successor:   successorIs(http.MethodGet, "/deploy-runs/{id}"),
 	ID:          &idRoute{Reason: "a deploy-repository run id, a positive integer and no uuid at all"},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: delivery.DeliveryRunDetailView{}},
 })

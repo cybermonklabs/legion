@@ -15,6 +15,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getArtifactBlocks,
 	Successor:   deletedFor(http.MethodGet, "/artifacts/{id}?include=blocks"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
-	Read:        readEntry{Writes: readWritesNothing, WriteNote: docsCompactionNote},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory, WriteNote: docsCompactionNote},
 	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 })

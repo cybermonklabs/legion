@@ -13,6 +13,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Links from blocks of one document to blocks of another: ?from=<document ref>&to=<document ref>; both block nodes, the edge kind, and when and in which version the source wrote each, newest first.",
 	Handler:     (*server).getBlockLinks,
 	Successor:   successorIs(http.MethodGet, "/block-links"),
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 })

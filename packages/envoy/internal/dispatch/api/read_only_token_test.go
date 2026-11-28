@@ -4,10 +4,11 @@
 // as reads (routeDecl.Read) and
 // nothing else. Every other row of the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before
 // the route's handler, before the row's scopes and the sign-in check and before its
-// Idempotency-Key is read, and every read but GET /api/v1/whoami and GET /api/v2/me answers one
-// that carries a cut 403 AS_OF_TOKEN_NOT_SERVED (refuseLimitedToken). register refuses a table
-// whose GET routes are not all classed, and a personal token the gate resolves before the route
-// keeps the answer it had before the gate.
+// Idempotency-Key is read. A token that carries a cut is answered as of its cut on the routes of
+// kind answers and named by GET /api/v1/whoami and GET /api/v2/me, and every other read and GET
+// /ws/live answer it 403 AS_OF_TOKEN_NOT_SERVED (refuseLimitedToken, as_of_token_test.go).
+// register refuses a table whose GET routes are not all classed, and a personal token the gate
+// resolves before the route keeps the answer it had before the gate.
 //
 // A token that names a service and no person is already refused every write, SIGN_IN_REQUIRED or
 // OAUTH_SCOPE_REQUIRED, so each refusal here is read by its code: a bare 403 would prove nothing.
@@ -77,10 +78,6 @@ func (token readOnlyWalkToken) probe(t *testing.T, caller *brokerCaller, route a
 // route, written out here rather than read from the server, so a refusal that drifted from it
 // fails.
 const theReadOnlyRefusal = "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran"
-
-// whoamiRow is the one read that answers a read-only token that carries a cut.
-const whoamiRow = "GET /api/v1/whoami"
-const whoamiV2Row = "GET /api/v2/me"
 
 var readWalkScopeCode = apicode.OAuthScopeRequired.Name()
 
@@ -215,20 +212,24 @@ func readOnlyPersonalTokens(t *testing.T, rig *brokerTokenRig) []readOnlyWalkTok
 
 // readOnlyAnswer is the refusal the gate, or the row's own scopes, answer token on route, and
 // empty where the row's handler runs: READ_ONLY_TOKEN on every row that is not a read, every
-// write among them; AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami and GET
-// /api/v2/me for a token that carries a cut; OAUTH_SCOPE_REQUIRED on a read whose scopes the
-// token's credential does not hold, the scopes of an authority rule the probe meets among them:
-// each rule that holds, as gateV2Authorities holds it (holdsFor), for the probe as the decoder
-// reads it, which names no query key and no body member a read takes, so a rule that holds for a
-// key's absence (a list form that names no slug) holds for it. The class is read from the
-// declarations (declaredClass) and not from the row (apiRoute.Read), so a table routes() stamped
-// wrong fails the walks rather than agreeing with the gate.
+// write among them; AS_OF_TOKEN_NOT_SERVED on every read but GET /api/v1/whoami, GET /api/v2/me
+// and the routes of kind answers for a token that carries a cut; OAUTH_SCOPE_REQUIRED on a read
+// whose scopes the token's credential does not hold, the scopes of an authority rule the probe
+// meets among them: each rule that holds, as gateV2Authorities holds it (holdsFor), for the probe
+// as the decoder reads it, which names no query key and no body member a read takes, so a rule
+// that holds for a key's absence (a list form that names no slug) holds for it. The class and the
+// kind are read from the declarations (declaredClass) and not from the row (apiRoute.Read), so a
+// table routes() stamped wrong fails the walks rather than agreeing with the gate.
 func readOnlyAnswer(route apiRoute, token readOnlyWalkToken) string {
-	name := route.Method + " " + route.Pattern
-	switch {
-	case route.Method != http.MethodGet || declaredClass(route).Writes != readWritesNothing:
+	if route.Method != http.MethodGet {
 		return contracts.DispatchReadOnlyToken
-	case token.cut != "" && name != whoamiRow && name != whoamiV2Row:
+	}
+	name := route.Method + " " + route.Pattern
+	read := declaredClass(route)
+	switch {
+	case read.Writes != readWritesNothing:
+		return contracts.DispatchReadOnlyToken
+	case token.cut != "" && read.AsOf != asOfAnswers && name != asOfCallerRow && name != asOfCallerV2Row:
 		return contracts.DispatchAsOfTokenNotServed
 	}
 	for _, scope := range route.OAuthScopes {
@@ -267,6 +268,15 @@ func declaredClass(route apiRoute) readEntry {
 	return readEntry{}
 }
 
+// liveSocketAnswer is the refusal GET /ws/live answers token: AS_OF_TOKEN_NOT_SERVED for a token
+// that carries a cut, since the cut is read first, and READ_ONLY_TOKEN for every other.
+func liveSocketAnswer(token readOnlyWalkToken) string {
+	if token.cut != "" {
+		return contracts.DispatchAsOfTokenNotServed
+	}
+	return contracts.DispatchReadOnlyToken
+}
+
 // readOnlyTally counts what one token's walk met, for its log line.
 type readOnlyTally struct {
 	walked, readOnly, cut, scopes, served int
@@ -292,14 +302,14 @@ func (tally *readOnlyTally) count(want string) {
 // body and a valid Idempotency-Key under every kind of read-only token (readOnlyWalkTokens). A
 // row that is not a read answers 403 READ_ONLY_TOKEN with no challenge and never runs its
 // handler. A read runs its handler once for a token with no cut, unless the row's own scopes
-// refuse that token first (OAUTH_SCOPE_REQUIRED, which the gate never answers). For the token
-// with a cut every read but GET /api/v1/whoami and GET /api/v2/me answers 403
-// AS_OF_TOKEN_NOT_SERVED naming the cut and runs nothing, and those two run their handler. GET
-// /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
-// replaced, and answers every token 403 READ_ONLY_TOKEN. A
-// row is counted once its assertions have run, and each token's count is held to the rows the
-// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
-// walked none, fails.
+// refuse that token first (OAUTH_SCOPE_REQUIRED, which the gate never answers). The token with a
+// cut runs the handler of GET /api/v1/whoami, GET /api/v2/me and each row of kind answers in the
+// same way. Every other read answers that token 403 AS_OF_TOKEN_NOT_SERVED naming the cut and runs
+// nothing. GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the
+// socket replaced, and answers the token with a cut 403 AS_OF_TOKEN_NOT_SERVED and every other
+// token 403 READ_ONLY_TOKEN. A row is counted once its assertions have run, and each token's count
+// is held to the rows the registered server mounts (its route index, one entry a row), so a walk
+// that skipped a row, or walked none, fails.
 func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
@@ -349,30 +359,32 @@ func TestEveryRowAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 		if socketOpened != 0 {
 			t.Errorf("%s: GET %s opened the socket %d times, want none", token.name, liveSocketPattern, socketOpened)
 		}
-		if why := notTheGatesRefusal(response, contracts.DispatchReadOnlyToken, token.cut); why != "" {
-			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, contracts.DispatchReadOnlyToken)
+		liveWant := liveSocketAnswer(token)
+		if why := notTheGatesRefusal(response, liveWant, token.cut); why != "" {
+			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, liveWant)
 		}
 
 		if tally.walked == 0 || tally.walked != mounted {
 			t.Fatalf("%s: walked %d rows, want every one of the %d the server mounts", token.name, tally.walked, mounted)
 		}
-		t.Logf("%s: walked %d of the table's %d rows (test hooks in) and GET %s: %d refused %s, %d refused %s, %d refused by their scopes, %d ran their handler",
-			token.name, tally.walked, mounted, liveSocketPattern, tally.readOnly+1, contracts.DispatchReadOnlyToken,
-			tally.cut, contracts.DispatchAsOfTokenNotServed, tally.scopes, tally.served)
+		t.Logf("%s: walked %d of the table's %d rows (test hooks in): %d refused %s, %d refused %s, %d refused by their scopes, %d ran their handler; GET %s refused %s",
+			token.name, tally.walked, mounted, tally.readOnly, contracts.DispatchReadOnlyToken,
+			tally.cut, contracts.DispatchAsOfTokenNotServed, tally.scopes, tally.served, liveSocketPattern, liveWant)
 	}
 	t.Logf("walked the table's %d rows and GET %s with each of %d read-only tokens", mounted, liveSocketPattern, len(tokens))
 }
 
 // TestTheMountedServerAnswersEachReadOnlyTokenByItsClass walks the server register mounted, test
-// hooks in, with every kind of read-only token: every row that is not a read and GET /ws/live
-// answer 403 READ_ONLY_TOKEN; every read but GET /api/v1/whoami and GET /api/v2/me answers the
-// token with a cut 403 AS_OF_TOKEN_NOT_SERVED naming the cut; and every other read answers its
-// handler's own answer of its probe path, which is neither refusal nor a 401, since the token
-// resolved (or its scopes' OAUTH_SCOPE_REQUIRED, for a token that does not hold them). GET
-// /api/v1/whoami and GET /api/v2/me answer every token 200 with the cut it carries, null for none,
-// and GET /ws/doc/{room}, which reads no broker token at all, answers 401. A row is counted once
-// its assertions have run, and each token's
-// count is held to the rows the registered server mounts, as the walk above is.
+// hooks in, with every kind of read-only token: every row that is not a read answers 403
+// READ_ONLY_TOKEN; every read that is not GET /api/v1/whoami or GET /api/v2/me and not of kind
+// answers answers the token with a cut 403 AS_OF_TOKEN_NOT_SERVED naming the cut; and every other
+// read answers its handler's own answer of its probe path, which is neither refusal nor a 401,
+// since the token resolved (or its scopes' OAUTH_SCOPE_REQUIRED, for a token that does not hold
+// them). GET /ws/live answers the token with a cut 403 AS_OF_TOKEN_NOT_SERVED naming the cut and
+// every other token 403 READ_ONLY_TOKEN. GET /api/v1/whoami and GET /api/v2/me answer every token
+// 200 with the cut it carries, null for none, and GET /ws/doc/{room}, which reads no broker token
+// at all, answers 401. A row is counted once its assertions have run, and each token's count is
+// held to the rows the registered server mounts, as the walk above is.
 func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
@@ -402,7 +414,7 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 					t.Errorf("%s: %s %s, want 403 %s", token.name, name, why, want)
 				}
 			}
-			if name == whoamiRow || name == whoamiV2Row {
+			if name == asOfCallerRow || name == asOfCallerV2Row {
 				wantCut := "null"
 				if token.cut != "" {
 					wantCut = `"` + token.cut + `"`
@@ -418,8 +430,9 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 		}
 
 		live := rig.serve(token.presenting(t, caller, http.MethodGet, liveSocketPattern, nil))
-		if why := notTheGatesRefusal(live, contracts.DispatchReadOnlyToken, token.cut); why != "" {
-			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, contracts.DispatchReadOnlyToken)
+		liveWant := liveSocketAnswer(token)
+		if why := notTheGatesRefusal(live, liveWant, token.cut); why != "" {
+			t.Errorf("%s: GET %s %s, want 403 %s", token.name, liveSocketPattern, why, liveWant)
 		}
 		room := "/ws/doc/00000000-0000-0000-0000-000000000001"
 		if document := rig.serve(token.presenting(t, caller, http.MethodGet, room, nil)); document.Code != http.StatusUnauthorized {
@@ -429,9 +442,9 @@ func TestTheMountedServerAnswersEachReadOnlyTokenByItsClass(t *testing.T) {
 		if tally.walked == 0 || tally.walked != mounted {
 			t.Fatalf("%s: walked %d rows, want every one of the %d the server mounts", token.name, tally.walked, mounted)
 		}
-		t.Logf("%s: walked %d of the mounted table's %d rows (test hooks in), GET %s and GET /ws/doc/{room}: %d refused %s, %d refused %s, %d refused by their scopes, %d answered by their handler",
-			token.name, tally.walked, mounted, liveSocketPattern, tally.readOnly+1, contracts.DispatchReadOnlyToken,
-			tally.cut, contracts.DispatchAsOfTokenNotServed, tally.scopes, tally.served)
+		t.Logf("%s: walked %d of the mounted table's %d rows (test hooks in): %d refused %s, %d refused %s, %d refused by their scopes, %d answered by their handler; GET %s refused %s, GET /ws/doc/{room} 401",
+			token.name, tally.walked, mounted, tally.readOnly, contracts.DispatchReadOnlyToken,
+			tally.cut, contracts.DispatchAsOfTokenNotServed, tally.scopes, tally.served, liveSocketPattern, liveWant)
 	}
 	t.Logf("walked the mounted table's %d rows, GET %s and GET /ws/doc/{room} with each of %d read-only tokens", mounted, liveSocketPattern, len(tokens))
 }
@@ -504,6 +517,32 @@ func withRouteRegistry(t *testing.T, routes []routeDecl) {
 	t.Cleanup(func() { routeRegistry = kept })
 }
 
+// routeChange is one change a negative control makes to the declaration of route, named
+// "<method> <pattern>" (plantedRefusal).
+type routeChange struct {
+	route  string
+	change func(*routeDecl)
+}
+
+// plantedRefusal is register's refusal of the package's route declarations with changes made,
+// each to its route's declaration, which it installs for the length of the test
+// (withRouteRegistry). It copies the declarations as they stand, so a test calls it once a
+// subtest: the subtest's cleanup restores the route files' declarations, and the next call's
+// changes are made to those and not stacked on the last.
+func plantedRefusal(t *testing.T, changes ...routeChange) string {
+	t.Helper()
+	planted := slices.Clone(routeRegistry)
+	for _, change := range changes {
+		index := slices.IndexFunc(planted, func(route routeDecl) bool { return route.Method+" "+route.Pattern == change.route })
+		if index < 0 {
+			t.Fatalf("no route declares %s", change.route)
+		}
+		change.change(&planted[index])
+	}
+	withRouteRegistry(t, planted)
+	return registerRefusal(t)
+}
+
 // TestRegisterRefusesARouteThatIsNotClassed: a GET route stating no class is one nobody has read
 // for what it writes, and a route that is not a GET stating one would open a write to a credential
 // minted only to read, so Register refuses a table holding either, naming the route: a GET route
@@ -520,35 +559,19 @@ func TestRegisterRefusesARouteThatIsNotClassed(t *testing.T) {
 		t.Fatalf("api.Register refused the read classes as they stand: %s", refusal)
 	}
 	const (
-		unclassed = whoamiRoute
+		unclassed = asOfCallerRow
 		unknown   = "GET /api/v1/limits"
 		unnoted   = "GET /api/v1/going/requests/{id}/stream"
 		write     = "POST /api/v1/issues/{key}/comments"
 	)
 	changes := []struct {
-		why, route string
-		change     func(*routeDecl)
+		why string
+		routeChange
 	}{
-		{"a GET route stating no class", unclassed, func(route *routeDecl) { route.Read = readEntry{} }},
-		{"a class that is no class", unknown, func(route *routeDecl) { route.Read = readEntry{Writes: readWrites(99)} }},
-		{"a GET that writes with no WriteNote", unnoted, func(route *routeDecl) { route.Read = readEntry{Writes: readWritesState} }},
-		{"a write stating a class", write, func(route *routeDecl) { route.Read = readEntry{Writes: readWritesNothing} }},
-	}
-	plant := func(t *testing.T, apply ...struct {
-		why, route string
-		change     func(*routeDecl)
-	}) string {
-		t.Helper()
-		planted := slices.Clone(routeRegistry)
-		for _, change := range apply {
-			index := slices.IndexFunc(planted, func(route routeDecl) bool { return route.Method+" "+route.Pattern == change.route })
-			if index < 0 {
-				t.Fatalf("no route declares %s", change.route)
-			}
-			change.change(&planted[index])
-		}
-		withRouteRegistry(t, planted)
-		return registerRefusal(t)
+		{"a GET route stating no class", routeChange{unclassed, func(route *routeDecl) { route.Read = readEntry{} }}},
+		{"a class that is no class", routeChange{unknown, func(route *routeDecl) { route.Read.Writes = readWrites(99) }}},
+		{"a GET that writes with no WriteNote", routeChange{unnoted, func(route *routeDecl) { route.Read.WriteNote = "" }}},
+		{"a write stating a class", routeChange{write, func(route *routeDecl) { route.Read = readEntry{Writes: readWritesNothing} }}},
 	}
 	refused := func(t *testing.T, refusal, route string) {
 		t.Helper()
@@ -556,12 +579,14 @@ func TestRegisterRefusesARouteThatIsNotClassed(t *testing.T) {
 			t.Fatalf("api.Register refused %q, want a refusal of the read class naming %s", refusal, route)
 		}
 	}
+	all := make([]routeChange, 0, len(changes))
 	for _, change := range changes {
-		t.Run(change.why, func(t *testing.T) { refused(t, plant(t, change), change.route) })
+		all = append(all, change.routeChange)
+		t.Run(change.why, func(t *testing.T) { refused(t, plantedRefusal(t, change.routeChange), change.route) })
 	}
 	t.Run("all four at once", func(t *testing.T) {
-		refusal := plant(t, changes...)
-		for _, change := range changes {
+		refusal := plantedRefusal(t, all...)
+		for _, change := range all {
 			refused(t, refusal, change.route)
 		}
 	})

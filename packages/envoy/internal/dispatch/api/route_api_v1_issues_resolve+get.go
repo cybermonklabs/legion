@@ -11,6 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Resolve ?ref=<KEY | owner/repo#n> to an issue key.",
 	Handler:     (*server).resolveIssue,
 	Successor:   deletedFor(http.MethodGet, "/issues?ref={ref}"),
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route resolves owner/repo#n by the external links that the issues held at the cut."},
 	Shape:       routeShape{Status: http.StatusOK, Response: issueRefResolved{}, Params: issueResolveQuery{}},
 })

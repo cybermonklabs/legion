@@ -11,7 +11,7 @@ var _ = declareRoute(routeDecl{
 	Description: "The newest handoff of one phase of an issue with its body, the exact text written; 404 HANDOFF_NOT_FOUND when the phase has none. A closed issue's read too.",
 	Handler:     (*server).getLatestHandoff,
 	Successor:   deletedFor(http.MethodGet, "/issues/{key}/handoffs?phase={phase}&sort=-version&limit=1&include=body"),
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
 	// the tree of each text the body's card draws.
 	Shape: routeShape{Status: http.StatusOK, Response: handoffRead{}},

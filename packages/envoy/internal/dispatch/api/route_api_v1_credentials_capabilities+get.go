@@ -14,7 +14,7 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getCredentialCapabilities,
 	Successor:   successorIs(http.MethodGet, "/settings/credential-broker"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	// Not a relay: Dispatch reads one fact off the broker's metadata and answers its own shape.
 	Shape: routeShape{Status: http.StatusOK, Response: credentialCapabilities{}},
 })

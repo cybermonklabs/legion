@@ -8,13 +8,14 @@ import type {
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
 import { commandName } from "../dispatch-command";
-import type { DispatchClient } from "../dispatch-http";
+import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { dispatchDocumentRef, documentLabel, issueTopic } from "../dispatch-owner";
 import { PICTURE_SNIFF_BYTES, readPictureHead } from "../dispatch-pictures";
 import { messageFor } from "../errors";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { leftOutAt, leftOutWords } from "./as-of";
 import {
   askOnceWithinDryRun,
   type CommandContext,
@@ -26,9 +27,11 @@ import {
   optionalNumber,
   optionalPrecondition,
   optionalString,
+  type ReadingContext,
   stringArg,
 } from "./context";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import { refusalWithCode } from "./failures";
 import {
   OPEN_BLOCK_ASK_THE_HUMAN,
   OPEN_BLOCK_WAIVED,
@@ -44,6 +47,7 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { approvalFormLines } from "./spec-form";
 import {
   artifactTextCheck,
   documentFileBytes,
@@ -58,6 +62,14 @@ import { readUploadedFile } from "./uploaded-file";
  *  apart without printing the document twice. */
 const BLOCK_OPENING_CHARS = 60;
 
+/** A table row's or cell's id as `dispatch doc-read --blocks` prints it: "no id yet" for one that
+ *  Dispatch gave no id, and the words for one the answer left out (`leftOutWords`), as an answer
+ *  at a cut does, since no record at the cut gives the ids of a table's rows and cells. */
+function tablePartId(id: string | undefined, asOf: string | undefined): string {
+  if (id === undefined) return `id ${leftOutWords(asOf)}`;
+  return id === "" ? "no id yet" : `id ${id}`;
+}
+
 /**
  * `dispatch doc-read --blocks`: the live document's blocks in document order, one line each, a
  * block indented under the block whose markdown range holds it. Each line carries the id, type,
@@ -68,13 +80,15 @@ const BLOCK_OPENING_CHARS = 60;
  * said to report none, never answered from the markdown, since a column read from the markdown is
  * not the index `delete_column` takes once a cell spans columns. The markdown, the blocks, the
  * token and the version come from one answer (`liveBlocks`), so no write between two reads can
- * leave the offsets slicing text they were not computed over.
+ * leave the offsets slicing text they were not computed over. At `read`'s cut each member the
+ * answer left out prints as left out at that cut.
  */
 async function listDocumentBlocks(
   client: DispatchClient,
-  artifact: Artifact
+  artifact: Artifact,
+  read: AsOfRead = {}
 ): Promise<{ text: string; token: string | undefined; version: number | null }> {
-  const live = await liveBlocks(client, artifact);
+  const live = await liveBlocks(client, artifact, read);
   const { bytes, blocks } = live;
   const decoder = new TextDecoder();
   const lines = [
@@ -91,10 +105,18 @@ async function listDocumentBlocks(
       points.length > BLOCK_OPENING_CHARS
         ? `${points.slice(0, BLOCK_OPENING_CHARS).join("")}…`
         : flat;
-    const { comments, asks } = block.references;
-    lines.push(
-      `${indent}${block.id} ${block.type} (${block.token ?? "no token"}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
-    );
+    // At a cut a block's token and anchored counts are left out, and so is the id of an untyped
+    // block of a version no index holds: none prints as a value, nor as "no token".
+    const { asOf } = read;
+    const id: string | undefined = block.id;
+    const shownId = id === undefined ? `(id ${leftOutWords(asOf)})` : id;
+    const token = block.token ?? (asOf === undefined ? "no token" : `token ${leftOutAt(asOf)}`);
+    const references: ArtifactBlock["references"] | undefined = block.references;
+    const anchored =
+      references === undefined
+        ? `anchored comments and asks ${leftOutWords(asOf)}`
+        : `${references.comments} comment${references.comments === 1 ? "" : "s"}, ${references.asks} ask${references.asks === 1 ? "" : "s"}`;
+    lines.push(`${indent}${shownId} ${block.type} (${token}; ${anchored}): ${opening}`);
     // Every pointer a typed block holds, in the order its type declares them: a reader follows
     // these between documents, and a `block[]` attribute a type declares later must not go
     // silently unprinted. A pointer is what the schema declares `block[]`, never what reads like
@@ -112,13 +134,11 @@ async function listDocumentBlocks(
         );
       } else {
         for (const row of block.table.rows ?? []) {
-          lines.push(
-            `${indent}  row ${row.index}, ${row.id === "" ? "no id yet" : `id ${row.id}`}`
-          );
+          lines.push(`${indent}  row ${row.index}, ${tablePartId(row.id, asOf)}`);
           for (const cell of row.cells ?? []) {
             const under = cell.header === "" ? "" : `, under ${JSON.stringify(cell.header)}`;
             lines.push(
-              `${indent}    row ${cell.row} column ${cell.column}, ${cell.id === "" ? "no id yet" : `id ${cell.id}`}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
+              `${indent}    row ${cell.row} column ${cell.column}, ${tablePartId(cell.id, asOf)}${under}: ${cell.text === "" ? "(empty)" : cell.text}`
             );
           }
         }
@@ -236,13 +256,17 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** `dispatch doc-read`: a document's markdown, its blocks, or an uploaded file's content. */
-export async function docReadCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, ownerArguments, shown, documentOwner, resolveDocument } = context;
+/** `dispatch doc-read`: a document's markdown, its blocks, or an uploaded file's content; at a
+ *  cut, each of them as it stood then. */
+export async function docReadCommand(
+  context: ReadingContext<CommandContext>
+): Promise<DispatchToolResult> {
+  const { args, client, ownerArguments, shown, documentOwner, resolveDocument, reading } = context;
+  const { cut } = reading;
   const { agentArtifact } = ownerArguments;
   if (agentArtifact !== undefined) {
     // A conversation's upload is a file or picture; Dispatch keeps no document there.
-    const artifact = await client.getAgentArtifact(agentArtifact.session, agentArtifact.slug);
+    const artifact = await client.getAgentArtifact(agentArtifact.session, agentArtifact.slug, cut);
     if (optionalBoolean(args, "blocks") === true) {
       throw new Error(
         `${artifact.name} is an uploaded ${artifact.kind}, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.`
@@ -254,7 +278,8 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
       { session: agentArtifact.session, artifact: artifact.slug },
       optionalNumber(args, "version") ?? agentArtifact.version,
       `agent/${agentArtifact.session}`,
-      shown
+      shown,
+      cut
     );
   }
   const artifactReference =
@@ -270,7 +295,7 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
         `${resolved.artifact.name} is an uploaded ${resolved.artifact.kind}, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.`
       );
     }
-    const listed = await listDocumentBlocks(client, resolved.artifact);
+    const listed = await listDocumentBlocks(client, resolved.artifact, cut);
     // The token and the version come from the one answer the blocks came from, so the
     // trailer names the document this listing was read from and nothing else.
     const trailer = [
@@ -309,11 +334,12 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
         : { issue: resolved.issue?.key },
       version,
       resolved.owner.kind === "project" ? resolved.owner.project : resolved.owner.issue,
-      shown
+      shown,
+      cut
     );
   }
-  const documentPromise = client.docRead(resolved.artifact.id, version);
-  const threadsPromise = openAnchoredThreads(client, resolved);
+  const documentPromise = client.docRead(resolved.artifact.id, version, cut);
+  const threadsPromise = openAnchoredThreads(client, resolved, cut);
   const threadsResultPromise = threadsPromise.then(
     (value) => ({ status: "fulfilled" as const, value }),
     (reason) => ({ status: "rejected" as const, reason })
@@ -376,11 +402,14 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
     ...APPROVAL_REQUEST_OPEN_BLOCKS,
   });
   const includeVerification = optionalBoolean(args, "include_verification") === true;
-  const result = await client.requestApproval(resolved.artifact.id, {
-    actor,
-    summary: stringArg(args, "summary"),
-    ...(includeVerification ? { include_verification: true } : {}),
-  });
+  // A refusal keeps its code: 409 SPEC_FORM names each text that breaks the form, with its rule.
+  const result = await client
+    .requestApproval(resolved.artifact.id, {
+      actor,
+      summary: stringArg(args, "summary"),
+      ...(includeVerification ? { include_verification: true } : {}),
+    })
+    .catch((error: unknown) => Promise.reject(refusalWithCode(error)));
   // One line per requirement of the spec with no check, or the one line saying the spec
   // marks none, as Dispatch names them; never a missing plan task, since the plan comes
   // after the approval. A gap refuses nothing: the request is recorded, and a spec every
@@ -396,11 +425,12 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
       : [
           `Coverage of ${resolved.artifact.name}: ${gaps.map((gap) => `${gap}.`).join(" ")} Mark each requirement the spec states with a requirement block and write a check that serves it, in the issue's Verification document, before the work starts.`,
         ];
+  const trailing = [...approvalFormLines(result, resolved.artifact.name), ...coverageLines];
   if (result.ask === null) {
     return {
       text: [
         `${resolved.artifact.name} (document id ${resolved.artifact.id}) is already approved at version ${result.version} by ${result.approval.by?.id ?? "unknown"}; no new request was opened. A change outside the decision blocks after approval makes it stale, so request again only for such a version, once the human has agreed to every point in it, with a --summary naming what changed since version ${result.version}; the human's own answer to a decision block carries the approval when that answer is the whole change.`,
-        ...coverageLines,
+        ...trailing,
       ].join("\n"),
       details: {
         ...(resolved.owner.kind === "project"
@@ -423,7 +453,7 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   return {
     text: [
       `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then.`,
-      ...coverageLines,
+      ...trailing,
     ].join("\n"),
     details: { ...details, artifact: resolved.artifact.id, version: result.version },
   };

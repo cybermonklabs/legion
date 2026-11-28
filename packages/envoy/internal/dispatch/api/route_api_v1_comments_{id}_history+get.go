@@ -16,6 +16,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getCommentHistory,
 	Successor:   successorIs(http.MethodGet, "/comments/{id}/corrections"),
 	ID:          &idRoute{Kind: "comment", NotFound: apicode.NotFound},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfPostHistoryAtACut("comment")},
 	Shape:       routeShape{Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 })

@@ -59,6 +59,7 @@ import {
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
   ProjectAccessChangedEventPayloadSchema,
+  parseAsOfAbsent,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -176,6 +177,24 @@ describe("answerNotKept", () => {
       IDEMPOTENCY_ANSWER_NOT_KEPT,
     ];
     expect(landed).toEqual(["KEY_COMMITTED", "ANSWER_NOT_KEPT"]);
+  });
+});
+
+// A client names each member a past-time answer omits from this header, so a space or a stray
+// comma must not become a pointer of its own, and a header the answer did not send names none.
+describe("parseAsOfAbsent", () => {
+  test("names no pointer for a missing header, an empty one or one of spaces and commas", () => {
+    for (const header of [null, undefined, "", "   ", " , ,"]) {
+      expect(parseAsOfAbsent(header)).toEqual([]);
+    }
+  });
+
+  test("names each pointer trimmed, in the order of the header", () => {
+    expect(parseAsOfAbsent("/route_status")).toEqual(["/route_status"]);
+    expect(
+      parseAsOfAbsent(" /route_status , /open_asks/*/referenced_by_count,/*/snoozed_until ")
+    ).toEqual(["/route_status", "/open_asks/*/referenced_by_count", "/*/snoozed_until"]);
+    expect(parseAsOfAbsent("/route_status,")).toEqual(["/route_status"]);
   });
 });
 

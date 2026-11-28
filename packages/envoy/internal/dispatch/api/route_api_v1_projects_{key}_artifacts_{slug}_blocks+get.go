@@ -13,6 +13,6 @@ var _ = declareRoute(routeDecl{
 	Description: "A project document's blocks and tokens, by slug or unambiguous filename.",
 	Handler:     (*server).getArtifactBlocks,
 	Successor:   deletedFor(http.MethodGet, "/projects/{key}/artifacts?issue=none&slug={slug}&include=blocks"),
-	Read:        readEntry{Writes: readWritesNothing, WriteNote: docsCompactionNote},
-	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArtifactBlock{}},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfBlocksAtACut, WriteNote: docsCompactionNote},
+	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArtifactBlock{}, Params: asOfQuery{}},
 })

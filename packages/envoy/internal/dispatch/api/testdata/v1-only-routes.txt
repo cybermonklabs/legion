@@ -47,6 +47,7 @@ POST /api/v1/artifacts/{id}/rebuild
 GET /api/v1/artifacts/{id}/references
 GET /api/v1/artifacts/{id}/reviews
 POST /api/v1/artifacts/{id}/reviews
+GET /api/v1/artifacts/{id}/spec-form # #4179, refuse an approval request that breaks the form of The Spec (post-freeze, awaiting /api/v2)
 GET /api/v1/artifacts/{id}/subscribers
 DELETE /api/v1/artifacts/{id}/subscribers/{session_id}
 GET /api/v1/artifacts/{id}/text

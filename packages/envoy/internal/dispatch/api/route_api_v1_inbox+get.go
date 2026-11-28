@@ -14,6 +14,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).listInbox,
 	Successor:   successorIs(http.MethodGet, "/asks?state=open"),
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route lists the asks open at the cut, on an issue open then or on a project document, that waited on the person at the cut by the same three steps. Snoozes keep no history, so the answer leaves out snoozed_until. An ask whose person is a project default that the records at the cut do not give matches no ?assignee=."},
 	Shape:       routeShape{Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 })

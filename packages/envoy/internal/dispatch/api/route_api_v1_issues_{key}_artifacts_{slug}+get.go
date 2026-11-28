@@ -11,6 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "Read an issue document by slug or unambiguous filename.",
 	Handler:     (*server).getArtifact,
 	Successor:   deletedFor(http.MethodGet, "/issues/{key}/artifacts?slug={slug}"),
-	Read:        readEntry{Writes: readWritesNothing},
-	Shape:       routeShape{Status: http.StatusOK, Response: artifactRead{}},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfDocumentAtACut},
+	Shape:       routeShape{Status: http.StatusOK, Response: artifactRead{}, Params: asOfQuery{}},
 })

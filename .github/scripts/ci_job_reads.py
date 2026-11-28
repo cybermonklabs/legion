@@ -2187,6 +2187,8 @@ TEXT_CHECK_TESTS = {
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
     f"{ENVOY}/internal/dispatch/api/routes_v2_raw_query_test.go": {
         "TestNoV2HandlerReadsTheRawQuery"},
+    f"{ENVOY}/internal/dispatch/api/spec_form_guard_test.go": {
+        "TestOnlyTheFormGateOpensOrAnswersAPersonsApproval"},
     f"{ENVOY}/internal/dispatch/api/spec_writer_route_guard_test.go": {
         "TestEveryRouteThatWritesADocumentChecksItsWriter",
         "TestTheSpecWriterExemptionsStillHold",

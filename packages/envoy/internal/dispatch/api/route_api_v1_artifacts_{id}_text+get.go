@@ -14,8 +14,8 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getArtifactText,
 	Successor:   deletedFor(http.MethodGet, "/artifacts/{id}?include=text"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
-	Read:        readEntry{Writes: readWritesNothing, WriteNote: docsCompactionNote},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: "At a cut the route answers the markdown and the document token of the document's newest version at the cut, and with ?blocks=true the blocks of that version.", WriteNote: docsCompactionNote},
 	Shape: routeShape{
-		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
+		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextAsOfQuery{},
 	},
 })

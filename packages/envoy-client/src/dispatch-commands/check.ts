@@ -16,6 +16,7 @@ import { defaultExec, type ExecFn, resolveCwdRepo } from "../dispatch-cwd";
 import { type ParsedDispatchRef, parseDispatchRef } from "../dispatch-owner";
 import { localPictures, parseAgentArtifactRef } from "../dispatch-picture-tools";
 import { formatZodIssues } from "../tool-input-errors";
+import { RESULTS_AT_AS_OF_PROBLEM } from "./as-of";
 import {
   asObject,
   type CheckedCall,
@@ -251,6 +252,12 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
         problems.push(
           "blocks lists the live document, the one dispatch doc-edit changes; name no version"
         );
+      }
+      break;
+    }
+    case "dispatch_results": {
+      if (optionalString(args, "at") !== undefined && optionalString(args, "as_of") !== undefined) {
+        problems.push(RESULTS_AT_AS_OF_PROBLEM);
       }
       break;
     }
@@ -603,6 +610,11 @@ export async function resolveOwnerArguments(
   // retraction that carried one would be refused as a record mixed with a retraction.
   const { retract } = args;
   if (tool === "dispatch_result" && typeof retract === "string") {
+    return { args, ref, owner: null };
+  }
+  // A walk of a root names the issues it reads by the root alone. LEGION_ISSUE must not fill an
+  // issue in here: the schema refuses any argument that names a document beside root.
+  if (tool === "dispatch_spec_form" && typeof args["root"] === "string") {
     return { args, ref, owner: null };
   }
   const legionIssue = env.LEGION_ISSUE;

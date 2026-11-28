@@ -16,6 +16,6 @@ var _ = declareRoute(routeDecl{
 	Successor:   successorIs(http.MethodGet, "/me/marks/{kind}/{id}", "kind=document"),
 	ID:          &idRoute{Kind: "artifact", NotFound: apicode.ArtifactNotFound},
 	OAuthScopes: routeScopeSet{model.ScopePerson},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: model.DocumentRead{}},
 })

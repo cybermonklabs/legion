@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getRouteIndex,
 	Successor:   successorIs(http.MethodGet, ""),
 	// The other reads.
-	Read:  readEntry{Writes: readWritesNothing},
+	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{Status: http.StatusOK, Response: routeIndex{}},
 })

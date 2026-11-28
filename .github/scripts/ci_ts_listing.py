@@ -1,10 +1,11 @@
 """The TypeScript half of what a Bun job reads, listed by the tools that compile and load it.
 
 ci_ts_programs.py pairs each changes filter with the tsc programs its job typechecks (PROGRAMS)
-and the entries its job runs with Bun (BUNDLES). This module lists them: `bunx tsc -p <project>
---noEmit --listFilesOnly` for a program, and the `inputs` of the metafile `bun build <entry>
---target bun --metafile` writes for a bundle, each kept to the files inside the repository and
-outside node_modules. Both need the workspace's node_modules, which `bun install` writes.
+and the entries its job runs with Bun (BUNDLES). This module lists them: `bunx --no-install
+<COMPILER> -p <project> --noEmit --listFilesOnly` for a program, and the `inputs` of the metafile
+`bun build <entry> --target bun --metafile` writes for a bundle, each kept to the files inside the
+repository and outside node_modules. Both need the workspace's node_modules, which `bun install`
+writes.
 
 Two readers use it: the changes job's filter generation (`check-ci-filters.sh generate`), which
 writes the files of each LISTED tree into that filter's listed block, and check-ts-filters.sh, which
@@ -23,7 +24,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ci_filter_coverage import REPO, error
+from ci_filter_coverage import REPO, background_priority, error
 
 # The files a program lists that no commit holds, each with the committed files it is rendered
 # from: git ignores the file and every `bun install` writes it (the root package.json's
@@ -42,6 +43,19 @@ RENDERED = {
         "packages/contracts/scripts/gen-api.ts",
     ),
 }
+
+# The compiler a program is listed with: tsc, the one every typecheck job runs, unless the run says
+# otherwise. The changes job's generation sets tsgo (check-ci-filters.sh, in generate mode);
+# .github/ci-notes/ci.md#the-changes-job-computes-its-filters-when-it-runs says why, with the
+# numbers.
+COMPILER = "tsc"
+
+# The command a program is listed with, before the compiler's name. `--no-install` runs the
+# compiler's binary in node_modules/.bin, which `bun install` writes from the root package.json's
+# pin, or one on PATH, and never fetches a package: with neither, the listing fails naming the
+# cause, where a bare bunx would download the npm package of the compiler's name, which for tsgo
+# and for tsc is not the pinned one.
+BUNX = ("bunx", "--no-install")
 
 # The files of this repository the listings resolve with besides the sources they list, which a
 # change can edit to move a listing while none of the files it lists changes: each program's
@@ -99,11 +113,12 @@ def nearest(start: Path, name: str) -> Path | None:
 
 
 def record_resolution(kind: str, path: str, files: list) -> None:
-    """What the listing of one program or bundle resolved with, into RESOLVED. tsc resolves a
-    program with that program's one tsconfig and its chain; bun resolves each module of a bundle
-    with the tsconfig nearest that module, so a bundle records the chain nearest every module its
-    metafile lists (`files`), the entry among them. Each listed file adds the package.json nearest
-    it, whose `exports` and `imports` decide what an import of that package resolves to."""
+    """What the listing of one program or bundle resolved with, into RESOLVED. The compiler
+    (COMPILER) resolves a program with that program's one tsconfig and its chain; bun resolves
+    each module of a bundle with the tsconfig nearest that module, so a bundle records the chain
+    nearest every module its metafile lists (`files`), the entry among them. Each listed file adds
+    the package.json nearest it, whose `exports` and `imports` decide what an import of that
+    package resolves to."""
     source = REPO / path
     if kind == "program":
         tsconfig_chain(source / "tsconfig.json" if source.is_dir() else source)
@@ -164,18 +179,18 @@ def failed(path: str, command: str, result, holds: str, problems: list, scratch:
 
 
 def listed_paths(text: str) -> list:
-    """The paths tsc's --listFilesOnly printed, one to a line. Where the repository root holds a
-    newline, as a test's fixture repository under a TMPDIR holding one does, splitting at each
-    newline would cut every path inside it in two, so the root is set aside as a NUL, which no path
-    holds, while the text is split, and put back in each line after."""
+    """The paths the compiler's --listFilesOnly printed, one to a line. Where the repository root
+    holds a newline, as a test's fixture repository under a TMPDIR holding one does, splitting at
+    each newline would cut every path inside it in two, so the root is set aside as a NUL, which no
+    path holds, while the text is split, and put back in each line after."""
     root = str(REPO)
     return [line.replace("\0", root) for line in text.replace(root, "\0").splitlines()]
 
 
 def program_files(project: str, problems: list) -> list | None:
-    """Every file of the project's tsc program that is inside the repository and outside
-    node_modules, repository-relative. None when the command fails."""
-    command = ["bunx", "tsc", "-p", project, "--noEmit", "--listFilesOnly"]
+    """Every file of the project's program, as the compiler (COMPILER) lists it, that is inside the
+    repository and outside node_modules, repository-relative. None when the command fails."""
+    command = [*BUNX, COMPILER, "-p", project, "--noEmit", "--listFilesOnly"]
     result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds", problems)
@@ -248,21 +263,29 @@ def pairs() -> list:
 STARTED: dict = {}
 
 
+def started_summary() -> str:
+    """The command the programs are listed with and how many program and bundle listings start()
+    began, as one line: check-ci-filters.sh prints it in generate mode after the table's load."""
+    kinds = [kind for kind, _path in STARTED]
+    return (f"the TypeScript programs are listed with {' '.join((*BUNX, COMPILER))}: {kinds.count('program')} "
+            f"program and {kinds.count('bundle')} bundle listings began before the table loaded")
+
+
 def start() -> None:
-    """Begin every listing a LISTED entry can ask for, each tsc or Bun run on a thread of its own,
-    and return at once. The changes job's generation calls it right after the engine's import
-    (check-ci-filters.sh), so tsc's listing of the dashboard's program, the longest piece of the
-    generation (9 s of the 16 s on a runner, run 45766372051), runs beside the read table's load
-    and the go commands rather than after the load. It records nothing: listed_files() records what
-    a listing resolved with, and the refusals it raised, for the entries it is asked for, as it does
-    for a listing it starts itself, so the filters, their inputs and the refusals are the same."""
+    """Begin every listing a LISTED entry can ask for, each a compiler or Bun run on a thread of its
+    own at nice 10 (background_priority), and return at once. The changes job's generation calls it
+    right after the engine's import (check-ci-filters.sh), so the listings run beside the read
+    table's load and the go commands rather than after the load, and take the processor time the
+    load leaves. It records nothing: listed_files() records what a listing resolved with, and the
+    refusals it raised, for the entries it is asked for, as it does for a listing it starts itself,
+    so the filters, their inputs and the refusals are the same."""
     from ci_ts_programs import LISTED
     sources = {source for _name, _tree, given, _why in LISTED for source in given}
     asked = dict.fromkeys((kind, path) for kind, pair, path, _ in pairs()
                           if pair in sources and (kind, path) not in STARTED and (REPO / path).exists())
     if not asked:
         return
-    pool = ThreadPoolExecutor(max_workers=len(asked))
+    pool = ThreadPoolExecutor(max_workers=len(asked), initializer=background_priority)
     for kind, path in asked:
         STARTED[kind, path] = pool.submit(listing, kind, path)
     pool.shutdown(wait=False)
@@ -281,9 +304,9 @@ def listed_files(filters, problems: list) -> dict:
     """Per LISTED entry of ci_ts_programs.py whose filter is in `filters`, the files of its tree
     that the programs and bundles paired with its sources give, sorted: the filter's listed block.
     A source that cannot be listed leaves the entry out with a refusal recorded, so a caller that
-    finds a problem knows the block is unknown. The sources are listed at once, each tsc or Bun
-    run on a processor of its own, and each one's refusals join `problems` where a listing one
-    after another would have put them."""
+    finds a problem knows the block is unknown. The sources are listed at once, each compiler
+    (COMPILER) or Bun run on a processor of its own, and each one's refusals join `problems` where
+    a listing one after another would have put them."""
     from ci_ts_programs import LISTED
     asked = dict.fromkeys((kind, path) for name, _tree, sources, _why in LISTED if name in filters
                           for source in sources for kind, pair, path, _ in pairs()
