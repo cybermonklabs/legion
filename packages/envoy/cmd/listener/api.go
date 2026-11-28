@@ -4196,3 +4196,5 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		writeJSONError(w, http.StatusNotFound, "not found")
 	})
 }
+
+// R5 timing probe 2 of INFRA-5794 at 15f8eb9bbf64: closed unmerged.
