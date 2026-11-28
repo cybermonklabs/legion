@@ -425,6 +425,11 @@ describe.skipIf(!envoyStackEnabled)("a role's topics across a relaunch", () => {
 
     await first.kill();
     const whileDown = await post("while-down");
+    // The pod is down for longer than the follow clock's allowance, as an evicted pod is.
+    await span(
+      FOLLOW_CLOCK_ALLOWANCE_MS + 1_000,
+      "the pod down for longer than the follow clock's allowance"
+    );
 
     const second = await start("owner-2", launch);
     await second.send({ op: "start", session: owner });
