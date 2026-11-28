@@ -635,7 +635,9 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 // seedChildInReviewing records a child of the walk's root, created in Dispatch under the root and
 // shown there in needs_review, so the daemon's copy holds its chain up to the root, and held by the
 // daemon's store in reviewing at generation 1, on an open pull request of its own at
-// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+// stepRecordsHead that GitHub reports clean, with its reviewer's round completed, so a person's
+// approval ends the round (workflow's reviewRound), and answers its key and its pull request's
+// number.
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
@@ -651,6 +653,10 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 			Title: "A child in the walk's tree", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
 			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
 		}); err != nil {
+			return err
+		}
+		if err := r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: created.Key, Role: claim.RoleReviewer, Claim: "seeded-reviewer",
+			HandoffCommit: stepRecordsHead, HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed"}); err != nil {
 			return err
 		}
 		if err := r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number)); err != nil {

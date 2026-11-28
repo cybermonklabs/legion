@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
@@ -24,7 +25,7 @@ import (
 func TestTheDeliveryHistoryAnswersTheDeliveryRoutes(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
-	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{})
 	to := fixture.To
 	from := to.AddDate(0, 0, -28)
 	window := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}

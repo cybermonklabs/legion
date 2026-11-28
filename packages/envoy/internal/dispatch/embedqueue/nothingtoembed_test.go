@@ -125,6 +125,7 @@ func TestNothingToEmbedNeverReachesTheEmbedderAndIsNotCovered(t *testing.T) {
 	enqueueWindow(t, database.Pool, "document_block", documentID, "b1", "", "b1")
 	enqueueWindow(t, database.Pool, "comment_block", "comment/"+commentID, "b1", "", "b1")
 	enqueueWindow(t, database.Pool, "message_block", "message/"+messageID, "b1", whitespaceOnly, "b1")
+	fillCounts(t, database)
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
 
@@ -160,6 +161,7 @@ func TestCoverAddsNoRowForAnItemWithNothingToEmbed(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	withTriggersOff(t, database, func(q querier) { seedNothingToEmbed(t, q, "BLNO") })
+	fillCounts(t, database)
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
 
@@ -216,6 +218,7 @@ func TestATextThatChangesBetweenEmptyAndRealIsSettledThenEmbedded(t *testing.T) 
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "FLIP", "FLIP-1", "Real at first")
+	fillCounts(t, database)
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
 	drain(t, deps)
@@ -320,6 +323,7 @@ func TestCoverSettlesADeadRowWithNothingToEmbed(t *testing.T) {
 	seedIssue(t, database, "DBLK", "DBLK-3", "A real title")
 	mustExec(t, database.Pool, `update embeddings set dead = true, confirmed_failures = 10, attempt_count = 12, dead_model = $1 where id = 'DBLK-1'`, configuredIdentity)
 	mustExec(t, database.Pool, `update embeddings set dead = true, confirmed_failures = 10, attempt_count = 12, dead_model = null where id = 'DBLK-2'`)
+	fillCounts(t, database)
 	embedder := newPlaceEmbedder(configuredIdentity)
 	deps := Deps{Store: database, Embedder: embedder}
 

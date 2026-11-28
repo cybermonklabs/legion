@@ -29,8 +29,9 @@ import (
 // The fixtures of Dispatch's own bytes reach the record through the paths the daemon reads them
 // on: the issue event logs of internal/intake's testdata/dispatch-resolved and the HTTP bodies of
 // internal/dispatch's testdata/resolved, each directory's README saying which file is a capture of
-// an older Dispatch and which is written by hand in the shape dispatch://INFRA-5793/spec#b-j-inherit
-// and #b-j-events give. Their issues are of the project ACME, so these tests record under it.
+// an older Dispatch and which is a capture of a Dispatch stack that serves the shape
+// dispatch://INFRA-5793/spec#b-j-inherit and #b-j-events give. Their issues are of the project
+// ACME, so these tests record under it.
 
 // shapeProject is the Dispatch project the fixtures' issues are of.
 const shapeProject = "ACME"

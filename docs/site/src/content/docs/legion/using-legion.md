@@ -139,10 +139,16 @@ template, and the later phases fill in their own lines:
 Legion's reviewer posts its review as the review App. A review from anyone with write access to the
 repository, submitted on GitHub while the issue is in `needs_review`, counts the same way:
 **Request changes** sends the work back to the implementer with your comments, and an approval of
-the head can end the round. A review from an account without write access decides nothing, since
-any GitHub account can review a public repository's pull request, and a plain comment moves
-nothing. Legion's handoffs are records on the Dispatch issue, never commits, so the pull request's
-file list shows only the change and the merge brings no handoff onto the default branch.
+the head can end the round once Legion's reviewer has completed its round at that head. Until then
+your approval waits: a review the reviewer submits after it decides the round instead, and the
+reviewer's completion at the approved head with no review of its own ends the round on your
+approval. A completion at another head leaves the round stuck until the reviewer reviews the head
+you approved. An agent can approve on a
+person's account, and nothing in the approval says so. A review from an account without write
+access decides nothing, since any GitHub account can review a public repository's pull request,
+and a plain comment moves nothing. Legion's handoffs are records on the Dispatch issue, never
+commits, so the pull request's file list shows only the change and the merge brings no handoff
+onto the default branch.
 
 ## Merge
 
