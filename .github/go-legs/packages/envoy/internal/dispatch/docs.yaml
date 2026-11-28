@@ -16,6 +16,7 @@
   - TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom  # 0.7 s
   - TestABrowserEditBeforeAVersionCommitsLeavesOnlyItsOwnAuthorOwed  # 0.8 s
   - TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits  # 1.3 s
+  - TestABrowserUpdateTheClosedIssuesGateCutsFromItsOwnBatchIsRefusedToItsSender
   - TestABrowserWrittenPointerToADisallowedTypeIsStoredAndNotListed  # 0.3 s
   - TestABrowsersEditWaitsWhileTheRoomsUpdatesQueuePastItsBuffer
   - TestABufferedFoldEndsWithItsContext  # 0.4 s
