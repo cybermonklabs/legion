@@ -248,12 +248,6 @@ func foldShownDays[C, D any](parts []DayPart, days []string, fold func([]DayPart
 	return perDay, fold(shownParts(byDay, days))
 }
 
-// foldShown is foldShownDays' fold of the shown days' parts together, alone: the parts of each
-// shown day, oldest first, folded by fold.
-func foldShown[C any](parts []DayPart, days []string, fold func([]DayPart) C) C {
-	return fold(shownParts(partsByDay(parts), days))
-}
-
 // shownParts is the parts of each of days in byDay, a range's parts by day (partsByDay), in days'
 // order, each day's in the order byDay holds them.
 func shownParts(byDay map[string][]DayPart, days []string) []DayPart {
@@ -393,13 +387,36 @@ type JobCell struct {
 // Total, and no day's: pr-ci's items sorted by median list each ranked job's cell over the range
 // (api's jobItemRows), and a fold of each of the range's days apart, which FoldSlowestJobs makes
 // for the Pipeline's days, was most of that read's fold. Each total folds the parts
-// FoldSlowestJobs' does, in its order (foldShown), so the two answer one cell; never nil.
+// FoldSlowestJobs' does, in its order (shownParts: the shown days' parts, oldest day first), so the
+// two answer one cell (JobCells), ranked by FoldSlowestJobs' rule (RankSlowestJobs); never nil.
 func SlowestJobTotals(parts []DayPart, days []string, minResults int) []JobCell {
+	return RankSlowestJobs(JobCells(shownParts(partsByDay(parts), days)), minResults)
+}
+
+// JobCells is every job series of pr-ci's parts (jobSeries) folded into one Cell over all its
+// parts, in their order (cellOf), by job name: each job a part names, one with no timed result
+// among them (N 0, no median) too. It is the one fold of a job's cell over a range, which the
+// slowest-jobs ranking ranks (SlowestJobTotals, RankSlowestJobs), the items read lists by name, and
+// the stored figures of pr-ci keep for each range (evals' jobFigures); never nil.
+func JobCells(parts []DayPart) []JobCell {
+	bySeries := jobSeries(parts)
+	cells := make([]JobCell, 0, len(bySeries))
+	for series, jobParts := range bySeries {
+		cells = append(cells, JobCell{Name: strings.TrimPrefix(series, JobSeriesPrefix), Cell: cellOf(jobParts, series)})
+	}
+	slices.SortFunc(cells, func(a, b JobCell) int { return cmp.Compare(a.Name, b.Name) })
+	return cells
+}
+
+// RankSlowestJobs is FoldSlowestJobs' ranking of cells, each job's cell over the days a read folds
+// (JobCells): every job with minResults timed results, the job series' min_n, and at least one,
+// since N counts the timed results and a job with none has no median to rank by, slowest first,
+// then by name (slowerJob); never nil.
+func RankSlowestJobs(cells []JobCell, minResults int) []JobCell {
 	slowest := []JobCell{}
-	for series, jobParts := range jobSeries(parts) {
-		total := foldShown(jobParts, days, func(parts []DayPart) Cell { return cellOf(parts, series) })
-		if total.N >= max(minResults, 1) {
-			slowest = append(slowest, JobCell{Name: strings.TrimPrefix(series, JobSeriesPrefix), Cell: total})
+	for _, job := range cells {
+		if job.Cell.N >= max(minResults, 1) {
+			slowest = append(slowest, job)
 		}
 	}
 	slices.SortFunc(slowest, func(a, b JobCell) int { return slowerJob(a.Name, a.Cell, b.Name, b.Cell) })

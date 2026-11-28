@@ -3522,6 +3522,20 @@ The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:n
 A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
 Its census answers `0`: an ordinary index refuses and rewrites no row.
 
+Migration `20261128172605_eval_days_job_rows` builds `eval_days_job_rows` on `eval_days (project_key, eval_id, writer, day) where not listed and starts_with(series, 'job:')`, the job rows of `pr-ci` (`job:<name>`, one unlisted series of each job that ran that day; dispatch://INFRA-2918, T33).
+`pr-ci`'s stored range figures hold each job's cell over the range beside its listed series' statistics (`evals.jobFigures`, beside a `jobs folded` entry no series' name can take), which the CI section's slowest-jobs list reads by the range row's key (`evals.StoredJobsIn`) where it read every job row of its range, and each of its days' `rows_stamp` stamps the day's job rows too: so a fold of `pr-ci`'s figures reads its job rows beside its listed rows, the stamps of a moved day's, those of the ranges that hold that day and those of one cut's days, each a range of this index for each key the project reads, as `eval_days_stamps` is of the listed rows.
+A range row without that entry, which the release before this one folds, is read from the day rows, and each release's folds read the `pr-ci` days the other stamped as moved, and fold them again.
+The predicate is the reads' own, written into each statement (`evals.jobRowsOf`), so the planner proves the index under a generic plan too.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because every refresher pass writes `eval_days`: a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of a day row waits for.
+A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
+
+Migration `20261128172606_eval_day_figures_cut_eval_day` builds `eval_day_figures_cut_eval_day` on `eval_day_figures (project_key, repo, eval_id, day)` (dispatch://INFRA-2918, T33).
+The eval list's read of its stored day figures reads one cut's rows of the evals it serves over the window's and the compare range's days (`evals.ReadStoredFiguresIn`), which `eval_day_figures_eval_day`, holding no cut, read with every other cut's rows and threw away by filter; that index stays for the reads of an eval's days of every cut (`evals.movedFigureDays`, `evals.buildFigureEnds`).
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because every fold of the stored figures writes `eval_day_figures`.
+A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
+Its census answers `0`: an ordinary index refuses and rewrites no row.
+
 Migration `20261117100023_delivery_run_jobs_named` builds `delivery_run_jobs_named` on `delivery_run_jobs (repo, name, run_id)` with `include (started_at, completed_at, conclusion, apply_step, apply_step_conclusion)`.
 `delivery.ListRunJobsForRuns` reads deploy jobs by name through this index in an index-only scan, which skips heap pages that the visibility map marks all-visible.
 The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), so ordinary reads and writes of jobs can continue.

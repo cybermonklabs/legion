@@ -3,7 +3,9 @@ package api
 // first_paint_plans_test.go holds R12 of dispatch://INFRA-2918 (check k12) to the plans of the
 // statements the Evals tab's first paint reads with: no plan reads a session title out of the event
 // log, the deploy run-jobs read names the jobs it reads, the failures list reads only the runs that
-// completed in the 24 hours before its range's end, and no plan scans the issues table.
+// completed in the 24 hours before its range's end, and no plan scans the issues table; and the
+// first paint's database time (R4, T33) to two of them: the slowest-jobs list reads pr-ci's stored
+// range figures and no day row, and the stored day figures' read reads its cut's rows alone.
 
 import (
 	"context"
@@ -124,7 +126,14 @@ const (
 // of delivery_run_jobs names those runs alone, every job of each, as measures.FailingJobs tallies
 // each job's results); when any plan has a Seq Scan on issues; when no plan of the evals views reads
 // the step series' readings through eval_readings_series; when no plan of the daemon's read reads
-// legion_reads; and when no statement was captured.
+// legion_reads; when a plan of the slowest-jobs read reads eval_days, or none reads
+// eval_range_figures, whose pr-ci row of the range holds each job's cell over it
+// (evals.StoredJobsIn, dispatch://INFRA-2918 T33: the read of every job row of the range was 122.8
+// of the first paint's 224.1 ms of database time at ten times INFRA's rate); when a plan of the
+// evals views reads eval_day_figures through any index but eval_day_figures_cut_eval_day, or through
+// it under a condition that does not bound the project, the cut, the evals and the days, or no plan
+// reads eval_day_figures (eval_day_figures_eval_day holds no cut, and the read threw away the rows
+// of the other cuts by filter); and when no statement was captured.
 // It prints what each read sent and read.
 func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	log := &paintStatements{}
@@ -197,7 +206,7 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 		tallies[paint.name] = &tally{}
 	}
 	relations := map[string]int{}
-	var deployJobReads, failureRunReads, failureJobReads, stepLastReads, daemonReadReads int
+	var deployJobReads, failureRunReads, failureJobReads, stepLastReads, daemonReadReads, slowestFigureReads, dayFigureReads int
 	for _, statement := range ran {
 		counts := tallies[statement.read]
 		counts.sent++
@@ -229,6 +238,34 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 		if statement.read == paintDaemonRead && read["legion_reads"] {
 			daemonReadReads++
 		}
+		if statement.read == paintSlowestJobs {
+			if read["eval_days"] {
+				t.Errorf("%s: a plan reads eval_days, where pr-ci's stored range figures hold each job's cell over the range (evals.StoredJobsIn):\n%s\n%s",
+					statement.read, sql, explaintest.Outline(t, plan))
+			}
+			if read["eval_range_figures"] {
+				slowestFigureReads++
+			}
+		}
+		if strings.HasPrefix(statement.read, "evals ") && read["eval_day_figures"] {
+			dayFigureReads++
+			for _, scan := range explaintest.IndexScans(t, plan) {
+				if !strings.HasPrefix(scan.Index, "eval_day_figures") {
+					continue
+				}
+				if scan.Index == "eval_day_figures_eval_day" {
+					t.Errorf("%s: the stored day figures' read reads eval_day_figures through %s, which holds no cut, so it throws the other cuts' rows away by filter:\n%s\n%s",
+						statement.read, scan, sql, explaintest.Outline(t, plan))
+					continue
+				}
+				for _, bound := range []string{"project_key = ", "repo = ", "eval_id = ", "day >= ", "day < "} {
+					if !strings.Contains(scan.Cond, bound) {
+						t.Errorf("%s: the stored day figures' read reads %s under %q, which names no `%s`:\n%s\n%s",
+							statement.read, scan, scan.Cond, bound, sql, explaintest.Outline(t, plan))
+					}
+				}
+			}
+		}
 		if statement.read == paintFailedJobs {
 			if read["delivery_runs"] {
 				failureRunReads++
@@ -258,6 +295,12 @@ func TestTheFirstPaintsReadsReadNoEventsAndScanNoIssues(t *testing.T) {
 	}
 	if daemonReadReads == 0 {
 		t.Error("no plan of the header's read of the daemon reads legion_reads, so the read the first paint's legion-read view answers was taken by no statement the test explained")
+	}
+	if slowestFigureReads == 0 {
+		t.Error("no plan of the slowest-jobs read reads eval_range_figures, so pr-ci's jobs were answered from no stored range figure")
+	}
+	if dayFigureReads == 0 {
+		t.Error("no plan of the evals views reads eval_day_figures, so no statement the test explained read the stored day figures")
 	}
 
 	explained := 0

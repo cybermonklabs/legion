@@ -2,9 +2,12 @@ package evals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -289,4 +292,76 @@ func storedDailyOf(stored []storedDay, key int64) ([]dayFold, bool) {
 		daily[index] = dayFold{day: day.day, folded: folded}
 	}
 	return daily, true
+}
+
+// StoredJobs is the jobs of an eval whose ranges fold them (foldsJobs) over one range as its
+// stored figures hold them (StoredJobsIn): each job's cell over the range by name (the fold
+// measures.JobCells makes of the range's job rows), and the newest day of each job's rows.
+type StoredJobs struct {
+	Cells  []measures.JobCell
+	Newest map[string]time.Time
+}
+
+// StoredJobsIn reads in q the jobs of entry's eval over r of repos (none, or the one repository
+// whose cut the stored figures fold) from the eval's stored range row of the range (withJobFigures):
+// of its project's union cut (`deploy_repo` `*`, unionDeployRepo) where the eval is keyed by the
+// deploy repository, as ReadStoredFiguresIn reads it, the fold of the rows the day rows' read of
+// the range reads (EvalDaysIn of every deploy repository of the project). It reads how far the
+// project's figures are built and what a stale mark of the cut names (figuresThrough), and then
+// the one range row by its primary key. ok is false where the stored figures cannot answer the
+// jobs, which the caller answers from the day rows (api's jobItemRows): an eval whose ranges fold
+// no job; a range FiguresOffered offers no stored row of (a length the tab does not offer, or two
+// repositories); a cut ReadStoredFiguresIn would not serve the eval from either (its project's
+// figures not built through the range's end, its union cut not folded through it, or a stale mark
+// of the cut naming it whose generation has not folded the range again: builtCut.serves); and a
+// stored row folded under another fold key than the eval's definition now has, one that does not
+// decode, or one that holds no jobsFolded entry, which a build that folds no job folded, or whose
+// jobs would have passed what one statement takes. A range of which the eval holds no stored row
+// holds no job: it holds no listed row of the eval, and a job series is held only beside its
+// eval's listed series (heldDays), so the day rows' read of it answers none either.
+func StoredJobsIn(ctx context.Context, q delivery.Querier, entry Entry, repos []string, r Range) (StoredJobs, bool, error) {
+	definition := entry.Definition
+	if !foldsJobs(definition) || !FiguresOffered(repos, r, nil) {
+		return StoredJobs{}, false, nil
+	}
+	repo := ""
+	if len(repos) == 1 {
+		repo = repos[0]
+	}
+	built, err := figuresThrough(ctx, q, []string{definition.ProjectKey}, repo)
+	if err != nil {
+		return StoredJobs{}, false, err
+	}
+	cut, held := built[definition.ProjectKey]
+	if !held || cut.through.Before(r.To) || !cut.serves(definition.EvalID, r, nil) || KeyedByDeployRepo(definition) && !cut.unionServes(r, nil) {
+		return StoredJobs{}, false, nil
+	}
+	deployRepo := ""
+	if KeyedByDeployRepo(definition) {
+		deployRepo = unionDeployRepo
+	}
+	var key int64
+	var figures []byte
+	err = q.QueryRow(ctx, `
+		select fold_key, figures from eval_range_figures
+		where project_key = $1 and repo = $2 and days = $3 and end_day = $4::date and eval_id = $5 and deploy_repo = $6
+	`, definition.ProjectKey, repo, rangeDays(r), r.To, definition.EvalID, deployRepo).Scan(&key, &figures)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StoredJobs{Cells: []measures.JobCell{}, Newest: map[string]time.Time{}}, true, nil
+	}
+	if err != nil {
+		return StoredJobs{}, false, fmt.Errorf("read the stored jobs of %s over %s to %s: %w", definition.EvalID, r.From.Format(time.DateOnly), r.To.Format(time.DateOnly), err)
+	}
+	if key != foldKeyOf(entry) {
+		return StoredJobs{}, false, nil
+	}
+	folded, _, err := decodeFigures(figures)
+	if err != nil {
+		return StoredJobs{}, false, nil
+	}
+	cells, newest, ok := jobCellsOf(folded)
+	if !ok {
+		return StoredJobs{}, false, nil
+	}
+	return StoredJobs{Cells: cells, Newest: newest}, true, nil
 }

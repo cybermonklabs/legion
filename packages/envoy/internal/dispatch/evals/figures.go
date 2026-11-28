@@ -36,12 +36,15 @@ import (
 //     statistics FoldStatistics answers for the eval's listed series over the range's rows of the
 //     cut, those rows in the folds' one order (sortWindowRows) with a repository cut's zero parts
 //     (cutZeros, withZeros), each series' via-repository count, and the oldest updated_at of the
-//     rows (the read's freshness). A range that holds no listed row of the eval in the cut has no
-//     row: its fold is the fold of no parts.
+//     rows (the read's freshness); and, of pr-ci (foldsJobs), the cell of each job of its job rows
+//     over the range (jobFigures, jobsFolded), which the CI section's slowest-jobs list of the first
+//     paint reads by the row's key (StoredJobsIn, api's jobItemRows) where it read every job row of
+//     the range. A range that holds no listed row of the eval in the cut has no row: its fold is
+//     the fold of no parts.
 //   - eval_day_figures holds, for each project, cut, day and eval that holds a listed row of the
 //     eval in the cut, the day's figures of each headline series that holds a part that day, a
 //     repository cut's zero part among them (the per-day array SeriesValuesOf answers), and the
-//     stamp of the rows it folded (rowsStamp).
+//     stamp of the rows it folded (rowsStamp, pr-ci's job rows among them: stampOf).
 //
 // Each is kept for every cut a read folds: the project's own rows (repo '', the all-repositories
 // day rows: its own and those of the owner keys it reads under the published defaults, owners.go),
@@ -182,6 +185,131 @@ func listedAndHeadline(entry Entry) (listed, headline []Series) {
 		}
 	}
 	return listed, headline
+}
+
+// foldsJobs reports whether definition's eval's stored range figures hold, beside its listed
+// series' statistics, the cell of each of its jobs over the range (jobFigures): the computed
+// pr-ci's, whose day rows hold, beside its listed series, one unlisted series of each job that ran
+// that day (measures.JobSeriesPrefix and the job's name, measures.PRChecksDay), which its
+// slowest-jobs list folds over a range (api's jobItemRows, StoredJobsIn). That list read the job
+// rows of every day of its range on the Evals tab's first paint: 122.8 of the first paint's 224.1
+// ms of database time at ten times INFRA's rate (dispatch://INFRA-2918, T33).
+func foldsJobs(definition Definition) bool {
+	return definition.Computed() && definition.Slug == SlugPRCI
+}
+
+// isJobRow reports whether a day row of series, of definition's eval, is one of its job rows,
+// which its stored range figures fold into its jobs' cells (foldsJobs).
+func isJobRow(definition Definition, series string) bool {
+	return foldsJobs(definition) && strings.HasPrefix(series, measures.JobSeriesPrefix)
+}
+
+// jobRowsOf is, in SQL, the condition that a day row (alias) is a job row (isJobRow) of the eval
+// its statement names: the predicate of eval_days_job_rows word for word, so the planner proves
+// that index from the statement under a generic plan too (migration 20261128172605).
+func jobRowsOf(alias string) string {
+	return `not ` + alias + `.listed and starts_with(` + alias + `.series, '` + measures.JobSeriesPrefix + `')`
+}
+
+// jobsFolded is the entry of a range's figures that says they hold the cell of each job of its
+// eval (jobFigures), each under its job series' name: a name no series takes, since a series' name
+// holds no whitespace (CodeSeriesInvalid), nor any job series, whose name begins with
+// measures.JobSeriesPrefix. A range row without it was folded by a build that folds no job, or its
+// jobs would have passed what one statement takes (rangeFiguresMost), and a read of the range's
+// jobs reads their day rows instead (StoredJobsIn). It is a series of a day's stamp too
+// (stampedRow), with no moment and no count, wherever the day's figures fold its eval's job rows,
+// so a build that folds no job reads every such day as moved, and folds it again (movedFigureDays).
+const jobsFolded = "jobs folded"
+
+// The statistics of one job's entry in a range's figures (jobFigures): its cell over the range
+// (measures.JobCells: its timed results, their median and p90, each outcome's count, and the share
+// of its decided results that succeeded) and the newest day of its rows, in Unix seconds, which
+// its items row is measured at.
+const (
+	jobN           = "n"
+	jobMedian      = "median"
+	jobP90         = "p90"
+	jobSuccess     = "success"
+	jobFailure     = "failure"
+	jobCancelled   = "cancelled"
+	jobSuccessRate = "success_rate"
+	jobNewest      = "newest"
+)
+
+// rangeFiguresMost is the most bytes a range row's figures take with its jobs' cells
+// (withJobFigures): with the most every other parameter of its upsert takes (figureRowReserve),
+// its statement sends within statementBytes (rangeUpserts).
+const rangeFiguresMost = statementBytes - figureRowReserve
+
+// jobFigures is the entry of each job of parts, one range's job rows' parts in the folds' order
+// (figureGroup.jobParts), by its job series' name: its cell over them (measures.JobCells, the fold
+// the slowest-jobs list folds the day rows of a range with) and the newest day of its rows.
+func jobFigures(parts []measures.DayPart) map[string]Statistics {
+	newest := map[string]time.Time{}
+	for _, part := range parts {
+		if part.Day.After(newest[part.Series]) {
+			newest[part.Series] = part.Day
+		}
+	}
+	cells := measures.JobCells(parts)
+	figures := make(map[string]Statistics, len(cells))
+	for _, job := range cells {
+		series := measures.JobSeriesPrefix + job.Name
+		figures[series] = Statistics{
+			jobN: new(float64(job.Cell.N)), jobMedian: job.Cell.MedianMinutes, jobP90: job.Cell.P90Minutes,
+			jobSuccess: new(float64(job.Cell.Success)), jobFailure: new(float64(job.Cell.Failure)), jobCancelled: new(float64(job.Cell.Cancelled)),
+			jobSuccessRate: job.Cell.SuccessRate, jobNewest: new(float64(newest[series].Unix())),
+		}
+	}
+	return figures
+}
+
+// withJobFigures is folded, a range's listed series' statistics, and via encoded (encodeFigures)
+// with the entry of each job of parts, the range's job parts (jobFigures), and jobsFolded beside
+// them, where that row takes at most rangeFiguresMost bytes, and without any where it would take
+// more: no route bounds how many jobs a repository's checks run, and a row past the bound would be
+// a statement past statementBytes, so a range of that many jobs leaves their read to the day rows.
+func withJobFigures(folded map[string]Statistics, via map[string]int, parts []measures.DayPart) []byte {
+	jobs := jobFigures(parts)
+	for series, stats := range jobs {
+		folded[series] = stats
+	}
+	folded[jobsFolded] = nil
+	if encoded := encodeFigures(folded, via); len(encoded) <= rangeFiguresMost {
+		return encoded
+	}
+	for series := range jobs {
+		delete(folded, series)
+	}
+	delete(folded, jobsFolded)
+	return encodeFigures(folded, via)
+}
+
+// jobCellsOf is the cell of each job a range's figures hold (withJobFigures), by name, and the
+// newest day of each job's rows; false where the figures hold no jobsFolded entry, or a job's entry
+// is not one jobFigures writes.
+func jobCellsOf(folded map[string]Statistics) ([]measures.JobCell, map[string]time.Time, bool) {
+	if _, held := folded[jobsFolded]; !held {
+		return nil, nil, false
+	}
+	cells, newest := []measures.JobCell{}, map[string]time.Time{}
+	for series, stats := range folded {
+		name, job := strings.CutPrefix(series, measures.JobSeriesPrefix)
+		if !job {
+			continue
+		}
+		counts := []*float64{stats[jobN], stats[jobSuccess], stats[jobFailure], stats[jobCancelled], stats[jobNewest]}
+		if slices.Contains(counts, nil) {
+			return nil, nil, false
+		}
+		cells = append(cells, measures.JobCell{Name: name, Cell: measures.Cell{
+			N: int(*stats[jobN]), MedianMinutes: stats[jobMedian], P90Minutes: stats[jobP90],
+			Success: int(*stats[jobSuccess]), Failure: int(*stats[jobFailure]), Cancelled: int(*stats[jobCancelled]), SuccessRate: stats[jobSuccessRate],
+		}})
+		newest[name] = time.Unix(int64(*stats[jobNewest]), 0).UTC()
+	}
+	slices.SortFunc(cells, func(a, b measures.JobCell) int { return strings.Compare(a.Name, b.Name) })
+	return cells, newest, true
 }
 
 // encodeFigures is a fold's map and its via-repository counts as a figures column holds them:
@@ -347,8 +475,9 @@ type stampedRow struct {
 	via       int
 }
 
-// rowsStamp is the fingerprint of one eval's listed rows of one cut, deploy repository and day
-// (eval_day_figures.rows_stamp): each row's series, its updated_at to the microsecond Postgres
+// rowsStamp is the fingerprint of one eval's listed rows of one cut, deploy repository and day, and
+// of its job rows where its ranges fold its jobs (stampOf) (eval_day_figures.rows_stamp): each
+// row's series, its updated_at to the microsecond Postgres
 // keeps and its via_repository as the project reads it, in series order and then in that of the
 // moments and of the counts, which it sorts rows into: a project's day can hold a row of one
 // series of its own and one of an owner key's (owners.go), a cut of its default repository one of
@@ -380,17 +509,23 @@ func rowsStamp(rows []stampedRow) int64 {
 // (sortWindowRows), and what folds them: the stored figures of every range and day of the rows are
 // folded from it. parts is the rows' parts in the same order and, in a repository's cut, the zero
 // part of each series of the eval each day holds no row of after that day's (withZeros): the parts
-// every fold of the group reads, as SeriesValuesOf folds them.
+// every fold of the group reads, as SeriesValuesOf folds them. jobs is, of an eval whose ranges
+// fold its jobs (foldsJobs), its job rows of the cut and deploy repository, in the same order, and
+// jobParts their parts, which each range folds into its jobs' cells (jobFigures) and each day's
+// stamp stamps beside its listed rows; none of any other eval.
 type figureGroup struct {
 	entry            Entry
 	listed, headline []Series
 	key              int64
 	rows             []WindowRow
 	parts            []measures.DayPart
+	jobs             []WindowRow
+	jobParts         []measures.DayPart
 }
 
 // newFigureGroup is the group of rows, one eval's listed rows of one cut and deploy repository as
-// DayWindowIn reads them, whose figures fold under key. It sorts rows into the one order
+// DayWindowIn reads them, and its job rows where its ranges fold its jobs (foldsJobs, isJobRow),
+// whose figures fold under key. It sorts the listed rows and the job rows apart into the one order
 // SeriesValuesOf folds its inputs in too (sortWindowRows), so a range's figures are the bits a read
 // folds whatever order either read answered the rows in. Each series whose every row holds samples
 // a sort keeps bit for bit (SortableSamples) has each row's samples sorted in place, once, so every
@@ -399,11 +534,34 @@ type figureGroup struct {
 // the merge and sort of each range reads as a read of the rows does, in the same order. A
 // repository cut's zero parts (cutZeros) are added once, here, for every range and day of the
 // group: each is a part of one day alone, so the parts of a range's days are those a read of that
-// range folds.
+// range folds. A job has no zero part: a job with no result that day has no row
+// (ZeroDeliveryDay).
 func newFigureGroup(entry Entry, key int64, rows []WindowRow) *figureGroup {
-	sortWindowRows(rows)
-	group := &figureGroup{entry: entry, key: key, rows: rows}
+	var jobs []WindowRow
+	if foldsJobs(entry.Definition) {
+		listed := rows[:0]
+		for _, row := range rows {
+			if isJobRow(entry.Definition, row.Part.Series) {
+				jobs = append(jobs, row)
+			} else {
+				listed = append(listed, row)
+			}
+		}
+		rows = listed
+	}
+	group := &figureGroup{entry: entry, key: key, rows: rows, jobs: jobs}
 	group.listed, group.headline = listedAndHeadline(entry)
+	parts := sortedParts(rows)
+	group.parts = withZeros(parts, cutZeros(entry.Definition, rows))
+	group.jobParts = sortedParts(jobs)
+	return group
+}
+
+// sortedParts sorts rows into the folds' one order (sortWindowRows), sorts in place the samples of
+// each row of a series whose every row's samples a sort keeps bit for bit (SortableSamples), and
+// answers the rows' parts in that order (newFigureGroup).
+func sortedParts(rows []WindowRow) []measures.DayPart {
+	sortWindowRows(rows)
 	sortable := map[string]bool{}
 	for _, row := range rows {
 		held, seen := sortable[row.Part.Series]
@@ -416,22 +574,31 @@ func newFigureGroup(entry Entry, key int64, rows []WindowRow) *figureGroup {
 		}
 		parts[index] = row.Part
 	}
-	group.parts = withZeros(parts, cutZeros(entry.Definition, rows))
-	return group
+	return parts
 }
 
 // span is the index range of the group's rows of the days [from, to).
 func (g *figureGroup) span(from, to time.Time) (int, int) {
-	first := sort.Search(len(g.rows), func(k int) bool { return !g.rows[k].Part.Day.Before(from) })
-	last := sort.Search(len(g.rows), func(k int) bool { return !g.rows[k].Part.Day.Before(to) })
+	return daysSpan(g.rows, from, to)
+}
+
+// daysSpan is the index range of rows, in day order, of the days [from, to).
+func daysSpan(rows []WindowRow, from, to time.Time) (int, int) {
+	first := sort.Search(len(rows), func(k int) bool { return !rows[k].Part.Day.Before(from) })
+	last := sort.Search(len(rows), func(k int) bool { return !rows[k].Part.Day.Before(to) })
 	return first, last
 }
 
 // partsIn is the group's parts of the days [from, to), which a fold of those days reads.
 func (g *figureGroup) partsIn(from, to time.Time) []measures.DayPart {
-	first := sort.Search(len(g.parts), func(k int) bool { return !g.parts[k].Day.Before(from) })
-	last := sort.Search(len(g.parts), func(k int) bool { return !g.parts[k].Day.Before(to) })
-	return g.parts[first:last]
+	return partsOfDays(g.parts, from, to)
+}
+
+// partsOfDays is parts, in day order, of the days [from, to).
+func partsOfDays(parts []measures.DayPart, from, to time.Time) []measures.DayPart {
+	first := sort.Search(len(parts), func(k int) bool { return !parts[k].Day.Before(from) })
+	last := sort.Search(len(parts), func(k int) bool { return !parts[k].Day.Before(to) })
+	return parts[first:last]
 }
 
 // rangeOf is the n days ending at end, exclusive.
@@ -439,8 +606,11 @@ func rangeOf(n int, end time.Time) Range {
 	return Range{From: end.AddDate(0, 0, -n), To: end}
 }
 
-// rangeFigure is the stored row of the n days ending at end: its figures and the oldest updated_at
-// of the rows it folds, and false where the range holds no row of the group.
+// rangeFigure is the stored row of the n days ending at end: its figures, with its jobs' cells
+// where the eval's ranges fold them (foldsJobs, withJobFigures), and the oldest updated_at of the
+// listed rows it folds, the freshness the list read answers; false where the range holds no listed
+// row of the group, where it holds no job row either (a job series is held only beside its eval's
+// listed series, heldDays), so its jobs read as none (StoredJobsIn).
 func (g *figureGroup) rangeFigure(n int, end time.Time) ([]byte, time.Time, bool) {
 	r := rangeOf(n, end)
 	first, last := g.span(r.From, r.To)
@@ -457,23 +627,44 @@ func (g *figureGroup) rangeFigure(n int, end time.Time) ([]byte, time.Time, bool
 			oldest = row.UpdatedAt
 		}
 	}
+	if foldsJobs(g.entry.Definition) {
+		return withJobFigures(folded, via, partsOfDays(g.jobParts, r.From, r.To)), oldest, true
+	}
 	return encodeFigures(folded, via), oldest, true
 }
 
 // dayFigure is the stored day row of day: the figures of each headline series that holds a part
 // that day, each folded over the day's parts alone as SeriesValuesOf folds a day of its per-day
-// array (foldDay), and the stamp of the day's rows; false where the day holds no row of the group.
+// array (foldDay), and the stamp of the day's rows, its job rows and jobsFolded among them where
+// the eval's ranges fold its jobs (stampOf); false where the day holds no listed row of the group.
 func (g *figureGroup) dayFigure(day time.Time) ([]byte, int64, bool) {
 	next := day.AddDate(0, 0, 1)
 	first, last := g.span(day, next)
 	if first == last {
 		return nil, 0, false
 	}
-	stamped := make([]stampedRow, 0, last-first)
+	jobsFrom, jobsTo := daysSpan(g.jobs, day, next)
+	stamped := make([]stampedRow, 0, last-first+jobsTo-jobsFrom+1)
 	for _, row := range g.rows[first:last] {
 		stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt, via: row.Part.ViaRepository})
 	}
-	return encodeFigures(foldDay(g.entry.Definition, g.headline, g.partsIn(day, next), day), nil), rowsStamp(stamped), true
+	for _, row := range g.jobs[jobsFrom:jobsTo] {
+		stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt, via: row.Part.ViaRepository})
+	}
+	return encodeFigures(foldDay(g.entry.Definition, g.headline, g.partsIn(day, next), day), nil), stampOf(g.entry.Definition, stamped), true
+}
+
+// stampOf is the stamp of rows, one day's rows of definition's eval in one cut and deploy
+// repository (rowsStamp), with jobsFolded among them where the eval's ranges fold its jobs
+// (foldsJobs): so a stored day row of such an eval folded by a build that folds no job, whose
+// stamp holds neither its job rows nor that entry, is never the stamp of a build that folds them,
+// and the reverse, and a write of either build folds again every day it moved the other's figures
+// of, whatever rows it wrote (movedFigureDays).
+func stampOf(definition Definition, rows []stampedRow) int64 {
+	if foldsJobs(definition) {
+		rows = append(rows, stampedRow{series: jobsFolded})
+	}
+	return rowsStamp(rows)
 }
 
 // foldEnds folds the group's stored figures of each end day from first through last, of evalID in
@@ -809,7 +1000,8 @@ type evalSpan struct {
 // movedFigureDays reads, in q, which days of spans (each by eval id, each eval one of entries)
 // hold figures that no longer fold their rows: each eval, cut and day whose listed rows' stamp
 // (rowsStamp, of the rows of the cut, the project's and its owner keys', each with its
-// via_repository as the project reads it, and each row in the cut cutOf names) is not the one the
+// via_repository as the project reads it, and each row in the cut cutOf names; of an eval whose
+// ranges fold its jobs, its job rows and jobsFolded too, stampOf) is not the one the
 // day's stored row of the cut recorded, which holds rows and no stored row or a stored row and no
 // rows, or whose stored row was folded under another fold key than the eval's definition now has
 // (a register write). For an eval keyed by the deploy repository (KeyedByDeployRepo), each row
@@ -820,9 +1012,11 @@ type evalSpan struct {
 // scope.through is the figures walks', and none of it is read. The days of an eval are those any
 // of spans names, each read once (spansOf), and none between two spans of it that none names.
 //
-// Each of its two reads is one range of an index for each of those spans, every cut's rows in it:
+// Each of its reads is one range of an index for each of those spans, every cut's rows in it:
 // eval_days_stamps (project_key, eval_id, writer, day) of the rows' stamps, one for each key the
-// project reads (eval_project_owners), and eval_day_figures_eval_day of the stored day rows. Each
+// project reads (eval_project_owners), and eval_day_figures_eval_day of the stored day rows; and,
+// of the spans of an eval whose ranges fold its jobs, eval_days_job_rows of the same columns over
+// its job rows (stampsQuery). Each
 // lateral ends in `offset 0`, which keeps Postgres from pulling it up into a join: pulled up, the
 // stamps' read took the estimate of the view's widest arm, refused a nested loop into eval_days and
 // read every listed row of every project (181 to 304 ms on the farm to answer the 75 rows of one
@@ -830,7 +1024,7 @@ type evalSpan struct {
 // spans against every stored day row of the project. The spans go in chunks of at most
 // statementBytes (statementChunks), each read by both statements.
 func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[figureGroupKey]map[time.Time]bool, error) {
-	var named []evalSpan
+	var named, jobSpans []evalSpan
 	hasKeyed := false
 	for _, evalID := range spannedEvals(spans) {
 		entry, held := entries[evalID]
@@ -842,6 +1036,9 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		}
 		for _, span := range spansOf(spans, evalID, scope.through.AddDate(0, 0, -1)) {
 			named = append(named, evalSpan{eval: evalID, writer: entry.Definition.writer(), daySpan: span})
+			if foldsJobs(entry.Definition) {
+				jobSpans = append(jobSpans, named[len(named)-1])
+			}
 		}
 	}
 	moved := map[figureGroupKey]map[time.Time]bool{}
@@ -865,28 +1062,15 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	var row stampedRow
 	var day storedDay
 	size := func(span *evalSpan) int { return 4*4 + len(span.eval) + len(span.writer) + 2*8 }
-	for chunk := range statementChunks(named, paramBytes(4, scope.project), size) {
+	readStamps := func(chunk []evalSpan, rowsOf string) ([]string, []time.Time, []time.Time, error) {
 		evalIDs, writers := make([]string, len(chunk)), make([]string, len(chunk))
 		firsts, lasts := make([]time.Time, len(chunk)), make([]time.Time, len(chunk))
 		for index, span := range chunk {
 			evalIDs[index], writers[index], firsts[index], lasts[index] = span.eval, span.writer, span.first, span.last
 		}
-		rows, err := q.Query(ctx, `
-			select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, `+viaAsRead("d.via_repository")+`
-			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
-			cross join eval_project_owners o
-			cross join lateral (
-				select d.project_key, d.deploy_repo, d.repo, d.day, d.series, d.updated_at, d.via_repository
-				from eval_days d
-				where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
-					and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed
-				offset 0
-			) d
-			cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
-			where o.project_key = $1 and cut.repo is not null
-		`, scope.project, evalIDs, writers, firsts, lasts)
+		rows, err := q.Query(ctx, stampsQuery(rowsOf), scope.project, evalIDs, writers, firsts, lasts)
 		if err != nil {
-			return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
+			return nil, nil, nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
 		}
 		if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
 			key.day = key.day.UTC()
@@ -898,9 +1082,16 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 			}
 			return nil
 		}); err != nil {
-			return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
+			return nil, nil, nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
 		}
-		rows, err = q.Query(ctx, `
+		return evalIDs, firsts, lasts, nil
+	}
+	for chunk := range statementChunks(named, paramBytes(4, scope.project), size) {
+		evalIDs, firsts, lasts, err := readStamps(chunk, "d.listed")
+		if err != nil {
+			return nil, err
+		}
+		rows, err := q.Query(ctx, `
 			select f.eval_id, f.deploy_repo, f.repo, f.day, f.fold_key, f.rows_stamp
 			from unnest($2::text[], $3::date[], $4::date[]) as given(eval_id, first_day, last_day)
 			cross join lateral (
@@ -921,6 +1112,11 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 			return nil, fmt.Errorf("read the stored day figures of %s: %w", scope.project, err)
 		}
 	}
+	for chunk := range statementChunks(jobSpans, paramBytes(4, scope.project), size) {
+		if _, _, _, err := readStamps(chunk, jobRowsOf("d")); err != nil {
+			return nil, err
+		}
+	}
 	keys := map[string]int64{}
 	note := func(at dayKey) {
 		if moved[at.group] == nil {
@@ -932,7 +1128,7 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		if _, done := keys[at.group.eval]; !done {
 			keys[at.group.eval] = foldKeyOf(entries[at.group.eval])
 		}
-		if figure, found := stored[at]; !found || figure.key != keys[at.group.eval] || figure.stamp != rowsStamp(held) {
+		if figure, found := stored[at]; !found || figure.key != keys[at.group.eval] || figure.stamp != stampOf(entries[at.group.eval].Definition, held) {
 			note(at)
 		}
 	}
@@ -942,6 +1138,28 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		}
 	}
 	return moved, nil
+}
+
+// stampsQuery is movedFigureDays' read of the stamps of the day rows rows names (`d.listed`, or
+// jobRowsOf), each span's rows of every cut and deploy repository: for each key the project $1
+// reads (eval_project_owners) and each span, of the eval of the same slug under that key, of the
+// span's writer and days, one range of the index of those rows (eval_days_stamps over the listed
+// rows, eval_days_job_rows over the job rows), each row in the cut cutOf names.
+func stampsQuery(rows string) string {
+	return `
+			select given.eval_id, d.deploy_repo, cut.repo, d.day, d.series, d.updated_at, ` + viaAsRead("d.via_repository") + `
+			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
+			cross join eval_project_owners o
+			cross join lateral (
+				select d.project_key, d.deploy_repo, d.repo, d.day, d.series, d.updated_at, d.via_repository
+				from eval_days d
+				where d.project_key = o.owner and d.eval_id = ` + evalIDAs("o.owner", "given.eval_id", "$1") + `
+					and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and ` + rows + `
+				offset 0
+			) d
+			cross join lateral (select ` + cutOf("d", "$1") + ` as repo) cut
+			where o.project_key = $1 and cut.repo is not null
+		`
 }
 
 // spannedEvals is every eval id one of spans names, in byte order.
@@ -1093,13 +1311,15 @@ func readFigurePlan(ctx context.Context, q delivery.Querier, scope figureScope, 
 // span, up to scope.through: the rows readFigureGroups reads of each cut, the same columns as
 // DayWindowIn answers them with no compare range and at most one repository named, and answers
 // each eval's group of each cut and deploy repository (figureGroupKey), none for a cut the eval
-// holds no row of there. A row's cut is the one cutOf names, so a row of the project's own stored
-// under legionfacts.DefaultRepo is its published default's, as a read of that repository reads it
-// (repoCut); the rows of a deploy repository are of its cut where the eval is keyed by it
-// (KeyedByDeployRepo) and of none otherwise. Each eval and key the project reads
-// (eval_project_owners) is one range of eval_days_stamps (project, eval, writer, day), as
-// movedFigureDays reads their stamps, where a read of a cut reads every listed row of the cut's
-// days through eval_days_window (project, repo, day), every eval's: a production rule's refold read
+// holds no row of there; and, of an eval whose ranges fold its jobs (foldsJobs), its job rows over
+// the same days, each with its samples, into the same groups. A row's cut is the one cutOf names,
+// so a row of the project's own stored under legionfacts.DefaultRepo is its published default's,
+// as a read of that repository reads it (repoCut); the rows of a deploy repository are of its cut
+// where the eval is keyed by it (KeyedByDeployRepo) and of none otherwise. Each eval and key the
+// project reads (eval_project_owners) is one range of eval_days_stamps (project, eval, writer,
+// day), as movedFigureDays reads their stamps, and one of eval_days_job_rows of its job rows,
+// where a read of a cut reads every listed row of the cut's days through eval_days_window
+// (project, repo, day), every eval's: a production rule's refold read
 // 10,792 rows of two cuts in 184 to 274 ms on the farm at ten times INFRA's size
 // (dispatch://INFRA-2916). The evals go in statements of at most statementBytes (statementChunks),
 // each with the pairs (eval, series) whose samples its folds read (readsSamples).
@@ -1108,7 +1328,7 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		entry       Entry
 		first, last time.Time
 	}
-	var named []given
+	var named, jobNamed []given
 	hasKeyed := false
 	for _, evalID := range slices.Sorted(maps.Keys(spans)) {
 		entry, held := entries[evalID]
@@ -1125,6 +1345,9 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		}
 		if !last.Before(first) {
 			named = append(named, given{entry: entry, first: first, last: last})
+			if foldsJobs(entry.Definition) {
+				jobNamed = append(jobNamed, named[len(named)-1])
+			}
 		}
 	}
 	var deployRepos *DeployRepos
@@ -1136,40 +1359,17 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 	}
 	multiDeploy := len(deployRepos.Of(scope.project)) > 1
 	byGroup := map[figureGroupKey][]WindowRow{}
-	size := func(one *given) int {
-		return 4*4 + len(one.entry.Definition.EvalID) + len(one.entry.Definition.writer()) + 2*8 + windowEntryBytes(&one.entry, false)
-	}
-	for chunk := range statementChunks(named, paramBytes(6, scope.project), size) {
+	// readRows reads the rows of one statement of chunk (foldGroupsQuery) into byGroup, args after
+	// the spans' arrays.
+	readRows := func(chunk []given, query string, args ...any) error {
 		evalIDs, writers := make([]string, len(chunk)), make([]string, len(chunk))
 		firsts, lasts := make([]time.Time, len(chunk)), make([]time.Time, len(chunk))
-		var sampledEvals, sampledSeries []string
 		for index, one := range chunk {
 			evalIDs[index], writers[index], firsts[index], lasts[index] = one.entry.Definition.EvalID, one.entry.Definition.writer(), one.first, one.last
-			for _, series := range one.entry.Series {
-				if readsSamples(one.entry.Definition, series) {
-					sampledEvals, sampledSeries = append(sampledEvals, one.entry.Definition.EvalID), append(sampledSeries, series.Series)
-				}
-			}
 		}
-		rows, err := q.Query(ctx, `
-			select given.eval_id, d.deploy_repo, cut.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max,
-				case when (given.eval_id, d.series) in (select * from unnest($6::text[], $7::text[])) then d.samples end,
-				d.last_value, d.last_at, nullif(d.counts, '{}'), `+viaAsRead("d.via_repository")+`, d.updated_at, o.owner, d.repo
-			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
-			cross join eval_project_owners o
-			cross join lateral (
-				select d.project_key, d.deploy_repo, d.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max, d.samples,
-					d.last_value, d.last_at, d.counts, d.via_repository, d.updated_at
-				from eval_days d
-				where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
-					and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and d.listed
-				offset 0
-			) d
-			cross join lateral (select `+cutOf("d", "$1")+` as repo) cut
-			where o.project_key = $1 and cut.repo is not null
-		`, scope.project, evalIDs, writers, firsts, lasts, sampledEvals, sampledSeries)
+		rows, err := q.Query(ctx, query, append([]any{scope.project, evalIDs, writers, firsts, lasts}, args...)...)
 		if err != nil {
-			return nil, fmt.Errorf("read the day rows of %s's moved figures: %w", scope.project, err)
+			return fmt.Errorf("read the day rows of %s's moved figures: %w", scope.project, err)
 		}
 		read := 0
 		var key figureGroupKey
@@ -1192,11 +1392,37 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 			row, read = WindowRow{}, read+1
 			return nil
 		}); err != nil {
-			return nil, fmt.Errorf("read the day rows of %s's moved figures: %w", scope.project, err)
+			return fmt.Errorf("read the day rows of %s's moved figures: %w", scope.project, err)
 		}
 		if times := figureTimesIn(ctx); times != nil {
 			times.reads++
 			times.rows += read
+		}
+		return nil
+	}
+	size := func(one *given) int {
+		return 4*4 + len(one.entry.Definition.EvalID) + len(one.entry.Definition.writer()) + 2*8 + windowEntryBytes(&one.entry, false)
+	}
+	sampled := `case when (given.eval_id, d.series) in (select * from unnest($6::text[], $7::text[])) then d.samples end`
+	for chunk := range statementChunks(named, paramBytes(6, scope.project), size) {
+		var sampledEvals, sampledSeries []string
+		for _, one := range chunk {
+			for _, series := range one.entry.Series {
+				if readsSamples(one.entry.Definition, series) {
+					sampledEvals, sampledSeries = append(sampledEvals, one.entry.Definition.EvalID), append(sampledSeries, series.Series)
+				}
+			}
+		}
+		if err := readRows(chunk, foldGroupsQuery("d.listed", sampled), sampledEvals, sampledSeries); err != nil {
+			return nil, err
+		}
+	}
+	jobSize := func(one *given) int {
+		return 4*4 + len(one.entry.Definition.EvalID) + len(one.entry.Definition.writer()) + 2*8
+	}
+	for chunk := range statementChunks(jobNamed, paramBytes(4, scope.project), jobSize) {
+		if err := readRows(chunk, foldGroupsQuery(jobRowsOf("d"), "d.samples")); err != nil {
+			return nil, err
 		}
 	}
 	groups := make(map[figureGroupKey]*figureGroup, len(byGroup))
@@ -1207,6 +1433,31 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		}
 	}
 	return groups, nil
+}
+
+// foldGroupsQuery is readFoldGroups' read of the day rows rows names (`d.listed`, or jobRowsOf),
+// with the samples samples selects of them: for each key the project $1 reads
+// (eval_project_owners) and each eval's days ($2 to $5), of the eval of the same slug under that
+// key, of its writer and days, one range of the index of those rows (eval_days_stamps over the
+// listed rows, eval_days_job_rows over the job rows), each row in the cut cutOf names.
+func foldGroupsQuery(rows, samples string) string {
+	return `
+			select given.eval_id, d.deploy_repo, cut.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max,
+				` + samples + `,
+				d.last_value, d.last_at, nullif(d.counts, '{}'), ` + viaAsRead("d.via_repository") + `, d.updated_at, o.owner, d.repo
+			from unnest($2::text[], $3::text[], $4::date[], $5::date[]) as given(eval_id, writer, first_day, last_day)
+			cross join eval_project_owners o
+			cross join lateral (
+				select d.project_key, d.deploy_repo, d.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max, d.samples,
+					d.last_value, d.last_at, d.counts, d.via_repository, d.updated_at
+				from eval_days d
+				where d.project_key = o.owner and d.eval_id = ` + evalIDAs("o.owner", "given.eval_id", "$1") + `
+					and d.writer = given.writer and d.day >= given.first_day and d.day <= given.last_day and ` + rows + `
+				offset 0
+			) d
+			cross join lateral (select ` + cutOf("d", "$1") + ` as repo) cut
+			where o.project_key = $1 and cut.repo is not null
+		`
 }
 
 // add adds to p the stored row of each of days, days of group's rows of key in day order, and of
@@ -1398,7 +1649,8 @@ func foldInChunks(n, workers int, fold func(index int), ends []int, send func(ch
 // moves, a single deploy repository's name or events repository for its own rows, or unionDeployRepo
 // `*` for all of the project's currently recorded deploy repositories; cutDeployRepos) of each eval
 // of evalIDs over r, as DayWindowIn reads them with no repository named, or with the cut's one
-// repository, and answers each eval's group, none for an eval with no row there. An eval whose rows
+// repository, and the job rows of the cut of each whose ranges fold its jobs (readCutJobRows), and
+// answers each eval's group, none for an eval with no row there. An eval whose rows
 // the cut's deploy repository does not key (KeyedByDeployRepo) is none of its evals. An eval none
 // of whose series is listed any more, whose rows a register write has not relisted yet, still has a
 // group of the rows DayWindowIn reads, whose figures fold no series: so a day that holds a listed
@@ -1422,6 +1674,11 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 	if err != nil {
 		return nil, err
 	}
+	jobs, err := readCutJobRows(ctx, q, scope.project, read, cut, deployRepos, r)
+	if err != nil {
+		return nil, err
+	}
+	rows = append(rows, jobs...)
 	if times := figureTimesIn(ctx); times != nil {
 		times.reads++
 		times.rows += len(rows)
@@ -1435,6 +1692,67 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 		groups[evalID] = newFigureGroup(entry, foldKeyOf(entry), held)
 	}
 	return groups, nil
+}
+
+// readCutJobRows reads, in q, the job rows (isJobRow) of cut over r of each of entries whose ranges
+// fold its jobs (foldsJobs), of the deploy repositories deployRepos names for project
+// (cutDeployRepos), each with its samples: the rows of the project and of each key it reads
+// (eval_project_owners), each under the project's eval id of its slug and in the cut cutOf names,
+// one range of eval_days_job_rows (project, eval, writer, day) for each key and eval, which the
+// lateral's `offset 0` keeps from being pulled up into a join, as movedFigureDays' are. Each row
+// carries what a DayWindowIn read of the cut answers of a listed row: the key it is stored under,
+// its repository in a repository's cut, and its deploy repository where the read folds several, the
+// folds' order (sortWindowRows). None where no entry folds its jobs, which reads nothing.
+func readCutJobRows(ctx context.Context, q delivery.Querier, project string, entries []Entry, cut figureCut, deployRepos *DeployRepos, r Range) ([]WindowRow, error) {
+	var evalIDs []string
+	for _, entry := range entries {
+		if foldsJobs(entry.Definition) {
+			evalIDs = append(evalIDs, entry.Definition.EvalID)
+		}
+	}
+	if len(evalIDs) == 0 {
+		return nil, nil
+	}
+	multiDeploy := len(deployRepos.Of(project)) > 1
+	rows, err := q.Query(ctx, `
+		select given.eval_id, d.deploy_repo, o.owner, d.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max, d.samples,
+			d.last_value, d.last_at, nullif(d.counts, '{}'), `+viaAsRead("d.via_repository")+`, d.updated_at
+		from unnest($2::text[]) as given(eval_id)
+		cross join eval_project_owners o
+		cross join lateral (
+			select d.project_key, d.deploy_repo, d.repo, d.series, d.day, d.n, d.sum, d.num, d.den, d.max, d.samples,
+				d.last_value, d.last_at, d.counts, d.via_repository, d.updated_at
+			from eval_days d
+			where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "$1")+`
+				and d.writer = '`+writerComputation+`' and d.day >= $3::date and d.day < $4::date and `+jobRowsOf("d")+`
+			offset 0
+		) d
+		where o.project_key = $1 and d.deploy_repo = any($5::text[]) and `+cutOf("d", "$1")+` = $6
+	`, project, evalIDs, r.From.UTC(), r.To.UTC(), deployRepos.Of(project), cut.repo)
+	if err != nil {
+		return nil, fmt.Errorf("read the job rows of %s's cut %q of %q: %w", project, cut.repo, cut.deployRepo, err)
+	}
+	var jobs []WindowRow
+	var row WindowRow
+	var deployRepo, repo string
+	part := &row.Part
+	if _, err := pgx.ForEachRow(rows, []any{&row.EvalID, &deployRepo, &row.owner, &repo, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num,
+		&part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
+		row.Range, row.UpdatedAt = RangeWindow, row.UpdatedAt.UTC()
+		if cut.repo != "" {
+			row.repo = repo
+		}
+		if multiDeploy {
+			row.deployRepo = deployRepo
+		}
+		utcPart(part)
+		jobs = append(jobs, row)
+		row = WindowRow{}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the job rows of %s's cut %q of %q: %w", project, cut.repo, cut.deployRepo, err)
+	}
+	return jobs, nil
 }
 
 // refoldFigures folds again, in tx, the stored figures of every day of spans (each by eval id: the

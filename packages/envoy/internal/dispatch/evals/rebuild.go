@@ -1609,7 +1609,8 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 
 // readOverlayGroups is readFigureGroups over the stored rows overlaid with the rebuild rb's staged
 // ones: each stored row of a computed eval a staged row of its key stands for is left out, and
-// each staged `u` row that is listed takes its place or is added, its via_repository as the project
+// each staged `u` row that is listed, or a job row of an eval whose ranges fold its jobs
+// (isJobRow, readCutJobRows), takes its place or is added, its via_repository as the project
 // reads it (viaAsRead), as DayWindowIn reads a stored row's. A logged eval's rows are the
 // readings write's, which no rebuild stages. A cut's rows hold one row of each owner (the
 // project's own key, or an owner key it reads, owners.go), eval, series, repository and day: a
@@ -1645,6 +1646,11 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if err != nil {
 		return nil, err
 	}
+	jobs, err := readCutJobRows(ctx, q, scope.project, read, cut, deployRepos, r)
+	if err != nil {
+		return nil, err
+	}
+	live = append(live, jobs...)
 	multiDeploy := len(deployRepos.Of(scope.project)) > 1
 	var stagedDeployRepos []string
 	if cut.deployRepo == "" {
@@ -1682,7 +1688,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 			part.LastRecordedAt, part.LastReading = nil, ""
 			utcPart(part)
 			shadowed[rowKey{owner: owner, repo: repo, deployRepo: row.deployRepo, eval: row.EvalID, series: part.Series, day: part.Day}] = true
-			if op == "u" && listed {
+			if op == "u" && (listed || isJobRow(entries[row.EvalID].Definition, part.Series)) {
 				added = append(added, row)
 			}
 			row = WindowRow{}

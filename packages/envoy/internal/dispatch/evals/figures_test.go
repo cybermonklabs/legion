@@ -183,9 +183,11 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // before that day that holds one of them folded by FoldStatistics, and every day before it that
 // holds one folded alone over its headline series, each over its rows' parts and, in a
 // repository's cut, the zero part of each series of the eval a day of them holds no row of
-// (cutZeros, withZeros), as a read of the rows folds them. No list is sorted before the fold, so
-// every quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
-// withZeros, encodeFigures), so a few stored figures are held to values worked out by hand as well
+// (cutZeros, withZeros), as a read of the rows folds them. Of an eval whose ranges fold its jobs
+// (foldsJobs), each range holds the cell of each job of its job rows (withJobFigures) and each
+// day's stamp its job rows (stampOf). No list is sorted before the fold, so every quantile merges
+// and sorts its samples. The folds are the code's own (FoldStatistics, withZeros, withJobFigures,
+// encodeFigures), so a few stored figures are held to values worked out by hand as well
 // (expectPinnedFigures).
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
@@ -230,25 +232,43 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 			}
 			byEval := r.cutRows(t, project, cut, deployRepos, entries, through)
 			for _, entry := range entries {
-				held := byEval[entry.Definition.EvalID]
+				var held, jobs []WindowRow
+				for _, row := range byEval[entry.Definition.EvalID] {
+					if isJobRow(entry.Definition, row.Part.Series) {
+						jobs = append(jobs, row)
+					} else {
+						held = append(held, row)
+					}
+				}
 				listed, headline := listedAndHeadline(entry)
 				if len(held) == 0 {
 					continue
 				}
-				slices.SortFunc(held, func(a, b WindowRow) int {
+				foldOrder := func(a, b WindowRow) int {
 					return cmp.Or(a.Part.Day.Compare(b.Part.Day), strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo),
 						strings.Compare(a.deployRepo, b.deployRepo), strings.Compare(a.Part.Series, b.Part.Series))
-				})
+				}
+				slices.SortFunc(held, foldOrder)
+				slices.SortFunc(jobs, foldOrder)
 				key := foldKeyOf(entry)
 				allParts := make([]measures.DayPart, len(held))
 				for i, row := range held {
 					allParts[i] = row.Part
+				}
+				jobParts := make([]measures.DayPart, len(jobs))
+				for i, row := range jobs {
+					jobParts[i] = row.Part
 				}
 				zeros := cutZeros(entry.Definition, held)
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
 					lo := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(from) })
 					hi := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(to) })
 					return held[lo:hi], withZeros(allParts[lo:hi], zeros)
+				}
+				jobsWithin := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
+					lo := sort.Search(len(jobs), func(i int) bool { return !jobs[i].Part.Day.Before(from) })
+					hi := sort.Search(len(jobs), func(i int) bool { return !jobs[i].Part.Day.Before(to) })
+					return jobs[lo:hi], jobParts[lo:hi]
 				}
 				for end := held[0].Part.Day.AddDate(0, 0, 1); !end.After(through); end = end.AddDate(0, 0, 1) {
 					for _, n := range FigureLengths {
@@ -264,8 +284,14 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 								oldest = row.UpdatedAt
 							}
 						}
+						folded := FoldStatistics(entry.Definition, listed, parts, span)
+						figures := encodeFigures(folded, via)
+						if foldsJobs(entry.Definition) {
+							_, ranJobs := jobsWithin(span.From, span.To)
+							figures = withJobFigures(folded, via, ranJobs)
+						}
 						truth[rangeLine(project, repo, deployRepo, n, end, entry.Definition.EvalID)] = figureRow{
-							foldKey: key, figures: encodeFigures(FoldStatistics(entry.Definition, listed, parts, span), via), oldest: oldest,
+							foldKey: key, figures: figures, oldest: oldest,
 						}
 					}
 				}
@@ -282,11 +308,12 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 							kept[series.Series] = folded[series.Series]
 						}
 					}
-					for _, row := range rows {
+					ranJobs, _ := jobsWithin(day, day.AddDate(0, 0, 1))
+					for _, row := range slices.Concat(rows, ranJobs) {
 						stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt, via: row.Part.ViaRepository})
 					}
 					truth[dayFigureLine(project, repo, deployRepo, day, entry.Definition.EvalID)] = figureRow{
-						foldKey: key, figures: encodeFigures(kept, nil), stamp: rowsStamp(stamped),
+						foldKey: key, figures: encodeFigures(kept, nil), stamp: stampOf(entry.Definition, stamped),
 					}
 				}
 			}
@@ -296,7 +323,8 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 }
 
 // cutRows is, by eval id, every listed day row of entries (evals of project, each of the one
-// deploy repository cut names or of none) before through that the stored figures of cut fold, read
+// deploy repository cut names or of none), and every job row of an eval whose ranges fold its jobs
+// (isJobRow), before through that the stored figures of cut fold, read
 // by the test's own statement: the rows of the project and of each key it reads
 // (eval_project_owners), each under the project's eval id of its slug, stored under the cut's
 // repository, or, of the project's own, under legionfacts.DefaultRepo where the cut's repository is
@@ -316,9 +344,9 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, depl
 	rows, err := r.database.Pool.Query(t.Context(), `
 		select o.project_key || substr(d.eval_id, length(o.owner) + 1), d.writer, d.deploy_repo, o.owner, d.repo, d.series, d.day,
 			d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, nullif(d.counts, '{}'),
-			case when o.via then d.via_repository else 0 end, d.updated_at
+			case when o.via then d.via_repository else 0 end, d.updated_at, d.listed
 		from eval_project_owners o join eval_days d on d.project_key = o.owner
-		where o.project_key = $1 and d.listed and d.day < $2
+		where o.project_key = $1 and d.day < $2
 			and (d.repo = $3 or d.repo = $4 and d.project_key = $1
 				and exists (select 1 from eval_days_defaults p where p.project_key = $1 and p.repo = $3))`,
 		project, through, cut.repo, legionfacts.DefaultRepo)
@@ -328,9 +356,10 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, depl
 	byEval := map[string][]WindowRow{}
 	var row WindowRow
 	var writer, deployRepo string
+	var listed bool
 	part := &row.Part
 	if _, err := pgx.ForEachRow(rows, []any{&row.EvalID, &writer, &deployRepo, &row.owner, &row.repo, &part.Series, &part.Day, &part.N, &part.Sum,
-		&part.Num, &part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
+		&part.Num, &part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt, &listed}, func() error {
 		entry, held := evals[row.EvalID]
 		ownWriter, ownDeployRepo := "readings", ""
 		if entry.Definition.Computed() {
@@ -339,7 +368,8 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, depl
 		if KeyedByDeployRepo(entry.Definition) {
 			ownDeployRepo = cut.deployRepo
 		}
-		if held && writer == ownWriter && (deployRepo == ownDeployRepo || ownDeployRepo == unionDeployRepo && deployRepos.hasRepo(project, deployRepo)) {
+		if held && (listed || isJobRow(entry.Definition, part.Series)) && writer == ownWriter &&
+			(deployRepo == ownDeployRepo || ownDeployRepo == unionDeployRepo && deployRepos.hasRepo(project, deployRepo)) {
 			if !entry.Definition.Computed() && !slices.ContainsFunc(entry.Series, func(series Series) bool { return series.Series == part.Series && series.Agg == AggQuantile }) {
 				part.Samples = nil
 			}
@@ -2081,6 +2111,113 @@ func TestTheStampsOfAFoldAreReadByProbesOfTheDaysItsSpansNameAndNoOtherRow(t *te
 			t.Errorf("%s scans eval_day_figures sequentially, where it holds %.0f rows to the %.0f it names:\n%s", subject, storedPopulation, storedRows, explaintest.Outline(t, plan))
 		}
 		t.Logf("the stored day figures' statement as movedFigureDays sends it, under %s:\n%s", mode, explaintest.ExplainBuffered(t, ctx, pool, stored, mode, "text"))
+	}
+}
+
+// TestPRCIsJobRowsAreReadThroughTheirIndexAlone (dispatch://INFRA-2918, T33): pr-ci's stored range
+// figures hold each job's cell over the range (foldsJobs), so a fold of them reads its job rows
+// beside its listed rows: the stamps of a moved day's job rows (movedFigureDays), the job rows of
+// every range that holds that day (readFoldGroups), and one cut's job rows (readCutJobRows: the
+// walk, a stale cut's refold, a first paint, a rebuild's overlay). Over 3 keys (the project's and
+// two other projects'), 2 deploy repositories, 2 cuts, a listed series and 20 jobs and 120 days
+// (30,240 rows of eval_days, 28,800 of them job rows), each of the three statements, explained and
+// run with the planner's own settings under each plan-cache mode (explaintest.ExplainBuffered),
+// scans no eval_days sequentially and reads it through eval_days_job_rows alone (migration
+// 20261128172605), bounded by the key, the eval, the writer and the days; the two that read every
+// cut read exactly the project's job rows of their days. Red without the index: no index bounds a
+// job row by its days, eval_days_stamps holding the listed rows alone, and the reads walk every
+// row of pr-ci through the primary key.
+func TestPRCIsJobRowsAreReadThroughTheirIndexAlone(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool, project := t.Context(), r.database.Pool, r.project
+	r.exec(t, "the other projects", `insert into projects (key, name, default_assignee) values ('QUAY', 'Quay', 'alice'), ('PIER', 'Pier', 'alice')`)
+	r.exec(t, "seed the day rows", `
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, samples, built_by)
+		select k.key, k.key || '/pr-ci', d.deploy_repo, s.series, c.repo, date '2026-07-01' + n, s.series = 'minutes', 1, '{3}', 'test'
+		from unnest($1::text[]) as k(key)
+		cross join unnest(array['acme/deploy', 'acme/other']) as d(deploy_repo)
+		cross join (select 'minutes' union all select 'job:j' || lpad(j::text, 2, '0') from generate_series(0, 19) as j) as s(series)
+		cross join unnest(array['', 'acme/main']) as c(repo)
+		cross join generate_series(0, 119) as n`, []string{project, "QUAY", "PIER"})
+	r.exec(t, "analyze the day rows", `analyze eval_days`)
+
+	evalID := EvalID(project, SlugPRCI)
+	entry := Entry{Definition: Definition{EvalID: evalID, ProjectKey: project, Slug: SlugPRCI, Source: SourceFoldTiming}}
+	entries := map[string]Entry{evalID: entry}
+	probed := time.Date(2026, 8, 30, 0, 0, 0, 0, time.UTC)
+	scope := figureScope{build: testBuild, project: project, through: probed.AddDate(0, 0, 10)}
+	cut, days := figureCut{repo: "acme/main", deployRepo: "acme/deploy"}, Range{From: probed.AddDate(0, 0, -30), To: probed}
+	jobRows := func(from, to time.Time) float64 {
+		t.Helper()
+		var count float64
+		if err := pool.QueryRow(ctx, `select count(*)::float8 from eval_days where project_key = $1 and eval_id = $2 and not listed and day >= $3 and day <= $4`,
+			project, evalID, from, to).Scan(&count); err != nil {
+			t.Fatalf("count the job rows: %v", err)
+		}
+		return count
+	}
+	var population float64
+	if err := pool.QueryRow(ctx, `select count(*)::float8 from eval_days`).Scan(&population); err != nil {
+		t.Fatal(err)
+	}
+	type jobRead struct {
+		name string
+		read func(tx *explaintest.RecordedTx) error
+		rows float64
+	}
+	reads := []jobRead{
+		{"the stamps of the moved day's job rows (movedFigureDays)", func(tx *explaintest.RecordedTx) error {
+			_, err := movedFigureDays(ctx, tx, scope, entries, map[string]daySpan{evalID: {first: probed, last: probed}})
+			return err
+		}, jobRows(probed, probed)},
+		{"the job rows of the ranges that hold the moved day (readFoldGroups)", func(tx *explaintest.RecordedTx) error {
+			_, err := readFoldGroups(ctx, tx, scope, entries, map[string]daySpan{evalID: {first: probed, last: probed}})
+			return err
+		}, jobRows(probed.AddDate(0, 0, 1-figureSpan), scope.through.AddDate(0, 0, -1))},
+		{"one cut's job rows (readCutJobRows)", func(tx *explaintest.RecordedTx) error {
+			_, err := readCutJobRows(ctx, tx, project, []Entry{entry}, cut, DeployReposOf(project, cut.deployRepo), days)
+			return err
+		}, -1},
+	}
+	index := explaintest.NewIndexKeys(pool)
+	for _, read := range reads {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recorded := &explaintest.RecordedTx{Tx: tx}
+		if err := read.read(recorded); err != nil {
+			tx.Rollback(ctx)
+			t.Fatalf("%s: %v", read.name, err)
+		}
+		statement := recorded.Holding(t, "starts_with(d.series")
+		tx.Rollback(ctx)
+		for _, mode := range explaintest.PlanCacheModes {
+			plan := explaintest.ExplainBuffered(t, ctx, pool, statement, mode, "json")
+			subject := read.name + " under " + mode
+			index.RequireIndexKeyed(t, plan, "eval_days_job_rows", subject, explaintest.CondRequired)
+			for _, scan := range explaintest.IndexScans(t, plan) {
+				if !slices.Contains(evalDaysIndexes, scan.Index) && scan.Index != "eval_days_job_rows" {
+					continue
+				}
+				if scan.Index != "eval_days_job_rows" {
+					t.Errorf("%s reads eval_days through %s, want eval_days_job_rows alone:\n%s", subject, scan, explaintest.Outline(t, plan))
+				}
+				for _, bound := range []string{"project_key = ", "eval_id = ", "writer = ", "day >= "} {
+					if !strings.Contains(scan.Cond, bound) {
+						t.Errorf("%s reads %s under %q, which names no `%s`:\n%s", subject, scan, scan.Cond, bound, explaintest.Outline(t, plan))
+					}
+				}
+			}
+			if explaintest.SeqScansRelation(t, plan, "eval_days") {
+				t.Errorf("%s scans eval_days sequentially, where it holds %.0f rows:\n%s", subject, population, explaintest.Outline(t, plan))
+			}
+			if rowsRead := evalDaysRowsRead(t, plan); read.rows >= 0 && math.Abs(rowsRead-read.rows) > 0.5 {
+				t.Errorf("%s read %.0f rows of eval_days, want the %.0f job rows of its days, of the %.0f it holds:\n%s", subject, rowsRead, read.rows, population, explaintest.Outline(t, plan))
+			}
+			t.Logf("%s:\n%s", subject, explaintest.ExplainBuffered(t, ctx, pool, statement, mode, "text"))
+		}
 	}
 }
 

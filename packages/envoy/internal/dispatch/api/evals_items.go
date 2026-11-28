@@ -1392,6 +1392,14 @@ func outcomeOf(parts []measures.DayPart) string {
 // (read.rng.start and end), which the items route reads as the same days: the range's whole days
 // are a day longer where it starts inside one, and past the 84 days the route takes where it was
 // 84 days long.
+//
+// The cells come from the eval's stored figures of the range where they hold them
+// (evals.StoredJobsIn: a range of a length the Evals tab offers, of the project's own rows or of
+// one repository, which the stored figures serve), the same cells folded ahead of the read
+// (measures.JobCells), ranked by the same rule (measures.RankSlowestJobs); and from the day rows
+// otherwise, and wherever a series filter names one job. The first paint's slowest-jobs read of
+// the day rows was 122.8 of the first paint's 224.1 ms of database time at ten times INFRA's
+// rate (dispatch://INFRA-2918, T33): every job row of the range, with its samples.
 func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	index := slices.IndexFunc(read.entry.Series, isJobSeries)
 	if index < 0 {
@@ -1400,63 +1408,63 @@ func (s *server) jobItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if read.request.sort == evalSortFailures {
 		return s.failingJobRows(ctx, read)
 	}
-	days, err := s.evalDaysOf(ctx, read)
-	if err != nil {
-		return nil, err
-	}
-	var parts []measures.DayPart
-	newest := map[string]time.Time{}
-	for _, day := range days {
-		name, job := strings.CutPrefix(day.Series, measures.JobSeriesPrefix)
-		if !job {
-			continue
-		}
-		parts = append(parts, day.DayPart)
-		if day.Day.After(newest[name]) {
-			newest[name] = day.Day
+	floor := slowestJobsFloor(read.entry.Series[index])
+	var cells []measures.JobCell
+	var newest map[string]time.Time
+	stored, held := evals.StoredJobs{}, false
+	if read.request.series == "" {
+		var err error
+		if stored, held, err = evals.StoredJobsIn(ctx, read.tx, read.entry, read.repos, read.rng.days); err != nil {
+			return nil, err
 		}
 	}
-	type jobCell struct {
-		name string
-		cell measures.Cell
-	}
-	var cells []jobCell
-	if read.request.sort == evalSortMedian {
-		// The range's own days: its day rows are of no other.
-		shown := evalRangeDays(read.rng.days)
-		for _, job := range measures.SlowestJobTotals(parts, shown, slowestJobsFloor(read.entry.Series[index])) {
-			cells = append(cells, jobCell{job.Name, job.Cell})
+	switch {
+	case held && read.request.sort == evalSortMedian:
+		cells, newest = measures.RankSlowestJobs(stored.Cells, floor), stored.Newest
+	case held:
+		cells, newest = stored.Cells, stored.Newest
+	default:
+		days, err := s.evalDaysOf(ctx, read)
+		if err != nil {
+			return nil, err
 		}
-	} else {
-		byJob := map[string][]measures.DayPart{}
-		for _, part := range parts {
-			name := strings.TrimPrefix(part.Series, measures.JobSeriesPrefix)
-			// The job's parts as the timing fold reads a series: its minutes.
-			part.Series = measures.SeriesMinutes
-			byJob[name] = append(byJob[name], part)
+		var parts []measures.DayPart
+		newest = map[string]time.Time{}
+		for _, day := range days {
+			name, job := strings.CutPrefix(day.Series, measures.JobSeriesPrefix)
+			if !job {
+				continue
+			}
+			parts = append(parts, day.DayPart)
+			if day.Day.After(newest[name]) {
+				newest[name] = day.Day
+			}
 		}
-		for _, name := range slices.Sorted(maps.Keys(byJob)) {
-			cells = append(cells, jobCell{name, measures.FoldTiming(byJob[name])})
+		if read.request.sort == evalSortMedian {
+			// The range's own days: its day rows are of no other.
+			cells = measures.SlowestJobTotals(parts, evalRangeDays(read.rng.days), floor)
+		} else {
+			cells = measures.JobCells(parts)
 		}
 	}
 	rows := make([]evalItemRow, len(cells))
 	for position, job := range cells {
 		behind := url.Values{
 			"from": {read.rng.start.Format(time.RFC3339Nano)}, "to": {read.rng.end.Format(time.RFC3339Nano)},
-			"series": {measures.JobSeriesPrefix + job.name}, "row_kind": {evalRowDay},
+			"series": {measures.JobSeriesPrefix + job.Name}, "row_kind": {evalRowDay},
 		}
 		if len(read.request.repos) > 0 {
 			behind["repo"] = read.request.repos
 		}
 		rows[position] = evalItemRow{
-			RowKey:  job.name,
+			RowKey:  job.Name,
 			RowKind: evalRowJob,
 			Cols: map[string]any{
-				"name": job.name, "n": job.cell.N, "median_minutes": job.cell.MedianMinutes, "p90_minutes": job.cell.P90Minutes,
-				"success": job.cell.Success, "failure": job.cell.Failure, "cancelled": job.cell.Cancelled,
-				"success_rate": job.cell.SuccessRate,
+				"name": job.Name, "n": job.Cell.N, "median_minutes": job.Cell.MedianMinutes, "p90_minutes": job.Cell.P90Minutes,
+				"success": job.Cell.Success, "failure": job.Cell.Failure, "cancelled": job.Cell.Cancelled,
+				"success_rate": job.Cell.SuccessRate,
 			},
-			MeasuredAt: newest[job.name],
+			MeasuredAt: newest[job.Name],
 			Source:     "measures.FoldTiming",
 			Href:       evalItemsPath(read.project, read.entry.Definition.Slug) + "?" + behind.Encode(),
 			Links:      []evals.Link{},

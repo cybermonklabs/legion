@@ -338,6 +338,148 @@ func TestTheSlowestJobsAnswerNamesItsFloor(t *testing.T) {
 	}
 }
 
+// TestPRCIsJobsFromTheStoredFiguresAreTheDayRowsJobs (dispatch://INFRA-2918, T33): pr-ci's job
+// rows, ranked by median as the CI section's slowest-jobs list reads them (sort=median) and listed
+// by name (row_kind=job), over 28 and 84 days, each from midnight to midnight and as the live view
+// reads it (from a moment, so L+1 whole days), with and without the compare range of the same
+// length before it, and over 28 days of the deploy repository with its compare range, answer byte
+// for byte what the day rows answer: read once with the stored figures built, which hold each
+// job's cell over each range (evals.StoredJobsIn), and once with no project's figures marked built
+// (eval_figures_built), which reads the day rows. Then, with the marks back and every job row
+// deleted from eval_days with no fold, each shape the stored figures offer answers as it did,
+// which no read of the job rows could, and 10 days, a length the tab does not offer, read from the
+// day rows, answers no job where it answered some. Before the stored figures held the jobs, every
+// shape read the day rows, and the shapes they offer answered no job once the rows were deleted.
+func TestPRCIsJobsFromTheStoredFiguresAreTheDayRowsJobs(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	fixture := deliverytest.Seed(t, database.Pool, deliveryseed.Spec{Seed: 2918, OneProject: true, Days: 120})
+	now := fixture.To.Add(-time.Minute)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, now)
+	today := measures.Midnight(now)
+	exec := func(statement string, args ...any) {
+		t.Helper()
+		if _, err := database.Pool.Exec(t.Context(), statement, args...); err != nil {
+			t.Fatalf("%s: %v", strings.Fields(statement)[0], err)
+		}
+	}
+	type jobShape struct {
+		name    string
+		query   url.Values
+		offered bool
+	}
+	ranged := func(from, to time.Time, n int, compare bool) url.Values {
+		query := url.Values{"from": {from.Format(time.RFC3339)}, "to": {to.Format(time.RFC3339)}}
+		if compare {
+			query.Set("compare_from", from.AddDate(0, 0, -n).Format(time.RFC3339))
+			query.Set("compare_to", to.AddDate(0, 0, -n).Format(time.RFC3339))
+		}
+		return query
+	}
+	var shapes []jobShape
+	for _, n := range []int{28, 84} {
+		for _, compare := range []bool{false, true} {
+			named := fmt.Sprintf("%d days", n)
+			if compare {
+				named += " with a compare range"
+			}
+			shapes = append(shapes,
+				jobShape{name: named, query: ranged(today.AddDate(0, 0, -n), today, n, compare), offered: true},
+				jobShape{name: "the live " + named, query: ranged(now.AddDate(0, 0, -n), now, n, compare), offered: true})
+		}
+	}
+	ofRepo := ranged(today.AddDate(0, 0, -28), today, 28, true)
+	ofRepo.Set("repo", fixture.DeployRepo)
+	shapes = append(shapes,
+		jobShape{name: "28 days of " + fixture.DeployRepo + " with a compare range", query: ofRepo, offered: true},
+		jobShape{name: "10 days", query: ranged(today.AddDate(0, 0, -10), today, 10, false)})
+	reads := []url.Values{{"sort": {evalSortMedian}, "limit": {"200"}}, {"row_kind": {evalRowJob}, "limit": {"200"}}}
+	answers := func() map[string][]byte {
+		t.Helper()
+		bodies := map[string][]byte{}
+		for _, shape := range shapes {
+			for _, read := range reads {
+				query := maps.Clone(shape.query)
+				maps.Copy(query, read)
+				target := evalItemsPath(fixture.Project, evals.SlugPRCI) + "?" + query.Encode()
+				response := evalRequest(t, handler, http.MethodGet, target, nil, "")
+				if response.Code != http.StatusOK {
+					t.Fatalf("GET %s: status %d, body %s", target, response.Code, response.Body.String())
+				}
+				bodies[shape.name+" "+read.Encode()] = bytes.Clone(response.Body.Bytes())
+			}
+		}
+		return bodies
+	}
+	jobsOf := func(body []byte) (window, compare int) {
+		t.Helper()
+		var answer evalItemsResponse
+		if err := json.Unmarshal(body, &answer); err != nil {
+			t.Fatalf("decode an items answer: %v", err)
+		}
+		for _, row := range answer.Items {
+			if row.RowKind != evalRowJob {
+				t.Fatalf("an items answer of pr-ci's jobs holds a row of kind %s: %s", row.RowKind, body)
+			}
+			if row.Range == evals.RangeCompare {
+				compare++
+			} else {
+				window++
+			}
+		}
+		return window, compare
+	}
+
+	built := figuresBuiltOf(t, database.Pool, []string{fixture.Project})
+	if _, held := built[fixture.Project]; !held {
+		t.Fatalf("%s's stored figures stand built nowhere, so no read answers from them", fixture.Project)
+	}
+	stored := answers()
+	windowJobs, compareJobs := 0, 0
+	for _, shape := range shapes {
+		for _, read := range reads {
+			window, compare := jobsOf(stored[shape.name+" "+read.Encode()])
+			if shape.offered {
+				windowJobs, compareJobs = windowJobs+window, compareJobs+compare
+			}
+		}
+	}
+	if windowJobs == 0 || compareJobs == 0 {
+		t.Fatalf("the shapes the stored figures offer answer %d job rows of their windows and %d of their compare ranges, and the check needs both", windowJobs, compareJobs)
+	}
+	exec(`delete from eval_figures_built`)
+	days := answers()
+	for _, line := range slices.Sorted(maps.Keys(stored)) {
+		if !bytes.Equal(stored[line], days[line]) {
+			t.Errorf("%s: the stored figures answer %d bytes that differ from the day rows' %d bytes at byte %d:\n%s\n%s",
+				line, len(stored[line]), len(days[line]), firstDifferingByte(stored[line], days[line]), stored[line], days[line])
+		}
+	}
+
+	// The marks go back as the walk left them: the figures and the union cut built through the
+	// same end day (evals.markFiguresBuilt).
+	exec(`insert into eval_figures_built (project_key, through, built_by, union_through) values ($1, $2, $3, $2)`, fixture.Project, built[fixture.Project], testServerBuild)
+	// Every key the project reads (eval_project_owners) can hold pr-ci rows of its own, under that
+	// key's pr-ci (an owner key's name holds a `/` of its own), so every computed job row goes:
+	// pr-ci's are the only ones (measures.PRChecksDay).
+	exec(`delete from eval_days where writer = 'computation' and starts_with(series, $1)`, measures.JobSeriesPrefix)
+	gone := answers()
+	for _, shape := range shapes {
+		for _, read := range reads {
+			line := shape.name + " " + read.Encode()
+			window, compare := jobsOf(gone[line])
+			switch before, _ := jobsOf(stored[line]); {
+			case shape.offered && !bytes.Equal(gone[line], stored[line]):
+				t.Errorf("%s: with the job rows deleted and no fold, the stored figures answer otherwise than before, so the read read the day rows:\n%s\n%s", line, gone[line], stored[line])
+			case !shape.offered && (before == 0 || window+compare != 0):
+				t.Errorf("%s: the day rows answered %d jobs before the job rows were deleted and %d after, want some and then none", line, before, window+compare)
+			}
+		}
+	}
+	t.Logf("%d shapes, %d reads each: %d job rows of windows and %d of compare ranges answered alike from the stored figures and the day rows",
+		len(shapes), len(reads), windowJobs, compareJobs)
+}
+
 // TestEveryCatalogueSourceAnswersItsRows: every computed eval a project is seeded with answers,
 // through the items route, rows its numbers count beside its day rows, so no computed eval's items
 // are its readings and day rows alone by an omission (evalComputedItems): over the histories the

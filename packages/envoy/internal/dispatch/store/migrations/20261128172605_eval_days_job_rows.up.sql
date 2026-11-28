@@ -1,0 +1,34 @@
+-- pgmigrate:non-transactional
+-- 20261128172605_eval_days_job_rows.up.sql
+--
+-- The index behind the stored figures' reads of pr-ci's job rows (dispatch://INFRA-2918, T33). The
+-- slowest-jobs list of the Evals tab's first paint read every job row of its range, with its
+-- samples, from eval_days: 122.8 of the first paint's 224.1 ms of database time at ten times
+-- INFRA's rate. pr-ci's stored range figures now hold each job's cell over the range
+-- (evals.jobFigures), which that list reads by the range row's key (evals.StoredJobsIn), so each
+-- fold of pr-ci's figures reads its job rows beside its listed rows: the job rows of the days a
+-- write moved, whose stamps it compares (evals.movedFigureDays, its rows_stamp holding them), and
+-- those of every range that holds one of those days (evals.readFoldGroups), of one cut's days
+-- (evals.readCutJobRows: the figures walk, a stale cut's refold, a first paint, a rebuild's
+-- overlay). Each is a range of this index for each key the project reads, of one eval, one
+-- writer and a run of days, as eval_days_stamps (20261117100006) is of the listed rows, which hold
+-- no job row: a job's series is unlisted. Without it each read is every row of pr-ci of every
+-- series, repository, deploy repository and day through the primary key.
+--
+-- The predicate is the reads' own `not listed and starts_with(series, 'job:')`, written into each
+-- statement (evals.jobRowsOf), so the planner proves the index from the statement under a generic
+-- plan too, and a listed row, which eval_days_stamps holds, holds no entry: the index holds pr-ci's
+-- job rows and the few unlisted rows of a logged series named so.
+--
+-- It is built `concurrently`, outside the runner's transaction, because eval_days is the table
+-- every refresher pass and every readings write writes: a plain build holds SHARE on it for one read
+-- of the table, which blocks every one of those writes until it ends. A concurrent build takes SHARE
+-- UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two passes over the
+-- table and a wait for the transactions already open, each wait bounded at five seconds and tried
+-- again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A failed build leaves
+-- an INVALID index of this name on eval_days, which the runner drops with DROP INDEX CONCURRENTLY
+-- and builds again on its next attempt or boot. Until it is built a fold reads the job rows through
+-- the primary key, slower and with the same rows. The release before this one reads and writes
+-- eval_days as it did: no statement of it names this index, and its folds read no job row.
+create index concurrently if not exists eval_days_job_rows on eval_days (project_key, eval_id, writer, day)
+    where not listed and starts_with(series, 'job:');
