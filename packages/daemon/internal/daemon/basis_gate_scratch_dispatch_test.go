@@ -572,12 +572,13 @@ func (r *personHandoverRig) openWhileWaiting(held *outboxHold, grant string, roo
 	var first *api.DeliveryView
 	if suspended {
 		testwait.Eventually(t, "the outbox to try the resting-root row of "+parent.Key, func() bool { return r.restingAttempts(parent.Key) > 0 })
-		if rows, state := r.notices(parent.Key, "resting-root"), r.d.claim(architect).State; len(rows) != 1 || state != string(supervise.StateSuspended) {
+		suspendedClaim := r.d.claim(architect)
+		if rows := r.notices(parent.Key, "resting-root"); len(rows) != 1 || suspendedClaim.State != string(supervise.StateSuspended) {
 			t.Fatalf("after the outbox tried it, the resting-root rows of %s = %+v with its architect claim %s, want the row waiting for that suspended claim",
-				parent.Key, rows, state)
+				parent.Key, rows, suspendedClaim.State)
 		}
 		t.Logf("the resting-root row of %s waits for its suspended architect claim", parent.Key)
-		first = r.d.claim(architect).Pending
+		first = suspendedClaim.Pending
 	} else {
 		if slices.ContainsFunc(r.d.claims(), func(c api.OperatorClaim) bool { return c.Token == architect }) {
 			t.Fatalf("the daemon lists an architect claim of %s while %s waits in the line for its first slot, want none", parent.Key, parent.Key)

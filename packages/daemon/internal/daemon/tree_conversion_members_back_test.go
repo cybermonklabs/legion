@@ -20,8 +20,8 @@ import (
 
 // releaseBeforeMigrations are this release's own migrations, the ones main, the release before the
 // one that stores no tree, does not carry, as `comm` reads the up.sql files of this tree against
-// those of main's tip (f9809362 at the last forward merge). A store migrated with every migration
-// but these is the store main leaves.
+// those of main's tip (390c6010 at the last forward merge, whose migrations are f9809362's). A
+// store migrated with every migration but these is the store main leaves.
 var releaseBeforeMigrations = []int{20261122154644, 20261122154645, 20261126035722, 20261127104032}
 
 // oldestReleaseNewest is the newest migration that legion-v22.16.2, the oldest release a project's

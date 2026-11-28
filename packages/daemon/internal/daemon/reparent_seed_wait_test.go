@@ -167,14 +167,10 @@ func seedWaitIssues(t *testing.T, pool *store.Pool, client *tickDispatch, issue 
 	client.serve(dispatch.Issue{Key: seedWaitParent, Project: "CAPTURE", Status: "backlog", Parent: new(seedWaitAbove), LastSeq: 2})
 }
 
-// seedWaitTells runs CAPTURE-500's one re-parent seed as the outbox's lane runs a row (execute):
-// it waits on CAPTURE-700's chain and tells nobody. One turn of R16's re-read (rereadDue) then
-// asks Dispatch for asked, in that order, CAPTURE-700's chain among them, and applies the answers,
-// so the copy holds that chain known; and the seed's next attempt tells CAPTURE-300's architect,
-// above the issue now, once, in the words of the move from CAPTURE-208 to CAPTURE-700.
-func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool *store.Pool, asked []string) {
+// seedWaitRow is CAPTURE-500's one re-parent seed, of the move from CAPTURE-208 to CAPTURE-700,
+// as the outbox holds it.
+func seedWaitRow(t *testing.T, pool *store.Pool) record.OutboxRow {
 	t.Helper()
-	ctx := context.Background()
 	rows := rowsOfKind(t, pool, record.OutboxKindReparentSeed)
 	if len(rows) != 1 || rows[0].Issue != seedWaitIssue {
 		t.Fatalf("premise: the outbox holds re-parent seeds %+v, want one of %s", rows, seedWaitIssue)
@@ -186,7 +182,19 @@ func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool 
 	if seed := payload.(record.ReparentSeed); seed.Parent != seedWaitParent || seed.OldParent != seedWaitBefore {
 		t.Fatalf("premise: the seed is %+v, want the move from %s to %s", seed, seedWaitBefore, seedWaitParent)
 	}
-	if err := w.outbox.execute(ctx, rows[0]); !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, record.ErrChainUnknown) {
+	return rows[0]
+}
+
+// seedWaitTells runs CAPTURE-500's one re-parent seed as the outbox's lane runs a row (execute):
+// it waits on CAPTURE-700's chain and tells nobody. One turn of R16's re-read (rereadDue) then
+// asks Dispatch for asked, in that order, CAPTURE-700's chain among them, and applies the answers,
+// so the copy holds that chain known; and the seed's next attempt tells CAPTURE-300's architect,
+// above the issue now, once, in the words of the move from CAPTURE-208 to CAPTURE-700.
+func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool *store.Pool, asked []string) {
+	t.Helper()
+	ctx := context.Background()
+	row := seedWaitRow(t, pool)
+	if err := w.outbox.execute(ctx, row); !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, record.ErrChainUnknown) {
 		t.Fatalf("the seed's first attempt = %v, want it waiting for the chain of %s", err, seedWaitParent)
 	}
 	if told := seedWaitTold(t, pool); len(told) != 0 {
@@ -202,7 +210,7 @@ func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool 
 		t.Errorf("the copy holds the chain of %s unknown after the re-read applied Dispatch's answers", seedWaitParent)
 	}
 
-	if err := w.outbox.execute(ctx, rows[0]); err != nil {
+	if err := w.outbox.execute(ctx, row); err != nil {
 		t.Fatalf("the seed's attempt once the chain of %s is known = %v, want it applied", seedWaitParent, err)
 	}
 	told := seedWaitTold(t, pool)
@@ -225,20 +233,10 @@ func seedWaitTells(t *testing.T, w *workflowRuntime, client *tickDispatch, pool 
 func seedSupersededRuns(t *testing.T, w *workflowRuntime, client *tickDispatch, pool *store.Pool, asked []string) {
 	t.Helper()
 	ctx := context.Background()
-	rows := rowsOfKind(t, pool, record.OutboxKindReparentSeed)
-	if len(rows) != 1 || rows[0].Issue != seedWaitIssue {
-		t.Fatalf("premise: the outbox holds re-parent seeds %+v, want one of %s", rows, seedWaitIssue)
-	}
-	payload, err := record.DecodeOutboxPayload(rows[0])
-	if err != nil {
-		t.Fatalf("decode the re-parent seed: %v", err)
-	}
-	if seed := payload.(record.ReparentSeed); seed.Parent != seedWaitParent || seed.OldParent != seedWaitBefore {
-		t.Fatalf("premise: the seed is %+v, want the move from %s to %s", seed, seedWaitBefore, seedWaitParent)
-	}
+	row := seedWaitRow(t, pool)
 
 	before := len(client.asked())
-	if err := w.outbox.execute(ctx, rows[0]); err != nil {
+	if err := w.outbox.execute(ctx, row); err != nil {
 		t.Fatalf("the seed's first attempt = %v, want it applied: the move made while %s was stopped superseded it, so it waits on no chain of %s",
 			err, seedWaitIssue, seedWaitParent)
 	}
@@ -256,15 +254,9 @@ func seedSupersededRuns(t *testing.T, w *workflowRuntime, client *tickDispatch, 
 	}
 
 	told := seedWaitTold(t, pool)
-	for _, notice := range told {
-		if strings.Contains(notice.Reason, "now stands above it") {
-			t.Errorf("the notice to the architect of %s says %q: it names an architect as above %s now, though a later move superseded the seed",
-				notice.To, notice.Reason, seedWaitIssue)
-		}
-	}
 	if len(told) != 0 {
-		t.Fatalf("the seed told %+v, want nobody: %s has no architect claim, and the copy shows no issue in Legion's work above %s or %s",
-			told, seedWaitIssue, seedWaitBefore, seedWaitParent)
+		t.Fatalf("the seed told %+v, want nobody, and none naming an architect as above %s now: %s has no architect claim, and the copy shows no issue in Legion's work above %s or %s",
+			told, seedWaitIssue, seedWaitIssue, seedWaitBefore, seedWaitParent)
 	}
 }
 

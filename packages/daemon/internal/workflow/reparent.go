@@ -180,11 +180,8 @@ func (e *Engine) reparentSeed(ctx context.Context, tx pgx.Tx, issue record.Issue
 // before and the one above it now, each naming the one it tells (record.Notice.To) and each
 // reading the same words (reparentedWords). The seed's parents, not the issue's current parent,
 // identify the two owner walks, so a later move does not erase the telling of an earlier one. A
-// seed a later move has superseded (seedSuperseded, over the issue's parent as the copy of
-// Dispatch holds it, copyParent) still tells the recipients of its own move, but names no
-// architect above it now and no R1 path: the issue no longer stands under the seed's parent,
-// whether the later move was told in Legion's work or made while the issue was out of it, which
-// changes its parent without telling anyone.
+// seed a later move has superseded (seedSuperseded) still tells the recipients of its own move,
+// but names no architect above it now and no R1 path.
 // When the latest move's new chain is unknown, no notices are queued until the chain is known
 // (R16), whatever the issue's phase meanwhile: a stop does not end the telling a move made in
 // Legion's work owes, and once the chain is known each architect is told in the seed's words, as
@@ -196,9 +193,7 @@ func (e *Engine) reparentSeed(ctx context.Context, tx pgx.Tx, issue record.Issue
 // person made it a child of a live tree and left at this release's first boot, names no run: its
 // old parent is the record's, where the record names one other than the seed's new parent, and
 // what goes on is read from the record now. A later move makes that reconstruction unreliable,
-// so only a seed of this older shape still requires its parent to match ToldParent. Past that
-// check it is told as any seed, and the record's parent, which may still be the one its move
-// left, does not judge whether the issue stands under the seed's parent now: the copy does.
+// so only a seed of this older shape still requires its parent to match ToldParent.
 func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.ReparentRead) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -224,7 +219,8 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 	if err != nil {
 		return intake.Result{}, err
 	}
-	architects, err := e.reparentArchitects(ctx, tx, *issue, current, seed)
+	superseded := seedSuperseded(*issue, current, seed)
+	architects, err := e.reparentArchitects(ctx, tx, *issue, superseded, seed)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -244,7 +240,7 @@ func (e *Engine) reparentRead(ctx context.Context, tx pgx.Tx, fact intake.Repare
 		}
 	}
 	now := architects.now
-	if seedSuperseded(*issue, current, seed) {
+	if superseded {
 		// Still tell the recipients of that move, but don't ask them to act on it as if
 		// the issue were still under that parent.
 		now, version = "", 0
@@ -285,29 +281,26 @@ func copyParent(ctx context.Context, tx pgx.Tx, store record.Store, issue record
 
 // seedSuperseded says whether a later move has superseded seed, so the issue no longer stands
 // under the seed's new parent: the issue has been told of a later parent (record.Issue.ToldParent),
-// or its current Dispatch parent, current (copyParent), is another. Both are read because a move
-// made while the issue was out of Legion's work changes its parent without telling anyone
-// (tellParentChange leaves told_parent as it was), so told_parent alone still names the seed's
-// parent after it.
+// whose move has a seed of its own, or its current Dispatch parent, current (copyParent), is
+// another. Both are read because a move made while the issue was out of Legion's work changes its
+// parent without telling anyone (tellParentChange leaves told_parent as it was), so told_parent
+// alone still names the seed's parent after it.
 func seedSuperseded(issue record.Issue, current string, seed record.ReparentSeed) bool {
 	return issue.ToldParent != seed.Parent || current != seed.Parent
 }
 
-// reparentWaitParent is the parent whose chain the seed waits for, current being the issue's
-// current Dispatch parent (copyParent): the seed's new parent while no later move has superseded
-// the seed (seedSuperseded: a later move told in Legion's work has its own seed, which tells it,
-// and a move made while the issue was out of Legion's work, which tells no one, leaves the issue
-// under another parent, so no chain of the seed's parent is owed) and while it is of the issue's
-// project (record.InProjectParent: a parent of another project ends the chain, which is then
-// known), "" for none. The wait holds whatever the issue's phase: R16 of dispatch://INFRA-3320
-// reads Dispatch again for a chain that is unknown, in Legion's work or out of it, until the
-// chain is known. The issue need not stand where an admission pass reads this parent (a close
-// that landed with the move took it to phase done, which no admission pass reads), so the outbox
-// has R16's re-read read this parent itself at each attempt that waits (the daemon's
-// seedReparent, through ReparentChainPending), and the telling owed since the move waits for that
-// read, out of work as in it.
-func reparentWaitParent(issue record.Issue, current string, seed record.ReparentSeed) string {
-	if seedSuperseded(issue, current, seed) {
+// reparentWaitParent is the parent whose chain the seed waits for: the seed's new parent while it
+// is of the issue's project (record.InProjectParent: a parent of another project ends the chain,
+// which is then known), and "" for none or where superseded says a later move has superseded the
+// seed (seedSuperseded), which leaves no chain of the seed's parent owed. The wait holds whatever
+// the issue's phase: R16 of dispatch://INFRA-3320 reads Dispatch again for a chain that is
+// unknown, in Legion's work or out of it, until the chain is known. The issue need not stand where
+// an admission pass reads this parent (a close that landed with the move took it to phase done,
+// which no admission pass reads), so the outbox has R16's re-read read this parent itself at each
+// attempt that waits (the daemon's seedReparent, through ReparentChainPending), and the telling
+// owed since the move waits for that read, out of work as in it.
+func reparentWaitParent(issue record.Issue, superseded bool, seed record.ReparentSeed) string {
+	if superseded {
 		return ""
 	}
 	return record.InProjectParent(issue.Key, seed.Parent)
@@ -315,12 +308,9 @@ func reparentWaitParent(issue record.Issue, current string, seed record.Reparent
 
 // ReparentChainPending lets the outbox keep the same seed on backoff while R16's re-read
 // repairs the copy, rather than running the Dispatch read and queuing a replacement every time.
-// It answers true only for a seed no later move has superseded (seedSuperseded: ToldParent and
-// the issue's current Dispatch parent, which it reads from the copy (copyParent), are both the
-// seed's parent, since a move made while the issue was out of Legion's work changes its parent
-// without telling anyone) whose parent is of the issue's project and whose chain the copy holds
-// unknown (reparentWaitParent), so the parent the seed waits on is then seed.Parent, which the
-// outbox notes for that re-read.
+// It answers true only for a seed no later move has superseded (seedSuperseded) whose parent is
+// of the issue's project and whose chain the copy holds unknown (reparentWaitParent), so the
+// parent the seed waits on is then seed.Parent, which the outbox notes for that re-read.
 func ReparentChainPending(ctx context.Context, tx pgx.Tx, store record.Store, key string, seed record.ReparentSeed) (bool, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -330,7 +320,8 @@ func ReparentChainPending(ctx context.Context, tx pgx.Tx, store record.Store, ke
 	if err != nil {
 		return false, err
 	}
-	parent := reparentWaitParent(*issue, current, seed)
+	superseded := seedSuperseded(*issue, current, seed)
+	parent := reparentWaitParent(*issue, superseded, seed)
 	if parent == "" {
 		return false, nil
 	}
@@ -338,14 +329,13 @@ func ReparentChainPending(ctx context.Context, tx pgx.Tx, store record.Store, ke
 	if err != nil {
 		return false, err
 	}
-	return reparentChainUnknown(*issue, current, seed, chains), nil
+	return reparentChainUnknown(*issue, superseded, seed, chains), nil
 }
 
 // reparentChainUnknown says whether seed waits on the chain of its wait parent
-// (reparentWaitParent, current being the issue's current Dispatch parent), which chains, read over
-// that parent, shows still unknown.
-func reparentChainUnknown(issue record.Issue, current string, seed record.ReparentSeed, chains *record.Chains) bool {
-	parent := reparentWaitParent(issue, current, seed)
+// (reparentWaitParent), which chains, read over that parent, shows still unknown.
+func reparentChainUnknown(issue record.Issue, superseded bool, seed record.ReparentSeed, chains *record.Chains) bool {
+	parent := reparentWaitParent(issue, superseded, seed)
 	return parent != "" && !chains.Chain(parent).Known()
 }
 
@@ -369,7 +359,7 @@ func (a reparentArchitects) distinct() []string {
 	return told
 }
 
-func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record.Issue, current string, seed record.ReparentSeed) (reparentArchitects, error) {
+func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record.Issue, superseded bool, seed record.ReparentSeed) (reparentArchitects, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return reparentArchitects{}, err
@@ -386,7 +376,7 @@ func (e *Engine) reparentArchitects(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return reparentArchitects{}, err
 	}
-	if reparentChainUnknown(issue, current, seed, chains) {
+	if reparentChainUnknown(issue, superseded, seed, chains) {
 		return reparentArchitects{waits: true}, nil
 	}
 	walk, err := record.OwnerWalkOver(ctx, e.store, tx, project, chains, keys)

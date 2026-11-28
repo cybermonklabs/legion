@@ -206,18 +206,18 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 }
 
-// thisBranchsMigrationsMainLacks are the versions this head embeds that main at f9809362, this
+// thisBranchsMigrationsMainLacks are the versions this head embeds that main at 390c6010, this
 // branch's newest merge of main, has not recorded, read off that commit as releaseDatabase says:
 // dispatch://INFRA-4730's three (20261122154644, 20261122154645 and 20261126035722), every one of
-// them below main's newest, 20261126163320, and the merge's union of the kind lists
-// (20261127104032), above it. Every other embedded version is one main's run applied, #4065's two
-// (20261115060739 and 20261115121838) and its merge holds kind (20261126110259),
-// dispatch://INFRA-3931's state events (20261126163320), cybermonklabs/legion#3712's four
-// (20261112012123, 20261112215432, 20261118073048 and 20261122212816) and #5204's parent of a plan
-// task (20261124022547) among them. 20261122154645 rewrites outbox_kind_check over the rows main's
-// daemon left, and 20261127104032 rewrites it last, as it does on every database this release
-// upgrades. The upgrade applies all four whatever main's newest version is: Store.apply asks each
-// migration whether its own version is recorded.
+// them below main's newest, 20261126163320, and the union of the kind lists that this branch's
+// merge 07a5990c made (20261127104032), above it. Every other embedded version is one main's run
+// applied, #4065's two (20261115060739 and 20261115121838) and its merge holds kind
+// (20261126110259), dispatch://INFRA-3931's state events (20261126163320),
+// cybermonklabs/legion#3712's four (20261112012123, 20261112215432, 20261118073048 and
+// 20261122212816) and #5204's parent of a plan task (20261124022547) among them. 20261122154645
+// rewrites outbox_kind_check over the rows main's daemon left, and 20261127104032 rewrites it
+// last, as it does on every database this release upgrades. The upgrade applies all four whatever
+// main's newest version is: Store.apply asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
 	holdsGateVersion: true, issueFactsVersion: true, claimsIssueVersion: true,
 	kindsAfterTheStateEventsVersion: true,
