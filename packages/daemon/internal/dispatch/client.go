@@ -567,7 +567,6 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 		Primary:       response.Primary,
 		Role:          response.Role,
 		Slug:          response.Slug,
-		ContentSHA256: response.Approval.ContentSHA256,
 		CurrentSHA256: response.Approval.CurrentSHA256,
 		DigestOwed:    response.Approval.DigestOwed,
 	}

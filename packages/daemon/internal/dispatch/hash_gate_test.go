@@ -53,13 +53,8 @@ func withApproval(t *testing.T, body []byte, change func(approval map[string]any
 // digest_owed, approved at its latest version, and the read the client's own tests serve
 // (approvedAtLatestBody).
 func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
-	const (
-		// standingDigest is artifact.json's content_sha256, the approved version's digest, and its
-		// current_sha256, the latest version's, which matches it.
-		standingDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		// owedApprovedDigest is artifact-owed.json's content_sha256, the approved version's digest.
-		owedApprovedDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	)
+	// standingDigest is artifact.json's current_sha256, the latest version's digest.
+	const standingDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	standing := hashGateFixture(t, "artifact.json")
 	bodies := map[string][]byte{
 		"standing": standing,
@@ -102,23 +97,19 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 	}
 
 	t.Run("version mode reads today's rule", func(t *testing.T) {
-		for id, want := range map[string]struct {
-			latest  int
-			content string
-		}{
-			"version-mode":        {2, standingDigest},
-			"client-version-mode": {3, ""},
+		for id, latest := range map[string]int{
+			"version-mode":        2,
+			"client-version-mode": 3,
 		} {
 			approval := read(t, id)
 			if approval.DigestOwed != nil || approval.CurrentSHA256 != nil {
 				t.Fatalf("%s: approval = %#v, want no digest_owed and no current_sha256 from a Dispatch that sends neither", id, approval)
 			}
-			if approval.State != "approved" || approval.Version == nil || *approval.Version != want.latest ||
-				approval.LatestVersion != want.latest || approval.ContentSHA256 != want.content {
-				t.Fatalf("%s: approval = %#v, want the approval of version %d, its latest, and content_sha256 %q", id, approval, want.latest, want.content)
+			if approval.State != "approved" || approval.Version == nil || *approval.Version != latest || approval.LatestVersion != latest {
+				t.Fatalf("%s: approval = %#v, want the approval of version %d, its latest", id, approval, latest)
 			}
-			if approval.ApprovedLatest() != want.latest || !approval.Stands() {
-				t.Fatalf("%s: ApprovedLatest = %d and Stands = %t, want %d and Stands as today's rule", id, approval.ApprovedLatest(), approval.Stands(), want.latest)
+			if approval.ApprovedLatest() != latest || !approval.Stands() {
+				t.Fatalf("%s: ApprovedLatest = %d and Stands = %t, want %d and Stands as today's rule", id, approval.ApprovedLatest(), approval.Stands(), latest)
 			}
 		}
 	})
@@ -128,9 +119,8 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 		if approval.State != "approved" || approval.Version == nil || *approval.Version != 1 || approval.LatestVersion != 2 {
 			t.Fatalf("approval = %#v, want the approval of version 1 at latest version 2", approval)
 		}
-		if approval.DigestOwed == nil || *approval.DigestOwed || approval.CurrentSHA256 == nil || *approval.CurrentSHA256 != standingDigest ||
-			approval.ContentSHA256 != standingDigest {
-			t.Fatalf("approval = %#v, want digest_owed false, the latest version's current_sha256 and the approved version's content_sha256", approval)
+		if approval.DigestOwed == nil || *approval.DigestOwed || approval.CurrentSHA256 == nil || *approval.CurrentSHA256 != standingDigest {
+			t.Fatalf("approval = %#v, want digest_owed false and the latest version's current_sha256", approval)
 		}
 		if !approval.Stands() {
 			t.Fatal("Stands = false, want true: Dispatch owes no digest and shows the approval")
@@ -145,8 +135,8 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 		if approval.State != "approved" || approval.Version == nil || *approval.Version != 1 || approval.LatestVersion != 2 {
 			t.Fatalf("approval = %#v, want Dispatch's approval of version 1 at latest version 2", approval)
 		}
-		if approval.DigestOwed == nil || !*approval.DigestOwed || approval.CurrentSHA256 != nil || approval.ContentSHA256 != owedApprovedDigest {
-			t.Fatalf("approval = %#v, want digest_owed true, no current_sha256 and the approved version's content_sha256", approval)
+		if approval.DigestOwed == nil || !*approval.DigestOwed || approval.CurrentSHA256 != nil {
+			t.Fatalf("approval = %#v, want digest_owed true and no current_sha256", approval)
 		}
 		if approval.Stands() {
 			t.Fatal("Stands = true, want false: Dispatch shows the approval, but owes the digest of the latest version")

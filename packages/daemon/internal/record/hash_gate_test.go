@@ -82,12 +82,12 @@ func TestHashGateOpenRule(t *testing.T) {
 // (GateBasis.RootVersion, Departure D2): the latest version the gate holds when the basis is set,
 // open or pending, and, for a pending basis that a person's approval of the ancestor's request
 // opens, the version that pending registration stood at. The two registrations leave a step a
-// person's approval holds open as it is by the told standing, so a digest owed on the root's own
-// document does not move that approval into KeptPerson. The store's reader closes a basis whose
-// approved version stands below the latest as a release before the basis's move only where no
-// digest is owed: in a fill window the latest version rose under this release, and the basis
-// waits for the digest.
-func TestHashGateBasisTransitionsReadTheToldStanding(t *testing.T) {
+// person's own approval holds open as it is by Dispatch's verdict on that approval, so a digest
+// owed on the root's own document does not move that approval into KeptPerson. The store's reader
+// closes a basis whose approved version stands below the latest as a release before the basis's
+// move only where no digest is owed: in a fill window the latest version rose under this release,
+// and the basis waits for the digest.
+func TestHashGateBasisTransitionsReadThePersonsOwnApproval(t *testing.T) {
 	registered := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
 	personal := EventMark{Seq: 9, At: registered.Add(-48 * time.Hour)}
 	m40 := EventMark{Seq: 40, At: registered.Add(-time.Hour)}
@@ -142,6 +142,63 @@ func TestHashGateBasisTransitionsReadTheToldStanding(t *testing.T) {
 			t.Fatalf("a step on a basis an earlier release's version 5 moved reads as %#v, want its basis ended on the person's approval of 2", got)
 		}
 	})
+}
+
+// A basis outranks no person's approval of the root's own document (R3), and the two transitions
+// that set one, OpenOnBasis and PendOnBasis, leave a step such an approval holds as it is
+// (heldByPerson): in version mode an approval of the latest version, in hash mode Dispatch's verdict
+// that the approval stands, also for an older version it reports current and through a fill window
+// at the verdict's version, and never a changes request. A step a basis stands open on is the
+// basis's, and the standing a basis told the tree, left on a row whose basis ended (CloseBasis) or
+// turned pending while a digest is owed, is no person's approval: the told standing is never read.
+func TestHashGatePersonsOwnApprovalHoldsTheStep(t *testing.T) {
+	registered := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	personal := EventMark{Seq: 9, At: registered.Add(-48 * time.Hour)}
+	m40 := EventMark{Seq: 40, At: registered.Add(-time.Hour)}
+	row := func(latest int, approved *int, verdict *GateVerdict, told *bool) DesignGate {
+		gate := DesignGate{Issue: "LEGION-208", Step: DesignStepSpec, ArtifactID: "artifact-208", LatestVersion: latest,
+			ApprovedVersion: approved, Verdict: verdict, ToldOpen: told}
+		if approved != nil {
+			gate.ApprovedMark = personal
+		}
+		return gate
+	}
+	changes := row(4, nil, hashVerdict(4, false, m40), new(false))
+	changes.ToldChangesVersion, changes.ToldChangesReason, changes.ToldChangesMark = new(4), "name the rollback path", m40
+	onBasis := OpenOnBasis(row(4, nil, nil, nil), basisOf("LEGION-100", 3, registered))
+	onBasis.Verdict, onBasis.ToldOpen = hashVerdict(4, true, m40), new(true)
+	// A step open on a basis at its own version 3, told open, whose own version 4 owes its digest.
+	stood := OpenOnBasis(row(3, nil, nil, nil), basisOf("LEGION-100", 3, registered))
+	stood.LatestVersion, stood.Verdict, stood.ToldOpen = 4, hashVerdict(3, false, m40), new(true)
+	pending := PendOnBasis(row(4, nil, hashVerdict(3, false, m40), new(true)), basisOf("LEGION-100", 4, registered), "ask-1")
+	if !pending.PendingOnBasis() || pending.ToldOpen == nil || !*pending.ToldOpen {
+		t.Fatalf("the pending step = %#v, want it pending, told open as the basis before it told", pending)
+	}
+
+	for _, tc := range []struct {
+		name string
+		gate DesignGate
+		held bool
+	}{
+		{"version mode, a person's approval of the latest version", row(4, new(4), nil, nil), true},
+		{"version mode, an approval below the latest version", row(5, new(4), nil, nil), false},
+		{"hash mode, a person's approval of the latest version", row(4, new(4), hashVerdict(4, true, m40), new(true)), true},
+		{"hash mode, an approval of 3 that Dispatch reports current for 4", row(4, new(3), hashVerdict(4, true, m40), new(true)), true},
+		{"hash mode, a fill window over a standing approval", row(5, new(4), hashVerdict(4, true, m40), new(true)), true},
+		{"hash mode, a changes request recorded", changes, false},
+		{"hash mode, a step open on a basis whose own approval stands", onBasis, false},
+		{"hash mode, the basis ended while a digest is owed, told open by it", CloseBasis(stood), false},
+		{"hash mode, pending while a digest is owed, told open by the basis before", pending, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := heldByPerson(tc.gate); got != tc.held {
+				t.Fatalf("heldByPerson = %t, want %t", got, tc.held)
+			}
+			if got := OpenOnBasis(tc.gate, basisOf("LEGION-101", 5, registered)); reflect.DeepEqual(got, tc.gate) != tc.held {
+				t.Fatalf("a basis over the step = %#v; want the step left as it is: %t", got, tc.held)
+			}
+		})
+	}
 }
 
 // A daemon from before the hash gate writes none of the verdict's columns, so a move it makes

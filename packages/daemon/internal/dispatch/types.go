@@ -341,12 +341,11 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
 //
-// ContentSHA256 is the SHA-256 of the text of the version the latest review reviewed, which
-// Dispatch pinned when it recorded the review, empty when it sent none. CurrentSHA256 and
-// DigestOwed are Dispatch's hash-gate verdict on the latest version (R1 of dispatch://INFRA-6065):
-// the latest version's digest, nil while it is owed and from a Dispatch that sends none, and
-// whether Dispatch still owes that digest, nil from a Dispatch that sends no digest_owed, so an
-// absent field reads apart from false. Stands, OwesDigest and DigestFound read them.
+// CurrentSHA256 and DigestOwed are Dispatch's hash-gate verdict on the latest version (R1 of
+// dispatch://INFRA-6065): the latest version's digest, nil while it is owed and from a Dispatch
+// that sends none, and whether Dispatch still owes that digest, nil from a Dispatch that sends no
+// digest_owed, so an absent field reads apart from false. Stands, OwesDigest and DigestFound read
+// them.
 //
 // Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
 // finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
@@ -366,7 +365,6 @@ type Approval struct {
 	Primary       bool
 	Role          string
 	Slug          string
-	ContentSHA256 string
 	CurrentSHA256 *string
 	DigestOwed    *bool
 }

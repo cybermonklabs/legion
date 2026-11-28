@@ -57,9 +57,9 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 //
 // A read that carries Dispatch's verdict (fact.DigestOwed, dispatch://INFRA-6065 R3 and R5) is
 // applied as one fact of the document to the row of it the record holds (registeredVerdict): the
-// approval Dispatch reports standing records its own version as approved, whatever the latest
-// version, and the gate opens on the verdict at the latest version; a read that owes the digest of
-// a newer version raises the latest version, opens nothing and leaves the standing last told as it
+// approval Dispatch shows records its own version as approved, whatever the latest version, and
+// the gate opens on the verdict at the latest version; a read that owes the digest of a newer
+// version raises the latest version, opens nothing and leaves the standing last told as it
 // was. Whether the registration tells an opening reads that told standing (record.ToldStanding): a
 // step told open before it, which no basis holds, was already open, whatever version the verdict
 // moved it to, so a registration across a prose edit tells nobody.
@@ -354,22 +354,18 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 // the changes request it records as told, its verdict and the standing it last told, so a read
 // that owes the digest of a newer version raises the latest version and leaves what was told as it
 // was, and a verdict it gives is ordered against the verdict the row holds. The read records the
-// approval Dispatch reports standing (fact.ApprovedVersion, at mark, whatever the latest version),
-// else a changes request of the version registered, else neither.
+// approval Dispatch shows (fact.ApprovedVersion, at mark, whatever the latest version), else a
+// changes request of the version registered, else neither.
 //
-// A row a basis held lends no told standing: the standing it told was the basis's, and the row
-// this builds holds no basis, so that standing would read as the person's approval holding the
-// step, and the basis the registration names again would find the step held and be dropped
-// (record.OpenOnBasis, record.PendOnBasis). The row reads instead what the person's own approval
-// gives (record.ToldStanding of a row that stores none: GateOpen), and gateRegistered sets the
-// told standing after the basis move (record.ToldOpenAfter).
+// A row a basis held lends the standing that basis told as any other row lends its own, though the
+// row this builds holds no basis: the basis the registration names is set over it all the same,
+// since record.OpenOnBasis and record.PendOnBasis read whether the person's own approval holds the
+// step, never the standing told, and gateRegistered sets the told standing after the basis move
+// (record.ToldOpenAfter).
 func registeredVerdict(built record.DesignGate, stored *record.DesignGate, fact intake.GateRegistered, version int, mark record.EventMark) record.DesignGate {
 	gate := built
 	if stored != nil {
 		gate.LatestVersion, gate.Verdict, gate.ToldOpen = stored.LatestVersion, stored.Verdict, stored.ToldOpen
-		if stored.Basis != nil {
-			gate.ToldOpen = nil
-		}
 		gate.ApprovedVersion, gate.ApprovedMark = nil, record.EventMark{}
 		if approval := stored.ApprovedByPerson(); approval != nil {
 			gate.ApprovedVersion, gate.ApprovedMark = &approval.Version, approval.Mark

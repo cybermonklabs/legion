@@ -996,9 +996,10 @@ func ToldStanding(gate DesignGate) bool {
 //     work it releases starts at once (dispatch://INFRA-6065, R3).
 //   - Otherwise a version owes its digest, which leaves the standing told as it was: told.
 //
-// A told standing that a basis gave is no person's: a caller that rebuilds a row with no basis
-// from one a basis held open does not carry it, so a person's approval is not read as holding the
-// step on it (workflow's registeredVerdict, OpenOnBasis, PendOnBasis).
+// A told standing that a basis gave is no person's, and stays on the row after that basis ends or
+// turns pending while a digest is owed, as the tree was told it: no rule reads it as a person's
+// approval holding the step, since OpenOnBasis and PendOnBasis read the person's own approval
+// (heldByPerson) rather than the standing told.
 func ToldOpenAfter(told bool, gate DesignGate) *bool {
 	switch {
 	case gate.Verdict == nil:

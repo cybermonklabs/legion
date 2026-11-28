@@ -1260,14 +1260,15 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 
 	// W23: a step open on an ancestor's basis that its architect registers again on the same
 	// basis keeps the basis. The told standing the row holds is the basis's, which says nothing of
-	// a person's approval of the root's own document, so the row the registration rebuilds with no
-	// basis does not carry it (registeredVerdict) and the basis is opened again over the person's
-	// own standing (record.OpenOnBasis), at the root version registered; the told standing is set
-	// after that move. So the digest of that root version, false, since the root has no approval of
-	// its own, ends nothing, and nothing is told. Two sequences: the registration while the root's
-	// version 4 owes its digest, as ROOT_VERSION_NOT_LATEST tells the architect to register, and a
-	// registration whose read's verdict floor equals the sequence of the verdict the row holds (the
-	// root's last event is the digest that gave it), which the row does not take.
+	// a person's approval of the root's own document, so record.OpenOnBasis does not read it: the
+	// row the registration rebuilds with no basis (registeredVerdict) is held by no approval of the
+	// person's own (its verdict is false), so the basis is opened again over it, at the root
+	// version registered; the told standing is set after that move. So the digest of that root
+	// version, false, since the root has no approval of its own, ends nothing, and nothing is
+	// told. Two sequences: the registration while the root's version 4 owes its digest, as
+	// ROOT_VERSION_NOT_LATEST tells the architect to register, and a registration whose read's
+	// verdict floor equals the sequence of the verdict the row holds (the root's last event is the
+	// digest that gave it), which the row does not take.
 	t.Run("W23", func(t *testing.T) {
 		t.Parallel()
 		registered := func(t *testing.T, pool *pgxpool.Pool) {
@@ -1393,5 +1394,106 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		}
 		assertNoticeCount(t, pool, "basis-ended", 1)
 		assertNoticeCount(t, pool, "design-approved", 0)
+	})
+
+	// stoodWhileOwed is where W26 and W27 start: LEGION-208's spec step open on LEGION-100's
+	// approval of version 3, registered at its own version 3, in hash mode with its own verdict
+	// false at 3 (no person approved it) and told open; then its own version 4, which owes its
+	// digest, so the step stays open on its basis.
+	stoodWhileOwed := func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
+		t.Helper()
+		seedLiveAncestor(t, pool)
+		stood := onBasisAt(3, 3)
+		stood.Verdict, stood.ToldOpen = &record.GateVerdict{Version: 3, Current: false, Mark: hashMark(9)}, new(true)
+		seedGate(t, pool, stood)
+		apply("version-4", versionOf(t, owedVersion, gatedRoot, gateDoc, 4, 30))
+		if gate := assertHashGate(t, pool, gatedRoot, false, true, 3); !gate.OnBasis() || !record.DigestOwed(gate) {
+			t.Fatalf("the spec row = %+v, want it on its basis while version 4 owes its digest", gate)
+		}
+	}
+
+	// W26: the step open on its basis while its own version 4 owes its digest (stoodWhileOwed).
+	// The ancestor's digest that reports its approval not current for its version 4, marked after
+	// that approval, ends the basis (endOpenBasis), and the owed digest leaves the standing told
+	// as it was, open, on the row that now holds no basis: the architect is told basis-ended, the
+	// tree nothing. Before the root's digest comes, the architect registers the step on a new
+	// basis, the person's approval of LEGION-100's version 4 given since. The standing the old
+	// basis told says nothing of a person's approval, and the root's own verdict is false, so no
+	// approval of the person's own holds the step (record.OpenOnBasis): the new basis stands,
+	// opening the step at version 4, told open, so the tree is told nothing still, and the digest
+	// of 4, false, ends nothing.
+	t.Run("W26", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		hashTree(t, pool, 3)
+		stoodWhileOwed(t, pool, apply)
+
+		apply("ancestor-digest-4", digestOf(t, basisAncestor, basisDoc, 4, 50, false, 0))
+		if gate := assertHashGate(t, pool, gatedRoot, false, true, 0); gate.Basis != nil || !record.DigestOwed(gate) {
+			t.Fatalf("the spec row = %+v, want its basis ended while version 4 owes its digest, told open as before", gate)
+		}
+		assertNoticeCount(t, pool, "basis-ended", 1)
+
+		newer := approvedBasis()
+		newer.Version, newer.Approval = 4, record.EventMark{Seq: 60, At: basisApprovedAt.Add(time.Hour)}
+		newer.Serves = []string{"dispatch://LEGION-100/spec#b-r1@v4"}
+		fact := onBasis(newer, 31)
+		fact.DigestOwed = new(true)
+		apply("register-on-a-new-basis", fact)
+		onNewBasis := func() {
+			t.Helper()
+			gate := assertHashGate(t, pool, gatedRoot, true, true, 4)
+			if !gate.OnBasis() || gate.Basis.Version != 4 || gate.Basis.Approval != newer.Approval || gate.Basis.RootVersion != 4 {
+				t.Fatalf("the spec row = %+v (basis %+v), want it open on the approval of LEGION-100's version 4 at root version 4", gate, gate.Basis)
+			}
+		}
+		onNewBasis()
+
+		apply("digest-4", digestOf(t, gatedRoot, gateDoc, 4, 32, false, 0))
+		onNewBasis()
+		assertNoticeCount(t, pool, "basis-ended", 1)
+		assertOutboxCount(t, pool, string(record.OutboxKindRoleMessage), 0)
+	})
+
+	// W27: the step open on its basis while its own version 4 owes its digest (stoodWhileOwed).
+	// Its architect registers it pending on LEGION-100's request ask-100 of version 4, at its own
+	// version 4, and the owed digest leaves the standing told as it was, open, on the pending row.
+	// A person approves the request before the root's digest comes. The step was registered at the
+	// version that owes its digest, so the fill window holds nothing back (openPendingBasis); the
+	// standing the old basis told says nothing of a person's approval, and the root's own verdict
+	// is false, so no approval of the person's own holds the step (record.OpenOnBasis): the
+	// approval opens the step on its basis at version 4, told open, with design-approved naming
+	// the basis, and the digest of 4, false, ends nothing.
+	t.Run("W27", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		seedGatedTree(t, pool)
+		stoodWhileOwed(t, pool, apply)
+
+		fact := onBasis(pendingBasis(), 31)
+		fact.DigestOwed = new(true)
+		apply("register-pending", fact)
+		if gate := assertHashGate(t, pool, gatedRoot, false, true, 0); !gate.PendingOnBasis() || gate.Basis.RootVersion != 4 || !record.DigestOwed(gate) {
+			t.Fatalf("the spec row = %+v (basis %+v), want it pending at root version 4 while 4 owes its digest, told open as before", gate, gate.Basis)
+		}
+
+		apply("read", seedRead(standing("approved", new(false)), ancestorAtWork))
+		openOnBasis := func() {
+			t.Helper()
+			gate := assertHashGate(t, pool, gatedRoot, true, true, 4)
+			if !gate.OnBasis() || gate.Basis.Version != 4 || gate.Basis.RootVersion != 4 ||
+				gate.Basis.Approval != (record.EventMark{Seq: 60, At: hashMark(60).At}) || gate.Basis.Approver != askPerson.Name() {
+				t.Fatalf("the spec row = %+v (basis %+v), want it open on the person's approval of LEGION-100's version 4 at m60, at root version 4", gate, gate.Basis)
+			}
+		}
+		openOnBasis()
+		approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
+		if len(approved) != 1 || approved[0].Ref != "dispatch://LEGION-100/spec" || approved[0].Version != 4 || approved[0].Actor != askPerson.Name() {
+			t.Fatalf("design-approved notices = %+v, want the one that names LEGION-100's version 4 as the basis", approved)
+		}
+
+		apply("digest-4", digestOf(t, gatedRoot, gateDoc, 4, 32, false, 0))
+		openOnBasis()
+		assertNoticeCount(t, pool, "basis-ended", 0)
 	})
 }
