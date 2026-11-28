@@ -54,11 +54,6 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 		return refused("DEFECT_ISSUE_CLOSED", fmt.Sprintf(
 			"%s is closed, so no change of it carries a defect; report it as a finding outside the issue. This report recorded nothing.", issue.Key)), nil
 	}
-	if !record.StandsIn(issue, phase.Retro, phase.Merging, phase.Verifying) {
-		return refused("DEFECT_BEFORE_LAST_STEP", fmt.Sprintf(
-			"%s stands in %s, and a step of its task is still to pass: a gap found now goes back by request_backward_move, or by the owner's return in accepting. This report recorded nothing.",
-			issue.Key, record.StandsAt(issue))), nil
-	}
 	allowed, err := e.mayReportDefect(ctx, tx, issue, fact)
 	if err != nil {
 		return intake.Result{}, err
