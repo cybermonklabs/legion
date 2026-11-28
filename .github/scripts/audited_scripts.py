@@ -95,7 +95,8 @@ UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|"
 # `xargs <path>` (xargs). reading_of says which of them a step's run: is.
 AUDITED_SCRIPTS = {
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1` over its packages, then counts the skips in its report. With no package argument it
+    # -count=1` over its packages. It counts skips in the temporary report, and tee keeps the
+    # same bytes for the job's artifact when RUNNER_TEMP is set. With no package argument it
     # counts its DEFAULT_PACKAGES, ./internal/cipher/..., ./cmd/cipherd/ and ./internal/holdrecord/,
     # less the import paths its DEFAULT_EXCEPT takes out of `go list` of them with `grep -Ev`, none
     # today since that pattern is empty (ci_job_reads.DATABASE_SKIPS_PATTERN, built from
@@ -104,9 +105,9 @@ AUDITED_SCRIPTS = {
     # `--skip P` adds -skip P, `--timeout D` sets the -timeout, and `--var NAME` decides only
     # whether it runs at all. `--count-table` runs every package its arguments name, in go list's
     # order, and counts the table's among them; it changes what is counted, never what runs. With
-    # `--report FILE` it reads a report and runs no test. `-run=^(Name|...)$`, which a leg pipes in
-    # with its package, adds that -run. envoy-go-race-api's legs and envoy-go's unit legs pass an
-    # xargs argument list below, each leg's packages (and group) after it.
+    # `--report FILE` it reads a report, runs no test and writes no events. `-run=^(Name|...)$`,
+    # which a leg pipes in with its package, adds that -run. envoy-go-race-api's legs and envoy-go's
+    # unit legs pass an xargs argument list below, each leg's packages (and group) after it.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={},
@@ -117,13 +118,14 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m":
                 "go test -json -count=1 -race -timeout 70m",
         },
-        sha256="2e47aa7c214764170c3fc2e1f479e84df5674d673013c2470856ce1dfa46d2cc",
+        sha256="d30b11fccf6c34e8e32ff7ede4b9e14098a33cc06462dfbb3474a90e16d61765",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
     # `--`, the -run built from the test names after it, then counts each test's `aws` and `gcp`
-    # passes. GO_TEST_SKIP adds a -skip, which no step sets, and envoy-go's job sets neither
-    # variable. envoy-go's count step passes the argument list below.
+    # passes. tee keeps the same report for the job's artifact when RUNNER_TEMP is set.
+    # GO_TEST_SKIP adds a -skip. The job sets neither GO_TEST_SKIP nor GO_TEST_TIMEOUT.
+    # envoy-go's count step passes the argument list below.
     "packages/envoy/scripts/backend-count.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -131,10 +133,11 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/cipher/ ./internal/cipher/api/",
         },
-        sha256="bea62eaf32791a70c86e0350053bda35bae7dfa81685ad3338022849f0587a0e",
+        sha256="54274d105ee59e8fc16f18aa6b280346a667fb5010047ede7da6b477f1643669",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`) and, given `run`, runs one
-    # `go test -count=1 -race` over the packages `go list ./...` prints less those its EXCLUDE,
+    # `go test -json -count=1 -race` through gotestsum, which writes a separate test2json file.
+    # The run tests the packages `go list ./...` prints less those its EXCLUDE,
     # '/internal/textcheck$' (ci_job_reads.INFRA_PLAIN_PATTERN), matches, with no -tags, -run or
     # -skip. envoy-infra-build's unit step passes `run`. Until this entry the reader skipped that
     # step, so neither verdict saw the module's race run: every untagged test of infra/core,
@@ -145,17 +148,17 @@ AUDITED_SCRIPTS = {
         commands={
             "run": "go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1 -race",
         },
-        sha256="3e9946d3482859bdab444ee99341955f982e70e86cb6e93c2138040cd015753b",
+        sha256="98a9f354bc5215286b57bedde29ae99fbe16cc3dd19dcd0dd2148ebdcdae8677",
     ),
     # It moves into packages/envoy/infra (`cd "$(dirname "$0")/.."`), takes the packages to run as
     # its arguments and refuses none, reads each one's -run from go-tagged-tests.sh's natslive list
-    # before any run starts, then runs one `go test -count=1 -timeout 25m -tags natslive -run
-    # <that package's list> <package>` per package, the three at once in the background, and waits
-    # for each by process id. What it runs is the go tests below, one per package with its own
-    # list, exactly as the step ran them one after another before it ran them at once; its output
-    # files, its headings and its exit status carry no test. envoy-infra-go's natslive step passes
-    # the argument list below (ci_job_reads.INFRA_NATSLIVE_PACKAGES), so a package added or dropped
-    # moves the step's own run: line and this entry together.
+    # before any run starts, then runs one `go test -json -count=1 -timeout 25m -tags natslive
+    # -run <that package's list> <package>` per package through gotestsum, each with its own
+    # test2json file. The three runs start in the background, and the script waits for each by
+    # process ID. The event files, text logs, headings and exit status carry no test.
+    # envoy-infra-go's natslive step passes the argument list below
+    # (ci_job_reads.INFRA_NATSLIVE_PACKAGES). A package added or dropped moves the step's own run:
+    # line and this entry together.
     "packages/envoy/infra/scripts/natslive.sh": AuditedScript(
         module="packages/envoy/infra",
         commands={
@@ -164,7 +167,7 @@ AUDITED_SCRIPTS = {
                                    "  go test -count=1 -timeout 25m -tags natslive -run \"$pattern\" \"$pkg\"\n"
                                    "done",
         },
-        sha256="52fa27ca8f9e67984a32009b75d5215f10b40b3f7ef9d87b556cf37d16dff8ec",
+        sha256="076464afa0a3bb69cd0ef23591f23d7304b52c577448ec742c8891dd48ced69d",
     ),
 }
 

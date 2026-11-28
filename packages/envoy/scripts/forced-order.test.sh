@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.test.sh: the refusals forced-order.sh must make. Each case
-# runs the script as a developer or a CI step does, and passes only when the run exits non-zero,
-# prints that refusal's own message and prints nothing a run past the refusal would. Each case is
-# first judged against a stand-in that fails early for another reason, as a failed download does,
-# and must fail there: a case that passes on any refusal would pass a run that never reached the
-# one it names. Needs the fixture package internal/testnats/hooktest/skiponly/.
+# packages/envoy/scripts/forced-order.test.sh: refusals, events and verdicts of forced-order.sh.
+# Each refusal case requires a non-zero exit and its own message, with nothing printed past the
+# refusal. A stand-in that fails earlier must fail each refusal case. The summary and cleanup
+# cases use a temporary Go module. Needs gotestsum and internal/testnats/hooktest/skiponly/.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
 envoy="$(dirname "$here")"
@@ -27,7 +25,7 @@ chmod +x "$early"
 judge() {
   local script=$1 log=$2 message=$3 absent=$4 code=0
   shift 4
-  (cd "$envoy" && "$script" "$@") >"$log" 2>&1 || code=$?
+  (cd "$envoy" && RUNNER_TEMP="$out/runner" "$script" "$@") >"$log" 2>&1 || code=$?
   if [ "$code" -eq 0 ]; then
     echo "exit 0, want a refusal"
     return 1
@@ -87,5 +85,82 @@ printf 'module example.com/replaced\n\ngo 1.21\n\nrequire github.com/nats-io/nat
 GOWORK=off refused replaced 'replaces github.com/nats-io/nats-server/v2 with ./fork' \
   '^forced-order.sh: nats-server v[0-9]' -C "$out/replacing-module" .
 
-echo "forced-order.test.sh: $failed failed of 5"
+# Use a small module to exercise the real gotestsum summary. Its failing test prints a line
+# that looks like a package's `ok` line. Repeating it in the summary would count a skipped
+# package because the last real package line already reset the count.
+fixture="$out/summary-module"
+mkdir -p "$fixture/mixed" "$fixture/pass" "$out/summary-runner" "$out/local"
+printf 'module example.com/summary\n\ngo 1.21\n\nrequire github.com/nats-io/nats-server/v2 v2.15.1\n' >"$fixture/go.mod"
+cat >"$fixture/mixed/summary_test.go" <<'EOF'
+package mixed
+
+import (
+	"fmt"
+	"testing"
+)
+
+func TestForcedOrderPasses(t *testing.T) {}
+func TestForcedOrderFails(t *testing.T) {
+	fmt.Println("ok\tfixture-output")
+	t.Fatal("a fixture failure")
+}
+func TestForcedOrderSkips(t *testing.T) { t.Skip("a fixture skip") }
+EOF
+printf 'package pass\n\nimport "testing"\n\nfunc TestForcedOrderPasses(t *testing.T) {}\n' >"$fixture/pass/summary_test.go"
+status=0
+RUNNER_TEMP="$out/summary-runner" GOWORK=off "$here/forced-order.sh" -C "$fixture" ./mixed \
+  >"$out/summary.log" 2>&1 || status=$?
+events=("$out/summary-runner/go-test-events"/forced-order-*.jsonl)
+if [ "$status" -eq 1 ] && [ "${#events[@]}" -eq 1 ] && [ -s "${events[0]}" ] &&
+  jq -es 'map(select(.Test and (.Action == "pass" or .Action == "fail" or .Action == "skip")) | .Action) == ["pass", "fail", "skip"]' "${events[0]}" >/dev/null &&
+  [ "$(grep -cxF $'ok\tfixture-output' "$out/summary.log")" -eq 1 ] &&
+  grep -qF '=== Skipped' "$out/summary.log" && grep -qF '=== Failed' "$out/summary.log" &&
+  grep -qF '=== FAIL:' "$out/summary.log" && grep -q '^DONE ' "$out/summary.log" &&
+  grep -q '^FAIL[[:space:]]\+example.com/summary/mixed' "$out/summary.log" &&
+  ! grep -qF 'no TestForcedOrder test ran in:' "$out/summary.log"; then
+  echo "PASS summary: one events file, and the summary does not change the verdict"
+else
+  echo "FAIL summary: exit $status"
+  cat "$out/summary.log"
+  failed=$((failed + 1))
+fi
+
+# Both packages' PASS lines can arrive before either package's ok line. A single count
+# reset at the first ok would wrongly report the second package as having skipped all tests.
+mkdir "$out/interleaved-bin"
+cat >"$out/interleaved-bin/go" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1 ${2:-}" != "test -json" ]; then
+  exec "$REAL_GO" "$@"
+fi
+for pkg in example.com/summary/pass example.com/summary/mixed; do
+  printf '{"Action":"start","Package":"%s"}\n' "$pkg"
+  printf '{"Action":"run","Package":"%s","Test":"TestForcedOrderPasses"}\n' "$pkg"
+  printf '{"Action":"output","Package":"%s","Test":"TestForcedOrderPasses","Output":"--- PASS: TestForcedOrderPasses (0.00s)\\n"}\n' "$pkg"
+  printf '{"Action":"pass","Package":"%s","Test":"TestForcedOrderPasses","Elapsed":0}\n' "$pkg"
+done
+for pkg in example.com/summary/pass example.com/summary/mixed; do
+  printf '{"Action":"output","Package":"%s","Output":"ok \\t%s\\t0.001s\\n"}\n' "$pkg" "$pkg"
+  printf '{"Action":"pass","Package":"%s","Elapsed":0.001}\n' "$pkg"
+done
+EOF
+chmod +x "$out/interleaved-bin/go"
+
+status=0
+env -u RUNNER_TEMP TMPDIR="$out/local" GOWORK=off REAL_GO="$(type -P go)" PATH="$out/interleaved-bin:$PATH" \
+  "$here/forced-order.sh" -C "$fixture" ./pass ./mixed \
+  >"$out/local.log" 2>&1 || status=$?
+if [ "$status" -eq 0 ] && grep -q '^--- PASS: TestForcedOrderPasses' "$out/local.log" &&
+  grep -q '^ok[[:space:]]\+example.com/summary/pass' "$out/local.log" &&
+  grep -q '^ok[[:space:]]\+example.com/summary/mixed' "$out/local.log" &&
+  ! grep -q 'no TestForcedOrder test ran in:' "$out/local.log" &&
+  [ -z "$(find "$out/local" -mindepth 1 -print)" ]; then
+  echo "PASS local: interleaved passing packages keep their verdicts, and the run leaves no file behind"
+else
+  echo "FAIL local: exit $status"
+  cat "$out/local.log"
+  failed=$((failed + 1))
+fi
+
+echo "forced-order.test.sh: $failed failed of 7"
 [ "$failed" -eq 0 ]

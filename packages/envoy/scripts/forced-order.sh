@@ -41,6 +41,9 @@
 # CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
 # go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
 # never written. scripts/forced-order.test.sh holds it to these refusals.
+# gotestsum prints Go's verbose output for the verdict below and keeps the test2json events in
+# $RUNNER_TEMP/go-test-events/forced-order-*.jsonl for the job's artifact, or in the script's
+# temporary directory, removed on exit.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -89,6 +92,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ $# -ge 1 ] || usage
+if ! command -v gotestsum >/dev/null; then
+  echo 'forced-order.sh: gotestsum is not on PATH; use .github/actions/install-gotestsum or run GOWORK=off go -C .github/actions/install-gotestsum build -o <dir>/gotestsum gotest.tools/gotestsum' >&2
+  exit 127
+fi
 command -v patch >/dev/null || die "patch(1) is not installed, and the hooks are a patch"
 command -v jq >/dev/null || die "jq is not installed, and the script reads go's JSON with it"
 
@@ -129,16 +136,17 @@ if [ -n "$in_workspace" ]; then
   for use in "${uses[@]}"; do
     go work edit -dropuse="$use" -use="$(cd "$workspace_dir" && cd "$use" && pwd)" "$work/go.work"
   done
-  go_cmd=(env "GOWORK=$work/go.work" go)
+  go_env=(env "GOWORK=$work/go.work")
   modflags=()
   build="a copy of $workspace"
 else
   cp go.mod "$work/go.mod"
   [ ! -f go.sum ] || cp go.sum "$work/go.sum"
-  go_cmd=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod" go)
+  go_env=(env GOWORK=off "GOFLAGS=${GOFLAGS:+$GOFLAGS }-mod=mod")
   modflags=(-modfile="$work/go.mod")
   build="a copy of $module/go.mod, with no workspace"
 fi
+go_cmd=("${go_env[@]}" go)
 flags=(${modflags[@]+"${modflags[@]}"} -tags odatrace -race)
 # The version the build requires, and the module that replaces it, if any: for a replaced module
 # go list's .Version is the requirement, not what the build links, and the hooked copy's replace
@@ -232,26 +240,53 @@ empty="$(awk '
 ' "$work/list")"
 [ -z "$empty" ] || die "no TestForcedOrder test in: $empty"
 
-# Every package named must also run one. go test -v prints `--- PASS:` or `--- FAIL:` at the start
-# of a line for each top-level test that ran (`--- SKIP:` for one that skipped), and ends each
-# package's output, which it prints as one block, with that package's own `ok` or `FAIL` line. A
-# package whose every forced-order test skipped would end in `ok`: its line is printed as a FAIL
-# line instead, and the run fails. The go command stays a line of its own, the text
-# .github/scripts/ci_job_reads.py pins.
+# Every package named must also run one. gotestsum prints the verbose Output fields, including
+# `--- PASS:` or `--- FAIL:` for top-level tests and each package's final `ok` or `FAIL` line.
+# A package whose every forced-order test skipped would end in `ok`: its line is printed as a
+# FAIL line instead, and the run fails. Keep the summary headings but omit its copies of test
+# output. ci_job_reads.py pins the go command on its own line.
+events_dir="$work"
+if [ -n "${RUNNER_TEMP:-}" ]; then
+  events_dir="$RUNNER_TEMP/go-test-events"
+  mkdir -p "$events_dir"
+fi
+events=$(mktemp --suffix=.jsonl "$events_dir/forced-order-XXXXXX")
 run_forced_order_tests() {
-  "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+  "${go_env[@]}" gotestsum --hide-summary output --jsonfile "$events" --format standard-verbose --raw-command -- \
+    go test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
-run_forced_order_tests "$@" 2>&1 | awk '
-  /^--- (PASS|FAIL): TestForcedOrder/ { ran++ }
-  /^(ok|FAIL)[ \t]+[^ \t]/ {
-    if ($1 == "ok" && ran == 0) {
-      print "FAIL\t" $2 "\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)"
-      fflush()
-      skipped = skipped " " $2
-      next
-    }
-    ran = 0
-  }
-  { print; fflush() }
-  END { if (skipped != "") { print "forced-order.sh: no TestForcedOrder test ran in:" skipped; exit 1 } }
-'
+
+# Plain go test -v holds each package's output together. With -json, even a package's last test
+# line can reach gotestsum before another package's `ok` line. Use the package on the events
+# instead of counting all test lines since the last `ok`. gotestsum writes each event to the file
+# before printing its Output, so the package's result is already there when we read its `ok`.
+check_test_output() {
+  local line package skipped_all skipped=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^ok[[:blank:]]+([^[:blank:]]+) ]]; then
+      package=${BASH_REMATCH[1]}
+      skipped_all=$(jq -nRr --arg package "$package" --arg line "$line"$'\n' '
+        reduce (inputs | fromjson? | select(.Package == $package)) as $event
+          ({result: false, ran: false};
+            if $event.Action == "output" and $event.Test == null and $event.Output == $line then
+              .result = true
+            elif ($event.Action == "pass" or $event.Action == "fail")
+              and ($event.Test // "" | test("^TestForcedOrder[^/]*$")) then
+              .ran = true
+            else . end)
+        | .result and (.ran | not)
+      ' "$events") || return 1
+      if [ "$skipped_all" = true ]; then
+        printf 'FAIL\t%s\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)\n' "$package"
+        skipped+=("$package")
+        continue
+      fi
+    fi
+    printf '%s\n' "$line"
+  done
+  if [ "${#skipped[@]}" -gt 0 ]; then
+    echo "forced-order.sh: no TestForcedOrder test ran in: ${skipped[*]}"
+    return 1
+  fi
+}
+run_forced_order_tests "$@" 2>&1 | check_test_output

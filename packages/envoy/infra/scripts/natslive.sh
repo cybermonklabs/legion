@@ -12,6 +12,8 @@
 # and is printed whole under its own heading as that run ends. It waits by process id, one run at
 # a time, and exits 1 naming each package whose run failed, 2 with no argument, and 0 otherwise.
 # Its -timeout fires before envoy-infra-go's job limit, so a hung test prints its dump.
+# gotestsum keeps one test2json file per package run in $RUNNER_TEMP/go-test-events/ for the
+# job's artifact. Locally the events go in the same temporary directory as the text logs.
 #
 # .github/scripts/audited_scripts.py's AUDITED_SCRIPTS holds a person's reading of this file,
 # pinned by its SHA-256, and .github/scripts/ci_job_reads.py pins the step to this script and the
@@ -23,26 +25,46 @@ if [ "$#" -eq 0 ]; then
 	echo "usage: $0 PACKAGE..." >&2
 	exit 2
 fi
+if ! command -v gotestsum >/dev/null; then
+	echo 'natslive.sh: gotestsum is not on PATH; use .github/actions/install-gotestsum or run GOWORK=off go -C .github/actions/install-gotestsum build -o <dir>/gotestsum gotest.tools/gotestsum' >&2
+	exit 127
+fi
 cd "$(dirname "$0")/.."
 out=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/natslive.XXXXXX")
 trap 'rm -rf "$out"' EXIT
+events_dir="$out"
+if [ -n "${RUNNER_TEMP:-}" ]; then
+	events_dir="$RUNNER_TEMP/go-test-events"
+	mkdir -p "$events_dir"
+fi
 
 declare -A pattern=() running=()
 for pkg in "$@"; do
 	pattern[$pkg]=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
 done
-for pkg in "$@"; do
-	go test -count=1 -timeout 25m -tags natslive -run "${pattern[$pkg]}" "$pkg" >"$out/${pkg//\//_}.txt" 2>&1 &
-	running[$!]=$pkg
+events=()
+packages=("$@")
+for pkg in "${packages[@]}"; do
+	slug=${pkg#./}
+	slug=${slug//[^a-zA-Z0-9._-]/_}
+	event_file=$(mktemp --suffix=.jsonl "$events_dir/natslive-$slug-XXXXXX")
+	events+=("$event_file")
+done
+for i in "${!packages[@]}"; do
+	pkg=${packages[$i]}
+	gotestsum --jsonfile "${events[$i]}" --format standard-quiet --raw-command -- \
+		go test -json -count=1 -timeout 25m -tags natslive -run "${pattern[$pkg]}" "$pkg" >"$out/$i.txt" 2>&1 &
+	running[$!]=$i
 done
 failed=()
 while [ ${#running[@]} -gt 0 ]; do
 	status=0
 	wait -n -p ended "${!running[@]}" || status=$?
-	pkg=${running[$ended]}
+	i=${running[$ended]}
+	pkg=${packages[$i]}
 	unset "running[$ended]"
 	echo "::group::$pkg (exit $status)"
-	cat "$out/${pkg//\//_}.txt"
+	cat "$out/$i.txt"
 	echo "::endgroup::"
 	[ "$status" -eq 0 ] || failed+=("$pkg (exit $status)")
 done

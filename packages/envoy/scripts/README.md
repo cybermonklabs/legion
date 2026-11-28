@@ -639,6 +639,8 @@ cannot stand in for a new test's.
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
 step skips them by name (`BACKEND_COUNT_TESTS` in `.github/scripts/ci_job_reads.py`).
+On CI the counter also keeps its report in `$RUNNER_TEMP/go-test-events/backend-count-*.jsonl`,
+one file per run for the job's artifact. Locally it deletes the temporary report on exit.
 
 ## database-skips.sh
 
@@ -682,6 +684,9 @@ leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a
 before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
 refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
 `--count-table`, `-run`).
+On CI each test run also keeps an exact copy of its report in
+`$RUNNER_TEMP/go-test-events/database-skips-*.jsonl` for the job's artifact. Locally the
+temporary report is deleted on exit. `--report` writes no events file.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -784,6 +789,14 @@ that version reports is refused before anything is built, so a mistyped point ca
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
 test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
 line).
+
+This script requires `gotestsum` on `PATH`. CI uses `.github/actions/install-gotestsum`.
+To build the same version locally, run `GOWORK=off go -C .github/actions/install-gotestsum
+build -o <dir>/gotestsum gotest.tools/gotestsum` and add `<dir>` to `PATH`.
+The log keeps Go's verbose output and appends the gotestsum summary without repeating test output.
+CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
+the temporary events file on exit.
+
 `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
 those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
 an empty `-C`, a module that replaces nats-server), with the fixture package
