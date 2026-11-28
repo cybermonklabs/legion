@@ -881,6 +881,37 @@ func TestTheReferencesReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testin
 		reference, around...)
 }
 
+// The reference graph's read answers the node of a fenced code block in a list item the tree of
+// its stored text alone, as the batched reference read answers that block
+// (TestTheReferenceTargetsReadKeepsTheTreeOfACodeBlockThatLeavesItsFenceOpen), though a line of
+// its code writes `[^1]` and its document defines the note 1 outside the block. The node's text is
+// the block's stored text, whose lines after the first carry the item's indentation, so, read
+// alone, its closing fence, four spaces in, closes nothing: the stand-in definitions the read
+// resolves a call with, read after that text, stand inside the code, and no tree of them can have
+// them taken out. The node's text is no cut, but it ends the way a cut can, so the node keeps the
+// tree of its text alone, as an edge's excerpt cut inside a code block does, rather than
+// answering no tree at all.
+func TestTheReferencesReadKeepsTheTreeOfACodeBlockThatLeavesItsFenceOpen(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	const line = "The graph's fence writes [^1] in its code."
+	reference, stored := uploadOpenFenceCode(t, handler, database, issue.Key, "graph-fence.md",
+		"The graph's intro reads the note[^1].", line)
+	alone := treeOfOpenFence(t, stored, line)
+
+	read := decodeBody[graphReferencesRead](t, treesRequest(t, handler,
+		"/api/v1/references?"+url.Values{"to": {reference}}.Encode(), true))
+	if read.Node.Text != stored {
+		t.Fatalf("the node's text is %q, want the code block's stored text %q", read.Node.Text, stored)
+	}
+	if read.Node.TextTree == nil {
+		t.Fatalf("the code block's node %s carries no text_tree, want the tree of its stored text %q alone", read.Node.Ref, stored)
+	}
+	requireTreeOfOpenFence(t, "the node's text_tree", json.RawMessage(read.Node.TextTree), alone, line)
+}
+
 // The reference graph's read reads the notes of at most 16 documents in one request, as the
 // batched reference read does, and takes them in the order in which the read draws their texts:
 // the queried node's document, then the document of each edge's excerpt in the order of the

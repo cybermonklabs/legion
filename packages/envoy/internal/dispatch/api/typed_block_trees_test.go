@@ -406,6 +406,98 @@ func TestTheReferenceTargetsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *
 		&footnotedReference{label: "k1", follows: "A plain paragraph reads the note"}, "A plain paragraph reads the note", " too.")
 }
 
+// openFenceCode is a fenced code block that stands in the item after the marker `10. ` of
+// openFenceDocument, as the block index stores it: the block's slice of the document's rendering,
+// whose lines after the first carry the item's four columns of indentation. Read alone, its
+// closing fence stands four spaces in, where it closes nothing (blockTextContent), so the code
+// runs to the end of the text. Its one line of code is line, which writes a call of the note 1.
+func openFenceCode(line string) string {
+	return "```\n    " + line + "\n    ```"
+}
+
+// openFenceDocument is a document of intro, a paragraph, then a list whose item after the marker
+// `10. ` holds openFenceCode(line), its first line four spaces in as the others are, then the
+// definition of the note 1, which stands outside the code block.
+func openFenceDocument(intro, line string) string {
+	return intro + "\n\n10. An item holds code.\n\n    " + openFenceCode(line) + "\n\n[^1]: The note.\n"
+}
+
+// uploadOpenFenceCode uploads openFenceDocument(intro, line) as the document name of the issue
+// key, and answers the reference of its code block and the text the block index stores for that
+// block, once the index lists the code block as a block of its own and stores it as
+// openFenceCode(line), its lines after the first four spaces in.
+func uploadOpenFenceCode(t *testing.T, handler http.Handler, database *store.Store, key, name, intro, line string) (reference, stored string) {
+	t.Helper()
+	document := uploadIssueDocument(t, handler, key, name, openFenceDocument(intro, line))
+	code := openFenceCode(line)
+	blocks := blockIDsByText(t, handler, document.ID)
+	id := blocks[code]
+	if id == "" {
+		t.Fatalf("the document lists the blocks %v, want its code block %q as a block of its own", blocks, code)
+	}
+	if stored = storedBlockText(t, database, document.ID, id); stored != code {
+		t.Fatalf("the code block's stored text is %q, want %q, its lines after the first carrying the item's four spaces", stored, code)
+	}
+	return refs.BlockRef("dispatch://"+key+"/artifact/"+document.Slug, id), stored
+}
+
+// treeOfOpenFence is the tree a read gives text, an open fence's code block as the block index
+// stores it (openFenceCode), where it reads that text alone: pmdoc.DisplayJSON in the latest mode,
+// the reading of a text a read registers as it stands (displayTreeReader.text). It fails unless
+// that tree is one code block whose code holds line and, after it, the closing fence, which the
+// text leaves open.
+func treeOfOpenFence(t *testing.T, text, line string) json.RawMessage {
+	t.Helper()
+	tree := pmdoc.DisplayJSON(text, pmdoc.DisplayLatest)
+	var root footnotedTreeNode
+	if err := json.Unmarshal(tree, &root); err != nil {
+		t.Fatalf("decode the tree %s: %v", tree, err)
+	}
+	if len(root.Content) != 1 || root.Content[0].Type != "code_block" ||
+		!strings.Contains(readFootnotedTree(t, tree).text, line+"\n    ```") {
+		t.Fatalf("the tree of %q alone is\n\t%s\nwant one code block whose code holds %q and the closing fence after it", text, tree, line)
+	}
+	return tree
+}
+
+// requireTreeOfOpenFence fails unless got, the text_tree a read answers for what, is want, the
+// tree of the code block's text alone (treeOfOpenFence), byte for byte, and holds line, the code's
+// call of the note 1 included, as text: no footnote reference, no footnote definition and no
+// stand-in's `x`.
+func requireTreeOfOpenFence(t *testing.T, what string, got, want json.RawMessage, line string) {
+	t.Helper()
+	if !bytes.Equal(got, want) {
+		t.Errorf("%s is\n\t%s\nwant the tree of its text alone\n\t%s", what, got, want)
+	}
+	requireFootnotedTree(t, what, got, nil, line)
+}
+
+// The batched reference read answers a fenced code block in a list item the tree of its stored
+// text alone, though a line of its code writes `[^1]` and its document defines the note 1 outside
+// the block. The block's stored text carries the item's indentation on each line but its first,
+// so, read alone, its closing fence, four spaces in, closes nothing (blockTextContent): the
+// stand-in definitions the read resolves a call with, read after that text, stand inside the code,
+// and no tree of them can have them taken out. The call is code, which the document reads as text
+// too, so the block keeps the tree of its text alone, as a block whose document cannot be read
+// does, rather than answering no tree at all.
+func TestTheReferenceTargetsReadKeepsTheTreeOfACodeBlockThatLeavesItsFenceOpen(t *testing.T) {
+	t.Parallel()
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "TBO")
+	issue := createReferenceAPIIssue(t, handler, "TBO")
+	const line = "The batched fence writes [^1] in its code."
+	reference, stored := uploadOpenFenceCode(t, handler, database, issue.Key, "batched-fence.md",
+		"The batched intro reads the note[^1].", line)
+	content := blockTextContent(stored, true)
+	alone := treeOfOpenFence(t, content, line)
+
+	member := referenceTargetOf(t, handler, reference)
+	if member.TextTree == nil {
+		t.Fatalf("the code block's member %#v carries no text_tree, want the tree of its stored text %q alone", member, content)
+	}
+	requireTreeOfOpenFence(t, "the code block's text_tree", json.RawMessage(member.TextTree), alone, line)
+}
+
 // The batched reference read reads the notes of at most 16 documents in one request, so one
 // request loads and parses no more than 16 documents however many its references name. It takes
 // the documents in the order in which the request's `ref` parameters first name a block of each,
