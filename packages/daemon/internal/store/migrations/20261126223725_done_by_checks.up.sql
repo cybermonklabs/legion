@@ -119,7 +119,6 @@
 -- commit;
 -- -- Block B: once, after block A ran for every project.
 -- begin;
--- do $$ begin if exists (select 1 from issues where phase = 'verifying') then raise exception 'an issue still stands in verifying: run block A for its project first'; end if; end $$;
 -- create or replace function design_news_current(told_issue text, told_generation bigint, told_tree_generation bigint)
 --   returns boolean language sql stable as $$
 --   select exists (select 1 from issues owner join issues root on root.key = owner.tree
