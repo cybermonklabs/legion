@@ -4752,8 +4752,9 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 
 // RoleClaims reads the claims of tokens and nothing else, keyed by token: RoleRuns' second
 // statement alone, for a caller that judges a role run by its claim and never reads the queued
-// starts beside it (admit's finishFencedStarts, through stopOutlivedStart, and the outbox's
-// check_look row after a project's pause, internal/daemon's lookBoundAfterPause). A token the store
+// starts beside it (admit's finishFencedStarts, through stopOutlivedStart, the outbox's
+// check_look row after a project's pause, internal/daemon's lookBoundAfterPause, and the boot's
+// pass over the open production checks, workflow's RepairOpenChecks). A token the store
 // holds no claim for is absent from the answer, which is the nil claim RoleRuns reports for it.
 // It saves admit's caller RoleRuns' first statement, which selects and strictly decodes every
 // supervise row of every issue that owes a start, once per admission pass.
@@ -4781,6 +4782,37 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 	return held, nil
 }
 
+// QueuedLookStarts is Store.QueuedLookStarts. A phase start carries no checkLook key
+// (SuperviseRequest.CheckLook is omitted at 0), so the key alone tells a look's start, and each row
+// found is decoded as strictly as the outbox decodes it (DecodeOutboxPayload).
+func (s *Postgres) QueuedLookStarts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) ([]SuperviseRequest, error) {
+	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
+		where kind = $1 and issue = $2 and payload->>'op' = 'start' and payload->>'role' = $3 and payload ? 'checkLook'
+		order by id`, string(OutboxKindSupervise), issue, string(role))
+	if err != nil {
+		return nil, fmt.Errorf("read the queued look starts of %s's %s: %w", issue, role, err)
+	}
+	queued, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (OutboxRow, error) {
+		return scanOutbox(row)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the queued look starts of %s's %s: %w", issue, role, err)
+	}
+	starts := make([]SuperviseRequest, 0, len(queued))
+	for _, row := range queued {
+		decoded, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, err
+		}
+		start, ok := decoded.(SuperviseRequest)
+		if !ok {
+			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
+		}
+		starts = append(starts, start)
+	}
+	return starts, nil
+}
+
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them). The task's id is read with it,
@@ -4793,7 +4825,9 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // production check look the task was queued for and that look's id (check_look, check_opened_at,
 // look_id; zero and "" for a task of no look, and "" for a look task an older daemon queued): a
 // look's task whose look no longer holds (LookHolds) is no work to the ready of a phase worker
-// (workflow's readyWorkerTask). The id is read for that test alone, and nothing logs it.
+// (workflow's readyWorkerTask), and an open look whose checking role holds a task of it with
+// another look id gets a new task at the boot (workflow's RepairOpenChecks). The id is read for
+// those two tests alone, and nothing logs it.
 //
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go

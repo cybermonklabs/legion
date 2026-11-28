@@ -61,15 +61,26 @@
 #                                  id and a new task, keeping its number and the check open — an open
 #                                  look (part 1), the last look (part 2), a look whose tester the
 #                                  operator holds and resumes after the boot (part 3), an id made for
-#                                  the previous look (part 4), a look beside a start row of it that
-#                                  release queued, which runs after the boot's row and, in the
-#                                  reverse order, before it, and finishes without acting (part 6), an
-#                                  id made for the check a later merge replaced (part 7) and a task
-#                                  written with no check_opened_at (part 8) — and a look that ended at
-#                                  the operator's hold is left to its next look (part 5); no text that
-#                                  release left reaches a connection, the look's new task does once
-#                                  the tester registers on this change's contract, and a report with
-#                                  its look id is taken, one with a stale id refused 409
+#                                  the previous look, which a rollback leaves when the checked root
+#                                  runs again while the way back runs, so the way back keeps its id,
+#                                  and the release before starts the next look once the run ends
+#                                  (part 4), a look beside a start row of it that release queued,
+#                                  which runs after the boot's row and, in the reverse order, before
+#                                  it, and finishes without acting (part 6), an id made for the check
+#                                  a later merge replaced (part 7) and a task written with no
+#                                  check_opened_at (part 8) — and a look that ended at the operator's
+#                                  hold is left to its next look (part 5); no text that release left
+#                                  reaches a connection, the look's new task does once the tester
+#                                  registers on this change's contract, and a report with its look id
+#                                  is taken, one with a stale id refused 409. Beside the eight parts
+#                                  c-upgrade names, two more on a root that ran again while the way
+#                                  back ran, which kept its look's id: once the root has left the
+#                                  workflow and its tester holds this change's task of the look in a
+#                                  delivery that holds no look id, the boot gives the look a new id
+#                                  and a new task, and a report with the kept id is refused 409 and
+#                                  records nothing (part 9); while the root still runs, the boot
+#                                  keeps the id and sends no task of the look, and the tester's report
+#                                  with that id is taken (part 10)
 #   id hidden                      c-id-hidden, the last step: no look id the run saw is in any body
 #                                  of GET /legion/v1/state, of the record route read_record calls or
 #                                  of an answer to a report, each read before a look's task is sent,
@@ -122,12 +133,12 @@
 # upgrade at the seeded text of parts 1, 2, 3, 5 and 8 and of each half of part 6 (the text the
 # release before left reaches the tester's connection once its claim is ready, since the base's
 # boot gives no look an id and no new task); those two steps run no other part at the base, and
-# parts 4 and 7 of upgrade, which seed a look id the base's schema has no column for, are among the
-# parts they skip. What part 4 of late turn did there, which passes at the base too, and what id
-# hidden did, which has nothing to search at the base, are printed as they came. A proof.log an
-# earlier run left in PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR is removed before the base run, so only
-# that run's steps are read. Its last line is `production check look id negative control:
-# PASS|FAIL …` with the base run's evidence directory.
+# parts 4, 7, 9 and 10 of upgrade, which hold the boot to a look id the base's schema has no column
+# for, are among the parts they skip. What part 4 of late turn did there, which passes at the base
+# too, and what id hidden did, which has nothing to search at the base, are printed as they came.
+# A proof.log an earlier run left in PRODUCTION_CHECK_LOOK_ID_EVIDENCE_DIR is removed before the
+# base run, so only that run's steps are read. Its last line is `production check look id negative
+# control: PASS|FAIL …` with the base run's evidence directory.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

@@ -913,8 +913,9 @@ const handoffPullRequestCaller = "handoff_pull_request"
 //   - CHECK_LOOK_ID_REQUIRED (400): a report that gives no lookId.
 //   - CHECK_LOOK_NOT_OPEN (409): a lookId that is not the current look's id
 //     (record.ProductionCheck.CurrentLookID): a made-up id, the id of a look a later look
-//     replaced, the id of a check a later merge replaced, or any id while the current look has
-//     none yet, which is a look an older daemon started, until the boot gives it one.
+//     replaced, the id of a check a later merge replaced, the id a look held before the boot gave
+//     it a new id and a new task, or any id while the current look has none yet, which is a look
+//     an older daemon started, until the boot gives it one.
 //
 // The id is compared in constant time (namesCurrentLook), so the time an answer takes says nothing
 // of how much of an id matched. The open check's other answer and the id's two answers name the

@@ -2031,10 +2031,12 @@ func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 
 // CurrentLookID is the look id of the check's current look: LookID when it was made for this look
 // of this check instance (LookIDLook is Looks, and LookIDOpenedAt is the instant OpenedAt is, as
-// NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns,
-// so after a rollback the record can hold the id of a look that has since ended, or of the check
-// that a later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the look
-// has no id of its own until the boot gives it one.
+// NamedBy compares them), and "" otherwise. An older binary writes none of the look id's columns.
+// So after a rollback the record can hold the id of a look that a later look replaced: the way
+// back of docs/kubernetes.md keeps the look id of an open check whose issue runs again, and the
+// release before starts the next look once the run ends. The record can also hold the id of the
+// check that a later merge replaced. Such an id names no look (R6 of dispatch://INFRA-3518): the
+// look has no id of its own until the boot gives it one.
 func (c ProductionCheck) CurrentLookID() string {
 	if c.LookID == "" || c.LookIDLook != c.Looks || !c.LookIDOpenedAt.Equal(c.OpenedAt) {
 		return ""
@@ -3454,6 +3456,12 @@ type Store interface {
 	// without its first, for a caller that judges a run by its claim and reads no queued start
 	// beside it. A token the store holds no claim for is absent, the nil claim RoleRuns reports.
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
+	// QueuedLookStarts is every start row of a production check look (SuperviseRequest.CheckLook
+	// above 0) queued on issue for role, oldest first, whatever generation it carries: a look's
+	// start is fenced on its check, its look and the look's id rather than on the generation (the
+	// outbox's checkLookHolds), so a row queued before the issue's last run carries the generation
+	// before it. The boot reads it (workflow's RepairOpenChecks).
+	QueuedLookStarts(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) ([]SuperviseRequest, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

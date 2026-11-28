@@ -221,7 +221,7 @@ func checkTask(issue record.Issue, check record.ProductionCheck, lookID, cause, 
 	if last {
 		text.WriteString(" This is the last look: no look follows.")
 	}
-	fmt.Fprintf(&text, "\nThis look has the look id `%s`. Your report gives check_opened_at and look_id from this task.", lookID)
+	fmt.Fprintf(&text, "\n%s`%s`. Your report gives check_opened_at and look_id from this task.", intake.LookIDLine, lookID)
 	text.WriteString("\nDo what the deployment instructions say to reach production and read whether production carries the merge. " +
 		"Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. " +
 		"Then report with the legion tool's handoff_complete, check_opened_at and look_id from this task and a verdict, committing nothing: " +

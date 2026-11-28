@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -311,15 +312,48 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 // look id the task gives (withheldTask).
 const lookIDWithheld = "<look id withheld>"
 
-// withheldTask is the text of d as the operator claim view writes it: a look's task with every
-// occurrence of its look id (supervise.Delivery.LookID) replaced by lookIDWithheld, and every
-// other task as it is, since a task that names no look carries no id. The rest of the text stays,
-// so an operator still reads which check, which look and which wake the task is of.
+// withheldTask is the text of d as the operator claim view writes it: every occurrence of the look
+// id its delivery holds (supervise.Delivery.LookID) replaced by lookIDWithheld, and the id that
+// each look-id line of the text gives too (withheldLookIDLines). The second covers a look's task
+// whose delivery holds no look id of its own, or another look's: a delivery the release before
+// wrote names no look id and keeps the id of the delivery it replaced, while its text, a start
+// this release queued, gives the look's id. A task that names no look has no such line and stays
+// as it is. The rest of the text stays, so an operator still reads which check, which look and
+// which wake the task is of.
 func withheldTask(d supervise.Delivery) string {
-	if d.LookID == "" {
-		return d.Task
+	task := d.Task
+	if d.LookID != "" {
+		task = strings.ReplaceAll(task, d.LookID, lookIDWithheld)
 	}
-	return strings.ReplaceAll(d.Task, d.LookID, lookIDWithheld)
+	return withheldLookIDLines(task)
+}
+
+// withheldLookIDLines is task with the text between the backticks of each look-id line
+// (intake.LookIDLine, then the id between backticks: workflow's checkTask) replaced by
+// lookIDWithheld. A line whose closing backtick is missing, and everything after it, stays.
+func withheldLookIDLines(task string) string {
+	const lead = intake.LookIDLine + "`"
+	if !strings.Contains(task, lead) {
+		return task
+	}
+	var withheld strings.Builder
+	withheld.Grow(len(task))
+	for {
+		at := strings.Index(task, lead)
+		if at < 0 {
+			break
+		}
+		at += len(lead)
+		end := strings.IndexByte(task[at:], '`')
+		if end < 0 {
+			break
+		}
+		withheld.WriteString(task[:at])
+		withheld.WriteString(lookIDWithheld)
+		task = task[at+end:]
+	}
+	withheld.WriteString(task)
+	return withheld.String()
 }
 
 // operatorAnswer is the answer every operator route about one claim writes: the claim its caller

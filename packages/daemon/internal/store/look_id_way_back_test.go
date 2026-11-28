@@ -31,11 +31,15 @@ import (
 //     keeps its close.
 //   - opened_generation goes null on each check, which the release before's upsert of a new check
 //     would leave in place.
-//   - The look id, the look and the check instance it was made for go null on each check the block
-//     leaves open: a start of the current look that the release before runs would otherwise leave
-//     the check holding that look's id as the current one with a delivery that holds none, so after
-//     the roll forward the boot would give the look no new task and the send would drop the old
-//     one. A check the block closes, and a check that closed already, keeps its look id.
+//   - The look id, the look and the check instance it was made for go null on each open check
+//     whose issue is out of the workflow (a done issue or a parked one): a start of the current look
+//     that the release before runs would otherwise leave the check holding that look's id as the
+//     current one with a delivery that holds none, so after the roll forward the boot would give the
+//     look no new task and the send would drop the old one. The open check of a root in the
+//     workflow keeps its look id: the root's checking role can hold that id from the task of the
+//     look and report with it while the root runs (decision 7 of dispatch://INFRA-3518), and the
+//     release before sends that role no task of the look while the run holds the root. A check the
+//     block closes, and a check that closed already, keeps its look id.
 //
 // OTHER's rows, of the same shapes, stay as they are. A second run changes nothing. The control is
 // the state before the block, which the same reads hold to the fixtures.
@@ -58,7 +62,7 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 		closed             bool
 	}{
 		// A root re-admitted after its check's merge, which keeps its check as the release before does,
-		// and loses its look id.
+		// and keeps its look id, which its checking role can still report with while the root runs.
 		{"LEGION-300", "LEGION", "LEGION-300", phase.Planning, "in_progress", false},
 		// A child that runs again: set back to todo after its check opened. Its check closes with its
 		// look id.
@@ -164,9 +168,9 @@ func TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain(t
 		`OTHER-301 supervise {"op": "retire_look", "role": "tester", "tree": "OTHER-300", "reported": true, "checkLook": 2, "checkOpenedAt": "2026-11-27T09:00:00Z"}`,
 	})
 	held("the checks after the way back: the open check of LEGION's child that runs again closed not_run, every LEGION "+
-		"generation cleared, the look id of each LEGION check left open cleared, and the look ids of LEGION's closed checks "+
-		"and OTHER's checks kept", checks, []string{
-		"LEGION-300 open - look open true generation - id - made for look - of -",
+		"generation cleared, the look id of each LEGION check left open whose issue is out of the workflow cleared, and the "+
+		"look ids of LEGION's root that runs again, of LEGION's closed checks and of OTHER's checks kept", checks, []string{
+		"LEGION-300 open - look open true generation - id LOOKIDOFLEGION300 made for look 2 of this check",
 		"LEGION-301 closed now not_run look open false generation - id LOOKIDOFLEGION301 made for look 2 of this check",
 		"LEGION-302 open - look open true generation - id - made for look - of -",
 		"LEGION-303 open - look open true generation - id - made for look - of -",

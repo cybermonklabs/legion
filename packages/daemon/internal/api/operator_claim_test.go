@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -85,4 +86,31 @@ func TestTheOperatorClaimViewWithholdsTheLookID(t *testing.T) {
 			t.Fatalf("the view shows the task %q, want %q", view.Pending.Task, want)
 		}
 	})
+
+	// A look's task whose delivery holds no look id of its own — one the release before wrote,
+	// whose upsert names no look id and keeps the id of the delivery it replaced — still gives the
+	// look's id on its look-id line (intake.LookIDLine), and that id is withheld by the line's form.
+	for _, tc := range []struct{ name, lookID string }{
+		{name: "a look's task whose delivery holds no look id"},
+		{name: "a look's task whose delivery holds another look's id", lookID: "ANOTHERLOOKIDOFLOOKONEABCD"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := func(id string) string {
+				return "Production check of LEGION-209: child.\n" + intake.LookIDLine + "`" + id +
+					"`. Your report gives check_opened_at and look_id from this task.\nReport the look."
+			}
+			view := operatorView(supervise.Claim{Token: "legion-legion-legion-209-tester", Pending: &supervise.Delivery{ID: "outbox:look-2",
+				Task: line(hiddenLookID), CheckLook: supervise.CheckLook{Look: 2}, LookID: tc.lookID}}, supervise.StepRecord{})
+			encoded, err := json.Marshal(view)
+			if err != nil {
+				t.Fatalf("encode the view: %v", err)
+			}
+			if strings.Contains(string(encoded), hiddenLookID) {
+				t.Fatalf("the view carries the look id its task's line gives: %s", encoded)
+			}
+			if want := line(lookIDWithheld); view.Pending.Task != want {
+				t.Fatalf("the view shows the task %q, want %q", view.Pending.Task, want)
+			}
+		})
+	}
 }

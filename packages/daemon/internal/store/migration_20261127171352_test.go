@@ -30,10 +30,11 @@ const lookIDRelease = "the release whose look report gives its look id"
 // and deletes each of its retire_look rows, which the release before refuses
 // (DisallowUnknownFields, an unknown op), and leaves every other key and every row of another kind
 // as it stands. It clears opened_generation on LEGION's checks, which the release before's upsert
-// of a new check would leave in place, and the look id of each of LEGION's open checks, so the
-// roll forward's boot gives each open look a new look id and a new task. It drops no column and
-// deletes no version row, so the roll forward applies nothing. The negative control is the store
-// before the migration, whose tables hold none of the five columns.
+// of a new check would leave in place, and the look id of each of LEGION's open checks whose issue
+// is out of the workflow, here a done root's, so the roll forward's boot gives that look a new look
+// id and a new task. It drops no column and deletes no version row, so the roll forward applies
+// nothing. The negative control is the store before the migration, whose tables hold none of the
+// five columns.
 func TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefuses(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

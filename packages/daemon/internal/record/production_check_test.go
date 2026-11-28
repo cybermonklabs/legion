@@ -8,7 +8,9 @@ import (
 // A check's look id names its current look only while it was made for that look of that check
 // instance. An older binary writes none of the look id's columns, so after a rollback the record
 // can still hold the id of the look before, or of the check a later merge replaced, and neither
-// may count as the current look's (R6 of dispatch://INFRA-3518). An empty id names no look
+// may count as the current look's (R6 of dispatch://INFRA-3518). The id of the look before stays
+// where the way back keeps the look id of an open check whose issue runs again and the release
+// before starts the next look once the run ends. An empty id names no look
 // whatever it was made for. The opening time the id was made for is compared as an instant, so
 // the same moment read back in another zone still names the check.
 func TestCurrentLookIDNamesOnlyTheLookItWasMadeFor(t *testing.T) {

@@ -1197,7 +1197,10 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			// A delivery a release before this one wrote takes the column's default, false: its
 			// task names no review round (supervise's Delivery.message).
 			RoundNamed: orFalse(roundNamed),
-			// A delivery a release before this one wrote holds no look id, which reads as none.
+			// A delivery of the release before holds no look id of its own: it holds none, which
+			// reads as none, or it keeps the look id of the delivery it replaced (its putDelivery's
+			// upsert names no look_id). A kept id holds the task only where it is the current look
+			// id of the look the task names (record.LookHolds).
 			LookID: lookID,
 		}
 	}

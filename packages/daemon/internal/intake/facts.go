@@ -2437,6 +2437,12 @@ func PlanRatingUnexpected(what string) *Refusal {
 // (workflow's checkReported), so an agent reads the same words from either.
 const LookIDRule = "A report gives check_opened_at and look_id from the task of its look."
 
+// LookIDLine is the leading words of the line of a look's task that gives the look's id, which
+// the id then follows between backticks (workflow's checkTask writes it). It is the one form of
+// that line, so the operator claim view finds each such line by it and withholds the id the line
+// gives (api's withheldTask), whatever look id the task's delivery holds.
+const LookIDLine = "This look has the look id "
+
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes

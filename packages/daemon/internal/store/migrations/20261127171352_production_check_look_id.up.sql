@@ -4,8 +4,9 @@
 -- production_checks.look_id is record.ProductionCheck.LookID: the id that only the look's own task
 -- gives the checking role, and that the role's report of the look gives back. look_id_look and
 -- look_id_opened_at are the look number and the check instance (opened_at) the id was made for
--- (LookIDLook, LookIDOpenedAt), so an id the record still holds for a look that has ended, or for
--- the check that a later merge replaced, names no look (ProductionCheck.CurrentLookID).
+-- (LookIDLook, LookIDOpenedAt), so an id the record still holds for a look that a later look
+-- replaced, or for the check that a later merge replaced, names no look
+-- (ProductionCheck.CurrentLookID).
 -- opened_generation is ProductionCheck.OpenedGeneration: the issue's generation when
 -- workflow.openCheck opened the check, which tells a later leave of the issue whether it ran again
 -- after that merge. pending_task_deliveries.look_id is supervise.Delivery.LookID: the look id that
@@ -22,22 +23,35 @@
 -- (the claim store's putDelivery and claimSelect), so it neither reads nor writes these. Its
 -- upsert of a new check leaves opened_generation of the check it replaces in place, so the way
 -- back below clears that column, and the next boot of this release writes each open check's
--- generation again. Its write of a new delivery names no look id, so the delivery holds null, or
--- the look id of the delivery it replaces, which is another look's. This release keeps and sends
--- a look's task only while the look id its delivery holds is the current look id of its look
--- (ProductionCheck.CurrentLookID), so it drops such a task. The release before can run a start
--- row of the current look that this release queued and the way back below stripped of lookId:
--- the task then gives the look id this release made for that look, the check still holds that id
--- as its current look's, and the delivery holds no id of that look. At the roll forward the boot
--- would then give the look no new task, since the look has an id of its own, and the send would
--- drop the old task, so the look would end with no report at its bound, and the check would close
--- not_run where that look is its last; the operator claim view, which withholds only the id a
--- delivery holds, would show the current look's id. So the way back below also clears the look
--- id of each open check, and the roll forward's boot gives each open look a new look id and a new
--- task of that look, which replaces the old task: the old id is then the id of no current look.
--- Each look id the way back leaves is a closed check's. The release before's upsert of the check
--- that a later merge opens leaves that id as this release wrote it, which CurrentLookID reads as
--- no id of the current look.
+-- generation again. Its write of a new delivery names no look id, so the delivery holds no look
+-- id of its own: it holds null, or keeps the look id of the delivery it replaces. This release
+-- keeps and sends a look's task only while the look id its delivery holds is the current look id
+-- of its look (ProductionCheck.CurrentLookID), so it drops such a task unless that kept id is the
+-- current one. The release before runs a start row of a look that comes due while the look's
+-- issue is out of the workflow, and finishes unrun one that comes due while the issue runs again.
+-- So it can run a start row of the current look that this release queued and the way back below
+-- stripped of lookId: the task then gives the look id this release made for that look, the check
+-- still holds that id as its current look's, and the delivery holds no id of that look. At the
+-- roll forward the send would drop that task, so the look would end with no report at its bound,
+-- and the check would close not_run where that look is its last; the operator claim view, which
+-- withholds only the id a delivery holds, would show the current look's id. So the way back below
+-- clears the look id of each open check whose issue is out of the workflow, and the roll forward's
+-- boot gives each open look with no look id of its own a new look id and a new task of that look,
+-- which replaces the old task: the old id is then the id of no current look. The way back keeps
+-- the look id of each open check whose issue runs again, a root re-admitted after its check's
+-- merge: the root's checking role can hold that id from the task of the look, and a report with
+-- that id counts while the root runs (decision 7 of dispatch://INFRA-3518), so a cleared id would
+-- lose that report. Such a look keeps its id through the roll forward while its issue still runs,
+-- and its checking role reports with it. Where the issue left the workflow before the roll forward
+-- and the checking role's claim holds a task of that look whose delivery holds no look id or
+-- another one, the boot gives the look a new look id and a new task of that look as well
+-- (workflow.Engine.RepairOpenChecks). So it does where a start row of that look stays queued for
+-- that role through the roll forward with its look id taken off, which the fence would finish
+-- unrun. Each other look id the way back leaves is a closed check's.
+-- The release before's upsert of the check that a later merge opens, and its start of the next
+-- look of an open check whose look id the way back kept, leave the look id as this release wrote
+-- it, which CurrentLookID reads as no id of the current look, and the boot gives that look an id
+-- of its own and a new task.
 --
 -- This release also writes the keys lookId and lookReissue into supervise rows
 -- (record.SuperviseRequest.LookID and LookReissue), and queues supervise rows of the op
@@ -84,9 +98,11 @@
 -- -- The generation each check of one project opened in.
 -- update production_checks set opened_generation = null
 -- where opened_generation is not null and project = '<PROJECT>';
--- -- The look id of each open check of one project.
--- update production_checks set look_id = null, look_id_look = null, look_id_opened_at = null
--- where closed_at is null and project = '<PROJECT>';
+-- -- The look id of each open check of one project whose issue is out of the workflow.
+-- update production_checks as c set look_id = null, look_id_look = null, look_id_opened_at = null
+-- from issues as i
+-- where c.issue = i.key and c.closed_at is null and c.project = '<PROJECT>'
+--   and (i.phase = 'done' or i.status in ('triage', 'icebox', 'backlog', 'done'));
 -- commit;
 alter table production_checks add column look_id text;
 alter table production_checks add column look_id_look integer;

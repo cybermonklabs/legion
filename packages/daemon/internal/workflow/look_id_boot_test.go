@@ -81,6 +81,74 @@ const lookBootOlderTask = "Production check of LEGION-209: child.\nRepository sj
 	"Do what the deployment instructions say to reach production and read whether production carries the merge. " +
 	"Then report with the legion tool's handoff_complete and a verdict, committing nothing."
 
+// lookBootOwnID is a look id made for look 2 of lookBootCheck: the current look's own id.
+const lookBootOwnID = "OWNLOOKIDOFLOOKTWOABCDEFGH"
+
+// lookBootOwnIDOf is check holding lookBootOwnID as the id of its look 2.
+func lookBootOwnIDOf(c record.ProductionCheck) record.ProductionCheck {
+	c.LookID, c.LookIDLook, c.LookIDOpenedAt = lookBootOwnID, 2, c.OpenedAt
+	return c
+}
+
+// lookBootRunsAgain is LEGION-209 re-entered at a later generation: back in the workflow.
+func lookBootRunsAgain(c record.Issue) record.Issue {
+	c.Phase, c.Status, c.DispatchStatus, c.Generation, c.LastDispatchSeq = phase.Admitted, "todo", "todo", 4, 3
+	return c
+}
+
+// lookBootTask is a task of look of the check (0 for a task of no look, a phase task), or of the
+// check a later merge replaced where replaced is true, that gives the look id id ("" for none): a
+// task pending on the checking role's claim, whose delivery holds id, or a start row queued for
+// that role, which carries id.
+type lookBootTask struct {
+	look     int
+	replaced bool
+	id       string
+}
+
+// openedAt is the check instance task is of: check's, the replaced check's a day before it, and
+// nil for a task of no look.
+func (task lookBootTask) openedAt(check record.ProductionCheck) *time.Time {
+	if task.look <= 0 {
+		return nil
+	}
+	at := check.OpenedAt
+	if task.replaced {
+		at = at.Add(-24 * time.Hour)
+	}
+	return &at
+}
+
+// seedLookBootTask records the claim of check's role on issue with task pending on it, as the
+// claim store holds a delivery: the release before writes a look's task with no look id of its
+// own, and its write of a task over another keeps the look id of the task it replaces.
+func seedLookBootTask(t *testing.T, pool *pgxpool.Pool, issue record.Issue, check record.ProductionCheck, task lookBootTask) {
+	t.Helper()
+	token := seedPhaseWorker(t, pool, issue.Key, check.Role, "")
+	working, text := "", "Production check of LEGION-209: the text of a look."
+	if task.look <= 0 {
+		working, text = string(phase.Testing), "Test the branch."
+	}
+	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation,
+		check_look, check_opened_at, look_id, queued_at) values ($1, 'outbox:57', $2, $3, $4, $5, $6, nullif($7, ''), now())`,
+		string(token), text, working, int64(issue.Generation), task.look, task.openedAt(check), task.id); err != nil {
+		t.Fatalf("seed the %s's pending task: %v", check.Role, err)
+	}
+}
+
+// queueLookBootStart queues for check's role on issue a start row of task's look, carrying task's
+// look id, as this release queued it before the issue's last run, at the generation before the
+// issue's, and as the way back leaves it: a row whose look id the way back took off carries none.
+func queueLookBootStart(t *testing.T, rig checkRig, issue record.Issue, check record.ProductionCheck, task lookBootTask) {
+	t.Helper()
+	start := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: check.Role, Generation: issue.Generation - 1,
+		CheckLook: task.look, LookID: task.id, Task: "Production check of LEGION-209: the text of a look."}
+	if opened := task.openedAt(check); opened != nil {
+		start.CheckOpenedAt = *opened
+	}
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error { return rig.engine.enqueueAt(t.Context(), tx, issue.Key, start, lookBootWoken) })
+}
+
 // TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask holds the R6 inventory of
 // dispatch://INFRA-3518: every kind of open look with no look id of its own gets one at the boot
 // (Engine.RepairOpenChecks), made for that look (26 base32 characters, stored with the look and
@@ -94,9 +162,22 @@ const lookBootOlderTask = "Production check of LEGION-209: child.\nRepository sj
 // daemon wrote with no check_opened_at, whose start row stays as it was beside the new one; a
 // last look, whose new task says it is the last; and the look of an issue that runs again, a
 // child re-entered at a later generation, whose row carries that generation (the outbox's
-// checkLookHolds finishes it while the run holds the issue). The controls change nothing and
-// queue nothing: a look with its own id, and a check with no open look. The engine's journal
-// carries no look id and no task.
+// checkLookHolds finishes it while the run holds the issue). The same holds for a look of an
+// issue out of the workflow that has its own id, where a task of that look gives no look id or
+// another look's id: a task pending on the checking role's claim, whose delivery holds that id,
+// where the release before ran a start of the look that this release queued, with its look id
+// taken off by the way back, and a start row of the look queued for that role, where the way back
+// took the look id off a start that this release queued before the issue's last run. The send
+// drops such a task and the fence finishes such a row (record.LookHolds), so the look gets a new id
+// and a new task. The controls change nothing and queue nothing: a look with its own id and no
+// task pending; a look with its own id whose pending task of the look, or whose queued start of
+// the look, gives that id; such a start beside a pending task of the look with no look id, and
+// such a pending task beside a queued start of the look with no look id, since the task of the
+// look's own id takes the other's place; the same task or start with no look id while the
+// issue runs again, whose checking role can hold the id from the look's task and report with it
+// while the run holds the issue; a pending task or a queued start of the previous look, of the
+// check a later merge replaced, or a pending task of no look, none of which gives the look's id;
+// and a check with no open look. The engine's journal carries no look id and no task.
 func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -105,6 +186,10 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 		check func(record.ProductionCheck) record.ProductionCheck
 		// older is the task of a start row of the look an older daemon queued, "" for none.
 		older string
+		// pending is the task pending on the checking role's claim, nil for none.
+		pending *lookBootTask
+		// queued is a start row queued for the checking role, nil for none.
+		queued *lookBootTask
 		// reissues says the boot gives the look an id and a new task; false for a control.
 		reissues bool
 		// says is what the new task says beside check_opened_at and the look id.
@@ -124,14 +209,36 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 			c.Last, c.LastWakeKind, c.LastWakeDetail = true, wakeBound, "2 days since the issue closed"
 			return c
 		}, says: []string{"Look 2, woken by the bound: 2 days since the issue closed.", "This is the last look: no look follows."}},
-		{name: "an issue that runs again", reissues: true, child: func(c record.Issue) record.Issue {
-			c.Phase, c.Status, c.DispatchStatus, c.Generation, c.LastDispatchSeq = phase.Admitted, "todo", "todo", 4, 3
-			return c
-		}},
-		{name: "control: a look with its own id", check: func(c record.ProductionCheck) record.ProductionCheck {
-			c.LookID, c.LookIDLook, c.LookIDOpenedAt = "OWNLOOKIDOFLOOKTWOABCDEFGH", 2, c.OpenedAt
-			return c
-		}},
+		{name: "an issue that runs again", reissues: true, child: lookBootRunsAgain},
+		{name: "a task of the look whose delivery holds no look id, the look holding its own id", reissues: true, check: lookBootOwnIDOf,
+			pending: &lookBootTask{look: 2}},
+		{name: "a task of the look whose delivery holds the previous look's id, the look holding its own id", reissues: true, check: lookBootOwnIDOf,
+			pending: &lookBootTask{look: 2, id: "PREVIOUSLOOKIDABCDEFGHIJKL"}},
+		{name: "control: a look with its own id and no task pending", check: lookBootOwnIDOf},
+		{name: "control: a task of the look whose delivery holds the look's own id", check: lookBootOwnIDOf,
+			pending: &lookBootTask{look: 2, id: lookBootOwnID}},
+		{name: "control: a task of the look whose delivery holds no look id, of an issue that runs again", child: lookBootRunsAgain,
+			check: lookBootOwnIDOf, pending: &lookBootTask{look: 2}},
+		{name: "control: a task of the previous look whose delivery holds no look id", check: lookBootOwnIDOf,
+			pending: &lookBootTask{look: 1}},
+		{name: "control: a task of the check a later merge replaced whose delivery holds no look id", check: lookBootOwnIDOf,
+			pending: &lookBootTask{look: 2, replaced: true}},
+		{name: "control: a phase task whose delivery kept the look's own id from the task it replaced", check: lookBootOwnIDOf,
+			pending: &lookBootTask{id: lookBootOwnID}},
+		{name: "a start of the look queued with no look id, the look holding its own id", reissues: true, check: lookBootOwnIDOf,
+			queued: &lookBootTask{look: 2}},
+		{name: "control: a start of the look queued with the look's own id", check: lookBootOwnIDOf,
+			queued: &lookBootTask{look: 2, id: lookBootOwnID}},
+		{name: "control: a start of the look queued with the look's own id, beside a task of the look whose delivery holds no look id",
+			check: lookBootOwnIDOf, pending: &lookBootTask{look: 2}, queued: &lookBootTask{look: 2, id: lookBootOwnID}},
+		{name: "control: a task of the look whose delivery holds the look's own id, beside a start of the look queued with no look id",
+			check: lookBootOwnIDOf, pending: &lookBootTask{look: 2, id: lookBootOwnID}, queued: &lookBootTask{look: 2}},
+		{name: "control: a start of the look queued with no look id, of an issue that runs again", child: lookBootRunsAgain,
+			check: lookBootOwnIDOf, queued: &lookBootTask{look: 2}},
+		{name: "control: a start of the previous look queued with no look id", check: lookBootOwnIDOf,
+			queued: &lookBootTask{look: 1}},
+		{name: "control: a start of the check a later merge replaced queued with no look id", check: lookBootOwnIDOf,
+			queued: &lookBootTask{look: 2, replaced: true}},
 		{name: "control: a check with no open look", check: func(c record.ProductionCheck) record.ProductionCheck {
 			wake := lookBootWoken.Add(2 * time.Hour)
 			c.LookOpen, c.WakeAt = false, &wake
@@ -157,6 +264,12 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 					return rig.engine.enqueueAt(t.Context(), tx, child.Key, record.SuperviseRequest{Op: "start", Tree: child.Tree, Role: seeded.Role,
 						Generation: child.Generation, CheckLook: seeded.Looks, Task: tc.older}, lookBootWoken)
 				})
+			}
+			if tc.pending != nil {
+				seedLookBootTask(t, rig.pool, child, seeded, *tc.pending)
+			}
+			if tc.queued != nil {
+				queueLookBootStart(t, rig, child, seeded, *tc.queued)
 			}
 			before := productionCheck(t, rig.pool, child.Key)
 			olderStarts := lookStarts(t, rig.pool, child.Key)
@@ -212,8 +325,8 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 				t.Fatalf("the older start row = %+v, want it kept with the older task and no look id beside the boot's own task", olderStarts)
 			}
 			journal := rig.logged.String()[mark:]
-			for _, secret := range []string{id, checkTaskLead} {
-				if strings.Contains(journal, secret) {
+			for _, secret := range []string{id, before.LookID, checkTaskLead} {
+				if secret != "" && strings.Contains(journal, secret) {
 					t.Fatalf("the engine's journal of the boot carries %q, a look id or a task:\n%s", secret, journal)
 				}
 			}
