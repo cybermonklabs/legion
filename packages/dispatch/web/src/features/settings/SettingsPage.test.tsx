@@ -33,6 +33,10 @@ function renderPage() {
  *  loading states. */
 function stubUnrelatedQueries() {
   return {
+    getCredentialCapabilities: spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+      dispatch_sign_in: false,
+      machine_code_page: false,
+    }),
     getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
     getLegionDaemon: spyOn(api, "getLegionDaemon").mockResolvedValue(null),
     getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),

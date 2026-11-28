@@ -387,6 +387,18 @@ func (d *operatorDaemon) post(path string, body any, into any) {
 	}
 }
 
+// runtimeCallsOf waits until rt has seen at least n calls of method, and returns every call of it
+// then. A route that can start a claim (a resume, a retry) answers once the start is under way,
+// before the start reaches the runtime (api's startUnderWay), so a row reads the runtime's calls
+// only once they have come, and holds the count it reads to what it wants.
+func runtimeCallsOf(t *testing.T, rt *fake.Runtime, method string, n int) []fake.Call {
+	t.Helper()
+	return testwait.Until(t, fmt.Sprintf("the runtime to see %d %s calls", n, method), func() ([]fake.Call, bool) {
+		calls := rt.CallsOf(method)
+		return calls, len(calls) >= n
+	})
+}
+
 // ready has the claim's agent register and declare itself ready, as the plugin does at boot.
 func (d *operatorDaemon) ready(token legionclaim.Token) {
 	d.t.Helper()
@@ -558,7 +570,7 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 		if out != step.want {
 			t.Fatalf("%s stdout = %q, want %q", step.action, out, step.want)
 		}
-		if calls := d.runtime.CallsOf(step.method); len(calls) != 1 {
+		if calls := runtimeCallsOf(t, d.runtime, step.method, 1); len(calls) != 1 {
 			t.Fatalf("after %s the runtime saw %v, want one %s", step.action, d.runtime.Methods(), step.method)
 		}
 	}
@@ -603,10 +615,7 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 4 0 - - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
-	// The retry answers once the store has taken the claim launching (supervise's HandleStart and
-	// writeTry), which comes before the runtime's spawn of that launch, so the spawn is waited for.
-	testwait.Eventually(t, "the retry's launch to reach the runtime", func() bool { return len(d.runtime.CallsOf("Spawn")) >= 4 })
-	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
+	if spawns := runtimeCallsOf(t, d.runtime, "Spawn", 4); len(spawns) != 4 {
 		t.Fatalf("the runtime saw %d spawns, want the retry's launch after the three refused", len(spawns))
 	}
 

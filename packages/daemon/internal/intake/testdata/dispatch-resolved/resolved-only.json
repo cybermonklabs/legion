@@ -1,17 +1,20 @@
 [
   {
-    "id": 900063,
+    "id": 195,
     "issue_key": "ACME-13",
     "artifact_id": null,
     "project": "ACME",
     "seq": 3,
     "type": "issue.updated",
-    "actor": { "kind": "user", "id": "human" },
+    "actor": {
+      "kind": "user",
+      "id": "alice"
+    },
     "notify": false,
-    "created_at": "2026-11-25T10:00:00Z",
+    "created_at": "2026-11-27T19:11:37.151461Z",
     "payload": {
       "key": "ACME-13",
-      "rank": "UUUm",
+      "rank": "g",
       "claim": null,
       "labels": [],
       "number": 13,
@@ -21,28 +24,31 @@
       "project": "ACME",
       "last_seq": 3,
       "priority": null,
-      "resolved_priority": 0,
-      "priority_from": "OTHER-5",
       "ancestors": ["ACME-7", "OTHER-5"],
       "closed_at": null,
       "blocked_by": [],
-      "created_at": "2026-11-25T09:00:00Z",
-      "updated_at": "2026-11-25T10:00:00Z"
+      "created_at": "2026-11-27T19:11:37.014478Z",
+      "updated_at": "2026-11-27T19:11:37.114759Z",
+      "priority_from": "OTHER-5",
+      "resolved_priority": 0
     }
   },
   {
-    "id": 900064,
+    "id": 199,
     "issue_key": "ACME-13",
     "artifact_id": null,
     "project": "ACME",
     "seq": 4,
     "type": "issue.updated",
-    "actor": { "kind": "user", "id": "human" },
+    "actor": {
+      "kind": "user",
+      "id": "alice"
+    },
     "notify": false,
-    "created_at": "2026-11-25T10:05:00Z",
+    "created_at": "2026-11-27T19:11:37.208859Z",
     "payload": {
       "key": "ACME-13",
-      "rank": "UUUm",
+      "rank": "g",
       "claim": null,
       "labels": [],
       "number": 13,
@@ -52,13 +58,13 @@
       "project": "ACME",
       "last_seq": 4,
       "priority": null,
-      "resolved_priority": null,
-      "priority_from": null,
       "ancestors": ["ACME-7"],
       "closed_at": null,
       "blocked_by": [],
-      "created_at": "2026-11-25T09:00:00Z",
-      "updated_at": "2026-11-25T10:05:00Z"
+      "created_at": "2026-11-27T19:11:37.014478Z",
+      "updated_at": "2026-11-27T19:11:37.151461Z",
+      "priority_from": null,
+      "resolved_priority": null
     }
   }
 ]

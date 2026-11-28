@@ -13,6 +13,6 @@ var _ = declareRoute(routeDecl{
 	// The {id} is an artifact, looked for among every document and file, as a whole artifact id
 	// is. The read goes through loadArtifact, which answers ARTIFACT_NOT_FOUND.
 	ID:    &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	Read:  readEntry{Writes: readWritesNothing},
-	Shape: routeShape{Status: http.StatusOK, Response: artifactRead{}},
+	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfDocumentAtACut},
+	Shape: routeShape{Status: http.StatusOK, Response: artifactRead{}, Params: asOfQuery{}},
 })

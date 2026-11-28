@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchStack, useDispatchStackDirectory } from "./dispatch-stack";
 
@@ -79,8 +80,8 @@ export interface DispatchCliLive {
    *  deployment's daemon publishes a gate record with, an agent records a plan review or opens an
    *  approval request with, and the CLI itself reaches the server with. */
   asMachine<T>(method: string, route: string, body?: unknown): Promise<T>;
-  /** An issue in the workflow, with a spec of its own: an issue Dispatch still shows in `triage`
-   *  is out of the workflow, and neither the advice's gates nor its approval requests name one. */
+  /** An issue in the workflow, with a spec of its own, which is where a running tree's gate
+   *  stands. */
   createIssue(project: string, title: string, parent?: string): Promise<CreatedIssue>;
   /** A document of the issue, uploaded as the person who owns it. */
   upload(issue: string, name: string, content: string): Promise<UploadedDocument>;
@@ -160,6 +161,7 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
   async function cli(command: string, issue: string, args: readonly string[]): Promise<string> {
     const child = Bun.spawn([process.execPath, ENTRY, command, "--issue", issue, ...args], {
       env: {
+        ...bunCacheOff,
         PATH: SHELL_PATH,
         HOME: directories.state,
         DISPATCH_STATE_DIR: directories.state,

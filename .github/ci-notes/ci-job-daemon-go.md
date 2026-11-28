@@ -68,10 +68,11 @@ but the other leg then held every Postgres package, and internal/store took 407.
 leg 611 s of job (run 45737777272, jobs 139637308654 and 139637308512). So the plain step runs in
 three legs, a runner each: leg 1 is cmd/legion's with internal/leakguard, internal/record and
 internal/repocache; leg 2 is internal/store's with the small packages and the race-impossible
-tests, the forced-order tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox,
-internal/workflow, internal/admit, internal/api and the rest, about 874 s of package time over
-four cores, and the stamped shape gate, which reuses the test build of internal/api that leg 3's
-plain step compiled.
+tests, the session client's left-setting test (a step of its own, which runs that test of
+internal/ompsessions by name with -v so that its summary line reaches the log), the forced-order
+tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox, internal/workflow,
+internal/admit, internal/api and the rest, about 874 s of package time over four cores, and the
+stamped shape gate, which reuses the test build of internal/api that leg 3's plain step compiled.
 
 The rules the legs keep:
 

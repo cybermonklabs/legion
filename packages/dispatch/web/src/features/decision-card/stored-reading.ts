@@ -131,9 +131,38 @@ const LINE_FEED = /\r\n?|\n/gu;
  */
 const MARKUP = /[\\`*_[\]<>&|~\0\uFEFF]|^[ \t]*(?:[#+:=-]|\d{1,9}[.)])|^ {0,3}\t|^ {4}/mu;
 
-/** The spaces and tabs a line opens and ends with, which the parse leaves out of a paragraph's
- *  words; no other white space, which it keeps. */
-const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
+/**
+ * How many characters `withoutEdgeSpace` has read in this process, so a test holds the trim of a
+ * plain text's lines to their length rather than to the time it took. It is a loop and runs no
+ * regular expression: the end-anchored `/[ \t]+$/` it once trimmed with (inside
+ * `/^[ \t]+|[ \t]+$/gu`) read, from every start in a run of spaces or tabs followed by any other
+ * character, the rest of the run, and JavaScriptCore counts no step a regular expression takes.
+ */
+let edgeCharactersRead = 0;
+
+/** How many characters `withoutEdgeSpace` has read in this process. */
+export function edgeSpaceReads(): number {
+  return edgeCharactersRead;
+}
+
+/** `line` less the spaces and tabs it opens and ends with, which the parse leaves out of a
+ *  paragraph's words; no other white space, which it keeps. Each loop stops at the first character
+ *  it does not skip, so no character is read more than twice. */
+function withoutEdgeSpace(line: string): string {
+  let read = 0;
+  let start = 0;
+  for (; start < line.length; start++) {
+    read++;
+    if (line[start] !== " " && line[start] !== "\t") break;
+  }
+  let end = line.length;
+  for (; end > start; end--) {
+    read++;
+    if (line[end - 1] !== " " && line[end - 1] !== "\t") break;
+  }
+  edgeCharactersRead += read;
+  return line.slice(start, end);
+}
 
 /**
  * The reading of a stored markdown text: the text parsed by the base of the page's markdown
@@ -149,10 +178,10 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  *
  * The reading holds what decides the words, where they stand apart and how a link reads: the
  * blocks, the text runs and the marks on them, by the server's names, and of their attributes an
- * ordered list's first number (`blockOf`) and a link's target and title (`linkMark`), as the
- * server writes them; no word lies in any other. The shared projection reads a link whose words
- * are its own address, an autolink among them, as its target's short form or name, by that
- * target (`linkDrawn`), as it reads the server's reading of the same text. A
+ * ordered list's first number where that is not 1 (`blockOf`) and a link's target and title
+ * (`linkMark`), as the server writes them; no word lies in any other. The shared projection reads
+ * a link whose words are its own address, an autolink among them, as its target's short form or
+ * name, by that target (`linkDrawn`), as it reads the server's reading of the same text. A
  * block opens a space before its words and after them. A mark sits on the runs it covers, so a
  * marked run and the run beside it stay consecutive children of one block and read adjacent
  * (`a **b**c` reads `a bc`). A leaf that holds no text - a hard break, an image, a footnote
@@ -215,7 +244,7 @@ export function plainReading(markdown: string): DisplayTree {
   const paragraphs: DisplayTree[] = [];
   let lines: string[] = [];
   for (const line of markdown.split(LINE_FEED)) {
-    const words = line.replace(EDGE_SPACE, "");
+    const words = withoutEdgeSpace(line);
     if (words !== "") {
       lines.push(words);
     } else if (lines.length > 0) {
@@ -233,11 +262,22 @@ function paragraphOf(lines: readonly string[]): DisplayTree {
   return { content: [{ text: lines.join(" "), type: "text" }], type: "paragraph" };
 }
 
+/** How many stored texts the parse has read (`parsedReading`) in this process: the work the
+ *  memo saves a redraw, counted, so a test reads what a draw parsed rather than how long it took
+ *  (`storedTextParses`). */
+let parses = 0;
+
+/** The count of `parsedReading`'s parses so far in this process. */
+export function storedTextParses(): number {
+  return parses;
+}
+
 /** The reading of a stored text by the parse alone (`STORED_TEXT_PARSE`), with no plain path and
  *  nothing remembered: what `storedReading` reads a text by where it holds no reading of it, and
  *  what a test holds the plain path (`plainReading`) equal to. The text's link reference
  *  definitions are read only once a reference link asks for one (`definedLinks`). */
 export function parsedReading(markdown: string): DisplayTree {
+  parses += 1;
   const root = fromMarkdown(markdown, STORED_TEXT_PARSE);
   let defined: ReadonlyMap<string, DisplayTree> | undefined;
   const links: DefinedLinks = (identifier) => {
@@ -291,7 +331,8 @@ function blocksOf(nodes: readonly Parsed[], links: DefinedLinks): DisplayTree[] 
  * The reading of one block of the parse and what it holds, by the server's name for it. A block
  * of HTML is a paragraph holding it as one `html` leaf, as the server shows one, since the
  * server's schema carries HTML inline only. An ordered list keeps the number it starts on as its
- * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`.
+ * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`,
+ * and none where that is 1, as the server's reading leaves out its schema's default.
  * Front matter is one text run of its lines between two plain `---` fences, and of the two fences
  * alone where it holds nothing, as the server writes it (`parseFrontmatterBlock`,
  * `pmdoc/lines.go`). A link reference definition, which only names a link's target, draws
@@ -304,13 +345,14 @@ function blockOf(node: Parsed, links: DefinedLinks): DisplayTree | undefined {
       return withContent(node.type, runsOf(node.children, links));
     case "blockquote":
       return withContent("blockquote", blocksOf(node.children, links));
-    case "list":
-      return node.ordered === true
-        ? {
-            ...withContent("ordered_list", blocksOf(node.children, links)),
-            attrs: { order: node.start ?? 1 },
-          }
-        : withContent("bullet_list", blocksOf(node.children, links));
+    case "list": {
+      if (node.ordered !== true) return withContent("bullet_list", blocksOf(node.children, links));
+      const list = withContent("ordered_list", blocksOf(node.children, links));
+      // The server's reading leaves the number out where it is 1, its schema's default, so a
+      // list from 3 reads apart from a list from 1 here as it does there.
+      if (node.start != null && node.start !== 1) return { attrs: { order: node.start }, ...list };
+      return list;
+    }
     case "listItem":
       return withContent("list_item", blocksOf(node.children, links));
     case "code": {
