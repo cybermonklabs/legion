@@ -24,7 +24,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
 - A control carries no help text: no sentence under a box, in a placeholder or in a tooltip that explains how the app works.
-  A control has no text at all where its icon or its place says what it does.
+  A control has no visible text at all where its icon or its place says what it does; it keeps its accessible name (`aria-label`).
   How to use the app is explained on a help page, not on the controls.
 
 - Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string; lint misses a namespace import (`import * as`), so review for it.
