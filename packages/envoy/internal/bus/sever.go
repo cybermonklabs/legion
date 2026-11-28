@@ -285,7 +285,10 @@ func (c *Client) ConfirmMarked(timeout time.Duration) bool {
 
 // ConfirmMarkedBy is ConfirmMarked with the caller's flush of the connection in place of
 // FlushTimeout, under the caller's own bound: a caller whose bound runs on a clock of its own (a
-// stop's, which a test moves) flushes with a context on that clock.
+// stop's, which a test moves) flushes with a context on that clock. flush must flush conn through nats.go
+// and return nil only once the server has answered that flush: a nil clears every mark the flush
+// confirms (severableDialer.confirmMarks), so a marked socket then closes normally rather than
+// being reset, and a nil with no round trip would confirm writes that never arrived.
 func (c *Client) ConfirmMarkedBy(flush func(*nats.Conn) error) bool {
 	current := c.severable.Load()
 	if current == nil {
