@@ -93,7 +93,6 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	started.Generation, started.NextChange = next, next
 	started.NextChanges++
 	started.Phase, started.Hold, started.Awaiting, started.ChildrenWait = phase.Admitted, nil, nil, nil
-	started.Status = "todo"
 	started.MergerCompletionOwed = false
 	started.StandingToldAt = nil
 	if place.Tree != "" {
