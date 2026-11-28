@@ -3874,9 +3874,12 @@ async function olderDispatch(cell: TableCell): Promise<void> {
  *  each press for that write's answer. */
 async function retryEach(cell: TableCell, most: number): Promise<void> {
   const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
-  for (let pressed = 0; pressed < most && (await retry.count()) > 0; pressed++) {
+  for (let pressed = 0; pressed < most; pressed++) {
+    // Read once the shell's line has come to rest: right after a Stop, the stopped line may not
+    // show its Retry yet.
+    const offered = await settledValue("the Retries the shell offers", () => retry.count());
+    if (offered === 0) break;
     const answered = cell.writes.filter((write) => write.status !== undefined).length;
-    const offered = await retry.count();
     await retry.last().click();
     // The Retry's write is answered, or the shell lets it go and its line leaves.
     await expect
@@ -4505,6 +4508,10 @@ const tableCells: {
         ),
         "her second write named a list"
       ).toBe(true);
+      await expect(
+        pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" }).first(),
+        "the shell offers her stopped writes' Retry"
+      ).toBeVisible();
       await retryEach(cell, 4);
       await expect
         .poll(() => tableStored(cell), { message: "her last text landed", timeout: 15_000 })
