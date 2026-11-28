@@ -125,12 +125,13 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // timer's settlement to queue there before it signals: Shutdown then finds that settlement in
 // flight rather than an armed timer it can stop. A timer that fired before the row took the lock
 // would settle the document before the signal, leaving nothing owed at shutdown, and the row fails
-// at its wait for that settlement. The row waits the delay out before it signals, so the delay is
-// as short as that rule lets it be: a build-cluster Job runs the row 20 times and reads, from the
-// row's line "the title change queued behind the issue lock ... after the edit", the largest time
-// from the edit to that point, and the delay is at least five times that largest value, 400 ms
-// while it is at most 80 ms. Two Jobs of 20 runs on CI's runner size (4 CPU) read at most 6.7 ms
-// and 13.6 ms.
+// at its wait for that settlement, at once, on the document owing none while the row holds the
+// lock. The row waits the delay out before it signals, so the delay is as short as that rule lets
+// it be: a build-cluster Job runs the row 20 times and reads, from the row's line "the title
+// change queued behind the issue lock ... after the edit", the largest time from the edit to that
+// point (read at testwait's pace, so up to 10 ms past it), and the delay is at least five times
+// that largest value, 400 ms while it is at most 80 ms. Two Jobs of 20 runs on CI's runner size (4
+// CPU) read at most 6.7 ms and 13.6 ms.
 const inFlightSettleDelay = 400 * time.Millisecond
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
@@ -139,10 +140,13 @@ const inFlightSettleDelay = 400 * time.Millisecond
 // the same lock before the signal. The document service starts once the drain's share ends and
 // finds that timer already fired, so it has no timer to stop: it runs its own settlement of the
 // document beside the timer's, joins the timer's, and reports the document settled. The lock is
-// released once Shutdown's settlement is queued behind it too, or two seconds after the document
-// service started, which is ample for it to read what is owed; a release before that read could
-// let the timer's settlement commit first. The row logs the time from the edit to the title change
-// queued behind the lock, which sizes inFlightSettleDelay.
+// released once Shutdown's settlement is queued behind it too, so Shutdown has read the document
+// owing its settlement before the timer's settlement can commit. Each of the row's waits goes
+// through internal/testwait with no bound of its own: for the title change's backend behind the
+// lock; for the timer's settlement beside it, which fails at once if that settlement committed
+// before the row took the lock; and for Shutdown's, which fails at once if Shutdown's drain budget
+// stopped it short of the lock. The row logs the time from the edit to the title change queued
+// behind the lock, which sizes inFlightSettleDelay.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	// Not parallel: the test must take the issue's lock before the edit's timer fires,
 	// inFlightSettleDelay after the edit, and load could stretch the steps between past that.
@@ -161,44 +165,62 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("Dispatch's output:\n%s", process.Output.String())
+		}
+	})
 	// The edit's settlement queues behind the same lock inFlightSettleDelay after the edit, so a
 	// count of waiters could pass with the title change still on its way: watch the title change's
 	// own backend.
-	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
-		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
-	}
+	waitForRenameBehind(t, database, holder)
 	t.Logf("the title change queued behind the issue lock %v after the edit", time.Since(edited))
 	// The title change is one waiter and the settlement the edit's timer starts is the second. The
-	// wait ends ten seconds past the moment the timer is due rather than at the test binary's
-	// deadline, so a timer that does not fire then fails the row here instead of being waited out.
-	queued := 0
-	if !testwait.Holds(time.Until(edited.Add(inFlightSettleDelay+10*time.Second)), 10*time.Millisecond, func() bool {
+	// wait has no bound of its own. A settlement takes the issue's lock before it commits, so none
+	// commits while the row holds that lock, and a document that owes no settlement now was settled
+	// before the row took it: the edit's timer fired first, and no second waiter will come. The row
+	// fails at once on that, naming it.
+	queued := testwait.Until(t, "the edit's settlement timer to queue its settlement behind the issue lock beside the title change (the count waiting on it)", func() (int, bool) {
 		count, err := storetest.LockWaiters(context.Background(), holder)
 		if err != nil {
 			t.Fatal(err)
 		}
-		queued = count
-		return count >= 2
-	}) {
-		t.Fatalf("the edit's settlement timer never queued its settlement behind the issue lock (%d waiting on it %v after the edit):\n%s",
-			queued, time.Since(edited), process.Output.String())
-	}
+		if count < 2 && !settlementOwed(t, database, artifactID) {
+			number, _, _ := latestVersion(t, database, artifactID)
+			t.Fatalf("the edit's settlement timer fired and its settlement committed before the row took the issue's lock: "+
+				"the document owes no settlement %v after the edit, its latest version is %d, and %d waits on the lock, "+
+				"so the signal would find nothing owed (inFlightSettleDelay %v is shorter than the row's steps from the edit to the lock)",
+				time.Since(edited), number, count, inFlightSettleDelay)
+		}
+		return count, count >= 2
+	})
 	t.Logf("the edit's settlement queued behind the issue lock %v after the edit, with %d waiting on it", time.Since(edited), queued)
 
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	// A reading, not a wait for a fact: the lock is released once Shutdown's settlement queues
-	// behind it too (three waiters) or two seconds after the document service started, as the
-	// comment above says, and the count is only logged; the settled document below is the verdict.
-	waiting := 0
-	testwait.Holds(2*time.Second, 10*time.Millisecond, func() bool {
+	// Shutdown's worker for the document reads that it owes a settlement and runs its own, which
+	// queues behind the issue's lock as the third waiter: the timer that fired stays registered
+	// while its settlement waits there, so Shutdown settles the document as one whose timer was
+	// armed, loading its room if need be (settleRoomWithin's mayLoad), and no check between its read
+	// and the issue's lock ends that settlement here. Only then is the lock released, so Shutdown
+	// has read the document owing its settlement before the timer's settlement can commit. The wait
+	// has no bound of its own. Shutdown's drain budget ending before its settlement reaches the lock
+	// makes the third waiter impossible, and the process logs it: the row fails at once on that line.
+	waiting := testwait.Until(t, "Shutdown's settlement to queue behind the issue lock as the third waiter (the count waiting on it)", func() (int, bool) {
 		count, err := storetest.LockWaiters(context.Background(), holder)
 		if err != nil {
 			t.Fatal(err)
 		}
-		waiting = count
-		return count >= 3
+		if count < 3 {
+			output := process.Output.String()
+			for _, stopped := range []string{"stop document settlement before durable append drain", "document settlement stopped at the shutdown budget"} {
+				if strings.Contains(output, stopped) {
+					t.Fatalf("Shutdown's drain budget stopped its settlement before it queued behind the issue lock (%q, with %d waiting on the lock)", stopped, count)
+				}
+			}
+		}
+		return count, count >= 3
 	})
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
@@ -972,20 +994,21 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	return holder
 }
 
-// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
-// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
-// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
-// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
-// same statement for the same lock, but only once it holds its document's lock, an advisory lock
-// of its own; the title change holds none of those while it waits. Both hold the owner lock's
-// gate, which every write of this build takes shared in that same statement before it waits on
-// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
-// advisory lock that tells the two apart by nothing and is left out of the exclusion.
-func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+// waitForRenameBehind waits for the title change's backend to queue behind holder's lock on the
+// issue, through testwait with no bound of its own; its give-up prints the backends it last read
+// waiting on an owner lock. The title change runs in the Dispatch process, so its backend is found
+// by its statement, the owner-lock statement a PATCH sends first (lockIssueOwners in
+// internal/dispatch/api/issue_parent.go). A settlement sends the same statement for the same lock
+// before it takes its document's advisory lock (settleRoomWithin calls lockArtifactOwner before
+// readLocked takes lockSettlementCursor), so neither the statement nor the advisory locks tell a
+// settlement waiting there from the title change: the row calls this before the edit's settle
+// timer can fire (inFlightSettleDelay), so the backend it finds is the title change's. The query
+// leaves out the owner lock's gate, which every write of this build takes shared in that same
+// statement before it waits on the owner (store.OwnerLockGateNamespace, migration 20261115200014).
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(within)
-	for {
+	testwait.Until(t, "the title change's backend to queue behind the issue lock (the backends last read waiting on an owner lock and holding no advisory lock but its gate)", func() ([]uint32, bool) {
 		rows, err := database.Pool.Query(ctx, `
 			select pid from pg_stat_activity
 			where datname = current_database() and query = $1
@@ -1007,14 +1030,11 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 				t.Fatal(err)
 			}
 			if queued {
-				return pid
+				return pids, true
 			}
 		}
-		if time.Now().After(deadline) {
-			return 0
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
+		return pids, false
+	})
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
