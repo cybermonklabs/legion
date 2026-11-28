@@ -54,11 +54,13 @@
 #      directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed per
 #      command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and pushed
 #      with `git push`, handoff-record.ts's STANDING read, the fetch of the source clone's heads, a
-#      commit, the shim's describedArgs, a second commit and the shim's adoptionArgs as
-#      packages/daemon/internal/shim/commands.go builds them: with the image's jj,
-#      JJ_PACK_MAPPED_LIMIT unset, on the original, with jj 0.45.1 on its copy. The fetch is one
-#      unmeasured `git fetch --no-tags <the source clone> +refs/heads/*:refs/remotes/source/*` into
-#      the copy's clone, by the setup git and outside every measured tree. The source clone's heads
+#      commit, the pre-`--ignore-working-copy` describedArgs, a second commit and the
+#      pre-`--ignore-working-copy` adoptionArgs — kept as a snapshot control of the import and
+#      snapshot memory those arguments took before packages/daemon/internal/shim/commands.go added
+#      `--ignore-working-copy` — with the image's jj, JJ_PACK_MAPPED_LIMIT unset, on the original,
+#      with jj 0.45.1 on its copy. The fetch is one unmeasured `git fetch --no-tags <the source
+#      clone> +refs/heads/*:refs/remotes/source/*` into the copy's clone, by the setup git and
+#      outside every measured tree. The source clone's heads
 #      become remote-tracking refs the copy did not hold, so the fetch writes refs and no pack,
 #      which it prints; its setup verdict holds when it exits 0 and writes at least one ref the copy
 #      did not hold. Each commit, by the setup git too, appends one line to a file, the walk file
@@ -84,11 +86,12 @@
 #   9. R10's role commands on each R10 copy, with its jj and budget, JJ_TIMESTAMP and
 #      JJ_OP_TIMESTAMP fixed, and a JJ_RANDOMNESS_SEED for each command, the same on every copy:
 #      `jj --ignore-working-copy file list -r @-`, the STANDING read, step 7's fetch of the source
-#      clone's heads and its two commits, describedArgs, adoptionArgs, `jj new`, `jj diff` after
-#      the same edits in two directories, and `jj --ignore-working-copy log -r '::@-' -- <walk
-#      file>`.
-#      five copies' HEADs are one commit before the commits, so each commit is one id on all five,
-#      which a verdict checks, and each released row's stdout can equal its control's.
+#      clone's heads and its two commits, the pre-`--ignore-working-copy` describedArgs and
+#      adoptionArgs (kept as a snapshot control of those arguments before commands.go added
+#      `--ignore-working-copy`), `jj new`, `jj diff` after the same edits in two directories, and
+#      `jj --ignore-working-copy log -r '::@-' -- <walk file>`. All five copies' HEADs are one
+#      commit before the commits, so each commit is one id on all five, which a verdict checks, and
+#      each released row's stdout can equal its control's.
 #  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a
 #      plain `git clone --no-checkout` of the provisioned clone, its packs hardlinked into the fresh
 #      clone's own object store, then every jj command the measuring jj recorded for the original's
@@ -236,7 +239,7 @@ declare -A copy_jj=() copy_budget=()
 for budget in "${budgets[@]}"; do
   copy_budget[r10-$budget]=$budget
 done
-r10_role_commands=(file-list standing described adoption new diff log-walk)
+r10_role_commands=(file-list standing described-snapshot-control adoption-snapshot-control new diff log-walk)
 r10_provision_commands=(git-init workspace-add sparse-reset)
 
 # --------------------------------------------------------------------------------------------
@@ -295,14 +298,14 @@ expected+=(
   "c-handoff-head-read-memory push control"
   "c-handoff-head-read-memory standing control"
   "c-handoff-head-read-memory standing control commit"
-  "c-shim-adoption-memory undescribed image"
-  "c-shim-adoption-memory described image"
-  "c-shim-adoption-memory adoption image"
-  "c-shim-adoption-memory author image"
-  "c-shim-adoption-memory undescribed control"
-  "c-shim-adoption-memory described control"
-  "c-shim-adoption-memory adoption control"
-  "c-shim-adoption-memory author control"
+  "c-shim-adoption-memory undescribed (snapshot control) image"
+  "c-shim-adoption-memory described (snapshot control) image"
+  "c-shim-adoption-memory adoption (snapshot control) image"
+  "c-shim-adoption-memory author (snapshot control) image"
+  "c-shim-adoption-memory undescribed (snapshot control) control"
+  "c-shim-adoption-memory described (snapshot control) control"
+  "c-shim-adoption-memory adoption (snapshot control) control"
+  "c-shim-adoption-memory author (snapshot control) control"
 )
 for copy in "${r10_copies[@]}"; do
   expected+=("setup $copy fetch of the source clone's heads" "setup $copy commit before describedArgs" "setup $copy commit before adoptionArgs")
@@ -1462,11 +1465,12 @@ fi
 # --------------------------------------------------------------------------------------------
 # 7. R3 to R5's jj rows, on the original and on the 0.45.1 copy.
 # --------------------------------------------------------------------------------------------
-# The role commands steps 7 and 9 both run, as the code builds them (the harness holds each to the
-# line that builds it): handoff-record.ts's STANDING read, which its pathJj runs as `jj -R
-# <workspace> <STANDING>`, in the workspace; and the shim's adoption, the two commands
-# packages/daemon/internal/shim/commands.go builds (describedArgs, then adoptionArgs), each ending
-# in `-R <workspace>`, which the shim runs under the incoming role's identity, in the workspace.
+# The role commands steps 7 and 9 both run: handoff-record.ts's STANDING read, held to the line
+# that builds it by the harness, which its pathJj runs as `jj -R <workspace> <STANDING>`, in the
+# workspace; and the shim adoption's pre-`--ignore-working-copy` describedArgs and adoptionArgs,
+# kept as a snapshot control of the import and snapshot memory those arguments took before
+# packages/daemon/internal/shim/commands.go added `--ignore-working-copy`, each ending in `-R
+# <workspace>`, run under the incoming role's identity, in the workspace.
 standing_args=(log -r @- --no-graph -T commit_id)
 described_args=(log -r '@ ~ description(exact:"")' --no-graph -T commit_id)
 adoption_args=(metaedit --update-author -r '@ & description(exact:"")')
@@ -1551,21 +1555,21 @@ commit_before() {
   fi
 }
 
-# shim_rows <copy> <workspace> <jj> <clone> <seed> [sampler options…]: the shim's adoption on one
-# copy, as steps 7 and 9 both run it: the fetch of the source clone's heads, a commit,
-# describedArgs, a second commit and adoptionArgs, each of the shim's two commands measured as the
-# adopter, with the caller's sampler options first and JJ_RANDOMNESS_SEED <seed> for describedArgs
-# and <seed> + 1 for adoptionArgs.
+# shim_rows <copy> <workspace> <jj> <clone> <seed> [sampler options…]: the pre-`--ignore-working-copy`
+# shim adoption control on one copy, as steps 7 and 9 both run it: the fetch of the source clone's
+# heads, a commit, the pre-`--ignore-working-copy` describedArgs, a second commit and the
+# pre-`--ignore-working-copy` adoptionArgs, each measured as the adopter, with the caller's sampler
+# options first and JJ_RANDOMNESS_SEED <seed> for describedArgs and <seed> + 1 for adoptionArgs.
 shim_rows() {
   local copy=$1 dir=$2 jj=$3 shared=$4 seed=$5
   local -a adopter=(--env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email")
   shift 5
   fetch_source_heads "$copy" "$shared"
   commit_before "$copy" "$dir" describedArgs "$walk_file"
-  measure "$copy-described" "$@" --env "JJ_RANDOMNESS_SEED=$seed" "${adopter[@]}" \
+  measure "$copy-described-snapshot-control" "$@" --env "JJ_RANDOMNESS_SEED=$seed" "${adopter[@]}" \
     -- "$jj" "${described_args[@]}" -R "$dir"
   commit_before "$copy" "$dir" adoptionArgs "$third_file"
-  measure "$copy-adoption" "$@" --env "JJ_RANDOMNESS_SEED=$((seed + 1))" "${adopter[@]}" \
+  measure "$copy-adoption-snapshot-control" "$@" --env "JJ_RANDOMNESS_SEED=$((seed + 1))" "${adopter[@]}" \
     -- "$jj" "${adoption_args[@]}" -R "$dir"
 }
 
@@ -1590,10 +1594,11 @@ jj_rows() { # jj_rows <copy> <workspace> <jj> <clone>
   echo "pushed: ${pushed[$copy]}"
   # handoff-record.ts's STANDING read.
   measure "$copy-standing" --env JJ_RANDOMNESS_SEED=103 -- "$jj" -R "$dir" "${standing_args[@]}"
-  # The shim's adoption: the working copy is undescribed, so the shim runs adoptionArgs and not
-  # `jj new`. describedArgs runs right after the fetch and a commit, so it is the command that
-  # imports the fetch's refs and the commit's HEAD, and adoptionArgs right after a second commit,
-  # so it imports a new HEAD too: each of the two reads its tree from the pack.
+  # The pre-`--ignore-working-copy` shim adoption control: the working copy is undescribed, so the
+  # old adoption ran adoptionArgs and not `jj new`. That describedArgs runs right after the fetch
+  # and a commit, so it imports the fetch's refs and the commit's HEAD, and that adoptionArgs right
+  # after a second commit, so it imports a new HEAD too: each of the two reads its tree from the
+  # pack.
   shim_rows "$copy" "$dir" "$jj" "$shared" 104
   # The author adoptionArgs sets, on an unmeasured run outside every measured tree: the measured
   # adoptionArgs's import of the new HEAD made the working-copy commit under the adopter's
@@ -1666,23 +1671,23 @@ if going; then
     else
       verdict "c-handoff-head-read-memory standing $copy commit" fail "$standing" "the pushed commit's 40-character id" "no commit was pushed"
     fi
-    undescribed=$(cat "$out/$copy-described.out" 2> /dev/null)
-    same "c-shim-adoption-memory undescribed $copy" "describedArgs printed [$undescribed]" "describedArgs printed []"
+    undescribed=$(cat "$out/$copy-described-snapshot-control.out" 2> /dev/null)
+    same "c-shim-adoption-memory undescribed (snapshot control) $copy" "describedArgs printed [$undescribed]" "describedArgs printed []"
     got="@'s author ${authored[$copy/before]:-unread} before the unmeasured adoptionArgs and ${authored[$copy/after]:-unread} after it; the newest operation: ${authored[$copy/operation]:-unread}"
     want="@'s author $JJ_EMAIL, the probe's, before the unmeasured adoptionArgs and $adopter_email after it; the newest operation: edit commit metadata for commit <id>, metaedit's"
     if [ "${authored[$copy/before]:-}" = "$JJ_EMAIL" ] && [ "${authored[$copy/after]:-}" = "$adopter_email" ] &&
       [[ ${authored[$copy/operation]:-} == "edit commit metadata for commit "* ]]; then
-      verdict "c-shim-adoption-memory author $copy" pass "$got" "$want"
+      verdict "c-shim-adoption-memory author (snapshot control) $copy" pass "$got" "$want"
     else
-      verdict "c-shim-adoption-memory author $copy" fail "$got" "$want"
+      verdict "c-shim-adoption-memory author (snapshot control) $copy" fail "$got" "$want"
     fi
   done
   under_bound "c-handoff-head-read-memory standing image" image-standing
   reaches_bound "c-handoff-head-read-memory standing control" control-standing "${control_pack_kib:-unread}" "the pack's size"
-  under_bound "c-shim-adoption-memory described image" image-described
-  under_bound "c-shim-adoption-memory adoption image" image-adoption
-  reaches_bound "c-shim-adoption-memory described control" control-described "${control_pack_kib:-unread}" "the pack's size"
-  reaches_bound "c-shim-adoption-memory adoption control" control-adoption "${control_pack_kib:-unread}" "the pack's size"
+  under_bound "c-shim-adoption-memory described (snapshot control) image" image-described-snapshot-control
+  under_bound "c-shim-adoption-memory adoption (snapshot control) image" image-adoption-snapshot-control
+  reaches_bound "c-shim-adoption-memory described (snapshot control) control" control-described-snapshot-control "${control_pack_kib:-unread}" "the pack's size"
+  reaches_bound "c-shim-adoption-memory adoption (snapshot control) control" control-adoption-snapshot-control "${control_pack_kib:-unread}" "the pack's size"
 fi
 
 # --------------------------------------------------------------------------------------------

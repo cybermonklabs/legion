@@ -24,14 +24,21 @@ import (
 //     through what it was doing. A death with no turn open and nothing pending is not counted: a
 //     parked agent — idle, holding no task — that the environment kills now and then is relaunched
 //     however often it happens. Bounded by the launch failure limit.
-//   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
-//     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
-//     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
-//     answer or the Claude Code bridge's, before or after its acknowledgement, or as a result that
-//     ran no turn), is re-queued at no charge. Which events charge this budget, and the other two,
-//     is one policy's (Charges, outcome.go). Reset by a started turn.
-//   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
-//     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
+//   - PromptFailures: acknowledged prompts that started no turn within the wait for it and drew no
+//     answer (noTurn): the agent's silence. A prompt that failed with an answer is charged
+//     nothing, because an agent that answers is live and a live worker is not stopped for prompt
+//     failures: the agent refusing it, before or after its acknowledgement, or running no turn
+//     for it; the shim refusing to adopt the working copy ahead of it; the busy answer of Oh My Pi
+//     or of the Claude Code bridge. So is a prompt lost to the transport or not sent for want of a
+//     connection. Each is re-queued. The sites that handle an answer ask no charge of it, whatever
+//     outcome it carries, a refusal with no code among them; which events charge this budget where
+//     it is asked, and the other two, is one policy's (Charges, outcome.go). Reset by a started
+//     turn and by an answer (answeredLive), so a run of charges that stops the claim is one in
+//     which its agent took no turn and answered nothing.
+//   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn
+//     only, never by an answer and never by the relaunch itself, so the limit bounds the
+//     retirements of a claim whose silent runs an answer now and then interrupts, as it bounds
+//     those of a claim that keeps acknowledging and never turning (INFRA-1480).
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
@@ -305,11 +312,16 @@ func (m *Machine) turnOpen() bool {
 	return m.claim.State == StateWorking || open
 }
 
-// chargePrompt counts one prompt failure where the policy charges o (Charges), and charges
-// nothing where it does not. At the limit the process is retired — suspended, the session kept —
-// and the same session relaunched, or, once retirements run out too, the claim fails with its
-// prompt count left at the limit, under the prompt budget's own word: what ran out is the
-// retirements, whichever event spent the last of them (CausePromptRetiresExhausted).
+// chargePrompt counts one silent prompt failure where the policy charges o (Charges), and charges
+// nothing where it does not. It has two callers: the wait for an acknowledged prompt's turn
+// running out with no answer (noTurn, through promptFailed), whose OutcomeNoTurnStarted, the
+// agent's silence, is the one outcome that charges, and a turn a provider error ended
+// (providerErrorTurnEnded), whose OutcomeProviderError the policy waives. No site that handles
+// the far side's answer to a prompt asks it anything, whatever outcome the answer carries
+// (Budgets). At the limit the process is retired — suspended, the session kept — and the same
+// session relaunched, or, once retirements run out too, the claim fails with its prompt count
+// left at the limit, under the prompt budget's own word: what ran out is the retirements,
+// whichever event spent the last of them (CausePromptRetiresExhausted).
 //
 // Three guards here are not outcome questions, and stay this function's. A
 // relaunch the tree lifecycle refuses is checked before the suspension so the process is kept
@@ -334,6 +346,13 @@ func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 			"limit", m.deps.Limits.PromptFailures)
 		return m.persist(ctx)
 	}
+	// A silent charge can meet a held suspension: a compaction leaves the wait for an
+	// acknowledged prompt's turn armed (compactStart), a suspension that arrives under it is held
+	// (holdSuspension), and where the runtime refuses that hold's stop at the compaction's end the
+	// claim is given back ready or idle with the hold kept and the wait still armed (compactEnded),
+	// so the wait's end charges the prompt with the hold standing (noTurn). A retirement there
+	// would let the process go and drop the hold with it (letGo), relaunching a claim its
+	// suspension was to stop.
 	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
@@ -357,4 +376,60 @@ func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 	}
 	m.claim.Budgets.PromptFailures = 0
 	return m.launch(ctx, noEnd)
+}
+
+// answeredLive is the far side's answer to a prompt that reached no turn: the shim refused the
+// adoption ahead of it, or the agent refused it or ran no turn for it, busy or not. The answer says
+// the agent is live, so it is charged nothing whatever outcome it carries — a refusal with no code
+// (runtime.OutcomeUnrecognised) among them, which the policy would charge were it asked (Charges),
+// and no answer site asks it — and it ends the run of silent charges the claim holds (Budgets). It
+// leaves the retirements earlier runs cost, which only a started turn clears. The task waits for
+// the next sweep, hello, turn end or ready, as every retry does.
+func (m *Machine) answeredLive(ctx context.Context) error {
+	b := &m.claim.Budgets
+	if b.PromptFailures == 0 {
+		return nil
+	}
+	m.log.Info("supervise: the agent answered, so its run of silent prompt failures ends",
+		"promptFailures", b.PromptFailures, "promptRetires", b.PromptRetires)
+	b.PromptFailures = 0
+	return m.persist(ctx)
+}
+
+// answeredFailure is a send of the pending task that the far side answered with a failure and
+// no turn: the shim refused to adopt the working copy ahead of it, or the agent refused it,
+// before or after its acknowledgement, or ran no turn for it. It is charged nothing and ends the
+// run of silent charges (answeredLive). It is counted all the same, per pending task: when the
+// count reaches the prompt-failure limit the issue's architect is told that the task keeps
+// failing while its worker is kept (Deps.PromptAnswersReached), the escalation that stands in for
+// a retirement and a failed claim. The count is of the task's answered failures since it was
+// queued or a turn last took it (confirmCarrying), and nothing else resets it: a busy answer, a
+// transport loss, an identity failure or a silent charge between two of them leaves it as it is.
+// A new task, or a turn that takes this one, starts the count again, so a task can be told of
+// again after a turn; so does a daemon restart, since the count is memory only. why is the far
+// side's text as the store keeps it.
+func (m *Machine) answeredFailure(ctx context.Context, why string) error {
+	if p := m.claim.Pending; p != nil {
+		if !p.QueuedAt.Equal(m.answeredTask) {
+			m.answeredTask, m.answeredFailures = p.QueuedAt, 0
+		}
+		m.answeredFailures++
+		if m.answeredFailures == m.deps.Limits.PromptFailures {
+			m.tellPromptAnswers(*p, why)
+		}
+	}
+	return m.answeredLive(ctx)
+}
+
+// tellPromptAnswers tells the issue's architect, through the daemon, that p's sends keep failing
+// with an answer, naming the claim, the task and the last answer.
+func (m *Machine) tellPromptAnswers(p Delivery, why string) {
+	reason := fmt.Sprintf("The %s claim %s did not get its task %s: %d sends of this task have failed with an answer since it was queued or a turn last took it. "+
+		"A worker that answers is not stopped, so the daemon keeps the worker and sends the task again at each sweep. "+
+		"The last answer was: %s", m.claim.Role, m.claim.Token, p.ID, m.answeredFailures, why)
+	m.log.Warn("supervise: the far side keeps answering the pending task's sends with a failure; the issue's architect is told",
+		"delivery", p.ID, "answeredFailures", m.answeredFailures, "why", why)
+	if m.deps.PromptAnswersReached != nil {
+		m.deps.PromptAnswersReached(m.current(), reason)
+	}
 }

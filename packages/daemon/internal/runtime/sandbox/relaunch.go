@@ -33,7 +33,8 @@ import (
 // resolve one (ResumeByAgent), is refused before anything is touched: continuing a recorded agent
 // is Resume's, and a fresh agent continues nothing. spec.Plugins travels with a claim that has
 // registered a session (specs.SpawnSpec), which a Spawn's claim never has yet, and is cleared here
-// anyway, so Spawn always installs nothing and a fresh pod always loads the image's copies.
+// anyway, and the pair the daemon pins goes to a Resume alone (relaunch), so Spawn always installs
+// nothing and its agent always loads the image's copies.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	switch {
 	case spec.ResumeSessionFile != "":
@@ -97,13 +98,14 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // replacing it at a launch would end every role's turn in it and delete the issue's disk with
 // everything unpushed on it (INFRA-484). A launch into a drifted pod is therefore an ordinary
 // launch, the install of a stale-plugin pair (spec.Plugins, LEGION-164) included, which brings
-// this launch's agent onto the current plugin without a fresh pod. Its role is started as the
+// this launch's agent onto the current plugin without a fresh pod; so does the pair this daemon
+// pins for a Resume into such a pod built on another image (relaunch). Its role is started as the
 // kept pod was built, from the volumes and mounts of that pod's own stored template (keptBy,
 // keptPod) and not from the configuration as it now reads: two of those drift facets, the
 // broker's enrollment and the role's overlays, are named in the role's own start command, and a
-// process started against what its pod cannot carry refuses to run, never registers, and so
-// never answers the round that is to replace that pod. A pod whose template says nothing this
-// daemon can read is replaced at the launch instead, as every drifted pod was before the round.
+// process started against what its pod cannot carry refuses to run, never registers, and so never
+// answers the round that is to replace that pod. A pod whose template says nothing this daemon can
+// read is replaced at the launch instead, as every drifted pod was before the round.
 //
 // Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
 // no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
@@ -178,13 +180,15 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // since the try's bound may be what ended it.
 // On an error the caller owns stopping its previous process (runtime.Runtime's Spawn and Resume);
 // relaunch stops only the child it may itself have started: a Start the launcher received but did
-// not answer in time (stopIssuedChild). A launch installs its plugin pair (launcherCommand) only
-// when spec.Plugins is set and the pod was kept rather than replaced: a pod replaced for any
-// reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never started, a
-// moved address, an update round that is over, a controller pod built on another image — comes up
-// on the configured image, which the boot gate holds to the daemon's contract, so its copies are
-// already right; carrying the install onto a fresh pod would be installing over a pair already
-// current. l.spec.Plugins is cleared in that case before launcherCommand builds its argv.
+// not answer in time (stopIssuedChild). A launch installs a plugin pair (launcherCommand) only into
+// a pod it keeps rather than replaces: the spec's own where spec.Plugins is set, a stale claim's,
+// and otherwise the pair this daemon pins for an Oh My Pi Resume into a kept pod built on another
+// image (the block in relaunch that sets it says why, dispatch://INFRA-3916 R8). A pod replaced
+// for any reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never
+// started, a moved address, an update round that is over, a controller pod built on another image
+// — comes up on the configured image, which the boot gate holds to the daemon's contract, so its
+// copies are already right; carrying the install onto a fresh pod would be installing over a pair
+// already current. l.spec.Plugins is cleared in that case before launcherCommand builds its argv.
 //
 // An issue Sandbox whose disk shape is not the one this launch renders (supersededDisk) is
 // replaced with the pod. It is one of the release before the pod-owned disk, which owns an
@@ -427,6 +431,21 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// Replaced, a controller pod built on another image included: the fresh pod comes up on
 		// the configured image, whose plugins are already current, so nothing is installed into it.
 		l.spec.Plugins = nil
+	}
+	// A Resume that carries no pair of its own into a pod it keeps that was built on another image
+	// than the configured one installs the pair this daemon pins (Options.Plugins,
+	// dispatch://INFRA-3916 R8). Its claim records this daemon's contract, so its spec carries no
+	// pair (specs.stalePluginInstall), but the pod's image carries its own release's plugins: a
+	// process that loaded them would register on that release's contract, be refused, and be
+	// relaunched once more, which ends its agent's background work again. No record names the
+	// contract an image carries, so the image the pod was built on decides (podImageDrift); the
+	// configured image carries this daemon's own, which the boot's image probe holds it to. A Spawn,
+	// which names no session to resume, installs nothing, nor does a Claude Code launch, whose
+	// plugin is the image's own claude-envoy, nor a daemon that knows no pair. No pod a round does
+	// not cover is kept here on another image: a launch installing nothing replaces such a pod for
+	// any drift of its shape.
+	if !replace && !installing && l.resumesOMP() && podImageDrift(s, r.podShapes[l.shapeKey()]) {
+		l.spec.Plugins = r.plugins
 	}
 	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)
 	if replace {

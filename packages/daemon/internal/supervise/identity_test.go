@@ -13,12 +13,11 @@ import (
 
 // A phase task first hands the agent's working copy its role's App identity for the claim's
 // issue, so a commit the task makes is authored by the bot rather than by whoever the workspace
-// last named. A send the adoption stops never reaches the agent, and what the claim is charged
-// for it is the split refused makes (table.go): the shim's own refusal of the working copy is the
-// far side's answer about this workspace and spends the prompt budget, while a transport failure
-// under the frame and a failure to mint the role's App identity — which never leaves the daemon,
-// and is an outage of the App rather than a fault of this workspace — spend nothing and are
-// retried for ever (INFRA-1480).
+// last named. A send the adoption stops never reaches the agent, and it costs the claim nothing
+// (refused, table.go): the shim's own refusal of the working copy is the far side's answer, which
+// says the worker is live, and a transport failure under the frame and a failure to mint the
+// role's App identity — which never leaves the daemon, and is an outage of the App rather than a
+// fault of this workspace — are no answer at all. Each is retried at the next send.
 func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	for _, tc := range []struct {
@@ -29,12 +28,11 @@ func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 		fail      error
 		prompts   int
 		adoptions int
-		budgets   Budgets
 	}{
 		{name: "an adopted working copy gets the task", prompts: 1, adoptions: 1},
-		{name: "a working copy the shim refuses to adopt does not, and is charged",
+		{name: "a working copy the shim refuses to adopt does not, and is charged nothing",
 			fail:      adoptRefusal("jj metaedit exited 1: the git lock /w/.git/index.lock was last written 31m ago"),
-			adoptions: 1, budgets: Budgets{PromptFailures: 1}},
+			adoptions: 1},
 		{name: "an adoption the transport loses is charged nothing", fail: errBoom, adoptions: 1},
 		{name: "an App identity that cannot be minted is charged nothing",
 			mint: errors.New("mint the implementer's installation token: the GitHub App is unreachable")},
@@ -64,7 +62,7 @@ func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 			if want := string(h.claim().Role) + " " + h.claim().Issue; len(asked) != 1 || asked[0] != want {
 				t.Fatalf("identity asked for %v, want once for %q, the claim's role and issue", asked, want)
 			}
-			h.wantBudgets(tc.budgets)
+			h.wantBudgets(Budgets{})
 			if p := h.pending(); p.Task != "implement the plan" || !p.ConfirmedAt.IsZero() {
 				t.Fatalf("pending %+v, want the task still queued for the next send", p)
 			}

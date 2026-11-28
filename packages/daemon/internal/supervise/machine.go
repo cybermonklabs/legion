@@ -227,6 +227,14 @@ type Claim struct {
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
 	// whose let-gos ended nothing worth telling records none.
 	EndedWork EndedWork
+	// LeftEdits is the commits in which a stale working copy's update, made by the adoption of one
+	// of this claim's tasks, left the edits that no jj command had recorded, for the agent to be
+	// told in the next prompt a turn takes (LeftEdits, leftEdits). It is the claim's rather than
+	// that task's, since the task can be dropped or replaced before any prompt of it reaches the
+	// agent, and it is persisted, since that prompt can be a relaunch and a daemon restart away. A
+	// later adoption that leaves more adds them while it is still untold (LeftEdits.with). A claim
+	// no adoption left edits for records none.
+	LeftEdits LeftEdits
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery whose turn is running,
@@ -1014,6 +1022,17 @@ type ClaimView struct {
 	WakeWaiting *WakeWaiting
 }
 
+// InTurn is whether the claim this view publishes is in a turn or has a prompt on its way to one,
+// which is what holds another claim's phase task back from adopting the working copy an issue's
+// roles share (internal/daemon's claimInTurn, Deps.IssueInTurn, sendPending's hold). The state is
+// StateWorking from a turn's start to its end, whichever event told the machine it ended, and the
+// send in flight covers the prompt before that start. Nothing else names the claim: a turn that
+// ended names nothing, whatever its outcome, and neither does a next prompt that waits on the
+// provider-error backoff or a relaunch that waits for the refresh gate. A refused loop of a run
+// Oh My Pi goes on from ends no turn, so the plugin's report of one leaves the claim working
+// (dispatch://INFRA-3916 R6).
+func (v ClaimView) InTurn() bool { return v.State == StateWorking || v.SendInFlight }
+
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
 // when its tree closes.
 func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) }
@@ -1390,6 +1409,21 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// PromptAnswersReached is told of a pending task whose sends the far side has answered with a
+	// failure Limits.PromptFailures times since the task was queued or a turn last took it
+	// (answeredFailure), with the reason the issue's architect is given: the claim, the task and
+	// the last answer's text. The worker is not stopped for those answers, so this is the
+	// escalation that stands in for a retirement and a failed claim. nil tells nobody. It is
+	// called inside the machine's decision, so it returns at once.
+	PromptAnswersReached func(c Claim, reason string)
+	// IssueHoldReached is told of a phase task that sendPending has held for more than
+	// issueHoldTold behind inTurn, another claim of its issue in a turn or with a send on its way to
+	// one (issueInTurn), once per hold (heldForTurn), with how long the task has waited. c is the
+	// held claim, whose pending delivery is the task. The hold itself is right, since the roles of
+	// an issue share one working copy; this is what tells the issue's architect a task waits that
+	// long, a turn that runs for hours included. nil tells nobody. It is called inside the
+	// machine's decision, so it returns at once.
+	IssueHoldReached func(c Claim, inTurn claim.Token, held time.Duration)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1788,16 +1822,22 @@ type Machine struct {
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst,
 	// and credits the delivery's own copy (Delivery.Carried).
 	outstanding awaitedPrompts
-	// answeredBusy is the id of the pending delivery whose acknowledged prompt the agent said,
-	// while the wait for its turn was armed, it could not take because it is in a turn of its
-	// own: a refusal the one rule of the refusal paths read as OutcomeAgentBusy
-	// (agentRefusalOutcome), which left the wait running (refusedElsewhere — the shim's replay of
-	// what Oh My Pi answered an earlier send of this same task). The wait's running out reads it
-	// (noTurn): the agent said it was in a turn, so the wait ended on that turn rather than on an
-	// agent that took the prompt and never turned. A delivery taken back clears it
-	// (takeBackPending), and so does the wait's end that sends a held prompt again under its id
-	// (noTurn), so it names no task after its wait. It is memory only, as the wait is.
-	answeredBusy string
+	// answeredFailures counts the sends of the pending task the far side answered with a failure
+	// (answeredFailure) since that task was queued, keyed by its QueuedAt (answeredTask), or since
+	// a turn took it (confirmCarrying). It is memory only: a daemon restart starts the count again.
+	answeredFailures int
+	answeredTask     time.Time
+	// waitAnswer is the agent's answer to the pending delivery's acknowledged prompt that came
+	// while the wait for that prompt's turn was armed and left the wait running: a refusal the
+	// shim replayed of what Oh My Pi answered an earlier send of this same task
+	// (refusedElsewhere), with its outcome as the one rule of the refusal paths read it
+	// (agentRefusalOutcome). The wait's running out reads it (noTurn): the agent answered, so the
+	// wait ended on that answer rather than on an agent that took the prompt and never turned or
+	// answered — on the turn the agent said it is in, for OutcomeAgentBusy, and on its refusal of
+	// the work for any other outcome, which is no silence and charges nothing. A delivery taken
+	// back clears it (takeBackPending), and so does the wait's end that sends a held prompt again
+	// under its id (noTurn), so it names no task after its wait. It is memory only, as the wait is.
+	waitAnswer keptAnswer
 	// resulted is the delivery id of the last prompt whose result promptResulted took, a turn
 	// that ran or one that ended in a provider error. A result of a prompt whose task still holds
 	// that id prevents sendPending from sending it again under the same id after the take-back's
@@ -1895,15 +1935,17 @@ type Machine struct {
 	// EndedWork.TaskTurn). letGo clears it with the process. It is memory only: a daemon
 	// restarted inside such a park records the end without it, from what the claim still holds.
 	cutTurnOf string
-	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
-	// current process carried the sentence of (sentences, Delivery.message): the session the claim
-	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
-	// that record's own sentence. It is what confirmCarrying reads to mark each record told, so a
-	// turn whose prompt went out before a record existed — the takeover of a process another
-	// runtime still runs, whose relaunch the pacing parks — tells nothing of it. It is set where
-	// the send goes out (startSend), and goes with the process (letGo) and, for the record of the
-	// let-go, with that record (recordEnd), since a newer record is words no earlier prompt
-	// carried. It is memory only: a daemon restarted inside the turn of such a prompt reads none
+	// carried is which of the claim's three untold records a prompt this machine sent to the
+	// claim's current process carried the sentence of (sentences, Delivery.message): the session
+	// the claim abandoned, what its last let-go ended, and the commits a stale working copy's
+	// update left the edits in, each marked only where the prompt's text carries that record's own
+	// sentence. It is what confirmCarrying reads to mark each record told, so a turn whose prompt
+	// went out before a record existed — the takeover of a process another runtime still runs,
+	// whose relaunch the pacing parks — tells nothing of it. It is set where the send goes out
+	// (startSend, and leftEdits, which composes that send's prompt again), and goes with the
+	// process (letGo) and, for the record of the let-go and the record of the edits, with that
+	// record (recordEnd, leftEdits), since a newer record is words no earlier prompt carried. It is
+	// memory only: a daemon restarted inside the turn of such a prompt reads none
 	// (confirmCarrying).
 	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
@@ -2096,6 +2138,15 @@ type Machine struct {
 	// session it does not hold, so its Error line is written once per delivery rather than at every
 	// sweep that asks again. Memory only.
 	unheldDelivery string
+	// staleHeldDelivery is the pending delivery sendPending last held back because this daemon
+	// refuses the claim's every `legion` call for a stale plugin (staleRefusesClaim), so its Info
+	// line is written once per delivery rather than at every sweep that asks again. Memory only: a
+	// restarted daemon writes the line once more for the delivery it finds held.
+	staleHeldDelivery string
+	// issueHold is the hold sendPending's check of the issue's turns (issueInTurn) keeps on the
+	// pending phase task: when it began, and whether the issue's architect has been told of it
+	// (heldForTurn). Memory only: a restarted daemon starts the hold's time again.
+	issueHold issueHold
 	// refusalLogged is the Warn line holdRecorded last wrote for a refused hold, so a refusal asked
 	// again at every sweep (sendPending, for a claim that does not hold its session) is written
 	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
@@ -2213,6 +2264,14 @@ func (p awaitedPrompts) ids() []string {
 
 // LogValue logs the prompts by their ids: what each carried of news is the delivery's to show.
 func (p awaitedPrompts) LogValue() slog.Value { return slog.AnyValue(p.ids()) }
+
+// keptAnswer is an answer a wait for a prompt's turn keeps for its end (Machine.waitAnswer): the id
+// of the pending delivery it answered, its outcome, and the far side's words.
+type keptAnswer struct {
+	id      string
+	outcome runtime.Outcome
+	why     string
+}
 
 // armed is one scheduled timer: its arming's sequence and delivery, how to cancel it, and when it
 // fires (due), so a later arming can tell whether it would fire sooner. TimerPodStart's is no
@@ -5835,6 +5894,7 @@ func copyClaim(c Claim) Claim {
 	c.CapabilityHash = bytes.Clone(c.CapabilityHash)
 	c.TurnOutcomes = slices.Clone(c.TurnOutcomes)
 	c.EndedWork.Kinds = slices.Clone(c.EndedWork.Kinds)
+	c.LeftEdits.Commits = slices.Clone(c.LeftEdits.Commits)
 	c.SessionRun.Endings = slices.Clone(c.SessionRun.Endings)
 	return c
 }

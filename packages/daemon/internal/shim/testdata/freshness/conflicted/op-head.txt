@@ -1,0 +1,2 @@
+# jj --ignore-working-copy op log -n1 --no-graph -T id --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace whose conflicted working-copy commit another workspace re-authored with --ignore-working-copy
+2ca9f2c5dfb2532f8acd7497afda4155cace2b5e6f34257e6b07d3503428289973257679bbd326ffd0b334941285225381ca50c0fa49bdebdf076ae380d2e65c

@@ -9,29 +9,28 @@ import (
 )
 
 // ErrPromptRefused is Oh My Pi answering a prompt frame with `success: false`. Prompt wraps it
-// for a refusal and for nothing else, because the two failures are charged differently: an agent
-// that refuses prompts spends its prompt budget (a worker that refused every prompt would
-// otherwise be retried forever), while a prompt lost to the transport was never the agent's
-// answer and is sent again at no charge. A refusal also carries the words Oh My Pi gave
+// for a refusal and for nothing else, because the supervisor logs and handles the two failures
+// apart: a refusal is the agent's answer, which says it is live, while a prompt lost to the
+// transport was never the agent's answer. Neither is charged to the prompt budget, which only a
+// prompt acknowledged and never answered spends. A refusal also carries the words Oh My Pi gave
 // (RefusalReason), for the log, and the stream's refusal carries the outcome it minted from the
 // code beside them (RefusalOutcome, stream.RefusedError), since one of them — a turn already
-// running — is no refusal of the work. Which outcomes charge is supervise.Charges's alone.
+// running — is no refusal of the work.
 var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 
 // ErrAdoptRefused is the agent's shim answering AdoptWorkingCopy with `ok: false`: the working
 // copy could not be given the role's App identity — a jj wedged on a stale lock, a metaedit that
 // failed, the shim's own command timeout. AdoptWorkingCopy wraps it for a refusal and for nothing
-// else, and the supervisor charges it to the same prompt budget ErrPromptRefused is charged to,
-// as supervise.OutcomeAdoptionRefused.
-// The two are the far side's own answer about this workspace, so asking again in a minute changes
-// nothing by itself, and an unbounded retry of either is a silent stop: the task is never
-// delivered, nothing fails, and the claim waits for hours with no one told (INFRA-1480, where two
-// planning tasks were held 31 and 33 hours by a stale lock). Charged, the claim runs out of budget
-// and fails, which the workflow reports.
+// else, and the supervisor reads it as OutcomeAdoptionRefused. It is the far side's own answer
+// about this workspace, so it says the worker is live and costs the claim no prompt budget: a
+// relaunch would run the same jj on the same working copy. The task waits for the next send, and
+// each refusal is counted on the pending task, so a claim waiting on a wedged working copy shows
+// why on its record (INFRA-1480, where two planning tasks were held 31 and 33 hours by a stale
+// lock with no record of why).
 //
-// What is not this, and is charged nothing because it is no answer about the workspace: no answer
-// within the request's reply deadline (ErrNoAnswer), a closed connection, a frame lost on the way
-// — the prompt never reached the far side — and a failure to mint the role's identity, which is
+// What is not this, because it is no answer about the workspace: no answer within the request's
+// reply deadline (ErrNoAnswer), a closed connection, a frame lost on the way — the prompt never
+// reached the far side — and a failure to mint the role's identity, which is
 // ErrIdentityUnavailable below.
 //
 // Every `ok: false` is this, the shim's own command timeout included, and the refusal's text is
@@ -132,8 +131,10 @@ type Conn interface {
 	// Shutdown asks the agent to end its own process — the graceful half of a stop.
 	Shutdown(ctx context.Context) error
 	// AdoptWorkingCopy makes the agent's side set the author of its working copy, for a
-	// workspace the daemon cannot reach itself.
-	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) error
+	// workspace the daemon cannot reach itself. It answers what the agent's side said of the
+	// adoption beside the error (Adoption): a refusal names the commits a stale working copy's
+	// update left its edits in, as an adoption that succeeded does.
+	AdoptWorkingCopy(ctx context.Context, id GitIdentity, timeout time.Duration) (Adoption, error)
 	// Compact asks Oh My Pi to shorten its session's context with a handoff, the document
 	// written to customInstructions, and returns when it answers or bound runs out. It never
 	// asks for Oh My Pi's `compact`, whose summary request Anthropic refuses for a long Claude

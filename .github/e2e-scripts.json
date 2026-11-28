@@ -238,6 +238,17 @@
       "jj": true
     },
     {
+      "script": "adoption-delivery.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": true,
+      "evidence_variable": "ADOPTION_DELIVERY_EVIDENCE_DIR",
+      "timeout_minutes": 15,
+      "why_hosted": "Run it from a checkout on a Linux host with bash, go, git, the worker image's jj, awk, tar, python3 and bun (after bun install), as LEGION_OMP_PATH=... LEGION_TEST_PG_DSN=... bash scripts/e2e/adoption-delivery.sh; install-omp gives it the pinned Oh My Pi, install-jj the worker image's jj, CI's service is the PostgreSQL, the script installs the nats-server it needs with go install, the driver makes its own origin, clones and jj workspaces under TMPDIR, and each pane's model is an HTTP stand-in of the driver's own, so it needs no model route, no tmux and no container",
+      "jj": true
+    },
+    {
       "script": "refusal-fallback-omp.sh",
       "go_version_file": "packages/envoy/go.mod",
       "apt": [],
@@ -406,6 +417,10 @@
     {
       "script": "leak-guard-image-probe.sh",
       "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
+    },
+    {
+      "script": "adopt-large-checkout-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), kubectl, git and jq, a commit of this repository pushed to GitHub (--commit), which the Job clones, an image by digest, a multi-platform image by its index digest, that carries bash, coreutils, awk, grep, gzip, curl, git 2.42 or later and a GNU tar gVisor runs (--image), and the deployment's namespace, compute class, storage class, labels and annotations (--namespace, --node-selector, --storage-class, --label, --annotation); it starts one gVisor Job, bounded by its deadline (7200 s by default), that writes a repository of 342,000 files and runs TestAdoptionOnALargeCheckout over it, and nothing of its own"
     },
     {
       "script": "pack-memory-job.sh",

@@ -1,0 +1,2 @@
+# jj --ignore-working-copy op log -n1 --no-graph -T id --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace whose working-copy commit another workspace rebased onto a commit that changes a file
+e66f649c44fedc297f7aee8a48d3778a286331652c79b9b4822450d53d408449b38a63b7b437e5462aac49774fe843dbaae46e018cebdfb19c32e42e1a01a44a

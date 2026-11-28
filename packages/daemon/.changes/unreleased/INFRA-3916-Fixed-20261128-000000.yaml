@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    A relaunch into a kept pod built on another image than the configured one now installs the
+    pinned plugin pair, so a claim retired for prompt failures in a pod on an older image comes
+    back on the daemon's contract rather than being refused once more (dispatch://INFRA-3916, R8).
+time: 2026-11-28T00:00:00Z
+custom:
+    Issue: INFRA-3916

@@ -1,0 +1,4 @@
+# jj --ignore-working-copy debug working-copy --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace whose conflicted working-copy commit another workspace re-authored with --ignore-working-copy
+Type: "local"
+Current operation: OperationId("8fae149eb4d6eb343045dee73dea7398168ee80eda24fba96d3cc9de75c315673f0b9eb3b6aed1c7240767009fdb6fa725d37d27659124e376872fc491c693c0")
+Current tree: MergedTree { tree_ids: Conflicted([TreeId("09fd040d5db469ff43138d500db567e4df6d7ec9"), TreeId("48330953513ed59af77f677348a28cbab5ee657c"), TreeId("fd5e7b0cf42d7d2fa6952b3f74b703e4995e3705")]), labels: Labeled(["vklvytuw d1ef03a2 \"the other side\" (rebase destination)", "tznqmnlw 53ee9a2c \"the default branch\" (parents of rebased revision)", "smxnurxn 967dd9b8 \"the workspace side\" (rebased revision)"]), .. }

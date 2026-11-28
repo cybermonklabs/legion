@@ -44,17 +44,30 @@ const idleRigURLVariable = "LEGION_IDLE_RIG_URL"
 // messages the session's own consumer was relayed — and every adopt-working-copy frame the daemon
 // sent it ahead of a prompt. Stopping is how many held stops its processes have begun
 // (idleRigPlan.StopDelaySeconds): each one's session record is gone from the listener while the
-// process still runs.
+// process still runs. Registrations is every registration its processes asked the daemon for,
+// recorded before the daemon answered, so one the daemon refused is on it too; Registered counts
+// the ones it took.
 type idleRigRole struct {
-	Claim       string
-	Secret      string
-	Session     string
-	SessionFile string
-	Registered  int
-	Stopping    int
-	Prompts     []idleRigMessage
-	Messages    []idleRigMessage
-	Adoptions   []idleRigAdoption
+	Claim         string
+	Secret        string
+	Session       string
+	SessionFile   string
+	Registered    int
+	Stopping      int
+	Prompts       []idleRigMessage
+	Messages      []idleRigMessage
+	Adoptions     []idleRigAdoption
+	Registrations []idleRigRegistration
+}
+
+// idleRigRegistration is one registration a role process asked the daemon for: the generation the
+// process is, the daemon API contract it registered on, and Agent, the agent command its
+// launcher wrapped (the argv after the shim's `--`), which says whether its start installed a
+// plugin pair before the agent and which pi-legion that agent loads.
+type idleRigRegistration struct {
+	Generation uint64
+	Contract   int
+	Agent      []string
 }
 
 // idleRigMessage is one message a role process recorded, with the moment it arrived. Delivery is
@@ -112,13 +125,20 @@ type idleRigAdoption struct {
 // start, far sooner than an Oh My Pi does, and a test that needs the daemon's publish to meet a
 // role its woken session has not claimed yet would be racing it.
 //
+// ImageContract is the daemon API contract the pi-legion of the image the process's pod was built
+// on declares (/opt/legion/pi-legion/package.json), zero for the configured image, whose pi-legion
+// declares this daemon's own: the boot's image probe holds it to that. A process whose Oh My Pi
+// loads that image's pi-legion registers on this contract, and one whose start installed a pair
+// registers on the pair's (idleRigRoleProcess.pluginContract).
+//
 // A process reads Topics and ExitsAsReleasedInProduction once, as it starts
-// (idleRigRoleProcess.run), after the plan no longer holds it, TakeTurn and Background at each
-// task and each activity report, and StopDelaySeconds at its SIGTERM, so a test can hold one stop
-// of a role and no later one. So a plan that sets either of the first two, or HoldsBeforeEnvoy,
-// reaches only a process that starts after it is set. The daemon's boot starts the role process
-// of every pod of the rig, so a plan for that process is given to newIdleWakeRig, which sets it
-// before the boot; a plan for a woken process is set before its wake.
+// (idleRigRoleProcess.run), after the plan no longer holds it, ImageContract as it registers,
+// TakeTurn and Background at each task and each activity report, and StopDelaySeconds at its
+// SIGTERM, so a test can hold one stop of a role and no later one. So a plan that sets either of
+// the first two, ImageContract or HoldsBeforeEnvoy, reaches only a process that starts after it is
+// set. The daemon's boot starts the role process of every pod of the rig, so a plan for that
+// process is given to newIdleWakeRig, which sets it before the boot; a plan for a woken process is
+// set before its wake.
 type idleRigPlan struct {
 	TakeTurn                    bool     `json:"takeTurn"`
 	Topics                      []string `json:"topics"`
@@ -126,6 +146,7 @@ type idleRigPlan struct {
 	StopDelaySeconds            int      `json:"stopDelaySeconds"`
 	ExitsAsReleasedInProduction bool     `json:"exitsAsReleasedInProduction"`
 	HoldsBeforeEnvoy            bool     `json:"holdsBeforeEnvoy"`
+	ImageContract               int      `json:"imageContract"`
 }
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
@@ -190,6 +211,7 @@ func (a *idleRigAgents) role(pod, role string) idleRigRole {
 	copied.Prompts = append([]idleRigMessage(nil), seen.Prompts...)
 	copied.Messages = append([]idleRigMessage(nil), seen.Messages...)
 	copied.Adoptions = append([]idleRigAdoption(nil), seen.Adoptions...)
+	copied.Registrations = append([]idleRigRegistration(nil), seen.Registrations...)
 	return copied
 }
 
@@ -221,6 +243,8 @@ func (a *idleRigAgents) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/agent/boot-token":
 		a.bootToken(w, r)
+	case "/agent/registering":
+		a.registering(w, r)
 	case "/agent/registered":
 		a.registered(w, r)
 	case "/agent/record":
@@ -259,6 +283,26 @@ func (a *idleRigAgents) bootToken(w http.ResponseWriter, r *http.Request) {
 	writeIdleRigJSON(w, map[string]string{"token": strings.TrimSpace(string(token))})
 }
 
+// registering records a registration a role process is about to ask the daemon for, before the
+// daemon answers it (idleRigRole.Registrations).
+func (a *idleRigAgents) registering(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Pod, Role  string
+		Generation uint64
+		Contract   int
+		Agent      []string
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.mu.Lock()
+	seen := a.roleLocked(request.Pod, request.Role)
+	seen.Registrations = append(seen.Registrations, idleRigRegistration{Generation: request.Generation, Contract: request.Contract, Agent: request.Agent})
+	a.mu.Unlock()
+	writeIdleRigJSON(w, map[string]string{})
+}
+
 // registered records a role process's registration and writes the session row its next resume is
 // looked up by, as the agent's own Oh My Pi writes its session into the session table.
 func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
@@ -275,12 +319,7 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
-	seen, ok := a.roles[key]
-	if !ok {
-		seen = &idleRigRole{}
-		a.roles[key] = seen
-	}
+	seen := a.roleLocked(request.Pod, request.Role)
 	seen.Claim, seen.Secret, seen.Session, seen.SessionFile = request.Claim, request.Secret, request.Session, request.SessionFile
 	seen.Registered++
 	a.mu.Unlock()
@@ -298,12 +337,7 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
-	seen, ok := a.roles[key]
-	if !ok {
-		seen = &idleRigRole{}
-		a.roles[key] = seen
-	}
+	seen := a.roleLocked(request.Pod, request.Role)
 	message := idleRigMessage{ID: request.ID, Delivery: request.Delivery, Text: request.Text, At: time.Now().UTC()}
 	switch request.Kind {
 	case "prompt":
@@ -326,15 +360,22 @@ func (a *idleRigAgents) stopping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
+	seen := a.roleLocked(request.Pod, request.Role)
+	seen.Stopping++
+	a.mu.Unlock()
+	writeIdleRigJSON(w, map[string]string{})
+}
+
+// roleLocked is the record of pod's role process, made empty where there is none yet. The caller
+// holds a.mu.
+func (a *idleRigAgents) roleLocked(pod, role string) *idleRigRole {
+	key := idleRigKey(pod, role)
 	seen, ok := a.roles[key]
 	if !ok {
 		seen = &idleRigRole{}
 		a.roles[key] = seen
 	}
-	seen.Stopping++
-	a.mu.Unlock()
-	writeIdleRigJSON(w, map[string]string{})
+	return seen
 }
 
 func (a *idleRigAgents) servePlan(w http.ResponseWriter, r *http.Request) {
@@ -451,6 +492,9 @@ type idleRigRoleProcess struct {
 	natsURLs   string
 	connect    string
 	tokenFile  string
+	// agent is the agent command the shim wraps, the argv after its `--`: Oh My Pi's own, or the
+	// start wrapper an installing launch puts around it (the Sandbox runtime's startArgv).
+	agent []string
 
 	conn   net.Conn
 	lines  *bufio.Reader
@@ -524,6 +568,9 @@ func newIdleRigRoleProcess(rig string, argv []string) (*idleRigRoleProcess, erro
 		case "--boot-token-file":
 			p.tokenFile = argv[i+1]
 		}
+	}
+	if i := slices.Index(argv, "--"); i >= 0 {
+		p.agent = argv[i+1:]
 	}
 	switch {
 	case p.pod == "" || p.role == "":
@@ -826,12 +873,25 @@ func (p *idleRigRoleProcess) reply(msg *nats.Msg, word string) {
 	}
 }
 
+// register records the registration with the rig (idleRigRole.Registrations) and then asks the
+// daemon for it, on the contract this process's pi-legion declares (pluginContract). A daemon
+// that refuses it — a contract other than its own — ends the process, as it ends an Oh My Pi
+// whose plugin it refuses.
 func (p *idleRigRoleProcess) register(bootToken string) error {
+	contract, err := p.pluginContract()
+	if err != nil {
+		return err
+	}
+	if err := p.post(p.rig+"/agent/registering", map[string]any{
+		"pod": p.pod, "role": p.role, "generation": p.generation, "contract": contract, "agent": p.agent,
+	}, nil); err != nil {
+		return err
+	}
 	sessionFile := idleRigSessionFile(p.pod, p.role)
 	var answer claim.RegisterResponse
 	if err := p.post(p.daemon+"/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: bootToken, SessionID: p.session, OmpSessionFile: sessionFile,
-		AgentID: "idle-rig-agent", PluginContract: api.DaemonAPIVersion(),
+		AgentID: "idle-rig-agent", PluginContract: contract,
 	}, &answer); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
@@ -840,6 +900,37 @@ func (p *idleRigRoleProcess) register(bootToken string) error {
 		"pod": p.pod, "role": p.role, "claim": string(p.claimToken), "secret": p.secret,
 		"session": p.session, "sessionFile": sessionFile,
 	}, nil)
+}
+
+// idleRigImagePiLegion is the pi-legion the worker image carries, which a role's Oh My Pi loads
+// unless its start installed a pair (the Sandbox runtime's legionPlugin).
+const idleRigImagePiLegion = "/opt/legion/pi-legion"
+
+// pluginContract is the daemon API contract the pi-legion this process's Oh My Pi loads declares:
+// the one its agent command names as an --extension. The image's own declares the contract of
+// the image the pod was built on (idleRigPlan.ImageContract, this daemon's own where the plan
+// names none). Any other is the pair the start wrapper installed under the generation's own
+// directory, which declares this daemon's contract: the wrapper checks the installed pi-legion
+// against the contract the daemon named and starts no Oh My Pi on any other (the Sandbox
+// runtime's pluginCheckScript).
+func (p *idleRigRoleProcess) pluginContract() (int, error) {
+	loaded := ""
+	for i := 0; i+1 < len(p.agent); i++ {
+		if p.agent[i] == "--extension" && strings.HasSuffix(p.agent[i+1], "/pi-legion") {
+			loaded = p.agent[i+1]
+		}
+	}
+	if loaded != idleRigImagePiLegion {
+		return api.DaemonAPIVersion(), nil
+	}
+	plan, err := p.plan()
+	if err != nil {
+		return 0, err
+	}
+	if plan.ImageContract != 0 {
+		return plan.ImageContract, nil
+	}
+	return api.DaemonAPIVersion(), nil
 }
 
 func (p *idleRigRoleProcess) plan() (idleRigPlan, error) {

@@ -534,9 +534,9 @@ func TestTheRealShimReadsItsProjectedTokenAgainForTheRealListener(t *testing.T) 
 // jj on the workspace its pod gave it, and a working copy jj cannot write is answered `ok:false`
 // rather than by taking the agent down: a stale `.git/index.lock` another role's container left
 // behind wedges every jj in that workspace until the pod is replaced. The daemon side reads that
-// answer as the typed refusal the supervisor charges a prompt budget for, carrying the shim's own
-// words — which name the lock's path and its age — so the claim walks to failed with the reason
-// on its record instead of re-sending for ever (INFRA-1480).
+// answer as the typed refusal the supervisor records on the pending task, carrying the shim's own
+// words — which name the lock's path and its age — so the reason is on the claim's record rather
+// than only in a log line inside the pod (INFRA-1480).
 func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	legion := buildLegion(t)
 	jj := fixturegit.CompiledJJ(t)
@@ -545,10 +545,9 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	// process's directory to the closest .jj and write that repository (docs/testing.md).
 	fixturegit.Isolated(t, home).With("JJ_USER=implementer", "JJ_EMAIL=implementer@example.test").
 		Run(workspace, append([]string{jj}, fixturegit.JJInit(workspace, true)[1:]...)...)
-	// A file the adoption's first jj snapshots, so that jj rewrites the git index it cannot lock.
-	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("smoke\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// The adoption's commands take no snapshot (--ignore-working-copy); changing @'s author from
+	// implementer to legion-implementer[bot] writes an operation whose Git HEAD reset writes the
+	// git index it cannot lock.
 	lock := filepath.Join(workspace, ".git", "index.lock")
 	if err := os.WriteFile(lock, nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -571,7 +570,7 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 		t.Fatalf("Await: %v", err)
 	}
 
-	err = conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{
+	_, err = conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{
 		Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com",
 	}, slowCommandTimeout)
 
@@ -590,6 +589,85 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	}
 	if frames := childFrames(t, shim.stdinRecord); len(frames) != 0 {
 		t.Fatalf("the fake OMP read %q; the adoption is the shim's own command", frames)
+	}
+}
+
+// A working copy another workspace left stale is brought up to date by the real shim's adoption,
+// with the pinned jj (fixturegit.PinnedJJ, whose debug output the shim's freshness check reads),
+// and the daemon side reads the shim's answer whole: the adoption succeeds, and it names the
+// commit in which `jj workspace update-stale` left the edits that no jj command had recorded — a
+// changed tracked file and a new file, written after the other workspace rebased the working-copy
+// commit — which hold both edits and are no longer on disk. The shim's own log line names that
+// commit too.
+func TestTheRealShimNamesTheCommitThatHoldsAStaleWorkspacesEdits(t *testing.T) {
+	legion := buildLegion(t)
+	jj := fixturegit.PinnedJJ(t)
+	home, root := t.TempDir(), t.TempDir()
+	main, ws := filepath.Join(root, "main"), filepath.Join(root, "ws")
+	if err := os.Mkdir(main, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixturegit.Isolated(t, home).With("JJ_USER=implementer", "JJ_EMAIL=implementer@example.test")
+	in := func(dir string, args ...string) string {
+		t.Helper()
+		return fixture.Run(dir, append([]string{jj}, args...)...)
+	}
+	write := func(dir, name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The init takes no -R and opens no workspace, so with no Dir jj would walk up from the test
+	// process's directory to the closest .jj and write that repository (docs/testing.md).
+	fixture.Run(main, append([]string{jj}, fixturegit.JJInit(main, true)[1:]...)...)
+	write(main, "README.md", "smoke\n")
+	in(main, "commit", "-m", "the default branch")
+	in(main, "workspace", "add", ws)
+	in(ws, "status")
+	// The other workspace rebases ws's working-copy commit onto a commit that changes a file, so
+	// ws's working copy is stale; then a role edits ws with no jj command between.
+	write(main, "other.txt", "another role's file\n")
+	in(main, "describe", "-m", "another role's change")
+	in(main, "rebase", "-r", "ws@", "-d", "@")
+	edits := map[string]string{"README.md": "smoke, edited by a role\n", "new.txt": "a file no jj command recorded\n"}
+	for name, body := range edits {
+		write(ws, name, body)
+	}
+
+	d := listen(t, "unix://"+testtmp.Socket(t, "worker-stream.sock"), (&gate{open: true}).resolve)
+	shim := startFakeOMPShim(t, legion, d.listener.Addr(), append(fixtureenv.Home(home), "LEGION_WORKSPACE="+ws,
+		"PATH="+filepath.Dir(jj)+string(os.PathListSeparator)+os.Getenv("PATH")))
+	if _, ok := d.next(t).(stream.Hello); !ok {
+		t.Fatal("the shim's first event was not its hello")
+	}
+	testwait.Eventually(t, "the shim to spawn OMP after the ack", shim.childStarted)
+	ctx := testwait.Context(t)
+	conn, err := d.listener.Await(ctx, integrationClaim)
+	if err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+
+	adoption, err := conn.AdoptWorkingCopy(ctx, runtime.GitIdentity{
+		Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com",
+	}, slowCommandTimeout)
+	if err != nil || len(adoption.EditsCommits) != 1 {
+		t.Fatalf("AdoptWorkingCopy = %+v, %v; want success naming the one commit that holds the edits; the shim's output:\n%s", adoption, err, shim.output.String())
+	}
+	commit := adoption.EditsCommits[0]
+	for name, body := range edits {
+		if got := strings.TrimSpace(fixture.Out(ws, jj, "--ignore-working-copy", "file", "show", "-r", commit, "--", name)); got != strings.TrimSpace(body) {
+			t.Errorf("commit %s holds %s as %q, want the edit %q that no jj command recorded", commit, name, got, strings.TrimSpace(body))
+		}
+		if got, err := os.ReadFile(filepath.Join(ws, name)); err == nil && string(got) == body {
+			t.Errorf("%s is still on disk as the role wrote it: want the edit only in %s", name, commit)
+		}
+	}
+	if output := shim.output.String(); !strings.Contains(output, commit) || !strings.Contains(output, "no longer on disk") {
+		t.Errorf("the shim's log does not name %s and say the edits are no longer on disk:\n%s", commit, output)
+	}
+	if status, err := fixture.Try(ws, jj, "status"); err != nil || strings.Contains(strings.ToLower(status), "stale") {
+		t.Errorf("jj status after the adoption ended %v and printed:\n%s\nwant exit 0 and no stale working copy", err, status)
 	}
 }
 

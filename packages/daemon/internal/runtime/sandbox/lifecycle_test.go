@@ -438,13 +438,13 @@ func TestAdoptWorkingCopyAsksTheRecordedProcess(t *testing.T) {
 	g.conns.Register(workerToken, conn)
 	loc := g.spawn(workerSpec(t))
 	id := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "1+legion-implement[bot]@users.noreply.github.com"}
-	if err := g.r.AdoptWorkingCopy(g.ctx, loc, id); err != nil {
+	if _, err := g.r.AdoptWorkingCopy(g.ctx, loc, id); err != nil {
 		t.Fatal(err)
 	}
 	if adoptions := conn.Adoptions(); len(adoptions) != 1 || adoptions[0].Identity != id {
 		t.Fatalf("adoptions %+v", adoptions)
 	}
-	if err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id); err == nil {
+	if _, err := g.r.AdoptWorkingCopy(g.ctx, sandboxLocator(workerToken, "uid-pod-stale"), id); err == nil {
 		t.Fatal("a stale locator's adoption was asked")
 	}
 }

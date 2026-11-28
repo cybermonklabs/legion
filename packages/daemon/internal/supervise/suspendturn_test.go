@@ -370,15 +370,13 @@ func TestAProcessThatDiesWhileItsSuspensionWaitsIsSuspendedNotRelaunched(t *test
 	h.wantCalls("Suspend", 1)
 }
 
-// A prompt retirement while a suspension is held is that suspension's stop: the process is alive,
-// so a stop the runtime refuses leaves the claim working and still holding the suspension, retried
-// at the probe interval, rather than marked suspended over a process that still runs. Nothing is
-// charged — here the retirement would be the claim's last, which would fail it. The phase task was
-// on its way when a turn began, and the shim refuses to adopt the working copy for it at the
-// prompt-failure limit. A refusal of the agent's own cannot reach that limit here: one that
-// arrives while the daemon's record holds the claim in a turn is its busy answer, charged nothing
-// (agentRefusalOutcome).
-func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
+// A refusal of the send while a suspension is held for the agent's turn stops nothing: the
+// shim's refusal to adopt the working copy is an answer, charged nothing even at a prompt-failure
+// limit of one, so the process is kept and the held suspension waits for the turn's end, which
+// runs it. The phase task was on its way when a turn began, and the shim refuses to adopt the
+// working copy for it. A refusal of the agent's own that arrives while the daemon's record holds
+// the claim in a turn is its busy answer (agentRefusalOutcome), charged nothing as well.
+func TestARefusalWhileASuspensionIsHeldLeavesTheStopToTheTurnsEnd(t *testing.T) {
 	h := newBareHarness(t)
 	h.deps.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1}
 	h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) {
@@ -402,19 +400,63 @@ func TestAPromptRetirementWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
 	if err := h.m.Handle(h.ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
 		t.Fatalf("suspend mid-turn returned %v, want ErrSuspendHeld", err)
 	}
-	h.rt.FailSuspend(errBoom)
 
 	gated.release <- struct{}{}
 	h.m.Wait()
 
 	h.wantState(StateWorking)
 	if c := h.claim(); !c.SuspensionHeld || c.Locator == nil {
-		t.Fatalf("after the refused stop the claim is %+v, want its process kept and the suspension still held", c)
+		t.Fatalf("after the refusal the claim is %+v, want its process kept and the suspension still held", c)
 	}
-	h.wantCalls("Suspend", 1)
-	h.rt.FailSuspend(nil)
-	h.advance(testProbe)
+	h.wantCalls("Suspend", 0)
+	h.wantBudgets(Budgets{})
+
+	h.must(StreamTurnEnd{Claim: testToken})
+
 	h.wantState(StateSuspended)
+	h.wantCalls("Suspend", 1)
+	h.wantCalls("Resume", 0)
+	h.wantBudgets(Budgets{})
+}
+
+// A prompt retirement while a suspension is held is that suspension's stop, charged nothing
+// (chargePrompt, suspendHeld): a retirement would let the process go and drop the hold with it,
+// and relaunch a claim the operator asked to stop. The agent's silence is the one charge, and it
+// meets a held suspension here: the task's prompt is acknowledged, a compaction runs with the wait
+// for that prompt's turn armed, the operator's suspension is held for the compaction's end, and
+// the runtime refuses that stop, so the claim is given back ready with the hold and the wait both
+// kept. The wait then runs out at a prompt-failure limit of one.
+func TestASilentChargeWhileASuspensionIsHeldRunsTheHeldStop(t *testing.T) {
+	h := newHarness(t)
+	h.deps.Limits = Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 2}
+	h.restart()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+	held := RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"}
+	if err := h.handle(held); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the suspension answered %v, want it held for the compaction's end", err)
+	}
+	h.rt.FailSuspend(errBoom)
+	release()
+	if err := <-compacted; err == nil {
+		t.Fatal("the compaction whose held stop the runtime refused answered nil, want that refusal")
+	}
+	h.m.Wait()
+	if c := h.claim(); c.State != StateReady || !c.SuspensionHeld {
+		t.Fatalf("after the refused stop the claim is %s, held %t, want it ready and the suspension still held", c.State, c.SuspensionHeld)
+	}
+	h.rt.FailSuspend(nil)
+
+	h.advance(testRPC) // the wait for the prompt's turn runs out: a silent charge at the limit
+
+	h.wantState(StateSuspended)
+	if got := h.claim().SuspendedBy; got != SuspendedByOperator {
+		t.Fatalf("the claim is suspended by %q, want the operator whose hold the charge ran", got)
+	}
 	h.wantCalls("Suspend", 2)
 	h.wantCalls("Resume", 0)
 	h.wantBudgets(Budgets{})
@@ -429,7 +471,7 @@ type gatedAdoption struct {
 	release chan struct{}
 }
 
-func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+func (g *gatedAdoption) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) (runtime.Adoption, error) {
 	g.entered <- string(loc.Claim)
 	<-g.release
 	return g.Runtime.AdoptWorkingCopy(ctx, loc, id)

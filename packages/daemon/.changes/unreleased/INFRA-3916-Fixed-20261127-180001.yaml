@@ -1,0 +1,32 @@
+kind: Fixed
+body: |-
+    A stale working copy no longer stops a phase task. Before and after the adoption's change,
+    the shim reads with no snapshot whether the working copy is stale, as jj's own check decides
+    it, and runs `jj workspace update-stale` only on one it reads as stale. Where one of the
+    check's jj commands fails or prints what the shim does not parse, it runs no update and
+    refuses the adoption, naming the check, and the daemon sends the task again at its next
+    sweep. The update leaves the edits that no jj command had recorded in a divergent commit that
+    is not checked out and no longer on disk. The shim's answer names each such commit in the new
+    optional field `editsCommits` of `adopt-working-copy-result` (a daemon or a shim of an
+    earlier release reads the frame as before), and the shim's log names it. The daemon records
+    the commit on the role's claim, in the new nullable column `claims.left_edits`, and every
+    prompt it sends that role names the commit in one sentence that says the edits are there,
+    until a turn takes one of those prompts: a task dropped or replaced before any prompt of it
+    reaches the agent leaves the sentence to the next task, across a daemon restart too
+    (dispatch://INFRA-3916, R1). The daemon's own workspace read no longer overlaps the adoption,
+    and a jj command that snapshots the same workspace and commits while the adoption runs no
+    longer leaves it stale, or with the previous author, behind an answer of success; `@`'s
+    change can stay divergent with a commit of the adoption's own, which the role can abandon.
+    The adoption and the shim's workspace read each hold the new workspace lock
+    (`.jj/legion-workspace.lock`) for their whole run, the adoption waits for jj's working-copy
+    lock before its first command and before its check after the change, and it is done only
+    when that check reads the working copy fresh and `@` undescribed and authored by the
+    requested identity. Otherwise it runs again, at most three times in all, and an update names
+    the divergent commit that already holds the edits too. Where another jj command's operation
+    was merged in beside its change, the adoption ends with `jj metaedit --force-rewrite -r @`,
+    so git's HEAD names `@`'s parent again after `jj new`. A role's own jj command that loaded the
+    repository before the change and commits only after the adoption answered can still leave the
+    working copy stale or `@` divergent; `troubleshooting.md` says what the role then does.
+time: 2026-11-27T18:00:01Z
+custom:
+    Issue: INFRA-3916

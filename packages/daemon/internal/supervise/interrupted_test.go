@@ -133,7 +133,7 @@ func TestATaskNotYetBegunWhenTheProcessDiedIsResentAsItWas(t *testing.T) {
 
 // The re-sent task keeps the read mark the interrupted turn earned, and the relaunched agent's
 // acknowledgement takes that mark over: a refusal of the re-sent prompt is judged against it, so
-// the task goes back unread and the prompt is charged, as for any prompt its agent refused.
+// the task goes back unread, charged nothing, as for any prompt its agent refused.
 func TestARefusalOfTheResentTaskIsJudgedAgainstItsOwnAcknowledgement(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -145,7 +145,7 @@ func TestARefusalOfTheResentTaskIsJudgedAgainstItsOwnAcknowledgement(t *testing.
 
 	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: "the model provider refused the request"})
 
-	h.wantBudgets(Budgets{Deaths: 1, PromptFailures: 1})
+	h.wantBudgets(Budgets{Deaths: 1})
 	if p := h.pending(); p.ID == resent || !p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the refusal = %+v, want the task kept unread and unconfirmed under a new id", p)
 	}

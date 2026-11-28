@@ -298,6 +298,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: projectedAt.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
+		LeftEdits: supervise.LeftEdits{Commits: []string{"c45ff7e33d4899a2b99db849241fe128115021b0"}, At: projectedAt.Add(-20 * time.Minute),
+			Delivery: "outbox:41"},
 		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: projectedAt.Add(-time.Minute), TurnStartedAt: projectedAt.Add(-2 * time.Minute),

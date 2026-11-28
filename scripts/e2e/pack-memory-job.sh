@@ -9,13 +9,17 @@
 # the default branch into a clone that lacks them, each jj row of R3 to R5 with the image's jj and
 # with jj 0.45.1-sami.20260910-043938, the control, and R10's rows with the released jj at each
 # JJ_PACK_MAPPED_LIMIT budget and with jj 0.46.0-sami.20261008-234600, their control, each on a
-# copy of its own. Each copy's describedArgs, the shim's, runs right after an unmeasured `git fetch`
-# of the provisioned clone's heads into that copy's clone as remote-tracking refs it does not hold,
-# and an unmeasured `git commit` in its workspace, with both dates fixed, so describedArgs imports
-# new refs and a new HEAD, as a role's jj does after git fetched a named branch and committed; its
-# adoptionArgs runs right after a second such commit, so it imports a new HEAD too. It reads the
-# image's `git config --system` and `jj --version` too. The implementer runs it at the head it
-# measures, and the tester runs it again at the head it tests, so this recipe is the one both read.
+# copy of its own. Each copy's describedArgs and adoptionArgs rows run the shim adoption's two
+# commands without `--ignore-working-copy`, a control of the import and snapshot
+# dispatch://INFRA-4036 measured, which the flagged commands of
+# packages/daemon/internal/shim/commands.go do not take: that describedArgs runs right after an
+# unmeasured `git fetch` of the provisioned clone's heads into that copy's clone as
+# remote-tracking refs it does not hold, and an unmeasured `git commit` in its workspace, with
+# both dates fixed, so it imports new refs and a new HEAD, as a role's jj does after git fetched a
+# named branch and committed; that adoptionArgs runs right after a second such commit, so it
+# imports a new HEAD too. It reads the image's `git config --system` and `jj --version` too. The
+# implementer runs it at the head it measures, and the tester runs it again at the head it tests,
+# so this recipe is the one both read.
 #
 # It is three files: this harness, which renders the Job, creates it and reads its verdict;
 # `pack-memory-probe.sh` beside it, the text the Job runs inside the image, whose header says what
@@ -31,10 +35,11 @@
 #     packages/daemon, prints sandbox.GitConfigPairs() as GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and
 #     GIT_CONFIG_VALUE_<n>, the block a role's start command carries, and this sets each of them on
 #     the Job's container, so the git rows "with the role's settings" read that head's block;
-#   - a check that the commands the probe copies are still the ones the code builds: the shim's
-#     describedArgs and adoptionArgs (packages/daemon/internal/shim/commands.go) and
-#     handoff-record.ts's STANDING read (packages/pi-shared/src/handoff-record.ts). A change to
-#     any of them is a refusal here, naming the line, until the probe is changed with it;
+#   - a check that the command the probe copies from the code is the one the code builds:
+#     handoff-record.ts's STANDING read (packages/pi-shared/src/handoff-record.ts). A change to it
+#     is a refusal here, naming the line, until the probe is changed with it; the shim's
+#     describedArgs and adoptionArgs rows, the unflagged control above, copy no line of
+#     packages/daemon/internal/shim/commands.go;
 #   - the jj release this checkout's image installs: the version that the one `ARG
 #     JJ_TOOL=<source>@<version>` line of packages/daemon/docker/worker.Dockerfile names, set on
 #     the container as PACK_MEMORY_JJ_TOOL_VERSION, which the image's `jj --version` must print
@@ -317,15 +322,13 @@ bash -n "$probe" || refuse "the probe $probe is not valid bash"
 python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$sampler" ||
   refuse "the sampler $sampler is not valid Python"
 
-# The commands the probe copies, held to the lines that build them. The probe runs each exactly as
-# that line builds it; a line that changed is a probe that would measure another command.
+# The command the probe copies from the code, held to the line that builds it. The probe runs it
+# exactly as that line builds it; a line that changed is a probe that would measure another
+# command. The shim's describedArgs and adoptionArgs rows, the unflagged control, copy no line of
+# packages/daemon/internal/shim/commands.go.
 holds_line() { # holds_line <file> <line>
   grep -qxF -- "$2" "$repo_root/$1" || refuse "$1 no longer holds the line the probe copies: [${2#"${2%%[![:space:]]*}"}]; change the probe with it"
 }
-holds_line packages/daemon/internal/shim/commands.go \
-  $'\treturn []string{jj, "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}'
-holds_line packages/daemon/internal/shim/commands.go \
-  $'\treturn []string{jj, "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", dir}'
 holds_line packages/pi-shared/src/handoff-record.ts \
   'const STANDING = ["log", "-r", "@-", "--no-graph", "-T", "commit_id"] as const;'
 

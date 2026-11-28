@@ -1096,6 +1096,100 @@ func TestASuspendedSandboxsInstallingResumeReplacesAndInstallsNothing(t *testing
 	}
 }
 
+// A Resume of an Oh My Pi role whose spec carries no pair of its own — its claim records the
+// daemon's contract — into a pod it keeps that was built on another image than the configured one
+// installs the pair the daemon pins (Options.Plugins, dispatch://INFRA-3916 R8): that image carries
+// its own release's plugins, and a process that loaded them would register on that release's
+// contract and be refused. Every other launch installs what it installed before: a pod on the
+// configured image gets nothing, the boot's image probe holding that image to the daemon's
+// contract (TestAPlainLaunchCarriesNoInstallWrapperAndTheImagesRoots); a spec that carries a pair,
+// a stale claim's, installs that pair; a replaced pod comes up on the configured image and gets
+// nothing; a Spawn gets nothing; a daemon that knows no pair installs nothing; and a Claude Code
+// launch gets nothing, its plugin being the image's own claude-envoy.
+func TestARelaunchIntoAKeptPodOnAnotherImageInstallsThePinnedPair(t *testing.T) {
+	t.Parallel()
+	pinned := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
+	own := &runtime.PluginInstall{PiLegion: "9.7.1", PiEnvoy: "9.6.2", Contract: 24}
+	for name, tc := range map[string]struct {
+		spec      func(*testing.T) runtime.SpawnSpec
+		session   string                 // the session the launch resumes; "" is a Spawn
+		image     string                 // the image the restarted daemon is configured with
+		known     *runtime.PluginInstall // the pair it pins (Options.Plugins)
+		plugins   *runtime.PluginInstall // the pair the launch's spec carries
+		suspended bool                   // the Sandbox is suspended before the launch, as a stopped issue's is
+		replaced  bool
+		installs  *runtime.PluginInstall // the pair the start installs, nil for none
+	}{
+		"a pod on the configured image, no pair in the spec": {spec: workerSpec, session: resumeSession, image: testImage, known: pinned},
+		"a kept pod on another image, no pair in the spec": {spec: workerSpec, session: resumeSession, image: nextImage, known: pinned,
+			installs: pinned},
+		"a pair in the spec, a stale claim's": {spec: workerSpec, session: resumeSession, image: nextImage, known: pinned, plugins: own,
+			installs: own},
+		"a replaced pod":                   {spec: workerSpec, session: resumeSession, image: nextImage, known: pinned, suspended: true, replaced: true},
+		"a Spawn":                          {spec: workerSpec, image: nextImage, known: pinned},
+		"no pair known, the degraded mode": {spec: workerSpec, session: resumeSession, image: nextImage},
+		"a Claude Code launch into a kept pod on another image": {spec: claudeWorkerSpec, session: claudeTranscript(claim.RoleTester),
+			image: nextImage, known: pinned},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newRig(t, nil)
+			spec := tc.spec(t)
+			loc := g.spawn(spec)
+			r2 := secondRuntime(t, g, func(o *Options) { o.Image, o.Plugins = tc.image, tc.known })()
+			g.connectRunning(spec.Claim, loc.Sandbox.Generation)
+			g.eventually("the role's launcher to report its child to the restarted daemon", func() bool {
+				state, connected := r2.launchers.state(spec.Claim, loc.Sandbox.PodUID)
+				return connected && state.Child != nil
+			})
+			if tc.suspended {
+				suspendSandbox(t, g, r2, loc.Sandbox.Name)
+			}
+			spec.Generation, spec.BootToken, spec.ResumeSessionFile, spec.Plugins = 2, "boot-g2", tc.session, tc.plugins
+			var newLoc runtime.Locator
+			var err error
+			if tc.session == "" {
+				newLoc, err = r2.Spawn(g.ctx, spec)
+			} else {
+				newLoc, err = r2.Resume(g.ctx, &loc, spec)
+			}
+			if err != nil {
+				t.Fatalf("the launch: %v", err)
+			}
+			if replaced := newLoc.Sandbox.PodUID != loc.Sandbox.PodUID; replaced != tc.replaced {
+				t.Fatalf("the launch replaced the pod: %t, want %t (pod %s, then %s)", replaced, tc.replaced, loc.Sandbox.PodUID, newLoc.Sandbox.PodUID)
+			}
+			start := lastStart(t, g, spec.Claim)
+			if start.Generation != 2 {
+				t.Fatalf("the last start sent is generation %d's, want the launch's generation 2", start.Generation)
+			}
+			i := slices.Index(start.Argv, "--")
+			if i < 0 {
+				t.Fatalf("the start %q carries no -- before the agent's command", start.Argv)
+			}
+			agent := start.Argv[i+1:]
+			script := ""
+			if len(agent) > 2 && agent[0] == "/bin/sh" && agent[1] == "-c" {
+				script = agent[2]
+			}
+			_, installed := pluginRoots(pluginGenDir(roleStateHome(spec.Role), spec.Generation))
+			if tc.installs == nil {
+				if strings.Contains(script, "bun add") || slices.Contains(agent, installed) {
+					t.Fatalf("the start %q installs a plugin pair, want none", agent)
+				}
+				return
+			}
+			for _, source := range []string{bunSpec(runtime.PiLegionPackage, tc.installs.PiLegion), bunSpec(runtime.PiEnvoyPackage, tc.installs.PiEnvoy)} {
+				if !strings.Contains(script, source) {
+					t.Errorf("the start's install wrapper names no %s, want the pair %+v installed:\n%s", source, *tc.installs, script)
+				}
+			}
+			if !slices.Contains(agent, installed) {
+				t.Errorf("the start's agent argv %q loads no installed pi-legion at %s", agent, installed)
+			}
+		})
+	}
+}
+
 // Stage 4b's finished-idle-planner-death: `kill 1` in an issue pod's `roles` container ends its launcher,
 // the kubelet restarts the container under restartPolicy Always, and the new launcher connects
 // before the pod status drops the killed instance's terminated state. The replacement generation

@@ -864,27 +864,31 @@ func (r *Runtime) awaitNotRunning(ctx context.Context, pane string, inc incarnat
 	}
 }
 
-// AdoptWorkingCopy has the agent's shim set the author of its working copy — the shared
-// `jj metaedit --update-author` run in the pane's own workspace — over the claim's connection,
-// bounded by the adoption timeout. The recorded process must still verify: the connection is its.
-func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+// AdoptWorkingCopy has the agent's shim set the author of its working copy (`jj
+// --ignore-working-copy metaedit --update-author`, or `jj --ignore-working-copy new` over a
+// described `@`, run in the pane's own workspace, after `jj workspace update-stale` where that
+// working copy is stale) over the claim's connection, bounded by the adoption timeout, and
+// answers the shim's account of it beside the error (runtime.Adoption). The recorded process
+// must still verify: the connection is its.
+func (r *Runtime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) (runtime.Adoption, error) {
 	pane, inc, err := r.paneOf(loc)
 	if err != nil {
-		return err
+		return runtime.Adoption{}, err
 	}
 	v, err := r.verifyPane(ctx, pane, inc)
 	if err != nil {
-		return fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: %w", loc.Claim, err)
 	}
 	if !v.verified() {
-		return fmt.Errorf("adopt %s's working copy: %s", loc.Claim, describeVerdict(pane, inc, v))
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: %s", loc.Claim, describeVerdict(pane, inc, v))
 	}
 	conn, ok := r.conns.Conn(loc.Claim)
 	if !ok {
-		return fmt.Errorf("adopt %s's working copy: the claim has no connection to ask over", loc.Claim)
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: the claim has no connection to ask over", loc.Claim)
 	}
-	if err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout); err != nil {
-		return fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
+	adoption, err := conn.AdoptWorkingCopy(ctx, id, r.adoptTimeout)
+	if err != nil {
+		return adoption, fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
 	}
-	return nil
+	return adoption, nil
 }

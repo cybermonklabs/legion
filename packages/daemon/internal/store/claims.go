@@ -63,7 +63,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.last_turn_start, c.last_turn_end, c.message_mark_at,
 	c.last_death_cause, c.last_death_at, c.last_death_digest,
 	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
-	c.turn_outcomes, c.abandoned_session, c.ended_work, c.session_run,
+	c.turn_outcomes, c.abandoned_session, c.ended_work, c.left_edits, c.session_run,
 	c.update_round, c.update_reasons, c.update_repository, c.update_repository_round,
 	c.update_opened_at, c.update_tasked_at, c.update_signalled_at, c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -505,6 +505,16 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		}
 		endedWork = encoded
 	}
+	// Null is a claim no adoption left edits for in a commit; one it did records the commits, for
+	// the role to be told in its next task (supervise's LeftEdits, leftEdits).
+	var leftEdits []byte
+	if len(c.LeftEdits.Commits) > 0 {
+		encoded, err := json.Marshal(c.LeftEdits)
+		if err != nil {
+			return fmt.Errorf("put claim %s: encode the commits an adoption left the edits in: %w", c.Token, err)
+		}
+		leftEdits = encoded
+	}
 	// The run of the claim's session since it last finished a turn, as JSON: never null, the
 	// empty run `{}` for a session that has ended no launch and finished no turn (supervise's
 	// SessionRun, dispatch://INFRA-2045 R1).
@@ -542,10 +552,10 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_repository, update_repository_round,
 		working_repository, working_repository_incarnation,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest, session_run, held_for,
-		retired_at_write_mark)
+		left_edits, retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, $70,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -599,6 +609,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		held_for = excluded.held_for,
 		leak_check_cause = excluded.leak_check_cause,
 		ended_work = excluded.ended_work,
+		left_edits = excluded.left_edits,
 		session_run = excluded.session_run,
 		handshake_entry = excluded.handshake_entry,
 		handshake_generation = excluded.handshake_generation,
@@ -647,7 +658,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		working, workingIncarnation,
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt), sessionRun,
-		heldFor(c),
+		heldFor(c), leftEdits,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -1033,7 +1044,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		deathDigest, failureDigest  []byte
 		outcomes                    []byte
 		abandoned                   []byte
-		endedWork                   []byte
+		endedWork, leftEdits        []byte
 		sessionRun                  []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
@@ -1061,7 +1072,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd, &messageMark,
 		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
-		&outcomes, &abandoned, &endedWork, &sessionRun,
+		&outcomes, &abandoned, &endedWork, &leftEdits, &sessionRun,
 		&c.UpdateRound, &c.UpdateReasons, &repository, &repositoryRound, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -1114,6 +1125,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if endedWork != nil {
 		if err := json.Unmarshal(endedWork, &c.EndedWork); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
+		}
+	}
+	// Null is a claim no adoption left edits for in a commit (putClaim).
+	if leftEdits != nil {
+		if err := json.Unmarshal(leftEdits, &c.LeftEdits); err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: decode the commits an adoption left the edits in: %w", token, err)
 		}
 	}
 	// The run of the session since it last finished a turn, `{}` for none (putClaim).

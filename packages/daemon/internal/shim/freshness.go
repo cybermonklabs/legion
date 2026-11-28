@@ -1,0 +1,619 @@
+package shim
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/workspace"
+)
+
+// The freshness of the working copy the adoption runs on, read with no snapshot, and the update
+// of a working copy that is stale (runAdoption). jj refuses an ordinary command in a stale
+// workspace ("The working copy is stale"), and no command run with --ignore-working-copy says
+// whether it is, because only a snapshot runs jj's check (WorkingCopyFreshness::check_stale). So
+// the adoption reads the facts that check reads and compares them as it does, and runs `jj
+// workspace update-stale`, which snapshots, only on a working copy it read as stale: on a fresh
+// one that command would take the snapshot the adoption's flags leave out. Where it cannot read
+// those facts, the adoption refuses.
+
+// updateReserve is the part of the adoption's budget that `jj workspace update-stale` leaves to
+// the reads after it: the smaller of 5 s and a quarter of the budget. The update stops at the
+// budget less this reserve, so an update cut off at its bound still has the time to read which
+// commits it left, and the whole adoption still ends inside the budget the daemon waits for.
+func updateReserve(budget time.Duration) time.Duration { return min(5*time.Second, budget/4) }
+
+// read runs one jj read of the workspace with no snapshot (--ignore-working-copy) and no color,
+// so what it prints is what the parse below reads, and answers its trimmed standard output.
+func (o openedWorkspace) read(args ...string) (string, error) {
+	argv := make([]string, 0, len(args)+6)
+	argv = append(argv, o.jj, "--ignore-working-copy")
+	argv = append(argv, args...)
+	argv = append(argv, "--color=never", "-R", o.dir)
+	return o.run(nil, argv...)
+}
+
+// freshness is what readFreshness read: whether the working copy is fresh, the operation and the
+// tree it recorded, and the repository's head operation.
+type freshness struct {
+	fresh     bool
+	operation string
+	tree      recordedTree
+	head      string
+}
+
+// readFreshness reads whether the working copy is fresh or stale, as jj's own check decides it,
+// with no snapshot: every command it runs through read carries --ignore-working-copy. It answers
+// what the working copy recorded too, which bringUpToDate reads the change @ had at that
+// operation from and compares the commits it finds with, and the head operation, which
+// runAdoption compares across its change.
+//
+// The commands, in the order they run: `jj debug working-copy` prints the operation and the tree
+// the working copy recorded (parseWorkingCopy), and `jj op log -n1 -T id` the repository's head
+// operation. The two operations equal is fresh. Otherwise `jj log -r @ -T commit_id` names @'s
+// commit, and `jj debug object commit` prints that commit's tree and conflict labels
+// (parseCommit): the recorded tree and labels equal to the commit's, in order, are fresh, and
+// any other is stale. jj finds that equal tree fresh wherever the recorded operation is an
+// ancestor of the head, however far behind it, so the check reads no operation log: the one case
+// of an equal tree that jj refuses, a recorded operation beside the head (a sibling), is no case
+// `jj workspace update-stale` repairs without taking the edits off the disk either. runAdoption
+// runs that update only on a stale reading; it leaves the edits that no jj command had recorded
+// in a divergent commit, which the adoption's answer names (bringUpToDate).
+//
+// A command that fails, or prints what does not parse, leaves the working copy unread, neither
+// fresh nor stale: the check answers an error, the command's own (workspace.RunCommand) or one
+// that names the command and the first line it printed, and runAdoption refuses with no update.
+// Read as stale, such a working copy would get the update even where @ was rewritten after the
+// operation it recorded, as it is at every check after the adoption's change, and there jj finds
+// it fresh and the update takes the edits off the disk.
+func readFreshness(read func(args ...string) (string, error)) (freshness, error) {
+	// unread is the error of a command whose output does not parse.
+	unread := func(args []string, out string, err error) error {
+		return fmt.Errorf("jj %s printed what does not parse (%v); its first line: %q", strings.Join(args, " "), err, firstLine(out))
+	}
+	args := []string{"debug", "working-copy"}
+	out, err := read(args...)
+	if err != nil {
+		return freshness{}, err
+	}
+	var got freshness
+	if got.operation, got.tree, err = parseWorkingCopy(out); err != nil {
+		return freshness{}, unread(args, out, err)
+	}
+	args = []string{"op", "log", "-n1", "--no-graph", "-T", "id"}
+	if got.head, err = read(args...); err != nil {
+		return freshness{}, err
+	}
+	if !isHex(got.head) {
+		return freshness{}, unread(args, got.head, errors.New("no operation id"))
+	}
+	if got.head == got.operation {
+		got.fresh = true
+		return got, nil
+	}
+	args = []string{"log", "-r", "@", "--no-graph", "-T", "commit_id"}
+	commit, err := read(args...)
+	if err != nil {
+		return freshness{}, err
+	}
+	if !isHex(commit) {
+		return freshness{}, unread(args, commit, errors.New("no commit id"))
+	}
+	args = []string{"debug", "object", "commit", commit}
+	dump, err := read(args...)
+	if err != nil {
+		return freshness{}, err
+	}
+	current, err := parseCommit(dump)
+	if err != nil {
+		return freshness{}, unread(args, dump, err)
+	}
+	got.fresh = got.tree.equal(current)
+	return got, nil
+}
+
+// bringUpToDate runs `jj workspace update-stale` on a working copy readFreshness read as stale
+// (recorded), bounded to bound after the adoption's budget began, and answers each commit that
+// holds edits the update took off the disk. On a stale working copy the update snapshots the
+// edits that no jj command had recorded into one commit of @'s change and checks out another,
+// which does not hold them, so the change is left divergent with the edits in the commit that is
+// not checked out and no longer on disk. So the commits of @'s change are read before the update
+// and after it: each one that is new and is not @ holds such edits. Where another workspace
+// abandoned the working-copy commit, @ is another change by now, and the update snapshots the
+// edits into a commit of the change @ had at the operation the working copy recorded, so that
+// change is read too.
+//
+// A jj command that snapshots this workspace beside the adoption's change can have committed the
+// edits already, in a commit of @'s change that the merge of the two operations left divergent
+// beside @ (runAdoption). The working copy then records that commit's tree, so the update has
+// nothing new to snapshot, and it checks out @, which does not hold the edits; that commit was
+// there before the update. So each commit of the changes that is not @ after the update and was
+// there before it is named too where its tree and labels, as readFreshness compares them, are the
+// tree the working copy recorded before the update, and that tree is not @'s after it
+// (holdingTree): the edits that were on disk are in that commit, and off the disk now.
+//
+// A read before the update that fails refuses the adoption with its error, as does a read after
+// it. An update that fails refuses with its own error, which names the command and its exit or
+// its timeout (workspace.RunCommand), and still answers what the reads after it found: an update
+// cut off at its bound may have written the commit already. Those reads run in the reserve the
+// update's bound leaves (updateReserve), so they have the time to.
+func (s *shim) bringUpToDate(opened openedWorkspace, recorded freshness, bound time.Duration) ([]string, error) {
+	changes, err := opened.changes(recorded.operation)
+	if err != nil {
+		return nil, err
+	}
+	revset := "change_id(" + strings.Join(changes, ") | change_id(") + ")"
+	before, err := opened.read("log", "-r", revset, "--no-graph", "-T", `commit_id ++ "\n"`)
+	if err != nil {
+		return nil, err
+	}
+	s.log.Printf("[worker-shim] the working copy is stale; bringing it up to date with jj workspace update-stale")
+	_, updateErr := opened.runWithin(bound, nil, opened.jj, "workspace", "update-stale", "-R", opened.dir)
+	after, err := opened.read("log", "-r", "("+revset+") ~ @", "--no-graph", "-T", `commit_id ++ "\n"`)
+	if err != nil {
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		return nil, err
+	}
+	held := workspace.OutputLines(before)
+	var edits, kept []string
+	for _, commit := range workspace.OutputLines(after) {
+		if slices.Contains(held, commit) {
+			kept = append(kept, commit)
+		} else {
+			edits = append(edits, commit)
+		}
+	}
+	if len(kept) == 0 {
+		return edits, updateErr
+	}
+	holding, err := opened.holdingTree(kept, recorded.tree)
+	edits = append(edits, holding...)
+	if updateErr != nil {
+		return edits, updateErr
+	}
+	return edits, err
+}
+
+// holdingTree answers each of commits whose tree and labels are tree, as readFreshness compares
+// them (parseCommit), and none where @'s commit has that tree: what such a commit holds is then on
+// disk. A read that fails, or a dump that does not parse, ends the reads with its error and the
+// commits found before it.
+func (o openedWorkspace) holdingTree(commits []string, tree recordedTree) ([]string, error) {
+	treeOf := func(commit string) (recordedTree, error) {
+		dump, err := o.read("debug", "object", "commit", commit)
+		if err != nil {
+			return recordedTree{}, err
+		}
+		got, err := parseCommit(dump)
+		if err != nil {
+			return recordedTree{}, fmt.Errorf("jj debug object commit %s printed what does not parse (%w); its first line: %q", commit, err, firstLine(dump))
+		}
+		return got, nil
+	}
+	at, err := o.read("log", "-r", "@", "--no-graph", "-T", "commit_id")
+	if err != nil {
+		return nil, err
+	}
+	if !isHex(at) {
+		return nil, fmt.Errorf("jj log -r @ -T commit_id printed %q, which is no commit id", firstLine(at))
+	}
+	current, err := treeOf(at)
+	if err != nil || current.equal(tree) {
+		return nil, err
+	}
+	var holding []string
+	for _, commit := range commits {
+		got, err := treeOf(commit)
+		if err != nil {
+			return holding, err
+		}
+		if got.equal(tree) {
+			holding = append(holding, commit)
+		}
+	}
+	return holding, nil
+}
+
+// changes is @'s change, and the change @ had at operation where that is another one: the two
+// differ where another workspace abandoned the working-copy commit since the working copy
+// recorded operation.
+func (o openedWorkspace) changes(operation string) ([]string, error) {
+	current, err := o.read("log", "-r", "@", "--no-graph", "-T", "change_id")
+	if err != nil {
+		return nil, err
+	}
+	if !isChangeID(current) {
+		return nil, fmt.Errorf("jj log -r @ -T change_id printed %q, which is no change id", firstLine(current))
+	}
+	recorded, err := o.read("log", "-r", "@", "--no-graph", "-T", "change_id", "--at-op", operation)
+	if err != nil {
+		return nil, err
+	}
+	if !isChangeID(recorded) {
+		return nil, fmt.Errorf("jj log -r @ -T change_id --at-op %s printed %q, which is no change id", operation, firstLine(recorded))
+	}
+	if recorded == current {
+		return []string{current}, nil
+	}
+	return []string{current, recorded}, nil
+}
+
+// recordedTree is a tree and its conflict labels as jj's freshness check compares them: the tree
+// ids in order (one for a resolved tree, a conflicted tree's sides), and the labels as the
+// string literals jj's Debug printed them, quotes and escapes kept. resolved tells a resolved
+// tree's one label from a conflicted tree's list.
+type recordedTree struct {
+	ids      []string
+	resolved bool
+	labels   []string
+}
+
+func (t recordedTree) equal(other recordedTree) bool {
+	return slices.Equal(t.ids, other.ids) && t.resolved == other.resolved && slices.Equal(t.labels, other.labels)
+}
+
+// parseWorkingCopy reads what `jj debug working-copy` prints: the operation the working copy
+// recorded, from `Current operation: OperationId("<hex>")`, and its tree, from `Current tree:
+// MergedTree { tree_ids: …, labels: …, .. }`. tree_ids is `Resolved(TreeId("<hex>"))` or
+// `Conflicted([TreeId("<hex>"), …])`; labels is `Unlabeled`, which is the one empty label a
+// commit's dump prints as `Resolved("")`, or `Labeled([…])`, the list of string literals a
+// commit's dump prints as `Conflicted([…])` (parseCommit). Every other line is passed over.
+func parseWorkingCopy(out string) (operation string, tree recordedTree, err error) {
+	const operationLine, treeLine = "Current operation: ", "Current tree: "
+	var sawTree bool
+	for line := range strings.Lines(out) {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, operationLine):
+			if operation != "" {
+				return "", recordedTree{}, errors.New("two operation lines")
+			}
+			value, err := parseDebug(strings.TrimPrefix(line, operationLine))
+			if err != nil {
+				return "", recordedTree{}, fmt.Errorf("the operation: %w", err)
+			}
+			id, isOperation := value.tuple("OperationId")
+			hex, isHexID := hexLiteral(id)
+			if !isOperation || !isHexID {
+				return "", recordedTree{}, errors.New("the operation is no OperationId of a hex id")
+			}
+			operation = hex
+		case strings.HasPrefix(line, treeLine):
+			if sawTree {
+				return "", recordedTree{}, errors.New("two tree lines")
+			}
+			sawTree = true
+			value, err := parseDebug(strings.TrimPrefix(line, treeLine))
+			if err != nil {
+				return "", recordedTree{}, fmt.Errorf("the tree: %w", err)
+			}
+			if value.word != "MergedTree" || value.fields == nil {
+				return "", recordedTree{}, errors.New("the tree is no MergedTree")
+			}
+			ids, ok := treeIDs(value.fields["tree_ids"])
+			if !ok {
+				return "", recordedTree{}, errors.New("the tree's tree_ids are neither Resolved(TreeId) nor Conflicted([TreeId, …])")
+			}
+			tree.ids = ids
+			labels := value.fields["labels"]
+			switch listed, conflicted := labels.tuple("Labeled"); {
+			case labels.bare("Unlabeled"):
+				tree.resolved, tree.labels = true, []string{`""`}
+			case conflicted:
+				if tree.labels, ok = stringLiterals(listed); !ok {
+					return "", recordedTree{}, errors.New("the tree's Labeled labels are no list of strings")
+				}
+			default:
+				return "", recordedTree{}, errors.New("the tree's labels are neither Unlabeled nor Labeled([…])")
+			}
+		}
+	}
+	if operation == "" || !sawTree {
+		return "", recordedTree{}, errors.New("no Current operation line and Current tree line")
+	}
+	return operation, tree, nil
+}
+
+// parseCommit reads the tree and the conflict labels of what `jj debug object commit` prints: a
+// Rust Debug dump of the commit over many lines, `Commit { …, root_tree: …, conflict_labels: …,
+// … }`. root_tree is `Resolved(TreeId("<hex>"))` or `Conflicted([TreeId("<hex>"), …])`, and
+// conflict_labels `Resolved("<label>")` or `Conflicted(["<label>", …])`. Each field is read
+// whole as a value, however jj breaks it over lines, and the commit's other fields are read only
+// as values to pass over: a description that holds `root_tree:` is one string literal of the
+// description field.
+func parseCommit(out string) (recordedTree, error) {
+	value, err := parseDebug(out)
+	if err != nil {
+		return recordedTree{}, err
+	}
+	if value.word != "Commit" || value.fields == nil {
+		return recordedTree{}, errors.New("no Commit")
+	}
+	ids, ok := treeIDs(value.fields["root_tree"])
+	if !ok {
+		return recordedTree{}, errors.New("its root_tree is neither Resolved(TreeId) nor Conflicted([TreeId, …])")
+	}
+	tree := recordedTree{ids: ids}
+	labels := value.fields["conflict_labels"]
+	if label, ok := labels.tuple("Resolved"); ok {
+		if !label.isString() {
+			return recordedTree{}, errors.New("its Resolved conflict label is no string")
+		}
+		tree.resolved, tree.labels = true, []string{label.literal}
+		return tree, nil
+	}
+	listed, ok := labels.tuple("Conflicted")
+	if !ok {
+		return recordedTree{}, errors.New("its conflict_labels are neither Resolved(…) nor Conflicted([…])")
+	}
+	if tree.labels, ok = stringLiterals(listed); !ok {
+		return recordedTree{}, errors.New("its Conflicted conflict labels are no list of strings")
+	}
+	return tree, nil
+}
+
+// treeIDs is the tree ids of a Resolved(TreeId("<hex>")) or a Conflicted([TreeId("<hex>"), …]).
+func treeIDs(value debugValue) ([]string, bool) {
+	if id, ok := value.tuple("Resolved"); ok {
+		hex, ok := treeID(id)
+		return []string{hex}, ok
+	}
+	sides, ok := value.tuple("Conflicted")
+	if !ok || !sides.list || len(sides.items) == 0 {
+		return nil, false
+	}
+	ids := make([]string, 0, len(sides.items))
+	for _, side := range sides.items {
+		hex, ok := treeID(side)
+		if !ok {
+			return nil, false
+		}
+		ids = append(ids, hex)
+	}
+	return ids, true
+}
+
+// treeID is the hex id of a TreeId("<hex>").
+func treeID(value debugValue) (string, bool) {
+	id, ok := value.tuple("TreeId")
+	if !ok {
+		return "", false
+	}
+	return hexLiteral(id)
+}
+
+// hexLiteral is the hex id a string literal holds.
+func hexLiteral(value debugValue) (string, bool) {
+	if !value.isString() {
+		return "", false
+	}
+	hex := value.literal[1 : len(value.literal)-1]
+	return hex, isHex(hex)
+}
+
+// stringLiterals is each string literal of a list of them, as printed.
+func stringLiterals(value debugValue) ([]string, bool) {
+	if !value.list {
+		return nil, false
+	}
+	literals := make([]string, 0, len(value.items))
+	for _, item := range value.items {
+		if !item.isString() {
+			return nil, false
+		}
+		literals = append(literals, item.literal)
+	}
+	return literals, true
+}
+
+// isHex is whether s is a non-empty run of lowercase hex digits: a commit, tree or operation id
+// as jj prints one.
+func isHex(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789abcdef") == ""
+}
+
+// isChangeID is whether s is a change id as jj prints one, a non-empty run of the letters k to z
+// (jj's reverse hex). It is put in a revset (change_id(…)), so nothing else may pass.
+func isChangeID(s string) bool {
+	return s != "" && strings.Trim(s, "klmnopqrstuvwxyz") == ""
+}
+
+// firstLine is the first line of out.
+func firstLine(out string) string {
+	line, _, _ := strings.Cut(out, "\n")
+	return line
+}
+
+// debugValue is one value of the text Rust's Debug prints, which is how jj's debug commands
+// print what they read: a bare word (a type or a variant with nothing after it, a number), a
+// string or char literal kept as printed, a tuple (word(…)), a list ([…]) or a struct
+// (word { field: value, … }).
+type debugValue struct {
+	// word is the bare word, or the type or variant name before a tuple's ( or a struct's {.
+	word string
+	// literal is a string or char literal as printed, its quotes and escapes kept.
+	literal string
+	// items is what a tuple's ( ) or a list's [ ] holds; list says it is a list.
+	items []debugValue
+	list  bool
+	// fields is what a struct's { } holds, by name; nil for every other value.
+	fields map[string]debugValue
+}
+
+// bare is whether the value is the bare word word: a unit variant, with no tuple or struct after it.
+func (v debugValue) bare(word string) bool {
+	return v.word == word && v.items == nil && v.fields == nil
+}
+
+// tuple is the one item of a tuple word(item).
+func (v debugValue) tuple(word string) (debugValue, bool) {
+	if v.word != word || v.fields != nil || v.list || len(v.items) != 1 {
+		return debugValue{}, false
+	}
+	return v.items[0], true
+}
+
+// isString is whether the value is a string literal.
+func (v debugValue) isString() bool { return len(v.literal) >= 2 && v.literal[0] == '"' }
+
+// parseDebug reads text as one Rust Debug value, with nothing but white space after it. Line
+// breaks are white space, so a value printed over many lines ({:#?}) reads as one printed on one.
+func parseDebug(text string) (debugValue, error) {
+	p := &debugParser{text: text}
+	value, err := p.value()
+	if err != nil {
+		return debugValue{}, err
+	}
+	if p.peek() != 0 {
+		return debugValue{}, fmt.Errorf("%q after the value, at byte %d", p.text[p.at], p.at)
+	}
+	return value, nil
+}
+
+// debugParser reads a Rust Debug value from text, from byte at on.
+type debugParser struct {
+	text string
+	at   int
+}
+
+// peek is the next byte that is not white space, 0 at the end of the text.
+func (p *debugParser) peek() byte {
+	for p.at < len(p.text) && strings.IndexByte(" \t\r\n", p.text[p.at]) >= 0 {
+		p.at++
+	}
+	if p.at == len(p.text) {
+		return 0
+	}
+	return p.text[p.at]
+}
+
+func (p *debugParser) value() (debugValue, error) {
+	switch c := p.peek(); {
+	case c == '"' || c == '\'':
+		literal, err := p.literal()
+		return debugValue{literal: literal}, err
+	case c == '[':
+		p.at++
+		items, err := p.items(']')
+		return debugValue{items: items, list: true}, err
+	case c == '(':
+		p.at++
+		items, err := p.items(')')
+		return debugValue{items: items}, err
+	case isWordByte(c):
+		value := debugValue{word: p.word()}
+		var err error
+		switch p.peek() {
+		case '(':
+			p.at++
+			value.items, err = p.items(')')
+		case '{':
+			p.at++
+			value.fields, err = p.fields()
+		}
+		return value, err
+	case c == 0:
+		return debugValue{}, errors.New("the text ends where a value was due")
+	default:
+		return debugValue{}, fmt.Errorf("%q where a value was due, at byte %d", c, p.at)
+	}
+}
+
+// literal reads a string or char literal whole: to the quote that closes it, past each quote a
+// backslash escapes, as Rust's Debug escapes every quote and backslash inside one.
+func (p *debugParser) literal() (string, error) {
+	quote, start := p.text[p.at], p.at
+	for p.at++; p.at < len(p.text); p.at++ {
+		switch p.text[p.at] {
+		case '\\':
+			p.at++
+		case quote:
+			p.at++
+			return p.text[start:p.at], nil
+		}
+	}
+	return "", fmt.Errorf("a literal that opens at byte %d and never closes", start)
+}
+
+func (p *debugParser) word() string {
+	start := p.at
+	for p.at < len(p.text) && isWordByte(p.text[p.at]) {
+		p.at++
+	}
+	return p.text[start:p.at]
+}
+
+// items reads the values of a tuple or a list up to closing, which a last comma may come before.
+func (p *debugParser) items(closing byte) ([]debugValue, error) {
+	items := []debugValue{}
+	for {
+		if p.peek() == closing {
+			p.at++
+			return items, nil
+		}
+		item, err := p.value()
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+		switch c := p.peek(); c {
+		case ',':
+			p.at++
+		case closing:
+			p.at++
+			return items, nil
+		default:
+			return nil, fmt.Errorf("%q where a comma or %q was due, at byte %d", c, closing, p.at)
+		}
+	}
+}
+
+// fields reads a struct's fields up to its }, each `name: value`, and the `..` of a struct that
+// prints only some of them.
+func (p *debugParser) fields() (map[string]debugValue, error) {
+	fields := map[string]debugValue{}
+	for {
+		switch c := p.peek(); {
+		case c == '}':
+			p.at++
+			return fields, nil
+		case strings.HasPrefix(p.text[p.at:], ".."):
+			p.at += 2
+		case isWordByte(c):
+			name := p.word()
+			if p.peek() != ':' {
+				return nil, fmt.Errorf("the field %s has no value, at byte %d", name, p.at)
+			}
+			p.at++
+			value, err := p.value()
+			if err != nil {
+				return nil, fmt.Errorf("the field %s: %w", name, err)
+			}
+			if _, twice := fields[name]; twice {
+				return nil, fmt.Errorf("the field %s twice", name)
+			}
+			fields[name] = value
+		default:
+			return nil, fmt.Errorf("%q where a field was due, at byte %d", c, p.at)
+		}
+		switch c := p.peek(); c {
+		case ',':
+			p.at++
+		case '}':
+			p.at++
+			return fields, nil
+		default:
+			return nil, fmt.Errorf("%q where a comma or '}' was due, at byte %d", c, p.at)
+		}
+	}
+}
+
+// isWordByte is whether c may be part of a bare word: an identifier or a number, a negative one
+// among them.
+func isWordByte(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-'
+}

@@ -5,10 +5,12 @@
 // an extension the real binary loads shows what they answer.
 //
 // It measures two things. The capability report through the production host
-// (`ompCapabilityHost`): the repository-extensions row is the one measured on the host's own
-// discovery, since its two members, `discoverExtensionPaths` and `loadSkills`, are the production
-// ones, and every other member answers at once with nothing, so no other row reaches a network, a
-// child command or the profile's MCP servers. And the host's cyber-policy classifier
+// (`ompCapabilityHost`): the repository-extensions and mcp rows are the ones measured on the
+// host's own modules, since their members, `discoverExtensionPaths` and `loadSkills`, and
+// `loadMCPConfigs` and `discoverMCPServers`, are the production ones, and every other member
+// answers at once with nothing, so no other row reaches a network or a child command. The mcp
+// row reads the MCP servers the session's workspace and its test profile configure: none, unless
+// a case writes one. And the host's cyber-policy classifier
 // (`isCyberPolicyRefusal` of `@oh-my-pi/pi-ai/error`), which `extensions/legion.ts` hands the
 // turn-outcome reporter: pi-legion's one runtime import of a pi-ai subpath, which a reporter that
 // cannot read it absorbs as a report with no `code` (`src/turn-outcome.ts`), so no other case
@@ -59,8 +61,11 @@ export interface CapabilityProbeReport {
     | {
         /** `discoverExtensionPaths(cwd)` as the production host answers it. */
         readonly extensionPaths: readonly unknown[];
-        /** The repository-extensions row of a report measured through that host. */
-        readonly row: unknown;
+        /** The rows of a report measured through that host that its own modules answer. */
+        readonly rows: {
+          readonly "repository-extensions": unknown;
+          readonly mcp: unknown;
+        };
       }
     | ProbeFailure;
   /** The host classifier's answer for each of `CYBER_POLICY_PROBE_MESSAGES`. */
@@ -69,18 +74,16 @@ export interface CapabilityProbeReport {
     | ProbeFailure;
 }
 
-/** The production host, with every member but the repository-extensions row's two answering
- *  nothing. */
+/** The production host, with every member but the repository-extensions and mcp rows' four
+ *  answering nothing. */
 function probeHost(): CapabilityHost {
   const real = ompCapabilityHost();
   return {
     discoverAgents: async () => ({ agents: [] }),
     disabledAgents: async () => [],
     runSearchQuery: async () => ({}),
-    loadMCPConfigs: async () => ({ configs: {}, sources: {} }),
-    discoverMCPServers: async () => {
-      throw new Error("the probe configures no MCP server");
-    },
+    loadMCPConfigs: real.loadMCPConfigs,
+    discoverMCPServers: real.discoverMCPServers,
     discoverExtensionPaths: real.discoverExtensionPaths,
     loadSkills: real.loadSkills,
     run: async () => ({ code: 0, stdout: "", stderr: "" }),
@@ -110,7 +113,12 @@ async function probe(context: SessionContext, out: string): Promise<void> {
       });
       return {
         extensionPaths,
-        row: capabilities.rows.find((row) => row.name === "repository-extensions"),
+        rows: {
+          "repository-extensions": capabilities.rows.find(
+            (row) => row.name === "repository-extensions"
+          ),
+          mcp: capabilities.rows.find((row) => row.name === "mcp"),
+        },
       };
     }),
     cyberPolicyRefusal: await measured(async () => {

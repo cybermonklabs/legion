@@ -1,0 +1,2 @@
+# jj --ignore-working-copy op log -n1 --no-graph -T id --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 as conflicted, with descriptions, and so conflict labels, that hold ", TreeId(" and root_tree:
+934d087aa1f160bcc6f78e5f620e6e90595a37cfb77a31d40bc2fc71f1d796702196f93eb444e4ceb93e142110a95861124fee5f22abc54e6c706c4185ffdb7a

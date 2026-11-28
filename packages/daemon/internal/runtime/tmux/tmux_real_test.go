@@ -447,8 +447,8 @@ func (c *stubConn) Shutdown(context.Context) error {
 
 func (c *stubConn) Sequence() uint64 { return c.seq }
 
-func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.Duration) error {
-	return errors.New("the stream stub does not adopt working copies")
+func (c *stubConn) AdoptWorkingCopy(context.Context, runtime.GitIdentity, time.Duration) (runtime.Adoption, error) {
+	return runtime.Adoption{}, errors.New("the stream stub does not adopt working copies")
 }
 
 func (c *stubConn) Compact(context.Context, string, time.Duration) error {

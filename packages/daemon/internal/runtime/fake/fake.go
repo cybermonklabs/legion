@@ -13,6 +13,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -131,6 +132,8 @@ type Runtime struct {
 	holdReplace  func()
 	replaceNoPod bool
 	holdIssue    func()
+	// adoption is what every AdoptWorkingCopy answers beside its error (AnswerAdoptWorkingCopy).
+	adoption runtime.Adoption
 	// suspendedOver is every pod whose Sandbox a replacement's suspension landed on, as the
 	// Sandbox runtime leaves it whether or not the pod is still there to see: a ReplacePod or a
 	// ReplaceIssuePod of such a pod replaces nothing and answers nil, as that runtime answers a
@@ -251,6 +254,15 @@ func (r *Runtime) FailReconcileOrphans(err error) { r.fail("ReconcileOrphans", e
 
 // FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
 func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", err) }
+
+// AnswerAdoptWorkingCopy makes every later AdoptWorkingCopy answer adoption beside its error, as
+// the shim answers the commits a stale working copy's update left its edits in, on a refusal too
+// (FailAdoptWorkingCopy). The zero value answers nothing again.
+func (r *Runtime) AnswerAdoptWorkingCopy(adoption runtime.Adoption) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.adoption = adoption
+}
 
 // FailCleanupTree makes every later CleanupTree return err; nil clears it.
 func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
@@ -763,11 +775,11 @@ func copyKnown(k runtime.Known) runtime.Known {
 	return k
 }
 
-func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity) error {
+func (r *Runtime) AdoptWorkingCopy(_ context.Context, loc runtime.Locator, id runtime.GitIdentity) (runtime.Adoption, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "AdoptWorkingCopy", Locator: loc, Identity: id})
-	return r.failures["AdoptWorkingCopy"]
+	return runtime.Adoption{EditsCommits: slices.Clone(r.adoption.EditsCommits)}, r.failures["AdoptWorkingCopy"]
 }
 
 func (r *Runtime) ProvisionsWorkspaces() bool {

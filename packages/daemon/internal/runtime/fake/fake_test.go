@@ -57,7 +57,7 @@ func TestRuntimeRecordsEveryCallInOrderWithItsArguments(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := fake.AdoptWorkingCopy(ctx, locator, identity); err != nil {
+	if _, err := fake.AdoptWorkingCopy(ctx, locator, identity); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 
@@ -477,7 +477,7 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	}
 
 	identity := runtime.GitIdentity{Name: "Legion", Email: "legion@example.com"}
-	if err := conn.AdoptWorkingCopy(ctx, identity, 30*time.Second); err != nil {
+	if _, err := conn.AdoptWorkingCopy(ctx, identity, 30*time.Second); err != nil {
 		t.Fatalf("adopt: %v", err)
 	}
 	adoptions := conn.Adoptions()

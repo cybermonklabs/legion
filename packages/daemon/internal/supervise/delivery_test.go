@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -294,11 +295,11 @@ func TestATransportErrorRequeuesWithoutACharge(t *testing.T) {
 	}
 }
 
-// A prompt the agent refuses is charged like an acknowledged prompt that started no turn
-// (LEGION-60), and retried at the next sweep rather than on the spot, so an agent that refuses is
-// not re-prompted into another refusal at once. Oh My Pi's busy answer is no refusal of the work
-// and is charged nothing (TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask).
-func TestARefusedPromptIsChargedAndRetriedAtTheNextSweep(t *testing.T) {
+// A prompt the agent refuses is its answer, so the agent is live and nothing is charged, and it
+// is retried at the next sweep rather than on the spot, so an agent that refuses is not
+// re-prompted into another refusal at once. Oh My Pi's busy answer is charged nothing either
+// (TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask).
+func TestARefusedPromptIsChargedNothingAndRetriedAtTheNextSweep(t *testing.T) {
 	for _, state := range prompted {
 		t.Run(string(state), func(t *testing.T) {
 			h := newHarness(t)
@@ -309,7 +310,7 @@ func TestARefusedPromptIsChargedAndRetriedAtTheNextSweep(t *testing.T) {
 			h.must(RequestDeliver{Claim: testToken, Task: "the task"})
 
 			first := h.wantPrompts(base + 1)[base]
-			h.wantBudgets(Budgets{PromptFailures: 1})
+			h.wantBudgets(Budgets{})
 			if p := h.pending(); p.ID != first.DeliveryID || !p.DeliveredAt.IsZero() {
 				t.Errorf("pending %+v, want the refused delivery queued under its own id", p)
 			}
@@ -323,30 +324,29 @@ func TestARefusedPromptIsChargedAndRetriedAtTheNextSweep(t *testing.T) {
 			if second := h.wantPrompts(base + 2)[base+1]; second.DeliveryID != first.DeliveryID {
 				t.Errorf("re-sent under %s, want %s", second.DeliveryID, first.DeliveryID)
 			}
-			h.wantBudgets(Budgets{PromptFailures: 1})
+			h.wantBudgets(Budgets{})
 		})
 	}
 }
 
-// An agent that refuses every prompt is not retried forever: its refusals spend the prompt
-// budget, and the retirement that follows is the same as for prompts that start no turn.
-func TestAnAgentThatRefusesEveryPromptRunsOutOfItsBudget(t *testing.T) {
+// An agent that refuses every prompt is answering, so it is live, and a live worker is not stopped
+// for prompt failures: however often it refuses, the process is kept and the task waits for the
+// next sweep. Only a claim whose agent takes no turn and answers nothing is retired
+// (TestPromptFailuresRetireAndRelaunchThenFail).
+func TestAnAgentThatRefusesEveryPromptIsNotStopped(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
-	refusing := h.locator()
 	h.conn.RefusePrompt("the model provider refused the request")
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-	h.observe(runtime.Alive)
-	h.wantBudgets(Budgets{PromptFailures: 2})
-
-	h.observe(runtime.Alive)
-
-	if suspend := h.wantCalls("Suspend", 1)[0]; suspend.Locator != refusing {
-		t.Errorf("suspended %+v, want the refusing process", suspend.Locator)
+	for range 6 {
+		h.observe(runtime.Alive)
 	}
-	h.wantCalls("Resume", 1)
-	h.wantBudgets(Budgets{PromptRetires: 1})
-	h.wantState(StateLaunching)
+
+	h.wantPrompts(7)
+	h.wantCalls("Suspend", 0)
+	h.wantCalls("Resume", 0)
+	h.wantBudgets(Budgets{})
+	h.wantState(StateReady)
 }
 
 // Oh My Pi answers a prompt that reaches it mid-turn with the busy code, which the
@@ -1462,17 +1462,16 @@ func TestALateRefusalForAnotherDeliveryIsDroppedAndLoggedOnce(t *testing.T) {
 // A prompt refused after a foreign turn already confirmed the send (B1's matching) was never taken:
 // the confirmation is taken back. The refusal lands while the daemon's record holds the claim in
 // that turn, so it is the agent's busy answer whatever its words or its code (agentRefusalOutcome),
-// and is charged nothing. A prompt lost to the transport takes the confirmation back too, at no
-// charge — the shim answers the same id again without a second turn if the turn was in fact the
-// delivery's.
+// and, an answer, is charged nothing. A prompt lost to the transport takes the confirmation back
+// too, at no charge — the shim answers the same id again without a second turn if the turn was in
+// fact the delivery's.
 func TestAFailedSendAfterAConfirmingTurnTakesTheConfirmationBack(t *testing.T) {
 	for _, failure := range []struct {
-		name    string
-		script  func(*gatedConn)
-		charged Budgets
+		name   string
+		script func(*gatedConn)
 	}{
-		{"refused", func(g *gatedConn) { g.RefusePrompt("the model provider refused the request") }, Budgets{}},
-		{"transport", func(g *gatedConn) { g.FailPrompt(errBoom) }, Budgets{}},
+		{"refused", func(g *gatedConn) { g.RefusePrompt("the model provider refused the request") }},
+		{"transport", func(g *gatedConn) { g.FailPrompt(errBoom) }},
 	} {
 		t.Run(failure.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -1493,7 +1492,7 @@ func TestAFailedSendAfterAConfirmingTurnTakesTheConfirmationBack(t *testing.T) {
 			h.m.Wait()
 
 			h.wantState(StateWorking)
-			h.wantBudgets(failure.charged)
+			h.wantBudgets(Budgets{})
 			if p := h.pending(); p.ID != id || !p.ConfirmedAt.IsZero() {
 				t.Fatalf("pending %+v, want %s unconfirmed", p, id)
 			}
@@ -1503,7 +1502,7 @@ func TestAFailedSendAfterAConfirmingTurnTakesTheConfirmationBack(t *testing.T) {
 			if prompts := gated.Prompts(); len(prompts) != 2 || prompts[1].DeliveryID != id {
 				t.Errorf("prompts %+v, want the delivery sent again under its own id after the turn", prompts)
 			}
-			h.wantBudgets(failure.charged)
+			h.wantBudgets(Budgets{})
 		})
 	}
 }
@@ -2097,12 +2096,10 @@ func TestAnOperatorsTaskSurvivesASuspensionAndGoesOnResume(t *testing.T) {
 
 // An agent that cannot start a turn at all answers every prompt with a late refusal: Oh My Pi
 // acknowledges the prompt and then rejects it, and a provider failure thrown before the turn
-// begins ("No API key found for …") arrives by that same route. Resending on the spot and
-// charging nothing made that an unbounded loop — the worker was never relaunched, failed or
-// held, and the prompt budget that exists to end it never moved. A refusal with no turn of the
-// agent's own running is the agent refusing to work: it is charged, and the retry waits for the
-// sweep that follows the charge.
-func TestAPersistentLateRefusalIsChargedAndNotResentOnTheSpot(t *testing.T) {
+// begins ("No API key found for …") arrives by that same route. Resending on the spot made that a
+// loop as fast as the agent could refuse. The refusal is an answer, so the agent is live and
+// nothing is charged, but the retry waits for the sweep that follows.
+func TestAPersistentLateRefusalIsNotResentOnTheSpot(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
@@ -2111,13 +2108,19 @@ func TestAPersistentLateRefusalIsChargedAndNotResentOnTheSpot(t *testing.T) {
 
 	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: refused, Error: "No API key found for anthropic."})
 
-	h.wantBudgets(Budgets{PromptFailures: 1})
+	h.wantBudgets(Budgets{})
 	if prompts := h.conn.Prompts(); len(prompts) != 1 {
 		t.Fatalf("prompts = %d, want the refused one alone: the retry waits for the sweep", len(prompts))
 	}
 	rotated := h.pending()
 	if rotated.ID == refused || !rotated.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the refusal = %+v, want the task kept, unconfirmed, under a new id", rotated)
+	}
+	if rotated.SendFailures != 1 || !strings.Contains(rotated.LastSendError, "No API key found") {
+		t.Fatalf("pending after the refusal = %+v, want the late refusal counted on the task with its text", rotated)
+	}
+	if stored, ok := h.store.delivery(testToken); !ok || stored.SendFailures != 1 {
+		t.Fatalf("stored delivery = %+v (held %t), want the late refusal's count persisted", stored, ok)
 	}
 
 	// The sweep that follows sends it again, once, under the rotated id. The refused prompt's own
@@ -2128,7 +2131,7 @@ func TestAPersistentLateRefusalIsChargedAndNotResentOnTheSpot(t *testing.T) {
 	if sent := h.wantPrompts(2)[1]; sent.DeliveryID != rotated.ID {
 		t.Fatalf("re-sent %+v at the sweep, want the task under the rotated id %s", sent, rotated.ID)
 	}
-	h.wantBudgets(Budgets{PromptFailures: 1})
+	h.wantBudgets(Budgets{})
 }
 
 // Confirming a turn writes the claim and the delivery, and a daemon can die between them. The

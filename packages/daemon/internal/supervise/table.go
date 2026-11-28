@@ -1249,7 +1249,7 @@ func fillTable(t *builder) {
 	t.ignore(onAcked, noSend, unready...)
 	t.ignore(onAcked, noSend, gone...)
 
-	t.row(onRefused, "the prompt was refused (charged, unless the agent is in a turn of its own, which records the claim working) or lost (not charged): re-queue it", refused,
+	t.row(onRefused, "the prompt was refused (an answer, charged nothing; a turn of the agent's own records the claim working) or lost: re-queue it", refused,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, StateReady, StateIdle, StateWorking)
 	t.ignore(onRefused, noSend, unready...)
 	t.ignore(onRefused, noSend, gone...)
@@ -1614,8 +1614,8 @@ func (b *builder) ignore(kind eventKind, reason string, states ...ClaimState) {
 
 // observe is the runtime's sweep. A live process in a ready or idle claim is also the retry of a
 // delivery that is waiting — after a refusal, a prompt that started no turn, or a missing
-// connection — when nothing else will come: the retry is bounded by the sweep's interval and by
-// the prompt budget, never made on the spot. In a working claim it asks whether the turn is over
+// connection — when nothing else will come: at the sweep's interval, never on the spot, and for
+// silent prompts until the prompt budget ends. In a working claim it asks whether the turn is over
 // where a mark arms the question (askTurnOver): the turn an earlier daemon saw start, when the
 // last ask went unanswered, and the turn a busy answer recorded, at every sweep until the agent
 // says it is not streaming or the turn's own start is read.
@@ -1850,41 +1850,45 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // its identity not minted, its prompt answered busy — is one no acknowledged prompt carried, which
 // no turn of the agent's own confirms across a restart (unsentNews).
 //
-// Which failures cost budget is the policy's (Charges), and this site names the outcome and
-// decides nothing: the send's error carries what the stream minted from the far side's answer, or
-// is the runtime's sentinel, or is no answer at all (sendOutcome). Charged are the two answers the
-// far side gave about this very workspace: a refused prompt (OutcomePromptRefused) and a refused
-// adoption (OutcomeAdoptionRefused). Uncharged are the failures that are no answer at all
-// (OutcomeTransportLost) — no reply within the RPC timeout, a closed connection, a frame lost on
-// the way — and a failure to mint the role's App identity (OutcomeIdentityUnavailable), which
-// never leaves the daemon and is an outage of the GitHub App rather than a fault of this
-// workspace. Nothing is ever re-sent on the spot: every retry waits for the next sweep, hello,
-// turn end, or ready.
+// No failure here costs budget, and this site asks the policy nothing (Charges): the send's error
+// carries what the stream minted from the far side's answer, or is the runtime's sentinel, or is
+// no answer at all (sendOutcome), and the outcome names the line and decides what follows, never a
+// charge. Two are the far side's answers about this very send: a refused prompt
+// (OutcomePromptRefused, or OutcomeUnrecognised for a refusal with no code) and a refused adoption
+// (OutcomeAdoptionRefused). The rest are no answer at all (OutcomeTransportLost) — no reply within
+// the RPC timeout, a closed connection, a frame lost on the way — and a failure to mint the role's
+// App identity (OutcomeIdentityUnavailable), which never leaves the daemon and is an outage of the
+// GitHub App rather than a fault of this workspace. Nothing is ever re-sent on the spot: every
+// retry waits for the next sweep, hello, turn end, or ready.
 //
-// A refusal is the agent's answer and is charged like a prompt that started no turn (LEGION-60:
-// an agent that refused every prompt would otherwise be retried forever). The agent's answer that
-// it is in a turn of its own (OutcomeAgentBusy) is not charged, as it is not for a late refusal
+// A refusal is the agent's answer, whatever outcome it carries, so the agent is live, and a live
+// worker is not stopped for prompt failures: the refusal is charged nothing and ends the run of
+// silent charges the claim holds (answeredFailure, answeredLive, Budgets). The agent's answer that
+// it is in a turn of its own (OutcomeAgentBusy) says more, as it does for a late refusal
 // (lateRefused): the stream mints it from the code of Oh My Pi's answer or the Claude Code
 // bridge's, and the one rule of the three refusal paths names it too for a refusal the daemon's
 // own record or the agent's get_state shows came during a turn (agentRefusalOutcome). The agent is
 // in a turn of its own — an Envoy notice's, which a tree publishes freely while its worker boots —
-// so it is working, not refusing to work, and charging it would spend the budget of the very turn
-// doing the work, three such collisions retiring the agent mid-turn. The task waits unread,
-// charged nothing, and a ready or idle claim is recorded working (recordBusyTurn): sendPending
-// holds the task for that turn, and the turn's end sends it — its agent_end, or the sweep's answer
-// that the agent is in no prompt (askTurnOver). Left ready, the claim was sent the task again at
-// every sweep and hello for the length of the turn, and answered busy each time. Which outcome is
-// busy is that rule's; that the busy answer records the turn is this site's, as it is no charge.
+// so it is working, not refusing to work. The task waits unread, and a ready or idle claim is
+// recorded working (recordBusyTurn): sendPending holds the task for that turn, and the turn's end
+// sends it — its agent_end, or the sweep's answer that the agent is in no prompt (askTurnOver).
+// Left ready, the claim was sent the task again at every sweep and hello for the length of the
+// turn, and answered busy each time. Which outcome is busy is that rule's; that the busy answer
+// records the turn is this site's.
 //
-// A refused adoption is charged the same way, and the busy answer is never read for it: that is
-// Oh My Pi's answer about a turn of its own, while this is the shim's own answer about a
-// working copy. Every `ok: false` the shim gives the adoption counts, its own command timeout
-// included — a jj wedged on a stale lock reports as exactly that — and the refusal's text is never
-// read to classify it, only carried into the log, where the shim's words already name the stale
-// lock's path and its age (INFRA-1480: unbounded re-sends of a refused adoption held two planning
-// tasks 31 and 33 hours, logged at warning level and charged nothing). With the shipped budgets
-// (prompt_failure_limit 3, prompt_retire_limit 2) the sixth consecutive charge fails the claim,
-// which workflow.Stranded and `legion state` report.
+// A refused adoption (OutcomeAdoptionRefused) is the shim's answer about the working copy, and is
+// charged nothing the same way, whatever it says; the busy answer is never read for it, since that
+// is Oh My Pi's answer about a turn of its own. Every `ok: false` the shim gives the adoption is
+// this, its own command timeout included: what a `jj workspace update-stale` of a stale working
+// copy that outruns its bound reports, and what the metaedit reports where a stale git index.lock
+// fails it. A retirement would cure neither, since the relaunch runs the same jj on the same
+// working copy, and it would end whatever the agent had running. So the bound INFRA-1480 asked
+// for — unbounded re-sends of a refused adoption held two planning tasks 31 and 33 hours, logged
+// at warning level and recorded nowhere else — is the count on the pending task below and one
+// `worker-stalled` notice to the issue's architect once the task's answered failures reach the
+// prompt-failure limit (answeredFailure, Deps.PromptAnswersReached), not a retirement. The
+// refusal's text is never read to classify it, only carried into the log and the record below,
+// where the shim's words name the command, or the stale lock's path and its age.
 //
 // A send lost to the transport is not charged and waits for the shim's next hello — which may
 // already have come while the send was out. So does an identity the daemon could not mint
@@ -1892,19 +1896,20 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // name of its own: it is raised before any frame leaves, and an operator told the transport lost
 // the prompt would look at the network while the GitHub App is the thing that is down.
 //
-// Every failure here, charged or not, is recorded on the pending delivery before the split acts:
-// how many sends of this task have failed, when this one failed and the error it failed
-// with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
-// second budget, and the uncharged failures are exactly the ones it exists for: a transport loss
-// costs nothing and is retried for ever, so without it the only trace of a claim waiting days on
-// a send that never lands is a log line inside its pod. It rides out on the write this already
-// makes of the delivery, so one persist covers the taken-back confirmation and the record alike,
-// and the claim goes with them where that confirmation's telling went back (putClaimAndPending);
-// that write is unconditional because the record changes on every failed send, where the
-// confirmation it takes back is there to clear only on some.
+// Every failure here is recorded on the pending delivery before the split acts: how many sends of
+// this task have failed, when this one failed and the error it failed with
+// (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
+// budget, and it is the one trace of a claim waiting on a send that never lands: a transport loss
+// and a refused adoption are retried for ever, so without it that trace would be a log line inside
+// its pod (INFRA-1480: refused adoptions held two planning tasks 31 and 33 hours, seen nowhere but
+// in warnings). It rides out on the write this already makes of the delivery, so one persist
+// covers the taken-back confirmation and the record alike, and the claim goes with them where
+// that confirmation's telling went back (putClaimAndPending); that write is unconditional because
+// the record changes on every failed send, where the confirmation it takes back is there to clear
+// only on some.
 //
-// Two things keep that record from deciding anything about the charge, because the charge is
-// what bounds the re-sends and the record is only a diagnosis.
+// Two things keep that record from deciding anything about what the split does, because the
+// record is only a diagnosis.
 //
 // The text is the far side's own — a refused adoption carries the wedged command's whole stderr
 // and a refused prompt Oh My Pi's decoded `error` — so the delivery holds it, in memory as in the
@@ -1915,12 +1920,10 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // (logFarSideError).
 //
 // The write may still fail — the store has its own weather — and a failed write is logged and
-// carried past rather than returned, so what the split decided is always done. A return there would
-// charge a refused adoption nothing and re-send it with no bound, which is the stall this split
-// exists to end. Nothing of the delivery is lost by carrying on: the failed write left it
-// unsaved (saved), and settle writes the claim and the delivery together before the next
-// decision, so the taken-back confirmation and this record reach the store on the first write
-// the store takes.
+// carried past rather than returned, so what the split decided is always done. Nothing of the
+// delivery is lost by carrying on: the failed write left it unsaved (saved), and settle writes the
+// claim and the delivery together before the next decision, so the taken-back confirmation and
+// this record reach the store on the first write the store takes.
 //
 // A confirmation the refusal takes back that the claim's handshake recorded goes from the
 // handshake too (takeBackConfirmation), and the write is then of the claim and the delivery
@@ -1977,9 +1980,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	default:
 		args = append(args, "outcome", string(outcome))
 	}
-	p.SendFailures++
-	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = m.logFarSideError(ctx, level, msg, r.Err, args...)
+	p.failedSend(m.deps.Clock.Now(), m.logFarSideError(ctx, level, msg, r.Err, args...))
 	var err error
 	if untold || handshakeMoved {
 		err = m.saved(m.putClaimAndPending(ctx))
@@ -1987,23 +1988,25 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		err = m.putPending(ctx)
 	}
 	if err != nil {
-		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on",
+		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again",
 			"delivery", r.DeliveryID, "error", err)
 	}
-	if err := m.chargePrompt(ctx, outcome); err != nil {
-		return err
+	// Whether to send again now, and what the failure does besides, is no charge question, and no
+	// failure here is charged. Only a send no answer reached is sent again on the hello that came
+	// while it was out, since the new connection may carry it. An agent that answered — refused,
+	// or said it is in a turn — and a shim that refused the adoption wait for the sweep, the hello
+	// or the turn's end that follows, and the answer ends the claim's run of silent charges; a
+	// refusal is counted for the issue's architect besides (answeredFailure).
+	switch outcome {
+	case runtime.OutcomeAgentBusy:
+		return errors.Join(m.recordBusyTurn(ctx), m.answeredLive(ctx))
+	case runtime.OutcomeTransportLost, runtime.OutcomeIdentityUnavailable:
+		if resend {
+			return m.sendPending(ctx)
+		}
+		return nil
 	}
-	if outcome == runtime.OutcomeAgentBusy {
-		return m.recordBusyTurn(ctx)
-	}
-	// Whether to send again now is no charge question: only a send no answer reached is sent
-	// again on the hello that came while it was out, since the new connection may carry it. An
-	// agent that answered — refused, or said it is in a turn — waits for the sweep, the hello or
-	// the turn's end that follows.
-	if resend && (outcome == runtime.OutcomeTransportLost || outcome == runtime.OutcomeIdentityUnavailable) {
-		return m.sendPending(ctx)
-	}
-	return nil
+	return m.answeredFailure(ctx, p.LastSendError)
 }
 
 // refusedElsewhere is the part of a late refusal every state shares, and it reports whether that
@@ -2020,21 +2023,25 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 //     nothing else; rotating or charging again would spend the budget twice for one prompt.
 //   - A refusal the shim replayed from its backlog, answering a prompt an earlier connection sent.
 //     The pending id may be the very delivery this connection is re-sending, whose own answer is
-//     still to come, so it clears only the mark it set.
+//     still to come, so it clears only the mark it set, and leaves the wait for the pending
+//     prompt's turn running for its end to read (Machine.waitAnswer).
 //
 // A replayed refusal that takes back a task a turn not its own confirmed is the exception
 // (takesBackConfirmed): the task goes back unread, charged nothing, so that turn's end sends it
 // again rather than retiring it as served — unless another prompt of the task is still
 // outstanding, whose turn that one is (takeBackPending).
 //
-// None of them is a charge, and that is no outcome question but which prompt the refusal
-// answers: the prompt it names was charged already, when the wait for its turn ran out, or is a
-// send of an earlier connection's that this claim's budget never counted. So nothing here asks the
-// policy. What the refusal's outcome does carry is read in two places, both through the one rule
+// None of them is a charge: a refusal is the agent's answer, which charges nothing whatever
+// outcome it carries, so nothing here asks the policy. The prompt it names was charged already, as
+// silence, when the wait for its turn ran out, or is a send of an earlier connection's that this
+// claim's budget never counted; either way the answer says the agent is live, so each kind ends
+// the claim's run of silent charges (answeredLive, which waitedOutAnswer calls for the first).
+// What the refusal's outcome does carry is read in two places, both through the one rule
 // of the refusal paths (agentRefusalOutcome): an outstanding prompt's busy answer records a ready
-// or idle claim working for the turn it names (waitedOutAnswer), and one that says the agent is in
-// a turn of its own while the pending prompt still waits for its turn is kept for that wait's end
-// (answeredBusy, noTurn).
+// or idle claim working for the turn it names (waitedOutAnswer), and a refusal of the pending
+// prompt while that prompt still waits for its turn is kept for that wait's end, which reads it
+// as the agent's turn where it is busy and as the agent's refusal of the work otherwise
+// (Machine.waitAnswer, noTurn).
 func refusedElsewhere(m *Machine, ctx context.Context, r StreamLateRefusal) (bool, error) {
 	p := m.claim.Pending
 	switch {
@@ -2042,16 +2049,16 @@ func refusedElsewhere(m *Machine, ctx context.Context, r StreamLateRefusal) (boo
 		m.log.Warn("supervise: a replayed refusal names the prompt a foreign turn confirmed; the task goes back unread",
 			"delivery", r.DeliveryID, "outcome", string(r.Outcome), "error", r.Error)
 		m.answered(r.DeliveryID)
-		return true, m.takeBackPending(ctx, taskUnread)
+		return true, errors.Join(m.takeBackPending(ctx, taskUnread), m.answeredLive(ctx))
 	case r.DeliveryID != p.ID && m.outstandingPrompt(r.DeliveryID):
 		return true, m.waitedOutAnswer(ctx, r.DeliveryID, taskUnread, m.agentRefusalOutcome(ctx, r.Outcome), "refused: "+r.Error)
 	case r.Replayed || r.DeliveryID != p.ID:
 		m.log.Warn("supervise: a refused prompt had marked the task as read; the mark is cleared",
 			"delivery", r.DeliveryID, "replayed", r.Replayed, "outcome", string(r.Outcome), "error", r.Error)
-		if _, awaiting := m.timers[TimerTurn]; awaiting && r.DeliveryID == p.ID && m.agentRefusalOutcome(ctx, r.Outcome) == runtime.OutcomeAgentBusy {
-			m.answeredBusy = p.ID
+		if _, awaiting := m.timers[TimerTurn]; awaiting && r.DeliveryID == p.ID {
+			m.waitAnswer = keptAnswer{id: p.ID, outcome: m.agentRefusalOutcome(ctx, r.Outcome), why: r.Error}
 		}
-		return true, m.markUnread(ctx)
+		return true, errors.Join(m.markUnread(ctx), m.answeredLive(ctx))
 	}
 	return false, nil
 }
@@ -2099,12 +2106,12 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // minted OutcomeAgentBusy for, one the stream already saw start, or one the agent says it is in
 // when asked. A turn of its own really running is the collision: the agent is working, not
 // refusing to work, and the daemon delivers those notices itself, so a tree publishing them while
-// a worker boots must not spend that worker's prompt budget. The policy charges it nothing
-// (Charges), the task is taken back, and the turn's end sends it. A claim the stream saw in the
-// turn stays working; a ready or idle one, whose turn's start the daemon never read, is recorded
-// working (recordBusyTurn), so that nothing sends the task into the turn the refusal names before
-// that turn ends — its agent_end, or the sweep's answer that the agent is in no prompt
-// (askTurnOver).
+// a worker boots must not spend that worker's prompt budget. It is charged nothing, as no answer
+// is, and ends the claim's run of silent charges (answeredLive); the task is taken back, and the
+// turn's end sends it. A claim the stream saw in the turn stays working; a ready or idle one,
+// whose turn's start the daemon never read, is recorded working (recordBusyTurn), so that nothing
+// sends the task into the turn the refusal names before that turn ends — its agent_end, or the
+// sweep's answer that the agent is in no prompt (askTurnOver).
 //
 // The turn running may be the task's own: a prompt of the task acknowledged earlier is still
 // outstanding (Machine.outstanding), and the pinned Oh My Pi refuses this one because it is
@@ -2114,12 +2121,12 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // task and its result settles it.
 //
 // No turn running is the agent refusing the work, under the outcome the stream minted
-// (OutcomePromptRefused, or OutcomeUnrecognised for a refusal with no code). It is charged like
-// any acknowledged prompt that becomes no turn, and the retry waits for the sweep that follows, so
-// a refusal that never stops walks the budget to its end — a relaunch, and then the retirement —
-// instead of looping on the spot for ever against an agent that cannot start a turn at all. Either
-// way the task goes back unread: the prompt did not run, so nothing reported from whatever turn
-// follows belongs to it.
+// (OutcomePromptRefused, or OutcomeUnrecognised for a refusal with no code) — a provider that
+// rejected before any turn began, an agent that will not take the work. That is still an answer,
+// so the agent is live: the refusal is charged nothing, whatever its outcome, is counted on the
+// pending task and ends the claim's run of silent charges (promptAnswered), and the retry waits
+// for the sweep that follows rather than looping on the spot. Either way the task goes back
+// unread: the prompt did not run, so nothing reported from whatever turn follows belongs to it.
 func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamLateRefusal)
 	// A refusal of the prompt whose send is still in flight answers that send, as its result
@@ -2137,9 +2144,9 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	m.answered(r.DeliveryID)
 	outcome := m.agentRefusalOutcome(ctx, r.Outcome)
 	if outcome != runtime.OutcomeAgentBusy {
-		m.log.Warn("supervise: the agent refused an acknowledged prompt and is in no turn",
+		m.log.Warn("supervise: the agent refused an acknowledged prompt and is in no turn; the task waits for the next send",
 			"delivery", r.DeliveryID, "outcome", string(outcome), "error", r.Error)
-		return m.promptFailed(ctx, outcome, taskUnread)
+		return m.promptAnswered(ctx, taskUnread, r.Error)
 	}
 	if m.awaitsResult() {
 		m.log.Info("supervise: the agent refused an acknowledged prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
@@ -2152,7 +2159,7 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 	// goes back to waiting, unread unless an earlier prompt of the task is the turn's, and nothing
 	// the worker reports from a turn of its own belongs to it. The turn is the agent's word
 	// whatever became of the take-back's write, so the record is made either way.
-	return errors.Join(m.promptFailed(ctx, outcome, taskUnread), m.recordBusyTurn(ctx))
+	return errors.Join(m.takeBackPending(ctx, taskUnread), m.recordBusyTurn(ctx), m.answeredLive(ctx))
 }
 
 // recordBusyTurn records a ready or idle claim working on the agent's busy answer to a prompt of
@@ -2278,6 +2285,10 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 // answer recorded, in place of the start line recordBusyTurn already wrote. A callback that only
 // wrote a line would leave the turn timed from the busy answer, or from the turn before it.
 func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, dateStart func(delivery string)) error {
+	// A turn the agent starts is no silence, whoever's input began it, so it ends the run of
+	// silent charges and the retirements they cost (Budgets), in the write below; a turn that
+	// takes the task clears them in confirmCarrying as well.
+	m.claim.Budgets.PromptFailures, m.claim.Budgets.PromptRetires = 0, 0
 	p := m.claim.Pending
 	news, inFlight := m.turnAnswers()
 	own := p != nil && p.ConfirmedAt.IsZero() && (start.DeliveryID == p.ID || (start.DeliveryID == "" && inFlight))
@@ -2587,7 +2598,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // pause's hold stops the claim at it (promptResulted), or the no-turn answer of a prompt whose
 // wait for its turn ran out, taking an idle claim's confirmation back (waitedOutAnswer). No other
 // answer runs this: not a send refused or lost (refused), not a result or a refusal after the
-// acknowledgement that says the prompt ran no turn (promptFailed, recordBusyTurn), and not a
+// acknowledgement that says the prompt ran no turn (promptAnswered, recordBusyTurn), and not a
 // result whose turn ended in a provider error (providerErrored). After a busy answer the claim is
 // recorded working, and the end of the turn it names comes here through turnEnded. After any
 // other, a stale-plugin relaunch held for the turn waits for its lane: the next sweep posts
@@ -2663,18 +2674,20 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // running, and one acknowledged before it that has no result yet never will.
 //
 // A prompt that ran no turn at all (AgentInvoked false) is the definitive form of what the wait
-// for the turn (TimerTurn) otherwise only times out on. The site names the outcome the stream
-// minted from the result (OutcomeNoTurnRun) unless the one rule of the refusal paths reads it as
-// the agent's busy answer (agentRefusalOutcome, below), the policy charges it the same, and the
-// task goes back to waiting with its read mark, since a prompt the agent took and answered without
-// a turn may still have been read. One whose wait already ran out was charged then, and is
-// answered by waitedOutAnswer, which charges nothing: what it can take back is a late start taken
-// for it, a turn that was then another input's, and the task goes back to waiting for that turn's
-// end; and a busy answer of such a prompt, read by the same rule, records the claim working, as
-// the busy answer below does.
+// for the turn (TimerTurn) otherwise only times out on, but it is an answer, so the agent is live.
+// The site names the outcome the stream minted from the result (OutcomeNoTurnRun) unless the one
+// rule of the refusal paths reads it as the agent's busy answer (agentRefusalOutcome, below), and
+// charges it nothing whatever it is: the result is counted on the pending task and ends the
+// claim's run of silent charges (promptAnswered), and the task goes back to waiting with its read
+// mark, since a prompt the agent took and answered without a turn may still have been read. One
+// whose wait already ran out was charged then, as silence, and is answered by waitedOutAnswer,
+// which ends that run too: what it can take back is a late start taken for it, a turn that was
+// then another input's, and the task goes back to waiting for that turn's end; and a busy answer
+// of such a prompt, read by the same rule, records the claim working, as the busy answer below
+// does.
 //
-// The agent's answer that it is in a turn of its own (OutcomeAgentBusy) is charged nothing by the
-// policy, here as for a send it refused outright (refused) and for a refusal after its
+// The agent's answer that it is in a turn of its own (OutcomeAgentBusy) is charged nothing either,
+// here as for a send it refused outright (refused) and for a refusal after its
 // acknowledgement (lateRefused). The stream mints it from the code of Oh My Pi's result or the
 // Claude Code bridge's, and the one rule names it for a result that ran no turn while the daemon's
 // own record or the agent's get_state shows a turn running (agentRefusalOutcome). The agent ran no
@@ -2740,7 +2753,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		if outcome != runtime.OutcomeAgentBusy {
 			m.log.Warn("supervise: acknowledged, and Oh My Pi ran no turn for the prompt",
 				"delivery", r.DeliveryID, "outcome", string(outcome), "error", r.Error)
-			return m.promptFailed(ctx, outcome, taskRead)
+			return m.promptAnswered(ctx, taskRead, r.Error)
 		}
 		if m.awaitsResult() {
 			m.log.Info("supervise: Oh My Pi ran no turn for the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
@@ -2749,7 +2762,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 			m.log.Warn("supervise: Oh My Pi ran no turn for the prompt; it is in a turn of its own, whose end sends the task again",
 				"delivery", r.DeliveryID, "error", r.Error)
 		}
-		return errors.Join(m.promptFailed(ctx, outcome, taskUnread), m.recordBusyTurn(ctx))
+		return errors.Join(m.takeBackPending(ctx, taskUnread), m.recordBusyTurn(ctx), m.answeredLive(ctx))
 	}
 	ran, acknowledged := m.promptNews(r.DeliveryID)
 	m.forgetOutstanding()
@@ -2803,9 +2816,10 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // waitedOutAnswer is the answer, with no turn run, of a prompt of the task whose wait for its turn
 // already ran out (noTurn): a result that says it was not invoked, or a refusal, naming an
 // outstanding id other than the pending one. The wait took the task back under a new id and
-// charged that prompt then, so nothing is charged now: charging again would spend the budget
-// twice for one prompt. That is no outcome question but which prompt the answer names, so the
-// policy is not asked (refusedElsewhere's reason too).
+// charged that prompt then, as silence; the answer says the agent is live after all, so it ends
+// the claim's run of silent charges (answeredLive) and charges nothing. That is no outcome
+// question but which prompt the answer names, so the policy is not asked (refusedElsewhere's
+// reason too).
 //
 // What the answer can still take back is a confirmation a turn took for this prompt. With no other
 // prompt of the task outstanding and no send of it whose answer is still to come (sendUnanswered),
@@ -2817,7 +2831,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // While another prompt is outstanding, the turn and the read mark are that prompt's, and nothing
 // moves. Otherwise only the mark goes, where the answer says the prompt was never read, as a
 // refusal of the prompt that set it always took it (markUnread). read says whether the agent may
-// have read it, as promptFailed's does: a busy answer or a refusal was never read.
+// have read it, as promptAnswered's does: a busy answer or a refusal was never read.
 //
 // o is the answer's outcome as the one rule of the refusal paths reads it (agentRefusalOutcome),
 // and why its words, which are logged and decide nothing. OutcomeAgentBusy is the agent's busy
@@ -2831,8 +2845,10 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // working while that turn runs, and recorded working only if it is ready; one left idle had that
 // turn's end come already, and the answer names the turn that end closed, so the task goes from
 // here as before rather than waiting a sweep for a turn that is over.
-func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read bool, o runtime.Outcome, why string) error {
+func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read bool, o runtime.Outcome, why string) (err error) {
 	m.answered(id)
+	// Last, so the answer's own take-back and marks are made whatever becomes of this write.
+	defer func() { err = errors.Join(err, m.answeredLive(ctx)) }()
 	p := m.claim.Pending
 	busy := o == runtime.OutcomeAgentBusy
 	record := busy && p.ConfirmedAt.IsZero()
@@ -2858,7 +2874,7 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read bool, o r
 		}
 		return nil
 	}
-	m.log.Info("supervise: a prompt whose wait for its turn ran out was answered with no turn; it was charged when the wait ran out, so nothing more is charged",
+	m.log.Info("supervise: a prompt whose wait for its turn ran out was answered with no turn; nothing more is charged",
 		"delivery", id, "outcome", string(o), "why", why)
 	if read {
 		return nil
@@ -2988,14 +3004,22 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 // the compaction held, whose frame was written and whose acknowledgement never came. Nothing says
 // Oh My Pi ever took it, so no prompt of the task came to nothing, and that is no outcome
 // question: the site names no outcome, asks the policy nothing and takes nothing back, and sends
-// the prompt again under its id. A busy answer the wait kept goes with that wait (answeredBusy),
+// the prompt again under its id. An answer the wait kept goes with that wait (Machine.waitAnswer),
 // so the wait the re-send arms reads none.
 //
-// For an acknowledged prompt the site names OutcomeNoTurnStarted, which the policy charges, unless
-// the agent said within the wait that it is in a turn of its own (answeredBusy, a refusal of this
-// same task that the one rule of the refusal paths read as OutcomeAgentBusy, agentRefusalOutcome):
-// then it names OutcomeAgentBusy, which the policy charges nothing. The wait carries no words of
-// its own, so nothing but that rule's reading of a refusal can make it busy.
+// An acknowledged prompt the agent answered within the wait is no silence (Machine.waitAnswer, a
+// refusal of this same task the shim replayed, read by the one rule of the refusal paths,
+// agentRefusalOutcome). A refusal of the work, whatever its outcome, a refusal with no code
+// among them, is the agent's answer: the prompt never ran, so it is no longer outstanding, and it
+// goes as any other answered failure goes, charged nothing and counted on the pending task
+// (promptAnswered). An answer that the agent is in a turn of its own (OutcomeAgentBusy) makes the
+// site name that outcome, which the policy charges nothing. Any other acknowledged prompt is the
+// agent's silence, and the site names OutcomeNoTurnStarted, which the policy charges. The wait
+// carries no words of its own, so nothing but that rule's reading of a refusal makes it an
+// answer. This site hands a prompt to the prompt budget (promptFailed, chargePrompt), as a turn a
+// provider error ended does with an outcome the policy waives (providerErrorTurnEnded): the
+// agent's silence is the one prompt failure that budget counts, and every answer to a prompt is
+// charged nothing where it lands (Budgets).
 //
 // Whether the task goes back read is this site's: the bound alone keeps the mark, since a turn
 // that has not started within it may still be this task's, starting late, and the agent read the
@@ -3016,13 +3040,21 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 		// from that record, without a second turn (shimwire's dedupe), so an acknowledgement then
 		// is the prompt Oh My Pi took, and a prompt it never had goes now.
 		m.answered(id)
-		m.answeredBusy = ""
+		m.waitAnswer = keptAnswer{}
 		m.log.Warn("supervise: the prompt the handoff held started no turn; it is sent again under its id, charged nothing",
 			"delivery", id)
 		return m.sendPending(ctx)
 	}
+	p, answer := m.claim.Pending, m.waitAnswer
+	answered := p != nil && answer.id == p.ID
+	if answered && answer.outcome != runtime.OutcomeAgentBusy {
+		m.log.Warn("supervise: acknowledged, and no turn started within the wait; the agent had refused the prompt, so the task waits for the next send",
+			"wait", m.deps.Timeouts.RPC, "delivery", p.ID, "outcome", string(answer.outcome), "error", answer.why)
+		m.answered(p.ID)
+		return m.promptAnswered(ctx, taskUnread, answer.why)
+	}
 	outcome, read := runtime.OutcomeNoTurnStarted, taskRead
-	if p := m.claim.Pending; p != nil && m.answeredBusy == p.ID {
+	if answered {
 		outcome, read = runtime.OutcomeAgentBusy, taskUnread
 	}
 	m.log.Warn("supervise: acknowledged, and no turn started within the wait", "wait", m.deps.Timeouts.RPC,

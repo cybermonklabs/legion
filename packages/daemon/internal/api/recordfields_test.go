@@ -157,6 +157,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			TurnFinished: true},
 		EndedWork: supervise.EndedWork{At: at.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
+		LeftEdits: supervise.LeftEdits{Commits: []string{"c45ff7e33d4899a2b99db849241fe128115021b0"}, At: at.Add(-20 * time.Minute),
+			Delivery: "outbox:41"},
 		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: at.Add(-time.Minute), TurnStartedAt: at.Add(-2 * time.Minute),

@@ -122,11 +122,11 @@ func (c *Conn) Shutdown(_ context.Context) error {
 	return c.failures["Shutdown"]
 }
 
-func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeout time.Duration) error {
+func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, timeout time.Duration) (runtime.Adoption, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.adoptions = append(c.adoptions, Adoption{Identity: id, Timeout: timeout})
-	return c.failures["AdoptWorkingCopy"]
+	return runtime.Adoption{}, c.failures["AdoptWorkingCopy"]
 }
 
 // Compact answers the daemon asking Oh My Pi to shorten the session, recording what it asked

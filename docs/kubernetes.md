@@ -312,7 +312,7 @@ Mount writable volumes below the profile directory, never at `/home/legion` itse
 everything the image-time probe proved lives under `HOME` — the CodeGraph plugin's link and the lock at `~/.omp/profiles/legion/plugins`, the natives at `~/.omp/natives`, the warm Go module cache at `~/go/pkg/mod/cache/download` — and a volume at `HOME` (an `emptyDir`, or a `HOME` volume under `readOnlyRootFilesystem`) shadows all of it silently.
 It is `linux/amd64` only: the OMP fork release has no linux/arm64 build.
 One commit ⇒ one image, with one exception:
-a fresh pod still loads the image's own copies of `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, from the commit, never from an npm release, but a role relaunched onto a newer plugin contract in a kept pod loads the release's published pair, installed from npm under the generation directory ("Contract discipline" below)
+a fresh pod still loads the image's own copies of `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, from the commit, never from an npm release, but a role relaunched onto a newer plugin contract in a kept pod, or relaunched into a kept pod built on another image than the configured one, loads the release's published pair, installed from npm under the generation directory ("Contract discipline" below)
 — what the image does take from npm is pinned:
 the CodeGraph CLI, the CodeGraph plugin, TypeScript and the two npm language servers all by the committed lockfiles under `packages/daemon/docker/` (`codegraph`, `omp-plugins`, `language-servers`).
 
@@ -4365,6 +4365,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
+20261128034924_claim_left_edits, of dispatch://INFRA-3916, adds `claims.left_edits`, null on every claim it finds, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it carries no way back, since nothing needs to be taken off, and a commit a stale adoption left edits in that the claim has not told yet is told after the roll-forward, in the claim's next task.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -4841,6 +4842,8 @@ A worker's turn is waited out:
 a stale claim in a turn is left running, its relaunch held until the turn ends (`holdStaleRelaunch` records it, `turnEnded` runs it back through `refreshPlugin`, both in `packages/daemon/internal/supervise/`), because a worker the lane asks nothing is exactly the worker whose unpushed turn the relaunch would throw away.
 That end asks the gate for a credit of its own, and takes the next sweep's where the gate is full.
 The hold logs `supervise: the process speaks another plugin contract; its relaunch waits for the agent's turn to end` once, and goes with the process it was made for if that process dies, is suspended or is retired first.
+A stale claim that is out of a turn is handed no task meanwhile, since the daemon refuses its every `legion` call: the task waits for the process the relaunch starts and goes at that process's ready (`staleRefusesClaim` and `sendPending` in `packages/daemon/internal/supervise/`).
+The first time that gate holds a delivery it logs `supervise: the process speaks another plugin contract, so this daemon refuses its every legion call; the task waits for the process the refresh lane's relaunch starts` at Info, naming `claim`, `delivery`, `pluginContract` (the contract the claim recorded) and `daemonApiVersion`, and it writes no line again for that delivery at the sweeps that hold it again; a restarted daemon writes it once more for the delivery it finds held.
 The admitted wake re-reads its claim before it launches: a claim no longer stale, or in a turn since it was admitted, is relaunched not at all, keeps its turn and whatever task it holds, gives its credit back, and is admitted again once it is idle.
 Each relaunch is made once, uncharged, through the moved-address relaunch path (`interrupted` → `launch`;
 the task of a turn in flight goes back to waiting and is delivered again, while a turn that was waited out has already retired its own finished task;
@@ -4866,6 +4869,13 @@ The install puts the release's plugins under the agent and nothing more, so a ke
 A controller pod whose other facets alone drifted is kept, and the pair is installed into it.
 An install failure ends the child before Oh My Pi starts;
 the launcher reports it gone, the daemon charges it as a launch failure, and the claim is retried until the budget ends it in a `worker-died`.
+
+A relaunch of a claim that records this daemon's contract, such as the relaunch after a death or after the prompt budget retired its process, carries no pair, since nothing of that claim is stale.
+Into a kept issue pod built on another image than `runtime.kubernetes.image`, such a relaunch installs the pair too, exactly as above (`relaunch`, `internal/runtime/sandbox/relaunch.go`, dispatch://INFRA-3916).
+That pod's image carries its own release's `pi-legion`, and a process that loaded it would register on that release's contract, be refused, and be relaunched once more, which ends its agent's background work again.
+No record holds the contract an image carries, so the image the pod was built on decides (`podImageDrift`):
+a pod on the configured image installs nothing, since the boot's image probe holds that image to the daemon's contract.
+A launch of a claim that has registered no session yet (`Spawn`) installs nothing there either, nor does a Claude Code launch (below), nor a daemon that knows no pair, and a pod the relaunch replaces comes up on the configured image with nothing installed.
 
 A role on Claude Code in a pod installs neither plugin.
 That install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm, and a phase worker `worker_backends` puts on `claude` loads neither:
@@ -6569,8 +6579,9 @@ Each row's check, and the fact a passing one reports:
 - `web-search`: `web_search` is registered and one `runSearchQuery` for `jujutsu version control` is answered by a provider
   — `web_search registered; provider <name> answered in <n> ms`.
 
-- `mcp`: every server the workspace's `.mcp.json` or `.omp/mcp.json` or the Oh My Pi profile configures is connected, measured through a second, short-lived client per server that the check disconnects (the session's own clients are the host's), so a server that admits one client reads open with its error
-  — `connected: <name> (<config file>), …`, or `no MCP server configured`.
+- `mcp`: every server the workspace's `.mcp.json` or `.omp/mcp.json` or the Oh My Pi profile configures is connected, measured through a second, short-lived client per server that the check disconnects (the session's own clients are the host's), so a server that admits one client reads open with its error;
+  a server configured `lazy: true`, which Oh My Pi connects only at its first tool call, passes unconnected while Oh My Pi has recorded no error for it, and one it recorded an error for (a configuration it refused) fails the row as a server that is not connected does
+  — `connected: <name> (<config file>), …`, then `; lazy: <name> (<config file>), …` for the lazy servers not connected (`lazy: <name> (<config file>), …` alone when no server is connected), or `no MCP server configured`.
 
 - `repository-extensions`: every `.omp/extensions/` module, `.omp/skills/*/SKILL.md` and `.claude/skills/*/SKILL.md` the workspace carries is among what Oh My Pi discovers
   — `discovered: <paths>`, or `the repository carries no .omp/extensions, .omp/skills or
@@ -12036,7 +12047,9 @@ Containers, in order:
    No argument grows with the prompt; a prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
-   the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
+   the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs `jj --ignore-working-copy metaedit --update-author` (or `jj --ignore-working-copy new` on a described `@`) in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
+   before that change and again after it, the shim reads with no snapshot whether the working copy is stale, and runs `jj workspace update-stale` on a stale one only;
+   that update leaves the edits that no jj command recorded in a divergent commit that is not checked out, which the answer names in its optional `editsCommits` (on `ok: false` too), the shim names in a line of its log, and the daemon records on the role's claim and names in a sentence of every prompt it sends that role until a turn takes one, so a task dropped or replaced before it reaches the agent leaves the sentence to the next;
    `ok: false` fails the delivery exactly as a failed `metaedit` does on tmux.
    The metaedit fills an empty author.
    `jj git push` refuses a commit with an empty author, but the push step of `legion jj` first gives such a commit the author of the role that its `Legion-Role` trailer names, where the step's rules let it (`docs/deployment.md`).

@@ -1,0 +1,58 @@
+# jj --ignore-working-copy debug object commit 1b463bd399359e31299da8484ebe822090bbb8b1 --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace whose conflicted working-copy commit another workspace re-authored with --ignore-working-copy
+Commit {
+    parents: [
+        CommitId(
+            "d1ef03a21788b9d4a48fd1bf6f46b2be3cd56ea6",
+        ),
+    ],
+    predecessors: [
+        CommitId(
+            "e39e725d511cf78419c9798f72b264fd373f0668",
+        ),
+    ],
+    root_tree: Conflicted(
+        [
+            TreeId(
+                "09fd040d5db469ff43138d500db567e4df6d7ec9",
+            ),
+            TreeId(
+                "48330953513ed59af77f677348a28cbab5ee657c",
+            ),
+            TreeId(
+                "fd5e7b0cf42d7d2fa6952b3f74b703e4995e3705",
+            ),
+        ],
+    ),
+    conflict_labels: Conflicted(
+        [
+            "vklvytuw d1ef03a2 \"the other side\" (rebase destination)",
+            "tznqmnlw 53ee9a2c \"the default branch\" (parents of rebased revision)",
+            "smxnurxn 967dd9b8 \"the workspace side\" (rebased revision)",
+        ],
+    ),
+    change_id: ChangeId(
+        "7d2c582c2075dacb84c200634996db8b",
+    ),
+    description: "the workspace side\n",
+    author: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807676000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    committer: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807676000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    secure_sig: None,
+}

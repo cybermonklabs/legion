@@ -118,7 +118,7 @@ on:
       - 'packages/daemon/internal/runtime/tmux/*'
       - 'packages/daemon/internal/runtime/workerbin/**'
       - 'packages/daemon/internal/sessionproxy/**'
-      - 'packages/daemon/internal/shim/**'
+      - 'packages/daemon/internal/shim/*'
       - 'packages/daemon/internal/shimwire/**'
       - 'packages/daemon/internal/stateevent/**'
       - 'packages/daemon/internal/store/*'

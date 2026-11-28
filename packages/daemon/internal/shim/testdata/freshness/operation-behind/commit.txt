@@ -1,0 +1,46 @@
+# jj --ignore-working-copy debug object commit b2a8a88087b6abaee274f8d84b16f08478b13125 --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace whose working-copy commit another workspace re-authored with --ignore-working-copy (tree kept)
+Commit {
+    parents: [
+        CommitId(
+            "26d6adffc655984861aa937d6db396d8a1a21136",
+        ),
+    ],
+    predecessors: [
+        CommitId(
+            "9e1bbf1bbf246a4d4c2bc3611d60987bbe9ff876",
+        ),
+    ],
+    root_tree: Resolved(
+        TreeId(
+            "48330953513ed59af77f677348a28cbab5ee657c",
+        ),
+    ),
+    conflict_labels: Resolved(
+        "",
+    ),
+    change_id: ChangeId(
+        "886a0d96f5b15e26bba469e453250b1b",
+    ),
+    description: "",
+    author: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807674000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    committer: Signature {
+        name: "implementer",
+        email: "implementer@example.test",
+        timestamp: Timestamp {
+            timestamp: MillisSinceEpoch(
+                1795807674000,
+            ),
+            tz_offset: 0,
+        },
+    },
+    secure_sig: None,
+}

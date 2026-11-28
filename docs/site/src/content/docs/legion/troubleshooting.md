@@ -1411,11 +1411,52 @@ Under tmux the `jj` in the state directory's `bin/` does, or the image's wrapper
 
 **The adoption sets the author of `@`.**
 Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
-The shim runs `jj log` on `@`, which snapshots the working copy.
-Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
+First the shim takes the workspace lock, `.jj/legion-workspace.lock` in the workspace, and holds it until its last jj command has ended.
+The shim's read of the work the workspace holds, which a pod update round and an idle release ask for, holds the same lock, so neither runs while the other does, in any role's shim of the workspace.
+A frame that finds the lock held writes one line to the shim's log, `the adoption waits for the workspace lock` or `the workspace read waits for the workspace lock`, and a wait that lasts the frame's whole budget refuses the frame, naming the lock and the wait.
+The daemon sends a refused adoption again at its next sweep, as it does every refused adoption.
+Next the shim waits until jj's own working-copy lock, `.jj/working_copy/working_copy.lock`, is free, so that a jj command that is taking a snapshot of the workspace commits first.
+A wait writes `the adoption waits for jj's working-copy lock` to the shim's log, and a wait that lasts the whole budget refuses the adoption, naming that lock and the wait.
+Then the shim reads whether the working copy is stale, without snapshotting it.
+It compares the operation and the tree that the working copy recorded (`jj debug working-copy`) with the repository's head operation and the tree of `@`, as jj's own check does.
+The working copy is fresh where the recorded operation is the head, or where the recorded tree is the tree of `@`, however far the head has moved past the recorded operation; it is stale where the two trees differ.
+Only on a working copy that this check reads as stale does the shim run `jj workspace update-stale`, which snapshots the working copy.
+Where the check cannot be read, because one of its jj commands failed or printed what the shim does not parse, the shim runs no update and refuses the adoption, and the daemon sends the task again at its next sweep.
+The refusal names the check, before or after the adoption's change, and the jj command, and the shim's log says the same in one line that starts `warning: the freshness check`.
+An update there could take the edits off the disk: after an adoption's change, and until the role's next jj command, `@` was rewritten after the operation that the working copy recorded, and jj finds that working copy fresh while its tree is kept.
+On a stale working copy, the update leaves the edits that no jj command recorded in a commit of `@`'s change that is not checked out: `@`'s change is then divergent, and those edits are no longer on disk.
+The shim names each such commit in its answer (`editsCommits`) and in one line of its log.
+The daemon records the commit on the role's claim, and every prompt it sends that role names the commit and says that the edits are there, until a turn takes one of those prompts.
+So a later send of the same task names it, and so does the next task when that task is dropped or replaced before any prompt of it reaches the agent.
+A role restores the edits from that commit, which `jj show <commit>` prints.
+Next the shim runs `jj --ignore-working-copy log` on `@`, which takes no snapshot either.
+Then it runs `jj --ignore-working-copy metaedit --update-author` on an `@` that has no description, or `jj --ignore-working-copy new` on an `@` that has one.
+These commands take no lock of jj's, which is why the shim takes the two locks above.
+After that change the shim waits for jj's working-copy lock again and reads again whether the working copy is stale.
+The adoption is done when the working copy reads fresh and `@` has no description and has the role's identity as its author, which both changes make.
+Otherwise a jj command wrote while the adoption ran.
+A jj command that another workspace ran can leave the working copy stale.
+A jj command that snapshots this workspace, and that loaded the repository before the change and committed after it, made an operation beside the change's, and jj merges the two at its next command.
+`@`'s change is then divergent, and `@` is one of its commits: the change's commit, while the working copy recorded the snapshot's tree, which reads stale; the snapshot's commit, which still has the author it had before; or, after `jj new`, the described commit.
+So the shim runs the adoption again (the update of a stale working copy, the read and the one change), at most three times in all within its budget, and then refuses, naming what its last check found.
+When the snapshot's commit already holds the edits, the update has nothing new to snapshot and takes the edits off the disk, so the shim names that commit as well.
+Where the merge left the commit that the adoption's change wrote beside `@`, that commit stays: it holds no edit of its own, since the metaedit's commit has the tree that `@` had before the adoption and the commit of `jj new` is empty, and the role can abandon it (`jj abandon <commit>`).
+The merge writes no git `HEAD`, so after `jj new` git's `HEAD` can still name the described commit as it was before the snapshot rewrote it.
+So when the change is done, the shim also reads the head operation (`jj --ignore-working-copy op log -n1`): where it is a merge, or an operation whose parent is not the head that the change started from, another jj command wrote beside the change.
+Then the shim runs `jj --ignore-working-copy metaedit --force-rewrite -r @`, which keeps the tree, the author and the description of `@` and has jj point git's `HEAD` at the parent of `@`, and checks once more, within the same three rounds.
+An adoption that no other jj command overlapped runs no such rewrite.
 The metaedit fills an author that is empty: an `@` that jj makes with no identity has an empty author.
 `jj git push` refuses such a commit, unless the push step first gives it the author of the role that its `Legion-Role` trailer names.
 An adoption can also make one role the author of edits that another role left in `@`.
+
+**A role's own jj command can still overlap the adoption.**
+A jj command that the role runs itself, in a background job or a subagent's shell, can load the repository before the adoption's change and take jj's working-copy lock only after the shim's last check.
+It then commits its snapshot beside the change after the adoption has answered, and nothing that the adoption reads can see it.
+The role's next jj command reports `The working copy is stale`, or `jj log` shows `@` as divergent.
+For a stale working copy, the role runs `jj workspace update-stale`.
+The edits that were on disk are then in the commit of `@`'s change that is not `@`: `jj log -r @ -T change_id` prints the change id, `jj log -r 'change_id(<id>)'` lists both commits, and `jj show <commit>` prints the edits.
+For a divergent `@` that reads fresh, the edits are in `@`, and the other commit is the adoption's change, which the role reads with `jj show <commit>` and can abandon.
+The daemon's own read of the workspace no longer causes this, since it holds the workspace lock that the adoption holds.
 
 **Which tasks adopt the working copy.**
 The daemon adopts only for a task that names a phase, and only for the role that owns that phase:
@@ -1453,7 +1494,7 @@ Notices, hooks, merge-forward messages and phase reminders reach the agent throu
 The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
 It sends the task when that turn ends, and the adoption runs then.
 
-**Four lines in the daemon's log show what each adoption did.**
+**Seven lines in the daemon's log show what each adoption did.**
 Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
 So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
 Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
@@ -1461,7 +1502,8 @@ Read the log of the daemon's pod under Kubernetes, or the output of `legion star
 ```sh
 kubectl -n <namespace> logs <the daemon's pod> > daemon.log
 grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
-  -e 'rather than adopt the working copy' -e 'refused to adopt the working copy' \
+  -e 'rather than adopt the working copy' -e 'waited more than 10 minutes' \
+  -e 'left the edits no jj command had recorded' -e 'refused to adopt the working copy' \
   -e 'lost to the transport'
 ```
 
@@ -1473,13 +1515,23 @@ A search that finds no line for a time before the first line does not show that 
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
   It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and, as `took` in nanoseconds, how long the daemon's call to adopt took: the daemon's own check of where the claim's process runs, then the round trip to the shim and back, with the shim's own work inside it.
+  Where the shim brought a stale working copy up to date, it also names `editsCommits`, the commits that hold the edits no jj command had recorded.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
   `inTurn` names the claim whose turn holds it.
+  A hold that lasts more than 10 minutes also writes `supervise: a phase task has waited more than 10 minutes behind another claim of its issue in a turn; the issue's architect is told` at Warn, once per hold, with the `delivery`, its `phase`, the `issue`, `inTurn`, `heldSince` and `held`, and the issue's architect gets one `worker-stalled` notice that names the held claim, its task and the claim in the turn.
+
+- `supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it` is an adoption whose update left edits in a commit.
+  It names the task under its new id as `delivery`, its old id as `was`, the `issue` and `editsCommits`.
+  The line is written before the adoption's own outcome, so a refused adoption writes it too.
+  The claim keeps the commit until a turn takes a prompt that names it, so the next prompt that the claim is sent names the commit, whichever task that prompt carries.
+  When the task has stopped being that send's task during the adoption, the daemon writes `supervise: the adoption left the edits no jj command had recorded in a commit, and the task it was made for is no longer this send's; the claim's next prompt names the commit` at Warn instead.
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
-  The task stays queued, and the refusal counts against the prompt budget of the claim.
+  The task stays queued and is sent again at the next sweep.
+  The refusal costs the claim no prompt budget, because the shim answered, and the pending task counts it in `sendFailures`.
+  The shim's words name the workspace lock or jj's working-copy lock where its wait for that lock lasted the whole budget, they say that the adoption ran its change three times where jj commands kept writing while it ran, and they name the freshness check and its jj command where that check could not be read.
 
 - `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
   When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon asked over the claim's connection, and the call did not succeed.
@@ -1493,6 +1545,27 @@ On a daemon that carries the rule, every adoption line names a phase, and its `c
 
 A daemon from a release before `legion-v20.5.0` (cybermonklabs/legion#2539) adopts the working copy before every task that it sends, and it holds no task for the turn of another role.
 On such a daemon, an update round or a message wake can take the author of the commit that the implementer works on.
+
+**Six lines in the shim's own log show the adoption's steps.**
+The shim writes them to the role's log: the role's pane under tmux, and under Kubernetes the issue pod's `roles` container, whose lines for one role start `<role>: `.
+The shim's log has no times, so read where each line falls among the lines around it:
+
+```sh
+kubectl -n <namespace> logs <the issue's pod> -c roles | grep '^<role>: ' > role.log
+grep -e 'waits for the workspace lock' -e "waits for jj's working-copy lock" \
+  -e 'warning: the freshness check' -e 'the working copy is stale; bringing it up to date' \
+  -e 'left the edits that no jj command had recorded' role.log
+```
+
+- `[worker-shim] the adoption waits for the workspace lock <path>, …` and `[worker-shim] the workspace read waits for the workspace lock <path>, …` are a frame that found the workspace lock held, by another adoption or workspace read of the workspace, and waited for it, at most for the time the line names.
+
+- `[worker-shim] the adoption waits for jj's working-copy lock <path>, which a jj command that snapshots the workspace holds, <where>: …` is an adoption that waited for a snapshot to commit, before its first jj command or before its check after its change.
+
+- `[worker-shim] warning: the freshness check …` is a check, before or after the adoption's change, that could not read what jj printed, or one of whose jj commands failed: the adoption runs no `jj workspace update-stale` and refuses, and the daemon sends the task again at its next sweep.
+
+- `[worker-shim] the working copy is stale; bringing it up to date with jj workspace update-stale` is an update that the check asked for, on a working copy that it read as stale.
+
+- `[worker-shim] bringing the stale working copy up to date left the edits that no jj command had recorded in commit <commit>: they are there, and no longer on disk` names each commit of the answer's `editsCommits`.
 
 **Other paths change an author, and no adoption line shows them.**
 
@@ -1598,10 +1671,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   agent never registered` for an agent that never registered). A prompt retirement waits the same
   way, its error `retire <claim> after <n> prompt failures: launch claim <claim>: bind work of tree
   <tree>: tree cleanup is reserved`, on the Error line of the prompt failure that reached the limit:
-  `supervise: timer` with `timer=turn` for a prompt that started no turn, `supervise: prompt
-  outcome` for a prompt the agent refused, and `supervise: an event failed` with
-  `event=supervise.StreamLateRefusal` for a late refusal. Nothing to do: the lines stop once the
-  tree has closed.
+  `supervise: timer` with `timer=turn`, a prompt that started no turn and drew no answer, the one
+  prompt failure that is charged. Nothing to do: the lines stop once the tree has closed.
 - **`supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the
   claim for the tree's close`** means the tree's cleanup was reserved while a retirement was
   stopping the process. The claim is suspended by the daemon with no process, and the tree's close

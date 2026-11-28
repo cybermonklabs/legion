@@ -1,0 +1,4 @@
+# jj --ignore-working-copy debug working-copy --color=never, printed by jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9 in a workspace just after a snapshot, its operation the repository's head
+Type: "local"
+Current operation: OperationId("0f25509e636d9fb28a9b16af4a0e55596c7a43cb53d15d0b07ec4da405cb7946155bdfa642b79238e34d2f93d8f59a2a25a17a2a5304ad09afb8a57e81e4a3e2")
+Current tree: MergedTree { tree_ids: Resolved(TreeId("48330953513ed59af77f677348a28cbab5ee657c")), labels: Unlabeled, .. }

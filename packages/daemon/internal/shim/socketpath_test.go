@@ -55,7 +55,7 @@ func roleTempDir(t *testing.T) string {
 // test's own name.
 func TestASocketPathBindsWhereTMPDIRIsARoleContainersScratch(t *testing.T) {
 	t.Setenv("TMPDIR", roleTempDir(t))
-	t.Run("AdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon", func(t *testing.T) {
+	t.Run("AdoptWorkingCopyBringsAStaleWorkspaceUpToDateAndNamesTheCommitThatHoldsItsEdits", func(t *testing.T) {
 		path := socketPath(t)
 		listener, err := net.Listen("unix", path)
 		if err != nil {

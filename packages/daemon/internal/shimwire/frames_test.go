@@ -292,6 +292,46 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 	}
 }
 
+// The adoption's answer names each commit in which bringing a stale working copy up to date left
+// the edits that no jj command had recorded (EditsCommits), on an answer that succeeds and on one
+// that refuses. The field is optional both ways, so a shim and a daemon of different releases still
+// read each other's frames: a frame with the field round-trips it, and a frame a shim of an earlier
+// release writes with no field decodes to no commit. A daemon of an earlier release decodes the
+// new frame with a plain json.Unmarshal (decodeInto), which ignores the field.
+func TestAnAdoptWorkingCopyResultCarriesItsEditsCommitsAndAnOlderFrameReadsAsNone(t *testing.T) {
+	const commit = "c45ff7e33d4899a2b99db849241fe128115021b0"
+	for _, tc := range []struct {
+		name  string
+		line  string
+		frame AdoptWorkingCopyResult
+	}{
+		{"an adoption that succeeded and left the edits in a commit",
+			`{"type":"adopt-working-copy-result","id":"r4","ok":true,"editsCommits":["` + commit + `"]}`,
+			AdoptWorkingCopyResult{ID: "r4", OK: true, EditsCommits: []string{commit}}},
+		{"an adoption refused after the update left the edits in a commit",
+			`{"type":"adopt-working-copy-result","id":"r4","ok":false,"error":"Command failed (exit 1): jj metaedit","editsCommits":["` + commit + `"]}`,
+			AdoptWorkingCopyResult{ID: "r4", Error: "Command failed (exit 1): jj metaedit", EditsCommits: []string{commit}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decoded, err := Decode([]byte(tc.line))
+			if err != nil || !reflect.DeepEqual(decoded, tc.frame) {
+				t.Fatalf("Decode(%s) = %#v, %v; want %#v", tc.line, decoded, err, tc.frame)
+			}
+			if encoded, err := json.Marshal(tc.frame); err != nil || string(encoded) != tc.line {
+				t.Fatalf("Marshal(%#v) = %s, %v; want %s", tc.frame, encoded, err, tc.line)
+			}
+		})
+	}
+
+	// The frame a shim of an earlier release writes, with no field.
+	const olderLine = `{"type":"adopt-working-copy-result","id":"r4","ok":true}`
+	decoded, err := Decode([]byte(olderLine))
+	result, ok := decoded.(AdoptWorkingCopyResult)
+	if err != nil || !ok || !result.OK || result.EditsCommits != nil {
+		t.Fatalf("Decode(%s) = %#v, %v; want a successful adoption that names no commit", olderLine, decoded, err)
+	}
+}
+
 // The prompt_result lines the pinned Oh My Pi actually writes, with the members, and except where
 // a case says otherwise their order, as its own schema declares them (`PromptResultEvent { type,
 // id?, agentInvoked, status, error?: PromptError, sessionSettled }`, `PromptError { message,

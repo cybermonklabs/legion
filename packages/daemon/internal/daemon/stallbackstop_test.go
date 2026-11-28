@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -1561,4 +1562,56 @@ func stallNamesASubject(text string) (string, string) {
 func rigClaim() supervise.Claim {
 	return supervise.Claim{Token: "legion-legion-legion-225-implementer", Project: "legion", Tree: "LEGION-225",
 		Issue: "LEGION-225", Role: claim.RoleImplementer, State: supervise.StateWorking}
+}
+
+// A pending task whose sends keep failing with an answer is told to the architect that owns the
+// claim's notices as a `worker-stalled` notice carrying the machine's reason, through the stall
+// notice's own rows (promptAnswersReached, enqueueStallNotice).
+func TestATaskThatKeepsFailingWithAnAnswerIsToldAsAWorkerStalledNotice(t *testing.T) {
+	t.Parallel()
+	rig := newBackstopRig(t)
+	c := rig.claim(claim.RoleImplementer, "LEGION-219", time.Minute, false)
+	const reason = "The implementer claim did not get its task: 3 sends of this task have failed with an answer since it was queued or a turn last took it."
+
+	rig.s.promptAnswersReached(c, reason)
+
+	notices := rig.awaitNotices("LEGION-219", 1)
+	if n := notices[0]; n.Kind != stallBackstopNotice || n.Role != claim.RoleImplementer || n.Reason != reason {
+		t.Fatalf("notice = %+v, want one %s notice of the implementer carrying the machine's reason", n, stallBackstopNotice)
+	}
+}
+
+// A phase task held past supervise's bound behind another claim of its issue in a turn is told to
+// the architect that owns the held claim's notices as one `worker-stalled` notice, whose reason
+// names the held claim, its task and the claim in the turn (issueHoldReached, enqueueStallNotice).
+// Where the claim in the turn is the issue's architect, the notice goes to it all the same,
+// naming its own claim, since its turn is what holds the task.
+func TestAHoldOverTenMinutesIsToldAsAWorkerStalledNotice(t *testing.T) {
+	t.Parallel()
+	for _, inTurn := range []claim.Role{claim.RoleImplementer, claim.RoleArchitect} {
+		t.Run("in a turn: the "+string(inTurn), func(t *testing.T) {
+			t.Parallel()
+			rig := newBackstopRig(t)
+			tester := rig.claim(claim.RoleTester, "LEGION-219", time.Minute, false)
+			tester.State = supervise.StateReady
+			tester.Pending = &supervise.Delivery{ID: "outbox:31", Task: "test the branch", Phase: phase.Testing, Generation: 5}
+			turning := rig.claim(inTurn, "LEGION-219", time.Minute, false)
+
+			rig.s.issueHoldReached(tester, turning.Token, 10*time.Minute+time.Second)
+
+			notices := rig.awaitNotices("LEGION-219", 1)
+			if rows := rig.written("LEGION-219"); len(rows) != 1 {
+				t.Fatalf("rows = %+v, want the one notice for the issue's architect", rows)
+			}
+			n := notices[0]
+			if n.Kind != stallBackstopNotice || n.Role != claim.RoleTester {
+				t.Fatalf("notice = %+v, want one %s notice of the tester", n, stallBackstopNotice)
+			}
+			for _, want := range []string{string(tester.Token), "testing task outbox:31", string(turning.Token), "10m1s"} {
+				if !strings.Contains(n.Reason, want) {
+					t.Errorf("the notice's reason %q does not name %q", n.Reason, want)
+				}
+			}
+		})
+	}
 }
