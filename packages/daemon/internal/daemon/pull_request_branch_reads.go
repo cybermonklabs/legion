@@ -18,11 +18,12 @@ import (
 
 // pullRequestBranchRead runs the read of the branches of an issue's tasks
 // (record.PullRequestBranchRead, dispatch://INFRA-5910 D5, R2 of dispatch://INFRA-4091): the close
-// of the last open pull request of the issue's set queued it (workflow's closed), and its fact
-// decides that close (intake.PullRequestBranchReadDone, workflow's pullRequestBranchRead). The
-// start's read looks a task's branch up only where the record holds no open or merged pull request
-// for that task (readIssuesAtStart), so this read is what finds a pull request an earlier daemon's
-// record lost, or whose opened the daemon never got, before that close is told.
+// of the last open pull request of the issue's set that held its close queued it (workflow's
+// closed), and its fact decides that close (intake.PullRequestBranchReadDone, workflow's
+// pullRequestBranchRead). The start's read looks a task's branch up only where the record holds no
+// open or merged pull request for that task (readIssuesAtStart), so this read is what finds a pull
+// request an earlier daemon's record lost, or whose opened the daemon never got, before that close
+// is told.
 //
 // Each attempt first reads the issue's record, and finishes the row without reading GitHub where
 // the record holds no such issue, holds it at another generation than the row's, or names no GitHub

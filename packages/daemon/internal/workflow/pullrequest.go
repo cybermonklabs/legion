@@ -1023,21 +1023,24 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 // one does (merged): the read its link queued may have asked GitHub before the close.
 //
 // What the architect is told turns on the rest of the issue's set (dispatch://INFRA-5910 D5,
-// decisions 9 and 12). While another pull request of the set is open (openOthers: an open one, or
-// a link that holds the close with no open row, its read owed or Legion unable to read it), the
-// close moves nothing and is told in a notice of its own kind, `pr-closed-others-open`, which names
-// each of them (tellOthersOpen): `pr-closed-unmerged` says that the issue's pull request closed,
-// which is false then. Where none is, the close was the last open one the record holds, and it
-// decides nothing more in its own transaction: it queues the daemon's read from GitHub of the open
-// pull requests on each branch a task of the issue holds (queueBranchRead,
+// decisions 9 and 12). While another pull request that holds the close is open (openOthers: a link
+// of setHolds, open or with no open row, its read owed or Legion unable to read it, or the own pull
+// request of a task, open and not merged), the close moves nothing and is told in a notice of its
+// own kind, `pr-closed-others-open`, which names each pull request of the set still open
+// (tellOthersOpen): `pr-closed-unmerged` says that the issue's pull request closed, which is false
+// then. Where none is, the close was the last open one the record holds that holds the close,
+// whatever other pull request of a task that the issue does not link stands open, which holds
+// nothing since the close of the task pull requests reaches it at the issue's last merge (D4), and
+// it decides nothing more in its own transaction: it queues the daemon's read from GitHub of the
+// open pull requests on each branch a task of the issue holds (queueBranchRead,
 // record.PullRequestBranchRead), and the read's end records each it finds open and then decides
 // (pullRequestBranchRead). A record an earlier daemon wrote can hold a second pull request of a
 // branch in the place of the first, which is still open, an opened the daemon never got leaves an
 // open one unknown, and the start's read looks a task's branch up only where the record holds no
 // open or merged pull request for that task (the daemon's readIssuesAtStart), so without the read
 // this close would tell the architect that the issue's pull request closed, or close the issue,
-// while a pull request of it is open (R2 of dispatch://INFRA-4091). A pull request left closed
-// holds nothing (setHolds).
+// while a pull request of it that holds the close is open (R2 of dispatch://INFRA-4091). A pull
+// request left closed holds nothing (setHolds).
 func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestClosed) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
@@ -1062,11 +1065,11 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err != nil || scope == nil {
 		return intake.Result{}, err
 	}
-	others, err := e.openOthers(ctx, tx, scope.issue.Key, *pr)
+	others, held, err := e.openOthers(ctx, tx, scope.issue, *pr)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if len(others) > 0 {
+	if held {
 		return intake.Result{}, e.tellOthersOpen(ctx, tx, scope.issue, prName(pr.Repo, pr.Number), others)
 	}
 	return intake.Result{}, e.queueBranchRead(ctx, tx, scope.issue, *pr)
@@ -1074,10 +1077,11 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 
 // tellOthersOpen tells the architect of issue that the pull request named closed, of its set, was
 // closed without a merge while others, the pull requests of the set still open (openOthers), stand
-// open: a notice of its own kind, `pr-closed-others-open`, which names each of them, and the one
-// thing that close does (dispatch://INFRA-5910 D5). The close of a pull request writes it where
-// another of the set is open (closed), and the end of the read of the branches of the issue's
-// tasks writes it where the read found one open, or one opened since (pullRequestBranchRead).
+// open, one of them at least holding the close: a notice of its own kind, `pr-closed-others-open`,
+// which names each of them, and the one thing that close does (dispatch://INFRA-5910 D5). The close
+// of a pull request writes it where another that holds the close is open (closed), and the end of
+// the read of the branches of the issue's tasks writes it where the read found one open that holds
+// the close, or one opened since (pullRequestBranchRead).
 func (e *Engine) tellOthersOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, closed string, others []string) error {
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-closed-others-open", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s of %s was closed without a merge while %s was in %s. These pull requests of %s are still open: %s. "+
@@ -1086,12 +1090,13 @@ func (e *Engine) tellOthersOpen(ctx context.Context, tx pgx.Tx, issue record.Iss
 }
 
 // queueBranchRead queues, in the transaction of the close of closed, the last open pull request of
-// issue's set, closed without a merge, the daemon's read of the open pull requests on each branch a
-// task of the issue holds (record.PullRequestBranchRead, at the issue's generation, of the
-// branches taskBranches names), and decides nothing of the close: the read's end decides it
-// (pullRequestBranchRead). The read is an outbox row, as every effect of a fact is, so the close
-// is acknowledged without waiting for GitHub and a restart before the read loses nothing. An issue
-// with no branch to read (taskBranches) decides at once (lastClosed): no read is left to wait for.
+// issue's set that held its close (openOthers), closed without a merge, the daemon's read of the
+// open pull requests on each branch a task of the issue holds (record.PullRequestBranchRead, at the
+// issue's generation, of the branches taskBranches names), and decides nothing of the close: the
+// read's end decides it (pullRequestBranchRead). The read is an outbox row, as every effect of a
+// fact is, so the close is acknowledged without waiting for GitHub and a restart before the read
+// loses nothing. An issue with no branch to read (taskBranches) decides at once (lastClosed): no
+// read is left to wait for.
 func (e *Engine) queueBranchRead(ctx context.Context, tx pgx.Tx, issue record.Issue, closed record.PullRequest) error {
 	branches, err := e.taskBranches(ctx, tx, issue)
 	if err != nil {
@@ -1142,12 +1147,12 @@ func (e *Engine) taskBranches(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // pullRequestBranchRead applies the end of the daemon's read of the branches of an issue's tasks,
-// which the close of the last open pull request of its set queued (intake.PullRequestBranchReadDone,
-// record.PullRequestBranchRead; dispatch://INFRA-5910 D5, R2 of dispatch://INFRA-4091). Each pull
-// request the read found open is recorded first, as its opened would record it
-// (pullRequestOpened), a reopen where the record holds it closed: the rule of the issue a branch is
-// of (issueForBranch), the fork rule, the late-event fences and the cleared clock of a generation
-// hold each of them as they hold a webhook's.
+// which the close of the last open pull request of its set that held its close queued
+// (intake.PullRequestBranchReadDone, record.PullRequestBranchRead; dispatch://INFRA-5910 D5, R2 of
+// dispatch://INFRA-4091). Each pull request the read found open is recorded first, as its opened
+// would record it (pullRequestOpened), a reopen where the record holds it closed: the rule of the
+// issue a branch is of (issueForBranch), the fork rule, the late-event fences and the cleared clock
+// of a generation hold each of them as they hold a webhook's.
 //
 // The read ran outside any transaction, so the close is then judged by the record as it stands
 // now, and a fact for an issue that has moved on decides nothing that is no longer true, which is
@@ -1155,14 +1160,17 @@ func (e *Engine) taskBranches(ctx context.Context, tx pgx.Tx, issue record.Issue
 // new run dropped the closed pull request; it holds it out of the workflow (InWorkflow), closed or
 // handed back, which has no close left to judge and whose architect decides nothing more of its
 // work; or it no longer holds that pull request closed for the issue, reopened or merged since, so
-// the close is no longer true. Otherwise, where a pull request of the set is open now (openOthers:
-// one the read recorded, one an opened recorded since the close, or a link that holds the close),
-// the architect is told the close in `pr-closed-others-open`, which names each of them
-// (tellOthersOpen), no `pr-closed-unmerged` is sent, and nothing closes or moves. Where none is,
-// the close is decided as the shipped daemon decided it (lastClosed). A read that failed on a
-// branch (Unread), after its row's attempts, decides by what the other branches showed, as if the
-// failed one held none open, and is logged: the close is not left untold for as long as GitHub
-// fails the read.
+// the close is no longer true. Otherwise, where a pull request that holds the close is open now
+// (openOthers: one the read recorded, one an opened recorded since the close, or a link that holds
+// the close; a link of setHolds, or the own pull request of a task, open and not merged), the
+// architect is told the close in `pr-closed-others-open`, which names each pull request of the set
+// still open (tellOthersOpen), no `pr-closed-unmerged` is sent, and nothing closes or moves. Where
+// none is, the close is decided as the shipped daemon decided it (lastClosed), and the read found
+// only pull requests that hold nothing, if any: another pull request of a task that the issue does
+// not link, which the close of the task pull requests reaches at the issue's last merge (D4). A
+// read that failed on a branch (Unread), after its row's attempts, decides by what the other
+// branches showed, as if the failed one held none open, and is logged: the close is not left
+// untold for as long as GitHub fails the read.
 func (e *Engine) pullRequestBranchRead(ctx context.Context, tx pgx.Tx, fact intake.PullRequestBranchReadDone) (intake.Result, error) {
 	for _, opened := range fact.Open {
 		recorded, err := e.pullRequestRow(ctx, tx, opened.Repo, opened.Number)
@@ -1201,11 +1209,11 @@ func (e *Engine) pullRequestBranchRead(ctx context.Context, tx pgx.Tx, fact inta
 		return intake.Result{}, err
 	}
 	name := prName(closed.Repo, closed.Number)
-	others, err := e.openOthers(ctx, tx, issue.Key, *closed)
+	others, held, err := e.openOthers(ctx, tx, scope.issue, *closed)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if len(others) > 0 {
+	if held {
 		return intake.Result{}, e.tellOthersOpen(ctx, tx, scope.issue, name, others)
 	}
 	if fact.Unread != "" {
@@ -1215,15 +1223,16 @@ func (e *Engine) pullRequestBranchRead(ctx context.Context, tx pgx.Tx, fact inta
 	return intake.Result{}, e.lastClosed(ctx, tx, scope.issue, name)
 }
 
-// lastClosed decides the close of the pull request named closed, the last open one of issue's set,
-// closed without a merge, where no pull request of the set is open (dispatch://INFRA-5910 D5,
-// decisions 9 and 12), as the shipped daemon decided it: the issue's close is judged again
-// (judgeClose), since another pull request merged may end the issue at this close. Where that judge
-// does not close it because its close waits for the issues beneath, the architect is told that wait
-// (waitingForTree), as a merge whose close waits tells it. Where it does not close it because no
-// merge of the issue's task is in hand — the closed pull request was a task's own, or nothing
-// merged — the architect gets `pr-closed-unmerged`, whose words are then true, naming the phase
-// issue, the copy of the issue read for the closed pull request's task, stands in.
+// lastClosed decides the close of the pull request named closed, the last open one of issue's set
+// that held its close, closed without a merge, where no pull request that holds the close is open
+// (dispatch://INFRA-5910 D5, decisions 9 and 12), as the shipped daemon decided it: the issue's
+// close is judged again (judgeClose), since another pull request merged may end the issue at this
+// close. Where that judge does not close it because its close waits for the issues beneath, the
+// architect is told that wait (waitingForTree), as a merge whose close waits tells it. Where it
+// does not close it because no merge of the issue's task is in hand — the closed pull request was a
+// task's own, or nothing merged — the architect gets `pr-closed-unmerged`, whose words are then
+// true, naming the phase issue, the copy of the issue read for the closed pull request's task,
+// stands in.
 func (e *Engine) lastClosed(ctx context.Context, tx pgx.Tx, issue record.Issue, closed string) error {
 	judged, err := e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("its last open pull request %s closed without a merge", closed))
 	switch {
@@ -1241,32 +1250,59 @@ func (e *Engine) lastClosed(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // owner/name#number, closed being one of the set that has just closed: each open pull request of
 // the set (pullRequestSet), in its order, and then each link that holds the issue's close with no
 // open row (setHolds), which counts as open: its read still owed, or Legion unable to read it,
-// which its name says.
-func (e *Engine) openOthers(ctx context.Context, tx pgx.Tx, issue string, closed record.PullRequest) ([]string, error) {
-	set, err := e.pullRequestSet(ctx, tx, issue)
+// which its name says. held says whether one of them holds the close (dispatch://INFRA-5910 D4,
+// D5): a link with no open row does, and an open one does where holdsOpen says so. An open pull
+// request of a task that the issue does not link and that is not the task's own is named, and holds
+// nothing.
+func (e *Engine) openOthers(ctx context.Context, tx pgx.Tx, issue record.Issue, closed record.PullRequest) (others []string, held bool, err error) {
+	set, err := e.pullRequestSet(ctx, tx, issue.Key)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var others []string
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue.Key)
+	if err != nil {
+		return nil, false, err
+	}
 	for _, pr := range set {
-		if pr.State == record.PullRequestOpen && (pr.Number != closed.Number || !strings.EqualFold(pr.Repo, closed.Repo)) {
-			others = append(others, prName(pr.Repo, pr.Number))
+		if pr.State != record.PullRequestOpen || (pr.Number == closed.Number && strings.EqualFold(pr.Repo, closed.Repo)) {
+			continue
+		}
+		others = append(others, prName(pr.Repo, pr.Number))
+		if !held {
+			if held, err = e.holdsOpen(ctx, tx, issue, holds, pr); err != nil {
+				return nil, false, err
+			}
 		}
 	}
-	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	for _, held := range holds {
+	for _, hold := range holds {
 		switch {
-		case held.row != nil:
-		case held.link.Refused != "":
-			others = append(others, prName(held.link.Repo, held.link.Number)+" (Legion cannot read it)")
+		case hold.row != nil:
+			continue
+		case hold.link.Refused != "":
+			others = append(others, prName(hold.link.Repo, hold.link.Number)+" (Legion cannot read it)")
 		default:
-			others = append(others, prName(held.link.Repo, held.link.Number)+" (Legion has not read it yet)")
+			others = append(others, prName(hold.link.Repo, hold.link.Number)+" (Legion has not read it yet)")
 		}
+		held = true
 	}
-	return others, nil
+	return others, held, nil
+}
+
+// holdsOpen says whether pr, an open pull request of issue's set, holds the issue's close
+// (dispatch://INFRA-5910 D4, D5): it is a link of holds, the links that hold the close (setHolds),
+// or it is the own pull request of its task (ownOfTask, the record's rule of decision 5), open and
+// so not merged, whose merge is the task's own. Another pull request of a task, which the issue
+// does not link, holds nothing: the close of the task pull requests reaches it at the issue's last
+// merge (taskCloseReaches).
+func (e *Engine) holdsOpen(ctx context.Context, tx pgx.Tx, issue record.Issue, holds []heldLink, pr record.PullRequest) (bool, error) {
+	if slices.ContainsFunc(holds, func(held heldLink) bool { return held.row != nil && e.samePullRequest(*held.row, pr) }) {
+		return true, nil
+	}
+	s, ok, err := e.scope(ctx, tx, issue, pr.Task)
+	if err != nil || !ok {
+		return false, err
+	}
+	return e.ownOfTask(ctx, tx, s, pr)
 }
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge

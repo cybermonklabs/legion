@@ -11,10 +11,12 @@ body: |-
     request that holds the close (`pr-holds-close`), with the way out, remove its link or have it
     merged, and an issue whose tasks are all done with no merge in hand is held for
     `pull-requests`. At the last merge Legion closes the other open pull requests of the issue's
-    tasks. A pull request closed without a merge while another is open is told as
-    `pr-closed-others-open` and moves nothing; the close of the last open one first reads each
-    branch of the issue's tasks on GitHub again, and sends `pr-closed-unmerged` only where that
-    read finds no other open pull request (INFRA-4091). A link to a fork's pull request, or to a
+    tasks. A pull request closed without a merge while another that holds the close is open (one
+    the issue links, or a task's own) is told as `pr-closed-others-open` and moves nothing; the
+    close of the last one that holds the close first reads each branch of the issue's tasks on
+    GitHub again, judges the close again where another pull request merged, and sends
+    `pr-closed-unmerged` only where that read finds no other open pull request that holds the close
+    and nothing merged closes the issue (INFRA-4091). A link to a fork's pull request, or to a
     pull request another issue holds, is refused (`pr-link-refused`). The reviewer reviews each
     open pull request of its task at its own head, the merger merges each one its review and its
     checks allow, and each merge has its own production check. `read_record` and

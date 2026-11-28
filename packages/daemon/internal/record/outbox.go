@@ -117,8 +117,8 @@ const (
 	// Dispatch, in its own repository (PullRequestLinkRead).
 	OutboxKindPullRequestLinkRead OutboxKind = "pull_request_link_read"
 	// OutboxKindPullRequestBranchRead reads from GitHub the open pull requests on each branch a
-	// task of the issue holds, before the close of the last open pull request of the issue's set is
-	// decided (PullRequestBranchRead).
+	// task of the issue holds, before the close of the last open pull request of the issue's set
+	// that held its close is decided (PullRequestBranchRead).
 	OutboxKindPullRequestBranchRead OutboxKind = "pull_request_branch_read"
 )
 
@@ -2968,12 +2968,13 @@ func (PullRequestLinkRead) OutboxKind() OutboxKind { return OutboxKindPullReques
 // PullRequestBranchRead is the daemon's read from GitHub, in the row's issue's repository and with
 // the implement App, of the open pull requests on each branch a task of the issue holds there
 // (Branches), as the per-issue read lists a task's branch (dispatch://INFRA-5910 D5). The workflow
-// queues it where Number of Repo, the last open pull request of the issue's set, closed without a
-// merge at the issue's generation Generation (the workflow's closed), and decides nothing of that
-// close in that transaction: a record an earlier daemon wrote can hold a second pull request of a
-// branch in the place of the first, which is still open, and an opened the daemon never got leaves
-// an open one unknown, so the close of the last recorded one could tell the architect that the
-// issue's pull request closed, or close the issue, while another is open. The read's fact
+// queues it where Number of Repo, the last open pull request of the issue's set that held its close
+// (a link that holds it, or a task's own pull request), closed without a merge at the issue's
+// generation Generation (the workflow's closed), and decides nothing of that close in that
+// transaction: a record an earlier daemon wrote can hold a second pull request of a branch in the
+// place of the first, which is still open, and an opened the daemon never got leaves an open one
+// unknown, so the close of the last recorded one could tell the architect that the issue's pull
+// request closed, or close the issue, while another that holds the close is open. The read's fact
 // (intake.PullRequestBranchReadDone) records each pull request it finds open as its opened would
 // and then decides the close (the workflow's pullRequestBranchRead). It is a durable row for the
 // reason MergeQueueRead is: a restart between the close and the read loses nothing.
@@ -3979,15 +3980,18 @@ func designReview(decision DecisionKind) bool {
 // `owner/name#number`. The workflow writes all three.
 //
 // `pr-closed-others-open` is a pull request of the issue closed without a merge while another of
-// its set is still open (D5): the close moves nothing, and the reason names the closed one and each
-// pull request of the set still open, a link whose read is owed or that Legion cannot read among
-// them. The workflow writes it in one place (tellOthersOpen), from two: the close of a pull request
-// (closed), where another of the set is open; and the end of the read of the branches of the
-// issue's tasks that the close of the last open one queues (PullRequestBranchRead, the workflow's
-// pullRequestBranchRead), where that read found a pull request open on one of them, which it then
-// names. It is written in place of `pr-closed-unmerged`, which the end of that read writes where
-// none is open and the close of the issue, judged again there, neither happens nor waits for the
-// issues beneath it.
+// its set that holds the close is still open (D5): a link that holds it, or a task's own pull
+// request, open and not merged. The close moves nothing, and the reason names the closed one and
+// each pull request of the set still open, a link whose read is owed or that Legion cannot read
+// among them, and another pull request of a task that the issue does not link, which holds nothing.
+// The workflow writes it in one place (tellOthersOpen), from two: the close of a pull request
+// (closed), where another that holds the close is open; and the end of the read of the branches of
+// the issue's tasks that the close of the last open one that held it queues (PullRequestBranchRead,
+// the workflow's pullRequestBranchRead), where a pull request that holds the close is open then,
+// one that read found on those branches among them. It is written in place of
+// `pr-closed-unmerged`, which the end of that read writes where none that holds the close is open
+// and the close of the issue, judged again there, neither happens nor waits for the issues beneath
+// it.
 //
 // `pr-holds-close` is a pull request of the issue's set that holds the issue's close: a linked one
 // still open, one whose read is still owed, or one whose repository the daemon does not serve or

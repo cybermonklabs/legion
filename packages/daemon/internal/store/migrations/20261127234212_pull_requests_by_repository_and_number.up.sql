@@ -4,7 +4,7 @@
 -- request, the issue's links to pull requests (pull_request_links), and the two outbox kinds that
 -- read GitHub for an issue's set: the read of a linked pull request (pull_request_link_read), and
 -- the read of the branches of the issue's tasks that comes before the close of its last open pull
--- request is told (pull_request_branch_read).
+-- request that holds its close is told (pull_request_branch_read).
 --
 -- 20261122122826 keyed pull_requests by the issue and the branch, so two pull requests on one
 -- branch of an issue shared one row, and the second replaced the first: the deployment
@@ -76,16 +76,20 @@
 -- block deletes each row of the new kinds, each unsent notice of the three kinds and each row whose
 -- payload names a repo, and writes the kind check of 20261127142558 again; ends the reason of each
 -- hold for pull-requests, which leaves the issue held from merging with no reason; drops
--- pull_request_links; keeps, of each issue, the
--- rows on the branch of a task of its plan at its generation, in the issue's own repository (on
--- legion/<KEY> where the issue has no plan rows there, as 20261122122826's way back reads it), and
--- of two rows on one branch the newer (the higher head_updated_at, then the higher number), and
--- deletes the others, which takes the settled heads of each with them; keys
--- pull_request_settled_heads by (issue, branch, kind, head) again, filled from pull_requests by the
--- repository and the number, with the foreign key 20261122122826 wrote; drops pull_requests_issue
--- and keys pull_requests by (issue, branch) again with 0004's unique pull_requests_repo_branch,
--- 20261102095707's index of the repository and the number and 20261029120300's index of the open
--- rows; drops review_decision;
+-- pull_request_links; keeps, of each issue, the rows on the branch of a task of its plan at its
+-- generation, in the issue's own repository (on legion/<KEY> where the issue has no plan rows
+-- there, as 20261122122826's way back reads it), and of two rows on one branch the task's own pull
+-- request by the plan's rule (dispatch://INFRA-5910 decision 5): an open row before a merged one,
+-- and a merged one before one closed unmerged; then the row on the task's base where the record
+-- holds that base (plan_tasks.base of the task whose branch it is, at the issue's generation; on
+-- legion/<KEY> where the issue has no plan rows there, the issue's default branch); then the lowest
+-- number, so the record of INFRA-1276 keeps #3654 onto main and not the draft #3955 onto
+-- legion/INFRA-1276-ci-base, which GitHub changed later at the same head. It deletes the others,
+-- which takes the settled heads of each with them; keys pull_request_settled_heads by (issue,
+-- branch, kind, head) again, filled from pull_requests by the repository and the number, with the
+-- foreign key 20261122122826 wrote; drops pull_requests_issue and keys pull_requests by (issue,
+-- branch) again with 0004's unique pull_requests_repo_branch, 20261102095707's index of the
+-- repository and the number and 20261029120300's index of the open rows; drops review_decision;
 -- and deletes its version row, which is owed to the roll-forward, so that it runs this file again.
 -- What the way back costs is the row of each linked pull request and of each other pull request on
 -- a task's branch, and what each remembered of its settled heads, each review decision, each link
@@ -116,7 +120,14 @@
 --     union all select 'legion/' || i.key
 --     where not exists (select 1 from plan_tasks t where t.issue = i.key and t.generation = i.generation)));
 -- delete from pull_requests pr using (select repo, number, row_number() over (partition by issue, branch
---   order by head_updated_at desc, number desc) as rank from pull_requests) ranked
+--   order by case state when 'open' then 0 when 'merged' then 1 else 2 end, coalesce(base = task_base, false) desc,
+--   number) as rank
+--   from (select p.issue, p.branch, p.repo, p.number, p.state, p.base, coalesce(
+--     (select t.base from plan_tasks t where t.issue = i.key and t.generation = i.generation and t.base <> ''
+--       and coalesce(nullif(t.branch, ''), 'legion/' || t.issue) = p.branch order by t.task limit 1),
+--     (select nullif(i.default_branch, '') where not exists (select 1 from plan_tasks t
+--       where t.issue = i.key and t.generation = i.generation))) as task_base
+--     from pull_requests p join issues i on i.key = p.issue) weighed) ranked
 --   where ranked.repo = pr.repo and ranked.number = pr.number and ranked.rank > 1;
 -- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_pull_request_fkey;
 -- alter table pull_request_settled_heads drop constraint pull_request_settled_heads_pkey;

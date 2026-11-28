@@ -23,9 +23,10 @@ import (
 )
 
 // The whole-daemon tests of the pull requests an issue links in Dispatch (dispatch://INFRA-5910
-// D4, D10): each boots the daemon in the test's process over a Postgres, the package's NATS, the
-// real Dispatch publishing its events there (behindTheWebhookCheck), and a fake GitHub of two
-// repositories, acme/widgets and acme/deploy.
+// D3, D4, D10): each boots the daemon in the test's process over a Postgres, the package's NATS,
+// the real Dispatch behind a proxy that answers its webhook App check (behindTheWebhookCheck),
+// publishing its events there or, where a test drops them, with its events off, and a fake GitHub
+// of two repositories, acme/widgets and acme/deploy.
 
 // stackPlan is two tasks, a and b, b needing a, each need written as examplePlan's: a's work
 // merges nothing, since b needs it, so a holds an open pull request of its own until the issue's
@@ -388,4 +389,97 @@ func TestAClosedIssueIsNotReopenedByItsLinks(t *testing.T) {
 	if got := r.pullState(linkedDeploy, r.linkedNumber()); links != 0 || got != "" {
 		t.Errorf("the boot recorded %d links of the done issue and its linked acme/deploy#%d as %q, want it to read nothing of a done issue", links, r.linkedNumber(), got)
 	}
+}
+
+// The set of an issue's pull requests is found again at a boot, from the links Dispatch holds and
+// the branches of its tasks (dispatch://INFRA-5910 D3, D2). The whole daemon boots with a Postgres,
+// the package's NATS, a fake GitHub (githubtest) of acme/widgets and acme/deploy, and Dispatch with
+// its events off behind a proxy that answers its webhook App check (behindTheWebhookCheck), so a
+// change in Dispatch reaches the daemon by a read alone. The walk's issue stands in implementing
+// with a plan of two tasks, a on legion/<KEY> and b on legion/<KEY>.b, both begun (putTwoTasks), and
+// the record holds a's own pull request, open. The daemon is stopped, and while it is down GitHub
+// opens b's pull request on b's branch and a person links the issue to an open pull request of
+// acme/deploy in Dispatch: neither webhook reaches the daemon. The daemon is started again. The
+// record then holds the three pull requests, each open at the head GitHub shows, b's as b's and the
+// linked one as the issue's link, and the repositories GitHub intake hears hold acme/deploy, which
+// only the link names.
+//
+// The fault it catches: a boot that looks at the issue's own branch alone, or only when nothing is
+// recorded, under which the record lacks b's pull request and the linked one, and GitHub intake does
+// not hear acme/deploy.
+func TestTheSetIsFoundAgainAtBoot(t *testing.T) {
+	// Not parallel: it stops and starts a daemon over the scratch-Dispatch rig, which holds the boot, Dispatch's readiness (2 min) and each read of the record (stepRecordsWait) to fixed spans that the load of rigs running beside it can push it past.
+	r := newStepRecordsRigSeeded(t, newLiveProofOn(t, workflowNATS(t)), behindTheWebhookCheck(t, startScratchDispatchOn(t, scratchDispatchOptions{})), 1,
+		func(r *stepRecordsRig, created createdIssue) bool {
+			if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+				if err := putTwoTasks(ctx, tx, r.records, record.Issue{
+					Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
+					Title: r.title, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+					Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
+				}); err != nil {
+					return err
+				}
+				return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(r.key, r.number))
+			}); err != nil {
+				t.Fatalf("record %s with its two tasks and a's pull request: %v", r.key, err)
+			}
+			r.seedArchitect()
+			return true
+		})
+	own, ofB, linked := r.number, r.number+1, r.linkedNumber()
+	branchOfB := claim.TaskBranch(r.key, "b")
+	if got, want := r.pullRequestSet(), []string{fmt.Sprintf("%s#%d open", liveRepo, own)}; !slices.Equal(got, want) {
+		t.Fatalf("the record of %s after the first boot holds %v, want %v: a's pull request alone", r.key, got, want)
+	}
+
+	r.restartWith(func() {
+		r.github.open(branchOfB, ofB)
+		r.linkInDispatch(linked, nil)
+	})
+	want := []string{fmt.Sprintf("%s#%d open", linkedDeploy, linked), fmt.Sprintf("%s#%d open", liveRepo, own), fmt.Sprintf("%s#%d open", liveRepo, ofB)}
+	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool { return slices.Equal(r.pullRequestSet(), want) }) {
+		t.Fatalf("the record of %s after the restart holds %v, want %v: a's pull request, b's from its branch and the one Dispatch links", r.key, r.pullRequestSet(), want)
+	}
+	for _, pull := range []struct {
+		repo, branch string
+		number       int
+	}{{liveRepo, claim.IssueBranch(r.key), own}, {liveRepo, branchOfB, ofB}, {linkedDeploy, linkedBranch, linked}} {
+		if got := linkedRow(t, r.st.Pool(), pull.repo, pull.number); got == nil || got.Issue != r.key || got.Branch != pull.branch || got.HeadSHA != stepRecordsHead {
+			t.Errorf("after the restart the record holds %s#%d as %+v, want it %s's on %s at %s, the head GitHub shows", pull.repo, pull.number, got, r.key, pull.branch, stepRecordsHead)
+		}
+	}
+	if got := linkedRow(t, r.st.Pool(), liveRepo, ofB); got == nil || got.Task != "b" || got.Linked {
+		t.Errorf("%s#%d is %+v, want b's pull request, which the issue does not link", liveRepo, ofB, got)
+	}
+	if got := linkedRow(t, r.st.Pool(), linkedDeploy, linked); got == nil || !got.Linked {
+		t.Errorf("%s#%d is %+v, want a pull request %s links", linkedDeploy, linked, got, r.key)
+	}
+	subject := "notifications.github." + strings.ReplaceAll(linkedDeploy, "/", ".") + ".>"
+	var heard []string
+	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
+		heard = r.githubFilterSubjects()
+		return slices.Contains(heard, subject)
+	}) {
+		t.Fatalf("GitHub intake hears %v after the restart, want %s among them: %s is named by a link alone", heard, subject, linkedDeploy)
+	}
+}
+
+// githubFilterSubjects is the subjects the daemon's GitHub consumer hears on the walk's broker, a
+// subject for each repository it hears.
+func (r *stepRecordsRig) githubFilterSubjects() []string {
+	r.t.Helper()
+	ctx := context.Background()
+	stream, err := r.js.Stream(ctx, "ENVOY_NOTIFICATIONS")
+	if err != nil {
+		r.t.Fatalf("read the stream of notifications: %v", err)
+	}
+	consumer, err := stream.Consumer(ctx, "legion-go-"+r.cfg.Project+"-github")
+	if err != nil {
+		r.t.Fatalf("read the GitHub consumer of %s: %v", r.cfg.Project, err)
+	}
+	info, err := consumer.Info(ctx)
+	if err != nil {
+		r.t.Fatalf("read the GitHub consumer of %s: %v", r.cfg.Project, err)
+	}
+	return info.Config.FilterSubjects
 }

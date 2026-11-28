@@ -152,16 +152,21 @@ func TestAPullRequestClosedUnmergedWhileAnotherIsOpenKeepsTheOtherInTheSet(t *te
 //   - #6990 merges first, and a's own #42 then closes with no merge, and the read finds none open:
 //     a's merge is not met, so the issue stays in merging and the architect gets the
 //     pr-closed-unmerged of today, whose words are then true;
-//   - #42 merges, #6990 closes with no merge, and the read finds sjawhar/legion#43 open on a's
-//     branch, whose opened the daemon never got: #43 is recorded as its opened would record it, the
-//     architect gets one pr-closed-others-open that names it, no pr-closed-unmerged, and the issue
-//     closes nothing and stays in merging.
+//   - #42 merges, and sjawhar/legion#43 then opens on a's branch onto another base than a's,
+//     legion/LEGION-208-ci-base, as a draft onto a CI base opens: another pull request of a, which
+//     the issue does not link and which is not a's own (dispatch://INFRA-5910 decision 5), so it
+//     holds nothing, since the stack closes it at the issue's last merge (D4). #6990 closes with
+//     no merge, and the read of a's branch finds #43 open: the issue closes at that close, with no
+//     boot between, with neither pr-closed-unmerged nor pr-closed-others-open, and the same
+//     transaction queues the stack's close of #43 (record.TaskPullRequestsClose), with the comment
+//     that the issue is done.
 //
 // The faults it catches: the close handler left as it was, which never judges the close, under
 // which the issue stays in merging after #6990 closes; a close that ends the issue at any last
 // close, a verdict of its own, under which the second row closes it; a close that decides before
-// the read, under which each row finds its decision at the close; and a read that does not record
-// what it finds, under which the third row closes the issue.
+// the read, under which each row finds its decision at the close; and a close that counts an open
+// pull request of a task that the issue does not link as one that holds the close, under which the
+// third row tells pr-closed-others-open and the issue stays in merging after #6990 closes.
 func TestTheLastOpenPullRequestClosedUnmergedAfterAnotherMergedJudgesTheCloseAgain(t *testing.T) {
 	t.Parallel()
 	merging := func(t *testing.T) (*pgxpool.Pool, func(string, intake.Fact) intake.Result, record.Issue) {
@@ -213,22 +218,28 @@ func TestTheLastOpenPullRequestClosedUnmergedAfterAnotherMergedJudgesTheCloseAga
 		}
 	})
 
-	t.Run("a's #42 merged, the linked one closed, and the read finds #43 open on a's branch", func(t *testing.T) {
+	t.Run("a's #42 merged, #43 opened on a's branch onto another base, and the linked one closed", func(t *testing.T) {
 		pool, apply, root := merging(t)
 		mustSpend(t, "the merge of #42", apply("merged-42", mergedFact(42, "a")))
+		drafted := foundOpen
+		drafted.Base = "legion/LEGION-208-ci-base"
+		mustSpend(t, "the open of sjawhar/legion#43", apply("opened-43", drafted))
+		if pr := pullRequestOf(t, pool, drafted.Repo, drafted.Number); pr == nil || pr.State != record.PullRequestOpen || pr.Issue != root.Key ||
+			pr.Linked || pr.Task != "a" {
+			t.Fatalf("premise: sjawhar/legion#43 is %+v, want it recorded open for %s as a's, not linked", pr, root.Key)
+		}
 		lastClosed(t, pool, apply, root, "the close of "+linkedPR, deployClosed)
-		readBranches(t, pool, apply, root.Key, foundOpen)
-		stillOpen(t, pool, root.Key, phase.Merging, "the read of a's branch")
-		if pr := pullRequestOf(t, pool, foundOpen.Repo, foundOpen.Number); pr == nil || pr.State != record.PullRequestOpen || pr.Issue != root.Key ||
-			pr.Branch != foundOpen.Branch || pr.HeadSHA != foundOpen.HeadSHA {
-			t.Fatalf("after the read sjawhar/legion#43 is %+v, want it recorded open for %s on %s at %s", pr, root.Key, foundOpen.Branch, foundOpen.HeadSHA)
+		readBranches(t, pool, apply, root.Key, drafted)
+		closedDone(t, pool, root.Key, "the read of a's branch")
+		for _, kind := range []record.NoticeKind{"pr-closed-unmerged", "pr-closed-others-open"} {
+			if told := noticesOf(t, pool, root.Key, kind); len(told) != 0 {
+				t.Fatalf("the close of %s sent %s %+v, want none: it closed the issue", linkedPR, kind, told)
+			}
 		}
-		if told := noticesOf(t, pool, root.Key, "pr-closed-others-open"); len(told) != 1 || !strings.Contains(told[0].Reason, "sjawhar/legion#43") ||
-			!strings.Contains(told[0].Reason, linkedPR) {
-			t.Fatalf("the read of a's branch sent pr-closed-others-open %+v, want one that names %s closed and sjawhar/legion#43 still open", told, linkedPR)
-		}
-		if told := noticesOf(t, pool, root.Key, "pr-closed-unmerged"); len(told) != 0 {
-			t.Fatalf("the read of a's branch sent pr-closed-unmerged %+v, want none: sjawhar/legion#43 is open", told)
+		want := []record.TaskPullRequestsClose{{Generation: root.Generation, Repo: "sjawhar/legion", Numbers: []int{43},
+			Comment: "Issue LEGION-208 is done; its last merge is #42."}}
+		if got := closesOf(t, pool, root.Key); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the closes of pull requests after the read of a's branch = %+v, want %+v: the stack closes #43 at the issue's close", got, want)
 		}
 	})
 }

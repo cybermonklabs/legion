@@ -1394,12 +1394,12 @@ func LinkNotFound(project, issue, repo string, number int) (PullRequestLinkReadD
 
 // PullRequestBranchReadDone is the daemon's read of the branches of Issue's tasks
 // (record.PullRequestBranchRead) ending: never decoded from an event. The read was queued where
-// pull request Number of Repo, the last open one of Issue's set, closed without a merge at the
-// issue's generation Generation (dispatch://INFRA-5910 D5), and it read from GitHub, in the issue's
-// repository, the open pull requests on each branch a task of the issue holds there, as the
-// per-issue read lists a task's branch. Open is each pull request it found, in number order, as
-// the opened its webhook would have carried (PullRequestOpened): its repository, number, branch,
-// base, head, head repository, page and GitHub's updated_at; whether it is a reopen is the
+// pull request Number of Repo, the last open one of Issue's set that held its close, closed without
+// a merge at the issue's generation Generation (dispatch://INFRA-5910 D5), and it read from GitHub,
+// in the issue's repository, the open pull requests on each branch a task of the issue holds there,
+// as the per-issue read lists a task's branch. Open is each pull request it found, in number
+// order, as the opened its webhook would have carried (PullRequestOpened): its repository, number,
+// branch, base, head, head repository, page and GitHub's updated_at; whether it is a reopen is the
 // record's to say, which the workflow reads. Unread is why the read of a branch failed at its last
 // attempt, "" where each branch was read; the pull requests the other branches showed open are in
 // Open all the same. The workflow's handler records each of Open as its opened would record it and

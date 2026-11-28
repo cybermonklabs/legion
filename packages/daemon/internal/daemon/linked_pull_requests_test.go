@@ -28,12 +28,12 @@ import (
 )
 
 // The runtime-level tests of the daemon's work on the pull requests an issue links in Dispatch
-// (dispatch://INFRA-5910 D2, D3, D6): a hand-built runtime (linkedRig) over a Postgres of its own,
-// a fake GitHub of two repositories, acme/widgets and acme/deploy (linkedGitHub), and a fake
+// (dispatch://INFRA-5910 D2, D6): a hand-built runtime (linkedRig) over a Postgres of its own, a
+// fake GitHub of two repositories, acme/widgets and acme/deploy (linkedGitHub), and a fake
 // Dispatch that holds each issue's external links and answers its webhook App check
 // (linkDetails). The fake GitHub records every request it was asked, so a test reads which
-// repository a read of one pull request was made in. The whole-daemon tests of D4 and D10 are in
-// linked_pull_requests_live_test.go.
+// repository a read of one pull request was made in. The whole-daemon tests of D3, D4 and D10 are
+// in linked_pull_requests_live_test.go.
 
 // linkedDeploy is the second repository of the tests that link a pull request of another
 // repository than the issue's own.
@@ -604,62 +604,4 @@ func TestTheDaemonReadsEachPullRequestInItsOwnRepository(t *testing.T) {
 			t.Errorf("the repositories heard are %v, want the lowercase spelling of Acme-Ops/Tools, which no event's subject carries, left out", names)
 		}
 	})
-}
-
-// The set of an issue's pull requests is found again at a boot, from the links Dispatch holds and
-// the branches of its tasks (dispatch://INFRA-5910 D3). CAPTURE-1, in implementing, has two tasks,
-// a on legion/CAPTURE-1 and b on legion/CAPTURE-1.b, each with an open pull request on GitHub, and
-// links acme/deploy#5481 in Dispatch. The daemon was down while GitHub opened b's pull request and
-// the person linked #5481, and while a's head moved, and a link of the issue to acme/deploy#9 went:
-// the record holds a's #86 at its old head, a row of #9 and its link, and nothing of b or #5481.
-// The boot's fact, which reads each running issue's links and each linked pull request before it
-// sweeps, and the start's read then leave the record holding the three pull requests, each at the
-// head GitHub shows, the link to #9 and its row gone, and GitHub intake hearing acme/deploy.
-func TestTheSetIsFoundAgainAtBoot(t *testing.T) {
-	t.Parallel()
-	pool := isolatedOutboxPool(t)
-	seedTwoTasks(t, pool)
-	seedLinks(t, pool, "CAPTURE-1", []record.PullRequestLink{{Issue: "CAPTURE-1", Repo: linkedDeploy, Number: 9}},
-		linkedPullRow("CAPTURE-1", linkedDeploy, 9, "fix/gone", "gone-head"))
-	github := newLinkedGitHub(t,
-		linkedPull{repo: "acme/widgets", number: 86, branch: "legion/CAPTURE-1", base: "main", head: "a-moved", state: "open"},
-		linkedPull{repo: "acme/widgets", number: 87, branch: "legion/CAPTURE-1.b", base: "main", head: "b-head", state: "open"},
-		linkedPull{repo: linkedDeploy, number: 5481, branch: "fix/deploy", base: "main", head: "linked-head", state: "open"},
-		linkedPull{repo: linkedDeploy, number: 9, branch: "fix/gone", base: "main", head: "gone-head", state: "open"})
-	rig := newLinkedRig(t, pool, github)
-	rig.dispatch.links["CAPTURE-1"] = []string{"https://github.com/acme/deploy/pull/5481"}
-	ctx := context.Background()
-
-	if err := rig.w.booted(ctx, 1); err != nil {
-		t.Fatalf("apply the boot: %v", err)
-	}
-	rig.w.readIssuesAtStart(ctx)
-
-	for _, want := range []struct {
-		repo   string
-		number int
-		head   string
-	}{{"acme/widgets", 86, "a-moved"}, {"acme/widgets", 87, "b-head"}, {linkedDeploy, 5481, "linked-head"}} {
-		got := linkedRow(t, pool, want.repo, want.number)
-		if got == nil || got.State != record.PullRequestOpen || got.HeadSHA != want.head {
-			t.Errorf("after the boot the record holds %s#%d as %+v, want it open at %s, the head GitHub shows", want.repo, want.number, got, want.head)
-		}
-	}
-	if linked := linkedRow(t, pool, linkedDeploy, 5481); linked != nil && (!linked.Linked || linked.Issue != "CAPTURE-1") {
-		t.Errorf("acme/deploy#5481 is %+v, want a pull request CAPTURE-1 links", linked)
-	}
-	if gone := linkedRow(t, pool, linkedDeploy, 9); gone != nil {
-		t.Errorf("acme/deploy#9 is still recorded (%+v) after its link went while the daemon was down, want it out of the set", gone)
-	}
-	var heard []ghrepo.Repository
-	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		heard, err = rig.w.heardRepositories(ctx, tx)
-		return err
-	}); err != nil {
-		t.Fatalf("heardRepositories: %v", err)
-	}
-	if !slices.ContainsFunc(heard, func(repo ghrepo.Repository) bool { return repo.String() == linkedDeploy }) {
-		t.Errorf("the repositories GitHub intake hears are %v, want acme/deploy among them, named by a link alone", heard)
-	}
 }

@@ -224,9 +224,12 @@ the next of them:
   it in `merging` while nothing holds the close, and Legion then closes the other open pull
   requests of the issue's tasks; otherwise the merge tells the architect `pr-merged`, or
   `pr-holds-close` for each pull request the issue links that is still open. A close without
-  merging tells the architect `pr-closed-others-open` while another pull request of the issue is
-  open; the close of the last open one first reads each branch of the issue's tasks on GitHub
-  again, and tells `pr-closed-unmerged` only where that read finds none open.
+  merging tells the architect `pr-closed-others-open` while another pull request of the issue
+  that holds the close is open: one the issue links, or a task's own pull request. Another open
+  pull request of a task that the issue does not link holds nothing, since Legion closes it at the
+  issue's last merge. The close of the last one that holds the close first reads each branch of
+  the issue's tasks on GitHub again, judges the close again, and tells `pr-closed-unmerged` only
+  where that read finds none open that holds the close and no merge closes the issue.
 - **A head that moved.** When GitHub shows the pull request open at a head the record does not
   hold, the read applies the synchronize its webhook would have carried, under GitHub's
   `updated_at` as its clock, so the same fence decides it: a read older than the record's clock
