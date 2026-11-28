@@ -36,9 +36,8 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 const ownsAsk = `((a.author->>'kind' = 'session' and a.author->>'id' = $1) is true
 	       or exists (select 1 from ask_followers f where f.ask_id = a.id and f.session_id = $1))`
 
-// destinationColumns are the columns that the destination arm of query, cutQuery and
-// cutPublicationQuery reads of each event: its type, the id its payload names, and the resolution
-// an ask.resolved carries.
+// destinationColumns are the columns that the destination arm of query and cutQuery reads of each
+// event: its type, the id its payload names, and the resolution an ask.resolved carries.
 const destinationColumns = `select e.type, e.payload->>'id' as id, e.payload->'resolution' as resolution`
 
 // destinationPredicate holds that arm to the events of query's S1: a person's events of the types
@@ -135,14 +134,15 @@ var query = `
 // has a published_at that is not at or before the cut. The outbox stops changing an event's
 // destinations once it sets published_at, but nothing dates a destination before that. An
 // ask.resolved that is no decline (declinedResolution) is no item of the arm, so it leaves
-// nothing unknown. The events shadow supplies the upper created_at bound. destination_events is
-// materialized, so the planner plans it to read every row, and it reads the arm's events through
-// the destination index. An exists over the events themselves is planned to stop at its first
-// row: it reads the window's events by time, and where none matches, as in most reads, all of
-// them.
+// nothing unknown. destination_events holds only what those two tests read of each event: its
+// type, its resolution and its published_at. The events shadow supplies the upper created_at
+// bound. destination_events is materialized, so the planner plans it to read every row, and it
+// reads the arm's events through the destination index. An exists over the events themselves is
+// planned to stop at its first row: it reads the window's events by time, and where none
+// matches, as in most reads, all of them.
 var cutPublicationQuery = `
 	with destination_events as materialized (
-		` + destinationColumns + `, e.published_at` + destinationPredicate("$1", "$2") + `
+		select e.type, e.payload->'resolution' as resolution, e.published_at` + destinationPredicate("$1", "$2") + `
 	)
 	select exists (
 		select 1 from destination_events

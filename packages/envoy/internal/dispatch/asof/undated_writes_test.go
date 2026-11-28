@@ -26,10 +26,9 @@ import (
 // The wording of an ask at a cut is unknown where the wording just after the cut, by the record,
 // is not the wording of the ask's newest state event at the cut: the previous wording of its
 // first edit after the cut, the own wording of any other first event after the cut, or the
-// present row's wording when no event is later. Such an ask counts as changed after the cut. A
-// payload's options carry part ids that the row's and an edit's previous options do not; the
-// comparison reads none of them.
-func TestAnAskWhoseWordingNoRecordDatesIsChangedWithItsWordingUnknown(t *testing.T) {
+// present row's wording when no event is later. A payload's options carry part ids that the
+// row's and an edit's previous options do not; the comparison reads none of them.
+func TestAnAskWhoseWordingNoRecordDatesHasItsWordingUnknownAtTheCut(t *testing.T) {
 	w := newWorld(t)
 	made := when(t, "2026-11-10T09:00:00Z")
 	w.project("ASOF", "carol", made.Add(-time.Hour))
@@ -114,47 +113,26 @@ func TestAnAskWhoseWordingNoRecordDatesIsChangedWithItsWordingUnknown(t *testing
 	unchanged := ask("a7", decided)
 	opened(unchanged, decided, "2026-11-10T09:00:00Z")
 
-	read := func(cut string) map[string]string {
-		t.Helper()
-		rows, err := w.database.Pool.Query(context.Background(), asof.AsksChangedAfterStatement,
-			slices.Sorted(maps.Keys(asks)), mustCut(t, cut).Time())
-		got := map[string]string{}
-		for _, row := range scanAll(t, rows, err) {
-			verdict := "changed"
-			if row["wording_unknown"].(bool) {
-				verdict = "changed, wording unknown"
-			}
-			got[asks[row["id"].(string)]] = verdict
-		}
-		return got
-	}
 	for _, row := range []struct {
 		cut  string
-		want map[string]string
+		want []string
 	}{
-		{"2026-11-10T09:30:00Z", map[string]string{
-			"a1": "changed, wording unknown",
-			"a2": "changed",
-			"a3": "changed, wording unknown",
-			"a4": "changed",
-			"a5": "changed",
-			"a6": "changed",
-		}},
+		// a2's and a5's edits record the wording at the cut as their previous, a4's answer does
+		// not change it, and a6 is opened after the cut.
+		{"2026-11-10T09:30:00Z", []string{"a1", "a3"}},
 		// Before the rewording, the edit's previous wording is the wording at the cut.
-		{"2026-11-10T09:15:00Z", map[string]string{
-			"a1": "changed",
-			"a2": "changed",
-			"a3": "changed",
-			"a4": "changed",
-			"a5": "changed",
-			"a6": "changed",
-		}},
-		{"2026-11-10T09:50:00Z", map[string]string{
-			"a1": "changed, wording unknown",
-		}},
+		{"2026-11-10T09:15:00Z", nil},
+		{"2026-11-10T09:50:00Z", []string{"a1"}},
 	} {
-		if got := read(row.cut); !maps.Equal(got, row.want) {
-			t.Errorf("at %s the asks changed after the cut are %v, want %v", row.cut, got, row.want)
+		rows, err := w.database.Pool.Query(context.Background(), asof.AsksWordingUnknownStatement,
+			slices.Sorted(maps.Keys(asks)), mustCut(t, row.cut).Time())
+		var got []string
+		for _, read := range scanAll(t, rows, err) {
+			got = append(got, asks[read["id"].(string)])
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, row.want) {
+			t.Errorf("at %s the asks whose wording no record gives are %v, want %v (a7 unchanged)", row.cut, got, row.want)
 		}
 	}
 }

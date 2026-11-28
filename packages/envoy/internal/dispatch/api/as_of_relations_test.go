@@ -332,7 +332,7 @@ const asOfStatementLength = 600
 //     shadow that a statement names with its schema (public.route_roster) fails too. A shadowed
 //     table that a statement names with its schema is a base table that the shadows read: the
 //     reads of the present log that decide what changed after the cut name public.events
-//     (asof.AsksChangedAfterStatement), and the keyword relation reads the present deleted_at
+//     (asof.AsksWordingUnknownStatement), and the keyword relation reads the present deleted_at
 //     of a post from public.comments and public.messages (decision 14).
 //
 // Each read must be served as the harness serves it at the cut (servedAtTheCut), so that no read

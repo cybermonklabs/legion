@@ -14,17 +14,14 @@ var askStateTypes = []string{
 // the partial index events_ask_state (migration 20261120004316) names exactly these types, in
 // this order, so that the planner can prove that the index serves that read: a change here needs
 // a new index. That predicate also holds created_at is not null, so each read of the index
-// compares created_at with the cut, as asksShadow and AsksChangedAfterStatement do.
+// compares created_at with the cut, as asksShadow and AsksWordingUnknownStatement do.
 func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 
-// AsksChangedAfterStatement reads which asks changed after a cut, and which of them hold a
-// wording at the cut that no record gives. Of the asks whose ids $1 holds (text[]), it answers
-// the id of each ask that changed after the cut $2 (timestamptz), and beside it whether the ask's
-// wording at the cut is unknown (wording_unknown). An ask changed after the cut where an event of
-// its state (AskStateTypes) is later than the cut, or where its wording at the cut is unknown: a
-// write with no event changed that wording, and that write can be later than the cut. A
-// past-time answer reads of it only which asks hold a wording that no record gives (api's
-// asksWordingUnknownAtTheCut).
+// AsksWordingUnknownStatement reads which asks hold a wording at a cut that no record gives. Of
+// the asks whose ids $1 holds (text[]), it answers the id of each ask whose wording at the cut $2
+// (timestamptz) is unknown: a write with no event changed that wording, and that write can be
+// later than the cut. A past-time answer leaves out the wording of each such ask (api's
+// askFieldsAtTheCut, sessionAnswersAtTheCut and searchAsksAtTheCut).
 //
 // The wording is the question, the options, multiple and the urgency. The restore of a decided
 // ask's wording (docs' decidedWordingRestore, at boot and at a document's settlement) writes them
@@ -46,14 +43,7 @@ func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 // It names public.events and public.asks by their schema, so that the store's binding at a cut
 // does not read a shadow in their place (Bind). The partial index events_ask_state serves each
 // read of an ask's events, and asks_pkey the read of its row. An id that is no uuid names no row.
-var AsksChangedAfterStatement = `select x.id, x.wording_unknown from (
-	select a.id, n.type as later,
-		case
-			when s.payload is null then false
-			when n.type is null then r.id is not null and ` + askWordingDiffers(askWordingAt, askWordingOfTheRow) + `
-			when n.type = 'ask.edited' and n.payload->'previous' ? 'question' then ` + askWordingDiffers(askWordingAt, askWordingBeforeTheEdit) + `
-			else ` + askWordingDiffers(askWordingAt, askWordingOf(`n.payload`)) + `
-		end as wording_unknown
+var AsksWordingUnknownStatement = `select a.id
 	from unnest($1::text[]) as a(id)
 	left join lateral (
 		select e.payload from public.events e
@@ -69,8 +59,12 @@ var AsksChangedAfterStatement = `select x.id, x.wording_unknown from (
 	) n on true
 	left join public.asks r on n.type is null and s.payload is not null
 		and r.id = (case when pg_input_is_valid(a.id, 'uuid') then a.id::uuid end)
-) x
-where x.later is not null or x.wording_unknown`
+	where case
+		when s.payload is null then false
+		when n.type is null then r.id is not null and ` + askWordingDiffers(askWordingAt, askWordingOfTheRow) + `
+		when n.type = 'ask.edited' and n.payload->'previous' ? 'question' then ` + askWordingDiffers(askWordingAt, askWordingBeforeTheEdit) + `
+		else ` + askWordingDiffers(askWordingAt, askWordingOf(`n.payload`)) + `
+	end`
 
 // askWording is the wording of an ask as four SQL expressions: its question, its options (a JSON
 // array), whether it takes several options, and its urgency.
@@ -87,10 +81,10 @@ func askWordingOf(payload string) askWording {
 	}
 }
 
-// The wordings that AsksChangedAfterStatement compares: the ask's at the cut, of its newest state
-// event at the cut (s), which the asks shadow gives too; its row's (r); and the previous wording
-// of its first edit after the cut (n), where each part that the edit does not record is the
-// wording at the cut's.
+// The wordings that AsksWordingUnknownStatement compares: the ask's at the cut, of its newest
+// state event at the cut (s), which the asks shadow gives too; its row's (r); and the previous
+// wording of its first edit after the cut (n), where each part that the edit does not record is
+// the wording at the cut's.
 var (
 	askWordingAt            = askWordingOf(`s.payload`)
 	askWordingOfTheRow      = askWording{question: `r.question`, options: `r.options`, multiple: `r.multiple`, urgency: `r.urgency`}
@@ -132,8 +126,8 @@ var (
 // ask whose anchor's block id at the cut $2 (timestamptz) no record gives (reason E), by the rule
 // of CommentAnchorBlocksNotGivenStatement: the backfill of anchor blocks writes an ask's row as it
 // writes a comment's. It reads each ask's events through events_ask_state, and its row through
-// asks_pkey. The backfill writes no part of an ask, so the statement is apart from
-// AsksChangedAfterStatement: an ask whose block id it reads does not count as changed.
+// asks_pkey. The backfill writes no wording of an ask, so the statement is apart from
+// AsksWordingUnknownStatement: a block id that the backfill wrote leaves the ask's wording known.
 var AskAnchorBlocksNotGivenStatement = anchorBlocksNotGiven("asks", askStateList)
 
 // asksShadow is decision 2's asks: the newest ask.* payload of each ask at the cut, by event id,

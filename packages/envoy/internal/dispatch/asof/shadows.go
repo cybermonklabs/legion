@@ -261,8 +261,6 @@ var MachineryTables = map[string]string{
 // test of the shadows admits these tables with no shadow; each read of one of them at a cut
 // must apply its predicate.
 var CutReadTables = map[string]string{
-	"ask_block_state": "None of it: no writer stores an ask's revision in its events, " +
-		"so an answer leaves out the revision of every ask, which the read of its ask_blocks reads with it.",
 	"ask_block_texts": "Only the texts of the parts that a meaning hit covers, of an ask whose text did not change after the cut.",
 	"ask_blocks": "Only the node and the id of the part that a reply names, which the reply's own row names: " +
 		"no writer stores an ask's part ids in its events, so an answer leaves out the part ids of every ask, " +

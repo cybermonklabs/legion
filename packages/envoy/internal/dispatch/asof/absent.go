@@ -33,7 +33,7 @@ const (
 		"No event records when the outbox reached that topic."
 	// E, for the block that a reply names.
 	reasonReplyBlock = "Dispatch keeps no record of the blocks of a comment or a message at the cut: the block index rewrites them with no event. " +
-		"No writer stores an ask's revision or part ids in its events, so no record gives a part of an ask at the cut either."
+		reasonParts
 	// E, for the place of an anchored block.
 	reasonAnchorBlock = "A stored document version records the id of a typed block only. " +
 		"No record gives the place of this block in the document at the cut."
@@ -291,7 +291,7 @@ func askFields(prefix string) []AbsentField {
 }
 
 // askWordingFields are the wording of an ask at prefix, which is unknown at a cut where a write
-// with no event changed it at a time that no record gives (AsksChangedAfterStatement): the
+// with no event changed it at a time that no record gives (AsksWordingUnknownStatement): the
 // question, the options, multiple and the urgency, and the question's tree, which an answer
 // carries for a request with display trees. The trees of an option's label and description are
 // members of the option, so they go out with the options. Not in the plan's list.
@@ -345,7 +345,7 @@ func blockFields(prefix string) []AbsentField {
 // where the block's document changed after the cut. An ask hit's snippet, and its tree in an
 // answer with display trees, come from the keyword table's version of the ask at the cut, which
 // holds the wording of the ask's newest event at the cut: they are left out where the ask's
-// wording at the cut no record gives (AsksChangedAfterStatement). The plan's list names the
+// wording at the cut no record gives (AsksWordingUnknownStatement). The plan's list names the
 // snippet tree, and not the snippet.
 func searchFields() []AbsentField {
 	return []AbsentField{

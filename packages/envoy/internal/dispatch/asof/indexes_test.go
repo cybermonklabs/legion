@@ -113,10 +113,10 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 			index:     "events_created_at",
 		},
 		{
-			// Which asks changed after the cut, and which hold a wording no record gives at it
-			// (api's asksWordingUnknownAtTheCut): each ask's events through the index of its types.
-			name:      "the asks changed after the cut, read alone",
-			statement: asof.AsksChangedAfterStatement,
+			// Which asks hold a wording no record gives at the cut (api's askFieldsAtTheCut):
+			// each ask's events through the index of its types.
+			name:      "the asks whose wording no record gives, read alone",
+			statement: asof.AsksWordingUnknownStatement,
 			arguments: []any{[]string{"ask-7"}, cut.Time()},
 			index:     "events_ask_state",
 		},

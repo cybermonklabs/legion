@@ -925,7 +925,7 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, trees)
+	messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, trees)
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -945,7 +945,7 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, wantsDisplayTrees(r))
+	messagesAtTheCut(r.Context(), []messageRead{read}, func(int) string { return "" }, wantsDisplayTrees(r))
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -1119,7 +1119,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.messagesAtTheCut(r.Context(), result, elementsOf(""), trees)
+	messagesAtTheCut(r.Context(), result, elementsOf(""), trees)
 	WriteJSON(w, http.StatusOK, result)
 }
 

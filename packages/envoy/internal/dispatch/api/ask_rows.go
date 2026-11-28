@@ -296,19 +296,19 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
 // answers nothing itself, so the apply reports that refusal. A read at a cut, which ctx carries,
-// queues no count and stamps none: the reference graph keeps no history, and a past-time answer
-// leaves the count out (askFieldsAtTheCut).
+// queues its identity event alone and stamps nothing else: the reference graph keeps no history,
+// no writer stores an ask's part ids in its events, and a past-time answer leaves out the count
+// and the parts (askFieldsAtTheCut, eventPageAtTheCut).
 func queueAskDetails(ctx context.Context, b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
+	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		return func() error { return applyOpenedEventIDs(asks, openedEventIDs) }
+	}
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
-	_, atCut := asof.CutFrom(ctx)
-	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
-	var countsErr error
-	if !atCut {
-		countsErr = refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
-	}
+	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, asks, partIDs)
 	return func() error {
 		if countsErr != nil {
@@ -317,9 +317,7 @@ func queueAskDetails(ctx context.Context, b *pgx.Batch, who model.Actor, asks []
 		if err := applyOpenedEventIDs(asks, openedEventIDs); err != nil {
 			return err
 		}
-		if !atCut {
-			applyAskBacklinkCounts(asks, counts)
-		}
+		applyAskBacklinkCounts(asks, counts)
 		applyAskPartIDs(asks, partIDs)
 		return nil
 	}
@@ -382,12 +380,13 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 // graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
 // with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
 // same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
-// A read at a cut reads no count, as queueAskDetails reads none.
+// A read at a cut reads neither, as queueAskDetails reads neither.
 func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
-	if _, atCut := asof.CutFrom(ctx); !atCut {
-		if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
-			return err
-		}
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		return nil
+	}
+	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
+		return err
 	}
 	return attachAskPartIDs(ctx, q, asks)
 }

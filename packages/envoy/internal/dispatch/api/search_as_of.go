@@ -673,7 +673,7 @@ const searchAskBlocksMovedStatement = `select k.id::text from asks k
 //     now, which no record holds at the cut for that document. Every other ask hit's link is the
 //     one the graph gave at the cut.
 //   - the snippet, and its tree where the answer carries display trees (trees), where the ask's
-//     wording at the cut no record gives (reason E, asof.AsksChangedAfterStatement). The snippet
+//     wording at the cut no record gives (reason E, asof.AsksWordingUnknownStatement). The snippet
 //     is cut from the keyword table's version of the ask at the cut (searchAsOfTexts), which holds
 //     the wording of the ask's newest event at the cut, and a restore changed that wording with
 //     no event at a time no record gives. The keyword arm finds such an ask by that wording. The
@@ -705,7 +705,7 @@ func (s *server) searchAsksAtTheCut(ctx context.Context, results []model.SearchR
 	if err != nil {
 		return fmt.Errorf("read which asks' block documents changed after the cut: %w", err)
 	}
-	wordingUnknown, err := s.asksWordingUnknownAtTheCut(ctx, asks, cut)
+	wordingUnknown, err := s.idsReadAtTheCut(ctx, asof.AsksWordingUnknownStatement, asks, cut)
 	if err != nil {
 		return fmt.Errorf("read which asks of a search have no wording at the cut: %w", err)
 	}

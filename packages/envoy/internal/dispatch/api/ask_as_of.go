@@ -17,36 +17,9 @@ import (
 // agent's answers the question of each ask whose wording no record gives (sessionAnswersAtTheCut).
 // A request at no cut leaves out nothing.
 
-// asksWordingUnknownAtTheCut reads, of the asks ids names, the ids of those whose wording at cut
-// no record gives (asof.AsksChangedAfterStatement, which answers each ask that changed after cut
-// and whether its wording at cut is unknown).
-func (s *server) asksWordingUnknownAtTheCut(ctx context.Context, ids []string, cut asof.Cut) (map[string]bool, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, asof.AsksChangedAfterStatement, ids, cut.Time())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var wordingUnknown map[string]bool
-	for rows.Next() {
-		var id string
-		var unknown bool
-		if err := rows.Scan(&id, &unknown); err != nil {
-			return nil, err
-		}
-		if !unknown {
-			continue
-		}
-		if wordingUnknown == nil {
-			wordingUnknown = map[string]bool{}
-		}
-		wordingUnknown[id] = true
-	}
-	return wordingUnknown, rows.Err()
-}
-
 // leaveOutAskWording names the wording of the ask at place, which no record gives at the cut
 // where a write with no event changed it at a time no record gives (reason E,
-// asof.AsksChangedAfterStatement): its question, its options, whether it takes several, and its
+// asof.AsksWordingUnknownStatement): its question, its options, whether it takes several, and its
 // urgency, and the tree of its question where the answer carries display trees (trees). The
 // trees of the options are members of the options, so they go out with them.
 func leaveOutAskWording(ctx context.Context, place string, trees bool) {
@@ -149,7 +122,7 @@ func (s *server) inboxAtTheCut(ctx context.Context, rows []inboxAsk, trees bool)
 // sessionAnswersAtTheCut names what an agent's answers at a cut leave out of each of items, the
 // answer's items in its order: the question of the ask that an item is on (an answer, a decline,
 // or a reply in the ask's thread), where the ask's wording at the cut no record gives (reason E,
-// asof.AsksChangedAfterStatement). The asks shadow gives the wording of the ask's newest event at
+// asof.AsksWordingUnknownStatement). The asks shadow gives the wording of the ask's newest event at
 // the cut, which a restore changed with no event at a time no record gives. One statement reads
 // every ask of the items, and none is sent where no item is on an ask. A request at no cut leaves
 // out nothing and sends no statement.
@@ -170,7 +143,7 @@ func (s *server) sessionAnswersAtTheCut(ctx context.Context, items []model.Sessi
 	// An ask can be on several items (its answer, its decline, the replies in its thread); the
 	// statement reads each ask once.
 	slices.Sort(ids)
-	wordingUnknown, err := s.asksWordingUnknownAtTheCut(ctx, slices.Compact(ids), cut)
+	wordingUnknown, err := s.idsReadAtTheCut(ctx, asof.AsksWordingUnknownStatement, slices.Compact(ids), cut)
 	if err != nil {
 		return fmt.Errorf("read which asks of an agent's answers have no wording at the cut: %w", err)
 	}

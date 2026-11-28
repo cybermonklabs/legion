@@ -29,18 +29,19 @@ func refuseResultsCommitAtCut(w http.ResponseWriter, r *http.Request) bool {
 // checkBlocksAtTheCut is checkBlocksOf at the cut ctx carries: every check block of the newest
 // version at the cut of artifact, the Verification document, parsed as the present read parses
 // the live text (checkBlocksOfRendering), with its issue and its reference. The text of a check's
-// tree is the text that the index recorded, as the present read takes it from the live text. The
-// answer leaves out the version and the digest of every check (reason E). The block index of a
-// version can be written after the version is saved: a write defers it (docs'
-// IndexDocumentReferences), and the reconciliation re-indexes a version in place. No record gives
-// the time of that write, so no record gives what the index held at the cut. One batch reads the
-// version and what the index recorded of its blocks, and nothing is read from the live document.
+// tree is the text that the index recorded, as the present read takes it from the live text. It
+// reads no check's version or digest (reason E). The block index of a version can be written
+// after the version is saved: a write defers it (docs' IndexDocumentReferences), and the
+// reconciliation re-indexes a version in place. No record gives the time of that write, so no
+// record gives what the index held at the cut, and the answer leaves both out (checksAtTheCut).
+// One batch reads the version and what the index recorded of its blocks, and nothing is read
+// from the live document.
 func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifact, trees *displayTreeReader) ([]model.CheckBlock, error) {
 	markdown, _, recorded, err := s.versionAtTheCut(ctx, artifact.ID, true)
 	if err != nil {
 		return nil, fmt.Errorf("read the checks of %s at the cut: %w", artifact.ID, err)
 	}
-	checks, err := checkBlocksOfRendering(artifact.ID, markdown, recorded.texts, trees)
+	checks, err := checkBlocksOfRendering(artifact.ID, markdown, recorded, trees)
 	if err != nil {
 		return nil, err
 	}
@@ -48,10 +49,6 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 		return []model.CheckBlock{}, nil
 	}
 	addressChecks(checks, artifact, nil)
-	at := elementsOf("/checks")
-	for index := range checks {
-		leaveOut(ctx, at(index)+"/version", at(index)+"/sha256")
-	}
 	return checks, nil
 }
 
@@ -64,14 +61,15 @@ func (s *server) checkBlocksAtTheCut(ctx context.Context, artifact model.Artifac
 // result, where its commit stands and the currency that older clients print. Of each result of a
 // check that the present read compares with the program's current deploy (readsTheLiveDeploy), it
 // leaves out not_counted, which the present read writes from that deploy now (markNotCounted).
-// It also leaves out whether the words of the check moved after each result (reason E): that
-// compares the check's version and digest, which no record gives at the cut
-// (checkBlocksAtTheCut).
+// It also leaves out, for reason E, each check's version and digest, which no record gives at
+// the cut (checkBlocksAtTheCut), and whether the words of the check moved after each result,
+// which compares them.
 func checksAtTheCut(ctx context.Context, checks []model.CheckBlock) {
 	at := elementsOf("/checks")
 	for index := range checks {
 		check := &checks[index]
 		place := at(index)
+		leaveOut(ctx, place+"/version", place+"/sha256")
 		leaveOut(ctx, place+"/compared_with", place+"/compared_nothing", place+"/pass_stands")
 		if validCICheck(*check, len(check.Results) > 0) {
 			leaveOut(ctx, place+"/ci")

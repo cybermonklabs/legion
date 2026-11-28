@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -40,7 +41,7 @@ const blockIndexAtTheCutStatement = `
 		select t.block_id, t.text
 		from (select max(v.number) as number from artifact_versions v where v.artifact_id = $1) n
 		cross join lateral (
-			select distinct on (b.block_id) b.block_id, b.version, b.text
+			select distinct on (b.block_id) b.block_id, b.text
 			from document_block_texts b
 			where b.artifact_id = $1 and b.version <= n.number
 			order by b.block_id, b.version desc
@@ -48,21 +49,15 @@ const blockIndexAtTheCutStatement = `
 		where t.text is not null
 		  and exists (select 1 from document_indexed_versions i where i.artifact_id = $1 and i.version = n.number)`
 
-// blockIndex is what the block index recorded of the blocks of one version: the text of each
-// block, by block id.
-type blockIndex struct {
-	texts map[string]string
-}
-
 // versionAtTheCut reads document artifactID's newest version at the cut ctx carries: its markdown
 // ("" for a document with no version then) and the document token stored with it (nil for none).
-// With blocks it also reads what the block index recorded of that version's blocks
-// (blockIndexAtTheCutStatement). One batch sends the statements; each caller names the batch's
-// error.
-func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, *string, blockIndex, error) {
+// With blocks it also reads what the block index recorded of that version's blocks: the text of
+// each block, by block id (blockIndexAtTheCutStatement). One batch sends the statements; each
+// caller names the batch's error.
+func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, *string, map[string]string, error) {
 	var markdown string
 	var token *string
-	var index blockIndex
+	var texts map[string]string
 	batch := &pgx.Batch{}
 	batch.Queue(versionAtTheCutStatement, artifactID).QueryRow(func(row pgx.Row) error {
 		if err := row.Scan(&markdown, &token); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -71,22 +66,22 @@ func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks 
 		return nil
 	})
 	if blocks {
-		index.texts = map[string]string{}
+		texts = map[string]string{}
 		batch.Queue(blockIndexAtTheCutStatement, artifactID).Query(func(rows pgx.Rows) error {
 			for rows.Next() {
 				var id, text string
 				if err := rows.Scan(&id, &text); err != nil {
 					return err
 				}
-				index.texts[id] = text
+				texts[id] = text
 			}
 			return rows.Err()
 		})
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
-		return "", nil, blockIndex{}, err
+		return "", nil, nil, err
 	}
-	return markdown, token, index, nil
+	return markdown, token, texts, nil
 }
 
 // artifactTextAtTheCut is the markdown and the token of the text route at the cut ctx carries:
@@ -95,7 +90,7 @@ func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks 
 // answer gives the blocks of that markdown (blocksAtTheCut) beside the rendering they index,
 // which is the markdown itself for each version this build's renderer wrote.
 func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, string, *[]model.ArtifactBlock, error) {
-	markdown, token, index, err := s.versionAtTheCut(ctx, artifactID, blocks)
+	markdown, token, recorded, err := s.versionAtTheCut(ctx, artifactID, blocks)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
 	}
@@ -112,14 +107,14 @@ func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, bl
 	if listed == nil {
 		listed = []model.ArtifactBlock{}
 	}
-	blocksAtTheCut(ctx, rendered, listed, index.texts, "/blocks")
+	blocksAtTheCut(ctx, rendered, listed, recorded, "/blocks")
 	return rendered, deref(token), &listed, nil
 }
 
 // artifactBlocksAtTheCut is the answer of a block route at the cut ctx carries: the blocks of
 // document artifactID's newest version then (blocksAtTheCut).
 func (s *server) artifactBlocksAtTheCut(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
-	markdown, _, index, err := s.versionAtTheCut(ctx, artifactID, true)
+	markdown, _, recorded, err := s.versionAtTheCut(ctx, artifactID, true)
 	if err != nil {
 		return nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
 	}
@@ -127,7 +122,7 @@ func (s *server) artifactBlocksAtTheCut(ctx context.Context, artifactID string) 
 	if err != nil {
 		return nil, err
 	}
-	blocksAtTheCut(ctx, rendered, blocks, index.texts, "")
+	blocksAtTheCut(ctx, rendered, blocks, recorded, "")
 	return blocks, nil
 }
 
@@ -234,8 +229,12 @@ func backfillPinned(approval *model.ArtifactApproval) bool {
 	return approval.ContentSHA256Source != nil && *approval.ContentSHA256Source == reviewPinBackfill
 }
 
-// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list.
+// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list. A
+// request at no cut leaves out nothing, and the call names no place.
 func approvalsAtTheCut(ctx context.Context, artifacts []model.Artifact) {
+	if _, atCut := asof.CutFrom(ctx); !atCut {
+		return
+	}
 	at := elementsOf("")
 	for index := range artifacts {
 		approvalAtTheCut(ctx, artifacts[index].Approval, at(index))

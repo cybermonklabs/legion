@@ -450,8 +450,8 @@ function documentText(when: When, blocks: boolean): Answered {
   };
 }
 
-/** `GET /api/v1/issues/{key}/results`: the one check and its result. At a cut what GitHub says
- *  now is left out, and so are the check's version and digest, of a version no index holds. */
+/** `GET /api/v1/issues/{key}/results`: the one check and its result. At every cut what GitHub
+ *  says now is left out, and so are the check's version and digest. */
 function results(when: When): Answered {
   const body = issueResultsBody();
   return {
