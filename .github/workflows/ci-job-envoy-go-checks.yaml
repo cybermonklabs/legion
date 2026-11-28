@@ -110,9 +110,6 @@ jobs:
       - name: Test loadtest/vm/vm.sh, the load-test deployment's driver (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start loadtest/vm/vm.test.sh bash loadtest/vm/vm.test.sh
         working-directory: packages/envoy
-      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
-        run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
-        working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
       # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale, so the
       # locale is generated first, inside the same pooled command.
@@ -122,11 +119,31 @@ jobs:
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
         working-directory: packages/envoy
-      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
-        run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
+      # Each group is its own pool entry. Each harness queues its groups longest first by CPU
+      # at main 8e248d6c (run 46127046034, job 140924069070), in CPU seconds:
+      # daemon: developer-box 32.4, short-reads 31.3, image-clients 27.5, vm-hub 26.4, versions 19.4,
+      # listeners 17.1, developer-box-surfaces 16.4, daemons 6.5, project-fields 2.1.
+      # legacy: publishers 23.2, readings 21.5, rules 18.1, facts 15.8.
+      # These entries follow dev-stack because each is estimated to take at most 30 s of wall time.
+      # Record each group's measured wall time here after the pull request's first run.
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: |
+          groups=$(bash scripts/daemon-release-gate.test.sh --groups)
+          [ -n "$groups" ]
+          for group in $groups; do
+            ../../.github/scripts/harness-pool.sh start "scripts/daemon-release-gate.test.sh $group" bash scripts/daemon-release-gate.test.sh "$group"
+          done
         working-directory: packages/envoy
       - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
-        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-gate.test.sh bash scripts/legacy-subjects-gate.test.sh
+        run: |
+          groups=$(bash scripts/legacy-subjects-gate.test.sh --groups)
+          [ -n "$groups" ]
+          for group in $groups; do
+            ../../.github/scripts/harness-pool.sh start "scripts/legacy-subjects-gate.test.sh $group" bash scripts/legacy-subjects-gate.test.sh "$group"
+          done
+        working-directory: packages/envoy
+      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
+        run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
         working-directory: packages/envoy
       - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
         run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-purge.test.sh bash scripts/legacy-subjects-purge.test.sh

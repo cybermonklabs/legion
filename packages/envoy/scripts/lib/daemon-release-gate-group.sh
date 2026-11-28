@@ -5,11 +5,8 @@
 # harness, which gives this process its own temporary directory, its own fakes and its own case
 # roots, then the client fixtures, then lib/daemon-release-gate-cases-<group>.sh, and writes the
 # number of checks that failed to <tally file>. It exits 0 when that number is 0 and 1 otherwise,
-# so the test that runs the groups reads both the tally and the exit, and a group that ends any
-# other way (a harness that could not start, a syntax error, a kill) fails that test by name.
-#
-# daemon-release-gate.test.sh runs the groups; run this file by hand to read one group alone:
-#   bash lib/daemon-release-gate-group.sh developer-box /dev/null
+# so daemon-release-gate.test.sh reads both the tally and the exit. A group that ends any other
+# way (a harness that could not start, a syntax error, a kill) fails that test by name.
 set -euo pipefail
 
 [ "$#" -eq 2 ] || {
