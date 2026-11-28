@@ -61,9 +61,9 @@
 #                                  id and a new task, keeping its number and the check open — an open
 #                                  look (part 1), the last look (part 2), a look whose tester the
 #                                  operator holds and resumes after the boot (part 3), an id made for
-#                                  the previous look, which a rollback leaves when the checked root
-#                                  runs again while the way back runs, so the way back keeps its id,
-#                                  and the release before starts the next look once the run ends
+#                                  the previous look, which the way back keeps while the checked root
+#                                  is out of the workflow, as it keeps every look id, and which the
+#                                  release before's wake leaves in place when it starts the next look
 #                                  (part 4), a look beside a start row of it that release queued,
 #                                  which runs after the boot's row and, in the reverse order, before
 #                                  it, and finishes without acting (part 6), an id made for the check
@@ -72,13 +72,13 @@
 #                                  hold is left to its next look (part 5); no text that release left
 #                                  reaches a connection, the look's new task does once the tester
 #                                  registers on this change's contract, and a report with its look id
-#                                  is taken, one with a stale id refused 409. Parts 9 and 10 run on a
-#                                  root that ran again while the way back ran, which kept its look's
-#                                  id: once the root has left the workflow and its tester holds this
+#                                  is taken, one with a stale id refused 409. The way back keeps every
+#                                  look id, so parts 9 and 10 run on a root whose look's id it kept:
+#                                  with the root out of the workflow and its tester holding this
 #                                  change's task of the look in a delivery that holds no look id, the
 #                                  boot gives the look a new id and a new task, and a report with the
 #                                  kept id is refused 409 and records nothing (part 9); while the root
-#                                  still runs, the boot keeps the id and sends no task of the look,
+#                                  runs again, the boot keeps the id and sends no task of the look,
 #                                  and the tester's report with that id is taken (part 10)
 #   id hidden                      c-id-hidden, the last step: no look id the run saw is in any body
 #                                  of GET /legion/v1/state, of the record route read_record calls or
