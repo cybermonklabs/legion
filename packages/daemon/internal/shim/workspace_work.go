@@ -34,13 +34,22 @@ func (s *shim) workspaceWork(request shimwire.WorkspaceWork) {
 // names in LEGION_WORKSPACE, with the jj of PATH and within the request's budget, as the adoption
 // does (openWorkspace). It answers the working copy's commit, whether that commit holds a change,
 // and every work commit (workspace.WorkRevset), newest first; the one thing it writes is jj's
-// snapshot of the working copy.
+// snapshot of the working copy. That snapshot is why it holds the workspace lock from before its
+// first jj command until its last one has ended (lockWorkspace), as the adoption does: a snapshot
+// that ran beside the adoption's change, with no lock of jj's between them, would commit an
+// operation beside the change's and leave @'s change divergent (runAdoption). A read the lock's
+// wait outlasts its budget for is refused, naming the lock and the wait.
 func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
 	opened, done, err := s.openWorkspace("read", s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
 		return "", false, nil, err
 	}
 	defer done()
+	unlock, err := s.lockWorkspace(opened, "workspace read")
+	if err != nil {
+		return "", false, nil, err
+	}
+	defer unlock()
 	run := func(args ...string) (string, error) { return opened.run(nil, args...) }
 	return workspace.ReadWork(run, opened.jj, opened.dir)
 }

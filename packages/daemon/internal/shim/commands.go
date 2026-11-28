@@ -115,16 +115,18 @@ func (s *shim) drainCommands() {
 }
 
 // openedWorkspace is what one request of the daemon's runs its commands with in the workspace
-// its role works in (openWorkspace): the workspace, the jj of PATH, the request's budget, and
-// runWithin, which runs one command there with the request's environment, with stdin fed to it,
-// ended at bound after the budget began, and answers its trimmed standard output
-// (workspace.RunCommand); its timeout names that bound. run runs a command within the whole
-// budget; the adoption's `jj workspace update-stale` runs within less, which leaves the reads
-// after it a reserve of the budget (updateReserve).
+// its role works in (openWorkspace): the workspace, the jj of PATH, the request's budget, ctx,
+// which that budget ends, and runWithin, which runs one command there with the request's
+// environment, with stdin fed to it, ended at bound after the budget began, and answers its
+// trimmed standard output (workspace.RunCommand); its timeout names that bound. run runs a
+// command within the whole budget; the adoption's `jj workspace update-stale` runs within less,
+// which leaves the reads after it a reserve of the budget (updateReserve). The waits for the
+// workspace's locks end with ctx (workspace_lock.go).
 type openedWorkspace struct {
 	dir       string
 	jj        string
 	budget    time.Duration
+	ctx       context.Context
 	runWithin func(bound time.Duration, stdin []byte, args ...string) (string, error)
 }
 
@@ -162,7 +164,7 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 		defer end()
 		return workspace.RunCommand(within, start, bound, started, env, dir, stdin, args)
 	}
-	return openedWorkspace{dir: dir, jj: jj, budget: budget, runWithin: runWithin}, cancel, nil
+	return openedWorkspace{dir: dir, jj: jj, budget: budget, ctx: ctx, runWithin: runWithin}, cancel, nil
 }
 
 // adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
@@ -208,10 +210,12 @@ func plural(n int, one, many string) string {
 // working copy's files or its state. So the adoption must keep the tree of the working-copy
 // commit: jj finds a working copy fresh only while that tree does not change, and a command that
 // changed it would leave the role's next jj command facing a stale working copy. The metaedit
-// rewrites the author alone, and `jj new` starts an empty commit on @, so both keep the tree. The
-// freshness check around them reads with the same flag (readFreshness); the one command of the
-// adoption that writes the working copy, `jj workspace update-stale`, runs only on a working copy
-// that check read as stale (bringUpToDate).
+// rewrites the author alone, and `jj new` starts an empty commit on @, so both keep the tree, and
+// so does exportHeadArgs's rewrite. The freshness check around them reads with the same flag
+// (readFreshness); the one command of the adoption that writes the working copy, `jj workspace
+// update-stale`, runs only on a working copy that check read as stale (bringUpToDate). With the
+// flag jj takes no working-copy lock either, so the adoption takes the workspace's locks itself
+// (workspace_lock.go).
 
 // adoptionArgs is the adoption's change of an undescribed working copy, in the one adoption the
 // daemon asks a role's shim to run before a phase task (runAdoption): its author becomes the
@@ -225,6 +229,20 @@ func adoptionArgs(jj, dir string) []string {
 func describedArgs(jj, dir string) []string {
 	return []string{jj, "--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", dir}
 }
+
+// exportHeadArgs rewrites @ with nothing changed (--force-rewrite: same tree, same author, same
+// description), which writes one operation, and at every operation it writes in a workspace that
+// shares its tree with git, jj points git's HEAD at @'s parent. runAdoption runs it where an
+// operation of another jj command was merged in beside its change: the merge writes no git HEAD,
+// so on the `jj new` branch git's HEAD can still name the described commit as it was before that
+// command's snapshot rewrote it.
+func exportHeadArgs(jj, dir string) []string {
+	return []string{jj, "--ignore-working-copy", "metaedit", "--force-rewrite", "-r", "@", "-R", dir}
+}
+
+// adoptionRounds is how many times at most the adoption runs a change: once, and again for each
+// time a jj command that wrote beside it overlapped it, up to this bound (runAdoption).
+const adoptionRounds = 3
 
 // runAdoption runs the adoption under the requested identity and budget, in the workspace the
 // shim's environment names in LEGION_WORKSPACE and with PATH's jj (openWorkspace): the one the
@@ -242,25 +260,60 @@ func describedArgs(jj, dir string) []string {
 // does, so a role's `git commit` reaches jj at its next ordinary command. A stale git index.lock
 // fails the adoption only where its second command writes an operation, after which jj resets git's
 // HEAD state and index (the metaedit's `Failed to reset Git HEAD state`); the read writes neither.
-// And the commands take no working-copy lock, so nothing holds a jj command the role runs meanwhile.
+// And the commands take no jj working-copy lock, so a jj command that snapshots this same workspace
+// is not held back by them: the adoption takes the workspace lock for its whole run, which keeps
+// the daemon's workspace read and any other adoption out (lockWorkspace), and it waits for jj's
+// working-copy lock before its first jj command and before the check after its change, so a
+// snapshot that holds that lock commits first (awaitWorkingCopy).
 //
 // A stale working copy, which jj refuses every ordinary command in, is brought up to date first:
 // the freshness check reads it with no snapshot (readFreshness), and only a working copy it reads
 // as stale runs `jj workspace update-stale` (bringUpToDate), which leaves the edits that no jj
 // command had recorded in a commit that is no longer checked out; the answer names each such
-// commit. The check runs once more after the change: the flagged commands take no working-copy
-// lock, so a jj command another workspace ran meanwhile can have left the working copy stale, and
-// then the update runs again and its commits join the answer. The adoption's own change keeps
-// @'s tree and labels, so where nothing else wrote, that check reads fresh.
+// commit, whatever the outcome. The adoption's own change keeps @'s tree and labels, so where
+// nothing else wrote, the check after it reads fresh. Something else can write all the same: a
+// jj command another workspace runs, which can leave the working copy stale, and a jj command
+// that snapshots this workspace, loaded the repository before the change and commits after it,
+// which commits an operation beside the change's. The next load merges the two, and @'s change is
+// then divergent: @ is the change's commit, while the working copy records the snapshot's tree,
+// which reads stale, or @ is the snapshot's commit, which reads fresh and carries the author it
+// had, or on the `jj new` branch @ is the described commit again. So the adoption's change is
+// done only when the check after it reads the working copy fresh and @ undescribed and authored by
+// the requested identity (adopted), which both changes produce. Where nothing wrote between the
+// start of the round and the check after its change (the head operation is the one the change
+// loaded: the round's first check's, or the update's), the change wrote nothing either: @ already
+// was undescribed and authored by that identity, and the second read is left out. Otherwise the
+// adoption runs again — the update of a stale working copy, the read, the one change — at most
+// adoptionRounds times in all, within the one budget, and past that it refuses, naming what the
+// last check found. A commit the first change wrote that an overlap left beside @ is left where it
+// is: it holds no edit of its own, since the metaedit's commit has the tree @ had before the
+// change and the commit of `jj new` is empty, and nothing the adoption reads tells it apart (its
+// change answers no commit id on its standard output), so an abandon of it would be a guess.
+//
+// The merge of an overlap's operation writes no git HEAD either, so on the `jj new` branch git's
+// HEAD can name the described commit as it was before the snapshot rewrote it, not @'s parent;
+// the jj this was measured with (0.46.0-sami.20261127-111037) names git's HEAD in no revset or
+// template. So once the change is done, the adoption reads whether an operation other than the
+// change's came in on top of the round's first head (overlapped): the head is a merge, or its one
+// parent is not that head. Where one did, the round's change is done but the adoption is not: the
+// next round's change is exportHeadArgs's rewrite, which writes nothing in @ and has jj point
+// git's HEAD at @'s parent, and the check runs once more, within the same bound of rounds. A
+// round no other command wrote beside writes nothing more.
+//
+// The checks see an overlap only where the snapshot commits before the check after the change
+// reads: a jj command of the role's own that loaded the repository before the change and takes
+// jj's working-copy lock only after that check commits its operation after the adoption has
+// answered, and the role's next jj command then meets a stale working copy or a divergent @
+// (docs/site's troubleshooting.md, "A role's own jj command can still overlap the adoption").
 //
 // Every command runs in the workspace itself, never in the shim's own directory: jj reads the
 // repository of the directory it runs in, whatever -R names, and migrates that repository's legacy
 // configuration (workspace.RunCommand). Every one runs through the same run under the one budget,
-// the update to that budget less a reserve the reads after it take (updateReserve). A failure is
-// answered in workspace.RunCommand's words, which name the command and its exit or its timeout,
-// with jj's standard error: the daemon decides what a failed adoption means. A shim without
-// LEGION_WORKSPACE was not started by a runtime, and refuses; a PATH without jj refuses naming jj
-// and the PATH searched (openWorkspace).
+// the update to that budget less a reserve the reads after it take (updateReserve), and the waits
+// for the locks inside it too. A failure is answered in workspace.RunCommand's words, which name
+// the command and its exit or its timeout, with jj's standard error: the daemon decides what a
+// failed adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and
+// refuses; a PATH without jj refuses naming jj and the PATH searched (openWorkspace).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (edits []string, err error) {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
@@ -269,34 +322,136 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (edits []string, e
 		return nil, err
 	}
 	defer done()
-	// upToDate brings a working copy the freshness check reads as stale up to date, adding the
-	// commits the update left the edits in to the answer.
-	upToDate := func() error {
-		fresh, operation := readFreshness(opened.read, func(line string) { s.log.Printf("[worker-shim] %s", line) })
-		if fresh {
-			return nil
-		}
-		left, err := s.bringUpToDate(opened, operation, budget-updateReserve(budget))
-		edits = append(edits, left...)
-		return err
+	unlock, err := s.lockWorkspace(opened, "adoption")
+	if err != nil {
+		return nil, err
 	}
-	if err := upToDate(); err != nil {
-		return edits, err
+	defer unlock()
+	// check waits for jj's working-copy lock and then reads whether the working copy is fresh.
+	check := func(when string) (freshness, error) {
+		if err := s.awaitWorkingCopy(opened, when); err != nil {
+			return freshness{}, err
+		}
+		return readFreshness(opened.read, func(line string) { s.log.Printf("[worker-shim] %s", line) }), nil
+	}
+	state, err := check("before its first jj command")
+	if err != nil {
+		return nil, err
 	}
 	dir, jj, run := opened.dir, opened.jj, opened.run
-	described, err := run(nil, describedArgs(jj, dir)...)
+	var found string
+	// exportHead is whether the next round's change is exportHeadArgs's rewrite: the last round's
+	// change was done, and an operation of another jj command came in beside it.
+	exportHead := false
+	for range adoptionRounds {
+		// base is the head operation the round's change loads: the one the check read, or on a
+		// stale working copy the one the update left.
+		base := state.head
+		if !state.fresh {
+			left, err := s.bringUpToDate(opened, state, budget-updateReserve(budget))
+			edits = append(edits, left...)
+			if err != nil {
+				return edits, err
+			}
+			if base, err = opened.head(); err != nil {
+				return edits, err
+			}
+		}
+		change := exportHeadArgs(jj, dir)
+		if !exportHead {
+			described, err := run(nil, describedArgs(jj, dir)...)
+			if err != nil {
+				return edits, err
+			}
+			change = adoptionArgs(jj, dir)
+			if described != "" {
+				// --ignore-working-copy as above adoptionArgs: the new commit is empty, so it keeps @'s tree.
+				change = []string{jj, "--ignore-working-copy", "new", "-R", dir}
+			}
+		}
+		if _, err := run(nil, change...); err != nil {
+			return edits, err
+		}
+		if state, err = check("before it checks the working copy after its change"); err != nil {
+			return edits, err
+		}
+		exportHead = false
+		switch {
+		case !state.fresh:
+			found = "the working copy stale"
+			continue
+		case state.head == base:
+			return edits, nil
+		}
+		if found, err = opened.adopted(request); err != nil {
+			return edits, err
+		}
+		if found != "" {
+			continue
+		}
+		merged, err := opened.overlapped(base)
+		if err != nil || !merged {
+			return edits, err
+		}
+		found, exportHead = "an operation of another jj command merged in beside the change, which leaves git's HEAD where it was", true
+	}
+	return edits, fmt.Errorf("worker-shim: the adoption ran its change %d times, and the check after the last found %s, not a fresh working copy whose @ is undescribed and authored by %s <%s>",
+		adoptionRounds, found, request.JJUser, request.JJEmail)
+}
+
+// head reads the repository's head operation with no snapshot, as the freshness check does.
+func (o openedWorkspace) head() (string, error) {
+	head, err := o.read("op", "log", "-n1", "--no-graph", "-T", "id")
 	if err != nil {
-		return edits, err
+		return "", err
 	}
-	change := adoptionArgs(jj, dir)
-	if described != "" {
-		// --ignore-working-copy as above adoptionArgs: the new commit is empty, so it keeps @'s tree.
-		change = []string{jj, "--ignore-working-copy", "new", "-R", dir}
+	if !isHex(head) {
+		return "", fmt.Errorf("jj op log -n1 -T id printed %q, which is no operation id", firstLine(head))
 	}
-	if _, err := run(nil, change...); err != nil {
-		return edits, err
+	return head, nil
+}
+
+// overlapped reads the head operation and its parents with no snapshot and answers whether an
+// operation of another jj command came in on top of base, the head the round's change loaded:
+// the head is neither base nor an operation whose one parent is base, which the change's own is.
+// A merge of two operations that ran beside each other is a head of two parents.
+func (o openedWorkspace) overlapped(base string) (bool, error) {
+	out, err := o.read("op", "log", "-n1", "--no-graph", "-T", `id ++ " " ++ parents.map(|p| p.id()).join(" ")`)
+	if err != nil {
+		return false, err
 	}
-	// upToDate appends to edits, so it runs before edits is read for the answer.
-	err = upToDate()
-	return edits, err
+	ids := strings.Fields(out)
+	if len(ids) < 2 || slices.ContainsFunc(ids, func(id string) bool { return !isHex(id) }) {
+		return false, fmt.Errorf("jj op log -n1 printed %q, which is no operation id followed by its parents'", firstLine(out))
+	}
+	head, parents := ids[0], ids[1:]
+	return head != base && !(len(parents) == 1 && parents[0] == base), nil
+}
+
+// adoptedTemplate prints whether @ is described and its author's name and email, one `key=value`
+// line each, so a name or an email that is empty still leaves its line.
+const adoptedTemplate = `"described=" ++ if(description, "yes", "no") ++ "\nname=" ++ author.name() ++ "\nemail=" ++ author.email() ++ "\n"`
+
+// adopted reads @ with no snapshot and answers what it found where @ is not what the adoption
+// makes, an undescribed commit authored by the requested identity, and "" where it is.
+func (o openedWorkspace) adopted(request shimwire.AdoptWorkingCopy) (found string, err error) {
+	out, err := o.read("log", "-r", "@", "--no-graph", "-T", adoptedTemplate)
+	if err != nil {
+		return "", err
+	}
+	fields := map[string]string{}
+	for line := range strings.Lines(out) {
+		key, value, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
+		fields[key] = value
+	}
+	switch described, name, email := fields["described"], fields["name"], fields["email"]; {
+	case described == "no" && name == request.JJUser && email == request.JJEmail:
+		return "", nil
+	case described == "yes":
+		return "@ described", nil
+	case described == "no":
+		return fmt.Sprintf("@ authored by %s <%s>", name, email), nil
+	default:
+		return fmt.Sprintf("what jj printed for @, which names no description and author: %q", firstLine(out)), nil
+	}
 }

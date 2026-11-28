@@ -35,10 +35,22 @@ func (o openedWorkspace) read(args ...string) (string, error) {
 	return o.run(nil, argv...)
 }
 
+// freshness is what readFreshness read: whether the working copy is fresh; the operation and the
+// tree it recorded, operation "" (and no tree) where the check's first command failed or printed
+// what does not parse; and the repository's head operation, "" where the check did not read it.
+// A fresh reading always carries all three.
+type freshness struct {
+	fresh     bool
+	operation string
+	tree      recordedTree
+	head      string
+}
+
 // readFreshness reads whether the working copy is fresh, as jj's own check decides it, with no
-// snapshot: every command it runs through read carries --ignore-working-copy. It answers the
-// operation the working copy recorded too, "" where the first command failed or printed what
-// does not parse, which bringUpToDate reads the change @ had at that operation from.
+// snapshot: every command it runs through read carries --ignore-working-copy. It answers what the
+// working copy recorded too, which bringUpToDate reads the change @ had at that operation from
+// and compares the commits it finds with, and the head operation, which runAdoption compares
+// across its change.
 //
 // The commands, in the order they run: `jj debug working-copy` prints the operation and the tree
 // the working copy recorded (parseWorkingCopy), and `jj op log -n1 -T id` the repository's head
@@ -48,12 +60,13 @@ func (o openedWorkspace) read(args ...string) (string, error) {
 // whether one operation is an ancestor of another: the recorded tree and labels equal to the
 // commit's, in order, and the recorded operation among those, is fresh, as jj finds a working
 // copy fresh whose recorded operation is an ancestor of the head and whose tree is still its
-// commit's. Every other case is stale, and so is each case the check cannot read, since a stale
-// reading of a fresh working copy costs one `jj workspace update-stale`, which answers that the
-// working copy is not stale, and a fresh reading of a stale one leaves the role's next jj
-// command to fail: a command that fails writes one warning line with its error, and an output
-// that does not parse one with its first line (warn).
-func readFreshness(read func(args ...string) (string, error), warn func(line string)) (fresh bool, operation string) {
+// commit's. Every other case is stale. So is a fresh working copy whose recorded operation is
+// not among those 1,000, and each case the check cannot read, since a stale reading of a fresh
+// working copy costs one `jj workspace update-stale`, which snapshots it and then finds nothing to
+// update, and a fresh reading of a stale one leaves the role's next jj command to fail: a command
+// that fails writes one warning line with its error, and an output that does not parse one with
+// its first line (warn).
+func readFreshness(read func(args ...string) (string, error), warn func(line string)) freshness {
 	failed := func(args []string, err error) {
 		warn(fmt.Sprintf("warning: the freshness check's `jj %s` failed, so the working copy is taken as stale and brought up to date: %q",
 			strings.Join(args, " "), shimwire.CutAnswerError(err.Error())))
@@ -74,75 +87,88 @@ func readFreshness(read func(args ...string) (string, error), warn func(line str
 
 	out, args, ok := run("debug", "working-copy")
 	if !ok {
-		return false, ""
+		return freshness{}
 	}
-	operation, recorded, err := parseWorkingCopy(out)
-	if err != nil {
+	var got freshness
+	var err error
+	if got.operation, got.tree, err = parseWorkingCopy(out); err != nil {
 		unread(args, out, err)
-		return false, ""
+		return freshness{}
 	}
 	head, args, ok := run("op", "log", "-n1", "--no-graph", "-T", "id")
 	if !ok {
-		return false, operation
+		return got
 	}
 	if !isHex(head) {
 		unread(args, head, errors.New("no operation id"))
-		return false, operation
+		return got
 	}
-	if head == operation {
-		return true, operation
+	got.head = head
+	if head == got.operation {
+		got.fresh = true
+		return got
 	}
 	commit, args, ok := run("log", "-r", "@", "--no-graph", "-T", "commit_id")
 	if !ok {
-		return false, operation
+		return got
 	}
 	if !isHex(commit) {
 		unread(args, commit, errors.New("no commit id"))
-		return false, operation
+		return got
 	}
 	dump, args, ok := run("debug", "object", "commit", commit)
 	if !ok {
-		return false, operation
+		return got
 	}
 	current, err := parseCommit(dump)
 	if err != nil {
 		unread(args, dump, err)
-		return false, operation
+		return got
 	}
-	if !recorded.equal(current) {
-		return false, operation
+	if !got.tree.equal(current) {
+		return got
 	}
 	listed, args, ok := run("op", "log", "-n", "1000", "--no-graph", "-T", `id ++ "\n"`)
 	if !ok {
-		return false, operation
+		return got
 	}
 	operations := workspace.OutputLines(listed)
 	if slices.ContainsFunc(operations, func(id string) bool { return !isHex(id) }) || len(operations) == 0 {
 		unread(args, listed, errors.New("a line that is no operation id"))
-		return false, operation
+		return got
 	}
-	return slices.Contains(operations, operation), operation
+	got.fresh = slices.Contains(operations, got.operation)
+	return got
 }
 
-// bringUpToDate runs `jj workspace update-stale` on a working copy readFreshness read as stale,
-// bounded to bound after the adoption's budget began, and answers each commit in which it left
-// the edits that no jj command had recorded. On a stale working copy the update snapshots those
-// edits into one commit of @'s change and checks out another, which does not hold them, so the
-// change is left divergent with the edits in the commit that is not checked out and no longer on
-// disk. So the commits of @'s change are read before the update and after it: each one that is
-// new and is not @ holds such edits. Where another workspace abandoned the working-copy commit,
-// @ is another change by now, and the update snapshots the edits into a commit of the change @
-// had at the operation the working copy recorded (operation), so that change is read too; with
-// no operation (the freshness check's first command failed or printed what does not parse) @'s
-// change alone is.
+// bringUpToDate runs `jj workspace update-stale` on a working copy readFreshness read as stale
+// (recorded), bounded to bound after the adoption's budget began, and answers each commit that
+// holds edits the update took off the disk. On a stale working copy the update snapshots the
+// edits that no jj command had recorded into one commit of @'s change and checks out another,
+// which does not hold them, so the change is left divergent with the edits in the commit that is
+// not checked out and no longer on disk. So the commits of @'s change are read before the update
+// and after it: each one that is new and is not @ holds such edits. Where another workspace
+// abandoned the working-copy commit, @ is another change by now, and the update snapshots the
+// edits into a commit of the change @ had at the operation the working copy recorded, so that
+// change is read too; with no recorded operation (the freshness check's first command failed or
+// printed what does not parse) @'s change alone is.
 //
-// A read before the update that fails refuses the adoption with its error, as does the read
-// after it. An update that fails refuses with its own error, which names the command and its
-// exit or its timeout (workspace.RunCommand), and still answers what the read after it found: an
-// update cut off at its bound may have written the commit already. That read runs in the reserve
-// the update's bound leaves (updateReserve), so it has the time to.
-func (s *shim) bringUpToDate(opened openedWorkspace, operation string, bound time.Duration) ([]string, error) {
-	changes, err := opened.changes(operation)
+// A jj command that snapshots this workspace beside the adoption's change can have committed the
+// edits already, in a commit of @'s change that the merge of the two operations left divergent
+// beside @ (runAdoption). The working copy then records that commit's tree, so the update has
+// nothing new to snapshot, and it checks out @, which does not hold the edits; that commit was
+// there before the update. So each commit of the changes that is not @ after the update and was
+// there before it is named too where its tree and labels, as readFreshness compares them, are the
+// tree the working copy recorded before the update, and that tree is not @'s after it
+// (holdingTree): the edits that were on disk are in that commit, and off the disk now.
+//
+// A read before the update that fails refuses the adoption with its error, as does a read after
+// it. An update that fails refuses with its own error, which names the command and its exit or
+// its timeout (workspace.RunCommand), and still answers what the reads after it found: an update
+// cut off at its bound may have written the commit already. Those reads run in the reserve the
+// update's bound leaves (updateReserve), so they have the time to.
+func (s *shim) bringUpToDate(opened openedWorkspace, recorded freshness, bound time.Duration) ([]string, error) {
+	changes, err := opened.changes(recorded.operation)
 	if err != nil {
 		return nil, err
 	}
@@ -161,13 +187,63 @@ func (s *shim) bringUpToDate(opened openedWorkspace, operation string, bound tim
 		return nil, err
 	}
 	held := workspace.OutputLines(before)
-	var edits []string
+	var edits, kept []string
 	for _, commit := range workspace.OutputLines(after) {
-		if !slices.Contains(held, commit) {
+		if slices.Contains(held, commit) {
+			kept = append(kept, commit)
+		} else {
 			edits = append(edits, commit)
 		}
 	}
-	return edits, updateErr
+	if len(kept) == 0 || recorded.operation == "" {
+		return edits, updateErr
+	}
+	holding, err := opened.holdingTree(kept, recorded.tree)
+	edits = append(edits, holding...)
+	if updateErr != nil {
+		return edits, updateErr
+	}
+	return edits, err
+}
+
+// holdingTree answers each of commits whose tree and labels are tree, as readFreshness compares
+// them (parseCommit), and none where @'s commit has that tree: what such a commit holds is then on
+// disk. A read that fails, or a dump that does not parse, ends the reads with its error and the
+// commits found before it.
+func (o openedWorkspace) holdingTree(commits []string, tree recordedTree) ([]string, error) {
+	treeOf := func(commit string) (recordedTree, error) {
+		dump, err := o.read("debug", "object", "commit", commit)
+		if err != nil {
+			return recordedTree{}, err
+		}
+		got, err := parseCommit(dump)
+		if err != nil {
+			return recordedTree{}, fmt.Errorf("jj debug object commit %s printed what does not parse (%w); its first line: %q", commit, err, firstLine(dump))
+		}
+		return got, nil
+	}
+	at, err := o.read("log", "-r", "@", "--no-graph", "-T", "commit_id")
+	if err != nil {
+		return nil, err
+	}
+	if !isHex(at) {
+		return nil, fmt.Errorf("jj log -r @ -T commit_id printed %q, which is no commit id", firstLine(at))
+	}
+	current, err := treeOf(at)
+	if err != nil || current.equal(tree) {
+		return nil, err
+	}
+	var holding []string
+	for _, commit := range commits {
+		got, err := treeOf(commit)
+		if err != nil {
+			return holding, err
+		}
+		if got.equal(tree) {
+			holding = append(holding, commit)
+		}
+	}
+	return holding, nil
 }
 
 // changes is @'s change, and the change @ had at operation where that is another one: the two

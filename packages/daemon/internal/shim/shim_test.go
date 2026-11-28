@@ -1491,9 +1491,12 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 	jj := fixturegit.PinnedJJ(t)
 	// The freshness check finds the working copy fresh on its first two reads, the recorded
 	// operation being the head; after the change it finds that operation behind the head, and
-	// reads @'s commit, its dump and the head's operations to find the tree and labels kept.
+	// reads @'s commit, its dump and the head's operations to find the tree and labels kept. The
+	// head having moved, it then reads whether @ is undescribed and authored by the requested
+	// identity, which the change made it, and the head operation's parents, which are the one the
+	// change loaded: no other jj command wrote beside it, so the adoption writes nothing more.
 	const check, checkAfter = "--ignore-working-copy debug\n--ignore-working-copy op\n",
-		"--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy debug\n--ignore-working-copy op\n"
+		"--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy debug\n--ignore-working-copy op\n--ignore-working-copy log\n--ignore-working-copy op\n"
 	for _, tc := range []struct {
 		name       string
 		leave      []string // what the previous role ran once README.md was written, nil for nothing

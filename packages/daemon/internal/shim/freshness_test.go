@@ -157,7 +157,8 @@ func TestTheFreshnessCheckReadsEachTreeShapeJJPrints(t *testing.T) {
 				t.Fatalf("the check ran jj %s, which is none of its commands", command)
 				return "", nil
 			}
-			fresh, operation := readFreshness(read, func(line string) { warnings = append(warnings, line) })
+			got := readFreshness(read, func(line string) { warnings = append(warnings, line) })
+			fresh, operation := got.fresh, got.operation
 			if fresh != tc.fresh {
 				t.Errorf("the check read the working copy fresh=%v, want %v", fresh, tc.fresh)
 			}
