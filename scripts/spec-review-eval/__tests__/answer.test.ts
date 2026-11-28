@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { textsHeading } from "../../../packages/envoy-client/src/dispatch-commands/spec-form-texts";
 import {
   compareFindings,
   type Expectation,
@@ -32,19 +33,9 @@ describe("parseFindings", () => {
     ).toEqual({
       verdict: "findings",
       findings: [
-        { kind: "principle", node: "lease-safety", subject: null, sentence: "It states an aim." },
-        {
-          kind: "repeated-meaning",
-          node: "terms",
-          subject: "work item",
-          sentence: "Its definition gives the meaning of issue.",
-        },
-        {
-          kind: "form-limit",
-          node: "prose",
-          subject: "pull-request",
-          sentence: "The paragraph names a pull request as 见#12.",
-        },
+        { kind: "principle", node: "lease-safety", subject: null },
+        { kind: "repeated-meaning", node: "terms", subject: "work item" },
+        { kind: "form-limit", node: "prose", subject: "pull-request" },
       ],
     });
   });
@@ -167,26 +158,24 @@ describe("specFormAnswered", () => {
       }),
     ].join("\n");
 
-  test("finds a dispatch spec-form call whose own result holds Dispatch's answer", () => {
+  const heading = textsHeading("spec.md", 1);
+
+  test("finds a dispatch spec-form call whose own result holds the client's line for the spec", () => {
     expect(
       specFormAnswered(
         call(
           "dispatch spec-form --issue ACME-4 --artifact spec.md",
-          "Dispatch read these texts in spec.md version 1, each by its kind and its node:\nstatement inbox-simple\n"
-        )
+          `${heading}\nstatement inbox-simple\n`
+        ),
+        heading
       )
     ).toBe(true);
   });
 
-  // The effect of the call, not its words: a call that only names the command, or one that
-  // failed, holds no answer of Dispatch.
-  test("finds none in a call that echoes the words, or in a spec-form call that failed", () => {
-    expect(specFormAnswered(call("echo dispatch spec-form", "dispatch spec-form\n"))).toBe(false);
-    expect(
-      specFormAnswered(
-        call("dispatch spec-form --issue ACME-4 --artifact spec.md", "NOT_FOUND: not found\n")
-      )
-    ).toBe(false);
+  test("finds none in a call that echoes the words", () => {
+    expect(specFormAnswered(call("echo dispatch spec-form", "dispatch spec-form\n"), heading)).toBe(
+      false
+    );
   });
 });
 
@@ -200,6 +189,16 @@ describe("evaluationNamed", () => {
       event("tool_execution_end", "bash", {
         result: { content: [{ type: "text", text: "statement inbox-simple" }] },
       }),
+      event("tool_execution_end", "bash", {
+        result: {
+          content: [
+            {
+              type: "text",
+              text: "/review/state/sessions/a/state.json\n/review/state/sessions/a/results.jsonl",
+            },
+          ],
+        },
+      }),
     ];
     expect(evaluationNamed(honest.join("\n"))).toEqual([]);
     const searched = [
@@ -209,12 +208,10 @@ describe("evaluationNamed", () => {
           content: [{ type: "text", text: "/srv/legion/scripts/spec-review-eval/expected.json" }],
         },
       }),
-      event("tool_execution_start", "read", { args: { path: "/srv/out/run-1/a/events.jsonl" } }),
     ];
     expect(evaluationNamed(searched.join("\n"))).toEqual([
       "bash result names spec-review-eval",
       "bash result names expected.json",
-      "read call names events.jsonl",
     ]);
   });
 });

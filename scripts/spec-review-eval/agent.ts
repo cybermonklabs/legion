@@ -8,13 +8,17 @@
  *   that in the agent's own sandbox, and refuses the run (exit 2) where it does not hold.
  * - It does not hide the system's directories. A checkout or an --out under one of them, such as
  *   /usr/local/src, is in the agent's reach, so the probe refuses that run and names the path.
- * - It does not cut the network, which reaches the stack and the model gateway. A copy of the
- *   repository from the network is in the agent's reach. evaluationNamed fails a run whose
- *   transcript names the command's files, but a command that never prints those names is unseen.
+ * - It does not cut the network, which reaches the stack and the model gateway, so a copy of the
+ *   repository from the network is in the agent's reach (EVALUATION_NAMES in answer.ts says what
+ *   catches such a copy, and what does not).
+ *
+ * The agent's omp gets no models.yml of the caller's, which would put every provider's key in its
+ * reach: it reaches the model only through GATEWAY_VARIABLES. So the command refuses to run where
+ * one of them is not set, and proveSandbox refuses a model that omp in the sandbox does not list.
  */
 import { copyFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CannotRunError } from "../approval-eval/corpus-io";
+import { CannotRunError, recordOf } from "../approval-eval/corpus-io";
 import { answerOf, PROFILE } from "../approval-eval/fresh-agent";
 
 /** The agent's own directory inside its sandbox: its home, its work, its state and the skill. */
@@ -41,7 +45,7 @@ const SYSTEM = [
 /** How long one agent run may take before it is killed and counted as a failed run. */
 const RUN_TIMEOUT_MS = 600_000;
 
-/** What every sandbox binds from the caller's machine: bwrap, omp and the compiled `dispatch`. */
+/** The caller's bwrap, and the omp and compiled `dispatch` that every sandbox binds read-only. */
 export interface Sandbox {
   readonly bwrap: string;
   readonly omp: string;
@@ -56,6 +60,9 @@ export interface Run {
   readonly stderr: string;
   readonly code: number;
 }
+
+/** The caller's two variables that reach the model gateway: the only values the agent takes from it. */
+export const GATEWAY_VARIABLES = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"] as const;
 
 export function promptOf(issue: string): string {
   return `You review a change request. Read ${SKILL} and follow it for issue ${issue}, document spec.md.`;
@@ -81,21 +88,20 @@ export function environmentOf(
     DISPATCH_SESSION_ID: session,
     DISPATCH_STATE_DIR: STATE,
   };
-  for (const name of ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]) {
+  for (const name of GATEWAY_VARIABLES) {
     const value = caller[name];
     if (value !== undefined) environment[name] = value;
   }
   return environment;
 }
 
-/**
- * bwrap's arguments for the agent whose own directory is `own` on the caller's machine: the
- * system's directories read-only, a /tmp of its own, `own` at /review, and omp and `dispatch`
- * read-only. It shares the network, which reaches the stack and the model gateway.
- */
+/** bwrap's arguments for the agent whose own directory is `own` on the caller's machine. */
 export function sandboxArgs(sandbox: Sandbox, own: string): string[] {
   return [
     "--die-with-parent",
+    // A session of its own, so the agent holds no terminal of the caller's: through that terminal
+    // a process in the sandbox could push keystrokes for the caller's shell to run (CVE-2017-5226).
+    "--new-session",
     "--unshare-all",
     "--share-net",
     ...SYSTEM.flatMap((path) => ["--ro-bind-try", path, path]),
@@ -180,15 +186,74 @@ export function probeProblems(
 }
 
 /**
- * Refuses the run unless the agent's sandbox shows it its own files and runs omp there, and hides
- * each path of `hidden`: the caller's paths that hold the expected answers and earlier runs'
- * transcripts. The probe is the same sandbox as the agent's, so a sandbox that cannot hide them
- * stops the command before the agent reads them.
+ * What is wrong where `printed`, the output of `omp models find <model> --json` in the agent's
+ * sandbox, lists no model `model` by its id or its selector; null where it lists it. omp there
+ * lists a model of the gateway only with both GATEWAY_VARIABLES, and never a model that only the
+ * caller's models.yml defines.
+ */
+export function modelProblem(printed: string, model: string): string | null {
+  let models: unknown;
+  try {
+    models = recordOf(JSON.parse(printed))?.models;
+  } catch {
+    models = undefined;
+  }
+  if (!Array.isArray(models)) {
+    return `omp in the agent's sandbox printed no list of models for ${model}: ${printed.trim().slice(0, 200) || "nothing"}`;
+  }
+  const listed = models.some((one) => {
+    const record = recordOf(one);
+    return record?.id === model || record?.selector === model;
+  });
+  return listed
+    ? null
+    : `omp in the agent's sandbox lists no model ${model}: the agent reaches a model only through ${GATEWAY_VARIABLES.join(" and ")}, and it gets no models.yml`;
+}
+
+/** What a command in the agent's sandbox printed, and its exit status. */
+interface Sandboxed {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly code: number;
+}
+
+/** Runs `command` in the sandbox of the agent whose own directory is `own`, with no stdin. */
+async function sandboxed(
+  sandbox: Sandbox,
+  own: string,
+  environment: Record<string, string>,
+  command: readonly string[],
+  timeout?: number
+): Promise<Sandboxed> {
+  const child = Bun.spawn({
+    cmd: [sandbox.bwrap, ...sandboxArgs(sandbox, own), ...command],
+    env: environment,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+    ...(timeout === undefined ? {} : { timeout }),
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, code };
+}
+
+/**
+ * Refuses the run unless the agent's sandbox shows it its own files and runs omp there, hides
+ * each path of `hidden`, the caller's paths that hold the expected answers and earlier runs'
+ * transcripts, and lists `model` to omp with the agent's own `environment`. The probe is the same
+ * sandbox and the same environment as the agent's, so a sandbox that cannot hide the answers, or
+ * an agent that cannot reach its model, stops the command before any agent runs.
  */
 export async function proveSandbox(
   sandbox: Sandbox,
   own: string,
-  hidden: readonly string[]
+  hidden: readonly string[],
+  model: string,
+  environment: Record<string, string>
 ): Promise<void> {
   const mine = [SKILL, DISPATCH, HOME, WORK];
   const script = [
@@ -197,32 +262,39 @@ export async function proveSandbox(
     "done",
     `if ${OMP} --version >/dev/null 2>&1; then echo "omp runs"; fi`,
   ].join("\n");
-  const child = Bun.spawn({
-    cmd: [
-      sandbox.bwrap,
-      ...sandboxArgs(sandbox, own),
-      "/bin/sh",
-      "-c",
-      script,
-      "probe",
-      ...mine,
-      ...hidden,
-    ],
-    env: { HOME, PATH: `${TOOLS}:/usr/local/bin:/usr/bin:/bin` },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [printed, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
+  const probe = await sandboxed(sandbox, own, environment, [
+    "/bin/sh",
+    "-c",
+    script,
+    "probe",
+    ...mine,
+    ...hidden,
   ]);
   const problems =
-    code === 0 ? probeProblems(printed, mine, hidden) : [`bwrap exited ${code}: ${stderr.trim()}`];
+    probe.code === 0
+      ? probeProblems(probe.stdout, mine, hidden)
+      : [`bwrap exited ${probe.code}: ${probe.stderr.trim()}`];
   if (problems.length > 0) {
     throw new CannotRunError(
       `the command refuses the run: the agent's sandbox cannot hide the answers\n${problems.join("\n")}`
+    );
+  }
+  const listing = await sandboxed(sandbox, own, environment, [
+    OMP,
+    "--profile",
+    PROFILE,
+    "models",
+    "find",
+    model,
+    "--json",
+  ]);
+  const problem =
+    listing.code === 0
+      ? modelProblem(listing.stdout, model)
+      : `omp models find exited ${listing.code} in the agent's sandbox: ${listing.stderr.trim()}`;
+  if (problem !== null) {
+    throw new CannotRunError(
+      `the command refuses the run: no agent can reach its model\n${problem}`
     );
   }
 }
@@ -235,10 +307,11 @@ export async function review(
   prompt: string,
   environment: Record<string, string>
 ): Promise<Run> {
-  const child = Bun.spawn({
-    cmd: [
-      sandbox.bwrap,
-      ...sandboxArgs(sandbox, own),
+  const { stdout, stderr, code } = await sandboxed(
+    sandbox,
+    own,
+    environment,
+    [
       OMP,
       "--profile",
       PROFILE,
@@ -259,16 +332,7 @@ export async function review(
       "-p",
       prompt,
     ],
-    env: environment,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    timeout: RUN_TIMEOUT_MS,
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
+    RUN_TIMEOUT_MS
+  );
   return { ...answerOf(stdout), stdout, stderr, code };
 }

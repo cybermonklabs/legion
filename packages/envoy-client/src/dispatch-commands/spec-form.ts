@@ -8,6 +8,7 @@ import {
   optionalString,
 } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
+import { textsHeading } from "./spec-form-texts";
 
 // `dispatch spec-form` and the line `dispatch request-approval` prints on the form of The Spec.
 // The server judges the form (`specFormOf` in packages/envoy/internal/dispatch/api/spec_form.go);
@@ -119,12 +120,7 @@ function textLines(form: SpecFormRead): string[] {
     ...(form.nodes ?? []).map(({ kind, node }) => `${kind} ${node}`),
     ...(form.definitions ?? []).map(({ term }) => `definition ${term}`),
   ];
-  return texts.length === 0
-    ? []
-    : [
-        `Dispatch read these texts in ${form.name} version ${form.version}, each by its kind and its node:`,
-        ...texts,
-      ];
+  return texts.length === 0 ? [] : [textsHeading(form.name, form.version), ...texts];
 }
 
 /**

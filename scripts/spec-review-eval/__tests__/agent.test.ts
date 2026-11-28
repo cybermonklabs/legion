@@ -2,7 +2,15 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { environmentOf, probeProblems, proveSandbox, type Sandbox, writeAgent } from "../agent";
+import {
+  environmentOf,
+  modelProblem,
+  probeProblems,
+  proveSandbox,
+  type Sandbox,
+  sandboxArgs,
+  writeAgent,
+} from "../agent";
 
 const STACK = { url: "http://127.0.0.1:40000", token: "dispatch-stack-token" };
 
@@ -59,7 +67,6 @@ describe("probeProblems", () => {
     ]);
   });
 
-  // A path with no line saw nothing, so it proves nothing hidden.
   test("fails a hidden path that the probe gave no line for", () => {
     expect(
       probeProblems("seen /review/SKILL.md\nseen /opt/bin/dispatch\nomp runs\n", own, hidden)
@@ -70,13 +77,45 @@ describe("probeProblems", () => {
   });
 });
 
-// The sandbox itself, where bubblewrap can start one on this machine.
+describe("modelProblem", () => {
+  const MODEL = "claude-opus-5-5";
+
+  test("passes a list that holds the model by its id or by its selector", () => {
+    expect(
+      modelProblem(`{"models":[{"id":"${MODEL}","selector":"anthropic/${MODEL}"}]}`, MODEL)
+    ).toBe(null);
+    expect(
+      modelProblem(
+        `{"models":[{"id":"${MODEL}","selector":"anthropic/${MODEL}"}]}`,
+        `anthropic/${MODEL}`
+      )
+    ).toBe(null);
+  });
+
+  test("fails a list without the model, as omp prints with no key, and names the two variables", () => {
+    expect(modelProblem('{"models":[]}', MODEL)).toBe(
+      `omp in the agent's sandbox lists no model ${MODEL}: the agent reaches a model only through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY, and it gets no models.yml`
+    );
+  });
+
+  test("fails an output that is no list of models", () => {
+    expect(modelProblem("No models available.\n", MODEL)).toBe(
+      `omp in the agent's sandbox printed no list of models for ${MODEL}: No models available.`
+    );
+  });
+});
+
+// The sandbox itself, where bubblewrap can start one on this machine. Under GITHUB_ACTIONS these
+// rows run on every machine: the test job installs bubblewrap (ci-job-test.yaml), so there a
+// sandbox that cannot start fails them rather than skipping them.
 const bwrap = Bun.which("bwrap");
 const bwrapRuns =
   bwrap !== null &&
   Bun.spawnSync({ cmd: [bwrap, "--ro-bind", "/", "/", "true"], stderr: "ignore" }).exitCode === 0;
 
-describe.skipIf(!bwrapRuns)("proveSandbox", () => {
+describe.skipIf(!bwrapRuns && process.env.GITHUB_ACTIONS !== "true")("proveSandbox", () => {
+  const MODEL = "claude-opus-5-5";
+  const GATEWAY = { ANTHROPIC_BASE_URL: "https://gateway.example", ANTHROPIC_API_KEY: "a-key" };
   const EXPECTED = resolve(import.meta.dir, "..", "expected.json");
   let scratch = "";
   let sandbox: Sandbox;
@@ -86,7 +125,19 @@ describe.skipIf(!bwrapRuns)("proveSandbox", () => {
   beforeAll(async () => {
     scratch = await mkdtemp(join(tmpdir(), "spec-review-eval-sandbox-"));
     const omp = join(scratch, "omp");
-    await writeFile(omp, "#!/bin/sh\nexit 0\n", "utf8");
+    // A stand-in omp that lists the model, as omp does, only where it has the key.
+    await writeFile(
+      omp,
+      [
+        "#!/bin/sh",
+        'if [ "$3 $4" = "models find" ]; then',
+        `  if [ -n "$ANTHROPIC_API_KEY" ] && [ "$5" = "${MODEL}" ]; then echo '{"models":[{"id":"${MODEL}"}]}'; else echo '{"models":[]}'; fi`,
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
     await chmod(omp, 0o755);
     const dispatch = join(scratch, "dispatch");
     await writeFile(dispatch, "#!/bin/sh\nexit 0\n", "utf8");
@@ -105,12 +156,54 @@ describe.skipIf(!bwrapRuns)("proveSandbox", () => {
   });
 
   test("hides an earlier run's transcript in the caller's TMPDIR and the checkout's expected.json", async () => {
-    await proveSandbox(sandbox, own, [earlier, EXPECTED]);
+    await proveSandbox(
+      sandbox,
+      own,
+      [earlier, EXPECTED],
+      MODEL,
+      environmentOf(STACK, "session-1", GATEWAY)
+    );
   });
 
   test("refuses the run where the sandbox shows a path that must be hidden", async () => {
-    await expect(proveSandbox(sandbox, own, [earlier, "/usr/bin/env"])).rejects.toThrow(
-      "the agent's sandbox shows it /usr/bin/env, which holds the answers"
-    );
+    await expect(
+      proveSandbox(
+        sandbox,
+        own,
+        [earlier, "/usr/bin/env"],
+        MODEL,
+        environmentOf(STACK, "session-1", GATEWAY)
+      )
+    ).rejects.toThrow("the agent's sandbox shows it /usr/bin/env, which holds the answers");
+  });
+
+  test("refuses the run where omp in the sandbox, with the agent's environment, lists no model", async () => {
+    await expect(
+      proveSandbox(
+        sandbox,
+        own,
+        [earlier, EXPECTED],
+        MODEL,
+        environmentOf(STACK, "session-1", { ANTHROPIC_BASE_URL: GATEWAY.ANTHROPIC_BASE_URL })
+      )
+    ).rejects.toThrow(`omp in the agent's sandbox lists no model ${MODEL}`);
+  });
+
+  // The kernel gives a session whose leader is outside the sandbox's process namespace, as the
+  // caller's is, the id 0. In a session of its own, the sandbox's first process, id 1, leads it.
+  test("starts the agent in a session of its own, which holds no terminal of the caller's", () => {
+    const child = Bun.spawnSync({
+      cmd: [
+        sandbox.bwrap,
+        ...sandboxArgs(sandbox, own),
+        "/bin/sh",
+        "-c",
+        'read -r stat < /proc/$$/stat; echo "$stat"',
+      ],
+      stderr: "pipe",
+    });
+    const session = child.stdout.toString().trim().split(" ")[5];
+    expect(child.exitCode).toBe(0);
+    expect(session).toBe("1");
   });
 });

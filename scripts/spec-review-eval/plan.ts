@@ -35,11 +35,15 @@ export interface FormFinding {
 
 /**
  * What the evaluation reads of the server's answer to `GET /api/v1/artifacts/{id}/spec-form`: the
- * scope and the findings (formProblems), and what the application's own reader read in the version
- * (readingProblems): each text by its kind and its node, each term that the version defines, the
- * root's list of terms, and each approved version under the root that Dispatch cannot read.
+ * document's name and version, which name the line `dispatch spec-form` prints before its texts,
+ * the scope and the findings (formProblems), and what the application's own reader read in the
+ * version (readingProblems): each text by its kind and its node, each term that the version
+ * defines, the root's list of terms, and each approved version under the root that Dispatch cannot
+ * read.
  */
 export interface FormRead {
+  readonly name: string;
+  readonly version: number;
   readonly in_scope: boolean;
   readonly scope: string;
   readonly findings: readonly FormFinding[];
@@ -102,9 +106,8 @@ export function formProblems(fixture: Fixture, read: FormRead): string[] {
  * Dispatch. Each planted and listed node is a text that Dispatch read, and each item at the node
  * `terms` is a term that the request defines. A planted undefined noun is a term of neither the
  * root's list nor the request. A planted other meaning, and a listed noun of a text, is a term of
- * one of them, so the reviewer finds it defined. A planted `form-limit` names a rule of the form,
- * no term, and its node can be `prose`, which Dispatch does not read. An approved version under
- * the root that Dispatch cannot read leaves the list of terms partial, so it is a problem too.
+ * one of them, so the reviewer finds it defined. An approved version under the root that Dispatch
+ * cannot read leaves the list of terms partial, so it is a problem too.
  */
 export function readingProblems(fixture: Fixture, read: FormRead): string[] {
   const problems = (read.unread ?? []).map(({ line }) => `${fixture.id}: ${line}`);
@@ -113,12 +116,6 @@ export function readingProblems(fixture: Fixture, read: FormRead): string[] {
   const listed = new Set((read.terms ?? []).map(({ term }) => normal(term)));
   for (const item of [...fixture.planted, ...fixture.mustNotName]) {
     const what = `${fixture.id}: ${item.kind ?? "the listed node"} ${label(item.node, item.subject)}`;
-    if (item.kind === "form-limit") {
-      if (!["prose", "terms"].includes(item.node) && !texts.has(item.node)) {
-        problems.push(`${what} is no text that Dispatch read`);
-      }
-      continue;
-    }
     if (item.node === "terms") {
       if (item.subject === undefined || !defined.has(normal(item.subject))) {
         problems.push(`${what} is no term that the request defines`);

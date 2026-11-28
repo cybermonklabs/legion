@@ -8,13 +8,15 @@
  *
  * Each agent runs in a bubblewrap sandbox (agent.ts), so `bwrap` must be installed. The exit
  * status is 0 when every run passes, 1 when one fails, and 2 when the command cannot run: a flag
- * it refuses, an --out that is no directory or is not empty, a stack that does not start, a sandbox
- * that cannot hide the answers, or any other error before every run has its verdict.
+ * it refuses, ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY not set, an --out that is no directory or is
+ * not empty, a stack that does not start, a sandbox that cannot hide the answers, a model that omp
+ * in the sandbox does not list, or any other error before every run has its verdict.
  */
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { textsHeading } from "../../packages/envoy-client/src/dispatch-commands/spec-form-texts";
 import {
   type DispatchStack,
   startDispatchStack,
@@ -24,6 +26,7 @@ import { MODEL } from "../approval-eval/fresh-agent";
 import {
   compileDispatch,
   environmentOf,
+  GATEWAY_VARIABLES,
   promptOf,
   proveSandbox,
   review,
@@ -62,7 +65,10 @@ interface Flags {
 const USAGE =
   "usage: ANTHROPIC_BASE_URL=<gateway> ANTHROPIC_API_KEY=<key> DISPATCH_TEST_DATABASE_URL=<postgres> bun scripts/spec-review-eval/run.ts [--runs N] [--omp <omp executable>] [--model <model>] [--fixture <id>]... [--out <dir>]";
 
-function readFlags(argv: readonly string[]): Flags {
+function readFlags(
+  argv: readonly string[],
+  caller: Readonly<Record<string, string | undefined>>
+): Flags {
   let values: { runs?: string; omp?: string; model?: string; fixture?: string[]; out?: string };
   try {
     ({ values } = parseArgs({
@@ -79,6 +85,12 @@ function readFlags(argv: readonly string[]): Flags {
     }));
   } catch (error) {
     throw new CannotRunError(`${error instanceof Error ? error.message : String(error)}\n${USAGE}`);
+  }
+  const unset = GATEWAY_VARIABLES.filter((name) => (caller[name] ?? "") === "");
+  if (unset.length > 0) {
+    throw new CannotRunError(
+      `${unset.join(" and ")} ${unset.length === 1 ? "is" : "are"} not set, and no agent can reach a model without ${GATEWAY_VARIABLES.join(" and ")}: the agent's omp gets no models.yml\n${USAGE}`
+    );
   }
   const runs = Number(values.runs ?? "1");
   if (!Number.isInteger(runs) || runs < 1)
@@ -122,6 +134,11 @@ interface Seeded {
   readonly fixture: Fixture;
   readonly issue: string;
   readonly artifact: string;
+}
+
+/** A seeded fixture with the line that `dispatch spec-form` prints before the texts of its spec. */
+interface Checked extends Seeded {
+  readonly heading: string;
 }
 
 /**
@@ -194,21 +211,25 @@ async function seed(
 
 /**
  * Refuses the run unless the form check of Dispatch reads each fixture in scope with no finding,
- * and what the application's own reader read holds each node and term of its expectation.
+ * and what the application's own reader read holds each node and term of its expectation. Each
+ * fixture gets the line that an answer of `dispatch spec-form` prints for its spec's version.
  */
-async function checkForm(stack: DispatchStack, seeded: readonly Seeded[]): Promise<void> {
+async function checkForm(stack: DispatchStack, seeded: readonly Seeded[]): Promise<Checked[]> {
   const problems: string[] = [];
-  for (const { fixture, artifact } of seeded) {
+  const checked: Checked[] = [];
+  for (const one of seeded) {
     const read = await call<FormRead>(
       stack,
       "GET",
-      `/api/v1/artifacts/${artifact}/spec-form`,
+      `/api/v1/artifacts/${one.artifact}/spec-form`,
       undefined,
       "agent"
     );
-    problems.push(...formProblems(fixture, read), ...readingProblems(fixture, read));
+    problems.push(...formProblems(one.fixture, read), ...readingProblems(one.fixture, read));
+    checked.push({ ...one, heading: textsHeading(read.name, read.version) });
   }
   if (problems.length > 0) throw new CannotRunError(problems.join("\n"));
+  return checked;
 }
 
 /** Refuses an --out that is a file or holds anything, as an earlier run's --out does. */
@@ -258,8 +279,7 @@ async function evaluate(flags: Flags): Promise<number> {
         env: { DISPATCH_SPEC_ROOTS: plan.roots.map((root) => root.key).join(",") },
       });
       try {
-        const seeded = await seed(stack, plan, fixtures);
-        await checkForm(stack, seeded);
+        const checked = await checkForm(stack, await seed(stack, plan, fixtures));
         if (sandbox === null) {
           const bwrap = Bun.which("bwrap");
           if (bwrap === null) {
@@ -271,17 +291,12 @@ async function evaluate(flags: Flags): Promise<number> {
             dispatch: await compileDispatch(REPO, join(agents, "dispatch")),
           };
         }
-        for (const [index, { fixture, issue }] of seeded.entries()) {
+        for (const [index, { fixture, issue, heading }] of checked.entries()) {
           const own = join(agents, `${run}-${index + 1}`);
+          const environment = environmentOf(stack, crypto.randomUUID(), process.env);
           await writeAgent(own, SKILL);
-          await proveSandbox(sandbox, own, hidden);
-          const answer = await review(
-            sandbox,
-            own,
-            flags.model,
-            promptOf(issue),
-            environmentOf(stack, crypto.randomUUID(), process.env)
-          );
+          await proveSandbox(sandbox, own, hidden, flags.model, environment);
+          const answer = await review(sandbox, own, flags.model, promptOf(issue), environment);
           const records = join(out, `run-${run}`, fixture.id);
           await mkdir(records, { recursive: true });
           await writeFile(join(records, "events.jsonl"), answer.stdout, "utf8");
@@ -289,7 +304,7 @@ async function evaluate(flags: Flags): Promise<number> {
           const problems = [
             ...(answer.code === 0 ? [] : [`the agent exited ${answer.code}`]),
             ...compareFindings(fixture, parseFindings(answer.text)).problems,
-            ...(specFormAnswered(answer.stdout)
+            ...(specFormAnswered(answer.stdout, heading)
               ? []
               : ["the transcript holds no dispatch spec-form call that Dispatch answered"]),
             ...evaluationNamed(answer.stdout).map((named) => `the transcript's ${named}`),
@@ -334,7 +349,7 @@ async function evaluate(flags: Flags): Promise<number> {
  */
 async function main(argv: readonly string[]): Promise<number> {
   try {
-    return await evaluate(readFlags(argv));
+    return await evaluate(readFlags(argv, process.env));
   } catch (error) {
     console.error(
       error instanceof CannotRunError
@@ -347,5 +362,4 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-// Only when run: a test that imports this module must not start a server.
-if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));
+process.exit(await main(Bun.argv.slice(2)));

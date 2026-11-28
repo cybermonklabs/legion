@@ -423,6 +423,18 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
+      # The rows of scripts/spec-review-eval/__tests__/agent.test.ts that start the evaluation's
+      # bubblewrap sandbox fail rather than skip under GITHUB_ACTIONS, so a change to its arguments
+      # is judged here. The job installs bubblewrap and turns off Ubuntu 24.04's AppArmor
+      # restriction of unprivileged user namespaces, as the machine watch's step does (`|| true`:
+      # a runner image without the key restricts nothing); the bwrap after them is the verdict
+      # that a sandbox starts.
+      - name: Install bubblewrap (the statement review evaluation's sandbox)
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --ro-bind / / true
+
       - name: Test the statement review evaluation
         run: bun test scripts/spec-review-eval
 

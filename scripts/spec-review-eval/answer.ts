@@ -27,7 +27,6 @@ export interface Finding {
   readonly kind: Kind;
   readonly node: string;
   readonly subject: string | null;
-  readonly sentence: string;
 }
 
 /**
@@ -105,14 +104,14 @@ export function parseFindings(text: string): Answer {
       continue;
     }
     const match = FINDING_LINE.exec(line);
-    const [, kind = "", node = "", subject = "", sentence = ""] = match ?? [];
+    const [, kind = "", node = "", subject = ""] = match ?? [];
     if (match === null || !isKind(kind)) {
       return { verdict: "unreadable", reason: `a line out of the skill's form: ${line}` };
     }
     if (VERDICT_WORD.test(line.slice("FINDING".length))) {
       return { verdict: "unreadable", reason: `a second verdict on a FINDING line: ${line}` };
     }
-    findings.push({ kind, node, subject: subject === "-" ? null : subject, sentence });
+    findings.push({ kind, node, subject: subject === "-" ? null : subject });
   }
   if (none && findings.length > 0) {
     return { verdict: "unreadable", reason: "NO FINDING beside a FINDING line" };
@@ -203,17 +202,12 @@ function toolEventsOf(stdout: string): ToolEvent[] {
 }
 
 /**
- * The line that only an answer of `dispatch spec-form` from Dispatch prints before the texts that
- * the route's `nodes` name: the effect of the command, which the words of a command do not show.
- */
-const SPEC_FORM_ANSWER =
-  /^Dispatch read these texts in \S+ version \d+, each by its kind and its node:$/m;
-
-/**
  * Whether the agent's JSON event stream holds a bash call of `dispatch spec-form` whose own result
- * holds Dispatch's answer: a call that echoes the words, or that failed, holds no such answer.
+ * holds `heading`, the line that the client prints before the texts that Dispatch read in the
+ * fixture's spec (`textsHeading`): a call that echoes the words, or that failed, holds no such
+ * line, so this finds the effect of the call and not its words.
  */
-export function specFormAnswered(stdout: string): boolean {
+export function specFormAnswered(stdout: string, heading: string): boolean {
   const events = toolEventsOf(stdout);
   return events.some(({ type, toolName, record }) => {
     const command = stringOf(recordOf(record.args)?.command);
@@ -231,7 +225,7 @@ export function specFormAnswered(stdout: string): boolean {
         result.type === "tool_execution_end" &&
         call !== null &&
         stringOf(result.record.toolCallId) === call &&
-        SPEC_FORM_ANSWER.test(textOfResult(result.record.result))
+        textOfResult(result.record.result).split("\n").includes(heading)
     );
   });
 }
@@ -245,17 +239,13 @@ function textOfResult(result: unknown): string {
 }
 
 /**
- * The names of this command's own files, which hold the expected answers and earlier runs'
- * answers. The agent's sandbox holds none of them, so a tool call or result that holds one reached
- * a copy outside it, such as one over the network, which the sandbox does not cut (agent.ts). This
- * is a match of names: a command that reads such a copy and never prints a name passes it.
+ * The names of this command's own files that hold the expected answers: its directory and
+ * expected.json. The agent's sandbox holds neither, and no file the agent's own `dispatch` writes
+ * has either name, so a tool call or result that holds one reached a copy outside the sandbox,
+ * such as one over the network, which the sandbox does not cut (agent.ts). This is a match of
+ * names: a command that reads such a copy and never prints a name passes it.
  */
-export const EVALUATION_NAMES = [
-  "spec-review-eval",
-  "expected.json",
-  "events.jsonl",
-  "results.jsonl",
-] as const;
+export const EVALUATION_NAMES = ["spec-review-eval", "expected.json"] as const;
 
 /**
  * Each tool call or result of the agent's JSON event stream that names one of this command's own

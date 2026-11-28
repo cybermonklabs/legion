@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,10 +20,22 @@ describe("the exit status of a command that cannot run", () => {
     await rm(scratch, { recursive: true, force: true });
   });
 
-  async function command(out: string): Promise<{ code: number; stderr: string }> {
+  // Each case sets the two gateway variables, which the command refuses to run without, unless
+  // `change` takes one out.
+  async function command(
+    out: string,
+    change: Record<string, string | undefined> = {}
+  ): Promise<{ code: number; stderr: string }> {
     const env: Record<string, string> = {};
-    for (const [name, value] of Object.entries(process.env)) {
-      if (value !== undefined && name !== "DISPATCH_TEST_DATABASE_URL") env[name] = value;
+    const given: Record<string, string | undefined> = {
+      ...process.env,
+      DISPATCH_TEST_DATABASE_URL: undefined,
+      ANTHROPIC_BASE_URL: "https://gateway.example",
+      ANTHROPIC_API_KEY: "a-key",
+      ...change,
+    };
+    for (const [name, value] of Object.entries(given)) {
+      if (value !== undefined) env[name] = value;
     }
     const child = Bun.spawn({
       cmd: [process.execPath, RUN, "--omp", omp, "--out", out],
@@ -42,6 +54,23 @@ describe("the exit status of a command that cannot run", () => {
     const { code, stderr } = await command(out);
     expect(stderr).toContain("DISPATCH_TEST_DATABASE_URL");
     expect(code).toBe(2);
+  }, 30_000);
+
+  test("is 2 with no ANTHROPIC_API_KEY, names it, and starts no stack and no agent", async () => {
+    const out = join(scratch, "no-key");
+    const temporary = join(scratch, "no-key-tmp");
+    await mkdir(out);
+    await mkdir(temporary);
+    // With a database named, only the refusal keeps the command from starting a stack in --out.
+    const { code, stderr } = await command(out, {
+      ANTHROPIC_API_KEY: undefined,
+      DISPATCH_TEST_DATABASE_URL: "postgres://127.0.0.1:1/none",
+      TMPDIR: temporary,
+    });
+    expect(stderr).toContain("ANTHROPIC_API_KEY is not set");
+    expect(code).toBe(2);
+    expect(await readdir(out)).toEqual([]);
+    expect(await readdir(temporary)).toEqual([]);
   }, 30_000);
 
   test("is 2 with an --out that an earlier run used, and names what it holds", async () => {
