@@ -4120,11 +4120,11 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 			return
 		}
 		logger.Info("listener unsubscribe", slog.String("session_id", body.SessionID), slog.Any("topics", body.Topics))
-		// The removal runs within sendRequestBudget of the request's own context, as subscribe's
-		// write does, and store work that did not answer is the bus-unavailable 503. The
-		// consumer's filter update after it runs on the same context, as a registration's
-		// consumer calls do, since the client waits for it too.
-		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
+		// The removal runs within sendRequestBudget on the listener's clock, as subscribe's
+		// write does. Store work that did not answer is the bus-unavailable 503. The
+		// consumer's filter update after it runs within the same request budget, since the
+		// client waits for it too.
+		ctx, cancel := d.clk().WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		// The role claims released are the ones this process holds, never the whole session's:
 		// a session id names no process, and a second process that resumed this one's id hands

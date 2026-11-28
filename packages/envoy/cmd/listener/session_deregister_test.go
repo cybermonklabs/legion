@@ -12,11 +12,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
@@ -232,7 +230,7 @@ func TestADeregistrationAnswersWhileItsConsumerDeleteWaits(t *testing.T) {
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
 		"delivery":{"consumer":true,"epoch":"e"}}`)
 	rig.requireConsumer(t, sessionID)
-	rig.deps.clock = clocktest.New(time.Now())
+	freezeRegistrationBudgets(rig.deps)
 	// The session's lock, held as one of this listener's own consumer calls holds it: the
 	// delete waits for it, and the answer must not.
 	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
@@ -271,6 +269,7 @@ func TestACleanStopKeepsTheConsumerOfARegistrationThatLandedUnderIt(t *testing.T
 	rig.subscribe(t, `{"session_id":"`+sessionID+`","self_subscribed":true,"topics":[],
 		"delivery":{"consumer":true,"epoch":"epoch-1"}}`)
 	rig.requireConsumer(t, sessionID)
+	freezeRegistrationBudgets(rig.deps)
 	// The moment the stop belongs to: the registration above was written at or before it, so
 	// the stop removes that entry and answers that it did.
 	stopAt := strconv.FormatInt(rig.entry(t, sessionID).UpdatedAt, 10)

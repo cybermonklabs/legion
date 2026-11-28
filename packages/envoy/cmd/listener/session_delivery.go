@@ -204,10 +204,11 @@ type sessionDelivery struct {
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.
 	now func() time.Time
-	// clock bounds a registration's consumer calls (consumerFor) and measures the time left
-	// for the shutdown drain (drain). A test that sets listenerDeps.clock for registration
-	// gives delivery the same clock, so both bounds use the same time. In production clk
-	// uses the wall clock.
+	// clock bounds a registration's consumer calls (consumerFor), a fenced filter write
+	// (storedFilterWrite), and a consumer delete after it has the lock (deleteConsumer).
+	// It also measures the time left for the shutdown drain (drain). Tests that set both
+	// listenerDeps.clock and this clock give them the same clock so the bounds agree.
+	// In production clk uses the wall clock.
 	clock clock.Clock
 	// beforeRegister runs at the top of each register call, before the session's lock is taken and
 	// the consumer's filter set; nil unless a test sets it. The window between a registration's

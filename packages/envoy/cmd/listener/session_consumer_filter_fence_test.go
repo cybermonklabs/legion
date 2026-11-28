@@ -65,6 +65,7 @@ func TestAConfirmKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t 
 	const kept = "notifications.dispatch.issue.CONFIRMFENCEKEPT.>"
 	const added = "notifications.dispatch.issue.CONFIRMFENCEADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	filtered, stored := make(chan struct{}), make(chan struct{})
 	letStore := sync.OnceFunc(func() { close(stored) })
@@ -133,6 +134,7 @@ func TestARestoreKeepsTheTopicARegistrationAddedUnderItsRead(t *testing.T) {
 	if err := deleting.deps.sessions.Delete(ctx, sessionID); err != nil {
 		t.Fatalf("delete the record of %s: %v", sessionID, err)
 	}
+	freezeRegistrationBudgets(registering.deps, deleting.deps)
 	raceTheDeleteWithARegistration(t, deleting.deps.consumers, func() {
 		if err := registering.harness.sessions.Put(sessionID, registered); err != nil {
 			t.Errorf("the entry write that raced the delete of %s: %v", sessionID, err)
@@ -171,6 +173,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerAddedUnderItsRead(t
 	const dropped = "notifications.dispatch.issue.REFOLLOWFENCEDROP.>"
 	const added = "notifications.dispatch.issue.REFOLLOWFENCEADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	unlock := sync.OnceFunc(a.deps.consumers.locks.lock(sessionID))
 	defer unlock()
@@ -221,6 +224,7 @@ func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t 
 	const dropped = "notifications.dispatch.issue.REFOLLOWUNJUDGEDDROP.>"
 	const added = "notifications.dispatch.issue.REFOLLOWUNJUDGEDADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	unlock := sync.OnceFunc(a.deps.consumers.locks.lock(sessionID))
 	defer unlock()
@@ -348,6 +352,7 @@ func TestARefollowKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsWrite
 	const dropped = "notifications.dispatch.issue.REFOLLOWWRITEDROP.>"
 	const added = "notifications.dispatch.issue.REFOLLOWWRITEADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	var once sync.Once
 	a.deps.consumers.afterStoredRowRead = func() {
@@ -407,6 +412,7 @@ func TestARepairWhoseConsumerCallAnsweredNothingTriesAgainOverTheRowThatMoved(t 
 	const kept = "notifications.dispatch.issue.LOSTANSWERKEPT.>"
 	const added = "notifications.dispatch.issue.LOSTANSWERADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	freezeRegistrationBudgets(rig.deps)
 
 	var faulted sync.Once
 	rig.deps.consumers.consumers.SetCreateFault(func(string) error {
@@ -530,6 +536,7 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 	const kept = "notifications.dispatch.issue.FENCEALREADYKEPT.>"
 	const added = "notifications.dispatch.issue.FENCEALREADYADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	requireRestoreMakesACorrectivePass(t, a, sessionID, added, func() {
 		// The registration on the other listener that sets the consumer's filter to the newest
@@ -567,6 +574,7 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 	const kept = "notifications.dispatch.issue.FENCERECGONEKEPT.>"
 	const added = "notifications.dispatch.issue.FENCERECGONEADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	freezeRegistrationBudgets(rig.deps)
 
 	registered, _ := requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
 		// The record delete of a reaper pass or a clean stop, landing between the restore's
@@ -618,6 +626,7 @@ func TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft(t *te
 	const kept = "notifications.dispatch.issue.FENCEPLANSNOTHINGKEPT.>"
 	const added = "notifications.dispatch.issue.FENCEPLANSNOTHINGADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	freezeRegistrationBudgets(rig.deps)
 
 	registered, movedTo := requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
 		// The connection this listener reads the record and the row through, closed before the
@@ -655,6 +664,7 @@ func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T
 	const dropped = "notifications.dispatch.issue.FENCECONSGONEDROP.>"
 	const added = "notifications.dispatch.issue.FENCECONSGONEADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+	freezeRegistrationBudgets(rig.deps)
 
 	passes := 0
 	rig.deps.consumers.afterStoredRowRead = func() {
@@ -712,6 +722,7 @@ func TestACorrectivePassThatFindsTheRecordAskingForNoConsumerReportsNothingLeftB
 	const added = "notifications.dispatch.issue.FENCECORERECADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
 	registered := rig.entry(t, sessionID)
+	freezeRegistrationBudgets(rig.deps)
 
 	requireRestoreMakesACorrectivePass(t, rig, sessionID, added, func() {
 		// The record an earlier build writes for the same session, which records no consumer
@@ -762,6 +773,7 @@ func TestAFenceWhoseBucketAnswersNoRowLeavesTheFilterItWroteOnALiveConsumer(t *t
 	const kept = "notifications.dispatch.issue.FENCEROWGONEKEPT.>"
 	const dropped = "notifications.dispatch.issue.FENCEROWGONEDROP.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+	freezeRegistrationBudgets(rig.deps)
 
 	var once sync.Once
 	rig.deps.consumers.afterStoredRowRead = func() {
@@ -804,6 +816,7 @@ func TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndT
 	const dropped = "notifications.dispatch.issue.FENCEREADDROP.>"
 	const added = "notifications.dispatch.issue.FENCEREADADD.>"
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+	freezeRegistrationBudgets(a.deps, b.deps)
 
 	var once sync.Once
 	a.deps.consumers.afterStoredRowRead = func() {
@@ -1009,8 +1022,8 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 	return registered, movedTo
 }
 
-// freezeRegistrationBudgets keeps each listener's registration and consumer calls on the same
-// clock so their deadlines do not advance during the test.
+// freezeRegistrationBudgets keeps each listener's route and consumer-call deadlines from
+// advancing while a test holds a lock or runs a hook.
 func freezeRegistrationBudgets(listeners ...*listenerDeps) {
 	fake := clocktest.New(time.Unix(1, 0))
 	for _, d := range listeners {

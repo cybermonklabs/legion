@@ -336,11 +336,12 @@ const (
 // the fence has logged what it met (storedFilterStep, fenceFilterWrite). A caller whose client
 // waits answers the reconnect alone (refollow), and a caller that must say what the filter left
 // standing costs it logs that itself (narrowFormerHolder).
+// Its budget uses the delivery's clock and covers both the lock wait and the fence's passes.
 func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store.Registry, sessionID, after string) error {
 	if m == nil || m.consumers == nil {
 		return errNoSessionConsumers
 	}
-	ctx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := m.clk().WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
 	unlock, err := m.locks.lockWithin(ctx, sessionID)
 	if err != nil {

@@ -394,6 +394,7 @@ func TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap(t *testin
 	subscribe := `{"session_id":"` + sessionID + `","self_subscribed":true,
 		"topics":["` + followed + `","` + added + `"],"delivery":{"consumer":true,"epoch":"e"}}`
 	rig.subscribe(t, heartbeat)
+	freezeRegistrationBudgets(rig.deps)
 
 	// S runs whole inside H's window, between H's plan and H's own consumer call: it plans at the
 	// revision H planned at, filters on {T, C} and stores them. Once only, so H's second pass
@@ -458,6 +459,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 	}
 	registration := `{"session_id":"` + sessionID + `","self_subscribed":true,"topics":["` + kept + `"],
 		"delivery":{"consumer":true,"epoch":"e","resume":{"stream_id":"` + rig.streamID(t) + `","seq":` + jsonUint(gone[0]) + `}}}`
+	freezeRegistrationBudgets(rig.deps)
 
 	// The unsubscribe lands between the first pass's plan and its write, which is what refuses
 	// that write. Once: the second pass must run against a settled row.
@@ -499,6 +501,8 @@ func TestSessionConsumerRefusesARegistrationEveryPlanOfWhichIsOutrun(t *testing.
 	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_plan_exhausted"
+	freezeRegistrationBudgets(rig.deps)
+
 	// Every pass's plan is outrun: the writer stores another topic between the plan and its
 	// write, so that write is refused the revision its plan read.
 	passes := 0
@@ -1048,6 +1052,7 @@ func TestSessionConsumerUnsubscribeWritesTheTopicsStoredWhenItHoldsTheLock(t *te
 	const dropped = "notifications.dispatch.issue.REFOLLOWDROPPED.>"
 	const followed = "notifications.dispatch.issue.REFOLLOWSTALE.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", dropped))
+	freezeRegistrationBudgets(rig.deps)
 
 	unlock := sync.OnceFunc(rig.deps.consumers.locks.lock(sessionID))
 	defer unlock()
@@ -1083,6 +1088,7 @@ func TestSessionConsumerRegistrationHoldsTheLockFromItsFilterToItsRow(t *testing
 	const sessionID = "ses_register_row_lock"
 	const followed = "notifications.dispatch.issue.ROWLOCK.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	freezeRegistrationBudgets(rig.deps)
 
 	// The restart runs on a goroutine of its own because under the fix it waits for the lock this
 	// hook is called under, which a call made here would wait for for ever.

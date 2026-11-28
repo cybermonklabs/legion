@@ -47,7 +47,7 @@ import (
 // step reports its own result, so a step that fails does not hide the steps after it.
 func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing.T) {
 	// Serial: step 5 reads the new subjects during the second pass of the write.
-	// The production fence still gives both passes a single wall-clock budget.
+	// That step keeps the fence's shared budget open while it changes the stream.
 	const (
 		teamT      = "notifications.team.t"
 		teamU      = "notifications.team.u"
@@ -229,6 +229,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	t.Run("step 5, a narrowing between a fenced write's two passes", func(t *testing.T) {
 		bustest.RestoreStream(t, js, original.Config)
 		readDeployedCaptureAfterReconnect(t, client, true, teamT)
+		freezeRegistrationBudgets(rig.deps)
 		passes := 0
 		rig.deps.consumers.afterStoredRowRead = func() {
 			passes++

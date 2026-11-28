@@ -246,6 +246,8 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 	const sessionID = "ses_hung_up"
 	rig.register(t, sessionID)
 	rig.requireConsumer(t, sessionID, "after its registration")
+	freezeRegistrationBudgets(rig.deps)
+
 	hangUp, hungUp := context.WithCancel(context.Background())
 	defer hungUp()
 	recorder := httptest.NewRecorder()
