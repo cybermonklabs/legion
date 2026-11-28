@@ -278,9 +278,15 @@ type Registration struct {
 // cmd/dispatch's shutdown decides that the database has stopped answering from the shared pool's
 // connections (store.Pool.Use): a heartbeat timing out there every few seconds hands a connection
 // back each time, which reads as a database still answering, and the process would never exit.
+// The configuration is the system pool's alone: Register refuses a request pool
+// (store.ErrRequestPoolRefuses), whose copy would run the registry's statements as the request
+// role.
 func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Registration, error) {
 	if len(instance.SigningKeys) == 0 {
 		return nil, errors.New("register this server process: it names no signing key")
+	}
+	if pool.IsRequest() {
+		return nil, fmt.Errorf("register this server process: %w", store.ErrRequestPoolRefuses)
 	}
 	config := pool.Config()
 	config.MaxConns = 1

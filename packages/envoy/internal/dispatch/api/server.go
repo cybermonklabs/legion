@@ -97,8 +97,10 @@ type Deps struct {
 	// policy, while Store is the request store, whose statements run as dispatch_app under the
 	// viewer the request's context carries (store.WithViewer). The work before the viewer
 	// (credential resolution and access.Resolve) and the API's own work run on System, and every
-	// read and write a request makes for its caller runs on Store (plan D1, D3).
-	// INFRA-6168 scaffold: work step 2 opens Store as the request store beside it and builds the importer and the GitHub limits from it; work step 5 moves the system call sites to it.
+	// read and write a request makes for its caller runs on Store (plan D1, D3). NewDeps builds the
+	// objects a background loop also runs, the architecture importer and the GitHub client's
+	// limits, from System.
+	// INFRA-6168 scaffold: work step 5 moves the system call sites to it.
 	System      *store.Store
 	Identity    identity.Identity
 	AgentTokens *auth.SharedAgentTokens
@@ -280,7 +282,8 @@ const defaultStreamHeartbeat = 15 * time.Second
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
 	Store *store.Store
-	// System is the system store Deps.System says, which NewDeps hands on as it is.
+	// System is the system store Deps.System says, which NewDeps hands on as it is and builds the
+	// architecture importer and the GitHub client's limits from.
 	System      *store.Store
 	Identity    identity.Identity
 	AgentTokens *auth.SharedAgentTokens
@@ -434,10 +437,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	// The GitHub client counts its calls on the process's one Counter for the rate reading, and
 	// obeys and records the rate limits every process shares (github_rate_limits): GitHub budgets
-	// the App and each installation, not this process.
+	// the App and each installation, not this process. The limits are read and written on System,
+	// since the delivery intakes and the architecture importer's runs use the same client on no
+	// request's viewer (plan D1).
 	githubOptions := []githubapp.Option{githubapp.WithRateCounter(input.GitHubRate)}
-	if input.Store != nil {
-		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.Store.Pool)))
+	if input.System != nil {
+		githubOptions = append(githubOptions, githubapp.WithLimits(ratelimit.New(input.System.Pool)))
 	}
 	github, err := githubapp.New(input.App, input.GitHubAPIBase, githubOptions...)
 	if err != nil {
@@ -466,7 +471,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
-		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Architecture:           architecture.NewImporter(input.System, github, input.Events),
 		Renames:                input.Renames,
 		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,

@@ -20,9 +20,14 @@ import (
 // with and whatever change configure makes to a copy of it, and closes it after t ends. The
 // production pool is built in store.Open and is not a seam a test may configure, so every test
 // that needs a pool of its own shape opens it here: Traced, Reopened, SingleConnection and
-// SecondProcess.
+// SecondProcess. It copies the system pool's configuration alone and fails t on a request pool
+// (store.OpenRequestPool), whose copy would run as dispatch_app with none of its wrapper: a test
+// that needs a request pool of its own shape opens one beside the reopened system pool (Request).
 func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config)) *store.Pool {
 	t.Helper()
+	if pool.IsRequest() {
+		t.Fatal("storetest: a pool is reopened from the system pool's configuration alone; reopen the system store and open a request pool beside it (storetest.Request)")
+	}
 	config := pool.Config()
 	configure(config)
 	opened, err := pgxpool.NewWithConfig(context.Background(), config)

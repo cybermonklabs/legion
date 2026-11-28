@@ -457,6 +457,18 @@ func main() {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
 	}
+	// The request pool opens once the migrations have run, since on a fresh database they make
+	// its role, and its open is the boot check: it reads the role one of its connections runs as
+	// and refuses unless row security holds that role (store.OpenRequestPool). Every request's own
+	// statements run on it, under the caller's viewer; database stays the system pool, which the
+	// migrations, every side pool and every background loop below run on.
+	requestPool, err := store.OpenRequestPool(ctx, database.Pool)
+	if err != nil {
+		slog.Error("dispatch: open the request pool", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("dispatch: requests run under row security as the verified role", "role", store.RequestRole)
+	requests := &store.Store{Pool: requestPool}
 
 	// A test process told to creates the elements its manifest stages for the next version. The
 	// switch is set before the first install and is apart from the manifest, so no reinstall
@@ -595,6 +607,7 @@ func main() {
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, docs.Deps{
 		Store:       database,
+		Request:     requests,
 		Events:      broker,
 		Identity:    requestIdentity,
 		ServerURL:   serverURL,
@@ -666,7 +679,8 @@ func main() {
 		Sessions:       sessions,
 		Identity:       requestIdentity,
 		SignIn:         signIn,
-		Store:          database,
+		Store:          requests,
+		System:         database,
 		ServerURL:      serverURL,
 		Docs:           documentService,
 		SpecForm:       &specForm,

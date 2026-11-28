@@ -190,8 +190,22 @@ func logRefusal() {
 // that Rooms, RoomAppends, Compaction and Horizon hand out check no cut: a statement sent through
 // one of them goes as the caller wrote it. Under a context with no cut, the pool sends each
 // statement as the caller wrote it.
+//
+// Open opens the system pool, which runs as the login that owns the tables and meets no policy.
+// OpenRequestPool opens a request pool beside it, which runs every statement as RequestRole
+// under the viewer the context carries (WithViewer): Query, QueryRow, Exec and SendBatch each
+// run in a transaction of their own, and each transaction that Begin or BeginTx opens, at a cut
+// too, begins with the viewer's settings statement (plan D2; viewer.go). Under the system-work
+// mark (WithSystemWork) with no viewer, a request pool runs the statement on the system pool it
+// was opened beside; with neither, it refuses the statement before any SQL (ErrNoViewer). It
+// hands out no connection, copy or separate pool (ErrRequestPoolRefuses). The nested-acquire mark
+// is one mark across both pools: a caller that holds a connection of either is refused one of
+// the other.
 type Pool struct {
 	pool *pgxpool.Pool
+	// request is what makes this a request pool (OpenRequestPool); nil on the system pool and on
+	// every pool NewPool wraps.
+	request *requestPart
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
 	// will ever close.
@@ -208,6 +222,10 @@ type Pool struct {
 	compaction   *pgxpool.Pool
 	textTrees    *pgxpool.Pool
 	horizon      *pgxpool.Pool
+	// requests is the request pools opened beside this one (OpenRequestPool) and not closed
+	// yet, which Close closes and Use counts, so a shutdown that waits for this pool's
+	// connections waits for the requests' too.
+	requests []*pgxpool.Pool
 	// closed refuses every separate pool but the health probe's from the moment Close begins
 	// (separate); healthClosed refuses that one too, once Close has closed every other pool
 	// (healthPool).
@@ -215,7 +233,17 @@ type Pool struct {
 	healthClosed bool
 }
 
-// NewPool wraps an open pgx pool.
+// requestPart is what makes a Pool a request pool (OpenRequestPool).
+type requestPart struct {
+	// system is the pool a statement under the system-work mark with no viewer runs on.
+	system *Pool
+	// settings is the settings statement each transaction begins with: requestSettingsSQL, or
+	// ownerSettingsSQL for the test-only pool that runs as the owner
+	// (OpenRequestPoolAsOwnerForTest).
+	settings string
+}
+
+// NewPool wraps an open pgx pool as a system pool.
 func NewPool(pool *pgxpool.Pool) *Pool {
 	return &Pool{pool: pool}
 }
@@ -223,22 +251,26 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 // IsRequest reports whether p is a request pool (OpenRequestPool), whose statements run as
 // dispatch_app under the viewer the context carries; the system pool, which Open opens, is not.
 func (p *Pool) IsRequest() bool {
-	// INFRA-6168 scaffold: work step 2
-	panic(errRequestPoolNotBuilt)
+	return p.request != nil
 }
 
-// sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
+// requestPoolSize and sharedPoolSize bound the request pool (OpenRequestPool) and the system pool
+// (Open), deliberately and in code. pgx's default,
 // max(4, NumCPU), is four on production's one Fargate task at cpu="512", and a connection per
 // blocked writer is all it takes to starve everything else: with four writers parked on one
 // issue's row lock, a read of an unrelated issue waited the whole seventeen seconds the lock
 // was held, where sixteen connections served 3,853 such reads at a four-millisecond median.
 // The ceiling is picked here rather than derived from the task's CPU allotment or read out of
-// the DSN another repository's URL builder writes. It is 64, from 16, since 2026-10-27: a
-// request takes a connection per statement one after another (an issue read once took six
-// statements, two more when the issue had documents, two more when it had open asks, and one per
-// artifact; it now takes two batches),
+// the DSN another repository's URL builder writes. The one pool Dispatch had grew to 64, from 16,
+// on 2026-10-27: a request takes a connection per statement one after another (an issue read
+// once took six statements, two more when the issue had documents, two more when it had open
+// asks, and one per artifact; it now takes two batches),
 // so under ~240 agent requests a minute the API held all sixteen and every other request waited
-// seconds for one. The database bounds it from above. Dispatch's database is the gcp:Dispatch
+// seconds for one. Since row security (INFRA-6168) those 64 are split: the request pool, which
+// every request's own statements run on, takes 48, and the system pool keeps 16 for the
+// migrations, the background loops and each request's two short reads before it has a viewer
+// (its credential and access.Resolve), which take no lock and wait on none. The split moves no
+// total. The database bounds it from above. Dispatch's database is the gcp:Dispatch
 // component's Cloud SQL Postgres instance, whose default max_connections follows its tier's
 // memory (https://cloud.google.com/sql/docs/postgres/flags, max_connections), and every server
 // pod opens up to ConnectionsPerProcess. During a roll, every pod that holds connections (the
@@ -247,7 +279,10 @@ func (p *Pool) IsRequest() bool {
 // or the pod count is checked against it: read SHOW max_connections on the instance before
 // raising either. A new pool, or a new permanent Listener caller, goes into
 // ConnectionsPerProcess with it.
-const sharedPoolSize = 64
+const (
+	requestPoolSize = 48
+	sharedPoolSize  = 16
+)
 
 // RoomsPoolSize bounds the connections document loads use. Loading takes no lock and always
 // finishes, so one is enough for the pool to be deadlock-free; a few let cold rooms load
@@ -645,12 +680,12 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres:
-// every pool's size - the shared, rooms, room-appends, health, lease, outbox, compaction and
-// display-tree-fill pools, the registry's own pool (processes.Register) and the event horizon's
-// (Horizon) - and one
+// every pool's size - the request pool (OpenRequestPool), the shared (system) pool, the rooms,
+// room-appends, health, lease, outbox, compaction and display-tree-fill pools, the registry's own
+// pool (processes.Register) and the event horizon's (Horizon) - and one
 // connection per listener it may hold at once, which the listener pool dials and hands off rather
 // than holds.
-const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
+const ConnectionsPerProcess = requestPoolSize + sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
 
 // Outbox is the pool the events outbox reads and records events through, reads the
 // followers and authors a publish routes to, and holds its publisher hold on. Under load the API's
@@ -734,10 +769,14 @@ func (p *Pool) Horizon() (*pgxpool.Pool, error) {
 }
 
 // separate opens the pool held at field on demand (openSeparateLocked) and closes it with the
-// shared pool. It refuses from the moment Close begins (ErrPoolClosed). Each caller holds mu for
-// the whole check-and-open so two of them cannot open two pools, and one opened after Close would
-// be a pool nobody closes.
+// shared pool. It refuses from the moment Close begins (ErrPoolClosed), and on a request pool,
+// which hands out no separate pool (ErrRequestPoolRefuses): each separate pool copies the system
+// pool's configuration alone. Each caller holds mu for the whole check-and-open so two of them
+// cannot open two pools, and one opened after Close would be a pool nobody closes.
 func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+	if p.request != nil {
+		return nil, fmt.Errorf("the %s pool: %w", name, ErrRequestPoolRefuses)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -748,8 +787,12 @@ func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName 
 
 // healthPool is separate for the health probe's pool, whose close rule is its own: it opens and
 // is handed out while Close waits for the other pools' connections, and refuses once Close has
-// closed every other pool (healthClosed), so Healthy answers for as long as Close waits.
+// closed every other pool (healthClosed), so Healthy answers for as long as Close waits. A
+// request pool refuses it as it refuses every separate pool.
 func (p *Pool) healthPool() (*pgxpool.Pool, error) {
+	if p.request != nil {
+		return nil, fmt.Errorf("the health probe pool: %w", ErrRequestPoolRefuses)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.healthClosed {
@@ -790,10 +833,11 @@ func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applic
 
 // Close releases every connection the pool holds, the separate pools' - the document rooms, their
 // appends, the compaction, the display tree fill, the health probe, the listener, the leases, the
-// outbox and the event horizon - included, and returns once every connection in use has come back. It closes the health
+// outbox and the event horizon - and the request pools' opened beside it included, and returns
+// once every connection in use has come back. It closes the health
 // probe's pool last, after every other pool has closed: Healthy answers for as long as Close
 // waits, and Use keeps counting the closing pools' connections. No other separate pool opens or is
-// handed out once Close has begun.
+// handed out once Close has begun. A request pool's Close closes its own connections alone.
 func (p *Pool) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -801,7 +845,7 @@ func (p *Pool) Close() {
 		return
 	}
 	p.closed = true
-	separates := []*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}
+	separates := append([]*pgxpool.Pool{p.rooms, p.roomAppends, p.listen, p.leases, p.outbox, p.compaction, p.textTrees, p.horizon}, p.requests...)
 	// The registry goes with the pool its reservations were on: a caller after the close is
 	// told the pool is closed rather than handed a reservation on a pool nothing serves.
 	p.leaseCallers = nil
@@ -812,6 +856,9 @@ func (p *Pool) Close() {
 		}
 	}
 	p.pool.Close()
+	if p.request != nil {
+		p.request.system.forgetRequestPool(p.pool)
+	}
 	p.mu.Lock()
 	p.healthClosed = true
 	health := p.health
@@ -821,28 +868,50 @@ func (p *Pool) Close() {
 	}
 }
 
+// adoptRequestPool records request, a request pool opened beside p (OpenRequestPool), as one
+// Close closes and Use counts. It refuses once Close has begun (ErrPoolClosed), since a pool
+// adopted then would be one nothing closes.
+func (p *Pool) adoptRequestPool(request *pgxpool.Pool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return ErrPoolClosed
+	}
+	p.requests = append(p.requests, request)
+	return nil
+}
+
+// forgetRequestPool drops request, which has closed itself, from the pools Close closes and Use
+// counts.
+func (p *Pool) forgetRequestPool(request *pgxpool.Pool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = slices.DeleteFunc(p.requests, func(held *pgxpool.Pool) bool { return held == request })
+}
+
 // Config returns a copy of the pool's configuration.
 func (p *Pool) Config() *pgxpool.Config { return p.pool.Config() }
 
 // Stat reports the pool's current connection counts.
 func (p *Pool) Stat() *pgxpool.Stat { return p.pool.Stat() }
 
-// ConnectionUse is how many connections of the shared, document-rooms and room-appends pools are
-// in use, and how many those pools have taken back since they opened, whether returned or
-// discarded. The health probe's pool is left out: it is how a caller asks whether the database
-// answers.
+// ConnectionUse is how many connections of the shared, document-rooms and room-appends pools, and
+// of the request pools opened beside the shared one, are in use, and how many those pools have
+// taken back since they opened, whether returned or discarded. The health probe's pool is left
+// out: it is how a caller asks whether the database answers.
 type ConnectionUse struct {
 	InUse    int32
 	Returned int64
 }
 
-// Use reports the shared, document-rooms and room-appends pools' ConnectionUse.
+// Use reports the shared, document-rooms and room-appends pools' ConnectionUse, with the request
+// pools opened beside this one (OpenRequestPool) counted in.
 func (p *Pool) Use() ConnectionUse {
 	p.mu.Lock()
-	rooms, roomAppends := p.rooms, p.roomAppends
+	pools := append([]*pgxpool.Pool{p.pool, p.rooms, p.roomAppends}, p.requests...)
 	p.mu.Unlock()
 	var use ConnectionUse
-	for _, pool := range []*pgxpool.Pool{p.pool, rooms, roomAppends} {
+	for _, pool := range pools {
 		if pool == nil {
 			continue
 		}
@@ -877,20 +946,62 @@ func (p *Pool) guard(ctx context.Context) error {
 	return ErrNestedAcquire
 }
 
+// route is where p runs a statement under ctx, and the settings statement each transaction
+// begins with there. The system pool runs it itself, with no settings. A request pool runs it
+// itself under the settings of the viewer ctx carries; with no viewer, it runs it on the system
+// pool it was opened beside where ctx carries the system-work mark (WithSystemWork), and refuses
+// it (ErrNoViewer) where ctx carries neither, before any SQL. A viewer wins over the mark. Each
+// exported method guards before it routes, so the nested-acquire mark is one mark across both
+// pools and a refusal names the method's caller.
+func (p *Pool) route(ctx context.Context) (*Pool, *viewerSettings, error) {
+	if p.request == nil {
+		return p, nil, nil
+	}
+	viewer, ok := ViewerFrom(ctx)
+	if !ok {
+		if isSystemWork(ctx) {
+			return p.request.system, nil, nil
+		}
+		return nil, nil, ErrNoViewer
+	}
+	settings, err := settingsFor(p.request.settings, viewer)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p, settings, nil
+}
+
+// refuseOnRequest is a request pool's refusal of method, which would send a statement outside
+// the viewer's settings, or nil on the system pool.
+func (p *Pool) refuseOnRequest(method string) error {
+	if p.request == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", method, ErrRequestPoolRefuses)
+}
+
 // Query runs a query on a pooled connection. The rows hold that connection until they close,
 // so the caller counts as holding one for as long as they are open. A cursor is one of this
 // pool's three connection-holders - a transaction, an open cursor, and a connection taken
 // with Acquire (the durable append's withRoomLock, marked with HoldsConnection) - and work
 // done inside the loop - a publish, a follower lookup, a write per row - is exactly the shape
-// that wedges the pool.
+// that wedges the pool. Under a viewer the query runs in a transaction of its own, which the
+// rows' end commits (queryViewed).
 func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	if cut, ok := asof.CutFrom(ctx); ok {
-		return p.queryAtCut(ctx, cut, sql, args)
+	target, settings, err := p.route(ctx)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := p.pool.Query(ctx, sql, args...)
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return target.queryAtCut(ctx, cut, settings, sql, args)
+	}
+	if settings != nil {
+		return target.queryViewed(ctx, settings, sql, args)
+	}
+	rows, err := target.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -938,31 +1049,51 @@ func (r *trackedRows) Values() ([]any, error) {
 	return values, err
 }
 
-// QueryRow runs a single-row query on a pooled connection.
+// QueryRow runs a single-row query on a pooled connection; under a viewer, in a transaction of
+// its own, which the row's Scan commits (queryRowViewed).
 func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
-	if cut, ok := asof.CutFrom(ctx); ok {
-		return p.queryRowAtCut(ctx, cut, sql, args)
+	target, settings, err := p.route(ctx)
+	if err != nil {
+		return errRow{err: err}
 	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return target.queryRowAtCut(ctx, cut, settings, sql, args)
+	}
+	if settings != nil {
+		return target.queryRowViewed(ctx, settings, sql, args)
+	}
+	return target.pool.QueryRow(ctx, sql, args...)
 }
 
-// Exec runs a statement on a pooled connection.
+// Exec runs a statement on a pooled connection; under a viewer, in a transaction of its own,
+// which commits once the statement returns (execViewed).
 func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	if cut, ok := asof.CutFrom(ctx); ok {
-		return p.execAtCut(ctx, cut, sql, args)
+	target, settings, err := p.route(ctx)
+	if err != nil {
+		return pgconn.CommandTag{}, err
 	}
-	return p.pool.Exec(ctx, sql, args...)
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return target.execAtCut(ctx, cut, settings, sql, args)
+	}
+	if settings != nil {
+		return target.execViewed(ctx, settings, sql, args)
+	}
+	return target.pool.Exec(ctx, sql, args...)
 }
 
-// Acquire takes a pooled connection the caller holds until it releases it.
+// Acquire takes a pooled connection the caller holds until it releases it. A request pool hands
+// out none (ErrRequestPoolRefuses).
 func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	if err := p.guard(ctx); err != nil {
+		return nil, err
+	}
+	if err := p.refuseOnRequest("Acquire"); err != nil {
 		return nil, err
 	}
 	if err := refuseAtCut(ctx, "Acquire"); err != nil {
@@ -971,9 +1102,13 @@ func (p *Pool) Acquire(ctx context.Context) (*pgxpool.Conn, error) {
 	return p.pool.Acquire(ctx)
 }
 
-// AcquireFunc runs fn with a pooled connection.
+// AcquireFunc runs fn with a pooled connection. A request pool hands out none
+// (ErrRequestPoolRefuses).
 func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) error {
 	if err := p.guard(ctx); err != nil {
+		return err
+	}
+	if err := p.refuseOnRequest("AcquireFunc"); err != nil {
 		return err
 	}
 	if err := refuseAtCut(ctx, "AcquireFunc"); err != nil {
@@ -983,18 +1118,19 @@ func (p *Pool) AcquireFunc(ctx context.Context, fn func(*pgxpool.Conn) error) er
 }
 
 // AcquireAllIdle takes every idle connection the pool holds. Under a cut it takes none, as
-// Acquire refuses one: its only caller is a test with no cut.
+// Acquire refuses one, and so does a request pool: its only caller is a test with no cut.
 func (p *Pool) AcquireAllIdle(ctx context.Context) []*pgxpool.Conn {
 	if err := p.guard(ctx); err != nil {
 		return nil
 	}
-	if _, atCut := asof.CutFrom(ctx); atCut {
+	if _, atCut := asof.CutFrom(ctx); atCut || p.request != nil {
 		return nil
 	}
 	return p.pool.AcquireAllIdle(ctx)
 }
 
-// CopyFrom streams rows into a table on a pooled connection.
+// CopyFrom streams rows into a table on a pooled connection. A request pool refuses it
+// (ErrRequestPoolRefuses).
 func (p *Pool) CopyFrom(
 	ctx context.Context,
 	table pgx.Identifier,
@@ -1004,21 +1140,32 @@ func (p *Pool) CopyFrom(
 	if err := p.guard(ctx); err != nil {
 		return 0, err
 	}
+	if err := p.refuseOnRequest("CopyFrom"); err != nil {
+		return 0, err
+	}
 	if err := refuseAtCut(ctx, "CopyFrom"); err != nil {
 		return 0, err
 	}
 	return p.pool.CopyFrom(ctx, table, columns, source)
 }
 
-// SendBatch runs a batch on a pooled connection.
+// SendBatch runs a batch on a pooled connection; under a viewer, in a transaction of its own,
+// which the batch's Close commits (sendBatchViewed).
 func (p *Pool) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
 	if err := p.guard(ctx); err != nil {
 		return errBatchResults{err: err}
 	}
-	if cut, ok := asof.CutFrom(ctx); ok {
-		return p.sendBatchAtCut(ctx, cut, batch)
+	target, settings, err := p.route(ctx)
+	if err != nil {
+		return errBatchResults{err: err}
 	}
-	return p.pool.SendBatch(ctx, batch)
+	if cut, ok := asof.CutFrom(ctx); ok {
+		return target.sendBatchAtCut(ctx, cut, settings, batch)
+	}
+	if settings != nil {
+		return target.sendBatchViewed(ctx, settings, batch)
+	}
+	return target.pool.SendBatch(ctx, batch)
 }
 
 // QueueExec queues sql with args into b; its error, wrapped in what as a statement sent alone
@@ -1039,7 +1186,11 @@ func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	return p.begin(ctx, pgx.TxOptions{})
+	target, settings, err := p.route(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return target.begin(ctx, settings, pgx.TxOptions{})
 }
 
 // BeginTx opens a transaction with options and marks the request as holding one.
@@ -1047,7 +1198,11 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	return p.begin(ctx, options)
+	target, settings, err := p.route(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return target.begin(ctx, settings, options)
 }
 
 // begin is the guarded body both transaction entry points share: guard runs in the exported
@@ -1058,8 +1213,9 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 // forward its Commit and Rollback. A transaction opened under a cut is read-only, whatever access
 // mode options name, and binds its statements to that cut (cutTx), around whatever begin would
 // hand on without one. A begin query that options name (pgx.TxOptions.BeginQuery) sets its own
-// access mode, so under a cut the pool refuses it.
-func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+// access mode, so under a cut the pool refuses it. A transaction a request pool opens under a
+// viewer sends the viewer's settings first (beginOwn), before the caller's first statement.
+func (p *Pool) begin(ctx context.Context, settings *viewerSettings, options pgx.TxOptions) (pgx.Tx, error) {
 	cut, atCut := asof.CutFrom(ctx)
 	if atCut {
 		if options.BeginQuery != "" {
@@ -1067,7 +1223,7 @@ func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 		}
 		options.AccessMode = pgx.ReadOnly
 	}
-	tx, err := p.pool.BeginTx(ctx, options)
+	tx, err := p.beginOwn(ctx, options, settings)
 	if err != nil {
 		return nil, err
 	}

@@ -35,7 +35,9 @@
 -- by its item's node; a component by the project its address names; a person, a session and a
 -- role by access.PersonClause, access.SessionClause and access.RoleClause over the node's id (the
 -- role's reads its held_by tuples as the owner); a page by its session's or its role's rule; the
--- block schema's own nodes (supertag, attribute) to every viewer; and a kind it does not know to
+-- block schema's own nodes (supertag, attribute) to every viewer that is set - open, or with a
+-- person, a session or any project it sees - and to no transaction that set no viewer, which
+-- reads every reader's fail-closed default; and a kind it does not know to
 -- no viewer. dispatch_tuple_end_visible is that rule over the node an end of a tuple names, read
 -- as the owner. Both are declared at a high cost, and each policy that calls them tests the fast
 -- path first, so a deployment with no private project calls neither for any row.
@@ -489,8 +491,10 @@ as $$
 						else true end)), false)
 						offset 0)))), false)
 			else false end
-		when 'supertag' then true
-		when 'attribute' then true
+		when 'supertag' then (public.dispatch_viewer_open() or public.dispatch_viewer_person() is not null
+			or public.dispatch_viewer_session() is not null or coalesce(cardinality(public.dispatch_viewer_sees()), 0) > 0)
+		when 'attribute' then (public.dispatch_viewer_open() or public.dispatch_viewer_person() is not null
+			or public.dispatch_viewer_session() is not null or coalesce(cardinality(public.dispatch_viewer_sees()), 0) > 0)
 		else false end, false)
 	from (select public.dispatch_viewer() as v) viewer
 $$;

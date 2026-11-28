@@ -1499,11 +1499,12 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 29 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 120 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 48 + 16 + 29 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 120 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
-| Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
+| Request (`requestPoolSize`) | 48 | Every request's own statements, as `dispatch_app` under the caller's viewer (`store.OpenRequestPool`): each statement or batch in a transaction of its own that sends the viewer's settings first, and each transaction a request opens. |
+| System (`sharedPoolSize`) | 16 | The migrations, the background loops, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions), as the login that owns the tables; and each request's two short reads before it has a viewer, its credential and `access.Resolve`. |
 | Leases (`store.LeasePoolSize`) | 29 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`), the CI verify loop's lease, the embeddings `project_key` fill, the display tree fill and the boot's one-time parent status fix among them, the intakes' holds (`duty.Hold`), the two delivery intakes' and the Legion state intake's, and the keyword fill's hold with the fill's batches, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |

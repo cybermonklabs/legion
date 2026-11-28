@@ -19,7 +19,9 @@ import (
 // transaction that Begin or BeginTx opens under a cut is read-only (Pool.begin). A statement of
 // Query, QueryRow or Exec under a cut runs in a read-only transaction of its own, on one pooled
 // connection, and so does a batch. The pool ends that transaction with a rollback when the
-// statement or the batch is done (endRead).
+// statement or the batch is done (rollbackBounded). On a request pool under a viewer, each of
+// these transactions sends the viewer's settings first (beginOwn), so a read at a past time sees
+// only what the viewer sees.
 //
 // A statement that Bind changes holds its cut in its text, so each new cut makes each of its
 // statements a new text. The pool sends such a statement with pgx.QueryExecModeCacheDescribe
@@ -62,64 +64,67 @@ func refuseAtCut(ctx context.Context, method string) error {
 	return nil
 }
 
-// queryAtCut is Query under cut: sql bound to cut, in a read-only transaction of its own. The
-// rows hold the transaction's connection, and the caller counts as holding it, until they close,
-// as at the present (trackedRows). Their close ends the transaction.
-func (p *Pool) queryAtCut(ctx context.Context, cut asof.Cut, sql string, args []any) (pgx.Rows, error) {
+// queryAtCut is Query under cut: sql bound to cut, in a read-only transaction of its own that
+// sends settings first where there are any. The rows hold the transaction's connection, and the
+// caller counts as holding it, until they close, as at the present (trackedRows). Their close
+// ends the transaction.
+func (p *Pool) queryAtCut(ctx context.Context, cut asof.Cut, settings *viewerSettings, sql string, args []any) (pgx.Rows, error) {
 	bound, err := asof.Bind(sql, cut)
 	if err != nil {
 		return nil, err
 	}
-	tx, err := p.pool.BeginTx(ctx, readAtCut)
+	tx, err := p.beginOwn(ctx, readAtCut, settings)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, bound, boundArgs(sql, bound, args)...)
 	if err != nil {
-		endRead(ctx, tx)
+		rollbackBounded(ctx, tx)
 		return nil, err
 	}
 	release := hold(ctx)
 	return &trackedRows{Rows: rows, release: func() {
-		endRead(ctx, tx)
+		rollbackBounded(ctx, tx)
 		if release != nil {
 			release()
 		}
 	}}, nil
 }
 
-// queryRowAtCut is QueryRow under cut: sql bound to cut, in a read-only transaction of its own,
-// which the row's Scan ends (cutRow).
-func (p *Pool) queryRowAtCut(ctx context.Context, cut asof.Cut, sql string, args []any) pgx.Row {
+// queryRowAtCut is QueryRow under cut: sql bound to cut, in a read-only transaction of its own
+// that sends settings first where there are any, which the row's Scan ends (cutRow).
+func (p *Pool) queryRowAtCut(ctx context.Context, cut asof.Cut, settings *viewerSettings, sql string, args []any) pgx.Row {
 	bound, err := asof.Bind(sql, cut)
 	if err != nil {
 		return errRow{err: err}
 	}
-	tx, err := p.pool.BeginTx(ctx, readAtCut)
+	tx, err := p.beginOwn(ctx, readAtCut, settings)
 	if err != nil {
 		return errRow{err: err}
 	}
 	return cutRow{ctx: ctx, row: tx.QueryRow(ctx, bound, boundArgs(sql, bound, args)...), tx: tx}
 }
 
-// execAtCut is Exec under cut: sql bound to cut, in a read-only transaction of its own.
-func (p *Pool) execAtCut(ctx context.Context, cut asof.Cut, sql string, args []any) (pgconn.CommandTag, error) {
+// execAtCut is Exec under cut: sql bound to cut, in a read-only transaction of its own that sends
+// settings first where there are any.
+func (p *Pool) execAtCut(ctx context.Context, cut asof.Cut, settings *viewerSettings, sql string, args []any) (pgconn.CommandTag, error) {
 	bound, err := asof.Bind(sql, cut)
 	if err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	tx, err := p.pool.BeginTx(ctx, readAtCut)
+	tx, err := p.beginOwn(ctx, readAtCut, settings)
 	if err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	defer endRead(ctx, tx)
+	defer rollbackBounded(ctx, tx)
 	return tx.Exec(ctx, bound, boundArgs(sql, bound, args)...)
 }
 
 // sendBatchAtCut is SendBatch under cut: each statement of batch bound to cut, sent one at a time
-// in a read-only transaction of its own, which Close ends (cutBatchResults). An empty batch sends
-// nothing, so it goes to pgx as it is and opens no transaction.
-func (p *Pool) sendBatchAtCut(ctx context.Context, cut asof.Cut, batch *pgx.Batch) pgx.BatchResults {
+// in a read-only transaction of its own that sends settings first where there are any, which
+// Close ends (cutBatchResults). An empty batch sends nothing, so it goes to pgx as it is and opens
+// no transaction.
+func (p *Pool) sendBatchAtCut(ctx context.Context, cut asof.Cut, settings *viewerSettings, batch *pgx.Batch) pgx.BatchResults {
 	if batch.Len() == 0 {
 		return p.pool.SendBatch(ctx, batch)
 	}
@@ -127,27 +132,28 @@ func (p *Pool) sendBatchAtCut(ctx context.Context, cut asof.Cut, batch *pgx.Batc
 	if err != nil {
 		return errBatchResults{err: err}
 	}
-	tx, err := p.pool.BeginTx(ctx, readAtCut)
+	tx, err := p.beginOwn(ctx, readAtCut, settings)
 	if err != nil {
 		return errBatchResults{err: err}
 	}
 	return &cutBatchResults{ctx: ctx, tx: tx, statements: statements, own: true}
 }
 
-// readRollbackTimeout bounds the rollback that ends a read-only transaction the pool opened of
-// its own under a cut (endRead). The rollback is one round trip; a connection that has not
-// answered it in a second is closed instead.
+// readRollbackTimeout bounds the rollback that ends a transaction the pool opened of its own and
+// has nothing to commit (rollbackBounded). The rollback is one round trip; a connection that has
+// not answered it in a second is closed instead.
 const readRollbackTimeout = time.Second
 
-// endRead ends tx, a read-only transaction that the pool opened of its own under a cut, and gives
-// its connection back to the pool. The transaction has nothing to commit, so it rolls back. The
-// rollback runs on a context that the end of ctx does not end, bounded by readRollbackTimeout:
-// pgx closes the connection of a rollback whose context is cancelled, so a request that ended
-// while its statement ran would otherwise cost the pool that connection. The rollback's error is
-// not returned: what the statement read stands, and a rollback that fails closes its connection
-// (pgx), so no connection stays inside the transaction. A second end finds the transaction closed
-// and sends nothing.
-func endRead(ctx context.Context, tx pgx.Tx) {
+// rollbackBounded ends tx with a rollback and gives its connection back to the pool: a read-only
+// transaction that the pool opened of its own under a cut, which has nothing to commit; the
+// transaction of a statement under a viewer that failed (endStatement); and one that AsOwner fails.
+// The rollback runs on a context that the end of ctx does not end, bounded by
+// readRollbackTimeout: pgx closes the connection of a rollback whose context is cancelled, so a
+// request that ended while its statement ran would otherwise cost the pool that connection. The
+// rollback's error is not returned: what the statement read stands, and a rollback that fails
+// closes its connection (pgx), so no connection stays inside the transaction. A second end finds
+// the transaction closed and sends nothing.
+func rollbackBounded(ctx context.Context, tx pgx.Tx) {
 	rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), readRollbackTimeout)
 	defer cancel()
 	_ = tx.Rollback(rollback)
@@ -162,7 +168,7 @@ type cutRow struct {
 }
 
 func (r cutRow) Scan(dest ...any) error {
-	defer endRead(r.ctx, r.tx)
+	defer rollbackBounded(r.ctx, r.tx)
 	return r.row.Scan(dest...)
 }
 
@@ -362,7 +368,7 @@ func (b *cutBatchResults) Close() error {
 	}
 	b.closed = true
 	if b.own {
-		endRead(b.ctx, b.tx)
+		rollbackBounded(b.ctx, b.tx)
 	}
 	return b.err
 }

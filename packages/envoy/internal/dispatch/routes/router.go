@@ -208,7 +208,7 @@ type AppContextOptions struct {
 	ParentStatusRule api.ParentStatusRule
 	// System is the system store (api.DepsInput.System): the owner's pool, which the work before
 	// the viewer and the API's own work run on, beside Store, the request store (plan D1).
-	// INFRA-6168 scaffold: work step 2 passes it to api.DepsInput.System (BuildAppContext).
+	// BuildAppContext passes it to api.DepsInput.System.
 	System *store.Store
 }
 
@@ -241,6 +241,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
+		System:                 opts.System,
 		Identity:               opts.Identity,
 		AgentTokens:            opts.AgentTokens,
 		NewIssueLabel:          opts.NewIssueLabel,

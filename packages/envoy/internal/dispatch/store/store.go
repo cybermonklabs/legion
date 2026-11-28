@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -73,8 +74,8 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	if declared {
 		return nil, fmt.Errorf(
-			"DATABASE_URL sets %s, which Dispatch does not honour: the pool is fixed at %d in code (store.sharedPoolSize). Remove the parameter",
-			poolSizeParam, sharedPoolSize)
+			"DATABASE_URL sets %s, which Dispatch does not honour: the pools are fixed in code, %d connections for the system pool (store.sharedPoolSize) and %d for the request pool (store.requestPoolSize). Remove the parameter",
+			poolSizeParam, sharedPoolSize, requestPoolSize)
 	}
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -94,14 +95,74 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	return &Store{Pool: NewPool(pool)}, nil
 }
 
-// OpenRequestPool opens the request pool beside system, after Migrate has run on system: a pool
-// copied from system's configuration whose every connection scans timestamptz in UTC and runs as
-// dispatch_app (set role), and which hands out no side pool (ErrRequestPoolRefuses). Before it
-// answers, it reads the role's facts on one of its connections (readRequestRoleFacts) and refuses,
-// closing the pool, unless checkRequestRole passes them (plan D1).
+// OpenRequestPool opens the request pool beside system, after Migrate has run on system (on a
+// fresh database RequestRole does not exist before the migrations make it): a pool of
+// requestPoolSize connections copied from system's configuration, whose every connection scans
+// timestamptz in UTC and runs as RequestRole (set role), and which hands out no side pool
+// (ErrRequestPoolRefuses). Before it answers, it reads the role's facts on one of its connections
+// (readRequestRoleFacts) and refuses, closing the pool, unless checkRequestRole passes them
+// (plan D1). system closes it with itself and counts its connections in Use.
 func OpenRequestPool(ctx context.Context, system *Pool) (*Pool, error) {
-	// INFRA-6168 scaffold: work step 2
-	return nil, errRequestPoolNotBuilt
+	return openRequestPool(ctx, system, requestSettingsSQL)
+}
+
+// OpenRequestPoolAsOwnerForTest is OpenRequestPool with no role: the same wrapper, which sends
+// the same viewer settings, on connections that run as the login that owns the tables, so the
+// functions that read the settings read them while no policy is met. It is for one test alone,
+// whose baseline server answers as Dispatch did before row security
+// (storetest.RequestAsOwner, plan D1); nothing that serves calls it.
+func OpenRequestPoolAsOwnerForTest(ctx context.Context, system *Pool) (*Pool, error) {
+	return openRequestPool(ctx, system, ownerSettingsSQL)
+}
+
+// openRequestPool opens a request pool beside system whose transactions begin with settings: the
+// request pool's, which run as RequestRole on connections set to it and checked at the open, or
+// the owner's, which change no role.
+func openRequestPool(ctx context.Context, system *Pool, settings string) (*Pool, error) {
+	if system == nil || system.IsRequest() {
+		return nil, errors.New("store: a request pool opens beside the system pool (store.Open), not beside another request pool")
+	}
+	asRole := settings == requestSettingsSQL
+	config := system.Config()
+	config.MaxConns = requestPoolSize
+	config.AfterConnect = scanTimestampsInUTC
+	if asRole {
+		config.AfterConnect = runAsRequestRole
+	}
+	opened, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("store: open the request pool: %w", err)
+	}
+	if asRole {
+		facts, err := readRequestRoleFacts(ctx, opened)
+		if err == nil {
+			err = checkRequestRole(facts)
+		}
+		if err != nil {
+			opened.Close()
+			return nil, err
+		}
+	}
+	if err := system.adoptRequestPool(opened); err != nil {
+		opened.Close()
+		return nil, fmt.Errorf("store: open the request pool: %w", err)
+	}
+	return &Pool{pool: opened, request: &requestPart{system: system, settings: settings}}, nil
+}
+
+// runAsRequestRole is the request pool's AfterConnect: scanTimestampsInUTC, then set role
+// RequestRole for the session, so a statement sent on one of its connections past the pool's
+// wrapper runs as RequestRole too, with no viewer setting, and reads no row of a table with a
+// policy. The settings statement sets the role again, local to each transaction, for a connection
+// whose session role something reset.
+func runAsRequestRole(ctx context.Context, conn *pgx.Conn) error {
+	if err := scanTimestampsInUTC(ctx, conn); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, "set role "+RequestRole); err != nil {
+		return fmt.Errorf("store: run the request pool's connection as %s: %w", RequestRole, err)
+	}
+	return nil
 }
 
 // requestRoleFacts are what the boot check reads of the role a connection of the request pool
@@ -112,20 +173,45 @@ type requestRoleFacts struct {
 	superuser, bypassRLS, ownsTable bool
 }
 
-// readRequestRoleFacts reads requestRoleFacts of the role q runs as.
+// readRequestRoleFacts reads requestRoleFacts of the role q runs as. Owning a table is read as
+// owning any relation of schema public - a table, a view, a sequence or an index - since none of
+// them belongs to the request role.
 func readRequestRoleFacts(ctx context.Context, q interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }) (requestRoleFacts, error) {
-	// INFRA-6168 scaffold: work step 2
-	return requestRoleFacts{}, errRequestPoolNotBuilt
+	var facts requestRoleFacts
+	err := q.QueryRow(ctx, `
+		select r.rolname::text, r.rolsuper, r.rolbypassrls,
+			exists (select from pg_class c where c.relowner = r.oid and c.relnamespace = 'public'::regnamespace)
+		from pg_roles r where r.rolname = current_user`).Scan(&facts.role, &facts.superuser, &facts.bypassRLS, &facts.ownsTable)
+	if err != nil {
+		return requestRoleFacts{}, fmt.Errorf("store: read the role the request pool runs as: %w", err)
+	}
+	return facts, nil
 }
 
 // checkRequestRole refuses, naming the fact, a request role that is not dispatch_app, is a
 // superuser, is BYPASSRLS or owns a table of schema public: under any of them row security would
 // not hold the request's statements (plan D1).
 func checkRequestRole(facts requestRoleFacts) error {
-	// INFRA-6168 scaffold: work step 2
-	return errRequestPoolNotBuilt
+	var refused []string
+	if facts.role != RequestRole {
+		refused = append(refused, "is not "+RequestRole)
+	}
+	if facts.superuser {
+		refused = append(refused, "is a superuser")
+	}
+	if facts.bypassRLS {
+		refused = append(refused, "has BYPASSRLS")
+	}
+	if facts.ownsTable {
+		refused = append(refused, "owns a relation of schema public")
+	}
+	if len(refused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("store: the request pool runs as the role %q, which %s: row security would not hold the requests' statements under it, so Dispatch refuses to serve",
+		facts.role, strings.Join(refused, " and "))
 }
 
 // scanTimestampsInUTC makes every timestamptz a connection scans come back in UTC, whatever zone

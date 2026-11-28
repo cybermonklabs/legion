@@ -1,6 +1,6 @@
 package store
 
-//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it states of this package's pools must equal the constants that decide them: store.LeasePoolSize, store.ConnectionsPerProcess and every pool of the sum (sharedPoolSize, RoomsPoolSize, roomAppendsPoolSize, compactionPoolSize, healthPoolSize, outboxPoolSize, horizonPoolSize, registryPoolSize, listenerConnections)
+//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md internal/dispatch/store/counts_in_documents_test.go reads it: the connection counts it states of this package's pools must equal the constants that decide them: store.LeasePoolSize, store.ConnectionsPerProcess and every pool of the sum (requestPoolSize, sharedPoolSize, RoomsPoolSize, roomAppendsPoolSize, compactionPoolSize, healthPoolSize, outboxPoolSize, horizonPoolSize, registryPoolSize, listenerConnections)
 //ci:reads .dispatch/architecture/dispatch-store.md internal/dispatch/store/counts_in_documents_test.go reads it, for the lease pool's own count, which that document states in words
 //ci:reads packages/envoy/cmd/dispatch/README.md TestTheDocumentsStateTheCountsThisPackageHolds docnumbers.Check and sumTerms os.ReadFile under ../../../../..: the pool table and connection sum it states must equal the same constants
 
@@ -83,10 +83,15 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 		// site page's enumeration of the same pools in prose, where four of the counts are
 		// spelled. One sentence each way for every pool, so a raise that moves one and not the
 		// other fails here rather than in a person's reading.
-		{File: readme, Pattern: `\| Shared \(` + "`sharedPoolSize`" + `\) \| ` + number + ` \|`,
-			Number: sharedPoolSize, Says: "the shared pool's row of the pool table"},
+		{File: readme, Pattern: `\| Request \(` + "`requestPoolSize`" + `\) \| ` + number + ` \|`,
+			Number: requestPoolSize, Says: "the request pool's row of the pool table"},
+		{File: readme, Pattern: `\| System \(` + "`sharedPoolSize`" + `\) \| ` + number + ` \|`,
+			Number: sharedPoolSize, Says: "the system pool's row of the pool table"},
+		// The site page counts the request pool and the system pool together as what a server
+		// opens for requests: the system pool serves each request's reads before it has a viewer
+		// beside the background work, and the page names no pool.
 		{File: site, Pattern: `up\s+to ` + number + ` connections for requests`,
-			Number: sharedPoolSize, Says: "the connections one server opens for requests"},
+			Number: requestPoolSize + sharedPoolSize, Says: "the connections one server opens for requests and its own work"},
 		{File: readme, Pattern: `\| Room appends \(` + "`roomAppendsPoolSize`" + `\) \| ` + number + ` \|`,
 			Number: roomAppendsPoolSize, Says: "the room-appends pool's row of the pool table"},
 		{File: site, Pattern: `up to ` + number + ` for saving what people type in documents`,
@@ -132,8 +137,8 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 	docnumbers.Check(t, root, stated)
 }
 
-// sumTerms is one entry per term of the README's connection sum, "opens at most 64 + 29 + 8 + 4 +
-// 2 + 2 + 1 + 2 + 2 + 1 + 5 = 120 connections to Postgres", generated from the pools themselves:
+// sumTerms is one entry per term of the README's connection sum, "opens at most 48 + 16 + 29 + 8 +
+// 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 120 connections to Postgres", generated from the pools themselves:
 // the terms in the order the sum writes them, each entry anchored by the terms before it, which
 // are written from the constants too. Nothing of the sum is a literal here, so the day a pool
 // moves the entry moves with it and the sentence is held to the new value rather than to the old
@@ -149,7 +154,8 @@ func sumTerms(t *testing.T, root, readme, number string) []docnumbers.Stated {
 		value int
 		says  string
 	}{
-		{sharedPoolSize, "the shared pool"},
+		{requestPoolSize, "the request pool"},
+		{sharedPoolSize, "the system pool"},
 		{LeasePoolSize, "the lease pool"},
 		{roomAppendsPoolSize, "the room-appends pool"},
 		{RoomsPoolSize, "the rooms pool"},
