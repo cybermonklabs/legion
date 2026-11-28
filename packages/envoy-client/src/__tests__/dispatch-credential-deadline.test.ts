@@ -134,7 +134,7 @@ test("inside the renewal window, a broker that hangs leaves a Dispatch call its 
   const live = dispatch.asked[0]?.authorization;
   expect(live).toStartWith("DPoP ");
   expect(dispatch.asked.map((asked) => asked.authorization)).toEqual([live, live]);
-}, 20_000);
+});
 
 // R3-99b1 (the review of 99b1e438db): a write whose credential cannot present ends with the
 // credential's own error, within the client's deadline, whatever that deadline is. A registration
@@ -201,6 +201,5 @@ test.each([
     } finally {
       warn.mockRestore();
     }
-  },
-  20_000
+  }
 );

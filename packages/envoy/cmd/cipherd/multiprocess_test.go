@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -541,32 +542,32 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	return solo
 }
 
-// freshRequest GETs path at addr over a connection of its own and answers the status, the body,
-// and whatever went wrong instead. A transport per call, never a client's idle keep-alive
-// connection: what a drain is about is whether the listener is still ACCEPTING, which only a
-// connection opened after the signal can show, and whether it is gone, which a reused connection
-// would not notice at all.
-func freshRequest(addr, path string) (int, string, error) {
+// mustRequest GETs path at addr over a connection of its own and answers the status and the body.
+// A transport per call, never a client's idle keep-alive connection: what a drain is about is
+// whether the listener is still ACCEPTING, which only a connection opened after the signal can
+// show. Its one bound is the test binary's deadline (testwait.Context): a broker the machine's
+// load slows is waited for, and one that never answers fails the row when the test gives up, with
+// the error naming the request. Every caller asserts what the broker ANSWERED, so a request that
+// never reached it at all is the row's failure rather than its observation.
+func mustRequest(t *testing.T, addr, path string) (int, string) {
+	t.Helper()
+	target := "http://" + addr + path
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
-	resp, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Get("http://" + addr + path)
+	resp, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body), err
-}
-
-// mustRequest is freshRequest for a caller that is asserting what the broker ANSWERED: a request
-// that never reached it at all is this row's failure rather than its observation.
-func mustRequest(t *testing.T, addr, path string) (int, string) {
-	t.Helper()
-	status, body, err := freshRequest(addr, path)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
-	return status, body
+	return resp.StatusCode, string(body)
 }
 
 // errorCode is the code an error answer names ({"code", "error"}, api/server.go's writeError),
@@ -949,24 +950,29 @@ func TestTwoBrokers(t *testing.T) {
 	// the handler, with nothing faked and nothing sleeping in the broker.
 	t.Run("6_ADrainingProcessFailsReadinessAndServesOn", func(t *testing.T) {
 		const (
-			// drain is this broker's BROKER_DRAIN_SECONDS: long enough to get both observations
-			// out inside the window, short enough that the row pays for no budget it does not
-			// use.
-			drain = 5 * time.Second
+			// drain is this broker's BROKER_DRAIN_SECONDS, the longest config.Load accepts. Once
+			// both observations are in, the row ends the drain with a second SIGTERM and requires
+			// the broker's log to say that signal ended it. The drain's own clock still runs: a
+			// stall of two minutes before the second signal ends the drain first, and the row then
+			// fails by name rather than reading the shutdown as the drain.
+			drain = 120 * time.Second
 			// oldShutdownBudget is what main.go's shutdownTimeout was before it became the
 			// write timeout: the figure this row exists to outlive.
 			oldShutdownBudget = 10 * time.Second
-			// holdFor is when the blocked refresh is let go, measured from the signal, past
-			// oldShutdownBudget by a margin no scheduling hiccup closes.
+			// holdFor is how long the blocked refresh stays held once the broker has logged that
+			// its shutdown began: past oldShutdownBudget, counted from inside the shutdown, by a
+			// margin no scheduling hiccup closes.
 			holdFor = 12 * time.Second
-			// controlWindow is how long the control broker, signalled with no drain, may go on
-			// answering a fresh connection. It is a window, not a wait: the control's claim is
-			// that without a drain the listener is gone almost at once, which a wait with no span
-			// of its own would grant any process that stops at all.
-			controlWindow = 2 * time.Second
-			host          = "draining-broker"
+			host    = "draining-broker"
+			// secondSignalEndedTheDrain is the line boot.go's stop logs when a second signal,
+			// and not the drain's clock, ends the drain.
+			secondSignalEndedTheDrain = "broker: a second signal ended the drain early"
 		)
 		solo := startSoloBroker(t, binary, drain)
+		// A row that fails before its first SIGTERM leaves that signal to startBroker's cleanup,
+		// which would begin a two-minute drain, past its stopGrace: the broker is killed here, once
+		// the row has its verdict.
+		t.Cleanup(func() { _ = solo.Process.Cmd.Process.Kill() })
 		machineKey := ciphertest.NewSigningKey(t)
 		authorization := solo.Client.DeviceLogin(t, machineKey, multiprocessPerson, host)
 		credentialID := solo.Client.ApproveMachineLogin(t, multiprocessPerson, authorization.UserCode)
@@ -1024,12 +1030,26 @@ func TestTwoBrokers(t *testing.T) {
 			t.Fatalf("GET /v1/settings at %s, %s into its drain, = %d %s; want 200 — a draining broker serves every route but its health check",
 				solo.Process.Addr, time.Since(signalled).Round(time.Millisecond), status, body)
 		}
+		// The drain ends here, on the row's word: a second SIGTERM, which the watchdog at the top
+		// of main hands to the drain. Readiness failing above shows the first signal was taken,
+		// so the two cannot merge into one pending signal. The broker logs a line only when this
+		// signal, and not its clock, ends the drain, so finding that line says both answers above
+		// came inside the drain.
+		if err := solo.Process.Cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("send the broker at %s its second SIGTERM: %v", solo.Process.Addr, err)
+		}
+		solo.Process.AwaitRecord(t, "broker shutting down", nil)
+		shutdownBegan := time.Now()
+		if len(recordsWith(solo.Process.Log(), secondSignalEndedTheDrain, nil)) == 0 {
+			t.Fatalf("the broker at %s began its shutdown without logging %q: the second SIGTERM, which the row sent once GET /healthz had answered 503 and GET /v1/settings 200, did not end its %s drain:\n%s",
+				solo.Process.Addr, secondSignalEndedTheDrain, drain, solo.Process.Log())
+		}
 
-		// This wait IS the experiment, and it is the only bare sleep in this file: the claim is
+		// This wait IS the experiment, and it is the only bare sleep in this row: the claim is
 		// about a request still in flight when the old ten-second shutdown budget would have run
 		// out, so the length of the wait is the thing under test rather than a stand-in for some
 		// observable the row could have waited on instead.
-		time.Sleep(time.Until(signalled.Add(holdFor)))
+		time.Sleep(time.Until(shutdownBegan.Add(holdFor)))
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release the refresh token's row: %v", err)
 		}
@@ -1046,37 +1066,43 @@ func TestTwoBrokers(t *testing.T) {
 		if err := solo.Process.AwaitExit(t); err != nil {
 			t.Fatalf("the broker exited with %v after draining; want 0:\n%s", err, solo.Process.Log())
 		}
-		stopped := time.Since(signalled)
-		t.Logf("the broker exited 0 %s after its SIGTERM, having finished the refresh it was holding",
-			stopped.Round(time.Millisecond))
-		if stopped <= oldShutdownBudget {
-			t.Fatalf("the broker exited %s after its SIGTERM, inside the old %s budget; the row says nothing about that budget unless the request it held outlived it",
-				stopped.Round(time.Millisecond), oldShutdownBudget)
+		t.Logf("the broker exited 0 %s after its first SIGTERM and %s after its shutdown began, having finished the refresh it was holding",
+			time.Since(signalled).Round(time.Millisecond), time.Since(shutdownBegan).Round(time.Millisecond))
+		// The shutdown's own record says whether it finished that request inside its budget: stop
+		// logs "broker: shutdown" with the error when srv.Shutdown's budget runs out first
+		// (boot.go). The old ten-second budget runs out while the request is still held, and logs
+		// so. Neither the answer nor the exit shows it: closing the store waits for the request's
+		// connection only until the request commits, and the answer it writes after that races the
+		// process's exit.
+		if gaveUp := recordsWith(solo.Process.Log(), "broker: shutdown", nil); len(gaveUp) != 0 {
+			t.Fatalf("the broker's shutdown gave up on the request it held (%v), which it held %s into the shutdown; want a shutdown budget that outlasts the old %s:\n%s",
+				gaveUp[0]["error"], holdFor, oldShutdownBudget, solo.Process.Log())
 		}
 
-		// The control, which is what makes the serving window above mean anything: the same
-		// binary and the same request, with the drain set to zero and nothing in flight. Here
-		// the listener must be gone almost at once, where the drained process answered
-		// /v1/settings at the same point after its own signal — so that window came from
-		// BROKER_DRAIN_SECONDS and not from a process that happens to be slow to stop.
+		// The control: the same binary, with the drain set to zero and nothing in flight, stopped
+		// by one SIGTERM. It must log that it began a drain of 0s and exit cleanly with no second
+		// signal. That shows BROKER_DRAIN_SECONDS reaches stop, so the drain the row ended above
+		// came from the setting and not from its 5 s default (config.Load).
 		control := startSoloBroker(t, binary, 0)
 		if status, body := mustRequest(t, control.Process.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at the control broker %s before its signal = %d %s; want 200",
 				control.Process.Addr, status, body)
 		}
 		controlSignalled := control.Process.Terminate(t)
-		for {
-			status, body, err := freshRequest(control.Process.Addr, "/v1/settings")
-			if err != nil {
-				t.Logf("the control broker refused a fresh connection %s after its signal: %v",
-					time.Since(controlSignalled).Round(time.Millisecond), err)
-				break
-			}
-			if time.Since(controlSignalled) > controlWindow {
-				t.Fatalf("the control broker at %s went on answering GET /v1/settings %d %s for %s after a SIGTERM with BROKER_DRAIN_SECONDS=0; want its listener gone",
-					control.Process.Addr, status, body, controlWindow)
-			}
+		draining := control.Process.AwaitRecord(t, "broker draining", nil)
+		if draining["drain"] != "0s" {
+			t.Fatalf("the control broker at %s, with BROKER_DRAIN_SECONDS=0, began a drain of %v; want 0s:\n%s",
+				control.Process.Addr, draining["drain"], control.Process.Log())
 		}
+		if err := control.Process.AwaitExit(t); err != nil {
+			t.Fatalf("the control broker exited with %v after its SIGTERM; want 0:\n%s", err, control.Process.Log())
+		}
+		// Exited closes once cmd.Wait has drained the output pipe, so this is the whole log.
+		if controlLog := control.Process.Log(); len(recordsWith(controlLog, "broker shutting down", nil)) == 0 {
+			t.Fatalf("the control broker at %s exited without logging its shutdown:\n%s", control.Process.Addr, controlLog)
+		}
+		t.Logf("the control broker exited 0 %s after its one SIGTERM, having begun a drain of 0s",
+			time.Since(controlSignalled).Round(time.Millisecond))
 	})
 
 	// A pod that is stopping still takes the other pods' rereads. The drain exists because new
