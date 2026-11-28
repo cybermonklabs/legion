@@ -21,7 +21,7 @@ import (
 // its lists are bounded by their length, not only by how many events they name. With the length
 // bound taken away, 50 such events are one list over the block bound.
 func TestAWindowOfLongDocumentReferencesMakesOneMessageTheBodyCheckTakes(t *testing.T) {
-	window := undeliveredWindow{issueKey: "T-1", role: "long-documents", openedAt: time.Now()}
+	window := undeliveredWindow{issueKey: "T-1", role: "long-documents", openedAt: fixtureTime}
 	slug := strings.Repeat("a", 2600)
 	for event := range 120 {
 		window.notes = append(window.notes, undeliveredNote{
@@ -46,7 +46,7 @@ func TestAWindowOfLongDocumentReferencesMakesOneMessageTheBodyCheckTakes(t *test
 // the one item is a block over the bound.
 func TestADocumentWithAnOversizedReferenceIsNamedByItsID(t *testing.T) {
 	document := uuid.NewString()
-	window := undeliveredWindow{issueKey: "T-1", role: "legacy-document", openedAt: time.Now(), notes: []undeliveredNote{{
+	window := undeliveredWindow{issueKey: "T-1", role: "legacy-document", openedAt: fixtureTime, notes: []undeliveredNote{{
 		eventID: 300000, eventType: "artifact.version", keeps: maxRoleKeeps, reason: model.RoleUndeliveredExpired,
 		itemRef: "dispatch://T-1/artifact/" + strings.Repeat("a", 40000), documentID: document,
 	}}}
@@ -99,12 +99,12 @@ func TestANoteThatJoinsAPostedWindowGetsAMessageOfItsOwn(t *testing.T) {
 }
 
 // owedExpiry writes an expiry of eventID's copy for role kept for the attempt'th time and stored
-// at sequence, still owed a keep, due at next (nil: due now), as the intake records one.
-func owedExpiry(t *testing.T, database *store.Store, eventID int64, role string, attempt int, sequence uint64, next *time.Time) {
+// at sequence, still owed a keep, due after next (nil: due now), as the intake records one.
+func owedExpiry(t *testing.T, database *store.Store, eventID int64, role string, attempt int, sequence uint64, next *time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into outbox_role_copy_expiries (event_id, role, keep_attempt, copy_sequence, dedupe_key, kept_at, dropped_at, next_attempt_at)
-		values ($1, $2, $3, $4, $5, now() - interval '2 hours', now() - interval '1 hour', $6)
+		values ($1, $2, $3, $4, $5, now() - interval '2 hours', now() - interval '1 hour', now() + $6::interval)
 	`, eventID, role, attempt, int64(sequence), fmt.Sprintf("dispatch-%d", eventID), next); err != nil {
 		t.Fatalf("write an owed expiry of event %d: %v", eventID, err)
 	}
@@ -143,11 +143,10 @@ func TestAnEventWhoseCopiesAreAllGoneIsRecordedOnce(t *testing.T) {
 	if len(lane) != 2 {
 		t.Fatalf("role %s's kept lane holds %d copies, want the scan's two", role, len(lane))
 	}
-	later := time.Now().Add(time.Hour)
 	owedExpiry(t, rig.database, both.ID, role, 1, 999991, nil)
 	owedExpiry(t, rig.database, both.ID, role, 2, 999992, nil)
 	owedExpiry(t, rig.database, one.ID, role, 1, 999993, nil)
-	owedExpiry(t, rig.database, one.ID, role, 2, lane[1].Sequence, &later)
+	owedExpiry(t, rig.database, one.ID, role, 2, lane[1].Sequence, new(time.Hour))
 
 	outbox.passKeptExpiries(ctx, unfenced{})
 

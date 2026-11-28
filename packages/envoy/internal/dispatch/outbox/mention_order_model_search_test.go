@@ -75,48 +75,33 @@ type moResult struct {
 func (m *moModel) explore() moResult {
 	var result moResult
 	start := m.start()
-	visited := map[moState]struct{}{start: {}}
-	type frame struct {
-		states []moState
-		next   int
-	}
-	children := func(s moState) []moState {
-		var states []moState
-		m.successors(s, func(_ moStep, next moState) { states = append(states, next) })
-		return states
-	}
-	stack := []frame{{states: children(start)}}
-	for len(stack) > 0 {
-		f := &stack[len(stack)-1]
-		if f.next == len(f.states) {
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		state := f.states[f.next]
-		f.next++
+	visited := map[moState]struct{}{}
+	var path []moState
+	var visit func(moStep, moState)
+	visit = func(_ moStep, state moState) {
 		if _, ok := visited[state]; ok {
-			continue
+			return
 		}
 		visited[state] = struct{}{}
+		path = append(path, state)
+		defer func() { path = path[:len(path)-1] }()
 		if state.violated {
 			result.violations++
 			if state.inWindow {
 				result.inWindow++
 			}
 			if result.first == nil {
-				path := []moState{start}
-				for _, f := range stack {
-					path = append(path, f.states[f.next-1])
-				}
+				// counterexample reads path before the next visit.
 				result.first = m.counterexample(path)
 			}
-			continue
+			return
 		}
 		if state.copied {
-			continue
+			return
 		}
-		stack = append(stack, frame{states: children(state)})
+		m.successors(state, visit)
 	}
+	visit(moStep{}, start)
 	result.states = len(visited)
 	for _, viaFallback := range []bool{false, true} {
 		memo := map[moState]int{}
@@ -168,11 +153,7 @@ func (m *moModel) counterexample(path []moState) *moCounterexample {
 			}
 		}
 		if !ok && s.anyDue(true) && !s.pend[s.hold].active {
-			choice := make([]int, len(planChains(verbose.batchEvents(&s))))
-			for i := range choice {
-				choice[i] = -1
-			}
-			step, s = verbose.applyBatch(s, int(s.hold), choice, s.fails)
+			step, s = verbose.successfulBatch(s, int(s.hold))
 			ok = true
 		}
 		if !ok {
@@ -214,11 +195,7 @@ func (m *moModel) fairStep(s moState, viaFallback bool) (moState, string, bool) 
 		return next, "", true
 	}
 	if s.anyDue(true) {
-		choice := make([]int, len(planChains(m.batchEvents(&s))))
-		for i := range choice {
-			choice[i] = -1
-		}
-		_, next := m.applyBatch(s, 0, choice, s.fails)
+		_, next := m.successfulBatch(s, 0)
 		return next, "", true
 	}
 	if _, next, ok := m.tick(s); ok {
@@ -227,42 +204,48 @@ func (m *moModel) fairStep(s moState, viaFallback bool) (moState, string, bool) 
 	return s, "no step is left and the copy has not gone", false
 }
 
+// successfulBatch uses the same plan and outcome code as the search, with no
+// chain failing a send.
+func (m *moModel) successfulBatch(s moState, p int) (moStep, moState) {
+	events := m.batchEvents(&s)
+	chains := planChains(events)
+	choice := make([]int, len(chains))
+	for i := range choice {
+		choice[i] = -1
+	}
+	return m.applyBatch(s, p, events, chains, choice, s.fails)
+}
+
 // fair runs the fair schedule from s and answers how many steps the copy took to go, or -1 and
-// why when it never goes. memo holds the answer of every state a run passed.
+// why when it never goes. A state marked visiting on this schedule detects a cycle.
 func (m *moModel) fair(s moState, viaFallback bool, memo map[moState]int) (int, string) {
-	var trail []moState
-	seen := map[moState]struct{}{}
-	answer, why := -1, ""
-	for {
-		if v, ok := memo[s]; ok {
-			answer = v
-			if v < 0 {
-				why = "it reaches a state whose copy never goes"
-			}
-			break
+	// The fair schedule never moves the hold to a different process by
+	// choice or spends a failure. Both counters would stay constant.
+	s.moves, s.fails = 0, 0
+	const visiting = -2
+	if v, ok := memo[s]; ok {
+		switch v {
+		case visiting:
+			return -1, fmt.Sprintf("the run comes back to a state it left, the copy held by event %d", m.v.holder(&s)+1)
+		case -1:
+			return -1, "it reaches a state whose copy never goes"
+		default:
+			return v, ""
 		}
-		if s.copied {
-			answer = 0
-			break
-		}
-		if _, ok := seen[s]; ok {
-			why = fmt.Sprintf("the run comes back to a state it left, the copy held by event %d", m.v.holder(&s)+1)
-			break
-		}
-		seen[s] = struct{}{}
-		trail = append(trail, s)
-		next, stuck, ok := m.fairStep(s, viaFallback)
-		if !ok {
-			why = stuck
-			break
-		}
-		s = next
 	}
-	for i := len(trail) - 1; i >= 0; i-- {
-		if answer >= 0 {
-			answer++
-		}
-		memo[trail[i]] = answer
+	if s.copied {
+		return 0, ""
 	}
+	memo[s] = visiting
+	next, why, ok := m.fairStep(s, viaFallback)
+	if !ok {
+		memo[s] = -1
+		return -1, why
+	}
+	answer, why := m.fair(next, viaFallback, memo)
+	if answer >= 0 {
+		answer++
+	}
+	memo[s] = answer
 	return answer, why
 }

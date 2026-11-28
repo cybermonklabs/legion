@@ -18,12 +18,15 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -61,7 +64,7 @@ func writePublisherHold(ctx context.Context, database *store.Store, holder uuid.
 }
 
 // holdingProcess is the process the publisher hold's row names, whatever its lease says: the
-// identity a test gives a fallback pass it runs outside an Outbox (publishFallbackCopies), since
+// identity a test gives a bareOutbox for a synchronous fallback pass (publishFallbackCopies), since
 // in production the pass runs in the process that took the hold and is given that process's
 // instance (Outbox.serve), and its record is written only while the hold is still that
 // process's (recordFallbackCopies). A test whose pass must find the hold gone passes an identity
@@ -124,25 +127,23 @@ func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *s
 	return &store.Store{Pool: pool}
 }
 
-// probeHook is a bus client whose windows call probing once, as the first probe of any of them
-// starts and before that probe asks the connection anything.
+// probeHook calls probing before each probe of its publisher's windows.
 type probeHook struct {
-	*bus.Client
-	once    sync.Once
+	Publisher
 	probing func()
 }
 
 func (c *probeHook) WindowUntil(deadline func() time.Time) bus.Sender {
-	return probeHookSender{Sender: c.Client.WindowUntil(deadline), hook: c}
+	return probeHookSender{Sender: c.Publisher.WindowUntil(deadline), probing: c.probing}
 }
 
 type probeHookSender struct {
 	bus.Sender
-	hook *probeHook
+	probing func()
 }
 
 func (s probeHookSender) Probe(timeout time.Duration) error {
-	s.hook.once.Do(s.hook.probing)
+	s.probing()
 	return s.Sender.Probe(timeout)
 }
 
@@ -167,9 +168,9 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -197,16 +198,18 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 		})
 	}
 	first := write("first")
-	stop := runOutbox(t, database, client, broker)
+	stop, retryNow := stageBlockedRetry(t, wiredOutbox(t, database, client, client, broker), first.ID, nil)
 	defer stop()
-	waitFor(t, "the first event backed off for S's subject", func() bool {
-		_, attempts := publishedDestinations(t, database, first.ID)
-		return attempts > 0
-	})
 	if _, err := js.UpdateStream(&capturing); err != nil {
 		t.Fatalf("let the stream capture agent subjects again: %v", err)
 	}
 	second, third := write("second"), write("third")
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	waitFor(t, "the later events on the topic family while the session route is backed off", func() bool {
+		bySubject, _ := streamOrder(t, reader)
+		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
+	})
+	retryNow(first.ID, second.ID, third.ID)
 
 	waitFor(t, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
@@ -217,7 +220,6 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
-	topic := "notifications.dispatch.issue.T-1.message.created"
 	session := contracts.LegacyAgentSubject("S")
 	order := map[string][]int64{}
 	sequence := map[string]uint64{}
@@ -252,7 +254,8 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 
 func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	t.Parallel()
-	rig := newRoleRig(t)
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithAckClock(t, ack)
 	const role, holder = "reviewer", "S"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
@@ -278,9 +281,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 		t.Fatalf("subscribe S: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := rig.conn.Flush(); err != nil {
-		t.Fatalf("flush S's subscription: %v", err)
-	}
+	flushSubscriber(t, rig.conn)
 	taken := func() []int64 {
 		mu.Lock()
 		defer mu.Unlock()
@@ -293,12 +294,14 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
 		})
 	}
-	stop := runOutbox(t, rig.database, rig.client, rig.broker)
-	defer stop()
-	waitFor(t, "the first event backed off for S", func() bool {
-		_, attempts := publishedDestinations(t, rig.database, first.ID)
-		return attempts > 0
+	topicAck := make(chan error, 1)
+	publisher := reportTopicAck{Publisher: rig.client, result: topicAck}
+	outbox := wiredOutboxJudgedBy(t, rig.database, rig.client, publisher, rig.broker, roles.Windows{Now: roleRigNow})
+	stop, retryNow := stageBlockedRetry(t, outbox, first.ID, func() {
+		awaitTopicAck(t, topicAck)
+		expireForwardAck(t, ack)
 	})
+	defer stop()
 	second, third := write("second"), write("third")
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
@@ -318,6 +321,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 
 	capturing()
+	retryNow(first.ID, second.ID, third.ID)
 	waitFor(t, "all three events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil &&
 			publishedAt(t, rig.database, third.ID) != nil
@@ -340,6 +344,34 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	if want := []int64{first.ID, second.ID, third.ID}; !slices.Equal(order, want) {
 		t.Fatalf("S took events %v, want %v: each only after the one before it", order, want)
+	}
+}
+
+// stageBlockedRetry records a failed first scan, then keeps that row backed off while later
+// events arrive. Run takes its own hold with the same instance after the staged scan returns.
+func stageBlockedRetry(t *testing.T, outbox *Outbox, id int64, driveAck func()) (stop func(), retryNow func(ids ...int64)) {
+	t.Helper()
+	database := outbox.deps.Store
+	check := recordAttemptMoment(t, database)
+	holdRow(t, database, outbox.instance)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	scanned := make(chan scanEnd, 1)
+	go func() { scanned <- outbox.scan(ctx, unfenced{}) }()
+	if driveAck != nil {
+		driveAck()
+	}
+	testwait.Receive(t, "the initial scan recording the failed attempt", scanned)
+	check(id)
+	// A real LISTEN wake after the one-second back-off must not retry the first event while
+	// the test arranges the later events.
+	backOffIn(t, database, id, 1, stagedAhead)
+	timers := clocktest.New(time.Time{})
+	stop, atRest := runResting(t, outbox, timers)
+	return stop, func(ids ...int64) {
+		t.Helper()
+		atRest("the holder resting after reading the later events against the first's back-off")
+		plantRetry(t, database, timers, ids...)
 	}
 }
 
@@ -386,9 +418,9 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -546,14 +578,12 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 	rig.refuse(t, contracts.AgentTopicPrefix)
 	person := model.Actor{Kind: "user", ID: "alice"}
 	first := rig.write(t, person, "first, by a person")
-	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	stop, retryNow := stageBlockedRetry(t, wiredOutbox(t, rig.database, rig.client, rig.client, rig.broker), first.ID, nil)
 	defer stop()
-	waitFor(t, "the first event backed off for S's subject", func() bool {
-		_, attempts := publishedDestinations(t, rig.database, first.ID)
-		return attempts > 0
-	})
 	rig.captureAgain(t)
 	second := rig.write(t, person, "second, by a person")
+	waitFor(t, "the second event settled behind the first", func() bool { return rig.settled(t, second.ID) })
+	retryNow(first.ID, second.ID)
 	waitFor(t, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
@@ -777,13 +807,15 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
 	session := contracts.LegacyAgentSubject("S")
-	waitFor(t, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
-	time.Sleep(200 * time.Millisecond)
-	if got := publisher.sent(); !slices.Equal(got, []string{topic}) {
-		t.Fatalf("sent %v before any answer, want only the first event's topic send: the second event's copy for S went while that send had no answer", got)
+	waitFor(t, "the first event's topic sent", func() bool { return len(publisher.sent()) >= 1 })
+	if got := publisher.sent()[0]; got != topic {
+		t.Fatalf("sent %s first, want the first event's topic %s", got, topic)
 	}
 	publisher.accept(0, 1)
-	waitFor(t, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) == 3 })
+	waitFor(t, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) >= 3 })
+	if after := publisher.answeredBefore(); after[1] != 1 || after[2] != 1 {
+		t.Fatalf("the second event's sends saw %v answers, want both after the first topic's answer", after[1:3])
+	}
 	if got := publisher.sent()[1:]; !slices.Contains(got, topic) || !slices.Contains(got, session) {
 		t.Fatalf("sent %v once the first event's topic send was answered, want the second event's to the topic family and to %s", got, session)
 	}
@@ -791,25 +823,63 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 	waitFor(t, "both events marked published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil
 	})
+	if got := publisher.sent(); len(got) != 3 {
+		t.Fatalf("sent %v, want the three destinations once each", got)
+	}
 }
 
-// shiftedClock moves database's clock an hour ahead of the pod's, as a database host whose clock
-// disagrees with the pod's has it, and returns a store whose connections read it: every now() they
-// call answers an hour later than the pod's clock.
-func shiftedClock(t *testing.T, database *store.Store) *store.Store {
+// frozenDatabaseClock answers a fixed now() on a second pool. An hour of skew also
+// distinguishes a database stamp from a stamp on the process clock.
+func frozenDatabaseClock(t *testing.T, database *store.Store) (*store.Store, time.Time) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `
-		create schema testclock;
-		create function testclock.now() returns timestamptz language sql stable
-			as $$ select pg_catalog.now() + interval '1 hour' $$;
-		do $$ begin
-			execute format('alter database %I set search_path = testclock, pg_catalog, public', current_database());
-		end $$;
-	`); err != nil {
-		t.Fatalf("shift the database's clock: %v", err)
+	var frozen time.Time
+	if err := database.Pool.QueryRow(t.Context(), `select pg_catalog.now() + interval '1 hour'`).Scan(&frozen); err != nil {
+		t.Fatalf("read the moment to freeze on the database: %v", err)
 	}
-	return storetest.SecondProcess(t, database)
+	return storeWithClock(t, database, fmt.Sprintf(`
+		create function testclock.now() returns timestamptz language sql stable
+			as $$ select '%s'::timestamptz $$;
+	`, frozen.UTC().Format(time.RFC3339Nano)), nil), frozen
 }
+
+// databaseMoment makes unqualified now() on the returned store follow the hold clock.
+// Move the database first so a renewal fired by the clock observes the new moment.
+func databaseMoment(t *testing.T, database *store.Store, fake *clocktest.Fake) (*store.Store, func(time.Time)) {
+	t.Helper()
+	timed := storeWithClock(t, database, `
+		create table testclock.moment (stamp timestamptz not null);
+		create function testclock.now() returns timestamptz language sql stable
+			as $$ select stamp from testclock.moment $$;
+	`, func() {
+		if _, err := database.Pool.Exec(t.Context(), `insert into testclock.moment values ($1)`, fake.Now()); err != nil {
+			t.Fatalf("set the database clock's initial moment: %v", err)
+		}
+	})
+	return timed, func(at time.Time) {
+		t.Helper()
+		if _, err := database.Pool.Exec(t.Context(), `update testclock.moment set stamp = $1`, at); err != nil {
+			t.Fatalf("move the database clock to %s: %v", at, err)
+		}
+		fake.Set(at)
+	}
+}
+
+// storeWithClock creates a test now() and reopens the pool with that clock first in its search path.
+func storeWithClock(t *testing.T, database *store.Store, setup string, initialize func()) *store.Store {
+	t.Helper()
+	if _, err := database.Pool.Exec(t.Context(), "create schema testclock;\n"+setup); err != nil {
+		t.Fatalf("install the database's test clock: %v", err)
+	}
+	if initialize != nil {
+		initialize()
+	}
+	return storetest.Reopened(t, database, func(config *pgxpool.Config) {
+		config.ConnConfig.RuntimeParams["search_path"] = "testclock, pg_catalog, public"
+	})
+}
+
+// The bus's publish acknowledgement and initial connection pin use the same five-second bound.
+const windowAckWait = 5 * time.Second
 
 // NATS that does not acknowledge an event's envelope on a connection still current backs it off:
 // no responders (no stream captures the subject) and a stream that never answers (the relay
@@ -850,36 +920,23 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
-		shifted := shiftedClock(t, database)
+		shifted, frozen := frozenDatabaseClock(t, database)
+		// Freeze SQL time, not the test goroutine: even a delayed second scan is still before due.
 		counter := &sendCounter{}
 		outbox := holding(t, Deps{Store: shifted, Publisher: countingClient{Client: client, counter: counter}})
-		// The database's clock as the scan starts, and again once the back-off is recorded. The
-		// record sets next_attempt_at to its own transaction's now() plus the first attempt's
-		// back-off (backOffAttempt: retry.Delay(1), which is retry.BaseDelay), and that now() falls
-		// between the two readings, so next_attempt_at does too, shifted by that back-off, however
-		// long a loaded machine takes between them.
-		var before time.Time
-		if err := shifted.Pool.QueryRow(context.Background(), `select now()`).Scan(&before); err != nil {
-			t.Fatalf("read the database's clock: %v", err)
-		}
 		outbox.scan(context.Background(), unfenced{})
 
 		backedOff(t, database, event, "no responders")
-		var after, nextAttempt time.Time
+		var nextAttempt time.Time
 		if err := shifted.Pool.QueryRow(context.Background(),
-			`select now(), next_attempt_at from events where id = $1`, event.ID).Scan(&after, &nextAttempt); err != nil {
+			`select next_attempt_at from events where id = $1`, event.ID).Scan(&nextAttempt); err != nil {
 			t.Fatalf("read the event's next attempt: %v", err)
 		}
-		firstBackOff := retry.Delay(1)
-		if nextAttempt.Before(before.Add(firstBackOff)) || nextAttempt.After(after.Add(firstBackOff)) {
-			t.Fatalf("the next attempt is at %s, want it the first back-off (%s) after the database's now() of the record, which fell between %s and %s",
-				nextAttempt, firstBackOff, before, after)
-		}
-		if until := time.Until(nextAttempt); until < 50*time.Minute {
-			t.Fatalf("the next attempt is %v past the pod's clock, want it on the database's, an hour ahead", until)
+		if want := frozen.Add(retry.Delay(1)); !nextAttempt.Equal(want) {
+			t.Fatalf("the next attempt is at %s, want %s on the frozen database clock", nextAttempt, want)
 		}
 		sent, _ := counter.of(event.ID)
 		outbox.scan(context.Background(), unfenced{})
@@ -891,36 +948,56 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	t.Run("a stream that never answers", func(t *testing.T) {
 		t.Parallel()
 		server, url := testnats.Start(t)
-		client, err := bus.ConnectOwningStream([]string{url})
+		ack := clocktest.New(time.Time{})
+		client, err := bus.ConnectOwningStream([]string{url}, bus.WithPublishAcknowledgementClock(ack))
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
-		// The window waits five seconds for an acknowledgement the frozen server never sends, and
-		// then probes the connection. The server thaws as that probe starts, so the probe is
-		// answered and the send fails for the acknowledgement alone, whatever the machine's speed.
-		clock := &probeHook{Client: client, probing: server.Freeze(t)}
-		holding(t, Deps{Store: database, Publisher: clock}).scan(context.Background(), unfenced{})
+		checkBackOff := recordAttemptMoment(t, database)
+		// Thaw only when the post-acknowledgement probe starts so it can answer.
+		publisher := &probeHook{Publisher: client, probing: sync.OnceFunc(server.Freeze(t))}
+		outbox := holding(t, Deps{Store: database, Publisher: publisher})
+		done := make(chan scanEnd, 1)
+		go func() { done <- outbox.scan(t.Context(), unfenced{}) }()
+		deadline := ack.Now().Add(windowAckWait)
+		ack.AwaitArmedAt(t, "the stream's unanswered acknowledgement", deadline)
+		crossDeadline(ack, deadline, func() {
+			if publishedAt(t, database, event.ID) != nil {
+				t.Fatal("the event was marked published before its acknowledgement wait ended")
+			}
+		})
+		testwait.Receive(t, "the scan after the stream's acknowledgement deadline", done)
 		backedOff(t, database, event, bus.ErrNotAcknowledged.Error())
+		checkBackOff(event.ID)
 	})
 
 	t.Run("a lost connection", func(t *testing.T) {
 		t.Parallel()
 		_, url := testnats.Start(t)
 		proxy := testnats.StartProxy(t, url)
-		client, err := bus.ConnectOwningStream([]string{proxy.URL()})
+		windows := clocktest.New(time.Time{})
+		client, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithPromptReconnect(), bus.WithWindowClock(windows))
 		if err != nil {
 			t.Fatalf("connect: %v", err)
 		}
-		t.Cleanup(client.Close)
+		t.Cleanup(func() { bustest.Close(t, client) })
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()
 		waitFor(t, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
-		outbox.scan(context.Background(), unfenced{})
+		done := make(chan scanEnd, 1)
+		go func() { done <- outbox.scan(t.Context(), unfenced{}) }()
+		pinEnd := windows.Now().Add(windowAckWait)
+		windows.AwaitArmedAt(t, "the disconnected window's connection pin", pinEnd)
+		windows.Set(pinEnd)
+		probeEnd := pinEnd.Add(probeTimeout)
+		windows.AwaitArmedAt(t, "the disconnected window's probe pin", probeEnd)
+		windows.Set(probeEnd)
+		testwait.Receive(t, "the scan releasing the event after the cut", done)
 		var attempts int
 		var nextAttempt *time.Time
 		var failure *string
@@ -1002,7 +1079,7 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 			delivery = "sent"
 		}
 		seedMentionDelivery(t, database, reply, writer.ID, delivery)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
 			Payload: model.CommentEventPayload{
 				Comment: model.Comment{
@@ -1010,44 +1087,45 @@ func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 					Mentions: mentionOf(writer.ID),
 				},
 			},
-		}))
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		})
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "comment.resolved", Actor: alice,
 			Payload: map[string]any{"id": root},
-		}))
+		})
 		askID := seedAsk(t, database, "T-1", model.Actor{Kind: "session", ID: fmt.Sprintf("asker-%d", index)}, "Ship it?")
 		seedFollower(t, database, askID, fmt.Sprintf("follower-%d", index))
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "ask.answered", Actor: alice,
 			Payload: map[string]any{"id": askID, "question": "Ship it?"},
-		}))
+		})
 		message := seedMessage(t, database, "T-1", model.Actor{Kind: "session", ID: fmt.Sprintf("sender-%d", index)}, "Status?", nil)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "message.created", Actor: alice,
 			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: "Fine", InReplyTo: &message},
-		}))
+		})
 		document := seedDocument(t, database, new("T-1"), fmt.Sprintf("notes-%d", index), model.Actor{Kind: "session", ID: fmt.Sprintf("author-%d", index)})
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
 			Payload: map[string]any{"id": uuid.NewString(), "body": "A note", "anchor": anchorOn(document)},
-		}))
+		})
 		edited := seedDocument(t, database, new("T-1"), fmt.Sprintf("spec-%d", index), model.Actor{Kind: "session", ID: fmt.Sprintf("spec-author-%d", index)})
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-1"), Type: "artifact.human_edited", Actor: alice,
 			Payload: map[string]any{"artifact_id": edited, "name": "spec.md", "from_version": 1, "to_version": 2, "editors": []any{alice.ID}},
-		}))
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		})
+		seeded = append(seeded, model.Event{
 			IssueKey: new("T-2"), Type: "comment.created", Actor: alice,
 			Payload: map[string]any{"id": uuid.NewString(), "body": "On the second issue"},
-		}))
+		})
 	}
 	// A reply on the second issue to a message there: the message authors are a kind the first
 	// issue's events ask too, so a scan that read the lookups once per owner would run it twice.
 	otherMessage := seedMessage(t, database, "T-2", model.Actor{Kind: "session", ID: "other-sender"}, "Status?", nil)
-	seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+	seeded = append(seeded, model.Event{
 		IssueKey: new("T-2"), Type: "message.created", Actor: alice,
 		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-2"), Body: "Fine", InReplyTo: &otherMessage},
-	}))
+	})
+	seeded = appendEvents(t, database, broker, seeded...)
 
 	// The batch the scan is about to read, read the same way, with its lookups run through a
 	// queryer that counts them (resolveDestinations): the scan's own statements are many more than
@@ -1155,11 +1233,12 @@ func TestOneBrokenRowOfARecipientReadCostsTheBatchAboutTwoStatementsPerHalving(t
 		if index == n/3 {
 			breakDocumentCredits(t, database, document)
 		}
-		edits[index] = appendEvent(t, database, broker, model.Event{
+		edits[index] = model.Event{
 			IssueKey: new(issueKey), Type: "artifact.human_edited", Actor: alice,
 			Payload: map[string]any{"artifact_id": document, "name": "spec.md", "from_version": 1, "to_version": 2, "editors": []any{alice.ID}},
-		})
+		}
 	}
+	edits = appendEvents(t, database, broker, edits...)
 
 	tracer := &statementTracer{}
 	deps := Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}}
@@ -1240,34 +1319,24 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 			for range published {
 				seeded = append(seeded, tc.seed(t, database, broker))
 			}
-			updates := func() int64 {
+			settled := func() int64 {
+				// A backend's pending counters are local to that connection. The scan has
+				// returned, so every connection that could have written is idle.
+				func() {
+					for _, conn := range database.Pool.AcquireAllIdle(ctx) {
+						defer conn.Release()
+						// Force a flush when this statement's transaction ends.
+						if _, err := conn.Exec(ctx, `select pg_stat_force_next_flush()`); err != nil {
+							t.Fatalf("flush this session's statistics: %v", err)
+						}
+					}
+				}()
 				var count int64
-				if err := database.Pool.QueryRow(ctx, `select pg_stat_force_next_flush()`).Scan(new(any)); err != nil {
-					t.Fatalf("flush this session's statistics: %v", err)
-				}
 				if err := database.Pool.QueryRow(ctx,
 					`select n_tup_upd from pg_stat_user_tables where relid = 'events'::regclass`).Scan(&count); err != nil {
 					t.Fatalf("read the events table's updates: %v", err)
 				}
 				return count
-			}
-			// A backend reports its statistics within a second of going idle: read the count once
-			// it has held still that long. The asking's one bound is the test binary's deadline less
-			// testwait's margin; its first read is the count to compare, each later read 1.5 s after
-			// the one before, and a give-up prints the last count read.
-			settled := func() int64 {
-				var last int64
-				first := true
-				return testwait.UntilPolling(t, 1500*time.Millisecond, "the events table's update count to hold still for 1.5 s", func() (int64, bool) {
-					now := updates()
-					if first {
-						first, last = false, now
-						return now, false
-					}
-					held := now == last
-					last = now
-					return now, held
-				})
 			}
 			before := settled()
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: &recordingPublisher{}})).scan(ctx, unfenced{})
@@ -1279,7 +1348,6 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 					t.Fatalf("event %d reached %v, want %d destinations", event.ID, destinations, tc.destinations)
 				}
 			}
-			waitFor(t, "the scan's updates reported", func() bool { return updates()-before >= published })
 			if written := settled() - before; written != published {
 				t.Fatalf("publishing %d events of %d destinations each updated events %d times, want %d: one write per event",
 					published, tc.destinations, written, published)
@@ -1475,12 +1543,17 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatalf("seed the backed-off events and the pending commands: %v", err)
 	}
 	fresh := func() []int64 {
-		ids := make([]int64, 0, 10)
-		for index := range 10 {
-			ids = append(ids, appendEvent(t, database, broker, model.Event{
+		written := make([]model.Event, 10)
+		for index := range written {
+			written[index] = model.Event{
 				IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 				Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: fmt.Sprintf("fresh %d", index)},
-			}).ID)
+			}
+		}
+		appended := appendEvents(t, database, broker, written...)
+		ids := make([]int64, len(appended))
+		for i, event := range appended {
+			ids[i] = event.ID
 		}
 		return ids
 	}
@@ -1593,10 +1666,10 @@ func someIDs(ids []int64) string {
 }
 
 // The statement that chooses a batch reads neither the pending subscription commands, which are
-// never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
+// never published, nor the backed-off events of owners that have nothing due: with 1,000 of each
 // in the table it reads three rows of events for each event it returns and nothing else, no node
 // of its plan that reads events removes a row by filter or recheck, none scans events in full,
-// and with 20,000 of each it reads the same number of rows and fetches about as many blocks from
+// and with 16,000 of each it reads the same number of rows and fetches about as many blocks from
 // the indexes of events. Three a row is what it reads today, and the row allows up to eight, so a
 // plan that reads one more of each event still passes.
 //
@@ -1617,9 +1690,11 @@ func someIDs(ids []int64) string {
 // The blocks the claim fetched from the indexes of events, summed over pg_index with
 // pg_stat_get_xact_blocks_fetched in the same transaction and on the same connection, see that
 // walk: on 2026-11-09 the healthy claim fetched 37 blocks at 5,000 and 37 at 20,000, and the
-// claim over the rebuilt index 56 and 113. blocks_fetched counts a hit and a read alike, so cache
-// pressure does not move it. The tuples an index returned do not separate the two cases, which
-// the review of INFRA-2065 measured: the access method skips the entries without returning them.
+// claim over the rebuilt index 56 and 113; the row now measures 1,000 and 16,000 rows of each
+// population, and the bound below gives its counts at those sizes. blocks_fetched counts a hit
+// and a read alike, so cache pressure does not move it. The tuples an index returned do not
+// separate the two cases, which the review of INFRA-2065 measured: the access method skips the
+// entries without returning them.
 //
 // A count is the same on a loaded machine as on an idle one, which no wall clock is. This row
 // asserted the claim ran in under 0.5 ms, and on 2026-11-08 the claim, unchanged and healthy,
@@ -1627,10 +1702,22 @@ func someIDs(ids []int64) string {
 // loops. No one wall-clock bound separates a healthy claim from a broken one on every machine
 // that runs this row, so the row asserts the counts and only logs the time.
 func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
-	t.Parallel()
-	small := measureClaim(t, 5000)
-	big := measureClaim(t, 20000)
-	costs := []claimCost{small, big}
+	// Not parallel: building both backlogs occupies the same Postgres server
+	// as the other tests. Run this fixture before the parallel tests resume.
+	costs := make([]claimCost, 2)
+	t.Run("measure", func(t *testing.T) {
+		// Keep the sizes far enough apart to catch a walk of the retry index
+		// even when the claim reads other indexes for a fixed cost.
+		for i, rows := range []int{1000, 16000} {
+			t.Run(strconv.Itoa(rows), func(t *testing.T) {
+				costs[i] = measureClaim(t, rows)
+			})
+		}
+	})
+	if t.Failed() {
+		return
+	}
+	small, big := costs[0], costs[1]
 	for _, cost := range costs {
 		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, fetched %d blocks from the indexes of events, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
 			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, cost.indexBlocks, len(cost.kept), len(cost.unpublished),
@@ -1656,11 +1743,11 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 	}
 	// The blocks the claim fetches in the indexes of events must not grow with the backlog: work
 	// that grows with the rows it skips is the regression this figure is here for. Measured on
-	// 2026-11-09 on an idle pod: 37 blocks at both sizes in all 12 readings of 3 runs of the
-	// healthy claim, against 56 and 113 for a claim whose retry index leads on id. The half is
-	// for a btree that gains a level as the table grows, which costs one more block for each
-	// descent the claim makes, around ten of them; half of 37 is 18, and the mutated claim is 29
-	// blocks past its own bound.
+	// 2026-11-28 in a build Job (4 CPU, CI's Postgres): 85 blocks at both sizes, 1,000 and 16,000
+	// rows of each population, in the 10 readings of 5 runs of the healthy claim, against 88 and
+	// 146 for a claim whose retry index leads on id. The half is for a btree that gains a level as
+	// the table grows, which costs one more block for each descent the claim makes, around ten of
+	// them; half of 85 is 42, and the mutated claim is 14 blocks past its own bound of 132.
 	if bound := small.indexBlocks + small.indexBlocks/2; big.indexBlocks > bound {
 		t.Errorf("the claim fetched %d blocks from the indexes of events with a backlog of %d and %d with a backlog of %d, want at most %d at the larger size: what the claim does inside an index must not grow with the rows it skips",
 			big.indexBlocks, big.backlog, small.indexBlocks, small.backlog, bound)

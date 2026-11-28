@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -62,7 +61,7 @@ func TestTheExpiryThatRecordsAnEventUndeliveredSettlesItsEarlierOwedKeeps(t *tes
 // refused on every try. It names every event. With the lists' bound taken away, the events are one
 // list, one block over the bound, and the window's message is never posted.
 func TestAWindowOfManyEventsMakesOneMessageTheBodyCheckTakes(t *testing.T) {
-	window := undeliveredWindow{issueKey: "T-1", role: "busy-role", openedAt: time.Now()}
+	window := undeliveredWindow{issueKey: "T-1", role: "busy-role", openedAt: fixtureTime}
 	for event := range 1000 {
 		window.notes = append(window.notes, undeliveredNote{
 			eventID: int64(100000 + event), eventType: "message.created", keeps: maxRoleKeeps, reason: model.RoleUndeliveredExpired,

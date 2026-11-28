@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -47,15 +48,16 @@ func (heldRoles) RoleClaim(context.Context, string) (envoystore.RoleClaim, error
 	return envoystore.RoleClaim{HolderSessionID: roleHolder}, nil
 }
 
-func (heldRoles) Holder(context.Context, string) (session.SessionEntry, error) {
-	return session.SessionEntry{SelfSubscribed: true, UpdatedAt: time.Now().UnixMilli()}, nil
+func (r heldRoles) Holder(context.Context, string) (session.SessionEntry, error) {
+	return session.SessionEntry{SelfSubscribed: true, UpdatedAt: r.Now().UnixMilli()}, nil
 }
 
 func (heldRoles) LastSeen(string) int64 { return 0 }
 
 // withHeldRoles is deps whose role routes resolve to roleHolder (heldRoles).
 func withHeldRoles(deps Deps) Deps {
-	deps.RoleClaims, deps.Sessions = heldRoles{}, heldRoles{}
+	held := heldRoles{Windows: roles.Windows{Now: roleRigNow}}
+	deps.RoleClaims, deps.Sessions = held, held
 	return deps
 }
 
@@ -90,17 +92,7 @@ type roleRig struct {
 
 func newRoleRig(t *testing.T) *roleRig {
 	t.Helper()
-	return newRoleRigWith(t)
-}
-
-// newRoleRigWithSessionMaxAge is a roleRig whose session bucket keeps a record for maxAge only,
-// shorter than the gone horizon as a deployed bucket's own maximum age can be: a holder that
-// stops heartbeating loses the record the bucket stored for it well before it is gone. The
-// bucket is created with that age (WithSessionTTL), which is the one way to put an age on it
-// under the duplicates window a KV bucket of two minutes' age carries.
-func newRoleRigWithSessionMaxAge(t *testing.T, maxAge time.Duration) *roleRig {
-	t.Helper()
-	return newRoleRigWith(t, session.WithSessionTTL(maxAge))
+	return newRoleRigWithAckClock(t, nil)
 }
 
 // keeperHeld is the keeper's period (bus.WithKeepInterval) of an outbox client on a stream a row
@@ -112,29 +104,53 @@ func newRoleRigWithSessionMaxAge(t *testing.T, maxAge time.Duration) *roleRig {
 // unacknowledged or refused is stored.
 const keeperHeld = time.Hour
 
-// newRoleRigWith is a roleRig on a server of its own, its session registry opened with options. Its
-// outbox client holds its keeper off (keeperHeld), so a row's narrowAgentCapture stands.
-func newRoleRigWith(t *testing.T, options ...session.SessionRegistryOption) *roleRig {
+// newRoleRigWithAckClock lets a row drive the client's acknowledgement clock instead of the wall clock.
+func newRoleRigWithAckClock(t *testing.T, acknowledgement *clocktest.Fake) *roleRig {
 	t.Helper()
 	_, url := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithKeepInterval(keeperHeld))
+	clientOptions := []bus.ConnectOption{bus.WithKeepInterval(keeperHeld)}
+	if acknowledgement != nil {
+		clientOptions = append(clientOptions, bus.WithPublishAcknowledgementClock(acknowledgement))
+	}
+	client, err := bus.ConnectOwningStream([]string{url}, clientOptions...)
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
-	return newRoleRigOn(t, url, client, testnats.Connect(t, url), options...)
+	t.Cleanup(func() { bustest.Close(t, client) })
+	return newRoleRigOn(t, url, client, testnats.Connect(t, url))
 }
+
+// expireForwardAck advances the bus's acknowledgement clock, leaving the flush on its own clock.
+func expireForwardAck(t *testing.T, ack *clocktest.Fake) {
+	t.Helper()
+	deadline := ack.Now().Add(roleForwardAckTimeout)
+	ack.AwaitArmedAt(t, "the forward's acknowledgement deadline", deadline)
+	crossDeadline(ack, deadline, func() {
+		ack.AwaitArmedAt(t, "the forward still waiting one tick before its acknowledgement deadline", deadline)
+	})
+}
+
+// crossDeadline checks the last instant before an already-armed deadline, then fires it.
+// The caller chooses how many timers to wait for and when to wait for them.
+func crossDeadline(fake *clocktest.Fake, deadline time.Time, before func()) {
+	fake.Set(deadline.Add(-time.Nanosecond))
+	before()
+	fake.Set(deadline)
+}
+
+// roleRigNow dates and judges registrations on the same fixed clock.
+func roleRigNow() time.Time { return fixtureTime }
 
 // newRoleRigOn is a roleRig on the server at url, with client as the outbox's client and conn as
 // the test's own connection, which the registries write through.
-func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn, options ...session.SessionRegistryOption) *roleRig {
+func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn) *roleRig {
 	t.Helper()
 	registry, err := envoystore.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(t.Context(), conn, options...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionClock(roleRigNow))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -144,9 +160,8 @@ func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Con
 }
 
 // deps is the outbox's dependencies as cmd/dispatch wires them: role routes resolved through
-// roles.Buckets on the outbox's own client, judged by the package's own windows, which is what
-// a deployment that sets neither ENVOY_SESSION_LIVE_WINDOW nor ENVOY_SESSION_GONE_HORIZON
-// gives it, and that client the reader of a role's kept lane and its drain cursor, which a
+// roles.Buckets on the outbox's own client with the compiled window lengths and the rig's
+// fixed session clock. That client also reads a role's kept lane and its drain cursor, which a
 // keep's handover makes its pass over (Deps.KeptLanes).
 func (r *roleRig) deps() Deps {
 	return r.depsJudgedBy(roles.Windows{})
@@ -155,6 +170,9 @@ func (r *roleRig) deps() Deps {
 // depsJudgedBy is deps whose role-route holders are judged by windows, as cmd/dispatch judges
 // them by the two the deployment gave its listeners (roleHolderWindows, cmd/dispatch/main.go).
 func (r *roleRig) depsJudgedBy(windows roles.Windows) Deps {
+	if windows.Now == nil {
+		windows.Now = roleRigNow
+	}
 	holders := roles.NewBuckets(r.client, windows)
 	return Deps{Store: r.database, Publisher: r.client, Broker: r.broker, RoleClaims: holders, Sessions: holders,
 		KeptLanes: r.client}
@@ -179,7 +197,7 @@ func (r *roleRig) claimRegisteredAt(t *testing.T, role, holder string, age time.
 	if _, err := r.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim %s for %s: %v", role, holder, err)
 	}
-	record, err := json.Marshal(session.SessionEntry{SelfSubscribed: true, UpdatedAt: time.Now().Add(-age).UnixMilli()})
+	record, err := json.Marshal(session.SessionEntry{SelfSubscribed: true, UpdatedAt: roleRigNow().Add(-age).UnixMilli()})
 	if err != nil {
 		t.Fatalf("encode the record of %s: %v", holder, err)
 	}
@@ -196,29 +214,11 @@ func (r *roleRig) claimRegisteredAt(t *testing.T, role, holder string, age time.
 // write records through.
 func (r *roleRig) sessionBucket(t *testing.T) (natsgo.KeyValue, error) {
 	t.Helper()
-	js, err := r.conn.JetStream()
+	js, err := r.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	return js.KeyValue(bus.SessionBucket)
-}
-
-// waitForExpiredSessionKey waits until the session bucket holds no record for sessionID: its
-// maximum age passed and the server dropped the record it stored. Its one bound is the test
-// binary's deadline.
-func (r *roleRig) waitForExpiredSessionKey(t *testing.T, sessionID string) {
-	t.Helper()
-	kv, err := r.sessionBucket(t)
-	if err != nil {
-		t.Fatalf("open the session bucket: %v", err)
-	}
-	waitFor(t, fmt.Sprintf("%s's record to leave the session bucket past its maximum age", sessionID), func() bool {
-		_, err := kv.Get(sessionID)
-		if err != nil && !errors.Is(err, natsgo.ErrKeyNotFound) {
-			t.Fatalf("read %s's record: %v", sessionID, err)
-		}
-		return errors.Is(err, natsgo.ErrKeyNotFound)
-	})
 }
 
 // roleClaim is role's claim as the role bucket holds it now.
@@ -301,6 +301,7 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 	t.Helper()
 	arrived := subscribe(t, r.conn, subject)
 	t.Cleanup(func() {
+		flushSubscriber(t, r.conn)
 		select {
 		case message := <-arrived:
 			t.Errorf("%s carried %s, want nothing", subject, message.Data)
@@ -341,9 +342,7 @@ func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 		t.Fatalf("subscribe to %s: %v", holder, err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := r.conn.Flush(); err != nil {
-		t.Fatalf("flush the subscription: %v", err)
-	}
+	flushSubscriber(t, r.conn)
 	return recv
 }
 
@@ -418,7 +417,7 @@ func (m *markers) await(t *testing.T, client *bus.Client, subject string) {
 // and the keeper would add them back.
 func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	t.Helper()
-	js, err := r.conn.JetStream()
+	js, err := r.conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -544,7 +543,7 @@ func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAck
 		t.Fatalf("attempt_count %d, publish_error %v, published_destinations %v: want no attempt, no error and the role route recorded",
 			attempts, failure, destinations)
 	}
-	if got := len(recv.received()); got != 1 {
+	if got := len(recv.receivedNow(t, rig.client)); got != 1 {
 		t.Fatalf("the holder received %d forwards, want the one", got)
 	}
 	if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(holder)); copies != 1 {
@@ -796,24 +795,42 @@ func TestARoleRouteIsJudgedOnTheWindowsDispatchWasGiven(t *testing.T) {
 	}
 }
 
-// A holder whose session key has expired - the bucket's maximum age passed and the record it held
-// is gone - keeps its role and holds its events back. The bucket's maximum age is how long a
-// record is stored and no verdict on the session: it can be shorter than the gone horizon, as it
-// is here, so a key it no longer holds says the bucket forgot the holder, not that the holder
-// died. The event stays pending for the role-claim reaper or the holder's own return to settle,
+// A holder whose session record has expired keeps its role and holds its events back.
+// The test removes the record the way expiry does, without a delete marker. A missing key says
+// the bucket forgot the holder, not that the holder died. The event stays pending for the
+// role-claim reaper or the holder's own return to settle,
 // and is not published with nothing sent. This is the case that cost a stalled Legion architect
 // its role: the resolution read the expired key as a session that is gone and released the claim
 // on the next event routed to the role (dispatch://INFRA-392).
 func TestARoleRouteWhoseHolderSessionKeyExpiredKeepsTheClaimAndStaysPending(t *testing.T) {
 	t.Parallel()
-	rig := newRoleRigWithSessionMaxAge(t, time.Second)
+	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_expired"
 	rig.claimRegisteredAt(t, role, holder, session.LiveWindow+time.Minute)
 	claimedAt := rig.roleClaim(t, role).ClaimedAt
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	rig.silent(t, contracts.LegacyAgentSubject(holder))
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	rig.waitForExpiredSessionKey(t, holder)
+	js, err := rig.conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	kv, err := js.KeyValue(bus.SessionBucket)
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	if _, err := kv.Get(holder); err != nil {
+		t.Fatalf("read the session record before expiry: %v", err)
+	}
+	// Expiry removes the record without leaving a delete marker.
+	if err := js.PurgeStream("KV_"+bus.SessionBucket, &natsgo.StreamPurgeRequest{
+		Subject: testnats.KVSubject(bus.SessionBucket, holder),
+	}); err != nil {
+		t.Fatalf("remove the expired session record: %v", err)
+	}
+	if _, err := kv.Get(holder); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		t.Fatalf("the purged record reads %v, want key not found", err)
+	}
 
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
@@ -867,7 +884,7 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 // backed off.
 func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	t.Parallel()
-	const events, denied = 50, 17
+	const count, denied = 50, 17
 	holderOf := func(index int) string { return fmt.Sprintf("ses_holder_%02d", index) }
 	seed, public := testnats.User(t)
 	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { allow: [\">\"], deny: [%q] } } } ]\n}\n",
@@ -877,36 +894,50 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
-	conn, err := testnats.ConnectSeed(t, url, seed)
+	t.Cleanup(func() { bustest.Close(t, client) })
+	conn, err := testnats.AwaitConnectSeed(t, url, seed)
 	if err != nil {
 		t.Fatalf("connect the test's connection: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	rig := newRoleRigOn(t, url, client, conn)
-
-	seeded := make([]model.Event, events)
-	for index := range events {
-		role := fmt.Sprintf("lane-%02d", index)
-		rig.claim(t, role, holderOf(index), session.SessionEntry{SelfSubscribed: true})
-		rig.silent(t, contracts.RoleTopicPrefix+role)
-		seeded[index] = rig.routedEvent(t, fmt.Sprintf("T-%d", index+1), role, model.Actor{Kind: "user", ID: "alice"})
+	rig := &roleRig{url: url, conn: conn, client: client, database: storetest.Open(t), broker: events.NewBroker()}
+	rig.silent(t, contracts.RoleTopicPrefix+">")
+	seedIssue(t, rig.database, "T-1", new("role:lane-00"))
+	if _, err := rig.database.Pool.Exec(t.Context(), `
+		insert into issues (key, project_key, number, title, route, created_by, rank)
+		select 'T-' || (i + 1), 'TT', i + 1, 'Routed', 'role:lane-' || lpad(i::text, 2, '0'),
+		       '{"kind":"user","id":"alice"}', 'U'
+		from generate_series(1, $1::int - 1) i
+	`, count); err != nil {
+		t.Fatalf("seed role-routed issues: %v", err)
 	}
+	holders := make(map[string]string, count)
+	written := make([]model.Event, count)
+	for i := range count {
+		holders[fmt.Sprintf("lane-%02d", i)] = holderOf(i)
+		key := fmt.Sprintf("T-%d", i+1)
+		written[i] = model.Event{
+			IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
+			Payload: model.Message{ID: fmt.Sprintf("8f14e45f-ceea-467a-9c1e-%012d", i+1), IssueKey: new(key), Body: "for the role"},
+		}
+	}
+	seedRoleHolders(t, conn, holders)
+	seeded := appendEvents(t, rig.database, rig.broker, written...)
 
-	holding(t, rig.deps()).scan(context.Background(), unfenced{})
+	counter := &sendCounter{}
+	deps := rig.deps()
+	deps.Publisher = countingClient{Client: client, counter: counter}
+	holding(t, deps).scan(context.Background(), unfenced{})
 
 	for index, event := range seeded {
 		attempts, failure, _ := eventState(t, rig.database, event.ID)
 		if index == denied {
-			// One scan claims due rows until none is left, and the denied event's first back-off
-			// (retry.Delay(1)) is a second: a scan of 50 forwards slower than that, as one beside
-			// the package's other tests can be, reads it again once it falls due and is denied
-			// again. So the row holds the denial and no publication, not how many denials fit in
-			// the scan.
-			if publishedAt(t, rig.database, event.ID) != nil || attempts < 1 || failure == nil ||
+			// A slow scan may retry; every denied forward must count exactly one attempt.
+			denials := counter.forSubject(event.ID, contracts.RoleTopicPrefix+fmt.Sprintf("lane-%02d", index))
+			if publishedAt(t, rig.database, event.ID) != nil || denials == 0 || attempts != denials || failure == nil ||
 				!strings.Contains(*failure, bus.ErrPublishDenied.Error()) {
-				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %q; want it backed off with the denial",
-					publishedAt(t, rig.database, event.ID) != nil, attempts, publishFailure(failure))
+				t.Fatalf("the denied holder's event: published %v, attempt_count %d, publish_error %q; want one attempt per denied send (%d)",
+					publishedAt(t, rig.database, event.ID) != nil, attempts, publishFailure(failure), denials)
 			}
 			continue
 		}
@@ -965,15 +996,26 @@ func TestAForwardHeldByItsHoldersResolutionIsAWaitNotAFailure(t *testing.T) {
 // acknowledges the forward - and no session answers one.
 func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	t.Parallel()
-	rig := newRoleRig(t)
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithAckClock(t, ack)
 	const role, holder = "reviewer", "ses_unacknowledged"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	rig.narrowAgentCapture(t)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	deps, registry := rig.countingDeps(t)
+	topicAck := make(chan error, 1)
+	deps.Publisher = reportTopicAck{Publisher: rig.client, result: topicAck}
 
-	holding(t, deps).scan(context.Background(), unfenced{})
+	// Drive the deadline while the scan is waiting for the stream's answer.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	outbox := holding(t, deps)
+	done := make(chan struct{})
+	go func() { defer close(done); outbox.scan(ctx, unfenced{}) }()
+	awaitTopicAck(t, topicAck)
+	expireForwardAck(t, ack)
+	testwait.Receive(t, "the scan after its forward acknowledgement deadline", done)
 
 	if publishedAt(t, rig.database, event.ID) != nil {
 		t.Fatal("the event whose role forward the stream did not acknowledge was published")
@@ -984,6 +1026,43 @@ func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	}
 	if strings.Contains(body, `reason="failed"`) {
 		t.Fatalf("/metrics body = %q counts a forward NATS took as a publish failure", body)
+	}
+}
+
+// reportTopicAck observes the issue topic's ordinary send before the test expires a role
+// forward. The same clock drives both waits, but only the forward should time out.
+type reportTopicAck struct {
+	Publisher
+	result chan<- error
+}
+
+func (p reportTopicAck) WindowUntil(deadline func() time.Time) bus.Sender {
+	return reportedTopicWindow{Sender: p.Publisher.WindowUntil(deadline), result: p.result}
+}
+
+type reportedTopicWindow struct {
+	bus.Sender
+	result chan<- error
+}
+
+func (w reportedTopicWindow) PublishAsync(item contracts.Envelope) <-chan error {
+	answer := w.Sender.PublishAsync(item)
+	relayed := make(chan error, 1)
+	go func() {
+		err := <-answer
+		relayed <- err
+		select {
+		case w.result <- err:
+		default:
+		}
+	}()
+	return relayed
+}
+
+func awaitTopicAck(t *testing.T, result <-chan error) {
+	t.Helper()
+	if err := testwait.Receive(t, "the stream acknowledging the issue topic before the forward's deadline", result); err != nil {
+		t.Fatalf("publish to the issue topic: %v", err)
 	}
 }
 
@@ -1001,7 +1080,7 @@ func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
-	t.Cleanup(client.Close)
+	t.Cleanup(func() { bustest.Close(t, client) })
 	rig := newRoleRigOn(t, url, client, testnats.Connect(t, url))
 	const role, holder = "reviewer", "ses_stream_full"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -1144,7 +1223,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 		deps := withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()})
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 		held := readHeldCopy(t, database, commentID, roleTopic)
 		if !held.published || !held.settled || held.attempts != 0 {
@@ -1176,7 +1255,7 @@ func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 			RoleClaims: unclaimedRoles, Sessions: unclaimedRoles}
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 		held := readHeldCopy(t, database, commentID, roleTopic)
 		if !held.settled || !held.published || held.attempts != 0 {
@@ -1223,7 +1302,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 	deps := rig.deps()
 	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 	held := readHeldCopy(t, rig.database, commentID, contracts.RoleTopicPrefix+role)
 	if !held.published || !held.settled || held.attempts != 0 {
@@ -1275,7 +1354,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
 
-	publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
+	bareOutbox(rig.publisherOn(publisher), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 	if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
@@ -1640,9 +1719,9 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 	t.Run("a live mention holds the keep until it settles", func(t *testing.T) {
 		database, publisher, commentID, event, deps := keptFor(t, "pending")
 
-		before := time.Now()
+		before := databaseNow(t, database)
 		holding(t, deps).scan(ctx, unfenced{})
-		after := time.Now()
+		after := databaseNow(t, database)
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the outbox kept %d copies while the comment's mentions were still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming no mentioned session shows the comment a second time to whichever of them claims the role",
@@ -1742,9 +1821,9 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 		t.Fatalf("the later event does not notify, so it takes no role route and proves nothing: %#v", update)
 	}
 
-	before := time.Now()
+	before := databaseNow(t, database)
 	holding(t, deps).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, database)
 
 	if kept := publisher.keeps(); len(kept) > 0 {
 		t.Fatalf("the outbox kept %d copies while the comment's copy waited on its mention, the first of event %s under %q, want none: the role's next holder would be handed the issue's later event first",
@@ -1827,6 +1906,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 	heldBy := func(t *testing.T, outcome string) (*roleRig, *receiver, Deps, string, model.Event) {
 		t.Helper()
 		rig := newRoleRig(t)
+		if outcome == "resumed" {
+			rig.database, _ = frozenDatabaseClock(t, rig.database)
+		}
 		rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
 		recv := rig.receiver(t, holder)
@@ -1838,11 +1920,11 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
-		before := time.Now()
+		before := databaseNow(t, rig.database)
 		holding(t, deps).scan(ctx, unfenced{})
-		after := time.Now()
+		after := databaseNow(t, rig.database)
 
-		if forwards := recv.received(); len(forwards) > 0 {
+		if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
 				holder, len(forwards), forwards[0].DedupeKey)
 		}
@@ -2001,9 +2083,9 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 			comment.Notify)
 	}
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -2036,7 +2118,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	if at := publishedAt(t, rig.database, comment.ID); at != nil {
 		t.Fatalf("published_at = %v while the role forward waits on the holder's own mention", at)
 	}
-	if forwards := recv.received(); len(forwards) > 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 		t.Fatalf("%s was sent %+v while its own mention of the comment was still being sent, want nothing: the forward waits for that mention and the claimant copy is left to it",
 			holder, forwards)
 	}
@@ -2208,10 +2290,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
 				reached, contracts.LegacyAgentSubject(bystander))
 		}
-		waitFor(t, "the other owner's claimant copy", func() bool {
-			return len(other.received()) > 0
-		})
-		copies := other.received()
+		copies := other.receivedNow(t, rig.client)
 		if len(copies) != 1 || copies[0].EventID != fmt.Sprintf("dispatch-%d", apart.ID) ||
 			copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", apart.ID) {
 			t.Fatalf("%s was sent %+v, want the claimant copy of event %d alone, under the event's own key",
@@ -2236,7 +2315,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 				reached, holderSubject, holder, target, comment.ID)
 		}
 		claimantCopyOf(t, rig, other, apart)
-		for _, item := range pinned.received() {
+		for _, item := range pinned.receivedNow(t, rig.client) {
 			t.Fatalf("%s was sent %+v, want nothing of the comment: its mention of %s delivered it, and every copy of the comment bound for that session's own topic is left to that mention (want no copy, or one under %q)",
 				holder, item, target, mentionKey(commentID))
 		}
@@ -2258,10 +2337,11 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the comment reached %v, want %s among them: the mention of %s failed, so the session it was pinned to is owed the outbox's copy and nothing else delivers it",
 				reached, holderSubject, target)
 		}
-		waitFor(t, "the copy owed to the session whose mention failed", func() bool {
-			return len(pinned.received()) > 0
-		})
-		for _, item := range pinned.received() {
+		copies := pinned.receivedNow(t, rig.client)
+		if len(copies) == 0 {
+			t.Fatal("the session whose mention failed received no copy")
+		}
+		for _, item := range copies {
 			if item.DedupeKey != mentionKey(commentID) {
 				t.Fatalf("%s was sent a copy keyed %q, want its failed mention's own key %q: a send that landed before its attempt failed gave that host this key, which is what has it drop the copy",
 					holder, item.DedupeKey, mentionKey(commentID))
@@ -2311,7 +2391,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 		deps := rig.deps()
 		commentID := seedHeldRoleFallbackCopyMentioningTwo(ctx, t, deps, role, first, second, "failed")
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 		held := readHeldCopy(t, rig.database, commentID, roleTopic)
 		if !held.published || !held.settled || held.attempts != 0 {
@@ -2347,7 +2427,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 			claimed <- rig.claimUnder(role, second, session.SessionEntry{SelfSubscribed: true})
 		})
 
-		publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
+		bareOutbox(rig.publisherOn(publisher), holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		if err := testwait.Receive(t, "the claim made under the keep", claimed); err != nil {
 			t.Fatalf("the claim made under the keep: %v", err)
@@ -2424,9 +2504,9 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 		ctx := store.WithTransactionTracking(context.Background())
 		database, publisher, deps, commentID := keptFor(ctx, t, "pending")
 
-		before := time.Now()
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := time.Now()
+		before := databaseNow(t, database)
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
+		after := databaseNow(t, database)
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the pass kept %d copies while the comment's mention of %s was still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming that session nowhere shows it the comment a second time when it claims the role",
@@ -2456,7 +2536,7 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 			t.Fatalf("pass the held copy's wait: %v", err)
 		}
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 		if settled := readHeldCopy(t, database, commentID, roleTopic); !settled.settled || !settled.published ||
 			settled.attempts != 0 {
@@ -2479,7 +2559,7 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 		ctx := store.WithTransactionTracking(context.Background())
 		database, publisher, deps, commentID := keptFor(ctx, t, "resumed")
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, database, commentID, roleTopic)
 		kept := publisher.keeps()
@@ -2531,6 +2611,9 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 	heldFor := func(ctx context.Context, t *testing.T, outcome string) (*roleRig, *receiver, Deps, string) {
 		t.Helper()
 		rig := newRoleRig(t)
+		if outcome == "resumed" {
+			rig.database, _ = frozenDatabaseClock(t, rig.database)
+		}
 		rig.claim(t, role, second, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
 		recv := rig.receiver(t, second)
@@ -2543,11 +2626,11 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID := heldFor(ctx, t, "pending")
 
-		before := time.Now()
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := time.Now()
+		before := databaseNow(t, rig.database)
+		bareOutbox(deps, holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
+		after := databaseNow(t, rig.database)
 
-		if forwards := recv.received(); len(forwards) > 0 {
+		if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 			t.Fatalf("the pass sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
 				second, len(forwards), forwards[0].DedupeKey)
 		}
@@ -2575,7 +2658,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 			t.Fatalf("pass the held copy's wait: %v", err)
 		}
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		if settled := readHeldCopy(t, rig.database, commentID, roleTopic); !settled.settled ||
 			!settled.published || settled.attempts != 0 {
@@ -2597,7 +2680,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID := heldFor(ctx, t, "resumed")
 
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		bareOutbox(deps, holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
 		forwards := recv.receivedNow(t, rig.client)
@@ -2677,9 +2760,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		deps, registry := rig.countingDeps(t)
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		before := time.Now()
-		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := time.Now()
+		before := databaseNow(t, rig.database)
+		bareOutbox(deps, holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
+		after := databaseNow(t, rig.database)
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "has not heartbeated", before, after)
 		if claimed, err := rig.registry.RoleHolder(role); err != nil || claimed != holder {
@@ -2705,9 +2788,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		unreadable := deps
 		unreadable.RoleClaims = unreadableRoleClaims{}
 
-		before := time.Now()
-		publishFallbackCopies(ctx, unreadable, unfenced{}, holdingProcess(t, rig.database))
-		after := time.Now()
+		before := databaseNow(t, rig.database)
+		bareOutbox(unreadable, holdingProcess(t, rig.database)).publishFallbackCopies(ctx, unfenced{})
+		after := databaseNow(t, rig.database)
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "resolve the role's holder", before, after)
 	})
@@ -2727,7 +2810,8 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	t.Parallel()
 	ctx := store.WithTransactionTracking(context.Background())
-	rig := newRoleRig(t)
+	ack := clocktest.New(time.Time{})
+	rig := newRoleRigWithAckClock(t, ack)
 	const role, holder = "reviewer", "ses_fallback_unacknowledged"
 	roleTopic := contracts.RoleTopicPrefix + role
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
@@ -2739,7 +2823,13 @@ func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T
 	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 	rig.narrowAgentCapture(t)
 
-	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	holderID := holdingProcess(t, deps.Store)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); bareOutbox(deps, holderID).publishFallbackCopies(ctx, unfenced{}) }()
+	expireForwardAck(t, ack)
+	testwait.Receive(t, "the fallback pass after its forward acknowledgement deadline", done)
 
 	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
 		t.Fatalf("the copy whose forward the stream did not acknowledge is published=%v settled=%v, want it left unsettled for a later pass",
@@ -2794,7 +2884,7 @@ func TestAFallbackForwardWhosePublishWasNotConfirmedIsCountedFailed(t *testing.T
 	unconfirmed := deps
 	unconfirmed.Publisher = unconfirmedForwardSender{}
 
-	publishFallbackCopies(ctx, unconfirmed, unfenced{}, holdingProcess(t, deps.Store))
+	bareOutbox(unconfirmed, holdingProcess(t, deps.Store)).publishFallbackCopies(ctx, unfenced{})
 
 	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
 		t.Fatalf("the copy whose forward was not confirmed is published=%v settled=%v, want it left unsettled for a later pass",

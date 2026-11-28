@@ -3,7 +3,6 @@ package outbox
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -31,14 +30,14 @@ func TestNoEventEnvelopeSaysAnythingAboutAReply(t *testing.T) {
 		{
 			name: "an answered ask, a receipt that stays silent",
 			event: model.Event{
-				ID: 1, IssueKey: new("T-1"), Type: "ask.answered", CreatedAt: time.Now(),
+				ID: 1, IssueKey: new("T-1"), Type: "ask.answered", CreatedAt: fixtureTime,
 				Payload: map[string]any{"id": ask, "answer": "Approve", "urgency": "high"},
 			},
 		},
 		{
 			name: "an approved artifact, the other one",
 			event: model.Event{
-				ID: 2, IssueKey: new("T-1"), Type: "artifact.approved", CreatedAt: time.Now(),
+				ID: 2, IssueKey: new("T-1"), Type: "artifact.approved", CreatedAt: fixtureTime,
 				Payload: map[string]any{
 					"artifact_id": "00000000-0000-0000-0000-000000000040",
 					"name":        "spec.md", "version": 3, "ask_id": ask,
@@ -48,14 +47,14 @@ func TestNoEventEnvelopeSaysAnythingAboutAReply(t *testing.T) {
 		{
 			name: "an opened ask, which wants an answer the envelope does not name",
 			event: model.Event{
-				ID: 3, IssueKey: new("T-1"), Type: "ask.opened", CreatedAt: time.Now(),
+				ID: 3, IssueKey: new("T-1"), Type: "ask.opened", CreatedAt: fixtureTime,
 				Payload: map[string]any{"id": ask, "question": "Which approach?", "urgency": "high"},
 			},
 		},
 		{
 			name: "a comment",
 			event: model.Event{
-				ID: 4, IssueKey: new("T-1"), Type: "comment.created", CreatedAt: time.Now(),
+				ID: 4, IssueKey: new("T-1"), Type: "comment.created", CreatedAt: fixtureTime,
 				Payload: map[string]any{"id": "comment-9", "body": "Slice 3 is pushed."},
 			},
 		},

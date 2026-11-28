@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -361,7 +360,7 @@ func TestACommentOnADocumentReachesTheSessionsThatWroteIt(t *testing.T) {
 				seedMentionDelivery(t, database, payloadString(event.Payload, "id"), sessionID, outcome)
 			}
 			event.ID = 100
-			event.CreatedAt = time.Now()
+			event.CreatedAt = fixtureTime
 			event.Notify = events.NewBroker().Notify(event)
 			publisher := &recordingPublisher{}
 			if err := publish(context.Background(), Deps{Store: database, Publisher: publisher}, event, slug, routing{claimant: tc.claimant}, map[string]struct{}{}); err != nil {
@@ -421,7 +420,7 @@ func TestAPersonsSpecEditReachesEachSessionThatWroteTheSpecOnce(t *testing.T) {
 	editor := model.Actor{Kind: "session", ID: "session-editor"}
 	spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer}, []model.Actor{editor, writer}, []model.Actor{alice})
 	event := model.Event{
-		ID: 100, CreatedAt: time.Now(), IssueKey: new("T-1"), Type: "artifact.human_edited", Actor: alice,
+		ID: 100, CreatedAt: fixtureTime, IssueKey: new("T-1"), Type: "artifact.human_edited", Actor: alice,
 		Payload: map[string]any{
 			"artifact_id": spec, "name": "spec.md", "from_version": 2, "to_version": 3,
 			"editors": []any{alice.ID}, "diff": "--- previous\n+++ current\n", "diff_truncated": false,
@@ -469,7 +468,7 @@ func TestAPersonsSpecEditOnAClaimedIssueStillReachesEachSessionThatWroteIt(t *te
 	editor := model.Actor{Kind: "session", ID: "session-editor"}
 	spec := seedDocument(t, database, new("T-1"), "spec", writer, []model.Actor{writer}, []model.Actor{editor})
 	event := model.Event{
-		ID: 100, CreatedAt: time.Now(), IssueKey: new("T-1"), Type: "artifact.human_edited", Actor: alice,
+		ID: 100, CreatedAt: fixtureTime, IssueKey: new("T-1"), Type: "artifact.human_edited", Actor: alice,
 		Payload: map[string]any{
 			"artifact_id": spec, "name": "spec.md", "from_version": 1, "to_version": 2,
 			"editors": []any{alice.ID}, "diff": "--- previous\n+++ current\n", "diff_truncated": false,

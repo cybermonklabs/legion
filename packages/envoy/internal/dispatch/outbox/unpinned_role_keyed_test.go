@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -131,11 +130,11 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "pending")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
-	if forwards := recv.received(); len(forwards) != 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",
 			holder, forwards)
 	}
@@ -195,6 +194,7 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	route := "role:" + routed
 
 	rig := newRoleRig(t)
+	rig.database, _ = frozenDatabaseClock(t, rig.database)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	recv := rig.receiver(t, holder)
@@ -211,13 +211,13 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 		},
 	})
 	// The first attempt's sender died with the send in flight, so the delivery sweep owes it a
-	// resend; the second is a send a sender claimed just now.
+	// resend; the second is a send that stays live through the test.
 	seedDelivery(t, rig.database, commentID, lapsedTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, liveTarget, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
-	if forwards := recv.received(); len(forwards) != 0 {
+	if forwards := recv.receivedNow(t, rig.client); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while a live unpinned mention of the comment named no session and no key stood for it, want nothing: the sender can pin that mention to this very holder, and this copy would carry a key its host never claimed",
 			holder, forwards)
 	}

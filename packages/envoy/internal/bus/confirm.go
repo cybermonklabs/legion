@@ -10,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/natsconn"
 )
 
@@ -59,8 +60,8 @@ func (e windowEndedBeforePublish) Unwrap() []error {
 // case the state read before it exists for.
 //
 // The publish and the flush each take nats.go's connection lock first, and the flush starts its
-// timer only once it holds the lock. So a publish or a flush made while a reconnect's handshake
-// holds that lock waits for the attempt, past ctx; readWithin lists such calls.
+// timer only once it holds the lock when no window clock is set. A window clock starts the flush
+// timeout before the lock. The calls themselves can still wait for the attempt (readWithin).
 //
 // Both reads of conn's state wait for nats.go's connection lock, which nats.go holds through a
 // reconnect's dial and handshake, so each is made within ctx (observeWithin). A read before the
@@ -95,7 +96,7 @@ func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nat
 	if err := publish(msg); err != nil {
 		return c.refused(err, len(msg.Data))
 	}
-	return confirmFlushed(ctx, conn, msg.Subject, before, deadline)
+	return c.confirmFlushed(ctx, conn, msg.Subject, before, deadline)
 }
 
 // windowSpent is ctx's error, or context.DeadlineExceeded once deadline has passed by the clock
@@ -110,22 +111,34 @@ func windowSpent(ctx context.Context, deadline time.Time) error {
 	return nil
 }
 
-// confirmFlushed flushes conn with what is left until deadline as the flush's timeout, and confirms
-// that the server accepted the core publish to subject made on it after before was observed
-// (confirmPublished), reading conn's state within ctx. nats.go's FlushTimeout starts that timeout
-// only once it holds the connection lock, and then sends its PING and waits for the server's PONG.
-// So the timeout bounds what follows the lock, from the moment nats.go lets the flush take it, as
-// for every call that readWithin lists: a flush that waited X for the lock waits for the server's
-// answer until X after deadline.
-func confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState, deadline time.Time) error {
+// confirmFlushed uses the window clock, if configured, for the remaining flush time. deadline
+// comes from a context and is a wall timestamp, including deadlines shown by WithShownDeadline.
+func (c *Client) confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState, deadline time.Time) error {
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return errWindowElapsed(subject)
 	}
-	if err := conn.FlushTimeout(remaining); err != nil {
+	if err := c.flushWithin(ctx, conn, remaining); err != nil {
 		return fmt.Errorf("bus: flush publish to %q: %w", subject, err)
 	}
 	return confirmPublished(ctx, conn, subject, before)
+}
+
+// confirmFlushed confirms a core publish without a configured window clock.
+func confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState, deadline time.Time) error {
+	return (&Client{}).confirmFlushed(ctx, conn, subject, before, deadline)
+}
+
+// flushWithin uses FlushTimeout in production. Its timeout starts once the flush
+// holds nats.go's connection lock. With a window clock, the timeout starts before
+// waiting for the lock and ends when that clock's timer fires or ctx ends.
+func (c *Client) flushWithin(ctx context.Context, conn *nats.Conn, timeout time.Duration) error {
+	if c.windowClock == nil {
+		return conn.FlushTimeout(timeout)
+	}
+	flushing, cancel := clock.WithShownTimeout(c.windowClock, ctx, timeout)
+	defer cancel()
+	return conn.FlushWithContext(flushing)
 }
 
 // errWindowElapsed is the error of a core publish to subject whose window ran out before it could

@@ -106,7 +106,7 @@ func TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut(t *
 	second := model.Actor{Kind: "session", ID: "session-second"}
 	const unheld = "role:nobody-holds-this-role"
 
-	database := storetest.Open(t)
+	database, _ := frozenDatabaseClock(t, storetest.Open(t))
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
 	claimIssue(t, database, "T-1", claimant)

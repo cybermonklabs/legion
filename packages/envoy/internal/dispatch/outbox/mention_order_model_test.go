@@ -429,12 +429,13 @@ func (m *moModel) batch(s moState, p int, emit func(moStep, moState)) {
 	if int(s.hold) != p || s.pend[p].active || !s.anyDue(true) {
 		return
 	}
-	chains := planChains(m.batchEvents(&s))
+	events := m.batchEvents(&s)
+	chains := planChains(events)
 	choice := make([]int, len(chains))
 	var walk func(i int, fails int8)
 	walk = func(i int, fails int8) {
 		if i == len(chains) {
-			emit(m.applyBatch(s, p, choice, fails))
+			emit(m.applyBatch(s, p, events, chains, choice, fails))
 			return
 		}
 		choice[i] = -1
@@ -450,11 +451,11 @@ func (m *moModel) batch(s moState, p int, emit func(moStep, moState)) {
 }
 
 // applyBatch is one batch of process p, choice naming each chain's failed send (-1 for none).
-func (m *moModel) applyBatch(s moState, p int, choice []int, fails int8) (moStep, moState) {
+// The plan depends on the starting state, not the send results. Every choice
+// rewrites the sends, then settles the events again in their original order.
+func (m *moModel) applyBatch(s moState, p int, events []*batchEvent, chains []*chain, choice []int, fails int8) (moStep, moState) {
 	next := s
 	next.fails = fails
-	events := m.batchEvents(&s)
-	chains := planChains(events)
 	reach := m.reach()
 	var took []int
 	var sends []string
@@ -462,11 +463,14 @@ func (m *moModel) applyBatch(s moState, p int, choice []int, fails int8) (moStep
 		for j, send := range c.sends {
 			k := int(send.event.event.ID) - 1
 			bit := moBit(send.dest.subject)
+			send.err, send.heldBy = nil, nil
 			switch {
 			case choice[i] == -1 || j < choice[i]:
 				send.state = reached
 				if bit&reach != 0 {
 					next.ev[k].sent |= bit
+				}
+				if m.verbose && bit&reach != 0 {
 					took = append(took, k+1)
 				}
 				if m.verbose {
@@ -486,7 +490,9 @@ func (m *moModel) applyBatch(s moState, p int, choice []int, fails int8) (moStep
 		// Past the mention's lease the batch holds s1's copy as a fallback row
 		// (mentionComment.holdFallbackCopy).
 		next.row = true
-		sends = append(sends, "fallback row made")
+		if m.verbose {
+			sends = append(sends, "fallback row made")
+		}
 	}
 	pend := moPending{active: true, readSeq: s.n}
 	var outs, read []string
@@ -568,9 +574,13 @@ func (m *moModel) record(s moState, p int) (moStep, moState, bool) {
 			note("%d published", k+1)
 		case writesOwed && mine:
 			e.owedNull, e.owed, e.owedSeq = false, o.owed, pend.readSeq
-			note("%d %s owing %s, owed_seq %d", k+1, moOutcomeName[o.state], moSet(o.owed), pend.readSeq)
+			if m.verbose {
+				note("%d %s owing %s, owed_seq %d", k+1, moOutcomeName[o.state], moSet(o.owed), pend.readSeq)
+			}
 		default:
-			note("%d reached %s, owed_keys left as they were", k+1, moSet(o.reached))
+			if m.verbose {
+				note("%d reached %s, owed_keys left as they were", k+1, moSet(o.reached))
+			}
 		}
 	}
 	var label string
@@ -605,7 +615,11 @@ func (m *moModel) client(s moState) (moStep, moState, bool) {
 	if op.kind == moComment {
 		next.c = k
 	}
-	return moStep{label: "write: " + op.label(int(k)+1)}, next, true
+	var label string
+	if m.verbose {
+		label = "write: " + op.label(int(k)+1)
+	}
+	return moStep{label: label}, next, true
 }
 
 // passed is the earlier events a copy going now passes: unpublished, owing s1 a send under the
@@ -642,7 +656,9 @@ func (m *moModel) copyRoad(s moState, fallback bool) (moStep, moState, bool) {
 		}
 	}
 	var label string
+	var took []int
 	if m.verbose {
+		took = []int{int(s.c) + 1}
 		road := "the API's send"
 		if fallback {
 			road = "the fallback pass"
@@ -658,7 +674,7 @@ func (m *moModel) copyRoad(s moState, fallback bool) (moStep, moState, bool) {
 			label += fmt.Sprintf(", while event %s still owes s1 a send", strings.Join(ids, ", "))
 		}
 	}
-	return moStep{label: label, took: []int{int(s.c) + 1}}, next, true
+	return moStep{label: label, took: took}, next, true
 }
 
 func (m *moModel) tick(s moState) (moStep, moState, bool) {
@@ -790,7 +806,6 @@ type moRow struct {
 	unobserved int
 	first      *moCounterexample
 	liveFirst  string
-	duration   time.Duration
 }
 
 // moFailBudget is how many sends of one run may fail: two with one publisher, and one with two
@@ -805,7 +820,6 @@ func moFailBudget(env moEnv) int8 {
 // moRun explores every scenario under v and env, the scenarios spread over at most 16 workers.
 func moRun(v moVariant, env moEnv, scenarios []moScenario) moRow {
 	row := moRow{variant: v, env: env, failBudget: moFailBudget(env), scenarios: len(scenarios)}
-	began := time.Now()
 	results := make([]moResult, len(scenarios))
 	work := make(chan int)
 	var workers sync.WaitGroup
@@ -841,14 +855,13 @@ func moRun(v moVariant, env moEnv, scenarios []moScenario) moRow {
 		}
 		row.steps = max(row.steps, result.maxSteps)
 	}
-	row.duration = time.Since(began)
 	return row
 }
 
 func (r moRow) String() string {
-	return fmt.Sprintf("| %s | %s | %d | %d | %d | %d (%d scenarios; %d in the window) | %d (longest fair run %d steps) | %s |",
+	return fmt.Sprintf("| %s | %s | %d | %d | %d | %d (%d scenarios; %d in the window) | %d (longest fair run %d steps) |",
 		r.variant.name, r.env.name, r.failBudget, r.scenarios, r.states, r.violations, r.counterexampleScenarios, r.inWindow,
-		r.liveFailures, r.steps, r.duration.Round(time.Millisecond))
+		r.liveFailures, r.steps)
 }
 
 // The model run: the rule that reads owed_keys alone must reproduce the reviewer's counterexample,
@@ -861,11 +874,10 @@ func TestTheMentionCopyOrderModel(t *testing.T) {
 	quiet := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(quiet) })
-	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	scenarios := moScenarios()
 	t.Logf("full model (ENVOY_MENTION_ORDER_MODEL=full): %v; %d scenarios", moFull(), len(scenarios))
-	t.Logf("| rule | publishers | failed sends | scenarios | states | copies that passed an earlier event | copies that never went | time |")
-	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- |")
+	t.Logf("| rule | publishers | failed sends | scenarios | states | copies that passed an earlier event | copies that never went |")
+	t.Logf("| --- | --- | --- | --- | --- | --- | --- |")
 	report := func(row moRow) moRow {
 		t.Logf("%s", row)
 		if row.unobserved != 0 {
@@ -915,5 +927,4 @@ func TestTheMentionCopyOrderModel(t *testing.T) {
 			t.Errorf("the rule as built left a copy that never goes (%s): %s", env.name, row.liveFirst)
 		}
 	}
-	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 }

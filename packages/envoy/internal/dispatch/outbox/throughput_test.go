@@ -12,10 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -25,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // busyPoolSize is the shared pool's size in the busy case. A full pool is what the case needs, of
@@ -33,10 +37,9 @@ import (
 // hundred.
 const busyPoolSize = 8
 
-// busySharedPool opens a second store on database's database whose shared pool holds
-// busyPoolSize connections, and keeps every one of them busy until t ends, with as many callers
-// again queued behind them, the way the API's requests keep the pool the outbox used to share
-// with them. The outbox pool it hands out is derived from it, as production's is.
+// busySharedPool holds every connection in the shared pool until the test ends.
+// The outbox pool derived from it must make progress despite there being no
+// capacity in the pool the API uses.
 func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 	t.Helper()
 	config := database.Pool.Config().Copy()
@@ -46,20 +49,16 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 		t.Fatalf("open the busy shared pool: %v", err)
 	}
 	busy := &store.Store{Pool: store.NewPool(pool)}
-	t.Cleanup(busy.Pool.Close)
-	ctx, cancel := context.WithCancel(context.Background())
-	var callers sync.WaitGroup
-	for range 2 * busyPoolSize {
-		callers.Go(func() {
-			for ctx.Err() == nil {
-				_, _ = busy.Pool.Exec(ctx, `select pg_sleep(0.01)`)
-			}
-		})
-	}
 	t.Cleanup(func() {
-		cancel()
-		callers.Wait()
+		testwait.Returns(t, "the busy pool's connections to come back and its pool to close", busy.Pool.Close)
 	})
+	for range busyPoolSize {
+		conn, err := busy.Pool.Acquire(testwait.Context(t))
+		if err != nil {
+			t.Fatalf("occupy the shared pool: %v", err)
+		}
+		t.Cleanup(conn.Release)
+	}
 	return busy
 }
 
@@ -70,11 +69,11 @@ func busySharedPool(t *testing.T, database *store.Store) *store.Store {
 func seedThroughputBacklog(t *testing.T, database *store.Store, broker *events.Broker, issues, count int) []model.Event {
 	t.Helper()
 	keys, parents := seedLoadMessageIssues(t, database, issues)
-	seeded := make([]model.Event, 0, count)
+	written := make([]model.Event, 0, count)
 	for index := range count {
-		seeded = append(seeded, appendLoadMessage(t, database, broker, index, keys[index%issues], parents[index%issues], index%2 == 1))
+		written = append(written, loadMessage(index, keys[index%issues], parents[index%issues], index%2 == 1))
 	}
-	return seeded
+	return appendEvents(t, database, broker, written...)
 }
 
 // seedCommentReplyBacklog appends count events across issues issues. Every second event is a
@@ -124,24 +123,23 @@ func seedCommentReplyBacklog(t *testing.T, database *store.Store, broker *events
 		}
 		seedComment(t, database, commentKeys[index], writer, "Done.", &roots[index])
 	}
-	seeded := make([]model.Event, 0, count)
+	written := make([]model.Event, 0, count)
+	replies := make([]loadComment, count/2)
+	for i := range replies {
+		thread := i % half
+		replies[i] = loadComment{key: commentKeys[thread], root: new(roots[thread])}
+	}
+	commentIDs := seedLoadComments(t, database, personJSON, replies)
 	for index := range count {
 		if index%2 == 1 {
 			message := index / 2
-			seeded = append(seeded, appendLoadMessage(t, database, broker, index, messageKeys[message%half], parents[message%half], message%2 == 1))
+			written = append(written, loadMessage(index, messageKeys[message%half], parents[message%half], message%2 == 1))
 			continue
 		}
-		thread := (index / 2) % half
-		key, root := commentKeys[thread], roots[thread]
-		reply := seedComment(t, database, key, person, "Load", &root)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
-			IssueKey: new(key), Type: "comment.created", Actor: person,
-			Payload: model.CommentEventPayload{
-				Comment: model.Comment{ID: reply, IssueKey: new(key), Author: person, Body: "Load", ReplyTo: new(root)},
-			},
-		}))
+		reply := index / 2
+		written = append(written, commentEvent(replies[reply], commentIDs[reply], person))
 	}
-	return seeded
+	return appendEvents(t, database, broker, written...)
 }
 
 // seedUnclaimedCommentBacklog inserts the project TT and issues issues TT-1 on, with no route and
@@ -191,61 +189,109 @@ func seedUnclaimedCommentBacklog(t *testing.T, database *store.Store, broker *ev
 		}
 		seedComment(t, database, keys[index], model.Actor{Kind: "session", ID: fmt.Sprintf("replier-%d", index)}, "Done.", &roots[index])
 	}
-	seeded := make([]model.Event, 0, count)
-	for index := range count {
+	comments := make([]loadComment, count)
+	for index := range comments {
 		issue := (index / 2) % issues
-		key := keys[issue]
-		var replyTo *string
+		comments[index].key = keys[issue]
 		if index%2 == 1 {
-			replyTo = new(roots[issue])
+			comments[index].root = new(roots[issue])
 		}
-		comment := seedComment(t, database, key, person, "Load", replyTo)
-		seeded = append(seeded, appendEvent(t, database, broker, model.Event{
-			IssueKey: new(key), Type: "comment.created", Actor: person,
-			Payload: model.CommentEventPayload{
-				Comment: model.Comment{ID: comment, IssueKey: new(key), Author: person, Body: "Load", ReplyTo: replyTo},
-			},
-		}))
 	}
-	return seeded
+	commentIDs := seedLoadComments(t, database, personJSON, comments)
+	written := make([]model.Event, count)
+	for index, comment := range comments {
+		written[index] = commentEvent(comment, commentIDs[index], person)
+	}
+	return appendEvents(t, database, broker, written...)
 }
 
-// seedLoadMessageIssues inserts the project TT and issues issues TT-1 on, each routed to
-// role:reviewer and holding a message from a session (agent-N), and returns their keys and those
-// messages' ids.
+type loadComment struct {
+	key  string
+	root *string
+}
+
+// seedLoadComments inserts the load's comments in one round trip, in event order.
+func seedLoadComments(t *testing.T, database *store.Store, author []byte, comments []loadComment) []string {
+	t.Helper()
+	var batch pgx.Batch
+	ids := make([]string, len(comments))
+	for i, comment := range comments {
+		batch.Queue(`
+			insert into comments (issue_key, author, body, reply_to) values ($1, $2, 'Load', $3)
+			returning id::text
+		`, comment.key, author, comment.root).QueryRow(func(row pgx.Row) error { return row.Scan(&ids[i]) })
+	}
+	if err := database.Pool.SendBatch(t.Context(), &batch).Close(); err != nil {
+		t.Fatalf("seed load comments: %v", err)
+	}
+	return ids
+}
+
+func commentEvent(comment loadComment, id string, author model.Actor) model.Event {
+	return model.Event{
+		IssueKey: new(comment.key), Type: "comment.created", Actor: author,
+		Payload: model.CommentEventPayload{
+			Comment: model.Comment{ID: id, IssueKey: new(comment.key), Author: author, Body: "Load", ReplyTo: comment.root},
+		},
+	}
+}
+
+// seedLoadMessageIssues inserts the project TT and its role-routed issues, each
+// with a parent message from a different session.
 func seedLoadMessageIssues(t *testing.T, database *store.Store, issues int) ([]string, []string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
+	ctx := testwait.Context(t)
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	keys := make([]string, issues)
-	parents := make([]string, issues)
-	for index := range issues {
-		number := index + 1
-		keys[index] = fmt.Sprintf("TT-%d", number)
-		if _, err := database.Pool.Exec(context.Background(), `
-			insert into issues (key, project_key, number, title, route, created_by, rank)
-			values ($1, 'TT', $2, 'Load', 'role:reviewer', '{"kind":"user","id":"alice"}', 'U')
-		`, keys[index], number); err != nil {
-			t.Fatalf("create issue %s: %v", keys[index], err)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, route, created_by, rank)
+		select 'TT-' || n, 'TT', n, 'Load', 'role:reviewer', '{"kind":"user","id":"alice"}', 'U'
+		from generate_series(1, $1::int) n
+	`, issues); err != nil {
+		t.Fatalf("create routed issues: %v", err)
+	}
+	rows, err := database.Pool.Query(ctx, `
+		with parents as (
+			insert into messages (issue_key, author, body)
+			select key, jsonb_build_object('kind', 'session', 'id', 'agent-' || (number - 1)), 'Status?'
+			from issues
+			returning issue_key, id
+		)
+		select p.issue_key, p.id::text from parents p join issues i on i.key = p.issue_key order by i.number
+	`)
+	if err != nil {
+		t.Fatalf("insert parent messages: %v", err)
+	}
+	defer rows.Close()
+	keys, parents := make([]string, 0, issues), make([]string, 0, issues)
+	for rows.Next() {
+		var key, parent string
+		if err := rows.Scan(&key, &parent); err != nil {
+			t.Fatalf("read parent message: %v", err)
 		}
-		parents[index] = seedMessage(t, database, keys[index], model.Actor{Kind: "session", ID: fmt.Sprintf("agent-%d", index)}, "Status?", nil)
+		keys, parents = append(keys, key), append(parents, parent)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read parent messages: %v", err)
+	}
+	if len(parents) != issues {
+		t.Fatalf("seeded %d parent messages, want one per issue (%d)", len(parents), issues)
 	}
 	return keys, parents
 }
 
-// appendLoadMessage appends a human message on key's issue, numbered index, and a reply to the
-// session's message parent when reply is set.
-func appendLoadMessage(t *testing.T, database *store.Store, broker *events.Broker, index int, key, parent string, reply bool) model.Event {
-	t.Helper()
+// loadMessage is a human message on key's issue, numbered index, and a reply to
+// the session's message parent when reply is set.
+func loadMessage(index int, key, parent string, reply bool) model.Event {
 	message := model.Message{ID: fmt.Sprintf("message-%d", index), IssueKey: new(key), Body: "Load"}
 	if reply {
 		message.InReplyTo = new(parent)
 	}
-	return appendEvent(t, database, broker, model.Event{
+	return model.Event{
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.MessageEventPayload{Message: message},
-	})
+	}
 }
 
 // unpublishedCount is how many of database's events are not yet marked published.
@@ -263,7 +309,7 @@ func unpublishedCount(t *testing.T, database *store.Store) int {
 // of the stream the checks of what it holds share (streamOrder, assertKeptLaneInOrder).
 func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -271,13 +317,37 @@ func streamMessages(t *testing.T, conn *natsgo.Conn) []*natsgo.RawStreamMsg {
 	if err != nil {
 		t.Fatalf("read the stream: %v", err)
 	}
-	var messages []*natsgo.RawStreamMsg
-	for sequence := info.State.FirstSeq; sequence <= info.State.LastSeq && info.State.Msgs > 0; sequence++ {
-		message, err := js.GetMsg(bus.Stream, sequence)
+	if info.State.Msgs == 0 {
+		return nil
+	}
+	// Read the snapshot in one ordered delivery instead of one request per
+	// sequence. Check every sequence; a gap must still fail the read.
+	sub, err := js.SubscribeSync(">", natsgo.BindStream(bus.Stream), natsgo.OrderedConsumer(), natsgo.StartSequence(info.State.FirstSeq))
+	if err != nil {
+		t.Fatalf("subscribe to the stream snapshot: %v", err)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Errorf("unsubscribe from the stream snapshot: %v", err)
+		}
+	}()
+	ctx := testwait.Context(t)
+	messages := make([]*natsgo.RawStreamMsg, 0, info.State.Msgs)
+	for sequence := info.State.FirstSeq; sequence <= info.State.LastSeq; sequence++ {
+		msg, err := sub.NextMsgWithContext(ctx)
 		if err != nil {
 			t.Fatalf("read stream message %d: %v", sequence, err)
 		}
-		messages = append(messages, message)
+		meta, err := msg.Metadata()
+		if err != nil {
+			t.Fatalf("read metadata for stream message %d: %v", sequence, err)
+		}
+		if meta.Sequence.Stream != sequence {
+			t.Fatalf("stream sequence = %d, want %d", meta.Sequence.Stream, sequence)
+		}
+		messages = append(messages, &natsgo.RawStreamMsg{
+			Subject: msg.Subject, Sequence: sequence, Header: msg.Header, Data: msg.Data, Time: meta.Timestamp,
+		})
 	}
 	return messages
 }
@@ -340,6 +410,7 @@ type throughputRig struct {
 	client   *bus.Client
 	reader   *natsgo.Conn
 	broker   *events.Broker
+	clock    *clocktest.Fake
 	// role is every forward the role's holder received, in arrival order, and marks the markers
 	// it took (markers.await).
 	roleMu sync.Mutex
@@ -347,23 +418,16 @@ type throughputRig struct {
 	marks  markers
 }
 
-// outstandingSends counts how many of the outbox's sends are outstanding at once. It wraps the
-// publisher the outbox sends through: a send counts from the moment the outbox makes it until
-// its answer is in. One outstandingSends counts across every window the publisher hands out,
-// because a scan runs up to concurrentBatches batches at once and each takes a window of its
-// own, so the reading is the peak over the whole drain: the most sends that were outstanding at
-// any one moment.
-//
-// The row reads that peak because it is what the outbox's throughput is made of, and unlike a
-// rate no load on the machine can change it. A drain that sends while earlier sends are
-// unanswered holds many at once, so a remote hub's round trips overlap and the peak is tens. A
-// drain that waits for each answer before it makes the next send holds about one send per batch
-// however fast or slow the machine runs, so its peak is the number of batches.
+// outstandingSends counts sends across the windows of one drain. In the backlog cases it
+// withholds their answers from the outbox until the outstanding count reaches the floor.
 type outstandingSends struct {
 	Publisher
 	mu          sync.Mutex
 	outstanding int
 	peak        int
+	floor       int
+	ready       chan struct{}
+	stop        <-chan struct{}
 }
 
 // WindowUntil wraps the real window, so every send of it is counted.
@@ -378,6 +442,9 @@ func (c *outstandingSends) began() {
 	c.outstanding++
 	if c.outstanding > c.peak {
 		c.peak = c.outstanding
+		if c.peak == c.floor {
+			close(c.ready)
+		}
 	}
 }
 
@@ -395,10 +462,8 @@ func (c *outstandingSends) peakOutstanding() int {
 	return c.peak
 }
 
-// outstandingWindow is one counted window. Each of its three sending methods counts its send
-// outstanding and hands the caller a channel of its own, which yields what the real channel
-// yielded, exactly once, so the outbox sees what it would have seen. Probe goes straight through,
-// as Connected and ConnectionChanged do on the publisher.
+// outstandingWindow counts sends and relays their real answers after the gate opens.
+// Probe goes straight through, as Connected and ConnectionChanged do on the publisher.
 type outstandingWindow struct {
 	bus.Sender
 	sends *outstandingSends
@@ -416,35 +481,88 @@ func (s outstandingWindow) Request(subject string, item contracts.Envelope, opts
 	return s.count(s.Sender.Request(subject, item, opts))
 }
 
-// count holds one send outstanding until answer yields, and relays that one value on a buffered
-// channel, which the relaying goroutine can always write to whether the outbox reads it or not.
+// count marks a send outstanding until it can relay the answer. It waits for ready before
+// taking the answer, and abandons the relay if stop wins either wait.
 func (s outstandingWindow) count(answer <-chan error) <-chan error {
 	s.sends.began()
 	relayed := make(chan error, 1)
 	go func() {
-		err := <-answer
-		s.sends.answered()
-		relayed <- err
+		select {
+		case <-s.sends.ready:
+		case <-s.sends.stop:
+			return
+		}
+		select {
+		case err := <-answer:
+			s.sends.answered()
+			relayed <- err
+		case <-s.sends.stop:
+		}
 	}()
 	return relayed
 }
 
+// proxyChunkClock signals the driver as soon as the proxy arms a chunk's delay.
+type proxyChunkClock struct {
+	*clocktest.Fake
+	armed chan struct{}
+}
+
+func (c proxyChunkClock) Sleep(ctx context.Context, d time.Duration) error {
+	timer := c.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case c.armed <- struct{}{}:
+	default:
+	}
+	select {
+	case <-timer.C():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// runProxyClock drains the armed chunk delays whenever the proxy signals, with the
+// shared wait's poll as a fallback. The test goroutine joins the driver at cleanup.
+func runProxyClock(t *testing.T, c proxyChunkClock) {
+	t.Helper()
+	stop, done := make(chan struct{}), make(chan struct{})
+	wake := notify(c.armed)
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if !fireNext(c.Fake) {
+				testwait.Within(c.armed, testwait.Poll)
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		close(stop)
+		wake()
+		testwait.Receive(t, "the proxy clock driver returning", done)
+	})
+}
+
 func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	t.Helper()
-	server, url := testnats.Start(t)
-	_ = server
-	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt)).URL()
+	_, url := testnats.Start(t)
+	chunks := proxyChunkClock{Fake: clocktest.New(time.Time{}), armed: make(chan struct{}, 1)}
+	proxied := testnats.StartProxy(t, url, testnats.ProxyLatency(rtt), testnats.ProxyClock(chunks)).URL()
+	runProxyClock(t, chunks)
 	client, err := bus.ConnectOwningStream([]string{proxied})
 	if err != nil {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
-	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	t.Cleanup(func() { bustest.Close(t, client) })
+	reader := testnats.Connect(t, url)
 	t.Cleanup(reader.Close)
-	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
+	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker(), clock: chunks.Fake}
 	if _, err := reader.Subscribe(contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg) {
 		if rig.marks.took(message) {
 			return
@@ -456,26 +574,47 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	}); err != nil {
 		t.Fatalf("subscribe the role's holder: %v", err)
 	}
-	if err := reader.Flush(); err != nil {
-		t.Fatalf("flush the holder's subscription: %v", err)
-	}
-	registry, err := envoystore.Open(t.Context(), reader)
-	if err != nil {
-		t.Fatalf("open the role registry: %v", err)
-	}
-	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(t.Context(), reader)
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
-	t.Cleanup(sessions.StopWatch)
-	if _, err := registry.SetRole(throughputHolder, "test-machine", "reviewer", false); err != nil {
-		t.Fatalf("claim role:reviewer: %v", err)
-	}
-	if err := sessions.Put(throughputHolder, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
-		t.Fatalf("register the role's holder: %v", err)
-	}
+	flushSubscriber(t, reader)
+	seedRoleHolders(t, reader, map[string]string{"reviewer": throughputHolder})
 	return rig
+}
+
+// seedRoleHolders writes live self-subscribed holders directly to the buckets
+// the outbox reads. It does not start the listener's registry watchers.
+func seedRoleHolders(t *testing.T, conn *natsgo.Conn, holders map[string]string) {
+	t.Helper()
+	js, err := conn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("open JetStream for the role fixture: %v", err)
+	}
+	ctx := testwait.Context(t)
+	stamp := fixtureTime.UnixMilli()
+	claims, err := bus.EnsureKeyValue(ctx, conn, js, &natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Storage: natsgo.FileStorage})
+	if err != nil {
+		t.Fatalf("open the role claim bucket: %v", err)
+	}
+	sessions, err := bus.EnsureKeyValue(ctx, conn, js, &natsgo.KeyValueConfig{Bucket: bus.SessionBucket, Storage: natsgo.FileStorage})
+	if err != nil {
+		t.Fatalf("open the session bucket: %v", err)
+	}
+	put := func(kv bus.KeyValue, key string, entry any) {
+		t.Helper()
+		value, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("encode %q: %v", key, err)
+		}
+		if _, err := kv.Put(key, value); err != nil {
+			t.Fatalf("write %q: %v", key, err)
+		}
+	}
+	for role, holder := range holders {
+		put(claims, envoystore.RoleClaimKeyOf(role), envoystore.RoleClaim{
+			HolderSessionID: holder, ClaimedAt: stamp, RenewedAt: stamp,
+		})
+		put(sessions, holder, session.SessionEntry{
+			SessionID: holder, MachineID: "test-machine", UpdatedAt: stamp, SelfSubscribed: true,
+		})
+	}
 }
 
 func (r *throughputRig) roleArrivals() []int64 {
@@ -498,16 +637,9 @@ func (r *throughputRig) roleArrivals() []int64 {
 // sessions. The destinations each event type reached are logged for comparison; the count of
 // destinations is checked last, so a publisher that reaches fewer still reports its order.
 //
-// The reading is how many sends the outbox held outstanding at once, at its peak over the drain
-// (outstandingSends, minOutstanding). The rate is logged beside it and nothing is asserted of it:
-// a floor of 25 events/s failed in 20 of 20 runs that published every event, each run in at
-// least one of its cases: 118 of the 240 readings were below 25 events/s, the slowest 9.6, under
-// 48 busy loops on a 2-CPU box on 2026-11-09, so the rate read the machine rather than the
-// outbox. The cases run beside each other and beside the package's other tests (TestMain's
-// outboxTestParallelism), so a rate logged in a package run reads the load of those too: to
-// compare a reading with THROUGHPUT.md's, which were taken one case at a time, run this test
-// alone with -parallel 1 (go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency
-// -parallel 1).
+// The verdict is how many sends the outbox holds outstanding at once. The gate releases answers
+// at minOutstanding, regardless of machine load. The rate and drain time are logged on the proxy
+// clock for each case. They are not wall-time measurements or verdicts (see THROUGHPUT.md).
 //
 // The burst cases put a batch of messages on one issue, the shape whose events share every
 // destination, so each destination takes them one round trip after another, and log the drain
@@ -517,19 +649,21 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 	t.Parallel()
 	const (
 		backlogIssues = 20
-		backlogCount  = 2 * batchSize
-		burstCount    = batchSize
+		// Fill one claim and leave another round of events across the owners.
+		backlogCount = batchSize + backlogIssues
+		burstCount   = batchSize
 		// minOutstanding is the fewest sends a correct drain holds outstanding at its peak, in
 		// the non-burst cases. Measured three ways under 48 busy loops on a 2-CPU box on
-		// 2026-11-09. The product held 50 (messages), 55 (comment replies) and 60 (unclaimed
-		// comments), the same figure in each of three runs. The product with concurrentBatches
-		// cut to 1 and the sends unchanged held 50, 55 and 60 too, so the reading is one batch's
-		// own overlap and not the scan's batches running side by side. A drain patched to issue
-		// one chain and wait for its answer before the next held 3 in every non-burst case. The
-		// floor sits between the two: 20 is 6.7 times the serialized drain's 3, and the lowest
-		// healthy peak measured is 45, which is 2.25 times the floor. That 45 was read once
-		// among the 60 non-burst readings of the loaded campaign at head 844b43ec05b2 on
-		// 2026-11-09; every other reading of it was 50, 55 or 60.
+		// 2026-11-09, with a backlog of 2 * batchSize. The product held 50 (messages), 55
+		// (comment replies) and 60 (unclaimed comments), the same figure in each of three runs.
+		// The product with concurrentBatches cut to 1 and the sends unchanged held 50, 55 and 60
+		// too, so the reading is one batch's own overlap and not the scan's batches running side
+		// by side. A drain patched to issue one chain and wait for its answer before the next
+		// held 3 in every non-burst case. The floor sits between the two: 20 is 6.7 times the
+		// serialized drain's 3. With the backlog at batchSize + backlogIssues, 120 non-burst
+		// readings in two build Jobs on 4-CPU nodes on 2026-11-28 (the package run whole and the
+		// row run by name) mostly read 50, 55 and 56 to 60 again; the lowest was 34, 1.7 times
+		// the floor, and 12 of the 120 were under 45.
 		minOutstanding = 20
 	)
 	for _, load := range []struct {
@@ -553,10 +687,8 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 		// replier's.
 		{"unclaimed comments", seedUnclaimedCommentBacklog, func(count int) int { return 2*count + count/2 }, func(int) int { return 0 }, false},
 	} {
-		// Each case drains a backlog on a rig of its own (newThroughputRig: its own database,
-		// NATS server and session registry), and its reading is how many sends one outbox held
-		// outstanding, so the cases run beside each other rather than one 50-150 ms round trip
-		// after another.
+		// Each case has its own database and NATS server. Run them beside
+		// one another so each still has real concurrent work around its drain.
 		t.Run(load.name, func(t *testing.T) {
 			t.Parallel()
 			for _, tc := range []struct {
@@ -594,14 +726,22 @@ func TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency(t *testing.T) {
 						outboxStore = busySharedPool(t, rig.database)
 					}
 
-					started := time.Now()
-					sends := &outstandingSends{Publisher: rig.client}
-					stop := runOutboxThrough(t, outboxStore, rig.client, sends, rig.broker)
+					started := rig.clock.Now()
+					stopRelaying := make(chan struct{})
+					sends := &outstandingSends{Publisher: rig.client, floor: minOutstanding, ready: make(chan struct{}), stop: stopRelaying}
+					if tc.burst {
+						sends.floor = 0
+						close(sends.ready)
+					}
+					outbox := wiredOutboxJudgedBy(t, outboxStore, rig.client, sends, rig.broker, roles.Windows{Now: func() time.Time { return fixtureTime }})
+					stop := runOn(t, outbox)
 					defer stop()
-					// The drain's one bound is the test binary's deadline: how long it takes is
-					// logged, never asserted, so a loaded machine only reads a lower rate.
+					defer close(stopRelaying)
+					if !tc.burst {
+						testwait.Receive(t, fmt.Sprintf("%s: at least %d sends outstanding at the peak", name, minOutstanding), sends.ready)
+					}
 					waitFor(t, name+": every event published", func() bool { return unpublishedCount(t, rig.database) == 0 })
-					elapsed := time.Since(started)
+					elapsed := rig.clock.Now().Sub(started)
 					rate := float64(count) / elapsed.Seconds()
 					peak := sends.peakOutstanding()
 					if tc.burst {
@@ -701,19 +841,24 @@ func logDestinations(t *testing.T, name string, seeded []model.Event, stream []i
 // the returned func stops it.
 func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *events.Broker) func() {
 	t.Helper()
-	return runOutboxThrough(t, database, client, client, broker)
+	return runOn(t, wiredOutbox(t, database, client, client, broker))
 }
 
-// runOutboxThrough is runOutbox publishing through publisher rather than through client itself,
-// for a row that reads what the outbox's own sends do (outstandingSends). Role routes still
-// resolve on client's connection, as cmd/dispatch has them.
-func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) func() {
+// wiredOutbox builds an outbox without running it, so a test can set its clock or wrap its publisher.
+func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
+	t.Helper()
+	return wiredOutboxJudgedBy(t, database, client, publisher, broker, roles.Windows{})
+}
+
+// wiredOutboxJudgedBy is wiredOutbox whose role holders are judged by windows. A roleRig dates its
+// registrations on roleRigNow, so a row on one passes roles.Windows{Now: roleRigNow}.
+func wiredOutboxJudgedBy(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker, windows roles.Windows) *Outbox {
 	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
-	holders := roles.NewBuckets(client, roles.Windows{})
-	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
+	holders := roles.NewBuckets(client, windows)
+	return New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders})
 }

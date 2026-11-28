@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -247,6 +248,8 @@ func heldGauges(t *testing.T, registry *metrics.Registry) string {
 // the event it waits behind and that event's last publish error - once, however many passes find
 // it waiting. When the event is published the row's copy goes and the gauges read none: the
 // control, as is the scrape before any pass.
+//
+// Not parallel: it swaps the default logger (logtest.SetDefault).
 func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	logs := &storetest.LockedLog{}
@@ -266,8 +269,9 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 	}
 	registry := metrics.New()
 	publisher := &recordingPublisher{}
+	fake := clocktest.New(time.Time{})
 	deps := Deps{Store: database, Publisher: publisher, Broker: broker, Metrics: registry,
-		held: newHeldCopies(), heldCopyWarnAfter: time.Second}
+		held: newHeldCopies(fake)}
 	holder := holding(t, deps).instance
 	due := func() {
 		t.Helper()
@@ -282,7 +286,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("the gauges read %q before any pass, want no held copy", body)
 	}
 
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	if row := readHeldCopy(t, database, commentID, s1); row.settled || row.published {
 		t.Fatalf("the row is settled %v and published %v while event %d owes its topic family, want it waiting", row.settled, row.published, earlier.ID)
 	}
@@ -294,15 +298,21 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("%d WARN lines before the threshold, want none", got)
 	}
 
-	time.Sleep(1100 * time.Millisecond)
+	fake.Advance(model.MentionCopyHeldWarnAfter - time.Nanosecond)
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
+	if got := warnings(); got != 0 {
+		t.Fatalf("%d WARN lines one tick before the threshold, want none", got)
+	}
+	fake.Advance(time.Nanosecond)
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
+	due()
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	body := heldGauges(t, registry)
-	if !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 1\n") ||
-		!strings.Contains(body, "envoy_dispatch_outbox_fallback_copy_held_oldest_seconds 1\n") {
-		t.Fatalf("the gauges read %q, want one copy held for a second", body)
+	oldest := fmt.Sprintf("envoy_dispatch_outbox_fallback_copy_held_oldest_seconds %d\n", model.MentionCopyHeldWarnAfter/time.Second)
+	if !strings.Contains(body, "envoy_dispatch_outbox_fallback_copies_held 1\n") || !strings.Contains(body, oldest) {
+		t.Fatalf("the gauges read %q, want one copy held for %s", body, model.MentionCopyHeldWarnAfter)
 	}
 	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "envoy_dispatch_outbox_fallback_cop") && (strings.Contains(line, "{") || strings.Contains(line, "T-1")) {
@@ -325,7 +335,7 @@ func TestAHeldFallbackCopyIsCountedAndReportedOnce(t *testing.T) {
 		t.Fatalf("publish the earlier event: %v", err)
 	}
 	due()
-	publishFallbackCopies(ctx, deps, unfenced{}, holder)
+	bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 	if row := readHeldCopy(t, database, commentID, s1); !row.settled || !row.published {
 		t.Fatalf("the row is settled %v and published %v once the earlier event was published, want both", row.settled, row.published)
 	}
@@ -380,10 +390,12 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 	// rowOf is each held row, "<comment id> <destination>" as the trigger below writes it, by the
 	// id of its comment's event, which a read of the rule for the row is bound to.
 	rowOf := map[int64]string{}
+	comments := make([]model.Event, 0, rows)
+	commentIDs := make([]string, 0, rows)
 	for index := range rows {
 		body := fmt.Sprintf("@s1 comment %d", index)
 		commentID := seedComment(t, database, "T-1", alice, body, nil)
-		comment := appendEvent(t, database, broker, model.Event{
+		comments = append(comments, model.Event{
 			IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
 			Payload: model.CommentEventPayload{Comment: model.Comment{
 				ID: commentID, IssueKey: new("T-1"), Body: body,
@@ -391,12 +403,18 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 			}},
 		})
 		seedDelivery(t, database, commentID, "session:s1", "s1", "failed")
-		if _, err := database.Pool.Exec(ctx, `
-			insert into comment_fallback_copies (comment_id, destination, event_id, session_id) values ($1, $2, $3, 's1')
-		`, commentID, s1, comment.ID); err != nil {
-			t.Fatalf("hold copy %d: %v", index, err)
-		}
-		rowOf[comment.ID] = fmt.Sprintf("%s %s", commentID, s1)
+		commentIDs = append(commentIDs, commentID)
+	}
+	eventIDs := make([]int64, 0, rows)
+	for i, comment := range appendEvents(t, database, broker, comments...) {
+		eventIDs = append(eventIDs, comment.ID)
+		rowOf[comment.ID] = fmt.Sprintf("%s %s", commentIDs[i], s1)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comment_fallback_copies (comment_id, destination, event_id, session_id)
+		select comment_id::uuid, $3, event_id, 's1' from unnest($1::text[], $2::bigint[]) as copies(comment_id, event_id)
+	`, commentIDs, eventIDs, s1); err != nil {
+		t.Fatalf("hold the fallback copies: %v", err)
 	}
 	for _, statement := range []string{
 		`create table fallback_due_writes (
@@ -458,7 +476,7 @@ func TestHeldFallbackCopiesReadTheRuleAtMostOncePerPendingDelay(t *testing.T) {
 			t.Fatalf("read the database's clock: %v", err)
 		}
 		before := len(sent.Statements())
-		publishFallbackCopies(ctx, deps, unfenced{}, holder)
+		bareOutbox(deps, holder).publishFallbackCopies(ctx, unfenced{})
 		readsOf := map[string]int{}
 		for _, statement := range sent.Statements()[before:] {
 			switch {

@@ -18,8 +18,8 @@ import (
 
 // publishAcknowledgementTimeout bounds each send of a publish window (Client.WindowUntil): its wait
 // for a connection on the client's window clock (WithWindowClock), a JetStream send's
-// acknowledgement (the stream context's PublishAsyncTimeout), and a Request's answer when its
-// options set no timeout of their own. Publish takes publishBound instead.
+// acknowledgement, and a Request's answer when its options set no timeout of their own.
+// Publish takes publishBound instead.
 const publishAcknowledgementTimeout = 5 * time.Second
 
 // ErrUnavailable is wrapped by the outcome of a window's send that NATS did not take because of
@@ -128,7 +128,7 @@ type RequestOptions struct {
 // not capture answers ErrNotCaptured, and a core forward goes through Request. An outcome decided
 // before anything was sent is in the channel when PublishAsync returns: a refusal (ErrRefused),
 // ErrNotCaptured, or ErrUnavailable. Otherwise the answer is the stream's acknowledgement, within
-// publishAcknowledgementTimeout (the JetStream context's PublishAsyncTimeout). A publish NATS does
+// publishAcknowledgementTimeout (on WithPublishAcknowledgementClock, if set). A publish NATS does
 // not acknowledge, or answers with no responders, is ErrNotAcknowledged while the window's
 // connection stays current and ErrUnavailable once it does not.
 //
@@ -336,9 +336,10 @@ func (w *window) pinToSend() error {
 	return pinned
 }
 
-// windowTime is the clock the client's publish windows read their deadlines against and time a
-// first send's wait for a connection on (pinFirst): WithWindowClock's, and the real clock when that
-// set none. A probe's flush reads WithWindowClock's clock itself (window.probeFlush).
+// windowTime is WithWindowClock's clock, or the real clock when none is set.
+// Windows use it to check deadlines, wait for their first connection (pinFirst),
+// and bound a request's pre-send state read (observeToSend). Probes and confirmed
+// publishes use the configured clock through flushWithin.
 func (c *Client) windowTime() clock.Clock {
 	return cmp.Or(c.windowClock, clock.Real())
 }
@@ -486,7 +487,8 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	if subscribed := w.requestSubscribed.Load(); subscribed != nil {
 		(*subscribed)()
 	}
-	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
+	timeout := cmp.Or(opts.Timeout, publishAcknowledgementTimeout)
+	deadline := time.Now().Add(timeout)
 	before, err := w.observeToSend(deadline)
 	if err != nil {
 		endReplies(inboxSub, false)
@@ -511,6 +513,12 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// connection was lost.
 		replied := false
 		defer func() { endReplies(inboxSub, replied && w.current()) }()
+		var ackWait context.Context
+		if w.client.customAcknowledgementClock() {
+			var cancel context.CancelFunc
+			ackWait, cancel = w.client.publishAcknowledgementClock.WithTimeout(context.Background(), timeout)
+			defer cancel()
+		}
 		// The flush runs beside the wait for the answer rather than ahead of it. nats.go clears
 		// the flushes pending on a connection only as that connection turns from connected to
 		// reconnecting (clearPendingFlushCalls), so a flush begun after that moment - a server
@@ -525,7 +533,15 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			if tick := w.client.beforeRequestFlush; tick != nil {
 				tick()
 			}
-			flushed <- confirmFlushed(context.Background(), w.conn, subject, before, deadline)
+			ctx := context.Background()
+			if w.client.windowClock != nil {
+				// The request's real answer bound still ends this flush, even if the window
+				// clock does not move.
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, deadline)
+				defer cancel()
+			}
+			flushed <- w.client.confirmFlushed(ctx, w.conn, subject, before, deadline)
 		}()
 		// denied is the server's refusal of this very send, as the connection recorded it under
 		// the subject (deniedPublish). It is the only evidence of a denial the flush cannot name:
@@ -602,10 +618,37 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		if expiry := w.client.requestExpiry; expiry != nil {
 			expired, flushSettled = expiry(deadline)
 		}
-		if expired == nil {
+		var acknowledgementDue <-chan struct{}
+		if ackWait != nil {
+			acknowledgementDue = ackWait.Done()
+		} else if expired == nil {
 			timer := time.NewTimer(time.Until(deadline))
 			defer timer.Stop()
 			expired = timer.C
+		}
+		timedOut := func() error {
+			// A reply that arrived with the timeout still counts.
+			if settled, err := drained(); settled {
+				return err
+			}
+			if !w.current() {
+				return lost()
+			}
+			if flushed != nil {
+				// The flush reports whether NATS accepted the send. Its own wait belongs to the
+				// connection, not to the clock for the stream's acknowledgement.
+				if settled := settleFlush(<-flushed); settled != nil {
+					return settled
+				}
+			}
+			// The callback can record a violation after the flush has returned.
+			if denial := denied(); denial != nil {
+				return denial
+			}
+			if unconfirmed != nil {
+				return fmt.Errorf("bus: request to %q: %w: %w", subject, ErrNotAcknowledged, unconfirmed)
+			}
+			return fmt.Errorf("bus: request to %q: %w", subject, ErrNotAcknowledged)
 		}
 		// The record answers the request as soon as the violation is recorded too
 		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
@@ -637,37 +680,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				}
 				return lost()
 			case <-expired:
-				// The request is out of time: its answer is the timeout's.
-				if settled, err := drained(); settled {
-					return err
-				}
-				if !w.current() {
-					return lost()
-				}
-				if flushed != nil {
-					// The flush's timeout bounds only what follows nats.go's connection lock,
-					// from the moment nats.go lets the flush take it (confirmFlushed,
-					// readWithin). So a flush that waited X for the lock waits for the server's
-					// answer until X after the deadline. In production the timeout fires at the
-					// deadline, so this wait lasts at most X, the whole of the flush's wait for
-					// the lock. Under a test's expiry (requestExpiry) the timeout can fire before
-					// the deadline, and the flush can run on until X after it. Either way, what
-					// it says belongs in the timeout's answer.
-					if settled := settleFlush(<-flushed); settled != nil {
-						return settled
-					}
-				}
-				// The violation is recorded on nats.go's error callback, which can run after the
-				// flush has returned, so the record is read once more here, with every send of
-				// this request behind it: a denial found now is this request's answer, and the
-				// timeout would have named another subject's violation or nothing at all.
-				if denial := denied(); denial != nil {
-					return denial
-				}
-				if unconfirmed != nil {
-					return fmt.Errorf("bus: request to %q: %w: %w", subject, ErrNotAcknowledged, unconfirmed)
-				}
-				return fmt.Errorf("bus: request to %q: %w", subject, ErrNotAcknowledged)
+				return timedOut()
+			case <-acknowledgementDue:
+				return timedOut()
 			}
 		}
 	}, nil
@@ -682,13 +697,23 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 // deadline has passed sends nothing either (ErrWindowDeadline), so the deadline is still read last
 // before the send writes, as pinToSend reads it.
 func (w *window) observeToSend(deadline time.Time) (connState, error) {
+	var windowEnds time.Time
 	if w.deadline != nil {
-		if windowEnds := w.deadline(); windowEnds.Before(deadline) {
+		windowEnds = w.deadline()
+		if w.client.windowClock == nil && windowEnds.Before(deadline) {
 			deadline = windowEnds
 		}
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
+	if w.deadline != nil && w.client.windowClock != nil {
+		// The window and the request may read different clocks. A window deadline's
+		// timestamp is meaningful only on its own clock.
+		windowTime := w.client.windowTime()
+		var cancelWindow context.CancelFunc
+		ctx, cancelWindow = windowTime.WithTimeout(ctx, windowEnds.Sub(windowTime.Now()))
+		defer cancelWindow()
+	}
 	before, answered := observeWithin(ctx, w.conn)
 	if err := w.expired(); err != nil {
 		return connState{}, err
@@ -737,20 +762,9 @@ func (w *window) Probe(timeout time.Duration) error {
 	return nil
 }
 
-// probeFlush flushes the window's pinned connection within timeout, for Probe. With no window
-// clock, as in every deployment, it is nats.go's FlushTimeout: its timeout starts once the flush
-// holds nats.go's connection lock (v1.55.0 nats.go:6113-6118), so a reconnect's handshake or a slow
-// write that holds that lock for the whole timeout delays the probe rather than failing it. On a
-// window clock (WithWindowClock) the timeout is that clock's, shown to nats.go
-// (clock.WithShownTimeout), so a fake's ends only where the test moves the fake; it starts before
-// the flush waits for nats.go's lock.
+// probeFlush flushes the window's pinned connection within timeout, for Probe.
 func (w *window) probeFlush(timeout time.Duration) error {
-	if w.client.windowClock == nil {
-		return w.conn.FlushTimeout(timeout)
-	}
-	flushing, cancel := clock.WithShownTimeout(w.client.windowClock, context.Background(), timeout)
-	defer cancel()
-	return w.conn.FlushWithContext(flushing)
+	return w.client.flushWithin(context.Background(), w.conn, timeout)
 }
 
 // acknowledged waits for future's acknowledgement of a publish to topic, sent at sentAt, and names
@@ -768,26 +782,43 @@ func (w *window) probeFlush(timeout time.Duration) error {
 // read only then and on the error arm. A publish the stream acknowledges reads no record, as at
 // main.
 func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time, signal <-chan struct{}) error {
+	var expired <-chan struct{}
+	if w.client.customAcknowledgementClock() {
+		ctx, cancel := w.client.publishAcknowledgementClock.WithTimeout(context.Background(), publishAcknowledgementTimeout)
+		defer cancel()
+		expired = ctx.Done()
+	}
+	ok, failed := future.Ok(), future.Err()
+	failure := func(err error) error {
+		// The subject's record can name a denial even when another send overwrote
+		// the connection's last error.
+		if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+			return denied
+		}
+		if !w.current() || errors.Is(err, nats.ErrDisconnected) {
+			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+		}
+		if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
+			return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
+		}
+		return streamFull(err)
+	}
 	for {
 		select {
-		case <-future.Ok():
+		case <-ok:
 			return nil
-		case err := <-future.Err():
-			// A window sends every destination of one event on one connection, so a grant that
-			// denies several of them has the server report a violation of each: the record
-			// answers each send with its own, where the connection's one last error held only the
-			// one that landed last and left every other denied send to report the ErrUnavailable
-			// below.
-			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
-				return denied
+		case err := <-failed:
+			return failure(err)
+		case <-expired:
+			// As with Request, do not lose an answer ready at the deadline.
+			select {
+			case <-ok:
+				return nil
+			case err := <-failed:
+				return failure(err)
+			default:
+				return failure(nats.ErrAsyncPublishTimeout)
 			}
-			if !w.current() || errors.Is(err, nats.ErrDisconnected) {
-				return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
-			}
-			if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
-			}
-			return streamFull(err)
 		case <-signal:
 			signal = w.client.refusalSignal()
 			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
