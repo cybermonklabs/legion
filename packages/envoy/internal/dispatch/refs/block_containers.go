@@ -168,8 +168,8 @@ func OutermostContainerAt(ctx context.Context, q Queryer, block DocumentBlock, v
 		             and t.at <= (select at from pinned)
 		       ),
 		       (
-		           select t.text from outermost
-		           join document_block_texts t on t.artifact_id = $1::uuid and t.block_id = outermost.block_id and t.version <= $3
+		           select t.text from document_block_texts t
+		           where t.artifact_id = $1::uuid and t.block_id = (select block_id from outermost) and t.version <= $3
 		           order by t.version desc limit 1
 		       )
 	`, block.ArtifactID, block.BlockID, version, BlockNodeKind, graphstore.TuplePartOf, "artifact",
