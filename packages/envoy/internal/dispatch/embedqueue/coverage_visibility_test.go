@@ -51,9 +51,7 @@ import (
 // Coverage runs on a pool of one connection, so the statistics of its own statement are the ones
 // read: pg_stat_force_next_flush makes that backend flush them before it next answers.
 func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *testing.T) {
-	// Not parallel: it builds the shared small-corpus template (openSmallCoverageCorpus) once for
-	// this test process while the parallel tests are paused, so the two parallel corpus tests clone
-	// it and wait for no build.
+	t.Parallel()
 	database := openSmallCoverageCorpus(t)
 	ctx := context.Background()
 	recordOnce(t, database)

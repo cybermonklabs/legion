@@ -634,13 +634,12 @@ const smallCoverageCorpusKey = "the small coverage corpus (openSmallCoverageCorp
 // statistics; it keeps none of the template's database settings, and its counters of scans start
 // at none.
 //
-// TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible builds the template: it is
-// serial, and Go starts no parallel test of a package until its serial tests have finished, so it
-// asks first and builds the template while the two parallel tests that clone it
-// (TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector and
-// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap) are paused; they then
-// clone it and wait for no build. It is the one of the three whose own work after the clone is the
-// least, so the one test that pays the build pays the least besides it.
+// The three tests that clone it are parallel:
+// TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible,
+// TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector and
+// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap. The first of the three
+// to ask builds the template while the package's other parallel tests run, and the other two wait
+// in its build (storetest.OpenFrom's once), so their leaf times include that wait.
 func openSmallCoverageCorpus(t *testing.T) *store.Store {
 	t.Helper()
 	return storetest.OpenFrom(t, smallCoverageCorpusKey, func(databaseURL string) error {

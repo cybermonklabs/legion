@@ -374,16 +374,16 @@ func (d CountsDeps) recount(ctx context.Context) error {
 	deadline := started.Add(bound)
 	ctx, cancel := c.WithDeadline(ctx, deadline)
 	defer cancel()
-	slog.Info("dispatch embedqueue: coverage counts recount started", "timeout", bound)
+	d.log().Info("dispatch embedqueue: coverage counts recount started", "timeout", bound)
 	if err := recountGroups(ctx, c, deadline, d.Store, false); err != nil {
 		return err
 	}
-	slog.Info("dispatch embedqueue: coverage counts recounted", "elapsed_ms", c.Now().Sub(started).Milliseconds())
+	d.log().Info("dispatch embedqueue: coverage counts recounted", "elapsed_ms", c.Now().Sub(started).Milliseconds())
 	return nil
 }
 
 // FillCoverage fills the coverage counts on database as the counts loop's first run does
-// (CountsDeps.fill), on the wall clock and under coverageFillTimeout.
+// (CountsDeps.fill), on the wall clock, under coverageFillTimeout, and logging to slog.Default().
 func FillCoverage(ctx context.Context, database *store.Store) error {
 	return CountsDeps{Store: database}.fill(ctx)
 }
@@ -400,7 +400,7 @@ func (d CountsDeps) fill(ctx context.Context) error {
 	deadline := started.Add(bound)
 	fillCtx, cancel := c.WithDeadline(ctx, deadline)
 	defer cancel()
-	slog.Info("dispatch embedqueue: coverage counts fill started", "timeout", bound)
+	d.log().Info("dispatch embedqueue: coverage counts fill started", "timeout", bound)
 	if coverageFillFailures.Load() > 0 && coverageFillFailures.Add(-1) >= 0 {
 		return errFillMadeToFail
 	}
@@ -411,7 +411,7 @@ func (d CountsDeps) fill(ctx context.Context) error {
 		}
 		return err
 	}
-	slog.Info("dispatch embedqueue: coverage counts filled", "elapsed_ms", c.Now().Sub(started).Milliseconds())
+	d.log().Info("dispatch embedqueue: coverage counts filled", "elapsed_ms", c.Now().Sub(started).Milliseconds())
 	return nil
 }
 
@@ -428,6 +428,11 @@ type CountsDeps struct {
 	// what is left on it until the bound (countsTransaction), a server timer no fake reaches, and
 	// a counts transaction's rollback (coverageRollbackTimeout) stays on the wall clock.
 	Clock clock.Clock
+	// Logger is where the counts loop and its fill, recount and fold log (CountsDeps.log):
+	// slog.Default() when nil. No deployment sets it, and cmd/dispatch leaves it nil. A test of
+	// this package sets a recorder of its own, so it reads the loop's lines without the process's
+	// default logger and runs beside the package's other tests.
+	Logger *slog.Logger
 	// fillBound and recountBound, when above 0, bound the fill and the recount in place of
 	// coverageFillTimeout and coverageRecountTimeout. TestCoverageStatementScale alone sets them,
 	// to a bound past any run it times, so what it reads is each one's whole length; a field
@@ -453,6 +458,15 @@ func (d CountsDeps) clock() clock.Clock {
 		return clock.Real()
 	}
 	return d.Clock
+}
+
+// log is where the counts loop and its fill, recount and fold log: Logger, or slog.Default() when
+// it is nil.
+func (d CountsDeps) log() *slog.Logger {
+	if d.Logger == nil {
+		return slog.Default()
+	}
+	return d.Logger
 }
 
 // orFloat64 is random, or rand.Float64 when random is nil, as it is in production.
@@ -513,7 +527,7 @@ func RunCounts(ctx context.Context, deps CountsDeps) {
 				if ctx.Err() != nil {
 					return
 				}
-				slog.Error("dispatch embedqueue: coverage counts fold failed; it runs again at the next period", "error", err)
+				deps.log().Error("dispatch embedqueue: coverage counts fold failed; it runs again at the next period", "error", err)
 			}
 			nextFold = started.Add(foldGap(foldRandom))
 			continue
@@ -524,7 +538,7 @@ func RunCounts(ctx context.Context, deps CountsDeps) {
 			}
 			recountFailures++
 			wait := backoffWait(backoffRandom, recountFailures)
-			slog.Error("dispatch embedqueue: coverage counts recount failed; it runs again later",
+			deps.log().Error("dispatch embedqueue: coverage counts recount failed; it runs again later",
 				"error", err, "elapsed_ms", c.Now().Sub(started).Milliseconds(), "retryIn", wait)
 			nextRecount = c.Now().Add(wait)
 			continue
@@ -559,7 +573,7 @@ func (d CountsDeps) fillUnlessFilled(ctx context.Context) (filledAt time.Time, o
 		}
 		failures++
 		wait := backoffWait(backoffRandom, failures)
-		slog.Error("dispatch embedqueue: coverage counts fill failed; it runs again later",
+		d.log().Error("dispatch embedqueue: coverage counts fill failed; it runs again later",
 			"error", err, "elapsed_ms", c.Now().Sub(started).Milliseconds(), "timed_out", errors.Is(err, errFillTimedOut), "retryIn", wait)
 		if !d.wait(ctx, c.Now().Add(wait)) {
 			return time.Time{}, false
