@@ -2108,7 +2108,7 @@ describe("label_tree", () => {
 
   const controls = path.join(scenarios, "controls");
   /** The two files of #4902's plan guidance change at its head
-   * (bda048a7780f9a46a0e0387f1e717425f9e8931d, on branch legion/INFRA-4115, whose pull request
+   * (c5b3a64f983a77b2cd37ff5d0895695e961fb483, on branch legion/INFRA-4115, whose pull request
    * carries the change since #4902 closed) that the control manifests change, committed as
    * controls/pr-4902-head/ (controls/patches/README.md): each fixture, the path it has in the head,
    * and its blob there. The names here say #4902, whose change it is. */
@@ -2116,12 +2116,12 @@ describe("label_tree", () => {
     [
       "architect-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
-      "9e440337702b9621eda5ac95e9aef3d2210e6d30",
+      "80bd553ff748f2e3977b74c4357fd9df76c5dc67",
     ],
     [
       "plan.md",
       "skills/legion-architect/references/plan.md",
-      "ad404ad4518604d99c0f0fe21cb3a6c88b2bc017",
+      "40fdff6b0360d02e13f1f28b750cd44bca6263af",
     ],
   ] as const;
   /** A repository of one commit that holds #4902's head's two files at their paths, built from the
@@ -2203,7 +2203,7 @@ describe("label_tree", () => {
     // plans-read lines too, which form A's takes out.
     expect(readFileSync(path.join(work, "label-trees/ctl-d/diff.numstat"), "utf8")).toBe(
       [
-        "1\t3\tpackages/daemon/internal/prompts/go/architect-common.md",
+        "1\t5\tpackages/daemon/internal/prompts/go/architect-common.md",
         "0\t3\tskills/legion-architect/references/plan.md",
         "",
       ].join("\n")
@@ -2211,7 +2211,7 @@ describe("label_tree", () => {
     expect(holds("ctl-d")).toEqual({
       code: 0,
       stdout:
-        "the label tree ctl-d differs from the label tree head in the lines of owner-walk-D.patch alone: 1 3 packages/daemon/internal/prompts/go/architect-common.md\n",
+        "the label tree ctl-d differs from the label tree head in the lines of owner-walk-D.patch alone: 1 5 packages/daemon/internal/prompts/go/architect-common.md\n",
       stderr: "",
     });
     // D with one manifest line more, E's sentences of plan.md taken out too, fails the same check.
