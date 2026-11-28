@@ -333,7 +333,7 @@ func TestTransformAssistantReplayRules(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertMessages(t, got, []conversation.Message{{Role: conversation.Assistant, API: responses, Provider: "openai", Model: id,
-			Content: []conversation.Block{thinking("", signature), thinking("unsigned", ""), text("answer")}}})
+			Content: []conversation.Block{thinking("", signature), text("answer")}}})
 	})
 	t.Run("Responses native turn drops empty unanchored thinking blocks", func(t *testing.T) {
 		const responses = conversation.OpenAIResponses

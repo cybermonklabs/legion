@@ -532,7 +532,7 @@ func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
 		f.add(responsesEntry("stop", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_stale\"}"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"","thinkingSignature":"{\"type\":\"reasoning\",\"id\":\"rs_stale_empty\"}"}]`))
 		f.add(toolResultEntry("call", "read", "tool not run", true))
 		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
-			user("request"), responses(thinking("earlier", ""), call("call", "read", `{}`)),
+			user("request"), responses(call("call", "read", `{}`)),
 			result("call", "read", "tool not run", true),
 		})
 	})
@@ -902,10 +902,12 @@ func TestReadSupportedTargets(t *testing.T) {
 	}{
 		{"openai", conversation.OpenAIResponses, "gpt-oss-120b", true, false},
 		{"openai", conversation.OpenAIResponses, "gpt-alias/gpt-oss-120b", true, false},
+		{"openai", conversation.OpenAIResponses, "gpt-alias/kimi-k3.1-pro", true, false},
 		{"nanogpt", conversation.AnthropicMessages, "claude-opus-5-5", true, false},
 		{"muse-code", conversation.OpenAIResponses, "gpt-6.2-sol", true, false},
 		{"model-gateway", "openai-completions", "kimi-k3.1-pro", true, false},
 		{"anthropic", conversation.AnthropicMessages, "gpt-6.2-sol", true, false},
+		{"anthropic", conversation.AnthropicMessages, "claude-alias/kimi-k3.1-pro", true, false},
 		{"anthropic", conversation.AnthropicMessages, "claude-opus-5-5", false, false},
 		{"openai", conversation.OpenAIResponses, "gpt-6.2-sol", false, true},
 	} {

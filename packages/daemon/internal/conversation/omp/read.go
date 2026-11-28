@@ -121,17 +121,13 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // choose between native items and blocks. An incremental assistant payload adds its items.
 // An assistant snapshot replaces the earlier wire input. Eligible user or developer payloads,
 // including compaction summaries, use their items in place of the message's fallback blocks.
-// Read carries the same-model Responses text phase and the saved message, reasoning, and
-// tool item IDs on blocks. The sender decides which IDs to keep, omit, or invent and hashes
-// IDs over 64 characters. It needs the message-ID preservation option, the presence of
-// replayable reasoning after filtering, the message index, and the resolved tool item kind.
+// Read carries the same-model Responses text phase and the saved message and tool item IDs
+// on blocks. The sender decides which IDs to keep, omit, or invent and hashes IDs over 64
+// characters. It needs the message-ID preservation option, the presence of replayable
+// reasoning after filtering, the message index, and the resolved tool item kind.
 //
 // The sender needs the resolved target identity and compatibility policy: image and computer
 // support, custom tool format, current tool declarations and wire names, and thinking mode.
-// The reader does not create the required reasoning item for targets that need one on every
-// assistant turn or tool call. The sender needs the replay requirements and filter policy.
-// Retained same-model thinking can supply text and a recorded ID for that synthesis.
-// Without native replay, a Thinking block with no replayable signature is not a wire item.
 // On a model alias the reader cannot infer the wire model identity from the journal ID.
 //
 // The sender checks pairing and order again after it has chosen and combined native and
@@ -227,9 +223,10 @@ func Read(content []byte, opts Options) (*Session, error) {
 }
 
 func supportedTarget(provider, api, model string) bool {
-	return (provider == "anthropic" && api == conversation.AnthropicMessages && strings.HasPrefix(model, "claude-")) ||
+	return (provider == "anthropic" && api == conversation.AnthropicMessages && strings.HasPrefix(model, "claude-") &&
+		replayModelClass(model) == "anthropic") ||
 		(provider == "openai" && api == conversation.OpenAIResponses && strings.HasPrefix(model, "gpt-") &&
-			replayModelClass(model) != "gpt-oss")
+			replayModelClass(model) == "openai")
 }
 
 // ReadFile reads the session file at path (file storage).

@@ -112,7 +112,6 @@ type block struct {
 	ID               string          `json:"id"`
 	Name             string          `json:"name"`
 	Arguments        json.RawMessage `json:"arguments"`
-	ItemID           string          `json:"itemId"`
 	CustomWireName   string          `json:"customWireName"`
 	Namespace        string          `json:"namespace"`
 	ProviderMetadata json.RawMessage `json:"providerMetadata"`

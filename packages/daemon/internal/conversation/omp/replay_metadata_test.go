@@ -47,34 +47,6 @@ func TestReadCarriesResponsesBlockToolMetadata(t *testing.T) {
 	})
 }
 
-func TestReadCarriesResponsesThinkingForSynthesis(t *testing.T) {
-	f := newFixture()
-	f.add(userEntry("Read the note."))
-	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "toolUse", `[`+
-		`{"type":"toolCall","id":"call_read|fc_read","name":"read","arguments":{"path":"note"}},`+
-		`{"type":"thinking","itemId":"rs_saved","thinking":"Check the note first."},`+
-		`{"type":"text","text":"I will check."}]`))
-	f.add(toolResultEntry("call_read|fc_read", "read", "plum", false))
-	messages := read(t, f.bytes()).Messages
-	if len(messages) != 3 || messages[1].Native != nil || len(messages[1].Content) != 3 {
-		t.Fatalf("history = %+v, want one replayable assistant turn with its saved thinking", messages)
-	}
-	blocks := messages[1].Content
-	if blocks[0].Type != conversation.Thinking || blocks[0].Signature != "" || blocks[1].Type != conversation.Text || blocks[2].Type != conversation.ToolCall {
-		t.Fatalf("blocks = %+v, unsigned thinking must not interrupt tool batch shaping", blocks)
-	}
-	t.Run("item ID", func(t *testing.T) {
-		if blocks[0].ItemID != "rs_saved" {
-			t.Fatalf("thinking item ID = %q, want rs_saved", blocks[0].ItemID)
-		}
-	})
-	t.Run("thinking text", func(t *testing.T) {
-		if blocks[0].Text != "Check the note first." {
-			t.Fatalf("thinking text = %q, want the saved unsigned text", blocks[0].Text)
-		}
-	})
-}
-
 func TestReadCarriesAnthropicCompactionFileNoteTimes(t *testing.T) {
 	// The fixture entry time is midnight. The inner message times are distinct
 	// and do not monotonically increase across the compaction summary.

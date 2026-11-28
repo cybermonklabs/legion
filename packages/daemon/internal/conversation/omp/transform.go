@@ -213,9 +213,6 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 		case "thinking":
 			visibleThinking = true
 			thinking := conversation.Block{Type: conversation.Thinking, Text: b.Thinking, Signature: b.ThinkingSignature}
-			if !anthropicTarget && sameModel {
-				thinking.ItemID = b.ItemID
-			}
 			signatureUntrustworthy := abandonedToolUse || (failed && i == len(m.blocks)-1)
 			if signatureUntrustworthy {
 				thinking.Signature = ""
@@ -295,7 +292,6 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			signed = true
 		}
 	}
-	hasResponsesOutput := msg.Native != nil
 	for _, block := range converted {
 		if block == nil {
 			continue
@@ -317,26 +313,11 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				block.Signature = ""
 			}
 		case block.Type == conversation.Thinking && !anthropicTarget && msg.Native == nil:
-			if hiddenEmpty || m.stopReason == "error" {
+			if hiddenEmpty || m.stopReason == "error" || !responsesReasoningSignature(block.Signature) {
 				continue
 			}
-			if !responsesReasoningSignature(block.Signature) {
-				if blank(block.Text) && block.ItemID == "" {
-					continue
-				}
-				// This thinking is input to the sender's optional synthesis,
-				// not a replayable reasoning item on its own.
-				block.Signature = ""
-			} else {
-				hasResponsesOutput = true
-			}
-		default:
-			hasResponsesOutput = true
 		}
 		msg.Content = append(msg.Content, *block)
-	}
-	if !anthropicTarget && !hasResponsesOutput {
-		msg.Content = nil
 	}
 	return msg, nil
 }

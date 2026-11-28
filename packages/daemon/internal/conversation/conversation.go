@@ -49,7 +49,7 @@ const (
 	// RedactedThinking is reasoning the provider returned encrypted: Data, opaque, sent back as it
 	// came.
 	RedactedThinking BlockType = "redacted_thinking"
-	// ToolCall is a call the model made: ToolCallID, ToolName and Arguments, a JSON object.
+	// ToolCall is a call the model made: ToolCallID, ToolName and Arguments, as Block.Arguments describes.
 	ToolCall BlockType = "tool_call"
 	// ToolResult is a call's result: ToolCallID, ToolName, Content (Text and Image blocks) and
 	// IsError.
@@ -70,9 +70,9 @@ type Block struct {
 	// Phase is a Text block's OpenAI Responses message phase, empty when unrecorded
 	// or from another model. Read fills it. Append refuses a block that sets it.
 	Phase string
-	// ItemID is a saved Responses ID: a Text block's message ID, a ToolCall
-	// block's item ID, or a Thinking block's recorded reasoning item ID.
-	// Read fills it for same-model replay. Append refuses a block that sets it.
+	// ItemID is the saved OpenAI Responses message ID of a Text block or the item
+	// half of a ToolCall block's ID. It is empty when unrecorded or from another
+	// model. Read fills it. Append refuses a block that sets it.
 	ItemID string
 	// Signature is a Thinking block's signature, empty when unsigned.
 	Signature string
