@@ -166,6 +166,7 @@ alter table issues drop constraint issues_phase_check;
 alter table issues add constraint issues_phase_check check (phase in (
   'admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting',
   'retro', 'merging', 'verifying', 'done', 'held'));
+update issues set phase = 'verifying' where phase = 'merging';
 
 alter table issues
   add column merge_number integer constraint issues_merge_number_check check (merge_number > 0),
