@@ -71,6 +71,7 @@ func twoHeadsSettledAndARunOpen(t *testing.T) (*pgxpool.Pool, func(string, intak
 // on to head-3 with its push not known, which opened a head run, and the pull request was closed at
 // head-3 and reopened there.
 func TestAReopenKeepsBothKindsOfStoredFences(t *testing.T) {
+	t.Parallel()
 	pool, apply := twoHeadsSettledAndARunOpen(t)
 	apply("closed", closedAt("head-3", lateApplied.Add(3*time.Minute)))
 	before := tablesText(t, pool, "pull_request_settled_heads")
@@ -88,6 +89,7 @@ func TestAReopenKeepsBothKindsOfStoredFences(t *testing.T) {
 // remembered go with it. A settlement of the earlier number then finds no record, and changes
 // nothing.
 func TestAnOpenedOfAnotherNumberReplacesTheRowAndItsFences(t *testing.T) {
+	t.Parallel()
 	pool, apply := twoHeadsSettledAndARunOpen(t)
 	apply("opened-43", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-208", HeadSHA: "head-43",
 		URL: "https://github.com/sjawhar/legion/pull/43", UpdatedAt: lateApplied.Add(3 * time.Minute)})

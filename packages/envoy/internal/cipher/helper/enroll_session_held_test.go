@@ -58,6 +58,8 @@ func (h *holderSignIns) Current(context.Context) (*cipherclient.Authority, error
 
 func (h *holderSignIns) Refused(context.Context, string) error { return nil }
 
+func (h *holderSignIns) SignedIn() (string, string, error) { return "", "", nil }
+
 func (h *holderSignIns) signIn(authority *cipherclient.Authority) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -75,6 +77,7 @@ func waitUpTo(t *testing.T, d time.Duration, cond func() bool, why string) {
 }
 
 func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *testing.T) {
+	t.Parallel()
 	const heldName = "99999999-8888-4777-8666-555555555555"
 	f := newFakeBroker(t)
 	f.heldSessions = map[string]bool{heldName: true}

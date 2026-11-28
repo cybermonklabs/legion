@@ -28,9 +28,10 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
-import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import { parseIssuePath, parseProjectPath, unknownToShell } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
 
@@ -51,7 +52,12 @@ export function composerOwner(owner: MarginOwner): ComposerOwner {
  *  every `owner`-keyed memo, callback and effect in the margin a new identity each render. */
 export function useMarginOwner(): MarginOwner | undefined {
   const { pathname, search } = useLocation();
-  const issueRoute = parseIssuePath(pathname, search);
+  // Where the reader draws today's page, an address of the new issue page alone is no issue's,
+  // so the margin has no owner there, as on `main` (`unknownToShell`).
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const issueRoute = unknownToShell(pathname, newPage)
+    ? undefined
+    : parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
   const document = projectRoute?.kind === "document" ? projectRoute : undefined;
   const artifact = useProjectArtifact(document);
@@ -76,6 +82,10 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: Decision;
+  /** The artifact id of the issue's `decisions.md`, the record the decision's text is, which a
+   *  `#id` in that text names a question block of; undefined until the issue's documents are
+   *  read. */
+  readonly documentId: string | undefined;
   /** `decision:<decision heading block>:<spec block>`. */
   readonly id: string;
   readonly kind: "decision";
@@ -123,6 +133,11 @@ export interface PinnedConversationCard {
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
   readonly id: string;
   readonly kind: ConversationPinKind;
+  /** The record's own id, without the kind the pin marker spells before it: what names the
+   *  record this card's text is (`textSourceOf`). */
+  readonly recordId: string;
+  /** The issue that record is on. */
+  readonly issue: string | null;
 }
 
 const NO_PINS: string[] = [];
@@ -317,9 +332,13 @@ export function useMarginItems(
   blockPlacements: ReadonlyMap<string, MarkPlacement>,
   blockFilterId: string | undefined,
   {
+    decisionsDocumentId,
     documentShown = false,
     held = NO_THREADS,
   }: {
+    /** The artifact id of the issue's `decisions.md`, from the issue read the margin already
+     *  holds: the record each decision card's text is drawn as. */
+    readonly decisionsDocumentId?: string;
     /** Whether the document whose margin this is has reported its layout: the issue page keeps
      *  its Spec editor mounted while the Conversation covers it, so without this the decisions
      *  of every issue page would be read where nothing shows them. */
@@ -421,6 +440,8 @@ export function useMarginItems(
           tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,
+          recordId: id,
+          issue: row.issue_key,
         },
       ];
     });
@@ -518,6 +539,7 @@ export function useMarginItems(
         .map((blockId) => ({
           blockId,
           decision,
+          documentId: decisionsDocumentId,
           id: `decision:${decision.block_id}:${blockId}`,
           kind: "decision" as const,
         }));
@@ -528,7 +550,14 @@ export function useMarginItems(
         placedItem(right, markPlacements, blockPlacements)
       )
     );
-  }, [blockFilterId, blockPlacements, decisionsView.data, markPlacements, showsDecisions]);
+  }, [
+    blockFilterId,
+    blockPlacements,
+    decisionsDocumentId,
+    decisionsView.data,
+    markPlacements,
+    showsDecisions,
+  ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({
       comment: root.comment,

@@ -23,6 +23,10 @@ import (
 // shorten it, and give it their own deadline otherwise (programbound).
 var forkReadBound = 10 * time.Second
 
+func init() {
+	programbound.Register(&forkReadBound)
+}
+
 // forkRepository is the repository the credential helper reads from GitHub after ghConfigDirFor
 // refused a request (forkUpstreamDir): owner, the path's owner already lowercased, and name, the
 // path's second segment already keyed as the bundle keys a repository (ghconfig.RepositoryName:
@@ -92,7 +96,7 @@ func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Reposit
 	if err != nil {
 		return "", "", err
 	}
-	response, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).CurlGet(ctx, "repos/"+repo.String(), token)
+	response, err := leakguard.New(leakguard.Options{Curl: leakguardCurl}).CurlGet(ctx, "repos/"+repo.String(), token, leakguard.DirectoryToken)
 	if err != nil {
 		return "", "", fmt.Errorf("the helper could not read %s from GitHub: %w", repo, err)
 	}

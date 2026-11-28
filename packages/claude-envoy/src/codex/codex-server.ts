@@ -44,6 +44,7 @@ import { inboundOffChannelSession } from "../envoy-off"
 import { channelConnectionName, installedPluginVersion } from "../installed-build"
 import { SessionIdentity } from "../session-identity"
 import { sessionTitle } from "../session-title"
+import { gatedStderr } from "../stop-gates"
 import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
 import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
 import { createCodexDelivery } from "./codex-delivery"
@@ -140,7 +141,7 @@ export function callingThread(meta: unknown): string | undefined {
 export function dispatchToolDefinition() {
   return {
     description:
-      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code: 0 written or read, 1 refused by Dispatch, 2 a usage error.',
+      'Runs the `dispatch` command as this session, outside Codex\'s sandbox. Pass the words after `dispatch` as `args` (for example ["read", "--issue", "LEGION-3"]) and what the command would read on standard input as `stdin` (the text of a here-document given as `--body-file -`). `["--help"]` lists the commands. Answers with what the command printed and its exit code. A command that a Dispatch spec defines exits 0 when it wrote or read. It exits 1 when Dispatch or AskGate refused it, Dispatch failed, the command could not reach Dispatch, its trade for a token at the secrets broker failed, or Dispatch kept no answer for a call that writes nothing (`ANSWER_NOT_KEPT`, which you run again). It exits 2 on a usage error or a session or configuration it cannot use. `dispatch proxy` and `dispatch login` give their own exit codes in their help.',
     inputSchema: {
       properties: {
         args: {
@@ -263,13 +264,17 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const endedNow = (sessionId: string): Promise<boolean> =>
     sessionEnded(codexEndedFile(stateDirectory, codexPid, sessionId))
   const configFile = sessionConfigFile("codex", process.env)
-  const warn = (text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`)
   const bundlePath = resolve(pluginRoot, process.argv[1] ?? "")
 
   let record: CodexSessionRecord | undefined
   let runtime: ChannelToolRuntime | undefined
   let notReady = "this session's Envoy side starts at its first prompt"
   const stopping = new AbortController()
+  // The server's tell gate over its stop (`stop`, R24 of dispatch://INFRA-3589): once the stop
+  // has begun, a warning of its own is written nowhere. The session reads the same stop from
+  // `startSignal`, and the client's stop gate from `stopping.signal` too.
+  const serverStderr = gatedStderr(() => stopping.signal.aborted)
+  const warn = (text: string): void => serverStderr(`envoy-channel: ${text}\n`)
 
   const server = new Server(MCP_SERVER_INFO, {
     capabilities: { tools: {} },
@@ -388,6 +393,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
     (entry) => {
       self = entry
     },
+    undefined,
+    undefined,
+    // The tell gate: a look that fails once the stop has begun writes no warning.
+    warn,
   )
   if (owning === undefined) {
     await stopped.promise
@@ -452,7 +461,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
     RECORD_POLL_MS,
   )
   const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = sessionSettings(configFile, process.env, {
+  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
     cwd: bound.cwd,
     session: () => id.id,
   })
@@ -486,6 +495,9 @@ export async function runCodexEnvoyServer(): Promise<void> {
     baseUrl: envoy.url,
     credential: envoy.credential,
     fetch: globalThis.fetch,
+    // The stop gate: once `stop` has begun, no call of the session's registration or role
+    // state is sent, the DELETE of the stop apart.
+    stopping: () => stopping.signal.aborted,
   })
   const clientInstanceID = newClientInstanceID()
   /** The session the `codex` process runs now, as its record names it: what `codex queue` and the
@@ -534,7 +546,12 @@ export async function runCodexEnvoyServer(): Promise<void> {
   try {
     const { inbound } = envoy
     if ("off" in inbound) {
-      session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
+      session = inboundOffChannelSession({
+        identity: id,
+        stateDirectory,
+        why: inbound.off,
+        stopping: () => stopping.signal.aborted,
+      })
     } else {
       // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
       // seed, no credential, or the session's broker token, which is then kept renewed and, at a
@@ -557,6 +574,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
         warn,
         connect,
         stopping.signal,
+        // The relay socket opens no socket again once the server's stop has begun.
+        () => stopping.signal.aborted,
       ).catch((error: unknown) => {
         if (isStopping) return undefined
         throw error
@@ -579,6 +598,8 @@ export async function runCodexEnvoyServer(): Promise<void> {
         session: () => id.id,
         name: natsName,
         signal: stopping.signal,
+        stopping: () => stopping.signal.aborted,
+        warn,
         swapKeeper: (stop) => {
           stopNatsKeeper()
           stopNatsKeeper = stop
@@ -612,9 +633,10 @@ export async function runCodexEnvoyServer(): Promise<void> {
           createCodexUserTurnRouter({
             ask: (question) => askSideQuestion(command(), id.id, question),
             deliver: (item) => codexDelivery.deliver(item),
-            dispatch: (ms) => {
+            dispatch: async (ms) => {
               const active = activeDispatchSettings(
-                sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }).dispatch,
+                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
+                  .dispatch,
               )
               return active === null
                 ? undefined

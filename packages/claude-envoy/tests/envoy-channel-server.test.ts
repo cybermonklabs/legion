@@ -1,12 +1,15 @@
 import { beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
 import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
+import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -28,6 +31,7 @@ import {
   MCP_SERVER_INFO,
   sessionCapabilities,
   startChannelSession,
+  userTurnDispatchClient,
 } from "../src/envoy-channel-server"
 import { modSession } from "../src/mod-session"
 import { roleStateFile, SessionIdentity } from "../src/session-identity"
@@ -47,6 +51,10 @@ import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
 import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
 import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
+
+// Every row's hang guard (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`), set above the first row:
+// Bun holds `setDefaultTimeout` only for the rows registered after it.
+setDefaultTimeout(ROW_GUARD_MS)
 
 isolatePaneEnvironment()
 
@@ -86,6 +94,7 @@ test("writes each Envoy envelope into the session as the rendered card that name
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
@@ -141,6 +150,7 @@ test("a cut comment's card keeps the part its frame carried and the note, and a 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
   const subject = "notifications.dispatch.issue.CORE-1.comment"
 
@@ -310,6 +320,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
@@ -408,6 +419,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   for (let index = 0; index < 51; index += 1) {
@@ -448,6 +460,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
   const unnamed = (summary: string): string =>
     JSON.stringify({
@@ -506,7 +519,7 @@ test("registers aside capability and soft-reclaims the role persisted for a resu
     },
     setRole: async (input) => {
       setRoles.push(input)
-      return { claimed: true, interest: noInterest() }
+      return { claimed: true, interest: noInterest(), warnings: [] }
     },
   })
 
@@ -576,17 +589,23 @@ test("the Codex manifest starts the server in the plugin's own directory, as the
   expect(envoy.args).toEqual(["./dist/envoy-channel.js", "--host", "codex"])
   // Every variable that names where Envoy, NATS, Dispatch or the secrets broker is, or the
   // credential for it: a Legion session pod sets several of these (its NATS nkey seed and its
-  // Dispatch token as files), and one Codex does not pass leaves the server without it.
+  // Dispatch token as files), and one Codex does not pass leaves the server without it. The read
+  // settings narrow the server's Dispatch trade, and the token files turn its Dispatch off, so
+  // the server must see those too.
   for (const name of [
     "AGENTBOX_HOST",
     "AGENT_SECRETS_MACHINE_AUDIENCE",
     "AGENT_SECRETS_MACHINE_IDENTITY",
     "AGENT_SECRETS_MACHINE_TOKEN_FILE",
     "AGENT_SECRETS_URL",
+    "DISPATCH_BROKER_DPOP_KEY_FILE",
+    "DISPATCH_BROKER_TOKEN_FILE",
     "DISPATCH_PUBLIC_URL",
     "DISPATCH_STATE_DIR",
     "DISPATCH_TOKEN",
     "DISPATCH_TOKEN_BROKER",
+    "DISPATCH_TOKEN_BROKER_AS_OF",
+    "DISPATCH_TOKEN_BROKER_READ",
     "DISPATCH_TOKEN_FILE",
     "DISPATCH_URL",
     "ENVOY_CONFIG_FILE",
@@ -717,24 +736,28 @@ const rejectedCommentFrameRaw = JSON.stringify({
   trace_id: "dispatch-malformed-comment",
 })
 
+// The reply is Dispatch's own answer, which names the call's key back, so the channel reports it
+// as made: it writes no line saying it could not report the rejected delivery.
 test("answers a rejected targeted frame on Dispatch instead of notifying the model", async () => {
   let server: Server<undefined> | undefined
+  const stderr = spyOn(process.stderr, "write")
   try {
     const replies: Array<{
       readonly path: string
       readonly auth: string | null
       readonly body: unknown
     }> = []
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -743,11 +766,14 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
     // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+    const lines = stderr.mock.calls.map(([chunk]) => String(chunk))
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
 
     expect(notifier.notifications).toEqual([])
     expect(replies).toEqual([
@@ -762,12 +788,14 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
+    stderr.mockRestore()
     server?.stop(true)
   }
 })
 
-// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) answered the
-// attempt: its line says it landed, never that it could not be reported.
+// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`, behind the keyed
+// layer, which names the report's key back on it) answered the attempt: its line says it landed,
+// never that it could not be reported.
 test("a rejected frame's report that landed with no answer back is not said to be unreported", async () => {
   let server: Server<undefined> | undefined
   const written = spyOn(process.stderr, "write").mockImplementation(() => true)
@@ -775,13 +803,16 @@ test("a rejected frame's report that landed with no answer back is not said to b
     const replies: string[] = []
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        replies.push(new URL(request.url).pathname)
-        return Response.json(
-          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
-          { status: 409 },
-        )
-      },
+      fetch: keyedLayer(
+        (request: Request) => {
+          replies.push(new URL(request.url).pathname)
+          return Response.json(
+            { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
+            { status: 409 },
+          )
+        },
+        { judged: () => true },
+      ),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -789,6 +820,7 @@ test("a rejected frame's report that landed with no answer back is not said to b
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier: new FakeNotifier(),
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
@@ -823,16 +855,14 @@ test("a Dispatch frame the channel answered with an error is answered again when
       ),
     )
     const replied: string[] = []
-    const controlAnswered = Promise.withResolvers<void>()
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        const path = new URL(request.url).pathname
-        replied.push(path)
-        if (path.includes("55555555")) controlAnswered.resolve()
+      fetch: keyedLayer((request: Request) => {
+        replied.push(new URL(request.url).pathname)
         return Response.json({})
-      },
+      }),
     })
+    const answersTo = (id: string) => replied.filter((path) => path.includes(id)).length
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const nats = new FakeNats()
@@ -847,23 +877,30 @@ test("a Dispatch frame the channel answered with an error is answered again when
 
     relayed(nats, 1, rejectedFrameRaw)
     // Answered on Dispatch, and the frame is done: the key it was claimed under is released
-    // again, since Claude Code was never handed the message.
-    await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the first answer")
-    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(1)
+    // again, since Claude Code was never handed the message. The channel answers a frame `done`
+    // only once it is through with it, its reply on Dispatch posted, so each verdict below is
+    // read at that frame's own `done`.
+    expect(await nats.settled("_INBOX.1")).toBe("done")
+    expect(answersTo("44444444")).toBe(1)
 
     // The listener mints a fresh event id for the re-send; its dedupe key is the first send's.
     relayed(nats, 2, JSON.stringify({ ...JSON.parse(rejectedFrameRaw), event_id: "resend" }))
-    // The relay hands frames over in stream order, so the control's answer comes after whatever
-    // the channel did with the re-send.
+    // A frame of another key after it. The two answers can reach Dispatch in either order, since
+    // each reads the session's settings first, asynchronously, so neither frame's answer stands
+    // for the other's: each is read at its own `done`.
     relayed(
       nats,
       3,
       JSON.stringify({ ...control, event_id: "control", dedupe_key: "dispatch-control" }),
     )
-    await controlAnswered.promise
+    expect(await Promise.all([nats.settled("_INBOX.2"), nats.settled("_INBOX.3")])).toEqual([
+      "done",
+      "done",
+    ])
 
     expect(notifier.notifications).toEqual([])
-    expect(replied.filter((path) => path.includes("44444444"))).toHaveLength(2)
+    expect(answersTo("44444444")).toBe(2)
+    expect(answersTo("55555555")).toBe(1)
   } finally {
     await session?.shutdown()
     server?.stop(true)
@@ -880,14 +917,14 @@ test("answers a malformed targeted comment through its supplied comment reply ad
     }> = []
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -896,6 +933,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      stderr: (line) => void process.stderr.write(line),
     })
 
     await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
@@ -924,6 +962,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    stderr: (line) => void process.stderr.write(line),
   })
 
   await delivery.enqueue({
@@ -939,6 +978,83 @@ test("drops a malformed targeted frame that has no reply address", async () => {
   expect(delivery.inbox()).toEqual([])
 })
 
+/** The variables a pod's broker trade reads beside DISPATCH_URL, which `isolatePaneEnvironment`
+ *  leaves alone: each test that sets one restores the process's own value after it. They are
+ *  cipher-client's own list, less the home directories every process keeps. */
+const brokerVariables = [
+  "DISPATCH_TOKEN_BROKER",
+  ...BROKER_VARIABLES.filter((name) => name !== "HOME" && name !== "XDG_STATE_HOME"),
+]
+
+test("the user-turn router's Dispatch client trades under the session's id", async () => {
+  const original = brokerVariables.map((name) => [name, process.env[name]] as const)
+  const servers: Server<undefined>[] = []
+  try {
+    // The session each trade asked the broker to write under, as its `session` form field.
+    const trades: string[] = []
+    servers.push(
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: async (request) => {
+          const form = new URLSearchParams(await request.text())
+          trades.push(form.get("session") ?? "no session")
+          return Response.json({
+            access_token: fixtureSecret("access"),
+            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+            token_type: "DPoP",
+            expires_in: 600,
+            credential_id: "cred-1",
+          })
+        },
+      }),
+    )
+    const schemes: string[] = []
+    servers.push(
+      Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: (request) => {
+          schemes.push((request.headers.get("authorization") ?? "").split(" ")[0] ?? "")
+          return Response.json({ kind: "agent", owner: null, service: null })
+        },
+      }),
+    )
+    const [broker, dispatch] = servers
+    // A pod launched under the broker setting: a projected token to trade, no bearer, and no
+    // AGENT_SECRETS_SESSION, which no pod sets.
+    const home = temporaryHome("router-dispatch")
+    const projected = join(home, "token")
+    await writeFile(projected, "projected.service.account.token\n")
+    for (const name of brokerVariables) delete process.env[name]
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${dispatch?.port}`
+    process.env["DISPATCH_TOKEN_BROKER"] = "1"
+    process.env["AGENT_SECRETS_URL"] = `http://127.0.0.1:${broker?.port}`
+    process.env["AGENT_SECRETS_MACHINE_IDENTITY"] = "kubernetes"
+    process.env["AGENT_SECRETS_MACHINE_TOKEN_FILE"] = projected
+    // Nobody signed in, so the trade is the pod's own.
+    process.env["AGENT_SECRETS_SIGNIN_DIR"] = join(home, "signins")
+
+    const client = await userTurnDispatchClient(
+      new SessionIdentity("ses_claude", home),
+      sessionConfigFile("claude", process.env),
+      5_000,
+    )
+    if (client === undefined) throw new Error("Dispatch is off for the router")
+    await client.whoami()
+
+    expect(trades).toEqual(["ses_claude"])
+    expect(schemes).toEqual(["DPoP"])
+  } finally {
+    forgetBrokerClients()
+    for (const server of servers) server.stop(true)
+    for (const [name, value] of original) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
+})
+
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
 // The rows below run the channel server as a child process of its own, with Bun's transpiler cache
@@ -948,7 +1064,6 @@ const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 // fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
 // its empty HOME first had not answered its `initialize` in 20 s.
 beforeEach(rowStarted)
-setDefaultTimeout(ROW_GUARD_MS)
 
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
@@ -1078,6 +1193,21 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
+})
+
+// The row's folder is the server's HOME, and the file's afterEach removes it under Bun's 5 s hook
+// limit, which no row's own limit covers: what the server leaves there is all that removal reads.
+test("the channel server leaves no Bun cache in its HOME", async () => {
+  const home = temporaryHome("cache")
+  const configDirectory = join(home, "claude-config")
+  await mkdir(configDirectory)
+  const { exitCode } = await runChannelServer({
+    HOME: home,
+    CLAUDE_CONFIG_DIR: configDirectory,
+    CLAUDE_CODE_SESSION_ID: "ses_cache",
+    CLAUDE_PLUGIN_DATA: home,
+  })
+  expect({ exitCode, cache: existsSync(join(home, ".bun")) }).toEqual({ exitCode: 0, cache: false })
 })
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {

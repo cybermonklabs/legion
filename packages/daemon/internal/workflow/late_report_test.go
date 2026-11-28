@@ -70,6 +70,7 @@ const usedTail = " Its handoff record counts as used, so the next run of this st
 // HANDOFF_STALE_GENERATION. An issue with no plan rows answers the same: a late reviewer's report
 // is taken and moves nothing, and a held issue's tester is told it runs no phase.
 func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
+	t.Parallel()
 	t.Run("a review that requested changes ended the reviewer's step", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -254,6 +255,7 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Reviewing)
 		reviewer := seedPhaseWorker(t, pool, root.Key, claim.RoleReviewer, "")
+		seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleReviewer, Claim: reviewer, Entry: 1, EntryTask: "review this change"})
 		reviewRequestsChanges(t, pool, engine, root.Key)
 		assertPhase(t, pool, phase.Implementing)
 
@@ -274,4 +276,89 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		assertLateReport(t, held, engine, claim.RoleTester, applyFacts(t, held, engine)("held", reportOf(claim.RoleTester, tester, "test-1")),
 			"HANDOFF_NOT_CURRENT_PHASE", "the tester does not run phase held of LEGION-208; this completion changed nothing", "", before)
 	})
+}
+
+// A task stopped in its retro or in its merge stands at no step of its plan: the retro and the
+// merge are the acts of its line after its steps (record.PlaceRetro, record.PlaceMerge). The late
+// report of the role that worked it, the implementer's of the retro and the merger's of the merge,
+// is refused HANDOFF_NOT_CURRENT_PHASE, as a report of a phase no role works while the issue is
+// held, and never TASK_STOPPED, which answers only the report of a step the stop ended
+// (lateReport). The two get there by two roads. The merger's report is of merging, the phase the
+// hold is from, so it reports the run the stop ended (pastReportOf), and lateReport answers it
+// nothing because the merge is no step. The implementer works implementing and the retro, and
+// while the issue is held its report is of implementing (phase.Of, phase.LeftBy: held stands
+// outside the line), which the hold is not from, so it reports no run at all. The implementer's
+// completion of implementing is the fact the completion route applies, so its row keeps that
+// completion's handoff record as its last one, as a real run leaves it. Each late report has the
+// fields the role's `legion` tool sends while the issue is held (packages/pi-shared/src/
+// handoff-record.ts, completedPhase and findHandoffReport) and the completion route requires
+// (api's handoffComplete: a commit from the implementer and from the merger). The implementer's is
+// of implementing, so it names its newest implementing handoff record, at that record's version
+// and with the head that record names as its commit. The merger's names no record and no version,
+// since merging ends with no record and the route refuses a merge report that names one
+// (HANDOFF_RECORD_MISMATCH), and its commit is the one its workspace stands on. Either refusal
+// writes nothing: the issue, its task, the role's row and the outbox stand as they were.
+func TestALateReportOfTheRetroOrTheMergeAfterAStopIsNotCurrent(t *testing.T) {
+	t.Parallel()
+	const head = "head"
+	for _, tc := range []struct {
+		name string
+		role claim.Role
+		// after takes the task on from the implementer's completion of its step to where the owner
+		// stops it, at in place. handoff and version are the record the role's report names, ""
+		// and 0 for none.
+		after   []TriggerKind
+		at      phase.Phase
+		place   record.TaskPlace
+		handoff string
+		version int
+	}{
+		{name: "the implementer's report of the retro", role: claim.RoleImplementer,
+			at: phase.Retro, place: record.TaskPlace{Kind: record.PlaceRetro}, handoff: "implement-1", version: 1},
+		{name: "the merger's report of the merge", role: claim.RoleMerger, after: []TriggerKind{TriggerRetroCompleted},
+			at: phase.Merging, place: record.TaskPlace{Kind: record.PlaceMerge}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			apply := applyFacts(t, pool, engine)
+			root := stepRoot(t, pool, phase.Admitted)
+			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
+			move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+			implementer := seedPhaseWorker(t, pool, root.Key, claim.RoleImplementer, "")
+			if result := apply("implemented", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer, Claim: implementer,
+				Summary: "implemented", Commit: head, HandoffRecord: "implement-1", HandoffVersion: 1}); result.Refusal != nil {
+				t.Fatalf("the implementer's completion of implementing was refused: %+v", result.Refusal)
+			}
+			for _, trigger := range tc.after {
+				move(t, pool, engine, root.Key, trigger, "", record.PhaseRow{})
+			}
+			assertWalksAt(t, pool, engine, root.Key, tc.at, tc.place)
+			worker := seedPhaseWorker(t, pool, root.Key, tc.role, "")
+			if result := apply("stop", ownersStop(t, root, "a")); result.Refusal != nil {
+				t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+			}
+			stopped := record.Hold{From: tc.at, Reason: record.HoldTaskStopped}
+			if held := issueOf(t, pool, engine, root.Key); held.Phase != phase.Held || held.Hold == nil || *held.Hold != stopped {
+				t.Fatalf("%s after the stop stands in %s with hold %+v, want held %+v", root.Key, held.Phase, held.Hold, stopped)
+			}
+			if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.Place != tc.place {
+				t.Fatalf("task a after the stop is %s at %+v, want stopped at %+v", task.State, task.Place, tc.place)
+			}
+			if row := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer); row.LastHandoff != "implement-1" {
+				t.Fatalf("the implementer's row after its completion = %+v, want implement-1 kept as its last handoff", row)
+			}
+			before := reportedOf(t, pool, engine, root.Key, tc.role, true)
+
+			result := apply("late", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: tc.role, Claim: worker, Summary: "the late report",
+				Commit: head, HandoffRecord: tc.handoff, HandoffVersion: tc.version})
+
+			if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" {
+				t.Fatalf("the %s's late report after the stop at %s = %+v, want 409 HANDOFF_NOT_CURRENT_PHASE", tc.role, tc.at, result.Refusal)
+			}
+			if after := reportedOf(t, pool, engine, root.Key, tc.role, true); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the refused late report changed %s:\n want %+v\n got  %+v", root.Key, before, after)
+			}
+		})
+	}
 }

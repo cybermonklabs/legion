@@ -1,13 +1,127 @@
 package dispatch
 
+//ci:reads packages/contracts/fixtures/dispatch-version-blocks/* versionBlocksFixture reads each answer a real Dispatch served, for PlanDocument's tests
+
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+// versionBlocksFixture is one answer under packages/contracts/fixtures/dispatch-version-blocks,
+// which a real Dispatch served and envoy's TestAVersionsBlocksCarryTheParentOfATaskBlock writes:
+// version 1 of ACME-1's plan.md, whose task blocks t1, t2 and t3 stand under default, and a build
+// of the release before refusing that version.
+func versionBlocksFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-version-blocks", name))
+	if err != nil {
+		t.Fatalf("read the fixture %s: %v", name, err)
+	}
+	return body
+}
+
+// servingVersion is a Dispatch that answers version 1 of plan-1 with status and body, as the
+// fixture's Dispatch did, and plan-1 itself as plan.md of ACME-1.
+func servingVersion(t *testing.T, status int, body []byte) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		switch r.URL.Path + "?" + r.URL.RawQuery {
+		case "/api/v1/artifacts/plan-1/versions/1?blocks=true":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+		case "/api/v1/artifacts/plan-1?":
+			writeJSON(t, w, map[string]any{"id": "plan-1", "issue_key": "ACME-1", "slug": "plan-md"})
+		default:
+			t.Fatalf("request = %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// A plan read from a real Dispatch keeps each task block's `parent`, among the block's attributes
+// and whole, as Dispatch serves it with the kind block[]: t1, t2 and t3 name default, and default
+// names none. The fault is a client that keeps only the attributes it knows, or cuts a reference.
+// The control is a client that leaves `parent` out of a block's attributes: the three blocks then
+// name no parent.
+func TestPlanDocumentReadsTheParentOfATaskBlock(t *testing.T) {
+	body := versionBlocksFixture(t, "plan-with-parent.json")
+	const parent = "dispatch://ACME-1/artifact/plan-md#b-default"
+	// The fixture is the shape the contract names: `parent` among the attributes, of kind block[].
+	var served struct {
+		Blocks []struct {
+			ID         string `json:"id"`
+			Attributes []struct{ Name, Value, Kind string }
+		} `json:"blocks"`
+	}
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode the fixture: %v", err)
+	}
+	kinds := map[string]string{}
+	for _, block := range served.Blocks {
+		for _, attribute := range block.Attributes {
+			if attribute.Name == "parent" {
+				kinds[block.ID] = attribute.Kind + " " + attribute.Value
+			}
+		}
+	}
+	if want := map[string]string{"t1": "block[] " + parent, "t2": "block[] " + parent, "t3": "block[] " + parent}; !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("the fixture's parent attributes = %v, want %v", kinds, want)
+	}
+
+	document, err := New(servingVersion(t, http.StatusOK, body).URL, BearerTransport(dispatchToken, nil)).PlanDocument(context.Background(), "plan-1", 1)
+	if err != nil {
+		t.Fatalf("read the plan at version 1: %v", err)
+	}
+	if document.IssueKey != "ACME-1" || document.Version != 1 {
+		t.Fatalf("plan document = %+v, want version 1 of ACME-1's plan", document)
+	}
+	got := map[string]string{}
+	texts := map[string]string{}
+	for _, block := range document.Blocks {
+		if value, ok := block.Attributes["parent"]; ok {
+			got[block.ID] = value
+		}
+		texts[block.ID] = block.Text
+	}
+	if want := map[string]string{"t1": parent, "t2": parent, "t3": parent}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the parent of each task block = %v, want %v: default names none", got, want)
+	}
+	if want := map[string]string{"default": "Ship the parser.", "t1": "Read the grammar.", "t2": "Write the parser.", "t3": "Test the parser."}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("the text of each task block = %v, want %v", texts, want)
+	}
+}
+
+// A build of the release before, which declares no `parent`, refuses the version read of a plan
+// that holds one: 409 DOC_NEWER_CONTENT, the body the fixture holds. PlanDocument answers that
+// refusal as an *Error with its status, code and message, never ErrNoBlocks and never Missing, so
+// register_plan answers it as a failed read and records nothing. The control is a PlanDocument
+// that reads any refusal of the version as ErrNoBlocks: the code is then gone.
+func TestPlanDocumentAnswersAnOlderBuildsRefusal(t *testing.T) {
+	body := versionBlocksFixture(t, "older-build-newer-content.json")
+	var refused struct{ Code, Error string }
+	if err := json.Unmarshal(body, &refused); err != nil || refused.Code != "DOC_NEWER_CONTENT" || refused.Error == "" {
+		t.Fatalf("the fixture = %s (%v), want a DOC_NEWER_CONTENT refusal with its message", body, err)
+	}
+	_, err := New(servingVersion(t, http.StatusConflict, body).URL, BearerTransport(dispatchToken, nil)).PlanDocument(context.Background(), "plan-1", 1)
+	var refusal *Error
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict || refusal.Code != "DOC_NEWER_CONTENT" || refusal.Message != refused.Error {
+		t.Fatalf("PlanDocument = %v, want Dispatch's 409 DOC_NEWER_CONTENT with its message %q", err, refused.Error)
+	}
+	if errors.Is(err, ErrNoBlocks) || Missing(err) {
+		t.Fatalf("PlanDocument = %v, want neither ErrNoBlocks nor a missing version", err)
+	}
+}
 
 // A plan is read at the version its owner gave: GET /api/v1/artifacts/{id}/versions/{n}?blocks=true,
 // whose blocks are that version's own. Each block keeps its id, its type and its attributes by
@@ -50,7 +164,7 @@ func TestPlanDocumentReadsTheBlocksOfThatVersion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, dispatchToken)
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	document, err := client.PlanDocument(context.Background(), "plan-1", 3)
 	if err != nil {

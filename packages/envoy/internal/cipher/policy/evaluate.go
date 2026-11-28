@@ -89,8 +89,8 @@ const ReasonProjectNotNamed = "project-not-named"
 const ReasonProjectMissing = "project-missing"
 
 // ReasonProjectChannelsNeedAirlock is the Reason of a Deny for a project-channels secret
-// (TagProjectChannels) that no profile with a proxy block serves, asked for by a credential that
-// names a private project (Requester.ListsPrivate). Outside the airlock the release hands the
+// (TagProjectChannels) not served behind Cipher's proxy (Secret.Proxy), asked for by a credential
+// that names a private project (Requester.ListsPrivate). Outside the airlock the release hands the
 // session the real token, which it could then spend anywhere; behind it the proxy holds each post
 // to the channels the project's owner named. A credential that names no private project is
 // unchanged.
@@ -209,9 +209,9 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	}
 	// After the project rule: a secret whose use a private project's owner limits goes to such a
 	// credential only behind the airlock, where the proxy holds each post to the channels that
-	// owner named, which only a profile with a proxy block puts a name behind. Outside it the
-	// release hands over the real token, which the session could then spend anywhere.
-	if secret.ProjectChannels != "" && (secret.Profile == nil || secret.Profile.Proxy == nil) && r.ListsPrivate() {
+	// owner named, which only a kind puts a name behind (Secret.Proxy). Outside it the release
+	// hands over the real token, which the session could then spend anywhere.
+	if secret.ProjectChannels != "" && secret.Proxy == "" && r.ListsPrivate() {
 		return Decision{Outcome: Deny, Reason: ReasonProjectChannelsNeedAirlock, Source: secret.Source}, nil
 	}
 	withheld := s.Withholds(r, name)

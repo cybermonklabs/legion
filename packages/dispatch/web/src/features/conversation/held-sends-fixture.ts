@@ -12,7 +12,7 @@ import type { SentRequest } from "./send-request";
 export const request: SentRequest = {
   anchor: undefined,
   ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: "Held", mentions: [], replacement: "" },
+  draft: { body: "Held", replacement: "" },
   edit: undefined,
   kind: "comment",
   owner: { issueKey: "CORE-1", kind: "issue" },
@@ -24,7 +24,7 @@ export const request: SentRequest = {
 /** A message to one session, Send's own: the request the Agents page's composer holds. */
 export const agentSend: SentRequest = {
   ...request,
-  draft: { body: "Status please", mentions: [], replacement: "" },
+  draft: { body: "Status please", replacement: "" },
   owner: { kind: "session", sessionId: "planner-session" },
   sendKey: "send-1",
 };

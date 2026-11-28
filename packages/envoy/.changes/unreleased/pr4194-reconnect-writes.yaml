@@ -1,0 +1,46 @@
+kind: Fixed
+body: |-
+  A write while the listener's NATS connection reconnects no longer fails with
+  `nats: outbound buffer limit exceeded`. A bucket call bounded by its caller's deadline waits for
+  the connection, reads the deadline again before it sends, and sends nothing once the deadline
+  has ended. Every other send made while the connection reconnects fails as
+  `bus: NATS is reconnecting`: a publish, each JetStream stream and consumer request, a session
+  relay's pull and each answer to a message it pulled. A registration's consumer calls fail the
+  same way: the read of the stream, the read of the session's resume record, and the consumer's
+  info, create and update. So does the consumer's filter update of an unsubscribe and of a
+  `DELETE /v1/interests/<session_id>`. Each waits for the connection within its route's bound,
+  which is 3.5 s of the client's 5 s attempt; each read of the connection's state it makes once
+  that bound has ended can still take up to 100 ms (`ConnLockWait`), and a send or subscribe that
+  meets a handshake begun in the microseconds after its read waits for that attempt (one dial, at
+  most 5 s). A route answers that error 503 with that reason,
+  and a log line names it the same way. A registration whose consumer call failed so is answered
+  that 503 inside the client's attempt, not `503 consumer_error` after it, and an unsubscribe is
+  answered that 503, not a 200 after the client's attempt. The envoy-client, pi-envoy and
+  claude-envoy of this release retry that 503, hold it for two minutes from the first such answer,
+  and then tell the session that its registration is not recorded for certain. A pi-envoy from
+  17.8.0, or a claude-envoy, of a release before this one tells it at once as a session that
+  receives nothing, so the pod images take the new plugins before a listener of this release
+  serves them.
+  A window's request whose read of the connection before its send meets a reconnect's handshake
+  sends nothing. It answers at its own deadline, `bus: NATS is reconnecting`, or at the window's
+  deadline when that comes first, `bus: the window's deadline has passed`; either answer can come
+  up to 100 ms late (`ConnLockWait`). `/healthz` answers `nats unavailable` at its budget when its
+  flush meets a handshake that holds nats.go's connection lock, where it answered when the attempt
+  ended. The reads after the flush (`SubOK`, `Connected`, `CoreSubOK` and the durable's
+  `ConsumerInfo`) can still wait out a handshake that begins after the flush.
+  An unsubscribe of named topics from a
+  session the bucket holds no record for answers 200 with an empty `removed` list, not 500
+  `nats: key not found`; so does the retry of an unsubscribe that took the last topic of the
+  record, once its own filter update is answered. A bucket call whose deadline had
+  already ended while the connection reconnects fails as
+  `bus: NATS is reconnecting: context deadline exceeded`, not as a bare `context deadline exceeded`,
+  so the session filter fence's log line names the reconnect. The known-session bucket's open
+  names it too, where it carried nats.go's own
+  `nats: key-value requires at least server version 2.6.2`, and so does every request of the
+  session bucket's maximum-age write.
+  A consumer restart whose delete's answer was lost reads the consumer back within the restart's
+  own bound, for at most 2 s: a read that bound leaves unsent is not sent, and the narrowing line
+  is written with `delete_confirmed` false.
+time: 2026-11-16T18:39:53Z
+custom:
+    Issue: pr4194

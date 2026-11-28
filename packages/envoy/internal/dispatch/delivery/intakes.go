@@ -3,8 +3,8 @@ package delivery
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -19,11 +19,39 @@ const (
 	jobIntakeConnectionName = "dispatch-job-intake"
 )
 
+// IntakeWriteDeadline is the write deadline of every NATS connection of an intake's client
+// (bus.WithWriteDeadline): the GitHub intakes' and the Legion state intake's, which cmd/dispatch
+// connects with it. A write to a socket that takes no byte holds nats.go's connection lock until
+// its deadline (timeoutWriter, nats.go v1.55.0), and the client's Close and nats.go's ping timer
+// wait for that lock, so at nats.go's default of a minute each write to a frozen link would hold the
+// stop of the process, and the standby with it, for a minute. With 5 s, the close that StartIntakes'
+// stop makes, and so the release of a pending hand-back's hold that waits for it (stopIntakes),
+// waits for the write that holds the lock, then for each write queued on the lock ahead of the
+// close, then for the close's own flush, under the lock and to the same socket, of what was queued
+// behind them (close, nats.go:6277-6281). Each of those writes lasts up to 5 s while the socket takes
+// no byte: every write to the socket gets a deadline of its own (timeoutWriter, nats.go:7026-7031),
+// and a write the deadline ends with no byte sent leaves the socket open (natsWriter.flush closes it
+// only after a write that sent part of its bytes, nats.go:2389-2395). The ping timer's PING is one
+// of them, written under the lock as the timer fires (processPingTimer and sendPing,
+// nats.go:6081-6101 and 6071-6076), every second on cmd/dispatch's clients
+// (bus.WithSilentCutDetection). So no fixed time bounds that release: the number of writes queued
+// ahead of the close decides it, until a write that sent part of its bytes, or the ping timer
+// finding the connection stale (nats.go:6089-6096, processOpErr at 3664-3666), has nats.go close
+// the socket, after which each write fails at once. A reconnect attempt through a frozen link holds
+// the lock through its dial and its handshake, each bounded by the bus's connect timeout. A write
+// the deadline ends has failed on its socket, which the bus resets rather than closes, as it resets
+// one that carries a hand-back no flush has confirmed (bus.Client.MarkUnconfirmed), so what the
+// kernel still holds of it is discarded rather than sent after the hold is released. nats.go's ping
+// timer, which notices a silent cut, waits behind the same writes. The intakes' clients publish only
+// acknowledgements and hand-backs, a few hundred bytes each, so a link that takes none of them for
+// 5 s is not one that is merely slow.
+const IntakeWriteDeadline = 5 * time.Second
+
 // IntakeLeases is the lease-pool reservation of each intake's callers (ReserveIntakeLeases),
 // which StartIntakes hands the intake it was taken for.
 type IntakeLeases struct {
-	events intakeLeases
-	jobs   intakeLeases
+	events DurableLeases
+	jobs   DurableLeases
 }
 
 // ReserveIntakeLeases reserves the connections of the lease pool the intakes can be inside at the
@@ -39,20 +67,23 @@ type IntakeLeases struct {
 // reserves the same callers and the count the server checks against the pool's size is the one
 // the pool is sized for.
 func ReserveIntakeLeases(callers *store.LeaseCallers) (IntakeLeases, error) {
-	events, err := reserveDurableLeases(callers, bus.DispatchDeliveryDurable)
+	events, err := ReserveDurableLeases(callers, bus.DispatchDeliveryDurable)
 	if err != nil {
 		return IntakeLeases{}, err
 	}
-	jobs, err := reserveDurableLeases(callers, bus.DispatchJobDurable)
+	jobs, err := ReserveDurableLeases(callers, bus.DispatchJobDurable)
 	if err != nil {
 		return IntakeLeases{}, err
 	}
 	return IntakeLeases{events: events, jobs: jobs}, nil
 }
 
-// reserveDurableLeases reserves one durable's three callers (store.LeaseCallers.ForAll) and
-// returns the lease pool they all take their connections from.
-func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLeases, error) {
+// ReserveDurableLeases reserves one held durable's three callers of the lease pool - its consumer
+// lease, its hold's statements and its hold's renewal, as ReserveIntakeLeases says - at once
+// (store.LeaseCallers.ForAll), and returns the lease pool they all take their connections from.
+// ReserveIntakeLeases reserves the intakes' two durables through it, and a held durable outside
+// this package (NewHeldDurable) its own.
+func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableLeases, error) {
 	leases, err := callers.ForAll(consumerLease(durable), intakeHoldName(durable), intakeHoldName(durable)+" renewal")
 	if err != nil {
 		return nil, err
@@ -104,8 +135,15 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
 func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor)
+}
+
+// startIntakes is StartIntakes with both intakes, and the settings cache they route by, timed by
+// tuning and logging to its logger (intakeTuning.log): production's values from StartIntakes, or a
+// test's.
+func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
 	if github == nil {
-		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
+		tuning.log.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
 	}
 	intakeClient, err := connect(intakeConnectionName)
@@ -117,10 +155,10 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 		intakeClient.Close()
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
-	settings := newSettingsCache(pool, settingsWake)
-	intake := newIntake(intakeClient, pool, leases.events, github, broker, settings, attributor)
+	settings := newSettingsCache(pool, settingsWake, tuning.log)
+	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
 	intake.pushes = pushes
-	job := newJobIntake(jobClient, pool, leases.jobs, github, realJobClock{}, settings)
+	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, realJobClock{}, settings)
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })

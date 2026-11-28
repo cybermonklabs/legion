@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import type { WriteBounds } from "../../api/client";
-import { primarySpec } from "../../api/issue-cache";
+import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
@@ -15,8 +15,14 @@ import { composerNameOf, keptForOtherWords, stoppedOfferOf } from "../conversati
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { useMarginDrawer } from "../issue-page/margin-slot";
-import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import {
+  DECISIONS_DOCUMENT_SLUG,
+  parseIssuePath,
+  parseProjectPath,
+  unknownToShell,
+} from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
@@ -97,7 +103,11 @@ export function useMarginSheet(): MarginSheetModel {
   const store = useHeldSends();
   const queryClient = useQueryClient();
   const { hash, key: locationKey, pathname, search } = useLocation();
-  const issueRoute = parseIssuePath(pathname, search);
+  // The owner's rule (`useMarginOwner`): today's page knows no address of the new page alone.
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const issueRoute = unknownToShell(pathname, newPage)
+    ? undefined
+    : parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
   const documentRoute = projectRoute?.kind === "document" ? projectRoute : undefined;
   const owner = useMarginOwner();
@@ -174,9 +184,14 @@ export function useMarginSheet(): MarginSheetModel {
     documentRoute === undefined
       ? routeArtifactSlug === undefined
         ? primarySpec(issue.data)
-        : issue.data?.artifacts?.find((artifact) => artifact.slug === routeArtifactSlug)
+        : artifactAtAddress(issue.data?.artifacts, routeArtifactSlug)
       : documentArtifact.data;
   const visibleArtifactId = visibleArtifact?.id;
+  // The issue's `decisions.md`, by the same find the Decisions panel makes: the record a margin
+  // decision card's text is, so a `#id` in it names a question block of that document.
+  const decisionsDocumentId = issue.data?.artifacts?.find(
+    (artifact) => artifact.slug === DECISIONS_DOCUMENT_SLUG && artifact.kind === "doc"
+  )?.id;
   // The compose of the document the margin shows (`composes`): the one the reader has open there
   // and has not sent, if any, and the number the newest compose there opened under. Each document
   // keeps its own, so one open on another document waits there for the reader's return.
@@ -251,6 +266,7 @@ export function useMarginSheet(): MarginSheetModel {
     retryItem,
     threads,
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
+    decisionsDocumentId,
     documentShown: placementsPublished,
     held: heldReplyKeys,
   });

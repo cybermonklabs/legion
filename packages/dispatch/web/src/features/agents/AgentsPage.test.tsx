@@ -1,4 +1,4 @@
-import { beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { RECEIPT_TIMEOUT_CAUSE } from "@legion/contracts";
 import {
   focusManager,
@@ -11,9 +11,11 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ownReplies } from "../../__tests__/own-replies";
+import { architectureTree, issueCollaborators } from "../../__tests__/search-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -48,12 +50,13 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
-import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
-import { orderAgents } from "./AgentsPage";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
+// The page itself is a lazy route of the app too, loaded here for the same reason.
+import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";
 import { type AgentFilters, filterOptions, matchesFilters, searchWords } from "./agent-search";
 import {
@@ -62,6 +65,14 @@ import {
   broadcastSendState,
   composedBroadcast,
 } from "./broadcast-plan";
+
+// A message, a reply and a held send's words are Markdown (`MarkdownBody`), drawn by the lazy
+// Markdown engine, and several rows read them as soon as their row shows. So the file loads the
+// engine before its first row, in whatever order the rows run and in the cold lane, which holds
+// the engine's load back.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What each attempt of a message to one agent, or of a broadcast, is held to, beside what it
  *  carries: its deadline and the key that names the press (`Idempotency-Key`). */
@@ -251,6 +262,14 @@ function renderAgents({
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
+  // A box with no issue offers everyone who has signed in instead of an issue's people.
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice" }]);
+  // The reference picker in each box reads the issue's collaborators and the project's
+  // components when a door opens, and a read no handler answers fails its test.
+  const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(
+    issueCollaborators()
+  );
+  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue(architectureTree());
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message(input.body)
   );
@@ -385,6 +404,9 @@ function renderAgents({
       createBroadcast.mockRestore();
       createMessageDelivery.mockRestore();
       listProjects.mockRestore();
+      getIssueCollaborators.mockRestore();
+      getArchitecture.mockRestore();
+      listUsers.mockRestore();
       listIssues.mockRestore();
       listAgentMessages.mockRestore();
       listAgents.mockRestore();
@@ -781,54 +803,6 @@ function session(overrides: Partial<Agent> & Pick<Agent, "session_id">): Agent {
 
 const minutesAgo = (minutes: number) => new Date(ago(minutes * 60_000)).toISOString();
 
-test("orderAgents puts who needs you first, then open asks, then Dispatch recency with silent sessions last", () => {
-  const needsYou = session({ last_activity: minutesAgo(30), open_asks: 1, session_id: "needy" });
-  const owed = session({ last_activity: minutesAgo(20), open_asks: 3, session_id: "owed" });
-  const recent = session({ last_activity: minutesAgo(1), session_id: "recent" });
-  const older = session({ last_activity: minutesAgo(5), session_id: "older" });
-  const silentB = session({ session_id: "silent-b", title: "Beta" });
-  const silentA = session({ session_id: "silent-a", title: "Alpha" });
-  const ordered = orderAgents(
-    [silentB, older, recent, owed, silentA, needsYou],
-    [],
-    new Map([["needy", 1]])
-  );
-  expect(ordered.map((agent) => agent.session_id)).toEqual([
-    "needy",
-    "owed",
-    "recent",
-    "older",
-    "silent-a",
-    "silent-b",
-  ]);
-});
-
-test("orderAgents keeps pinned sessions first in pin order, whoever needs you", () => {
-  const needsYou = session({ last_activity: minutesAgo(1), open_asks: 1, session_id: "needy" });
-  const pinnedSilent = session({ session_id: "pinned-silent" });
-  const pinnedRecent = session({ last_activity: minutesAgo(2), session_id: "pinned-recent" });
-  const ordered = orderAgents(
-    [needsYou, pinnedRecent, pinnedSilent],
-    ["pinned-silent", "pinned-recent"],
-    new Map([["needy", 1]])
-  );
-  expect(ordered.map((agent) => agent.session_id)).toEqual([
-    "pinned-silent",
-    "pinned-recent",
-    "needy",
-  ]);
-});
-
-test("orderAgents orders Dispatch activity within one second by time, not by the timestamp strings", () => {
-  // As text `…00.12Z` sorts after `…00.123456Z`, the later time.
-  const earlier = session({ last_activity: "2026-10-02T00:00:00.12Z", session_id: "earlier" });
-  const later = session({ last_activity: "2026-10-02T00:00:00.123456Z", session_id: "later" });
-  expect(orderAgents([earlier, later], [], new Map()).map((agent) => agent.session_id)).toEqual([
-    "later",
-    "earlier",
-  ]);
-});
-
 // The four groups are `agent-groups.ts`'s own rule, with its own tests; what the page does with
 // them - the headings, the counts, the collapse and who lands where - is tested below.
 
@@ -910,13 +884,13 @@ test("matchesFilters keeps a session any picked group, machine or role holds, fr
   expect(narrow({ machines: ["build-host"] }, "active", "reviewer-host")).toBe(false);
 });
 
-test("filterOptions offers the machines the live sessions occupy, and the ones the filter names besides", () => {
+test("filterOptions offers what the live sessions occupy, and what the filters name besides", () => {
   const live = [
     session({ host: "build-host", roles: ["planner"], session_id: "one", title: "One" }),
     session({ host: "archive-host", roles: [], session_id: "two", title: "Two" }),
   ];
 
-  expect(filterOptions(live, [])).toEqual({
+  expect(filterOptions(live, [], [])).toEqual({
     machines: ["archive-host", "build-host"],
     roles: ["planner"],
   });
@@ -924,13 +898,17 @@ test("filterOptions offers the machines the live sessions occupy, and the ones t
   // A `?machine=` naming a host no live session reports - an old link, or a machine whose
   // sessions have ended - is an option of its own, in machine order with the rest, so the
   // control shows the filter that is hiding every row and its row can be unticked.
-  expect(filterOptions(live, ["ended-host"]).machines).toEqual([
+  expect(filterOptions(live, ["ended-host"], []).machines).toEqual([
     "archive-host",
     "build-host",
     "ended-host",
   ]);
   // A machine the live sessions do report is offered once, not twice.
-  expect(filterOptions(live, ["build-host"]).machines).toEqual(["archive-host", "build-host"]);
+  expect(filterOptions(live, ["build-host"], []).machines).toEqual(["archive-host", "build-host"]);
+  // A `?role=` whose holder has stopped is an option of its own by the same rule, and a role a
+  // live session carries is still offered once.
+  expect(filterOptions(live, [], ["merger"]).roles).toEqual(["merger", "planner"]);
+  expect(filterOptions(live, [], ["planner"]).roles).toEqual(["planner"]);
 });
 
 test("Agents lists each session in its group, orders the rows inside one, and keeps a re-poll stable", async () => {
@@ -1026,6 +1004,84 @@ test("Agents draws four counted groups, the empty ones among them", async () => 
     for (const group of ["needs-you", "active", "idle", "quiet"] as const) {
       expect(groupToggle(region, group)).toHaveAttribute("aria-expanded", "true");
     }
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 3: a group whose length comes from data shows ten
+// entries, then one "+N" that shows the rest in place, and folds them back. A session's roles and
+// the composer's recipients are two such groups; each keeps every entry one press away.
+test("an Agents row shows ten roles and a +N for the rest, and the composer ten recipients", async () => {
+  const user = userEvent.setup();
+  const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
+  const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
+    ...agents[1],
+    roles: index === 0 ? roles : [],
+    session_id: `crowd-${index + 1}-session`,
+    title: `Crowd ${index + 1}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const row = card(region, "Crowd 1");
+    const group = row.querySelector<HTMLElement>('[data-layout-group="roles"]');
+    if (group === null) throw new Error("the roles group is missing");
+    const shown = () =>
+      [...group.children].filter((child) => !child.hasAttribute("data-layout-more"));
+    expect(shown().map((entry) => entry.textContent)).toEqual(roles.slice(0, 10));
+    await user.click(within(group).getByRole("button", { name: "+4, show all 14 roles" }));
+    expect(shown().map((entry) => entry.textContent)).toEqual(roles);
+    await user.click(within(group).getByRole("button", { name: "Show fewer roles" }));
+    expect(shown()).toHaveLength(10);
+
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    const recipients = within(screen.getByRole("region", { name: "Broadcast" })).getByRole("list", {
+      name: "Selected agents",
+    });
+    expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(10);
+    await user.click(within(recipients).getByRole("button", { name: "+2, show all 12 agents" }));
+    expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: the recipients the reader opened past their
+// "+N" stay open when an agent list that comes back empty takes the composer away while the
+// selection stands, and the composer comes back with the list.
+test("the composer's opened recipients are still open after an empty agent list takes it away and it comes back", async () => {
+  const user = userEvent.setup();
+  const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
+    ...agents[1],
+    roles: [],
+    session_id: `crowd-${index + 1}-session`,
+    title: `Crowd ${index + 1}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+  const recipients = () =>
+    within(screen.getByRole("region", { name: "Broadcast" })).getByRole("list", {
+      name: "Selected agents",
+    });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    await user.click(within(recipients()).getByRole("button", { name: "+2, show all 12 agents" }));
+    expect(within(recipients()).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+
+    page.listAgents.mockResolvedValue([]);
+    await refetchAgents(page.queryClient);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Broadcast" })).toBeNull());
+
+    page.listAgents.mockResolvedValue(crowd);
+    await refetchAgents(page.queryClient);
+    await screen.findByRole("region", { name: "Broadcast" });
+    expect(within(recipients()).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+    expect(within(recipients()).getByRole("button", { name: "Show fewer agents" })).toBeTruthy();
   } finally {
     page.view.unmount();
     page.restore();
@@ -1369,13 +1425,13 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
-      ).toBe("@Planner")
+      ).toBe("[@Planner](dispatch://agent/planner-session) ")
     );
-    // The pick put `@Planner` in the box as an accepted mention the composer follows, so the
-    // rest of the message is written after it: replacing the box would drop that mention.
+    // The pick wrote the party's mention into the box, and the one space a seed ends with, so
+    // the rest of the message is written after it: replacing the box would drop that mention.
     const comment = within(planner).getByRole("textbox", { name: "Comment" });
     await user.click(comment);
-    await user.paste(" Track this under Core");
+    await user.paste("Track this under Core");
     // The composer's own form submit, which user-event has no form for.
     fireEvent.submit(within(planner).getByRole("form", { name: "Comment composer" }));
     await waitFor(() =>
@@ -1383,9 +1439,8 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
       expect(page.createComment).toHaveBeenCalledWith(
         "CORE-1",
         {
-          body: "@Planner Track this under Core",
+          body: "[@Planner](dispatch://agent/planner-session) Track this under Core",
           delivery: "aside",
-          mentions: [{ target: "session:planner-session" }],
         },
         keyedAttempt
       )
@@ -1425,12 +1480,15 @@ test("a direct message refused on an Agents row goes with the issue pick, and it
     await within(planner).findByText("Couldn't send — Dispatch refused the message");
 
     await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner Status please"));
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() =>
+      expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) Status please")
+    );
     expect(within(planner).queryByText(/This message was written/)).not.toBeInTheDocument();
     await user.click(within(planner).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(page.createComment).toHaveBeenCalledTimes(1));
     expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([
-      ["CORE-1", "@Planner Status please"],
+      ["CORE-1", "[@Planner](dispatch://agent/planner-session) Status please"],
     ]);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(1);
     expect(page.createComment.mock.calls[0]?.[2].key).not.toBe(
@@ -1468,7 +1526,8 @@ test("an upload refused on an Agents row's issue goes with the pick, and its Ret
     await expand(user, planner, "Planner");
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await within(planner).findByText("That file is too large.");
@@ -1506,7 +1565,8 @@ test("an upload that lands after an Agents row's issue pick joins the message at
     await expand(user, planner, "Planner");
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await pickIssue(user, planner, "CORE-1");
-    await waitFor(() => expect(field.value).toBe("@Planner"));
+    // The issue's seed names Planner as the link a pick writes (`seededDraft`, R4).
+    await waitFor(() => expect(field.value).toBe("[@Planner](dispatch://agent/planner-session) "));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
@@ -2381,6 +2441,45 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
   }
 });
 
+// A reply turn quotes the message it answers, which the exchange's read carries with its tree:
+// the quote draws that tree (`excerptTree`) rather than a parse of the parent's markdown. The tree
+// reads differently from the markdown beside it, so a quote drawn from a parse would read
+// `— Can this ship?`.
+test("a reply turn on the Agents page quotes its parent from the tree the exchange read carries", async () => {
+  const user = userEvent.setup();
+  await warmMarkdownRenderer();
+  const root = message("Can **this** ship?");
+  const page = renderAgents({
+    messages: [
+      {
+        message: { ...root, body_tree: displayTree("Can **this** ship today?") },
+        replies: [
+          message("Yes, it can.", {
+            author: { id: "planner-session", kind: "session" },
+            id: "message-2",
+            in_reply_to: root.id,
+          }),
+        ],
+      },
+    ],
+  });
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const conversation = await within(planner).findByRole("list", {
+      name: "Conversation with Planner",
+    });
+    const replies = await within(conversation).findByRole("list", { name: "Replies" });
+    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    if (answer === null) throw new Error("answer turn missing");
+    await waitFor(() => expect(answer).toHaveTextContent("— Can this ship today?"));
+    expect(within(answer).getByText("this").tagName).toBe("STRONG");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // The server's times carry microseconds, and `Date.parse` keeps milliseconds: it reads
 // `…00.123456Z` and `…00.1235Z` as one time. The read mark and the Clear cutoff still name the
 // newer, or a reply 44 µs after the mark would stay unread and a Clear would stop short of it.
@@ -3183,10 +3282,21 @@ test("a selected session missing from an agent list that is not current is unkno
   expect(broadcastPlan(selected, failed, "aside").unchecked).toEqual([
     { reason: "couldn't check whether it is running", sessionID: planner.session_id },
   ]);
-  // Send counts it and does not refuse, even when it is the whole selection.
+  // Send counts it and does not refuse, even when it is the whole selection, and the notice names
+  // it with its reason: a phone's closed composer shows one chip, cut to one line.
   expect(
     broadcastSendState(broadcastPlan(selected, refilling, "aside"), "aside", "Status?")
-  ).toEqual({ label: "Send to 2", notice: null, refusal: null, refusalOnNotice: false });
+  ).toEqual({
+    label: "Send to 2",
+    notice: [
+      "Not confirmed: ",
+      { sessionId: planner.session_id, storedTitle: undefined },
+      ` (couldn't check whether it is running. ${AGENT_LIST_REFILLING})`,
+      ". It is still sent to, and the server checks it.",
+    ],
+    refusal: null,
+    refusalOnNotice: false,
+  });
   const alone = broadcastPlan(new Set([planner.session_id]), { ...refilling, agents: [] }, "btw");
   expect(broadcastSendState(alone, "btw", "Status?").label).toBe("Send to 1");
 });
@@ -3273,7 +3383,12 @@ test("a selected session listed without the mode on an agent list that is not cu
   ]);
   expect(broadcastSendState(broadcastPlan(selected, refilling, "btw"), "btw", "Status?")).toEqual({
     label: "Send to 2",
-    notice: null,
+    notice: [
+      "Not confirmed: ",
+      { sessionId: reviewer.session_id, storedTitle: undefined },
+      ` (couldn't check whether it is running. ${AGENT_LIST_REFILLING})`,
+      ". It is still sent to, and the server checks it.",
+    ],
     refusal: null,
     refusalOnNotice: false,
   });
@@ -3359,16 +3474,57 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     );
     expect(chips()[0]).not.toContain("no live session");
     expect(chips()[1]).toBe("Reviewer ✕");
-    expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
-      "Broadcast to 2 of 2 selected"
-    );
+    const heading = within(composer()).getByRole("heading", { level: 2 });
+    expect(heading.textContent).toBe("Broadcast to 2 of 2 selected");
+    // A narrow screen ends the heading in an ellipsis, so its whole words are its title.
+    expect(heading).toHaveAttribute("title", "Broadcast to 2 of 2 selected");
     expect(within(composer()).queryByText(/Excluded:/)).not.toBeInTheDocument();
+    // The Reviewer takes Aside and not BTW, so the selection goes as an Aside, and the notice says
+    // why beside the Not confirmed line. The agent's name is an element of its own inside the
+    // line, so the line is read whole.
+    const notice = within(composer()).getByText(/^Not confirmed:/);
+    expect(notice.textContent).toContain("Sending as Aside: Reviewer");
+    // Nobody is refused or left out, so the line is context, in the muted tone, not a warning.
+    expect(notice.className).toContain("text-slate-500");
+    expect(notice.className).not.toContain("text-rose-700");
 
     const field = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, field, "Status?");
     await user.click(within(composer()).getByRole("button", { name: "Send to 2" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(1));
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A phone's closed composer shows one chip, cut to one line, and a touch reader has no hover to
+// read its title with. A recipient the list could not confirm is named in the notice with its
+// reason, in the page's text: here one is chosen alone, so no "+N" opens the chips either.
+test("the composer names a recipient the agent list could not confirm, and its reason, in its notice text", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    const composer = () => within(region).getByRole("region", { name: "Broadcast" });
+    // The last read that returned a list holds no Planner, and the next one fails: the list
+    // cannot vouch for it, so the chip names it by its id.
+    page.listAgents.mockResolvedValue([agents[1]]);
+    await refetchAgents(page.queryClient);
+    page.listAgents.mockRejectedValue(refillingError());
+    await refetchAgents(page.queryClient);
+    await screen.findByTestId("agent-list-refilling");
+
+    const notice = within(composer()).getByText(/^Not confirmed:/);
+    expect(notice.tagName).toBe("P");
+    expect(notice).not.toHaveAttribute("title");
+    expect(notice.textContent).toContain("session:planner-…");
+    expect(notice.textContent).toContain("couldn't check whether it is running");
   } finally {
     page.view.unmount();
     page.restore();
@@ -3661,7 +3817,8 @@ test("a live-view send out when the page reloads is sent again under its key and
   after.createAgentMessage.mockReturnValueOnce(answer.promise);
   try {
     const held = await screen.findByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     expect(after.createAgentMessage.mock.calls).toEqual([
       [
@@ -3920,8 +4077,10 @@ test("a refused send's row shows its message formatted on one line, with its who
       "Stop the deploy check main report back"
     );
     expect(preview.querySelector("ol, li, p")).toBeNull();
+    // The hover text is the shared projection, which writes an ordered list's item with its
+    // number as a rendered body draws it (issue page decisions 66 and 88): `1. check` keeps `1.`.
     await waitFor(() =>
-      expect(preview).toHaveAttribute("title", "Stop the deploy check main report back")
+      expect(preview).toHaveAttribute("title", "Stop the deploy 1. check main 2. report back")
     );
   } finally {
     page.view.unmount();
@@ -4285,6 +4444,53 @@ test("the search box reads its query from the page's address and writes back to 
   }
 });
 
+// `dispatch://role/<token>` opens `/agents?role=<token>`, so the role filter lives
+// in the address as the machine filter does: that link reads as one role picked, and unticking
+// it brings the other rows back and empties the parameter.
+test("the role filter reads the page's address, so a role reference opens the sessions holding it", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=planner" });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const role = filterTrigger(region, "role");
+    expect(role.textContent).toContain("1");
+    expect(screen.getByTestId("location-search").textContent).toBe("?role=planner");
+    await within(region).findByRole("heading", { level: 2, name: "Planner" });
+    expect(
+      within(region).queryByRole("heading", { level: 2, name: "Reviewer" })
+    ).not.toBeInTheDocument();
+
+    await user.click(role);
+    await user.click(filterOption("role", "planner"));
+
+    await screen.findByRole("heading", { level: 2, name: "Reviewer" });
+    await waitFor(() => expect(screen.getByTestId("location-search").textContent).toBe(""));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("a role no live session holds says so, and says what this list outside an issue holds", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({ initialEntry: "/agents?role=merger" });
+
+  try {
+    const empty = await screen.findByRole("region", { name: "Agents filtered empty state" });
+    expect(empty.textContent).toBe(
+      "No live session holds merger. Outside an issue, this list holds only the roles a live session carries; Dispatch keeps no list of every role."
+    );
+    // The option stays in the control, so the reader can clear the filter that hides every row.
+    const region = screen.getByRole("region", { name: "Agents" });
+    await user.click(filterTrigger(region, "role"));
+    expect(filterOption("role", "merger")).toBeInTheDocument();
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // The machines page of dispatch://INFRA-883 links here as `/agents?machine=<host>`. The address
 // is where the machine filter lives, so that link reads as one machine picked - a host with no
 // live session, which that link can name, included - the rows it does not name are hidden, and
@@ -4545,7 +4751,8 @@ test("a live-view send that keeps failing outlives the view, under one key, unti
     await backToAgents(user);
     await openLiveView(user, "Planner");
     const held = screen.getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     await jump(4_000);
     await jump(8_000);
@@ -4596,7 +4803,8 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     const field = within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     expect(field.value).toBe("");
@@ -4692,7 +4900,8 @@ test("a refused live-view send shows on the Agents row, and Discard there drops 
     const planner = card(screen.getByRole("region", { name: "Agents" }), "Planner");
     await expand(user, planner, "Planner");
     const held = within(planner).getByTestId("agent-send-held");
-    expect(within(held).getByText("Your message: “Status please”")).toBeTruthy();
+    expect(within(held).getByText("Your message")).toBeTruthy();
+    expect(within(held).getByText("Status please")).toBeTruthy();
     expect(within(held).getByTestId("agent-send-error").textContent).toBe(
       "Could not send: Dispatch refused the message"
     );
@@ -5190,6 +5399,51 @@ test("a row the reader opened keeps its draft when the window scrolls past it", 
     layout.scrollTo(0);
     expect(card(region, "Session 00")).toBe(opened);
     expect(field.value).toBe("Half a thought");
+  } finally {
+    layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: a row's roles the reader opened past their
+// "+N" stay open when the window stops drawing the row and draws it again. The row is not opened,
+// so the window unmounts it with the scroll; the page, not the row, holds the roles' state.
+test("a row's opened roles are still open when the window scrolls past the row and back", async () => {
+  const user = userEvent.setup();
+  const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
+  const listed = manySessions(60).map((session, index) =>
+    index === 5 ? { ...session, roles } : session
+  );
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: listed });
+  const rolesOf = (region: HTMLElement) =>
+    region.querySelector<HTMLElement>('[data-agent-row="session-05"] [data-layout-group="roles"]');
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Session 05", { exact: true });
+    await user.click(
+      within(card(region, "Session 05")).getByRole("button", { name: "+4, show all 14 roles" })
+    );
+    expect(rolesOf(region)).toHaveAttribute("data-layout-open");
+    // The press left the focus in the row, and the window keeps the focused row drawn: the focus
+    // goes to another row's box first, so this row is one the window lets go of.
+    act(() => {
+      card(region, "Session 00").focus();
+    });
+
+    layout.scrollTo(2_000);
+    // The row is gone from the page: nothing of it can hold the reader's choice.
+    expect(region.querySelector('[data-agent-row="session-05"]')).toBeNull();
+
+    layout.scrollTo(0);
+    const group = rolesOf(region);
+    expect(group).toHaveAttribute("data-layout-open");
+    expect(within(group as HTMLElement).getByText("role-14")).toBeTruthy();
+    expect(
+      within(card(region, "Session 05")).getByRole("button", { name: "Show fewer roles" })
+    ).toBeTruthy();
   } finally {
     layout.restore();
     page.view.unmount();

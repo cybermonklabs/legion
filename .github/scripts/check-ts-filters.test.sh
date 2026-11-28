@@ -20,7 +20,8 @@
 # filters through an anchor (filters.yaml beside the fixture, which CI_FILTERS_FILE names), a
 # package and a library it compiles, and a ci_ts_programs.py pairing them - and symlinks the real
 # script, the listing it shares with the changes job (ci_ts_listing.py), the engine it borrows the
-# quantifier and the block reader from (ci_filter_coverage.py), the path model both import
+# quantifier and the block reader from (ci_filter_coverage.py), the readings that engine reads a
+# step through (audited_scripts.py), the path model both import
 # (workflow_paths.py) and the Go build-tag module the engine imports (go_build_tags.py) into it,
 # so the code under test is the code CI runs. The programs are listed by a stand-in bunx on the
 # fixture's PATH, which prints the list the fixture wrote for the project, and the bundles built by
@@ -69,7 +70,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/bin" "$root/pkg/app/src" "$root/pkg/lib" \
     "$root/other"
-  for linked in check-ts-filters.sh ci_ts_listing.py ci_filter_coverage.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ts-filters.sh ci_ts_listing.py ci_filter_coverage.py audited_scripts.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   ln -s "$python" "$root/bin/python3"
@@ -579,7 +580,7 @@ check "fails" "$(is "$status" 1)"
 check "names the filter, the file and the source that gives it" \
   "$(contains "$out" '::error file=pkg/lib/runtime.ts::filter consumer does not select pkg/lib/runtime.ts, which the bundles of filter cli load (consumer loads what app compiles and runs the CLI): the filter must select it, or a change to it starts no job')"
 
-# The browser suite's rows spawn the dispatch command: packages/dispatch/e2e/dispatch-cli.ts:8,39
+# The browser suite's rows spawn the dispatch command: `packages/dispatch/e2e/dispatch-cli.ts#dispatchEntry`
 # runs `bun packages/envoy-client/bin/dispatch.ts` for the inbox-cli, asked-of-cli, asked-of and
 # doc specs. So the suite loads the contracts modules that dispatch_ui's programs compile and that
 # command's bundle loads, the bundle BUNDLES pairs with dispatch_two_builds_go.

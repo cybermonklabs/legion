@@ -171,15 +171,23 @@ environment:
                                runtime directory and not at a path a second helper shares);
                                records found beside this helper's socket, where they used to
                                live, are moved here once (default: sessions.json beside
-                               AGENT_SECRETS_MACHINE_FILE, so ~/.config/agent-secrets/sessions.json)
+                               AGENT_SECRETS_MACHINE_FILE, so ~/.config/agent-secrets/sessions.json).
+                               Beside them, the same name with .signin-boxes after it names the
+                               boxes the helper enrolled under a person's sign-in, whose sign-in
+                               it keeps traded until each is unenrolled; a helper that finds no
+                               such record keeps the sign-in on the box traded until it leaves
   AGENT_SECRETS_MACHINE_IDENTITY
                                the identity this machine proves at the broker's token exchange:
                                kubernetes (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata
-                               (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (both, with
-                               AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT).
-                               With it the helper's launcher credential is the one that exchange
-                               mints, traded again before it lapses with the key it kept, and no
-                               person approves this machine; unset, a person logs it in as before
+                               (AGENT_SECRETS_MACHINE_AUDIENCE), pool (both, with
+                               AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT) or
+                               github-actions (ACTIONS_ID_TOKEN_REQUEST_URL,
+                               ACTIONS_ID_TOKEN_REQUEST_TOKEN and AGENT_SECRETS_MACHINE_AUDIENCE).
+                               With metadata or pool the helper's launcher credential is the one
+                               that exchange mints, traded again before it lapses with the key it
+                               kept, and no person approves this machine; the broker mints none
+                               for kubernetes or github-actions, so with either the helper has no
+                               launcher credential. Unset, a person logs it in as before
   AGENT_SECRETS_KEY_DIR        where this user's session identity lives; install writes it into
                                the unit when set (default $XDG_RUNTIME_DIR/agent-secrets)
   AGENT_SECRETS_SIGNIN_DIR     where agent-secrets login keeps this user's sign-ins, which the
@@ -251,7 +259,7 @@ func serve(cfg config) error {
 		return err
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	identity, err := identityClient(cfg, log)
+	identity, identityKeyMade, err := identityClient(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -265,8 +273,9 @@ func serve(cfg config) error {
 		// package that holds them (internal/cipher/leasetime): the whole-call timeout a
 		// renewal an outage black-holes costs, and the floor under the renew cadence.
 		Broker: &helper.Broker{URL: cfg.URL, OperatorFile: cfg.OperatorFile, MachineFile: cfg.MachineFile,
-			Identity: identity, SignIns: signInAuthority(cfg, log),
-			HTTP: &http.Client{Timeout: leasetime.RenewClientTimeout}, Log: log},
+			Identity: identity, SignIns: signInAuthority(cfg, log), SignInBoxesFile: helper.SignInBoxesPath(cfg.StatePath),
+			FirstOnMachine: identityKeyMade,
+			HTTP:           &http.Client{Timeout: leasetime.RenewClientTimeout}, Log: log},
 		Hostname: hostname,
 		PeerOf:   helper.PeerOf,
 		Log:      log,
@@ -350,24 +359,27 @@ func migrateRecords(cfg config, log *slog.Logger) {
 // (helper.LoadOrMakeIdentityKey), so a restart trades the same subject and moves the one
 // credential this machine already holds rather than leaving it and its sessions behind. A
 // reboot empties neither that file nor this machine's credential; what a reboot does end is
-// every session, which is enrolled afresh by the processes that come back.
-func identityClient(cfg config, log *slog.Logger) (*cipherclient.Client, error) {
+// every session, which is enrolled afresh by the processes that come back. made reports that
+// the key was made at this start: no helper ran here before with it, and since a sign-in needs
+// this machine's identity, none enrolled anything under a sign-in (helper.Broker.FirstOnMachine).
+func identityClient(cfg config, log *slog.Logger) (client *cipherclient.Client, made bool, err error) {
 	if cfg.Identity == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	key, made, err := helper.LoadOrMakeIdentityKey(cfg.IdentityKeyFile)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	thumbprint, err := proof.Thumbprint(&key.PublicKey)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	log.Info("this machine's identity key", "file", helper.IdentityKeyNamed, "thumbprint", thumbprint, "made", made)
-	return cipherclient.New(cipherclient.Config{
+	client, err = cipherclient.New(cipherclient.Config{
 		BrokerURL: cfg.URL, Key: key, Subject: cfg.Identity, Session: cfg.Session,
 		HTTP: cipherclient.HTTPClient(), Log: log,
 	})
+	return client, made, err
 }
 
 // signInAuthority is the people signed in on this box as this helper's own user, which the

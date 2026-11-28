@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ci-ok is one of the two checks main's ruleset requires of ci.yaml's router, and this script is
-# its verdict. ci.yaml's `ci-ok` job runs it over `toJSON(needs)`, needing every job of the file
+# its verdict. `.github/workflows/ci.yaml#ci-ok` job runs it over `toJSON(needs)`, needing every job of the file
 # but itself and those CI_OK_EXEMPT names, and fails when this script does, so the job's own
 # check run carries the verdict — and a job's check run is in its run's own check suite, where a
 # check run POSTed with POST /repos/.../check-runs joins the first suite at that commit, which is
@@ -87,17 +87,18 @@
 # prints every job's result and whether it was selected, and an `::error::` for each failure
 # naming the job, its result and why.
 #
-# A job its paths selected and a pull request held back (ci-ok.jq's `gated`) did not run at this
+# A job its paths selected and a pull request held back (`.github/scripts/ci-ok.jq#gated`) did not run at this
 # head, and the verdict accepts its skip as it accepts any job changes did not select. Its own
 # line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
 # changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.
 # So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
-# <job> (selected by paths, held back on a pull request without full-ci or lane:<output>; runs in
-# the merge queue)`, naming the job's own `changes` output, and the job summary lists those lines
-# apart from the jobs that ran and passed. No job runs in part: each runs all its steps wherever
-# it runs, or its own output skips it, so a success is the whole job's. A run that held nothing
-# back writes no summary: only a pull request can hold a job back, so ci-ok-report.sh's
-# merge-group calls, inside other jobs, never write one.
+# <job> (selected by paths, held back on a pull request; the merge queue runs it before the change
+# lands, and lane:<output> runs it here only for a need the pull request names)`, naming the job's
+# own `changes` output, and the job summary lists those lines apart from the jobs that ran and
+# passed. No job runs in part: each runs all its steps wherever it runs, or its own output skips
+# it, so a success is the whole job's. A run that held nothing back writes no summary: only a
+# pull request can hold a job back, so ci-ok-report.sh's merge-group calls, inside other jobs,
+# never write one.
 #
 # Run from anywhere:
 #   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... GH_TOKEN=... \
@@ -193,7 +194,7 @@ include "ci-ok";
       selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request without full-ci or lane:\($map[$job]); runs in the merge queue)"]),
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then

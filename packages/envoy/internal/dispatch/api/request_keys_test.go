@@ -19,9 +19,11 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keyedRequest sends body to target as login, under key when key is not empty, as the dashboard
@@ -72,10 +74,10 @@ func newKeyedRigAt(t *testing.T, pattern string, answer func(run int32, w http.R
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	rig := &keyedRig{database: database, server: served}
 	mux := http.NewServeMux()
-	mux.HandleFunc(http.MethodPost+" "+pattern, trackTransactions(served.keyedWrites(
+	mux.HandleFunc(http.MethodPost+" "+pattern, routeContext(served.keyedWrites(
 		http.MethodPost, pattern,
 		func(w http.ResponseWriter, r *http.Request) { answer(rig.runs.Add(1), w, r) },
-		nil,
+		keyedRoute{},
 	)))
 	rig.handler = mux
 	return rig
@@ -122,13 +124,40 @@ func refusalOf(t *testing.T, response *httptest.ResponseRecorder) (code, text st
 }
 
 // heldUntilReleased is a channel a held handler waits on, and its one release, which the test's
-// cleanup runs too, so a test that fails while a handler waits never leaves it waiting.
+// cleanup runs too, so a test that fails while a handler waits never leaves it waiting. A server
+// built after the release was made waits out its background work in a cleanup that runs before
+// the release's own, so that wait runs the test's releases first (releaseHeld).
 func heldUntilReleased(t *testing.T) (<-chan struct{}, func()) {
 	t.Helper()
 	release := make(chan struct{})
 	once := sync.OnceFunc(func() { close(release) })
-	t.Cleanup(once)
+	heldReleases.Lock()
+	heldReleases.byTest[t] = append(heldReleases.byTest[t], once)
+	heldReleases.Unlock()
+	t.Cleanup(func() {
+		once()
+		heldReleases.Lock()
+		delete(heldReleases.byTest, t)
+		heldReleases.Unlock()
+	})
 	return release, once
+}
+
+// heldReleases is every release heldUntilReleased handed a test that has not yet ended, by test.
+var heldReleases = struct {
+	sync.Mutex
+	byTest map[testing.TB][]func()
+}{byTest: map[testing.TB][]func(){}}
+
+// releaseHeld runs every release heldUntilReleased handed t. A cleanup calls it once the test is
+// over, when each release would run at the latest anyway.
+func releaseHeld(t testing.TB) {
+	heldReleases.Lock()
+	releases := heldReleases.byTest[t]
+	heldReleases.Unlock()
+	for _, release := range releases {
+		release()
+	}
 }
 
 // INFRA-258. A repeat under a key - a retry after a lost answer, a double press - is answered the
@@ -201,7 +230,7 @@ func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", map[string]any{"n": 1}, "alice", "slow") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 
 	repeat := rig.send(t, "a", map[string]any{"n": 1}, "alice", "slow")
 	if code, _ := refusalOf(t, repeat); repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight ||
@@ -332,7 +361,9 @@ func TestAPanickingHandlerReleasesItsKey(t *testing.T) {
 
 // A key belongs to the login that sent it. Another person's identical request under the same key
 // is another request; the same person under another casing of the identity header is the same
-// person; the shared agent token's keys are its own.
+// person; the shared agent token's keys are its own. A CI job's results token names its result
+// entry's person, who sent nothing: its keys are its run's, the repository and the check run of
+// its job, so two runs or two legs of one entry never replay each other's writes.
 func TestAKeyBelongsToItsLogin(t *testing.T) {
 	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
@@ -356,6 +387,7 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}
 
 	owner, service := "Carol@example.com", "system:serviceaccount:legion:worker"
+	run := &oauthwire.Run{Repository: "example-org/example-repo", CheckRun: 97}
 	for name, test := range map[string]struct {
 		actor model.Actor
 		human bool
@@ -363,8 +395,10 @@ func TestAKeyBelongsToItsLogin(t *testing.T) {
 	}{
 		"a person":                {model.Actor{Kind: "user", ID: " Carol@Example.com "}, true, "carol@example.com"},
 		"that person's own token": {model.Actor{Kind: "session", Owner: &owner}, false, "carol@example.com"},
-		"a service token":         {model.Actor{Service: &service}, false, "service:" + service},
-		"the shared agent token":  {model.Actor{}, false, requestKeyAgentToken},
+		"a CI job's results token": {model.Actor{Kind: "session", Owner: &owner, Credential: &model.Credential{ResultsOnly: true, CI: run}},
+			false, "ci-run:example-org/example-repo#97"},
+		"a service token":        {model.Actor{Service: &service}, false, "service:" + service},
+		"the shared agent token": {model.Actor{}, false, requestKeyAgentToken},
 	} {
 		if got := requestKeyLogin(test.actor, test.human); got != test.want {
 			t.Errorf("%s's keys belong to %q, want %q", name, got, test.want)
@@ -429,9 +463,11 @@ func TestAWriteWithoutAKeyRunsEachTime(t *testing.T) {
 	}
 }
 
-// Every answer to a keyed request names its key back - run, replayed, refused 422, refused 409 and
-// a 5xx the key does not keep - so a client can tell a Dispatch that judged the key from one that
-// ignored the header, and retries a 5xx under its key only against the first.
+// Every answer to a keyed request names its key back - run, replayed, refused 422, refused 409, a
+// 5xx the key does not keep, a 204 with no body and an answer past the kept size, written through
+// as it comes and replayed as its status alone - so a client can tell a Dispatch that judged the
+// key from one that ignored the header, retries a 5xx under its key only against the first, and
+// reads a 2xx that names no key back, or another, as no answer of Dispatch's to its write.
 func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	t.Parallel()
 	running := make(chan struct{})
@@ -441,6 +477,12 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 		switch {
 		case r.PathValue("thing") == "broken":
 			writeError(w, "BROKEN", http.StatusInternalServerError, "the handler's own failure")
+		case r.PathValue("thing") == "empty":
+			w.WriteHeader(http.StatusNoContent)
+		case r.PathValue("thing") == "large":
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, strings.Repeat("x", keyedAnswerKept+10))
 		case r.PathValue("thing") == "slow":
 			if slowRuns.Add(1) == 1 {
 				close(running)
@@ -461,9 +503,13 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	names("a replay", rig.send(t, "a", nil, "alice", `"echo-1"`), http.StatusCreated, "echo-1")
 	names("a reused key", rig.send(t, "b", nil, "alice", "echo-1"), http.StatusUnprocessableEntity, "echo-1")
 	names("a 5xx", rig.send(t, "broken", nil, "alice", "echo-2"), http.StatusInternalServerError, "echo-2")
+	names("a 204", rig.send(t, "empty", nil, "alice", "echo-4"), http.StatusNoContent, "echo-4")
+	names("a 204 replayed", rig.send(t, "empty", nil, "alice", "echo-4"), http.StatusNoContent, "echo-4")
+	names("an answer past the kept size", rig.send(t, "large", nil, "alice", "echo-5"), http.StatusCreated, "echo-5")
+	names("its replay, its status alone", rig.send(t, "large", nil, "alice", "echo-5"), http.StatusCreated, "echo-5")
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "slow", nil, "alice", "echo-3") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 	names("a key in flight", rig.send(t, "slow", nil, "alice", "echo-3"), http.StatusConflict, "echo-3")
 	releaseOnce()
 	names("the slow run", awaitResponse(t, answered), http.StatusCreated, "echo-3")
@@ -523,7 +569,7 @@ func TestALapsedHolderIsTakenOver(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "stalled") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)
@@ -729,7 +775,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "slow-write") }()
-	<-holding
+	testwait.Receive(t, "the keyed handler to hold its write", holding)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)
@@ -768,13 +814,8 @@ func TestAWriteDetachedPastTheAnswerCommits(t *testing.T) {
 		t.Fatalf("first: status=%d", first.Code)
 	}
 	close(answeredSignal)
-	select {
-	case err := <-detached:
-		if err != nil {
-			t.Fatalf("the detached write after the answer = %v, want it committed", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the detached write never finished")
+	if err := testwait.Receive(t, "the detached write after the answer to finish", detached); err != nil {
+		t.Fatalf("the detached write after the answer = %v, want it committed", err)
 	}
 	if writes := rig.writes(t); len(writes) != 1 {
 		t.Fatalf("the rig's writes = %v, want the detached one", writes)

@@ -1,10 +1,11 @@
-import { expect, spyOn, test } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymap } from "../shell/keymap";
 import { useDialog } from "../shell/useDialog";
@@ -13,7 +14,13 @@ import { presetPath } from "./issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
 import type { PresetSignal } from "./presets";
 
-const SIGNALS: Readonly<Record<Preset, PresetSignal>> = {
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+const SIGNALS: Readonly<Partial<Record<Preset, PresetSignal>>> = {
   conversation: { count: 0 },
   decisions: { count: 0 },
   plan: { count: 0 },
@@ -56,17 +63,21 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       expect(document.activeElement, "Escape left the focus off the control").toBe(chooser);
     }
 
-    // Down and Up move one view, wrapping at each end; Home and End go to the ends.
+    // Down and Up move one view, wrapping at each end; Home and End go to the ends. The views are
+    // read in `PRESET_ORDER`, so the walk holds whichever view comes last.
+    const first = PRESET_ORDER[0];
+    const last = PRESET_ORDER[PRESET_ORDER.length - 1];
+    const beforeLast = PRESET_ORDER[PRESET_ORDER.length - 2];
     await user.keyboard("{ArrowDown}");
     for (const [key, to] of [
-      ["{ArrowDown}", "verification"],
-      ["{ArrowDown}", "plan"],
-      ["{ArrowDown}", "decisions"],
-      ["{ArrowDown}", "conversation"],
-      ["{ArrowUp}", "decisions"],
-      ["{Home}", "conversation"],
-      ["{End}", "decisions"],
-      ["{ArrowUp}", "plan"],
+      ...PRESET_ORDER.slice(PRESET_ORDER.indexOf("spec") + 1).map(
+        (preset) => ["{ArrowDown}", preset] as const
+      ),
+      ["{ArrowDown}", first],
+      ["{ArrowUp}", last],
+      ["{Home}", first],
+      ["{End}", last],
+      ["{ArrowUp}", beforeLast],
     ] as const) {
       await user.keyboard(key);
       expect(document.activeElement, `${key} did not move to ${PRESET_NAMES[to]}`).toBe(
@@ -77,7 +88,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
-      presetPath("CORE-1", "plan")
+      presetPath("CORE-1", beforeLast)
     );
     expect(document.activeElement, "a chosen view left the focus off the control").toBe(chooser);
 
@@ -287,8 +298,8 @@ function missingReferences(within: HTMLElement): string[] {
 // (`slots/view-row.tsx`), since a count drawn then reads as the real one. The row is drawn all
 // the same, each control with its name alone, and no control points at a signal that is not
 // there. The case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is the
-// row of five.
-test("with no signals the row of five draws every view's control with its name alone, and no description names a missing element", () => {
+// row of six.
+test("with no signals the row of six draws every view's control with its name alone, and no description names a missing element", () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[presetPath("CORE-1", "spec")]}>
@@ -350,5 +361,62 @@ test("with no signals the one control and its menu draw every view named alone, 
   } finally {
     view.unmount();
     restoreMatchMedia();
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-new-page (R2): Dashboard is the first control of the row, in
+// both its shapes, drawn and pressed as every control is: pressing it while it is on returns to
+// Conversation, at Conversation's own address, and Conversation's control opens that address
+// from Dashboard's, the issue's own among them. Dashboard draws no signal: what waits on the
+// reader is counted in the header.
+test("Dashboard is the first control, draws no count, and a press of it while it is on returns to Conversation", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    const dashboard = screen.getByRole("button", { name: PRESET_NAMES.dashboard, pressed: true });
+    expect(
+      within(screen.getByRole("toolbar")).getAllByRole("button")[0],
+      "Dashboard is not the row's first control"
+    ).toBe(dashboard);
+    expect(dashboard.getAttribute("aria-describedby"), "Dashboard is described by a signal").toBe(
+      null
+    );
+    expect(
+      view.container.querySelector('[data-preset-count="dashboard"]'),
+      "Dashboard drew a count"
+    ).toBeNull();
+    await user.click(dashboard);
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+
+  const restorePhone = stubViewport(PHONE_WIDTH);
+  const phone = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <IssuePresets active="dashboard" issueKey="CORE-1" signals={SIGNALS} />
+      <Address />
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: PRESET_NAMES.dashboard }));
+    expect(screen.getAllByRole("menuitemradio")[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(screen.getAllByRole("menuitemradio")[0]).toBe(menuItem("dashboard"));
+    await user.click(menuItem("conversation"));
+    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
+      presetPath("CORE-1", "conversation")
+    );
+  } finally {
+    phone.unmount();
+    restorePhone();
   }
 });

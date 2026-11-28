@@ -5,7 +5,6 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import {
   borderDefault,
-  card,
   dangerText,
   linkHoverText,
   linkText,
@@ -13,9 +12,9 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
-import { buildMachinePath } from "../refs/routes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { machineList, sessionCountSentence } from "./machine-model";
+import { machineList } from "./machine-model";
+import { MachineList } from "./ui/MachineList";
 
 /**
  * Every machine a live session names, with how many sessions are on it and how many of those are
@@ -56,27 +55,7 @@ export function MachinesPage(): ReactNode {
           />
         ) : null
       ) : (
-        <ul className="space-y-2" data-testid="machine-list">
-          {machines.map((machine) => (
-            <li
-              className={`rounded-xl border ${card} ${borderDefault}`}
-              data-in-tmux={machine.inTmux}
-              data-machine={machine.host}
-              data-sessions={machine.sessions}
-              data-testid="machine-row"
-              key={machine.host}
-            >
-              <Link className="flex w-full flex-col px-3 py-2" to={buildMachinePath(machine.host)}>
-                <span className={`min-w-0 break-words font-medium ${textPrimaryOnCanvas}`}>
-                  {machine.host}
-                </span>
-                <span className={`text-xs ${textMutedOnCanvas}`}>
-                  {sessionCountSentence(machine)}
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <MachineList machines={machines} />
       )}
     </section>
   );

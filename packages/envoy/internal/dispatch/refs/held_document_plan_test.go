@@ -36,6 +36,7 @@ const heldDocumentPlanBlocks = 1000
 // condition, reading every block node again for each member: it must plan and run, and the check
 // must fail on it under both modes.
 func TestTheHeldDocumentReadProbesEachMembersNodeOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	pool := database.Pool
@@ -51,7 +52,7 @@ func TestTheHeldDocumentReadProbesEachMembersNodeOnce(t *testing.T) {
 	tuples := make([]graphstore.Tuple, 0, 2*heldDocumentPlanBlocks)
 	for index := range heldDocumentPlanBlocks {
 		address := blockNodeAddress(refKey, fmt.Sprintf("b%05d", index))
-		node := blockNode(address, who, at, graphstore.StateLive)
+		node := blockNode(address, IndexedVersion{RefKey: refKey, Writer: who}, at, graphstore.StateLive)
 		node.SourceEvent = cause
 		nodes = append(nodes, node)
 		tuples = append(tuples,

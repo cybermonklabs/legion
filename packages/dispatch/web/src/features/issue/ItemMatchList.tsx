@@ -10,9 +10,11 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import { PlainText } from "../refs/plain-text";
 import { postDeletion } from "../refs/post-marks";
-import { buildReferencePath, parseDispatchReference, shortForm } from "../refs/routes";
+import { parseDispatchReference, referenceHref, shortForm } from "../refs/routes";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import type { ItemRoute } from "./useItemLanding";
 
 /** What each kind of match is called, in the words the rest of the page uses for the same
@@ -84,11 +86,16 @@ export function ItemMatchList({
 
 function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
   const reference = candidate.ref === "" ? undefined : parseDispatchReference(candidate.ref);
+  // An item of an issue always has a page; a reference that names none - a person (R5) - is
+  // listed without a link rather than with one that opens nothing.
+  const href = reference === undefined ? undefined : referenceHref(reference);
   const owner = ownerOf(candidate);
   const deleted = postDeletion(candidate);
   // The first line tells two matches apart; where the server gave none, the whole id does, so
-  // the link always has words of its own.
-  const words = candidate.first_line ?? "";
+  // the link always has words of its own. A document's first line is its file's name, which is
+  // drawn as the characters it is, so `*draft*.md` reads as written. Every other first line is
+  // the head of the item's text, which the server cuts and reads into a tree, and a link's words
+  // hold no markup, so it is read as its plain words.
   return (
     <li className="min-w-0">
       <div
@@ -102,17 +109,33 @@ function ItemMatch({ candidate }: { candidate: IDCandidate }): ReactNode {
         )}
         <EditedMark at={candidate.edited_at} deleted={deleted} />
       </div>
-      {reference === undefined ? null : (
+      {href === undefined ? null : (
         <Link
           className={`block min-w-0 [overflow-wrap:anywhere] ${linkText} ${linkHoverText}`}
-          to={buildReferencePath(reference)}
+          to={href}
         >
           {deleted !== null ? (
             <DeletedBody deleted={deleted} />
-          ) : words === "" ? (
-            candidate.id
+          ) : candidate.kind === "artifact" ? (
+            // A file's name, as the reading list's `item-match-first-line` says of a document.
+            candidate.first_line || candidate.id
           ) : (
-            words
+            <PlainText
+              markdown={candidate.first_line}
+              source={textSourceOf(
+                textSourceKind(candidate.kind),
+                candidate.id,
+                candidate.issue_key
+              )}
+              surface="item-match-first-line"
+              tree={candidate.first_line_tree}
+            >
+              {/* The candidate is the record the line is the head of, though a block of a
+                  document names no record by its own id. The first line is drawn from the
+                  server's reading of it as its plain words, and as written until the engine
+                  has answered: the reading list's `item-match-first-line`. */}
+              {(line) => (line ?? candidate.first_line) || candidate.id}
+            </PlainText>
           )}
         </Link>
       )}

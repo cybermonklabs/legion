@@ -73,6 +73,7 @@ func repoName(repo *string) string {
 // exactly issueRepoCap links below the root is still answered, so the refusal is the cap's own
 // boundary and not a fixture that fails for every issue.
 func TestIssueRepositoryRefusesAChainPastTheDepthCap(t *testing.T) {
+	t.Parallel()
 	database := newIssueRepoChain(t, issueRepoCap+2)
 	ctx := context.Background()
 
@@ -102,6 +103,7 @@ func TestIssueRepositoryRefusesAChainPastTheDepthCap(t *testing.T) {
 // than answering with the project's default. The same issue resolves before the loop is closed,
 // so the refusal is the loop's.
 func TestIssueRepositoryRefusesALoopedParentChain(t *testing.T) {
+	t.Parallel()
 	database := newIssueRepoChain(t, 2)
 	ctx := context.Background()
 
@@ -255,6 +257,7 @@ func issueRepoSetAnswer(t *testing.T, database *store.Store, key string) string 
 // project that has no default, and a key no issue has. The spread check below says the ground
 // still holds all four answers, so an agreement on "none" everywhere cannot pass for one.
 func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
+	t.Parallel()
 	database := newIssueRepoGround(t)
 	seen := map[string]bool{}
 	for _, ground := range []struct{ key, is string }{
@@ -290,6 +293,7 @@ func TestIssueRepositoryAnswersWhatMainsLateralDid(t *testing.T) {
 // BETA-4's acme/beta4 either; ALPHA-2 takes nothing from BETA-4, and resolves to ALPHA's default
 // alone. ALPHA-5 under ALPHA-1 and BETA-6 under BETA-5 still inherit, which is the control.
 func TestIssueRepositoryStopsAtTheProjectEdge(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)

@@ -82,10 +82,10 @@ func TestACreditWhoseTurnIsRunningIsCountedByACorrectionMadeDuringTheTurn(t *tes
 	}
 }
 
-// A credit its machine no longer holds for a refresh wake is kept through the first correction
+// A credit its machine holds for no launch of the lane is kept through the first correction
 // after its admission and taken back at the second: the first correction keeps it, as every
 // credit granted since the correction before is kept (RefreshGate.Correct), and the second asks
-// the machine, which is between decisions, finds the credit no longer held for a wake, takes it
+// the machine, which is between decisions, finds the credit held for no owed launch, takes it
 // back and says so. A machine that is deciding at the second correction keeps the credit (the
 // running-turn row above holds that) until a later correction finds it between decisions. The loss
 // is planted as a path that no decision's end reaches would make it: a locked section outside
@@ -185,7 +185,7 @@ func TestACreditedRefreshPostAClaimIgnoresGivesItsCreditBack(t *testing.T) {
 			h := pacedHarness(t, wakeRate, func(d *Deps) { d.RefreshGate = gate })
 			if state == StateRetired {
 				h.reach(StateIdle)
-				h.must(RequestStop{Claim: h.token})
+				h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			} else {
 				h.reach(state)
 			}

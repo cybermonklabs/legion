@@ -24,6 +24,7 @@ var pprofListening = regexp.MustCompile(`msg="dispatch: pprof listening" addr=(1
 // from the line naming it: a port the test picked and let go of is any process's to take before
 // Dispatch binds it, which refuses the boot.
 func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		Env: map[string]string{"DISPATCH_PPROF_PORT": "0"},

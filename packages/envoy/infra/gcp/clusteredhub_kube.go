@@ -160,6 +160,15 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		return err
 	}
 
+	// The scrape drops every consumer series. The exporter runs the chart's -jsz=all, which serves a
+	// series of each JetStream consumer labelled with its consumer_name and consumer_desc
+	// (prometheus-nats-exporter 0.20.2, collector/jsz.go:111-115, :430-431), and Managed Prometheus
+	// would keep each one for every holder of monitoring.timeSeries.list in its project.
+	// -jsz=streams would serve none of them, but it reads /jsz?streams=true, which carries no stream
+	// configuration (:432-433; nats-server v2.15.1 server/monitor.go:3187), so the exporter would
+	// serve no nats_stream_limit_bytes or nats_stream_limit_messages either (:540-543), the divisor
+	// of a stream's byte-limit alert. clusteredhub_exporter_live_test.go applies the rule to what the
+	// exporter serves.
 	_, err = apiextensions.NewCustomResource(ctx, s.name, &apiextensions.CustomResourceArgs{
 		ApiVersion: pulumi.String("monitoring.googleapis.com/v1"), Kind: pulumi.String("PodMonitoring"),
 		Metadata: objectMeta(s.name, s.namespace),
@@ -167,6 +176,11 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 			"selector": pulumi.Map{"matchLabels": pulumi.ToStringMap(hubPods)},
 			"endpoints": pulumi.Array{pulumi.Map{
 				"port": pulumi.String(clusteredHubExporterPortName), "interval": pulumi.String("30s"),
+				"metricRelabeling": pulumi.Array{pulumi.Map{
+					"action":       pulumi.String("drop"),
+					"sourceLabels": pulumi.StringArray{pulumi.String("__name__")},
+					"regex":        pulumi.String("nats_consumer_.+"),
+				}},
 			}},
 		}},
 	}, child...)

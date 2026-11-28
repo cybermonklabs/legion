@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // promptBound is how much real time a stop of a claim waiting at the gate, and a read of that
@@ -79,10 +80,10 @@ func (h *harness) waitingTrio() (first, second, third *podRole) {
 	h.t.Helper()
 	first, second, third = h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended),
 		h.podRole(claim.RoleTester, StateSuspended)
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
 	for _, r := range []*podRole{second, third} {
-		h.parks(r, RequestResume{Claim: r.token}, 0)
+		h.parks(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
 	}
 	return first, second, third
 }
@@ -133,7 +134,7 @@ func aRetirementOfTheWaitingClaim(t *testing.T) {
 	h := podHarness(t, "")
 	first, second, third := h.waitingTrio()
 
-	h.stopsWithoutWaiting(second, RequestStop{Claim: second.token}, StateRetired)
+	h.stopsWithoutWaiting(second, RequestStop{Claim: second.token, By: SuspendedByOperator}, StateRetired)
 
 	// Nothing waits on the retired claim to launch it again.
 	h.clock.Advance(testProbe)
@@ -237,9 +238,9 @@ func aGrantAfterTheDaemonsStop(t *testing.T) {
 	first := h.podRole(claim.RoleArchitect, StateSuspended)
 	second := h.podRoleUnder(stopping, claim.RoleImplementer, StateSuspended)
 	third := h.podRole(claim.RoleTester, StateSuspended)
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	for _, r := range []*podRole{second, third} {
-		h.parks(r, RequestResume{Claim: r.token}, 0)
+		h.parks(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
 	}
 
 	// The daemon stops the second's machine while its start waits: the start stays in the
@@ -282,7 +283,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.postPromptly(r, RequestSuspend{Claim: r.token, By: SuspendedByOperator, Reason: "a person stops the role"})
 		}},
 		{name: "a retirement", state: StateRetired, ended: "retirement", cut: func(h *harness, r *podRole) error {
-			return h.postPromptly(r, RequestStop{Claim: r.token})
+			return h.postPromptly(r, RequestStop{Claim: r.token, By: SuspendedByOperator})
 		}},
 		{name: "a close of the issue", state: StateRetired, ended: "retirement", cut: func(h *harness, r *podRole) error {
 			return h.postPromptly(r, RequestIssueClose{Claim: r.token})
@@ -297,14 +298,20 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			return h.postPromptly(r, RequestTurnOutcome{Claim: r.token, Generation: r.m.View().Claim.Generation, Sequence: 1,
 				Refused: true, Message: "400 the provider refused the turn", HTTPStatus: 400, Unprompted: true})
 		}},
-		// The wake pacing's park replaces the gate's (parkWake, waitOnMachine). No event of the
+		// The wake pacing's park replaces the gate's (waitOnMachine). No event of the
 		// table raises a second launch over a claim whose launch waits at the gate, so the case
-		// parks that wake where a decision would (insideDecision); its turn is an hour away, and
-		// the test never reaches it.
+		// parks that wake where a decision would (insideDecision), on a place of a pacer of its own
+		// whose turn is an hour away, behind the one place that pacer's bucket lets out at once;
+		// the test never reaches that turn.
 		{name: "another park", state: StateLaunching, ended: "failed launch", cut: func(h *harness, r *podRole) error {
 			return h.insideDecision(r.m, func() error {
-				now := h.clock.Now()
-				return r.m.parkWake(h.ctx, &wake{at: now.Add(time.Hour), reserved: now, kind: WakeLaunch, state: StateLaunching,
+				pacer := NewPacer(wakepace.New(1, 1, func(time.Duration) time.Duration { return time.Hour }), h.clock)
+				pacer.Join(wakepace.Second)
+				place := pacer.Join(wakepace.Second)
+				if _, out := r.m.bindWake(place); out {
+					return errors.New("the place behind the bucket's one token was let out at its join")
+				}
+				return r.m.waitOnMachine(h.ctx, &wake{place: place, joined: h.clock.Now(), kind: WakeLaunch, state: StateLaunching,
 					run: func(context.Context) error { return nil }})
 			})
 		}},
@@ -331,9 +338,9 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 			second := h.podRole(claim.RoleImplementer, StateSuspended)
 			h.deps.Worker = nil
 			third := h.podRole(claim.RoleTester, StateSuspended)
-			h.mustPostTo(first.m, RequestResume{Claim: first.token})
+			h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 			for _, r := range []*podRole{second, third} {
-				h.parks(r, RequestResume{Claim: r.token}, 0)
+				h.parks(r, RequestResume{Claim: r.token, By: SuspendedByOperator}, 0)
 			}
 			// The generation the second's try wrote before it parked, which its cut-short line names.
 			parked := second.m.View().Claim.Generation
@@ -374,7 +381,7 @@ func aRelaunchThatWaitsStopsAtThePark(t *testing.T) {
 	first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
 	h.runs(second)
 	replaced := *second.m.View().Claim.Locator
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
 
 	// The runtime finds the second role's live process holding an address a process launched
@@ -413,11 +420,11 @@ func aResumeParkedOverARefusedStop(t *testing.T) {
 	h.runs(second)
 	ran := *second.m.View().Claim.Locator
 	h.mustPostTo(second.m, RequestSuspend{Claim: second.token, By: SuspendedByOperator, Reason: "a person stops the role"})
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
 	h.rt.FailSuspend(errors.New("the runtime refused the stop"))
 
-	if err := h.postPromptly(second, RequestResume{Claim: second.token}); err != nil {
+	if err := h.postPromptly(second, RequestResume{Claim: second.token, By: SuspendedByOperator}); err != nil {
 		t.Fatalf("the operator's resume of the second, whose launch parks over a stop the runtime refused, answered %v, want no failure", err)
 	}
 	h.wantWaitsForPod(second, 1)
@@ -454,9 +461,9 @@ func pausedPodWithAWaitingStart(t *testing.T, secondWorker func(context.Context)
 	h.deps.Worker = secondWorker
 	second = h.podRole(claim.RoleImplementer, StateSuspended)
 	h.deps.Worker = nil
-	h.mustPostTo(first.m, RequestResume{Claim: first.token})
+	h.mustPostTo(first.m, RequestResume{Claim: first.token, By: SuspendedByOperator})
 	h.wantStarts(first.token, 1)
-	h.parks(second, RequestResume{Claim: second.token}, 0)
+	h.parks(second, RequestResume{Claim: second.token, By: SuspendedByOperator}, 0)
 	flag.set(7)
 	return h, first, second, flag, stops
 }

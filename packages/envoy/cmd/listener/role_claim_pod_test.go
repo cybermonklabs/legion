@@ -63,6 +63,7 @@ const podNoticeTopic = "notifications.team.pod-notice"
 // process and frees nothing; such a claim is then adopted by no registration.
 // Control: the same bodies mark a claim that names a process, as they did before.
 func TestAPodClaimWithNoProcessGoesToThePodsFirstRegistration(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_session_pod"

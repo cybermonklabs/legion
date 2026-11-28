@@ -17,10 +17,12 @@ import (
 
 // Each give-up counts itself in the project's intake-gave-up notice (record.Postgres.RecordUndecodable
 // here), and the outbox executor publishes that row as it publishes every controller notice: on the
-// controller topic of the daemon's own project, under the row's own key, with the count of the
-// give-ups it took and the id, consumer and subject of each. The two give-ups come from two of the
-// project's consumers, so the row they join is the project's, not one consumer's.
-func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
+// role topic of the daemon's own project's controller, once the registered controller session
+// holds that role live, under the row's own key, with the count of the give-ups it took and the
+// id, consumer and subject of each. The two give-ups come from two of the project's consumers, so
+// the row they join is the project's, not one consumer's.
+func TestTheIntakeGaveUpNoticeReachesTheControllersRoleTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -60,6 +62,7 @@ func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
 	}
 
 	publisher := &outboxPublisher{}
+	publisher.holds(legionController, "ses-controller")
 	runner := &outbox{pool: pool, records: records, notices: publisher, project: token, dispatchProject: project, log: quietLogger(),
 		// Past the minute the notice waits for the give-ups after its first to join it.
 		now: func() time.Time { return gaveUpAt.Add(2 * time.Minute) }}
@@ -72,8 +75,8 @@ func TestTheIntakeGaveUpNoticeReachesTheControllerTopic(t *testing.T) {
 		t.Fatalf("the outbox published %+v, want the one notice", published)
 	}
 	got := published[0]
-	if want := "notifications.legion." + token + ".controller"; got.topic != want || got.topic != notify.ControllerTopic(token) {
-		t.Errorf("the notice went to %s, want the controller topic of the daemon's own project, %s", got.topic, want)
+	if want := notify.RoleTopicPrefix + string(claim.ControllerToken(token)); got.topic != want || got.topic != controllerRoleTopic {
+		t.Errorf("the notice went to %s, want the role topic of the daemon's own project's controller, %s", got.topic, want)
 	}
 	if want := "intake-gave-up on " + project; got.message != want {
 		t.Errorf("the notice's summary is %q, want %q", got.message, want)

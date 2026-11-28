@@ -26,6 +26,7 @@ const issuePlansVersion = 20261117034837
 // the same write with what the plan grammar and the walk take is stored: that pair is the control,
 // which shows each refusal is the check's and not a row the write could not reach.
 func TestMigrationIssuePlansRefusesABadRoleAndAPlace(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	exec := func(sql string) error {
@@ -85,6 +86,7 @@ func TestMigrationIssuePlansRefusesABadRoleAndAPlace(t *testing.T) {
 // left it. Both columns are unknown before the migration, which is what shows the fixture is the
 // old shape.
 func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStep(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, issuePlansVersion-1)

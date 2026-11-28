@@ -71,6 +71,9 @@ const uploadRendersOfTheUpload = 1
 // (ReplaceText in a joined transaction), renders uploadRenders documents, of which
 // uploadRendersOfTheUpload are of the document it wrote.
 func TestUploadRenderOnceCountsTheRendersOfAnUpload(t *testing.T) {
+	// Not parallel: it records every document render the process makes in the package variable
+	// documentRenders (countRenders), which refuses a second recorder and would count the renders of
+	// the tests beside it.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "The quick brown fox.\n")

@@ -28,7 +28,7 @@ func TestForcedOrderALameDuckReleasesTheHoldOnItsServer(t *testing.T) {
 	hooks := testnats.Hook(t)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(reachWithin))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}

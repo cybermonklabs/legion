@@ -127,14 +127,17 @@ func (s *server) relatedAllowance() time.Duration {
 }
 
 // relatedBounds is the context a check's work runs under and the allowance it ends at: ctx
-// bounded by relatedAllowance, ending with errRelatedAllowanceEnded as its cause so that a check
-// whose context is done can tell its own deadline from the request that ran it going away
-// (runRelatedCheck's callerGone). Every site that bounds a check uses it, so a decision block's
-// per-check context inherits the edit's allowance with that same cause. The caller cancels, and
-// names the allowance in what it answers.
+// bounded by relatedAllowance on the server's clock (clock.Clock's WithTimeoutCause), ending with
+// context.DeadlineExceeded and errRelatedAllowanceEnded as its cause so that a check whose context
+// is done can tell its own deadline from the request that ran it going away (runRelatedCheck's
+// callerGone), on the real clock and a test's fake alike. Every site that bounds a check uses it,
+// so a decision block's per-check context inherits the edit's allowance with that same cause. The
+// caller cancels, and names the allowance in what it answers. An allowance already spent ends the
+// context before this returns, on either clock, which is what a case setting suggestionTimeout
+// relies on.
 func (s *server) relatedBounds(ctx context.Context) (context.Context, context.CancelFunc, time.Duration) {
 	allowance := s.relatedAllowance()
-	bounded, cancel := context.WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
+	bounded, cancel := s.clock().WithTimeoutCause(ctx, allowance, errRelatedAllowanceEnded)
 	return bounded, cancel, allowance
 }
 
@@ -440,7 +443,7 @@ func (s *server) runRelatedCheck(
 	stagesStarted := time.Now()
 	pick := &relatedPick{ready: make(chan struct{})}
 	keyword := make(chan relatedStage, 1)
-	go func() {
+	s.goReadWorker(func() {
 		pick.terms, pick.err = s.pickRelatedTerms(keywordCtx, s.deps.Store.Pool, project, input.text, input.title, exclusion, probeUnknownTerms)
 		close(pick.ready)
 		stage := relatedStage{err: pick.err}
@@ -455,7 +458,7 @@ func (s *server) runRelatedCheck(
 		}
 		stage.took = time.Since(stagesStarted)
 		keyword <- stage
-	}()
+	})
 
 	// Stage 2 runs on a context of its own ending at relatedMeaningAllowance from the check's
 	// start (server.meaningBound in a test), so the embedding and the meaning query both stop
@@ -510,11 +513,11 @@ func (s *server) runRelatedCheck(
 		// relatedMeaningStage hands the leg's answer over on the stage it answers
 		// (relatedStage.cross), and the leg runs on until the check's wait for it is over.
 		meaning = make(chan relatedStage, 1)
-		go func() {
+		s.goReadWorker(func() {
 			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
-		}()
+		})
 	}
 
 	select {
@@ -672,7 +675,7 @@ func (s *server) relatedMeaningStage(
 		// its wait for the leg is over: an overrunning query then gives its pool connection
 		// back at the grace rather than at the meaning deadline.
 		cross = make(chan []model.SearchResult, 1)
-		go func() {
+		s.goReadWorker(func() {
 			reader := s.readDisplayTrees(crossRead, trees)
 			results, err := s.relatedOtherProjects(crossRead, vector, project, s.deps.Embedder.Identity(), reader)
 			if err != nil {
@@ -682,7 +685,7 @@ func (s *server) relatedMeaningStage(
 			// the answers by the time any other goroutine can read one.
 			reader.resolve()
 			cross <- results
-		}()
+		})
 	}
 	select {
 	case <-pick.ready:

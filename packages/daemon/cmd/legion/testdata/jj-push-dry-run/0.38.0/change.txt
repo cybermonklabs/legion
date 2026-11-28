@@ -1,0 +1,5 @@
+jj git push --dry-run --ignore-working-copy --color=never -c lrwxolnkzrxrtpronmqspwunqquwnpou
+Creating bookmark push-lrwxolnkzrxr for revision lrwxolnkzrxr
+Changes to push to origin:
+  Add bookmark push-lrwxolnkzrxr to 7b282eb05b73
+Dry-run requested, not pushing.

@@ -104,6 +104,7 @@ func serveSlowly(t *testing.T, path string, handler http.Handler, headers map[st
 // A GitHub delivery whose body takes longer than the server's 10 s to arrive is read whole and
 // published, not cut off with no answer.
 func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}
@@ -130,6 +131,7 @@ func TestAGitHubDeliveryWhoseBodyArrivesOverMoreThanTenSecondsIsPublished(t *tes
 // A GitHub sender that goes away partway through its body fails the read, and the failure is
 // logged with what the delivery was and how far its body got.
 func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
+	// Not parallel: it swaps the log package's output (log.SetOutput).
 	logged := &lockedBuffer{}
 	previous := log.Writer()
 	log.SetOutput(logged)
@@ -141,7 +143,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	}
 	_, _ = io.WriteString(conn, "POST /webhook/github HTTP/1.1\r\nHost: listener\r\nX-GitHub-Delivery: delivery-cut\r\nX-GitHub-Event: push\r\nContent-Length: 1000\r\n\r\n"+strings.Repeat("x", 300))
 	conn.Close() // the sender goes away with 700 bytes still owed
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !strings.Contains(logged.String(), "github body read failed") && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -157,6 +159,8 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 // arrive is cut off. The body is a signed url_verification, which the route would answer 200 had
 // it arrived whole.
 func TestASlackBodyStillHasTheServersReadTimeout(t *testing.T) {
+	// Not parallel: it requires the Slack request to end by 11.5 s, 1.5 s past the server's 10 s
+	// read timeout.
 	if testing.Short() {
 		t.Skip("sends a body over 12 s")
 	}

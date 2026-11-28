@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+    A comment of `src/daemon-contract.ts` names the deployment repository by its placeholder, "the deployment repository".
+    No behavior changes.
+time: 2026-11-26T12:52:22Z
+custom:
+    Issue: pr5694

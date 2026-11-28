@@ -29,8 +29,8 @@ import (
 // implementer's work (decision 12 of dispatch://INFRA-3759). The round asks no claim with no
 // session (roundAsks), so a keep read only through the round's sets keeps nothing for the second
 // case, and the replacement through the tester's process deletes the pod that the pause keeps.
-// No read of the workspace is made either, since the round passed over no claim with a session
-// (passedOverClaims), so the issue is not told what the implementer left on the disk.
+// That replacement reads the workspace first (R7 of #5285), and a read that finds
+// nothing that origin does not hold lets it delete the pod that the pause keeps.
 func TestALiveRoundKeepsThePodForTheLaunchAPauseOwesWhetherOrNotItKeepsItsSession(t *testing.T) {
 	t.Parallel()
 	const stopped = pauseStoppedRole

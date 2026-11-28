@@ -409,6 +409,37 @@ export function architectureSource() {
   };
 }
 
+/** `PUT` and `DELETE /api/v1/projects/{key}/proven-sessions`: the project as the project list
+ *  shows it, its setting as the write left it. */
+export function projectBody(provenSessions: boolean) {
+  return {
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    gated_steps: [],
+    proven_sessions: provenSessions,
+    created_at: AT,
+  };
+}
+
+/** `POST` and `GET /api/v1/deploys`: the program's deploy at the example's commit, as a caller's
+ *  own write records it, so the record holds the line `dispatch deploy` and `dispatch deploys`
+ *  print of it. */
+export function deployBody() {
+  return {
+    id: 1,
+    repo: "acme/widgets",
+    program: "worker",
+    commit: COMMIT,
+    deployed_at: AT,
+    recorded_at: AT,
+    recorded_by: actor,
+    source: "route",
+    run_attempt: null,
+    url: "",
+  };
+}
+
 /** `GET /api/v1/priorities`: one live priority with work under it, and one issue in each of the
  *  two faults, so the record holds every line `dispatch priorities` can print. Neither faulted
  *  issue is claimed, so the run reads no agent list and no printed line carries a liveness. */

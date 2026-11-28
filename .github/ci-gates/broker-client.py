@@ -10,4 +10,5 @@ GATE = gate("broker_client", "broker-client", reads=reads(
     (f"{ENVOY}/internal/cipher/oauth/testdata/refusal-descriptions.json", "packages/cipher-client/src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its OAuth library writes them, which internal/cipher/oauth's refusal-corpus test writes"),
     (f"{ENVOY}/internal/cipher/oauth/testdata/refusal-codes.json", "packages/cipher-client/src/__tests__/refusal-corpus.test.ts reads the OAuth codes the broker's library writes, which internal/cipher/oauth's refusal-corpus test writes, and holds LIBRARY_OAUTH_ERROR_CODES to them"),
     (f"{ENVOY}/internal/cipherclient/testdata/wire.json", "packages/cipher-client/src/__tests__/wire.test.ts reads the Go package's own corpus by relative path (CORPUS_PATH) - that file itself, never a copy, so the two clients are held to one wire; refusal-corpus.test.ts reads it for the broker's own refusal codes"),
-) + bun_job("broker-client"))
+    (f"{ENVOY}/internal/cipherclient/testdata/renewal.json", "packages/cipher-client/src/__tests__/renewal.test.ts reads the Go package's renewal corpus by relative path (RENEWAL_CORPUS), which cipherclient's renewal test replays too, so both clients renew at the moment it names"),
+) + dispatch_api_types(at("broker-client", "Typecheck the broker client")) + bun_job("broker-client"))

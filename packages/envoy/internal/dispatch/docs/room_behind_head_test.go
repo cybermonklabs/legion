@@ -644,6 +644,7 @@ func TestAWriteThatOpensBeforeTheCloseTakesItsLockLeavesTheRoomOpen(t *testing.T
 // and warns of nothing, since a browser joining the room is no fault. Once the caller has left,
 // the same close closes the room.
 func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	pair := newProcessPair(t)
 	pair.replaceTaskAsHistory(t)
 	logs := &storetest.LockedLog{}
@@ -2211,9 +2212,7 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 		t.Fatalf("hold the document's lock: %v", err)
 	}
 	typeOver(t, alice, "before", "first keystroke")
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, roomWait(t)); waiting < 1 {
-		t.Fatal("alice's append never came to wait on the document's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	foldHistoryPastRoom(t, holder, artifactID, head)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the document's lock: %v", err)

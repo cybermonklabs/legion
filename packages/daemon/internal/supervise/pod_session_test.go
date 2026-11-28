@@ -129,6 +129,10 @@ func (c clientRegistrar) KeepPodSession(ctx context.Context, s PodSession) (func
 	})
 }
 
+func (c clientRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return c.client.ReleasePodSessions(ctx, names)
+}
+
 // TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite: a role relaunched in its pod (a new
 // generation, so a new incarnation, with a new key) registers its session again with the new
 // hello's thumbprint. The old incarnation's renewal may be in flight when the old process is let
@@ -193,7 +197,7 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 			relaunched <- err
 			return
 		}
-		if err := h.handle(RequestResume{Claim: h.token}); err != nil {
+		if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByOperator}); err != nil {
 			relaunched <- err
 			return
 		}
@@ -246,6 +250,8 @@ func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), e
 	return func() {}, nil
 }
 
+func (*keyRecorder) ReleasePodSessions(context.Context, []string) error { return nil }
+
 func (r *keyRecorder) registered() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -291,7 +297,7 @@ func TestEachProcessRegistersAtItsLaunchGeneration(t *testing.T) {
 	h.ready()
 	h.rt.ScriptResume(inPod(2))
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	hello()
 	h.restart()
 	hello()
@@ -346,7 +352,7 @@ func TestARegistrationReadsTheClaimsCurrentGenerationWhenItIsAnswered(t *testing
 	}
 	h.rt.ScriptResume(inPod(2))
 	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	if got := first(); got != 2 {
 		t.Fatalf("after the relaunch the first process's registration reads the claim's generation as %d, want 2, the claim's current one", got)
 	}

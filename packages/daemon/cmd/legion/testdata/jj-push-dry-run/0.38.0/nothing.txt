@@ -1,0 +1,3 @@
+jj git push --dry-run --ignore-working-copy --color=never --bookmark main
+Bookmark main@origin already matches main
+Nothing changed.

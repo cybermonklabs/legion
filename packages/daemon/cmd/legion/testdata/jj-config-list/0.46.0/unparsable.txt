@@ -1,0 +1,12 @@
+jj --ignore-working-copy --color=never config list --include-defaults -T 'if(name.starts_with("aliases.") || name == "ui.default-command", json(name) ++ " " ++ json(value) ++ "\n")'
+--- stderr
+Config error: Configuration cannot be parsed as TOML document
+Caused by: TOML parse error at line 1, column 9
+  |
+1 | [aliases
+  |         ^
+unclosed table, expected `]`
+
+Hint: Check the config file: /legion/scratch/tmp/tmp.rmu8OI3BR1/home/.config/jj/repos/4ff567b4dc2be17890e7/config.toml
+For help, see https://docs.jj-vcs.dev/latest/config/ or use `jj help -k config`.
+--- exit 1

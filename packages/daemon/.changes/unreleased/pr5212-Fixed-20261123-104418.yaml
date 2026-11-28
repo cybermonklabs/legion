@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The daemon's broker client reads a 408 from the secrets broker, or a proxy before it, as an
+    outage, as it reads a 429: `APIError.Permanent` is false for it, so an enrolment, a revoke or a
+    pod session's registration answered 408 is tried again. Before, a 408 was a refusal no retry
+    changes, which dropped the pod's identity or stopped the registration's writes.
+time: 2026-11-23T10:44:18Z
+custom:
+    Issue: pr5212

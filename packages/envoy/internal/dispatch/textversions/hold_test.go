@@ -39,7 +39,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
 	second := startFill(t, storetest.SecondProcess(t, database), nil, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 
 	var holders cursorHolders
 	var ids []int64
@@ -114,7 +114,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	standbyStore := storetest.SecondProcess(t, database)
 	released := releasedWake(t, standbyStore)
 	second := startFillRetrying(t, standbyStore, released, make(chan time.Time), true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
 	written := commitComment(t, database, broker, textversionstest.Issue).id
 	first.Wake()
@@ -169,7 +169,7 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	never := make(chan struct{})
 	retry := make(chan time.Time, 1)
 	second := startFillRetrying(t, storetest.SecondProcess(t, database), never, retry, true)
-	second.AwaitLine(t, standingByMessage, 10*time.Second)
+	second.AwaitLine(t, standingByMessage)
 
 	first.Stop(t)
 	// The holder released its hold as it stopped, or, where its release did not reach the

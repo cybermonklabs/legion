@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The Codex plugin's manifest passes four more settings to its server: `DISPATCH_TOKEN_BROKER_READ`,
+  `DISPATCH_TOKEN_BROKER_AS_OF`, `DISPATCH_BROKER_TOKEN_FILE` and `DISPATCH_BROKER_DPOP_KEY_FILE`.
+  The server reads the two broker settings as the `dispatch` command does. When either token file
+  setting is set, the server turns Dispatch off with an error that says so.
+time: 2026-11-20T02:56:23Z
+custom:
+  Issue: pr4557

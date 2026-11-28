@@ -18,6 +18,7 @@ import (
 // 10071, which it does. Before, a claim or a delete that lost such a race and reached a write
 // route's error was answered as a bus that did not answer, a 503 with Retry-After: 1.
 func TestALostConditionalWriteOnAReplicatedBucketIsTheStoresAnswer(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.Servers[0].URL())
 	t.Cleanup(conn.Close)

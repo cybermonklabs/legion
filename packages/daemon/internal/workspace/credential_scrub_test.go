@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock"
 )
 
 // echoesTheToken answers a command whose argv holds word as a git does that echoed its credentialed
@@ -39,6 +41,7 @@ func (r echoesTheToken) Run(_ context.Context, command Command) (Result, error) 
 // (ensureRepoClone's `jj git clone`) scrub their stderr, as Fetch's transfers do, before an error
 // is made from it, through commandFailure for an exit and through runFailure for a signal's death.
 func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T) {
+	t.Parallel()
 	const token = "ghs_provisioningTokenThatMustNotLeak"
 	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
 	for _, ending := range []struct {
@@ -61,7 +64,7 @@ func TestARunUnderTheProvisioningCredentialReturnsItsTokenScrubbed(t *testing.T)
 				t.Fatal(err)
 			}
 			cloneDir := filepath.Join(t.TempDir(), "repos", "acme", "widgets")
-			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, WallClock{}, cloneDir, "https://github.com/acme/widgets", "main", source)
+			err = ensureRepoClone(context.Background(), echoesTheToken{word: "clone", token: token, end: ending.end}, clock.Real(), cloneDir, "https://github.com/acme/widgets", source)
 			if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "x-access-token:***@github.com") {
 				t.Errorf("ensureRepoClone = %v, want the failure with its token scrubbed", err)
 			}

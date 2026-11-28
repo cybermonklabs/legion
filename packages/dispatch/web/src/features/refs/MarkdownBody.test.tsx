@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the `error` events below are a picture failing to load, which user-event has no form for.
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
@@ -26,6 +26,12 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "./parse-worker-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function withQueries(children: ReactNode): ReactNode {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -361,7 +367,9 @@ describe("Dispatch pictures", () => {
       const shot = await within(view.container).findByRole("img", { name: "shot" });
       expect(shot).toHaveAttribute("src", `/api/v1/issues/CORE-1/artifacts/${slug}/versions/1`);
       expect(shot.closest("a")?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}?v=1`);
-      const link = await within(view.container).findByRole("link", { name: "design.md" });
+      // The link's words are its author's, so they stay (R8); what this row reads is which
+      // document a long name opens.
+      const link = await within(view.container).findByRole("link", { name: "design" });
       expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
       expect(link).toHaveAttribute("data-dispatch-ref", `dispatch://CORE-1/artifact/${slug}`);
     } finally {
@@ -400,7 +408,7 @@ describe("Dispatch pictures", () => {
 
     try {
       await act(() => worker.answer(0));
-      const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
+      const designs = await within(view.container).findAllByRole("link", { name: "design" });
       expect(designs).toHaveLength(2);
       for (const link of designs) {
         expect(link).toHaveAttribute("href", `/issues/CORE-1/artifacts/${slug}`);
@@ -453,7 +461,7 @@ describe("Dispatch pictures", () => {
 
     try {
       await act(() => worker.answer(0));
-      const designs = await within(view.container).findAllByRole("link", { name: "design.md" });
+      const designs = await within(view.container).findAllByRole("link", { name: "design" });
       expect(designs).toHaveLength(1);
       expect(designs[0]?.getAttribute("href")).toBe(`/issues/CORE-1/artifacts/${slug}`);
       expect(designs[0]?.getAttribute("data-dispatch-ref")).toBe(long);
@@ -1126,6 +1134,22 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
   }
 });
 
+// An email standing in text outside a `dispatch://` address is linked as before: the step that
+// keeps an address whole (`@legion/proof-editor`'s `whole-addresses.ts`) puts back as text only a
+// link that starts inside an address, so a dot or a hyphen in the local part cuts nothing here.
+test("a bare email in text renders as a link to its mailto: address", async () => {
+  const view = render(<MarkdownBody markdown="Mail john.doe@example.com for details" />);
+
+  try {
+    const link = await within(view.container).findByRole("link", {
+      name: "john.doe@example.com",
+    });
+    expect(link).toHaveAttribute("href", "mailto:john.doe@example.com");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("two references in one body each resolve their own inline link and title, reading only what each shows", async () => {
   await warmMarkdownRenderer();
   const askRead: AskRead = {
@@ -1266,7 +1290,9 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
   );
 
   try {
-    const link = await within(view.container).findByRole("link", { name: "Ship it?" });
+    // The link's words are its author's and stay so; what this row reads is that the target
+    // behind `data-dispatch-href` is the one resolved and read.
+    const link = await within(view.container).findByRole("link", { name: "the ask" });
     expect(link).toHaveAttribute("href", "/issues/CORE-1/asks/ask-1");
     expect(link).toHaveAttribute("data-dispatch-ref", "dispatch://CORE-1/ask/ask-1");
     expect(getAsk).toHaveBeenCalledWith("ask-1");
@@ -1560,6 +1586,53 @@ describe("A long body parsed in the worker", () => {
       expect(fallbackMark(view.container)).toBeNull();
     } finally {
       getIssueSummary.mockRestore();
+      view.unmount();
+    }
+  });
+
+  // A body wholly above the top of the page that fills while the reader reads below it is put
+  // back for by how far the content under it moved, not by how far its own foot moved. The
+  // bottom margin of a body's last block collapses through the element's foot, so the first
+  // batch moves that foot against the content under it: here 18px, while the browser's own
+  // scroll anchoring has held the content under it where it was, so the page must not move.
+  test("puts the reader back by what the content under a body above them moved, not by its own foot", async () => {
+    const worker = installFakeParseWorker();
+    const box = (top: number, bottom: number) =>
+      ({
+        bottom,
+        height: bottom - top,
+        left: 0,
+        right: 600,
+        top,
+        width: 600,
+        x: 0,
+        y: top,
+      }) as DOMRect;
+    const rects = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      if (this.classList.contains("dispatch-markdown")) {
+        return box(-900, this.querySelector("p") === null ? -800 : -782);
+      }
+      return this.getAttribute("data-testid") === "under" ? box(-790, -770) : box(0, 0);
+    });
+    const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => undefined);
+    const view = render(
+      <>
+        <MarkdownBody markdown={paragraphBody("A long body above the reader")} />
+        <p data-testid="under">The turn the reader is reading.</p>
+      </>
+    );
+
+    try {
+      await waitFor(() => expect(pendingMark(view.container)).toBe("true"));
+      await act(() => worker.answer(0));
+      await waitFor(() => expect(topParagraphs(view.container)).toHaveLength(paragraphs + 1));
+      await waitFor(() => expect(pendingMark(view.container)).toBeNull());
+      expect(scrollBy).not.toHaveBeenCalled();
+    } finally {
+      rects.mockRestore();
+      scrollBy.mockRestore();
       view.unmount();
     }
   });

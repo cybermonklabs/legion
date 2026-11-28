@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The item-writer census (item_writer_census_test.go) is a map of names: it catches a writer of a
@@ -255,7 +256,9 @@ func TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites(t *testin
 // file's, or the route table's (route_owner_lock_test.go): it holds write's owner lock in a
 // transaction of its own, runs the writer, and requires it to wait for that lock having written
 // nothing, then gives the lock back (running the row's meanwhile first, where it has one) and
-// requires the writer to finish and write what it meant to. writer names it for the failures.
+// requires the writer to finish and write what it meant to. writer names it for the failures. The
+// wait for the writer's answer once the lock is back has one bound, the test binary's deadline
+// (testwait.Receive): a writer a loaded machine merely slows still answers.
 func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrite) {
 	t.Helper()
 	ctx := context.Background()
@@ -270,7 +273,7 @@ func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrit
 
 	answered := make(chan string, 1)
 	go func() { answered <- write.call() }()
-	if answer, early := storetest.WaitForQueuedBehind(t, holder, write.pid, answered, itemRowOwnerLockQueued); early {
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, write.pid, answered); early {
 		t.Fatalf("%s answered %s while this test held %s, the owner lock of %s: it writes that "+
 			"row under no owner lock, so a writer holding the owner does not exclude it, and "+
 			"main's row lock did. Take the owner's lock (store.LockOwner, refs.LockItemOwner) "+
@@ -293,12 +296,7 @@ func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrit
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the owner lock: %v", err)
 	}
-	select {
-	case <-answered:
-	case <-time.After(itemRowOwnerLockFinish):
-		t.Fatalf("%s never answered within %s of the owner lock being released",
-			writer, itemRowOwnerLockFinish)
-	}
+	testwait.Receive(t, writer+"'s answer once the owner lock was released", answered)
 	write.wrote(t)
 }
 

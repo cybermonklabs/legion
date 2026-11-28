@@ -14,6 +14,7 @@ import (
 // no file it names, so this check is the one proof that a hook's words can come from a file;
 // without the read, a deployment would start on a hook whose prompt says nothing.
 func TestConfigCheckReadsAHooksPromptFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	dir := t.TempDir()
 	present, missing := filepath.Join(dir, "stuck.md"), filepath.Join(dir, "missing.md")

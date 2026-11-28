@@ -9,6 +9,7 @@ import {
   ROLE_TOPIC_PREFIX,
   slackMentionTopic,
 } from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import { LegionHealthResponse } from "@legion/contracts/legion-api";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
@@ -468,11 +469,11 @@ async function serveController(
       return new Response(null, { status: 204 });
     }
     // The controller's boot check reads the daemon's project here, and `read_build` the contract
-    // the header states, which is this build's own `legion.daemonApiVersion` (the contract a
-    // daemon this build pairs with speaks).
+    // the header states, which is this build's own (`daemonContract`, the contract a daemon this
+    // build pairs with speaks).
     if (url.pathname === "/healthz") {
       return Response.json(health, {
-        headers: { "Legion-Daemon-Contract": String(pkg.legion.daemonApiVersion) },
+        headers: { "Legion-Daemon-Contract": String(daemonContract(pkg, import.meta.dir)) },
       });
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
@@ -734,8 +735,8 @@ interface DaemonController {
  * project's Slack channels (none unless `launch` names them), and no
  * LEGION_CONTROLLER_START_MESSAGE, since the daemon delivers the start message itself once the
  * controller reports ready — against the controller's stand-in (`serveController`), which answers
- * the daemon's state while the daemon holds the controller's claim (internal/projection's
- * golden), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
+ * the daemon's state while the daemon holds the controller's claim (state-controller-claim.json,
+ * which internal/daemon's composition test writes), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
  * (ENVOY_HEARTBEAT_MS, 90 s by default), which a case that watches a pass shortens.
  */
 async function startDaemonController(
@@ -900,12 +901,14 @@ interface StoredMessage {
  * listener's relay would send it: the session's deliver subject
  * (`notifications.envoy.deliver.<session>`), under the headers that name the subject the stream
  * stored it on. A card is the listener's forward of a role-lane message to the session's agent
- * subject; a notice is what the daemon's controller-notice executor posts on the controller topic
- * (packages/daemon/internal/daemon/outbox.go `controllerNotice`, the listener's
- * `messageEnvelope` in packages/envoy/cmd/listener/api.go), which only a session holding that
- * project's controller role registers, and so only its consumer carries; a mention is what
- * Envoy's Slack webhook publishes for an app mention in a channel, which only that controller's
- * launch names.
+ * subject; a notice is what a daemon of an earlier release posts on the controller topic, in the
+ * envelope the listener's publish route builds (`MessageEnvelope`,
+ * packages/envoy/internal/contracts/message_envelope.go), and only a session holding that
+ * project's controller role registers that topic, so only its consumer carries a notice (a current
+ * daemon's controller-notice executor, packages/daemon/internal/daemon/outbox.go
+ * `controllerNotice`, posts it on the controller's role topic instead); a mention is what Envoy's
+ * Slack webhook publishes for an app mention in a channel, which only that controller's launch
+ * names.
  */
 interface ControllerInbound {
   /**
@@ -921,13 +924,17 @@ interface ControllerInbound {
    * session takes in that order.
    */
   repeat(sid: string, card: Card): Promise<unknown>;
-  /** The controller topic of the project, which a notice goes on and a case derives from. */
+  /**
+   * The controller topic of the project, where a daemon of an earlier release posts its controller
+   * notices (a current daemon posts them on the controller's role topic): the topic this inbound
+   * relays a notice on and a case derives from.
+   */
   readonly noticeSubject: string;
   /**
-   * Relays one triage notice on the controller topic to session `sid` and returns its summary
-   * (`triage on <issue>`, the daemon's `noticeSummary`), whose issue key no other notice shares.
-   * The session receives it only while its registration carries that lane, which its controller
-   * role is what allows.
+   * Relays one triage notice on the controller topic to session `sid`, as a daemon of an earlier
+   * release posts it there, and returns its summary (`triage on <issue>`, the daemon's
+   * `noticeSummary`), whose issue key no other notice shares. The session receives it only while
+   * its registration carries that lane, which its controller role is what allows.
    */
   notice(sid: string): string;
   /**
@@ -1595,7 +1602,7 @@ test.skipIf(skip)(
     });
     await session.shows(
       "a wait of the busy claim on screen",
-      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+      "was answered 503 at attempt 1; claiming it again in"
     );
     await session.shows(
       "the busy claim's failure on screen",
@@ -1618,7 +1625,7 @@ test.skipIf(skip)(
     });
     await session.shows(
       "a wait of the busy claim on screen",
-      "was answered 503 at attempt 1, so nothing was claimed; claiming it again in"
+      "was answered 503 at attempt 1; claiming it again in"
     );
     await landed.promise;
     expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
@@ -1867,12 +1874,13 @@ test.skipIf(skip)(
 
 // The start command's claim sends the start message, marking the start turn sent, then claims the
 // role and subscribes to the controller topic, so a card the listener forwards on the role's lane
-// and a daemon notice on the topic reach the session while the start turn runs. The stand-in holds
-// the registration that follows the topic's subscription, which the claim awaits, and the start
-// turn's model request, until both have reached the session: the card's frame and the repeat
-// behind it are taken by the session's one connection in the order they were published. The
-// start turn's first request carries the start message alone; the card and the notice wait for it
-// and each reaches the model in a request after it, behind the start message.
+// and a notice on the topic, as a daemon of an earlier release posts it, reach the session while
+// the start turn runs. The stand-in holds the registration that follows the topic's subscription,
+// which the claim awaits, and the start turn's model request, until both have reached the session:
+// the card's frame and the repeat behind it are taken by the session's one connection in the order
+// they were published. The start turn's first request carries the start message alone; the card
+// and the notice wait for it and each reaches the model in a request after it, behind the start
+// message.
 test.skipIf(skip)(
   "a card and a Legion notice that arrive while the start command's claim runs wait for the start turn, and each still gets a turn after it",
   async () => {
@@ -2213,13 +2221,14 @@ for (const variant of ["the start claim never answers", "the start command never
 
 // The real pair's proof of the controller's own lanes (INFRA-771): a session receives what its
 // own consumer carries and nothing else, and the controller role is what puts its project's
-// notice lane (`notifications.legion.<project>.controller`) and its Slack channels' mention
-// topics into that consumer's filter. The controller the daemon launches is the one whose launch
-// names channels (LEGION_SLACK_CHANNELS), so it is the one here, with a 2 s registration
-// heartbeat so that the case watches its passes. Three things, in one session's life:
-//   - a notice stored while the session's registration had lapsed — the listener able to give it
-//     no consumer, so nothing at all reached it — is read once when the registration is back,
-//     the relay's redelivery of that same stored frame included;
+// notice lane (`notifications.legion.<project>.controller`, where a daemon of an earlier release
+// posts its controller notices) and its Slack channels' mention topics into that consumer's
+// filter. The controller the daemon launches is the one whose launch names channels
+// (LEGION_SLACK_CHANNELS), so it is the one here, with a 2 s registration heartbeat so that the
+// case watches its passes. Three things, in one session's life:
+//   - a notice stored on the lane while the session's registration had lapsed, its role still
+//     held — the listener able to give it no consumer, so nothing at all reached it — is read once
+//     when the registration is back, the relay's redelivery of that same stored frame included;
 //   - a mention of the channel its launch names reaches it;
 //   - once the role ends (the heartbeat's re-assertion refused by a listener that names another
 //     live holder), the registration that follows carries neither topic, and the session's own

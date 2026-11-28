@@ -121,6 +121,7 @@ func subscribeCore(t *testing.T, url, subject string) *natsgo.Subscription {
 // session no longer registers through and a directory it no longer runs in. The deliveries read the
 // session's entry, which every registration rewrites, so they follow the session already.
 func TestASessionRegisteredAgainThroughAnotherListenerIsReachedAndStampedThroughThatRegistration(t *testing.T) {
+	t.Parallel()
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	first := startListenerProcess(t, binary, uri, "relay-first")

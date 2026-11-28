@@ -139,12 +139,12 @@ type SignInAuthority struct {
 //
 // Nobody signed in here is nil and no error, and so is a sign-in refused for good — the person
 // revoked it, or the issuer no longer honours their refresh token — which is remembered so the
-// next enrolment does not ask again. A refusal a later trade could still cure, the broker's 429
-// and a clock-skewed DPoP proof among them, is an error rather than that: remembering one of
-// those would enrol every later session under this machine for the life of the process. Every
-// other failure is an error too, which a caller must not read as "nobody is signed in": a
-// broker that did not answer says nothing about who is signed in here, and a box with two
-// sign-ins and nothing naming which is refused by name rather than acting as either
+// next enrolment does not ask again. A refusal a later trade could still cure, an outage (a 408
+// or the broker's 429) and a clock-skewed DPoP proof among them, is an error rather than that:
+// remembering one of those would enrol every later session under this machine for the life of
+// the process. Every other failure is an error too, which a caller must not read as "nobody is
+// signed in": a broker that did not answer says nothing about who is signed in here, and a box
+// with two sign-ins and nothing naming which is refused by name rather than acting as either
 // (SignInStore.Choose).
 //
 // One call at a time reads and renews the held credential, and a call that finds another doing
@@ -196,7 +196,7 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 		// The sign-in is over: the broker refused it for good, or the issuer no longer honours
 		// the person's refresh token, which is as final as a revoke; asking again at every
 		// enrolment would fail every enrolment on this box rather than fall back to the machine.
-		// A refusal a retry could cure — the broker's 429, a skewed DPoP proof, a person
+		// A refusal a retry could cure — a 408 or the broker's 429, a skewed DPoP proof, a person
 		// Dispatch holds — is not this sign-in ending: marking it refused on one of those would
 		// enrol every later session under this machine for the life of the process. A broker's
 		// code is the answer's own text, so it is logged as the address lets it print
@@ -219,6 +219,23 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 	}
 	a.heldCredential = token.CredentialID
 	return &Authority{Key: a.held.Key(), CredentialID: token.CredentialID, Operator: record.Person}, nil
+}
+
+// SignedIn names the sign-in Current would act under, read from the store with no trade and no
+// wait for a trade in progress: its person, and its box key's thumbprint, which no other sign-in
+// shares, since each `agent-secrets login` makes a key of its own. Both are empty, with no error,
+// where nobody is signed in here. A store it cannot read, or two sign-ins with nothing naming
+// which, is an error, as it is for Current. A sign-in the broker has refused for good is still
+// named: it is still on the box, though Current trades it no more.
+func (a *SignInAuthority) SignedIn() (person, thumbprint string, err error) {
+	record, err := a.Store.Choose(a.Person)
+	switch {
+	case errors.Is(err, ErrNoSignIn):
+		return "", "", nil
+	case err != nil:
+		return "", "", err
+	}
+	return record.Person, record.Thumbprint, nil
 }
 
 // SignInWaitEnded says how a wait for person's sign-in on this machine, which another call holds
