@@ -816,20 +816,28 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 		// Both waited out whatever they waited out on ctx, which the boot budget does not bound:
 		// what follows gets a budget of its own, as the App mint and the image probe's callers
-		// already do, for the boot record and supervision's start (starting).
+		// already do, for supervision's start (starting).
 		var cancelAfterReady context.CancelFunc
 		boot, cancelAfterReady = bootBudget(ctx)
 		defer cancelAfterReady()
 	}
 
-	startedAt := time.Now().UTC()
-	bootID, err := st.RecordBoot(boot, cfg.Project, startedAt)
-	if err != nil {
-		s.stop()
-		listener.Close()
-		workflow.stop()
-		st.Close()
-		return err
+	// A daemon with the workflow recorded its boot before its first fact, in the transaction of the
+	// reset after an earlier release's boot (workflowRuntime.recordBoot), and holds that row's id
+	// and start; one without the workflow records its boot here, once it is ready.
+	var bootID int64
+	var startedAt time.Time
+	if workflow != nil {
+		bootID, startedAt = workflow.bootRecord, workflow.bootStartedAt
+	} else {
+		startedAt = time.Now().UTC()
+		if bootID, err = st.RecordBoot(boot, cfg.Project, startedAt, nil); err != nil {
+			s.stop()
+			listener.Close()
+			workflow.stop()
+			st.Close()
+			return err
+		}
 	}
 	// From here every way the daemon ends halts supervision before anything waits: the signal, at
 	// once, serve's end, or a start that failed. The signal also ends the boot's own steps, which run

@@ -66,56 +66,63 @@
 -- by the version rule. It does not know that a row owes a digest, so it never settles what such a
 -- version held back: the end of a basis that the version rule ends at once (R3, "A version").
 -- Its writes leave the verdict, the told standing and the root version as this release last wrote
--- them, and no rule of this release reads past that. So a rollback runs the way back below first,
--- with the daemon stopped. And a boot of this release whose project's newest daemon_boot row has
--- no row of design_gate_verdict_boots, a boot of an earlier release, does to that project's rows
--- what the way back does before it applies any fact, tells each change of standing it makes, and
+-- them. So a rollback runs the way back below first, for the project that rolls back, with that
+-- project's daemon stopped. And each boot of this release, before it applies any fact, records
+-- itself in daemon_boot and in design_gate_verdict_boots in one transaction (the store's
+-- RecordBoot); where the project's newest earlier daemon_boot row has no row of
+-- design_gate_verdict_boots, a boot of an earlier release, that same transaction puts each of the
+-- project's rows in version mode and clears every column this migration adds, ending no basis and
+-- telling nothing, since the columns cannot show what the earlier release did, and the boot
 -- queues the gate seed of each registered step of each tree in the workflow, whose read of
--- Dispatch gives each row its verdict again (record.ResetGatesAfterEarlierRelease). The
--- first boot after this migration finds the release before's boot there, changes no row, which is
--- in version mode already, and queues the seeds.
+-- Dispatch gives each row its verdict again and tells each change from the standing version mode
+-- reads (record.ResetGatesAfterEarlierRelease). The first boot after this migration finds the
+-- release before's boot there, changes no row, which is in version mode already, and queues the
+-- seeds.
 --
--- The way back first settles what a version owing its digest held back: on each row that owes
--- its digest, it ends each basis, open or pending, whose root version is below latest_version, as
--- version mode would have ended it at once, so the step is closed
--- (record.ResetAfterEarlierRelease). An open step's root version is its approved_version, and
--- it falls back to the person's approval it kept (record.CloseBasis); a pending step's is
--- basis_root_version, or latest_digest_version where it has none, and its wait ends
--- (record.EndPendingBasis); each end counts one move of the basis in basis_moves, as the
--- daemon's own write counts it. Then it drops design_gate_verdict_boots and every column this
--- migration adds, digest_owed first, since it is generated from latest_digest_version, and the
--- check, so every row is in version mode, and deletes this migration's version row, so that the
--- roll forward applies the migration again: every row then reads in version mode, the update
--- marks again the copies the release before carried while it ran, and the first boot finds that
--- release's boot and resets. The way back tells nobody: after it, read each gated tree's steps
+-- The way back acts on the rows of one project's issues alone, the project whose daemon rolls
+-- back: replace <PROJECT> with its key, project in its legion.yaml, the part of each of its issue
+-- keys before the hyphen. It first settles what a version owing its digest held back: on each row
+-- that owes its digest, it ends each basis, open or pending, whose root version is below
+-- latest_version, as version mode would have ended it at once, so the step is closed. An open
+-- step's root version is its approved_version, and it falls back to the person's approval it kept
+-- (record.CloseBasis); a pending step's is basis_root_version, or latest_digest_version where it
+-- has none, and its wait ends (record.EndPendingBasis); each end counts one move of the basis in
+-- basis_moves, as the daemon's own write counts it. A row that owes no digest keeps its basis:
+-- this release ended each basis below the latest version when that version settled. Then it
+-- clears carried and marks the copies again as this migration does, as the boot's reset does, and
+-- puts each of those rows in version mode with every other column this migration adds cleared. It
+-- drops nothing and deletes no version row: the columns and design_gate_verdict_boots stay for the
+-- daemons of this release that serve other projects from the same database, the release before
+-- names none of them, its Migrate applies only the migrations it embeds and passes over this
+-- one's row, and the roll forward finds this migration applied. The earlier release's boot writes
+-- no row of design_gate_verdict_boots, so the first boot of this release after it resets the
+-- project's rows as above. The way back tells nobody: after it, read each gated tree's steps
 -- (legion state) and tell the merger of a tree whose step it closed (docs/kubernetes.md). Run it
--- with every daemon that shares the database stopped: a daemon of this release still running for
--- another project would fail every read of a gate after the drop.
+-- with the project's daemon stopped; it is one transaction, and a second run changes nothing.
 --
+-- begin;
 -- update design_gates set approved_version = kept_person_version, approved_seq = kept_person_seq, approved_at = kept_person_at,
 --   kept_person_version = null, kept_person_seq = null, kept_person_at = null, basis_issue = null, basis_artifact_id = null,
 --   basis_version = null, basis_approved_seq = null, basis_approved_at = null, basis_approver = null, basis_serves = null,
 --   basis_reason = null, basis_session = null, basis_registered_at = null, basis_pending_ask = null, basis_moves = basis_moves + 1
---   where digest_owed and coalesce(basis_artifact_id, '') <> '' and coalesce(basis_pending_ask, '') = ''
+--   where issue in (select key from issues where project = '<PROJECT>')
+--   and digest_owed and coalesce(basis_artifact_id, '') <> '' and coalesce(basis_pending_ask, '') = ''
 --   and coalesce(approved_version, basis_root_version, latest_digest_version) < latest_version;
 -- update design_gates set basis_issue = null, basis_artifact_id = null, basis_version = null, basis_approved_seq = null,
 --   basis_approved_at = null, basis_approver = null, basis_serves = null, basis_reason = null, basis_session = null,
 --   basis_registered_at = null, basis_pending_ask = null, basis_moves = basis_moves + 1
---   where digest_owed and coalesce(basis_artifact_id, '') <> '' and coalesce(basis_pending_ask, '') <> ''
+--   where issue in (select key from issues where project = '<PROJECT>')
+--   and digest_owed and coalesce(basis_artifact_id, '') <> '' and coalesce(basis_pending_ask, '') <> ''
 --   and coalesce(basis_root_version, latest_digest_version) < latest_version;
--- drop table if exists design_gate_verdict_boots;
--- alter table design_gates drop column if exists digest_owed;
--- alter table design_gates drop constraint if exists design_gates_verdict_check;
--- alter table design_gates drop column if exists latest_digest_version;
--- alter table design_gates drop column if exists approval_current;
--- alter table design_gates drop column if exists latest_digest;
--- alter table design_gates drop column if exists latest_digest_seq;
--- alter table design_gates drop column if exists latest_digest_at;
--- alter table design_gates drop column if exists approved_digest;
--- alter table design_gates drop column if exists told_open;
--- alter table design_gates drop column if exists basis_root_version;
--- alter table design_gates drop column if exists carried;
--- delete from schema_version where version = 20261127204213;
+-- update design_gates set carried = false where carried and issue in (select key from issues where project = '<PROJECT>');
+-- update design_gates set carried = true from handed_over_roots, issues
+--   where handed_over_roots.issue = design_gates.issue and issues.key = design_gates.issue and issues.project = '<PROJECT>'
+--   and handed_over_roots.generation = issues.generation and handed_over_roots.gate_carried
+--   and exists (select 1 from design_gates other where other.artifact_id = design_gates.artifact_id and other.issue <> design_gates.issue);
+-- update design_gates set latest_digest_version = null, approval_current = null, latest_digest = null, latest_digest_seq = null,
+--   latest_digest_at = null, approved_digest = null, told_open = null, basis_root_version = null
+--   where issue in (select key from issues where project = '<PROJECT>');
+-- commit;
 alter table design_gates add column latest_digest_version integer check (latest_digest_version > 0);
 alter table design_gates add column approval_current boolean;
 alter table design_gates add constraint design_gates_verdict_check

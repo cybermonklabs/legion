@@ -317,9 +317,22 @@ func schemaVersion(ctx context.Context, tx pgx.Tx) (int, error) {
 // boot ran a release that knows the hash gate's columns, so a boot of this
 // release never leaves a daemon_boot row without it: a daemon_boot row with none
 // is a boot of an earlier release (record.ResetGatesAfterEarlierRelease).
-func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (int64, error) {
+//
+// settle, where it is not nil, runs first in that transaction, before the boot's
+// two rows, so the newest daemon_boot row of the project it reads is the boot
+// before this one, and what it writes commits with the boot or not at all. A
+// daemon with the workflow records its boot so, with the reset after an earlier
+// release's boot as settle, before it applies any fact (the daemon's
+// openWorkflow), and holds the id from then on; one without the workflow records
+// its boot once it is ready, with no settle.
+func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time, settle func(context.Context, pgx.Tx) error) (int64, error) {
 	var id int64
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if settle != nil {
+			if err := settle(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if err := tx.QueryRow(ctx,
 			"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
 			project, at,

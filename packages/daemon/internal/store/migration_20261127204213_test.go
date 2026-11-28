@@ -196,25 +196,97 @@ func releaseBeforeGate(t *testing.T, st *Store, issue string) record.DesignGate 
 	return gate
 }
 
-// resetAtBoot is the boot's reset after an earlier release's boot for project as this release's
-// boot runs it, in one transaction (record.ResetGatesAfterEarlierRelease): each row it changes is
-// written by this release's PutGate, and it queues the gate seeds of a deployment that gates the
-// spec step, due at now.
-func resetAtBoot(t *testing.T, st *Store, project string, now time.Time) record.GateReset {
+// bootOf is a boot of this release for project as the daemon's workflow records it
+// (workflowRuntime.recordBoot): RecordBoot writes the boot's daemon_boot row and its marker, and
+// before them, in the same transaction, the reset after an earlier release's boot
+// (record.ResetGatesAfterEarlierRelease), which queues the gate seeds of a deployment that gates
+// the spec step, due at at. It answers the boot's id, what the reset did, and the error of a boot
+// whose transaction fails.
+func bootOf(t *testing.T, st *Store, project string, at time.Time) (int64, record.GateReset, error) {
 	t.Helper()
 	var reset record.GateReset
 	records := record.NewStore()
-	write := func(ctx context.Context, tx pgx.Tx, _, after record.DesignGate) error {
-		return records.PutGate(ctx, tx, after)
-	}
-	if err := Transact(t.Context(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	id, err := st.RecordBoot(t.Context(), project, at, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, records, project, []record.DesignStep{record.DesignStepSpec}, write, now)
+		reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, records, project, []record.DesignStep{record.DesignStepSpec}, at)
 		return err
-	}); err != nil {
-		t.Fatalf("the boot's reset of %s: %v", project, err)
+	})
+	return id, reset, err
+}
+
+// bootAt is bootOf for a boot whose transaction commits.
+func bootAt(t *testing.T, st *Store, project string, at time.Time) (int64, record.GateReset) {
+	t.Helper()
+	id, reset, err := bootOf(t, st, project, at)
+	if err != nil {
+		t.Fatalf("the boot of %s: %v", project, err)
 	}
-	return reset
+	return id, reset
+}
+
+// earlierReleaseBoot writes the daemon_boot row a boot of a release before the hash gate writes for
+// project at at, which has no row of design_gate_verdict_boots, and answers its id.
+func earlierReleaseBoot(t *testing.T, st *Store, project string, at time.Time) int64 {
+	t.Helper()
+	var id int64
+	if err := st.Pool().QueryRow(t.Context(), `insert into daemon_boot (project, started_at) values ($1, $2) returning id`, project, at).Scan(&id); err != nil {
+		t.Fatalf("record the earlier release's boot of %s: %v", project, err)
+	}
+	return id
+}
+
+// outboxKinds is how many rows of each kind the outbox holds.
+func outboxKinds(t *testing.T, st *Store) map[string]int {
+	t.Helper()
+	rows, err := st.Pool().Query(t.Context(), `select kind, count(*) from outbox group by kind`)
+	if err != nil {
+		t.Fatalf("count the outbox's rows: %v", err)
+	}
+	defer rows.Close()
+	kinds := map[string]int{}
+	for rows.Next() {
+		var kind string
+		var count int
+		if err := rows.Scan(&kind, &count); err != nil {
+			t.Fatalf("read the outbox's count: %v", err)
+		}
+		kinds[kind] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the outbox's rows: %v", err)
+	}
+	return kinds
+}
+
+// assertToldNothing holds the outbox to before, but for its gate seeds: a boot's reset queues a gate
+// seed of each registered step and tells nobody anything (no notice, role message, news reconcile
+// or other row).
+func assertToldNothing(t *testing.T, st *Store, before map[string]int, what string) {
+	t.Helper()
+	after := outboxKinds(t, st)
+	for kind := range after {
+		if _, ok := before[kind]; !ok {
+			before[kind] = 0
+		}
+	}
+	for kind, count := range before {
+		if kind != "gate_seed" && after[kind] != count {
+			t.Fatalf("%s left %d outbox rows of kind %s, want the %d before it: it tells nobody anything", what, after[kind], kind, count)
+		}
+	}
+}
+
+// gateColumns is each column of design_gates the hash gate adds that the table holds.
+func gateColumns(t *testing.T, st *Store) []string {
+	t.Helper()
+	var columns []string
+	if err := st.Pool().QueryRow(t.Context(), `select coalesce(array_agg(column_name::text order by column_name), '{}') from information_schema.columns
+		where table_schema = 'public' and table_name = 'design_gates' and column_name = any($1)`,
+		[]string{"latest_digest_version", "approval_current", "latest_digest", "latest_digest_seq", "latest_digest_at", "approved_digest",
+			"digest_owed", "told_open", "basis_root_version", "carried"}).Scan(&columns); err != nil {
+		t.Fatalf("read the hash gate's columns of design_gates: %v", err)
+	}
+	return columns
 }
 
 // rowsUnseeded is each design_gates row of the issues of project, as "issue/step", for which the
@@ -250,21 +322,24 @@ func gateSeeds(t *testing.T, st *Store) int {
 // together, and digest_owed follows the two versions with no write of its own. The outbox rows of
 // the release before's gate kinds still decode: the hash gate adds no kind and no payload field.
 //
-// RecordBoot writes a boot's daemon_boot row and its row of design_gate_verdict_boots both or
-// neither. A boot after an earlier release's boot (a daemon_boot row with no such row) does, before
-// it applies a fact, what the way back does to its own project's rows: it ends each basis, open or
-// pending, whose root version is below latest_version while a digest is owed, and keeps one at the
-// latest version; it puts every row in version mode, so a changes request the earlier release
-// wrote over a verdict closes the gate; it keeps a carried copy marked and marks one the earlier
-// release carried; it touches no row of another project; and it queues a gate seed for each
-// registered step. A boot after a boot of its own release, and a project with no boot, do neither.
+// The way back, for the rows of one project's issues alone, ends each basis, open or pending, whose
+// root version is below latest_version while a digest is owed, so the step is closed and the
+// earlier release cannot open a pending one at a version nobody approved, and ends no basis whose
+// digest is not owed, at the latest version or below it; then it puts those rows in version mode
+// and clears every column the hash gate adds. It drops nothing: every column, the check, the table
+// and the migration's version row stay, and another project's rows stay as they were. The release
+// before's write still runs after it, and the roll forward applies nothing.
 //
-// The way back ends each basis, open or pending, whose root version is below latest_version while
-// a digest is owed, so the step is closed and the earlier release cannot open a pending one at a
-// version nobody approved, and keeps one at the latest version and one below it on a row that owes
-// no digest; then it drops every column and the table, and deletes the migration's version row. The
-// release before's write still runs after it, the roll forward puts every row in version mode, and
-// the first boot after it resets.
+// Each boot of this release records its daemon_boot row and its row of design_gate_verdict_boots,
+// both or neither (RecordBoot). A boot after an earlier release's boot of the same project (a
+// daemon_boot row with no such row), in the transaction that records it, puts that project's rows
+// in version mode and clears every column the hash gate adds, so a changes request the earlier
+// release wrote over a verdict closes the gate; it ends no basis and tells nothing; it keeps a
+// carried copy marked and marks one the earlier release carried; it touches no row of another
+// project; and it queues a gate seed for each registered step. A boot after its own release's boot,
+// a boot after another project's earlier release's boot, and a boot after one that failed after
+// its record reset nothing; and a boot whose transaction fails leaves no daemon_boot row, no marker
+// and no reset.
 func TestHashGateMigrationAndWayBack(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -488,8 +563,6 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		return record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "doc-" + key, LatestVersion: 5, ApprovedVersion: new(5),
 			ApprovedMark: m30, Verdict: &record.GateVerdict{Version: 5, Current: true, Mark: m30}, ToldOpen: new(true), EverOpened: true}
 	}
-	// lastBoot is the newest boot of LEGION that RecordBoot wrote.
-	var lastBoot int64
 
 	t.Run("the outbox rows of the release before decode", func(t *testing.T) {
 		rows, err := st.Pool().Query(ctx, `select id, kind, issue, payload from outbox order by id`)
@@ -525,7 +598,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 	// in hash mode: its daemon_boot row has no row of design_gate_verdict_boots. It applies a
 	// person's changes request over a verdict, which it leaves standing, and carries a gate at a
 	// re-admission, a copy it leaves carried false. Then this release boots.
-	t.Run("a boot after an earlier release's boot resets its own project's rows before it applies a fact", func(t *testing.T) {
+	t.Run("a boot after an earlier release's boot puts its own project's rows in version mode in the transaction that records it", func(t *testing.T) {
 		for key, project := range map[string]string{"LEGION-701": "LEGION", "LEGION-702": "LEGION", "LEGION-703": "LEGION",
 			"LEGION-704": "LEGION", "LEGION-705": "LEGION", "LEGION-706": "LEGION", "ACME-801": "ACME"} {
 			issueOf(t, key, project, 1)
@@ -543,20 +616,26 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			Verdict: &record.GateVerdict{Version: 7, Current: true, Digest: "sha256:content-7", Mark: m40}})
 		putGate(t, st, hashOpen("ACME-801"))
 
-		var earlier int64
-		if err := st.Pool().QueryRow(ctx, `insert into daemon_boot (project, started_at) values ('LEGION', $1) returning id`, at.Add(time.Hour)).Scan(&earlier); err != nil {
-			t.Fatalf("record the earlier release's boot: %v", err)
-		}
+		earlier := earlierReleaseBoot(t, st, "LEGION", at.Add(time.Hour))
 		changed := gatesOf(t, st, "LEGION-701")[record.DesignStepSpec]
 		changed.ApprovedVersion, changed.ApprovedMark = nil, record.EventMark{}
 		changed.ToldChangesVersion, changed.ToldChangesReason, changed.ToldChangesMark = new(5), "name the rollback path", m50
 		writeAsTheReleaseBefore(t, st, changed)
 		must(t, `insert into handed_over_roots (issue, generation, gate_carried) values ('LEGION-706', 1, true)`)
 		writeAsTheReleaseBefore(t, st, record.DesignGate{Issue: "LEGION-706", ArtifactID: "doc-205", LatestVersion: 3, ApprovedVersion: new(3), EverOpened: true})
+		moves := map[string]int{}
+		for _, key := range []string{"LEGION-702", "LEGION-703", "LEGION-704"} {
+			moves[key] = gatesOf(t, st, key)[record.DesignStepSpec].BasisMoves
+		}
 
-		seeds := gateSeeds(t, st)
-		reset := resetAtBoot(t, st, "LEGION", at.Add(2*time.Hour))
+		seeds, outbox := gateSeeds(t, st), outboxKinds(t, st)
+		boot, reset := bootAt(t, st, "LEGION", at.Add(2*time.Hour))
 
+		var recorded bool
+		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from daemon_boot join design_gate_verdict_boots on boot = daemon_boot.id
+			where daemon_boot.id = $1 and project = 'LEGION')`, boot).Scan(&recorded); err != nil || !recorded {
+			t.Fatalf("the boot %d of LEGION and its marker are recorded: %t (%v), want both written with the reset", boot, recorded, err)
+		}
 		// The changes request the release before applied closes the gate: in version mode no
 		// approval stands.
 		if gate := gatesOf(t, st, "LEGION-701")[record.DesignStepSpec]; gate.Verdict != nil || record.GateOpen(gate) {
@@ -569,9 +648,10 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			approved               int
 			why                    string
 		}{
-			{"LEGION-702", false, false, false, 2, "its basis at root version 3 ends, as version 4 ended it under the version rule, back on the person's approval of 2"},
-			{"LEGION-703", false, false, false, 2, "its wait at root version 3 ends, as version 4 ended it under the version rule, on the person's approval of 2"},
-			{"LEGION-704", true, true, false, 4, "its basis, registered at version 4 inside the fill window, stands"},
+			{"LEGION-702", false, false, false, 2, "its basis at root version 3 stands on the row, since the reset ends no basis, and this release reads a basis below the " +
+				"latest version 4 in version mode as the version rule reads it, closed, back on the person's approval of 2 (basisAsWritten)"},
+			{"LEGION-703", false, false, true, 2, "its wait at root version 3 stands, since the reset ends no basis, closed on the person's approval of 2"},
+			{"LEGION-704", true, true, false, 4, "its basis, registered at version 4 inside the fill window, stands open at the latest version"},
 			{"LEGION-705", false, false, false, 6, "the version rule reads no approval of the latest version 7"},
 		} {
 			gate := gatesOf(t, st, row.key)[record.DesignStepSpec]
@@ -580,10 +660,21 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 				approved = *gate.ApprovedVersion
 			}
 			if gate.Verdict != nil || gate.ToldOpen != nil || gate.ApprovedDigest != "" || record.GateOpen(gate) != row.open ||
-				gate.OnBasis() != row.onBasis || gate.PendingOnBasis() != row.pending || approved != row.approved {
-				t.Fatalf("the gate of %s after the reset reads open %t, approved %d (%#v, basis %+v); want it in version mode, open %t, approved %d, "+
-					"on a basis %t, pending %t: %s", row.key, record.GateOpen(gate), approved, gate, gate.Basis, row.open, row.approved,
-					row.onBasis, row.pending, row.why)
+				gate.OnBasis() != row.onBasis || gate.PendingOnBasis() != row.pending || approved != row.approved ||
+				gate.Basis != nil && gate.Basis.RootVersion != 0 {
+				t.Fatalf("the gate of %s after the reset reads open %t, approved %d (%#v, verdict %+v, basis %+v); want it in version mode, "+
+					"open %t, approved %d, on a basis %t, pending %t, with no root version: %s",
+					row.key, record.GateOpen(gate), approved, gate, gate.Verdict, gate.Basis, row.open, row.approved, row.onBasis, row.pending, row.why)
+			}
+		}
+		// The reset ends no basis: each basis stands on its row as the reset found it, with its moves.
+		for key, before := range moves {
+			var standing bool
+			var moved int
+			if err := st.Pool().QueryRow(ctx, `select coalesce(basis_artifact_id, '') <> '', basis_moves from design_gates where issue = $1 and step = 'spec'`,
+				key).Scan(&standing, &moved); err != nil || !standing || moved != before {
+				t.Fatalf("the basis of %s after the reset stands %t with %d moves (%v), want it standing with the %d moves before: the reset ends no basis",
+					key, standing, moved, err, before)
 			}
 		}
 		if set := addedColumnsSet(t, st, "LEGION"); set != 0 {
@@ -618,23 +709,25 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		if added := gateSeeds(t, st) - seeds; added != rows || reset.Seeds != rows {
 			t.Fatalf("the reset queued %d gate seeds and answered %d, want one for each of the %d rows of LEGION, ACME's none", added, reset.Seeds, rows)
 		}
-		if want := (record.GateReset{EarlierBoot: earlier, Rows: 5, BasesEnded: 2, Seeds: rows}); reset != want {
-			t.Fatalf("the reset answered %+v, want %+v: the five rows in hash mode or with a root version reset, the two bases below the latest ended", reset, want)
+		if want := (record.GateReset{EarlierBoot: earlier, Rows: 5, Seeds: rows}); reset != want {
+			t.Fatalf("the reset answered %+v, want %+v: the five rows in hash mode or with a root version put in version mode", reset, want)
 		}
+		assertToldNothing(t, st, outbox, "the boot's reset")
 	})
 
-	t.Run("a boot after its own release's boot, and a project with no boot, reset nothing", func(t *testing.T) {
-		var err error
-		if lastBoot, err = st.RecordBoot(ctx, "LEGION", at.Add(3*time.Hour)); err != nil {
-			t.Fatalf("record this release's boot: %v", err)
-		}
+	// The boot above recorded itself with its reset and then failed, before it stamped its stop,
+	// once its catch-up had put LEGION-707 in hash mode. The next boot finds that boot's marker.
+	// Then an earlier release boots on ACME, which shares the database, and LEGION boots again.
+	t.Run("a boot after one that failed after its record, after its own release's boot, or after another project's earlier release's boot resets nothing", func(t *testing.T) {
 		issue(t, "LEGION-707", 1)
 		putGate(t, st, hashOpen("LEGION-707"))
-		seeds := gateSeeds(t, st)
-		for _, project := range []string{"LEGION", "ACME"} {
-			if reset := resetAtBoot(t, st, project, at.Add(4*time.Hour)); reset != (record.GateReset{}) {
-				t.Fatalf("the reset of %s answered %+v, want nothing done", project, reset)
-			}
+		seeds, outbox := gateSeeds(t, st), outboxKinds(t, st)
+		if _, reset := bootAt(t, st, "LEGION", at.Add(3*time.Hour)); reset != (record.GateReset{}) {
+			t.Fatalf("the boot after a boot that failed after its record reset %+v, want nothing done", reset)
+		}
+		earlierReleaseBoot(t, st, "ACME", at.Add(4*time.Hour))
+		if _, reset := bootAt(t, st, "LEGION", at.Add(5*time.Hour)); reset != (record.GateReset{}) {
+			t.Fatalf("the boot of LEGION after ACME's earlier release's boot reset %+v, want nothing done", reset)
 		}
 		for _, key := range []string{"LEGION-707", "ACME-801"} {
 			if gate := gatesOf(t, st, key)[record.DesignStepSpec]; gate.Verdict == nil || gate.ToldOpen == nil {
@@ -642,36 +735,48 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			}
 		}
 		if got := gateSeeds(t, st); got != seeds {
-			t.Fatalf("the outbox holds %d gate seeds after the resets, want the %d before them", got, seeds)
+			t.Fatalf("the outbox holds %d gate seeds after the boots, want the %d before them", got, seeds)
 		}
+		assertToldNothing(t, st, outbox, "the boots")
 	})
 
-	t.Run("RecordBoot writes a boot and its marker both or neither", func(t *testing.T) {
-		boots := func() int {
+	t.Run("RecordBoot writes a boot and its marker both or neither, and a boot whose transaction fails resets nothing", func(t *testing.T) {
+		count := func(table string) int {
 			t.Helper()
 			var count int
-			if err := st.Pool().QueryRow(ctx, `select count(*) from daemon_boot where project = 'LEGION'`).Scan(&count); err != nil {
-				t.Fatalf("count the boots of LEGION: %v", err)
+			if err := st.Pool().QueryRow(ctx, `select count(*) from `+table).Scan(&count); err != nil {
+				t.Fatalf("count the rows of %s: %v", table, err)
 			}
 			return count
 		}
-		id, err := st.RecordBoot(ctx, "LEGION", at.Add(5*time.Hour))
+		id, err := st.RecordBoot(ctx, "LEGION", at.Add(6*time.Hour), nil)
 		if err != nil {
 			t.Fatalf("record a boot: %v", err)
 		}
-		lastBoot = id
 		var marked bool
 		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from design_gate_verdict_boots where boot = $1)`, id).Scan(&marked); err != nil || !marked {
 			t.Fatalf("the boot %d has its row of design_gate_verdict_boots: %t (%v), want it written with the boot", id, marked, err)
 		}
-		before := boots()
+		// An earlier release boots on LEGION after it, so the next boot of this release resets
+		// where its transaction commits.
+		earlierReleaseBoot(t, st, "LEGION", at.Add(7*time.Hour))
+		boots, markers, seeds := count("daemon_boot"), count("design_gate_verdict_boots"), gateSeeds(t, st)
 		must(t, `create function refuse_verdict_boot() returns trigger language plpgsql as $$ begin raise exception 'the marker refused'; end $$`)
 		must(t, `create trigger refuse_verdict_boot before insert on design_gate_verdict_boots for each row execute function refuse_verdict_boot()`)
-		if _, err := st.RecordBoot(ctx, "LEGION", at.Add(6*time.Hour)); err == nil || !strings.Contains(err.Error(), "the marker refused") {
+		if _, _, err := bootOf(t, st, "LEGION", at.Add(8*time.Hour)); err == nil || !strings.Contains(err.Error(), "the marker refused") {
 			t.Fatalf("a boot whose marker the store refuses = %v, want the refusal", err)
 		}
-		if after := boots(); after != before {
-			t.Fatalf("a boot whose marker the store refused left %d boots of LEGION, want the %d before it: no daemon_boot row without its marker", after, before)
+		if after := count("daemon_boot"); after != boots {
+			t.Fatalf("a boot whose marker the store refused left %d boots, want the %d before it: no daemon_boot row without its marker", after, boots)
+		}
+		if after := count("design_gate_verdict_boots"); after != markers {
+			t.Fatalf("a boot whose marker the store refused left %d markers, want the %d before it", after, markers)
+		}
+		if gate := gatesOf(t, st, "LEGION-707")[record.DesignStepSpec]; gate.Verdict == nil || gate.ToldOpen == nil {
+			t.Fatalf("the gate of LEGION-707 reads %#v after a boot whose transaction failed, want it in hash mode: no reset without its boot", gate)
+		}
+		if got := gateSeeds(t, st); got != seeds {
+			t.Fatalf("the outbox holds %d gate seeds after a boot whose transaction failed, want the %d before it", got, seeds)
 		}
 		must(t, `drop trigger refuse_verdict_boot on design_gate_verdict_boots`)
 		must(t, `drop function refuse_verdict_boot()`)
@@ -698,12 +803,25 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		// so the way back, which ends only what a version owing its digest held back, keeps both.
 		putGate(t, st, onBasis("LEGION-607", 3, 4, 4))
 		putGate(t, st, pending("LEGION-608", 3, 4, 4))
+		// ACME-802, of another project whose daemon of this release goes on, stands open on a basis
+		// registered at root version 3 while version 4 owes its digest: LEGION's way back leaves it,
+		// and ACME-801 in hash mode, as they were.
+		issueOf(t, "ACME-802", "ACME", 1)
+		putGate(t, st, onBasis("ACME-802", 3, 4, 3))
+		other := map[string]record.DesignGate{}
+		for _, key := range []string{"ACME-801", "ACME-802"} {
+			other[key] = gatesOf(t, st, key)[record.DesignStepSpec]
+		}
 		moves := map[string]int{}
 		for _, key := range wayBackRows {
 			moves[key] = gatesOf(t, st, key)[record.DesignStepSpec].BasisMoves
 		}
 
-		must(t, wayBackOf(t, hashGateVersion, "the hash gate"))
+		wayBack := wayBackOf(t, hashGateVersion, "the hash gate")
+		if !strings.Contains(wayBack, "'<PROJECT>'") {
+			t.Fatalf("the way back of the hash gate names no project as '<PROJECT>':\n%s", wayBack)
+		}
+		must(t, strings.ReplaceAll(wayBack, "<PROJECT>", "LEGION"))
 
 		for _, row := range []struct {
 			key      string
@@ -746,19 +864,30 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 				t.Fatalf("the step of LEGION-601 after the way back = %#v, want the person's approval of 2 back at its own mark, none kept apart", gate)
 			}
 		}
-		var left []string
-		if err := st.Pool().QueryRow(ctx, `select coalesce(array_agg(column_name::text order by column_name), '{}') from information_schema.columns
-			where table_schema = 'public' and table_name = 'design_gates' and column_name = any($1)`,
-			[]string{"latest_digest_version", "approval_current", "latest_digest", "latest_digest_seq", "latest_digest_at", "approved_digest",
-				"digest_owed", "told_open", "basis_root_version", "carried"}).Scan(&left); err != nil || len(left) != 0 {
-			t.Fatalf("the verdict's columns after the way back = %q (%v), want none", left, err)
+		if set := addedColumnsSet(t, st, "LEGION"); set != 0 {
+			t.Fatalf("%d rows of LEGION hold a column the hash gate added after the way back, want none: every row is in version mode", set)
 		}
-		var table, recorded bool
-		if err := st.Pool().QueryRow(ctx, `select to_regclass('design_gate_verdict_boots') is not null`).Scan(&table); err != nil || table {
-			t.Fatalf("design_gate_verdict_boots after the way back stands: %t (%v), want it dropped", table, err)
+		if gate := gatesOf(t, st, "LEGION-206")[record.DesignStepSpec]; !gate.Carried {
+			t.Fatalf("LEGION-206's carried copy reads %#v after the way back, want it marked carried again, as the migration marks it", gate)
 		}
-		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, hashGateVersion).Scan(&recorded); err != nil || recorded {
-			t.Fatalf("the migration's version row after the way back stands: %t (%v), want it deleted", recorded, err)
+		for key, before := range other {
+			if after := gatesOf(t, st, key)[record.DesignStepSpec]; !reflect.DeepEqual(after, before) {
+				t.Fatalf("the gate of %s, of another project, after LEGION's way back = %#v (verdict %+v, basis %+v); want it as it was, %#v",
+					key, after, after.Verdict, after.Basis, before)
+			}
+		}
+		// It drops nothing, so the daemons of this release that serve other projects from the same
+		// database go on: every column the migration adds, its check, design_gate_verdict_boots and
+		// the migration's version row stand.
+		if columns := gateColumns(t, st); len(columns) != 10 {
+			t.Fatalf("the hash gate's columns of design_gates after the way back = %q, want all ten", columns)
+		}
+		var check, table, recorded bool
+		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from pg_constraint where conname = 'design_gates_verdict_check'),
+			to_regclass('design_gate_verdict_boots') is not null, exists (select 1 from schema_version where version = $1)`, hashGateVersion).
+			Scan(&check, &table, &recorded); err != nil || !check || !table || !recorded {
+			t.Fatalf("after the way back the check stands %t, design_gate_verdict_boots stands %t and the migration's version row stands %t (%v); "+
+				"want each to stand", check, table, recorded, err)
 		}
 
 		// The release before writes on the schema the way back leaves: a new row and a move of
@@ -767,37 +896,24 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		writeAsTheReleaseBefore(t, st, record.DesignGate{Issue: "LEGION-501", ArtifactID: "doc-501", LatestVersion: 2, ApprovedVersion: new(2)})
 		writeAsTheReleaseBefore(t, st, record.DesignGate{Issue: "LEGION-705", ArtifactID: "doc-LEGION-705", LatestVersion: 8,
 			ApprovedVersion: new(7), ApprovedMark: m50, EverOpened: true})
-
-		if _, err := st.Migrate(ctx); err != nil {
-			t.Fatalf("roll forward through the hash gate: %v", err)
-		}
-		var hashMode, marks int
-		if err := st.Pool().QueryRow(ctx, `select count(*) from design_gates where latest_digest_version is not null or approval_current is not null
-			or latest_digest is not null or latest_digest_seq is not null or latest_digest_at is not null or approved_digest is not null
-			or digest_owed is not null or told_open is not null or basis_root_version is not null`).Scan(&hashMode); err != nil || hashMode != 0 {
-			t.Fatalf("%d rows after the roll forward carry a verdict's column (%v), want every row in version mode", hashMode, err)
-		}
-		if err := st.Pool().QueryRow(ctx, `select count(*) from design_gate_verdict_boots`).Scan(&marks); err != nil || marks != 0 {
-			t.Fatalf("design_gate_verdict_boots after the roll forward holds %d rows (%v), want it empty", marks, err)
-		}
-		for _, key := range []string{"LEGION-601", "LEGION-603", "LEGION-701", "LEGION-705", "LEGION-707", "LEGION-501", "ACME-801"} {
-			if gate := gatesOf(t, st, key)[record.DesignStepSpec]; gate.Verdict != nil || gate.ToldOpen != nil {
-				t.Fatalf("the gate of %s after the roll forward reads %#v, want it in version mode", key, gate)
-			}
-		}
 		if gate := gatesOf(t, st, "LEGION-501")[record.DesignStepSpec]; !record.GateOpen(gate) {
-			t.Fatalf("the gate the release before wrote open reads %#v after the roll forward, want it open", gate)
+			t.Fatalf("the gate the release before wrote open reads %#v, want it open", gate)
 		}
-		if gate := gatesOf(t, st, "LEGION-206")[record.DesignStepSpec]; !gate.Carried {
-			t.Fatalf("LEGION-206's carried copy reads %#v after the roll forward, want it marked carried again", gate)
+		earlier := earlierReleaseBoot(t, st, "LEGION", at.Add(9*time.Hour))
+
+		if applied, err := st.Migrate(ctx); err != nil || applied != 0 {
+			t.Fatalf("the roll forward applied %d migrations (%v), want none: the way back deletes no version row", applied, err)
+		}
+		if set := addedColumnsSet(t, st, "LEGION"); set != 0 {
+			t.Fatalf("%d rows of LEGION hold a column the hash gate added after the roll forward, want none", set)
 		}
 
-		// The first boot after the roll forward finds the newest boot, whose row of
-		// design_gate_verdict_boots the way back dropped, and resets: every row is in version mode
-		// already, so it changes none, and it queues a seed of each registered step.
-		reset := resetAtBoot(t, st, "LEGION", at.Add(7*time.Hour))
-		if reset.EarlierBoot != lastBoot || reset.Rows != 0 || reset.BasesEnded != 0 {
-			t.Fatalf("the first boot's reset after the roll forward answered %+v, want the boot %d found and no row changed", reset, lastBoot)
+		// The first boot of this release after the roll forward finds the earlier release's boot,
+		// which has no row of design_gate_verdict_boots, and resets: every row of LEGION is in
+		// version mode already, so it clears none, and it queues a seed of each registered step.
+		_, reset := bootAt(t, st, "LEGION", at.Add(10*time.Hour))
+		if reset.EarlierBoot != earlier || reset.Rows != 0 {
+			t.Fatalf("the first boot's reset after the roll forward answered %+v, want the boot %d found and no row cleared", reset, earlier)
 		}
 		if unseeded := rowsUnseeded(t, st, "LEGION"); len(unseeded) != 0 {
 			t.Fatalf("the rows of LEGION with no gate seed after the roll forward's reset = %q, want a seed of each registered step", unseeded)

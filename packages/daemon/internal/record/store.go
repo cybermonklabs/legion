@@ -2424,10 +2424,10 @@ const gateColumns = `issue, step, artifact_id, latest_version, approved_version,
 // release's write: a basis such a release's write moved is read as ended (basisAsWritten).
 //
 // A release before the hash gate names none of the columns the hash gate added, so its writes
-// leave them as this release last wrote them. No rule here reads past that: the boot's reset
-// after such a release's boot puts every row of the project in version mode before any fact
-// applies (ResetGatesAfterEarlierRelease), and a rollback runs the migration's way back first
-// (dispatch://INFRA-6065, R2).
+// leave them as this release last wrote them. No rule here reads past that: a rollback runs the
+// migration's way back for the project first, which puts its rows in version mode, and the boot
+// after such a release's boot puts every row of the project in version mode again before any fact
+// applies (ResetGatesAfterEarlierRelease) (dispatch://INFRA-6065, R2).
 func scanGate(row scanner) (DesignGate, error) {
 	var gate DesignGate
 	var approvedSeq, toldSeq, basisSeq, keptSeq, digestSeq *int64

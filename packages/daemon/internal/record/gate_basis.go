@@ -170,9 +170,8 @@ func EndPendingBasis(gate DesignGate) DesignGate {
 // column records none: on a row in version mode it is the latest version, which no version of its
 // own document moved without ending the basis, and on a row in hash mode it is read at its
 // verdict's version, which is where a version-mode row entered hash mode. classify.ApplyGateFact
-// reads it of a row in hash mode with a basis, the boot's reset after an earlier release's boot
-// of every row (ResetAfterEarlierRelease), and the workflow's telling of an end by the root's own
-// document of any row and its opening of a pending step.
+// reads it of a row in hash mode with a basis, and the workflow of any row, in its telling of an
+// end by the root's own document and its opening of a pending step.
 func RegisteredRootVersion(gate DesignGate) int {
 	switch {
 	case gate.OnBasis() && gate.ApprovedVersion != nil:
@@ -183,35 +182,6 @@ func RegisteredRootVersion(gate DesignGate) int {
 		return gate.LatestVersion
 	}
 	return gate.Verdict.Version
-}
-
-// ResetAfterEarlierRelease is gate as the boot's reset after an earlier release's boot leaves it
-// (ResetGatesAfterEarlierRelease), which is what the migration's way back does to the row in SQL
-// with the daemon stopped (dispatch://INFRA-6065, R2). First it applies the effect that a version
-// owing its digest defers to the digest and that the row still holds (R3, "A version"): on a row
-// that owes its digest (DigestOwed), a basis, open or pending, registered at a version of the
-// root's own document below the latest (RegisteredRootVersion) ends, as version mode would have
-// ended it at once and as the digest that settles the row would end it (classify's basisEnded), so
-// the step is closed (CloseBasis, EndPendingBasis). Then it puts the row in version mode and
-// clears every value of a column the hash gate added: the verdict, the approved digest, the told
-// standing and the basis's root version. Carried stays as it is: the reset marks the copies again
-// as the migration does. ended says it ended a basis, and changed that it changed the row at all:
-// a row in version mode that holds none of those values is left as it is.
-//
-// On a row that owes no digest, this release ended each basis below the latest version when that
-// version settled, so the reset ends none there.
-func ResetAfterEarlierRelease(gate DesignGate) (reset DesignGate, ended, changed bool) {
-	if gate.Basis != nil && DigestOwed(gate) && RegisteredRootVersion(gate) < gate.LatestVersion {
-		gate, ended = EndPendingBasis(CloseBasis(gate)), true
-	}
-	changed = ended || gate.Verdict != nil || gate.ApprovedDigest != "" || gate.ToldOpen != nil
-	gate.Verdict, gate.ApprovedDigest, gate.ToldOpen = nil, "", nil
-	if gate.Basis != nil && gate.Basis.RootVersion != 0 {
-		basis := *gate.Basis
-		basis.RootVersion = 0
-		gate.Basis, changed = &basis, true
-	}
-	return gate, ended, changed
 }
 
 // heldByPerson says whether a person's own approval of the issue's own document holds the step,

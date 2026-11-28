@@ -57,7 +57,7 @@ func seedStage3(s *seeding) composition {
 	stage3At := time.Date(2126, 9, 22, 17, 30, 0, 0, time.UTC)
 	for _, booted := range []time.Time{time.Date(2126, 9, 18, 14, 3, 27, 0, time.UTC), time.Date(2126, 9, 19, 9, 0, 0, 0, time.UTC),
 		time.Date(2126, 9, 20, 9, 0, 0, 0, time.UTC), time.Date(2126, 9, 21, 9, 0, 0, 0, time.UTC), stage3At} {
-		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
+		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted, nil)
 		s.must("a boot", err)
 	}
 	return composition{cfg: cfg, now: time.Date(2126, 9, 22, 17, 30, 30, 0, time.UTC), startedAt: stage3At}
@@ -76,7 +76,7 @@ func seedOperatorClaim(s *seeding) composition {
 	}
 	cfg := apifixture.LoadSettings(s.t, "project: "+project+"\n"+body)
 	spawnedAt := time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC)
-	_, err := s.st.RecordBoot(s.ctx, project, spawnedAt)
+	_, err := s.st.RecordBoot(s.ctx, project, spawnedAt, nil)
 	s.must("the boot", err)
 	_, err = s.st.OpenOperatorTreeLifecycle(s.ctx, "ac91849371", "AC91849371-900", func(context.Context, pgx.Tx) error { return nil })
 	s.must("the operator's tree", err)
@@ -99,7 +99,7 @@ func seedLastPause(s *seeding) composition {
 	paused, ended := apifixture.Pause(false), apifixture.Pause(true)
 	startedAt := time.Date(2026, 11, 15, 8, 30, 0, 0, time.UTC)
 	for _, booted := range []time.Time{time.Date(2026, 11, 2, 14, 3, 27, 0, time.UTC), startedAt} {
-		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
+		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted, nil)
 		s.must("a boot", err)
 	}
 	_, err := pauseService(s, cfg, paused.Since).Pause(s.ctx, paused.By, paused.Reason)
@@ -177,7 +177,7 @@ func seedDaemonController(s *seeding) composition {
 	})
 	s.openTrees("LEGION", "LEGION-208")
 	for _, booted := range []time.Time{admitted.Add(-time.Hour), admitted.Add(-time.Minute)} {
-		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
+		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted, nil)
 		s.must("a boot", err)
 	}
 	// The architect is ready in its issue's pod, in a `dispatch` call whose start the daemon

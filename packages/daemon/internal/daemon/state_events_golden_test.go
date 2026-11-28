@@ -395,7 +395,7 @@ func TestStateEventsGolden(t *testing.T) {
 			if err := r.workflow.queueStateBoot(ctx, stateTestRun, api.SettingsOf(r.cfg), stateGoldenSchemaVersion); err != nil {
 				t.Fatalf("queue the boot event: %v", err)
 			}
-			if _, err := r.claims.RecordBoot(ctx, r.cfg.Project, r.now); err != nil {
+			if _, err := r.claims.RecordBoot(ctx, r.cfg.Project, r.now, nil); err != nil {
 				t.Fatalf("record the boot: %v", err)
 			}
 		}},

@@ -300,8 +300,8 @@ func changesRequestStands(gate record.DesignGate, version int) bool {
 // basisEnded ends the basis of a row a fact settled at a version of the root's own document above
 // the one the basis was registered at (record.RegisteredRootVersion), as today's newer version
 // ends it: a step open on the basis falls back to the person's approval it kept, and a pending
-// wait ends closed. prior is the row before the fact, in hash mode. The boot's reset after an
-// earlier release's boot ends such a basis by the same rule (record.ResetAfterEarlierRelease).
+// wait ends closed. prior is the row before the fact, in hash mode. The migration's way back ends
+// such a basis by the same rule in SQL, on each row that owes its digest.
 func basisEnded(prior, gate record.DesignGate) record.DesignGate {
 	if gate.Basis == nil || prior.Basis == nil || gate.LatestVersion <= record.RegisteredRootVersion(prior) {
 		return gate

@@ -305,7 +305,8 @@ func openedWithVerdict(approved, current int) string {
 // ends, since its entry verdict is the root's own), W21 (a registration whose read owes the
 // digest answers no wait for a person until the digest settles that version), W22 (a rise of
 // the approved version an owed digest held back queues the news at the settlement) and W29 (the
-// boot's reset after an earlier release's boot tells each change of standing it makes, R2). Each row
+// boot's reset after an earlier release's boot tells nothing, and the gate seed's verdict then
+// tells the change from the standing version mode reads, R2). Each row
 // asserts the record it leaves (record.GateOpen, record.ToldStanding, the approved version, the
 // root's wait) and the outbox rows it queues, exactly. Every event fact is decoded from the wire
 // fixtures of packages/contracts/fixtures/hash-gate through intake.DecodeDispatchEvent; every
@@ -1535,14 +1536,19 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 	})
 
 	// W29: an earlier release booted on this project since this release's last boot, so the boot
-	// resets the project's rows to version mode before it applies any fact
-	// (record.ResetGatesAfterEarlierRelease), each row through the engine (Engine.ResetGate),
-	// which tells each change of standing the reset makes as every other move tells it: a basis it
-	// ends is told to the root's architect as basis-ended, a gate told open that reads closed is
-	// told closed once, and one already told closed is told nothing. The earlier release's boot is
-	// a daemon_boot row with no row of design_gate_verdict_boots.
-	resetAfterEarlierRelease := func(t *testing.T, pool *pgxpool.Pool) record.GateReset {
-		t.Helper()
+	// puts the project's rows in version mode in the transaction that records the boot, before it
+	// applies any fact (record.ResetGatesAfterEarlierRelease), and tells nothing: the columns
+	// cannot show what the earlier release did, and the standing version mode reads is the one the
+	// earlier release left. The gate seed the reset queues then reads Dispatch, and its verdict
+	// tells the change from that standing, as any seed's verdict does. The earlier release's boot
+	// is a daemon_boot row with no row of design_gate_verdict_boots.
+	t.Run("W29", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		hashTree(t, pool, 4)
+		// Open on the person's approval of version 4, which Dispatch reported current for the
+		// latest version 5, told open.
+		seedGate(t, pool, openAt(5, 4, 10, 30))
 		var earlier int64
 		if err := pool.QueryRow(t.Context(), `insert into daemon_boot (project, started_at) values ('LEGION', $1) returning id`, basisEngineNow).Scan(&earlier); err != nil {
 			t.Fatalf("record the earlier release's boot: %v", err)
@@ -1550,75 +1556,38 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		var reset record.GateReset
 		if err := store.Transact(t.Context(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, record.NewStore(), "LEGION", steps, engine.ResetGate, basisEngineNow)
+			reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, record.NewStore(), "LEGION", steps, basisEngineNow)
 			return err
 		}); err != nil {
 			t.Fatalf("the boot's reset: %v", err)
 		}
-		if want := (record.GateReset{EarlierBoot: earlier, Rows: 1, BasesEnded: 1, Seeds: 1}); reset != want {
-			t.Fatalf("the reset answered %+v, want %+v: the spec row reset with its basis ended, and its seed queued", reset, want)
+		if want := (record.GateReset{EarlierBoot: earlier, Rows: 1, Seeds: 1}); reset != want {
+			t.Fatalf("the reset answered %+v, want %+v: the spec row put in version mode, and its seed queued", reset, want)
+		}
+		// Version mode reads no approval of the latest version 5, so the row reads closed, and so
+		// does the standing it was last told, and the reset told nobody anything.
+		if gate := assertHashGate(t, pool, gatedRoot, false, false, 4); gate.Verdict != nil || gate.ToldOpen != nil {
+			t.Fatalf("the spec row = %+v (verdict %+v), want it in version mode", gate, gate.Verdict)
+		}
+		for _, kind := range []record.OutboxKind{record.OutboxKindRoleMessage, record.OutboxKindNotice, record.OutboxKindDesignChanges} {
+			assertOutboxCount(t, pool, string(kind), 0)
 		}
 		assertOutboxCount(t, pool, string(record.OutboxKindGateSeed), 1)
-		return reset
-	}
-	t.Run("W29", func(t *testing.T) {
-		t.Parallel()
-		const newer = "Version 4 of the primary document of LEGION-208 (dispatch://LEGION-208/spec), the root's own document, is newer than version 3, " +
-			"which the step was registered at, and its digest was owed. An earlier release of the Legion daemon booted on this project since"
-		// The step open on LEGION-100's approval of its version 3, registered at the root's own
-		// version 3, while version 4 owes its digest: it reads closed, told open as the basis opened
-		// it. The reset ends the basis, told to the root's architect, and tells the tree the close.
-		t.Run("a step open on a basis", func(t *testing.T) {
-			t.Parallel()
-			pool, apply := rig(t)
-			hashTree(t, pool, 3)
-			seedGate(t, pool, onBasisAt(3, 3))
-			apply("version-4", versionOf(t, owedVersion, gatedRoot, gateDoc, 4, 30))
-			if gate := assertHashGate(t, pool, gatedRoot, false, true, 3); !gate.OnBasis() || !record.DigestOwed(gate) {
-				t.Fatalf("the spec row = %+v, want it on its basis while version 4 owes its digest", gate)
-			}
-			assertNothingSent(t, pool)
 
-			resetAfterEarlierRelease(t, pool)
+		// The seed reads Dispatch: the person's approval of 4 stands for the latest version 5. The
+		// gate opens from the closed standing version mode read, and the opening is told: the tree's
+		// opened message, and design-approved naming the person's approval of 4 the read shows.
+		apply("seed-read", gateSeedRead(gatedRoot, gateDoc, 4, 5, hashMark(10), false, true, hashMark(40)))
 
-			if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); gate.Basis != nil || gate.Verdict != nil || gate.ToldOpen != nil {
-				t.Fatalf("the spec row = %+v (verdict %+v), want it in version mode with its basis ended", gate, gate.Verdict)
-			}
-			ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
-			if len(ended) != 1 || ended[0].Version != 3 || ended[0].Actor != "" || ended[0].Role != claim.RoleArchitect ||
-				ended[0].Ref != "dispatch://LEGION-100/spec" || !strings.Contains(ended[0].Reason, newer) ||
-				!strings.Contains(ended[0].Reason, "stood open on the approval of version 3 of the primary document of LEGION-100") ||
-				!strings.Contains(ended[0].Reason, "The step stays closed") {
-				t.Fatalf("basis-ended notices = %+v, want one to the root's architect naming %q", ended, newer)
-			}
-			assertOutboxCount(t, pool, string(record.OutboxKindNotice), 1)
-			assertTreeTold(t, pool, toEveryone(gateMovedBody(record.DesignStepSpec, gateDoc, 4, false)))
-		})
-		// The step waiting on ask-100, registered at the root's own version 3, while version 4 owes
-		// its digest: it reads closed and was told closed. The reset ends the wait, told to the
-		// root's architect, and the tree is told nothing: its standing does not move.
-		t.Run("a step pending on a request", func(t *testing.T) {
-			t.Parallel()
-			pool, apply := rig(t)
-			hashTree(t, pool, 3)
-			seedGate(t, pool, pendingAt(3))
-			apply("version-4", versionOf(t, owedVersion, gatedRoot, gateDoc, 4, 30))
-			if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); !gate.PendingOnBasis() || !record.DigestOwed(gate) {
-				t.Fatalf("the spec row = %+v, want it pending while version 4 owes its digest", gate)
-			}
-			assertNothingSent(t, pool)
-
-			resetAfterEarlierRelease(t, pool)
-
-			if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); gate.Basis != nil || gate.Verdict != nil || gate.ToldOpen != nil {
-				t.Fatalf("the spec row = %+v (verdict %+v), want it in version mode with its wait ended", gate, gate.Verdict)
-			}
-			ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
-			if len(ended) != 1 || ended[0].Version != 4 || ended[0].Actor != "" || ended[0].Ref != "dispatch://LEGION-100/spec" ||
-				!strings.Contains(ended[0].Reason, newer) || !strings.Contains(ended[0].Reason, "no longer waits on approval request ask-100") {
-				t.Fatalf("basis-ended notices = %+v, want one to the root's architect naming %q", ended, newer)
-			}
-			assertOutboxCount(t, pool, string(record.OutboxKindRoleMessage), 0)
-		})
+		assertHashGate(t, pool, gatedRoot, true, true, 4)
+		opened := openedWithVerdict(4, 5)
+		assertTreeTold(t, pool, [3]string{opened + " " + nothingChangedClause(4), opened + " " + treeNothingChangedClause(4), opened + " " + nothingChangedClause(4)})
+		approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
+		if len(approved) != 1 || approved[0].Version != 4 || approved[0].Actor != askPerson.Name() || approved[0].Review != hashMark(10) ||
+			approved[0].Artifact != gateDoc {
+			t.Fatalf("design-approved notices = %+v, want one of version 4 by %s, at the approval's mark m10", approved, askPerson.Name())
+		}
+		assertOutboxCount(t, pool, string(record.OutboxKindNotice), 1)
+		assertOutboxCount(t, pool, string(record.OutboxKindDesignChanges), 0)
 	})
 }

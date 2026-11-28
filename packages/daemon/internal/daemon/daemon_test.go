@@ -690,9 +690,11 @@ func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
 	}
 }
 
-// A recorded boot is a boot that served. A daemon whose port is already taken never ran, and a
-// row for it would inflate `daemon.boots` — the value `legion state` answers with and the stage
-// gate asserts on.
+// A daemon without the workflow records its boot once it is ready, so its recorded boot is a boot
+// that served. A daemon whose port is already taken never ran, and a row for it would inflate
+// `daemon.boots` — the value `legion state` answers with and the stage gate asserts on. (A daemon
+// with the workflow records its boot before its first fact, with the reset after an earlier
+// release's boot, so a boot of it that fails later keeps its row: workflowRuntime.recordBoot.)
 func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)

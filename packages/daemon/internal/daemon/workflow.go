@@ -76,6 +76,11 @@ type workflowRuntime struct {
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
 	// (config.Gates.Steps).
 	gatedSteps []record.DesignStep
+	// bootRecord and bootStartedAt are this boot's daemon_boot row, which openWorkflow writes
+	// before any fact, in the transaction of the reset after an earlier release's boot
+	// (recordBoot). run holds this id for the boot, and records no second row.
+	bootRecord    int64
+	bootStartedAt time.Time
 	// tokens mints every lease the workflow's own reads and writes use. apps is that same token
 	// source whole, the leases and the owners each App is installed on (appauth.Source), which
 	// the daemon hands on to the runtime it builds and to the API's routes (run, serve): both
@@ -717,9 +722,9 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 
 // openWorkflow opens the workflow in the order a refusal names its cause: the configuration, the
 // Apps' logins, the proof of each App's key (proveAppKeys, which records the owners each App is
-// installed on into installed), the records and the pool, the reset of the project's design gates
-// where an earlier release booted since this release's last boot
-// (resetGatesAfterEarlierRelease), the fill of any record written before the record
+// installed on into installed), the records and the pool, the boot's own record, in one
+// transaction with the reset of the project's design gates where an earlier release booted since
+// this release's last boot (recordBoot), the fill of any record written before the record
 // carried its repository (backfillRepositories, which leaves a record it cannot fill for the
 // refresher), then the deployment's design-gate steps queued for the project's Dispatch row
 // (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
@@ -884,9 +889,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	// The reset after an earlier release's boot runs before the boot's first write of a record and
-	// before any fact (resetGatesAfterEarlierRelease).
-	if err := w.resetGatesAfterEarlierRelease(ctx); err != nil {
+	// The boot records itself, with the reset after an earlier release's boot, before its first
+	// write of a record and before any fact (recordBoot).
+	if err := w.recordBoot(ctx, st); err != nil {
 		return nil, err
 	}
 	// The boot writes through the bare records, so it asks for no follow of a record it fills:
@@ -908,29 +913,34 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	return w, nil
 }
 
-// resetGatesAfterEarlierRelease is the boot's reset after an earlier release's boot
-// (record.ResetGatesAfterEarlierRelease, dispatch://INFRA-6065 R2), in one transaction of its own:
-// where an earlier release booted since this release's last boot, it puts the design gates of the
-// project's issues in version mode, ending each basis a version owing its digest held past that
-// version, and queues the gate seed of each registered step of each tree in the workflow.
-// openWorkflow runs it before the boot's first write of a record and before any fact: the
-// repository backfill, the publications and seeds queued after it, the open of the uncounted runs,
-// the reconcile, the catch-up and the consumers all come after it, and so does this boot's own
-// RecordBoot, so the newest boot it reads is the one before this. Each row it changes is written
-// through the engine, which tells each change of standing (workflow.Engine.ResetGate), and it logs
-// what it did. A boot that cannot write the reset fails, as the publications after it do.
-func (w *workflowRuntime) resetGatesAfterEarlierRelease(ctx context.Context) error {
+// recordBoot writes this boot's daemon_boot row and its marker (store.Store.RecordBoot), and in
+// the same transaction, before those rows, the boot's reset after an earlier release's boot
+// (record.ResetGatesAfterEarlierRelease, dispatch://INFRA-6065 R2): where the project's newest
+// earlier boot has no marker, an earlier release booted since this release's last boot, and the
+// reset puts the design gates of the project's issues in version mode, ending no basis and telling
+// nothing, and queues the gate seed of each registered step of each tree in the workflow, whose
+// verdict then tells each change from the standing version mode reads. openWorkflow runs it before
+// the boot's first write of a record and before any fact: the repository backfill, the
+// publications and seeds queued after it, the open of the uncounted runs, the reconcile, the
+// catch-up and the consumers all come after it. The boot and the reset commit together, so a boot
+// that fails after this leaves its marked row, and the next boot resets nothing over rows this
+// release wrote since; and run holds the id written here (bootRecord) rather than recording a second
+// row. A boot that cannot write it fails, as the publications after it do.
+func (w *workflowRuntime) recordBoot(ctx context.Context, st *store.Store) error {
 	var reset record.GateReset
-	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+	startedAt := time.Now().UTC()
+	id, err := st.RecordBoot(ctx, w.dispatchProject, startedAt, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, w.records, w.dispatchProject, w.gatedSteps, w.engine.ResetGate, time.Now().UTC())
+		reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, w.records, w.dispatchProject, w.gatedSteps, startedAt)
 		return err
-	}); err != nil {
-		return fmt.Errorf("reset the design gates of %s after an earlier release's boot: %w", w.dispatchProject, err)
+	})
+	if err != nil {
+		return err
 	}
+	w.bootRecord, w.bootStartedAt = id, startedAt
 	if reset.EarlierBoot != 0 {
 		w.log.Info("legion workflow boot found that an earlier release booted since this release's last boot, and put the project's design gates in version mode",
-			"earlierBoot", reset.EarlierBoot, "rowsReset", reset.Rows, "basesEnded", reset.BasesEnded, "gateSeeds", reset.Seeds)
+			"earlierBoot", reset.EarlierBoot, "boot", id, "rowsReset", reset.Rows, "gateSeeds", reset.Seeds)
 	}
 	return nil
 }
@@ -1003,7 +1013,7 @@ func (w *workflowRuntime) queueGatedStepsPublish(ctx context.Context) error {
 // request among them, of each issue whose tree's root is in the workflow (record.InWorkflow), so
 // a verdict the intake lost is read again from Dispatch (R2 of dispatch://INFRA-6065). A boot
 // after an earlier release's boot has queued the seed of every registered step already, open or
-// closed (resetGatesAfterEarlierRelease), and this queues none beside one still
+// closed (recordBoot), and this queues none beside one still
 // pending. A gate open on the record is read before the starts it holds (the outbox's
 // designGateStandsInDispatch), and a step no person approves (record.TakesStep) holds nothing.
 // Which closed steps get a seed is the rule the reset's seeds follow too (record.EnqueueGateSeeds).
