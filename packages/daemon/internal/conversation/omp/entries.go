@@ -70,6 +70,7 @@ type message struct {
 	Steering         bool            `json:"steering"`
 	Timestamp        *float64        `json:"timestamp"`
 	HistoryRewriteAt *float64        `json:"historyRewriteAt"`
+	ProviderPayload  json.RawMessage `json:"providerPayload"`
 	// assistant
 	API             string          `json:"api"`
 	Provider        string          `json:"provider"`
@@ -80,7 +81,6 @@ type message struct {
 	RequestControls json.RawMessage `json:"requestControls"`
 	RetryRecovery   json.RawMessage `json:"retryRecovery"` // true in older builds, an object now
 	Continued       json.RawMessage `json:"continued"`
-	ProviderPayload json.RawMessage `json:"providerPayload"`
 	// toolResult
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`

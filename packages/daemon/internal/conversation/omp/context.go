@@ -11,16 +11,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
-// llmMessage is one message as Oh My Pi's convertToLlm hands it to the provider layer: a user,
-// assistant or tool result message. A developer message is a user message here: both provider
-// APIs the reader rebuilds for send it as one.
+// llmMessage is one message as Oh My Pi's convertToLlm hands it to the provider layer.
 type llmMessage struct {
-	role                 string // "user", "assistant" or "toolResult"
-	blocks               []block
+	role   string // "user", "assistant" or "toolResult"
+	blocks []block
+	// A developer turn starts with the user projection, but Anthropic can upgrade it.
+	developer            bool
+	attribution          string
+	payload              json.RawMessage
+	stringInput          bool
 	timestamp, rewriteAt *float64
 	// assistant
 	api, provider, model, stopReason    string
-	payload                             json.RawMessage
 	continued                           bool
 	userInterrupted, hasRequestControls bool
 	// toolResult
@@ -30,7 +32,7 @@ type llmMessage struct {
 	notExecuted          bool
 	// custom user message
 	customType string
-	// user: a compaction summary's provider-native replay
+	// provider-native replay derived from compaction
 	native *conversation.Native
 }
 
@@ -89,23 +91,25 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 
 	models := map[string]string{}
 	explicitDefault := false
+	hasThinkingEntry := false
 	lastModelRole := ""
 	resetIdx := -1
 	for i, e := range path {
 		switch e.Type {
 		case "thinking_level_change":
+			hasThinkingEntry = true
 			ctx.thinkingLevel = "off"
 			if e.ThinkingLevel != nil {
 				ctx.thinkingLevel = *e.ThinkingLevel
 			}
 		case "model_change":
+			role := "default"
+			if e.Role != nil {
+				role = *e.Role
+			}
+			lastModelRole = role
 			if e.Model != "" {
-				role := "default"
-				if e.Role != nil {
-					role = *e.Role
-				}
 				models[role] = e.Model
-				lastModelRole = role
 				if role == "default" {
 					explicitDefault = true
 				}
@@ -118,7 +122,12 @@ func buildContext(entries []*entry) (*sessionContext, error) {
 			resetIdx = i
 		}
 	}
-	ctx.model = restoredModel(models, lastModelRole)
+	selector := restoredModel(models, lastModelRole)
+	var level string
+	ctx.model, level = restoredModelID(entries, selector)
+	if !hasThinkingEntry && level != "" && level != "auto" && level != "inherit" {
+		ctx.thinkingLevel = level
+	}
 	provider, _, _ := strings.Cut(ctx.model, "/")
 	ctx.api = modelAPI(entries, ctx.model)
 	compactionIdx := -1
@@ -344,6 +353,34 @@ func restoredModel(models map[string]string, lastRole string) string {
 	return models["default"]
 }
 
+// restoredModelID splits the thinking suffix on a saved model selector
+// (model-selector.ts:59–78). A recorded literal :max or :auto model stands
+// in for the registry's exact lookup for those two ambiguous suffixes.
+func restoredModelID(entries []*entry, selector string) (id, level string) {
+	slash, colon := strings.IndexByte(selector, '/'), strings.LastIndexByte(selector, ':')
+	if slash <= 0 || colon <= slash+1 {
+		return selector, ""
+	}
+	suffix := selector[colon+1:]
+	if len(suffix) >= 2 {
+		for _, candidate := range []string{"inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"} {
+			if strings.HasPrefix(candidate, suffix) {
+				if level != "" {
+					return selector, ""
+				}
+				level = candidate
+			}
+		}
+	}
+	if suffix == "auto" {
+		level = suffix
+	}
+	if level == "" || (level == "max" || level == "auto") && modelAPI(entries, selector) != "" {
+		return selector, ""
+	}
+	return selector[:colon], level
+}
+
 func indexOf(path []*entry, id string) int {
 	return slices.IndexFunc(path, func(e *entry) bool { return e.ID == id })
 }
@@ -563,7 +600,9 @@ func messageEntryMessages(e *entry) ([]llmMessage, error) {
 		if m.Role == "user" && m.Steering {
 			blocks = steeringBlocks(blocks)
 		}
-		turn := llmMessage{role: "user", blocks: blocks}
+		turn := llmMessage{role: "user", blocks: blocks, developer: m.Role == "developer",
+			attribution: m.Attribution, payload: m.ProviderPayload}
+		turn.stringInput = startsJSON(m.Content, '"')
 		if m.Role == "user" {
 			turn.rewriteAt = m.HistoryRewriteAt
 		}
@@ -624,6 +663,11 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 	one := func(blocks []block) llmMessage {
 		return llmMessage{role: "user", blocks: blocks, customType: customType}
 	}
+	developer := func(blocks []block) llmMessage {
+		turn := one(blocks)
+		turn.developer, turn.attribution = true, attribution
+		return turn
+	}
 	trimmed := bytes.TrimSpace(content)
 	textContent := bytes.HasPrefix(trimmed, []byte(`"`))
 	if !textContent && !bytes.HasPrefix(trimmed, []byte("[")) {
@@ -649,11 +693,11 @@ func customMessages(customType string, content json.RawMessage, attribution, whe
 		}
 	}
 	if len(images) == 0 || textContent {
-		return []llmMessage{one(blocks)}, nil
+		return []llmMessage{developer(blocks)}, nil
 	}
 	var out []llmMessage
 	if len(texts) > 0 {
-		out = append(out, one(texts))
+		out = append(out, developer(texts))
 	}
 	note := block{Type: "text", Text: "Images attached to " + customType + "."}
 	return append(out, one(append([]block{note}, images...))), nil

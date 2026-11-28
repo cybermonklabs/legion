@@ -7,6 +7,25 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
+// responsesInputHistory retains the eligible replay alternative beside the
+// fallback user blocks (openai-shared.ts:2332–2357). Without an explicit
+// provider, getOpenAIResponsesHistoryItems uses the current provider.
+func responsesInputHistory(raw json.RawMessage, provider string) *conversation.Native {
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload struct {
+		Type     conversation.NativeKind
+		Provider *string
+		Items    []json.RawMessage
+	}
+	if json.Unmarshal(raw, &payload) != nil || payload.Type != conversation.OpenAIResponsesHistory ||
+		payload.Items == nil || payload.Provider != nil && *payload.Provider != provider {
+		return nil
+	}
+	return &conversation.Native{Kind: payload.Type, Provider: provider, Items: payload.Items, Payload: raw}
+}
+
 func responsesTextSignature(signature string) (id, phase string) {
 	if !strings.HasPrefix(signature, "{") {
 		return signature, ""

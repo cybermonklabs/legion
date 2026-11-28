@@ -80,6 +80,10 @@ func read(t *testing.T, content []byte) *Session {
 
 func text(s string) conversation.Block { return conversation.Block{Type: conversation.Text, Text: s} }
 
+func systemText(s string) conversation.Message {
+	return conversation.Message{Role: conversation.System, Content: []conversation.Block{text(s)}}
+}
+
 func user(texts ...string) conversation.Message {
 	m := conversation.Message{Role: conversation.User}
 	for _, s := range texts {
@@ -253,7 +257,9 @@ func TestReadCarriesDerivedOpenAICompactionPayload(t *testing.T) {
 	f := newFixture()
 	f.add(userEntry("request"))
 	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "stop", `[{"type":"text","text":"answer"}]`))
-	items := `[{"type":"compaction","encrypted_content":"encoded"}]`
+	first := `{"type":"compaction","encrypted_content":"first"}`
+	second := `{"type":"compaction_summary","encrypted_content":"second"}`
+	items := `[` + first + `,` + second + `]`
 	f.add(`{"type":"compaction","summary":"Compacted.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":{"provider":"openai","replacementHistory":` + items + `}}}`)
 	s := read(t, f.bytes())
 	payload := `{"type":"openaiResponsesHistory","provider":"openai","items":` + items + `}`
@@ -263,6 +269,9 @@ func TestReadCarriesDerivedOpenAICompactionPayload(t *testing.T) {
 	native := s.Messages[0].Native
 	if native.Kind != conversation.OpenAIResponsesHistory || native.Provider != "openai" || native.Incremental || string(native.Payload) != payload {
 		t.Errorf("native = %+v, Payload = %s, want %s", native, native.Payload, payload)
+	}
+	if len(native.Items) != 2 || string(native.Items[0]) != first || string(native.Items[1]) != second {
+		t.Errorf("native replay items = %q, want %s in order", native.Items, items)
 	}
 }
 
@@ -282,7 +291,7 @@ func TestReadAppliesEntryPatchContent(t *testing.T) {
 		`{"entryId":`+quote(answer)+`,"message":{"content":[{"type":"text","text":"new answer"}]}}`,
 	))
 	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
-		user("new developer text"), user("latest request"), user("new note"), claude(text("new answer")),
+		user("new developer text"), user("latest request"), systemText("new note"), claude(text("new answer")),
 	})
 }
 
@@ -368,11 +377,16 @@ func TestReadDoesNotInferASyntheticAssistantModel(t *testing.T) {
 // session-context.ts:69–84,657–673: a user-attributed skill prompt or a parent's IRC
 // message can be the last request restored before the kept tail.
 func TestReadRestoresCustomRolloverRequests(t *testing.T) {
-	for _, tc := range []struct{ name, record, want string }{
-		{"user skill prompt", `{"type":"custom_message","customType":"skill-prompt","attribution":"user","content":"skill request"}`, "skill request"},
-		{"agent skill prompt", `{"type":"custom_message","customType":"skill-prompt","attribution":"agent","content":"skill request"}`, "plain request"},
-		{"parent IRC", `{"type":"custom_message","customType":"irc:incoming","details":{"fromParent":true},"content":"parent request"}`, "parent request"},
-		{"other IRC", `{"type":"custom_message","customType":"irc:incoming","details":{"fromParent":false},"content":"another IRC message"}`, "plain request"},
+	for _, tc := range []struct {
+		name, record string
+		request      conversation.Message
+	}{
+		{"user skill prompt", `{"type":"custom_message","customType":"skill-prompt","attribution":"user","content":"skill request"}`, user("skill request")},
+		{"user collaborator prompt", `{"type":"custom_message","customType":"collab-prompt","attribution":"user","content":"collaborator request"}`,
+			user(render(steeringTemplate, "{{message}}", "collaborator request"))},
+		{"agent skill prompt", `{"type":"custom_message","customType":"skill-prompt","attribution":"agent","content":"skill request"}`, user("plain request")},
+		{"parent IRC", `{"type":"custom_message","customType":"irc:incoming","details":{"fromParent":true},"content":"parent request"}`, systemText("parent request")},
+		{"other IRC", `{"type":"custom_message","customType":"irc:incoming","details":{"fromParent":false},"content":"another IRC message"}`, user("plain request")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
@@ -385,7 +399,7 @@ func TestReadRestoresCustomRolloverRequests(t *testing.T) {
 			if len(messages) != 3 {
 				t.Fatalf("messages = %+v, want summary, restored request, kept answer", messages)
 			}
-			assertMessages(t, messages[1:], []conversation.Message{user(tc.want), claude(text("kept answer"))})
+			assertMessages(t, messages[1:], []conversation.Message{tc.request, claude(text("kept answer"))})
 		})
 	}
 }
@@ -654,7 +668,7 @@ func TestReadKeepsAReminderAcrossToolResultsAndContextNotes(t *testing.T) {
 		t.Fatalf("messages = %+v, want summary, continued turn, tool result, context notes, reminder", messages)
 	}
 	assertMessages(t, messages[1:3], []conversation.Message{claude(text("partial"), call("call", "read", `{}`)), result("call", "read", "plum", false)})
-	assertMessages(t, messages[4:], []conversation.Message{user("Pick up where you stopped.")})
+	assertMessages(t, messages[4:], []conversation.Message{systemText("Pick up where you stopped.")})
 }
 
 // context-notes.ts:22–43,54–63: count UTF-8 bytes and ignore an invalid revision
@@ -731,7 +745,7 @@ func TestReadSuppressesBranchSummaryDuplicatedByRewindReport(t *testing.T) {
 	f.add(`{"type":"custom_message","customType":"rewind-report","content":"Report for the model."}`)
 	f.add(claudeEntry("stop", `[{"type":"text","text":"done"}]`))
 	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
-		user("request"), user("Report for the model."), claude(text("done")),
+		user("request"), systemText("Report for the model."), claude(text("done")),
 	})
 }
 
@@ -765,8 +779,8 @@ func TestReadCarriesToolCallIDsAsTheTargetRequestDoes(t *testing.T) {
 	if got := s.Messages[2]; !reflect.DeepEqual(got, result(anthropicID, "read", "out", false)) {
 		t.Errorf("message after the call = %+v, want the real result under %q", got, anthropicID)
 	}
-	if got := s.Messages[3]; got.Role != conversation.User || got.Content[0].Text != "Keep going." {
-		t.Errorf("message after the result = %+v, want the custom message", got)
+	if got := s.Messages[3]; !reflect.DeepEqual(got, systemText("Keep going.")) {
+		t.Errorf("message after the result = %+v, want the custom message as a system turn", got)
 	}
 
 	s = read(t, build(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "stop", `[{"type":"text","text":"done"}]`)))
@@ -950,11 +964,6 @@ func TestReadRefusesWhatItDoesNotKnow(t *testing.T) {
 		{"a provider payload type", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"anthropic-messages","provider":"anthropic","model":"claude-x","stopReason":"stop","content":[{"type":"text","text":"hi"}],"providerPayload":{"type":"geminiHistory"}}}` + "\n"},
 		{"a provider API", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"assistant","api":"google-generative-ai","provider":"google","model":"gemini-3","stopReason":"stop","content":[{"type":"text","text":"hi"}]}}` + "\n"},
 		{"a mistyped field", fixtureHeader + "\n" + `{"type":"compaction","id":"a","parentId":null,"summary":7,"firstKeptEntryId":"x"}` + "\n"},
-		{"a snapcompact archive", fixtureHeader + "\n" + `{"type":"compaction","id":"a","parentId":null,"summary":"s","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}` + "\n"},
-		{"a bash execution", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"bashExecution","command":"ls","output":""}}` + "\n"},
-		{"a python execution", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"pythonExecution","code":"print(1)","output":"1","cancelled":false,"truncated":false,"timestamp":1}}` + "\n"},
-		{"a file mention message", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"fileMention","files":[{"path":"note.txt","content":"plum"}],"timestamp":1}}` + "\n"},
-		{"a legacy hook message", fixtureHeader + "\n" + `{"type":"message","id":"a","parentId":null,"message":{"role":"hookMessage","customType":"note","content":"a note","display":false,"timestamp":1}}` + "\n"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			_, err := Read([]byte(testCase.content), Options{})
@@ -964,6 +973,24 @@ func TestReadRefusesWhatItDoesNotKnow(t *testing.T) {
 			var formatError *conversation.FormatError
 			if !errors.As(err, &formatError) || formatError.What == "" {
 				t.Errorf("Read = %v, want a FormatError naming what it did not know", err)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, entry, what string }{
+		{"a snapcompact archive", `{"type":"compaction","summary":"s","firstKeptEntryId":"","preserveData":{"snapcompact":{}}}`, "snapcompact compaction e0000002"},
+		{"a bash execution", `{"type":"message","message":{"role":"bashExecution","command":"ls","output":""}}`, "bashExecution message e0000002 in the context"},
+		{"a python execution", `{"type":"message","message":{"role":"pythonExecution","code":"print(1)","output":"1","cancelled":false,"truncated":false,"timestamp":1}}`, "pythonExecution message e0000002 in the context"},
+		{"a file mention message", `{"type":"message","message":{"role":"fileMention","files":[{"path":"note.txt","content":"plum"}],"timestamp":1}}`, `message role "fileMention"`},
+		{"a legacy hook message", `{"type":"message","message":{"role":"hookMessage","customType":"note","content":"a note","display":false,"timestamp":1}}`, `message role "hookMessage"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(claudeEntry("stop", `[{"type":"text","text":"supported model"}]`))
+			f.add(tc.entry)
+			_, err := Read(f.bytes(), Options{})
+			var formatError *conversation.FormatError
+			if !errors.As(err, &formatError) || formatError.What != tc.what {
+				t.Fatalf("Read = %v, want FormatError.What = %q", err, tc.what)
 			}
 		})
 	}
@@ -985,6 +1012,14 @@ func TestReadConvertsCustomMessagesAndPrunes(t *testing.T) {
 	f.add(`{"type":"custom","customType":"tool_result_prune","data":{"results":[{"entryId":"` + result + `","notice":"[Uneventful result elided]","prunedAt":5}]}}`)
 	f.add(claudeEntry("stop", `[{"type":"text","text":"done"}]`))
 	f.add(`{"type":"custom","customType":"legion-answer","data":{"questionId":"q1"}}`)
+	ctx := contextBeforeRequest(t, f)
+	for _, m := range ctx.messages {
+		if m.role == "toolResult" && m.toolCallID == "toolu_01" {
+			if m.rewriteAt == nil || *m.rewriteAt != 5 {
+				t.Errorf("the prune's rewrite timestamp was not carried: %v, want 5", m.rewriteAt)
+			}
+		}
+	}
 	s := read(t, f.bytes())
 	assertMessages(t, s.Messages, []conversation.Message{
 		user("request"),

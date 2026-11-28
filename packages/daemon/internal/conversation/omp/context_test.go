@@ -17,6 +17,9 @@ func TestReadRestoresBranchSettings(t *testing.T) {
 			f := newFixture()
 			f.add(`{"type":"model_change","model":"anthropic/claude-opus-5-5"}`)
 			f.add(claudeEntry("stop", `[{"type":"text","text":"default"}]`))
+			if tc.role == `"small"` {
+				f.add(`{"type":"model_change","model":"anthropic/claude-opus-5-5","role":"small"}`)
+			}
 			f.add(`{"type":"model_change","model":"anthropic/claude-small","role":` + tc.role + `}`)
 			f.add(assistantEntry("anthropic", conversation.AnthropicMessages, "claude-small", "stop", `[{"type":"text","text":"small"}]`))
 			f.add(assistantEntry("other", conversation.OpenAIResponses, "temporary", "stop", `[{"type":"text","text":"temporary"}]`))
@@ -34,6 +37,43 @@ func TestReadRestoresBranchSettings(t *testing.T) {
 			}
 			assertMessages(t, s.Messages, []conversation.Message{user("after reset")})
 		})
+	}
+}
+
+func TestReadRestoresSavedModelSelector(t *testing.T) {
+	for _, tc := range []struct {
+		name, selector, assistant, level, change string
+	}{
+		{"concrete suffix", "gpt-test:high", "gpt-test", "high", ""},
+		{"ambiguous literal", "gpt-test:max", "gpt-test:max", "off", ""},
+		{"recorded level overrides suffix", "gpt-test:high", "gpt-test", "medium", `{"type":"thinking_level_change","thinkingLevel":"medium","configured":"auto"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(`{"type":"model_change","model":"openai/` + tc.selector + `"}`)
+			f.add(assistantEntry("openai", conversation.OpenAIResponses, tc.assistant, "stop", `[{"type":"text","text":"answer"}]`))
+			if tc.change != "" {
+				f.add(tc.change)
+			}
+			s := read(t, f.bytes())
+			if s.Model != "openai/"+tc.assistant || s.API != conversation.OpenAIResponses || s.ThinkingLevel != tc.level {
+				t.Fatalf("Model = %q, API = %q, ThinkingLevel = %q, want openai/%s, openai-responses, %s",
+					s.Model, s.API, s.ThinkingLevel, tc.assistant, tc.level)
+			}
+		})
+	}
+}
+
+func TestReadRestoresLastRoleEvenWhenItsChangeHasNoModel(t *testing.T) {
+	f := newFixture()
+	f.add(`{"type":"model_change","model":"anthropic/claude-opus-5-5"}`)
+	f.add(claudeEntry("stop", `[{"type":"text","text":"default"}]`))
+	f.add(`{"type":"model_change","role":"small","model":"openai/gpt-test"}`)
+	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-test", "stop", `[{"type":"text","text":"small"}]`))
+	f.add(`{"type":"model_change","role":"default","model":""}`)
+	s := read(t, f.bytes())
+	if s.Model != "anthropic/claude-opus-5-5" || s.API != conversation.AnthropicMessages {
+		t.Fatalf("Model = %q, API = %q, want the existing default selection", s.Model, s.API)
 	}
 }
 

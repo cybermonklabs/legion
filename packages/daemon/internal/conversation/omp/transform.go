@@ -21,6 +21,8 @@ type target struct {
 	textOnly          bool
 	prefixBinding     bool
 	demotionClass     string
+	anthropicSystem   bool
+	anthropicEffort   bool
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
@@ -28,6 +30,7 @@ type target struct {
 func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) {
 	if t.api == conversation.AnthropicMessages {
 		t.prefixBinding = anthropicPrefixBinding(t.model)
+		t.anthropicSystem, t.anthropicEffort = anthropicControlSupport(t.model)
 	}
 	t.demotionClass = replayModelClass(t.model)
 	messages = dropMalformedToolCalls(messages)
@@ -50,8 +53,9 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		var err error
 		switch m.role {
 		case "user":
-			out[i], err = userMessage(m)
-			if t.api == conversation.OpenAIResponses && out[i].Native != nil {
+			out[i], err = userMessage(m, t)
+			if t.api == conversation.OpenAIResponses && out[i].Native != nil &&
+				out[i].Native.Kind == conversation.OpenAIResponsesHistory {
 				native := *out[i].Native
 				native.Items = shapeNativeResponsesItems(native.Items, false)
 				out[i].Native = &native
@@ -75,7 +79,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	if t.api == conversation.OpenAIResponses {
 		return shapeResponsesHistory(paired), nil
 	}
-	return shapeAnthropicHistory(paired, t.textOnly), nil
+	return shapeAnthropicHistory(paired, t), nil
 }
 
 const historyImageOmission = "[image omitted: the active model does not support image input]"
@@ -107,7 +111,7 @@ func replaceHistoryImages(blocks []block) []block {
 }
 
 // userMessage converts the saved text and inline images. Both encoders omit blank input text.
-func userMessage(m llmMessage) (conversation.Message, error) {
+func userMessage(m llmMessage, t target) (conversation.Message, error) {
 	msg := conversation.Message{Role: conversation.User, Native: m.native}
 	for _, b := range m.blocks {
 		converted, keep, err := inputBlock(b)
@@ -116,6 +120,17 @@ func userMessage(m llmMessage) (conversation.Message, error) {
 		}
 		if keep && (converted.Type != conversation.Text || !blank(converted.Text)) {
 			msg.Content = append(msg.Content, converted)
+		}
+	}
+	switch t.api {
+	case conversation.AnthropicMessages:
+		msg.Content = anthropicInput(msg.Content, t.textOnly)
+		if m.developer {
+			markAnthropicDeveloper(&msg, m.attribution, m.payload, m.stringInput, t)
+		}
+	case conversation.OpenAIResponses:
+		if msg.Native == nil {
+			msg.Native = responsesInputHistory(m.payload, t.provider)
 		}
 	}
 	return msg, nil
@@ -363,8 +378,19 @@ func sanitizeToolIDChars(id string) string {
 
 // anthropicPrefixBinding applies the pinned Claude family and revision rules.
 func anthropicPrefixBinding(id string) bool {
+	family, major, minor := claudeFamilyRevision(id)
+	// classes/anthropic.kdl:113–125,247–281. A collapsed 55 is not revision 5.5.
+	switch family {
+	case "fable", "mythos":
+		return major > 5 || (major == 5 && minor >= 1)
+	case "opus", "sonnet", "haiku":
+		return major == 5 && minor >= 5
+	}
+	return false
+}
+
+func claudeFamilyRevision(id string) (family string, major, minor int) {
 	bare := strings.ToLower(strings.TrimFunc(id, isJSSpace))
-	family := ""
 	tied := false
 	for _, candidate := range []string{"opus", "sonnet", "haiku", "fable", "mythos"} {
 		if strings.Contains(bare, candidate) {
@@ -377,22 +403,15 @@ func anthropicPrefixBinding(id string) bool {
 		}
 	}
 	if tied {
-		return false
+		return "", 0, 0
 	}
 	tail := strings.TrimPrefix(bare, "claude-")
 	first := strings.IndexAny(tail, "0123456789")
 	if first < 0 {
-		return false
+		return "", 0, 0
 	}
-	major, minor := revisionComponents(tail[first:])
-	// classes/anthropic.kdl:113–125,247–281. A collapsed 55 is not revision 5.5.
-	switch family {
-	case "fable", "mythos":
-		return major > 5 || (major == 5 && minor >= 1)
-	case "opus", "sonnet", "haiku":
-		return major == 5 && minor >= 5
-	}
-	return false
+	major, minor = revisionComponents(tail[first:])
+	return family, major, minor
 }
 
 // revisionComponents reads the first two components, the only ones these rules compare.

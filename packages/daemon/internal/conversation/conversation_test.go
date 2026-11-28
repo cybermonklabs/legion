@@ -62,3 +62,18 @@ func TestAppendValidateRefusesReadOnlyBlockFields(t *testing.T) {
 		})
 	}
 }
+
+func TestAppendValidateRefusesSavedToolChanges(t *testing.T) {
+	for _, kind := range []BlockType{ToolAddition, ToolRemoval} {
+		t.Run(string(kind), func(t *testing.T) {
+			a := Append{
+				QuestionID: "q-1", Question: "What does the note say?",
+				Provider: "anthropic", API: AnthropicMessages, Model: "claude-test",
+				Turns: []Turn{{Content: []Block{{Type: kind, ToolName: "read"}, {Type: Text, Text: "Plum."}}}},
+			}
+			if err := a.Validate(); err == nil || !strings.Contains(err.Error(), string(kind)+" block in a model turn") {
+				t.Fatalf("Validate = %v, want a refusal of the saved %s block", err, kind)
+			}
+		})
+	}
+}

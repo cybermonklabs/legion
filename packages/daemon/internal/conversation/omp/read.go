@@ -62,23 +62,23 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // provider discovery, or request overrides. An override makes no difference if it leaves the
 // inferred model and replay policy unchanged.
 //
-// Read uses the effective thinking level recorded in the session. Resolving the configured
-// selector (including auto), a model fallback, or an unrecorded API requires the active model
-// registry and settings. This changes nothing when the first recorded model is available on the
-// recorded API and its resolved level matches the last effective level. Read also does not
-// restore service-tier routing, mode prompts, or trigger suppression from TTSR rule names.
-// These omissions make no difference when the tier is the default, no mode prompt applies, and
-// no session rule would trigger differently. Read is for stopped sessions: it has no in-flight
-// tool call IDs. This makes no difference after all tool execution has stopped.
+// Read uses the effective thinking level recorded in the session or a concrete model-selector
+// suffix when no thinking entry exists. It does not resolve auto. Read takes the pin's first
+// model selection with the API recorded on a turn for that model. A current registry is needed
+// to resolve aliases, model availability, fallback, an unrecorded API or a new effective level.
+// The configured thinking selector, service tier and mode are request parameters that the
+// answer loop sets. Read does not restore injected TTSR rule names. Read is for stopped sessions:
+// it has no in-flight tool call IDs.
 //
 // Read always uses the journal's active leaf. It does not accept a temporary leaf override.
 // It reads rollover requests from inline journal data, so it needs no cold-store classification.
 // It does not repeat persistence-time filtering on entries the journal never recorded.
 //
-// Read does not replay Anthropic request controls. The sender needs the current tools and
-// effort, the recorded changes, and endpoint support for mid-conversation controls and
-// system turns. Without those controls, Read represents historical developer text as user
-// content. Upgrading it to system also requires its original attribution and placement.
+// On Anthropic, Read shapes saved developer messages using the pin's direct Anthropic catalog
+// rules for the restored model. They start as user content and can become mid-conversation
+// system messages. Read preserves recorded tool changes by logical name and sets controls on
+// the messages that carry them. The sender applies wire tool names and any endpoint overrides.
+// The answer loop sets request-level effort and tools. Read does not insert request-time markers.
 //
 // The sender chooses native Anthropic compaction or the summary text. It needs the target's
 // compaction support, legacy replay policy, and request mode. Native replay uses the recorded
@@ -105,15 +105,16 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // auto if the resolved endpoint does not support original. The session does not record
 // images.blockImages or whether a route strips images while its model still advertises image input.
 //
-// On Responses the sender supplies system prompts and the endpoint policy for placing them
-// in input or in instructions. The reader represents saved developer content as user blocks.
-// The sender needs the original developer attribution and policy if it sends a string.
+// On Responses the sender supplies the effective system prompts (including any applicable
+// recorded base) and the policy for placing and redacting them. Read represents saved developer
+// content as user blocks. Optional developer string encoding needs the original role, original
+// content shape and current encoding policy.
 //
 // Read keeps the saved Responses payload unchanged and cleans its native replay copy. The
 // sender needs the live native-history replay state, reasoning filter, and signature policy to
 // choose between native items and blocks. An incremental assistant payload adds its items.
-// A snapshot replaces the earlier wire input. A user compaction payload uses its items in
-// place of the summary. Preserve the earlier blocks until the sender chooses the replay path.
+// An assistant snapshot replaces the earlier wire input. Eligible user or developer payloads,
+// including compaction summaries, use their items in place of the message's fallback blocks.
 // Read carries the same-model Responses text phase and the saved message and tool item IDs
 // on blocks. The sender decides which IDs to keep, omit, or invent and hashes IDs over 64
 // characters. It needs the message-ID preservation option, the presence of replayable

@@ -29,6 +29,8 @@ const (
 	// User is a user turn: what a person typed, and what the harness sends as one (its own notes,
 	// summaries of compacted history).
 	User Role = "user"
+	// System is a saved mid-conversation system turn, not the request's system prompt.
+	System Role = "system"
 	// Assistant is a model turn.
 	Assistant Role = "assistant"
 	// Tool is one tool call's result.
@@ -54,6 +56,10 @@ const (
 	ToolResult BlockType = "tool_result"
 	// Image is an image: MediaType and ImageData, base64.
 	Image BlockType = "image"
+	// ToolAddition and ToolRemoval change tool availability in a saved message. ToolName
+	// is the logical name before the sender applies the endpoint's wire naming rules.
+	ToolAddition BlockType = "tool_addition"
+	ToolRemoval  BlockType = "tool_removal"
 )
 
 // Block is one content block. Which fields it uses depends on its Type.
@@ -105,6 +111,8 @@ const (
 	// AnthropicCompaction is the Anthropic API's own compaction block for a summary it wrote,
 	// which the harness can send back in place of the summary's text.
 	AnthropicCompaction NativeKind = "anthropicCompaction"
+	// AnthropicMessageControls adds clear_at or output_config alongside the message blocks.
+	AnthropicMessageControls NativeKind = "anthropicMessage"
 )
 
 // Native is provider-native history a message carries beside its blocks.
@@ -112,15 +120,22 @@ type Native struct {
 	Kind NativeKind
 	// Provider is the provider the history came from: only that provider's requests carry it.
 	Provider string
-	// Incremental is true for OpenAIResponsesHistory items that are this turn's own output, false
-	// for items that replace every earlier one (the history of a provider-side compaction).
+	// Incremental distinguishes an assistant turn's own output from a snapshot.
+	// It is unused on user turns, whose items stand in for that turn's fallback text.
 	Incremental bool
 	// Items are the OpenAIResponsesHistory items, including any reader-side replay repairs.
 	Items []json.RawMessage
-	// Payload preserves the session's bytes for a message's providerPayload or a compaction's
-	// anthropicCompaction preserve data. For openaiRemoteCompaction, it holds the derived
-	// openaiResponsesHistory object with type, provider and items in that order.
+	// Payload preserves the session's bytes for native history, or the derived Responses
+	// compaction payload.
 	Payload json.RawMessage
+	// Controls is set only for AnthropicMessageControls.
+	Controls *AnthropicControls
+}
+
+// AnthropicControls holds the message-level fields of an Anthropic system turn.
+type AnthropicControls struct {
+	ClearAt string // "next_user_message" or empty if the field is omitted
+	Effort  string // output_config.effort, or empty if omitted
 }
 
 // OpenAIResponsesItem holds the fields the Oh My Pi appender uses from a Responses
@@ -158,8 +173,8 @@ func (item *OpenAIResponsesItem) SummaryText() string {
 type Message struct {
 	Role    Role
 	Content []Block
-	// Native is the provider-native history the harness sends for this message in place of its
-	// blocks, nil when it sends the blocks.
+	// Native carries alternative provider-native history or fields that the sender
+	// adds alongside the blocks, as specified by its Kind.
 	Native *Native
 	// Provider, API and Model are where an Assistant message's turn ran.
 	Provider string
