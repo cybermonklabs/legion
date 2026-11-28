@@ -20,11 +20,13 @@ import (
 
 // Create creates branch on repo, whose REST API github calls, at the current commit of base, a
 // branch name used verbatim (release/v7.1 is the ref refs/heads/release/v7.1, release#stable is
-// itself and never release). A branch GitHub already has is left where it is, and Create reports
-// success: GitHub answers its create with 422 "Reference already exists". Every other answer, to
-// the read of base or to the create, is an error naming the repository, the ref and GitHub's
-// answer (a *githubrest.Answer, its status and body). An error the same call meets again, a 403
-// or a 422 of the create among them, is a *Refusal naming its kind (refusalKind, PermanentRefusal).
+// itself and never release), and answers whether GitHub took that write (created). A branch
+// GitHub already has is left where it is, and Create reports success with created false: GitHub
+// answers its create with 422 "Reference already exists" and writes nothing, so a caller that
+// counts only a write GitHub took tells the two apart. Every other answer, to the read of base or
+// to the create, is an error naming the repository, the ref and GitHub's answer (a
+// *githubrest.Answer, its status and body). An error the same call meets again, a 403 or a 422 of
+// the create among them, is a *Refusal naming its kind (refusalKind, PermanentRefusal).
 //
 // The ref name passes the deployment's private-name rules before anything is sent: rules, the
 // rule set the daemon compiled from the deployment's rule file at boot, run alone
@@ -40,12 +42,12 @@ import (
 // daemon's own making, which can carry one of the deployment's private names and none of what the
 // shared check reads for, a secret, customer text or private code. The write itself is one POST
 // of a ref and a sha.
-func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string, rules *leakguard.RuleSet) (err error) {
+func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, branch, base string, rules *leakguard.RuleSet) (created bool, err error) {
 	defer func() { err = withRefusal(err) }()
 	ref := "refs/heads/" + branch
 	if rules != nil {
 		if err := rules.Check(ctx, "the write", leakguard.RefRecord(ref)); err != nil {
-			return fmt.Errorf("create a branch of %s: %w", repo, err)
+			return false, fmt.Errorf("create a branch of %s: %w", repo, err)
 		}
 	}
 	var read struct {
@@ -54,19 +56,22 @@ func Create(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		} `json:"object"`
 	}
 	if err := github.Get(ctx, "/git/ref/heads/"+RefPath(base), &read); err != nil {
-		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
+		return false, fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, err)
 	}
 	head := read.Object.SHA
 	if head == "" {
-		return fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, errNoCommit)
+		return false, fmt.Errorf("read refs/heads/%s of %s: %w", base, repo, errNoCommit)
 	}
 
 	err = github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
-	var answer *githubrest.Answer
-	if err == nil || errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
-		return nil
+	if err == nil {
+		return true, nil
 	}
-	return fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
+	var answer *githubrest.Answer
+	if errors.As(err, &answer) && answer.Status == http.StatusUnprocessableEntity && alreadyExists(answer.Body) {
+		return false, nil
+	}
+	return false, fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
 }
 
 // RefPath is branch as a path under any route of GitHub's REST API that takes a branch name with

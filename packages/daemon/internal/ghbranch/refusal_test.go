@@ -44,7 +44,8 @@ var (
 		if branch == "" {
 			branch = "legion/WIDGETS-12"
 		}
-		return Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
+		_, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
+		return err
 	}
 	resetting write = func(t *testing.T, g *github, rules *leakguard.RuleSet, branch string) error {
 		t.Helper()
@@ -189,8 +190,9 @@ func TestAFailureARetryMayPassIsNoRefusal(t *testing.T) {
 			return resetting(t, &github{refs: atMerge(), refuse: "Something went wrong while executing your query."}, nil, "")
 		}},
 		{name: "no answer at all", cause: "connection refused", call: func(t *testing.T) error {
-			return Create(context.Background(), githubrest.Client{Token: "installation-token", API: githubrest.RepositoryAPI(closed.URL, ghrepo.MustParse("acme/widgets"))},
+			_, err := Create(context.Background(), githubrest.Client{Token: "installation-token", API: githubrest.RepositoryAPI(closed.URL, ghrepo.MustParse("acme/widgets"))},
 				ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", nil)
+			return err
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

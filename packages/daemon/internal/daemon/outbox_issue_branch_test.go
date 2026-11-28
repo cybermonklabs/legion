@@ -250,34 +250,48 @@ func TestABranchWithCommitsAfterTheMergeIsLeftAndTold(t *testing.T) {
 }
 
 // A refusal of the branch's write stands until a write of that branch GitHub takes: a move or a
-// create (Moved, Made) clears it, and a row that wrote nothing leaves it, whether the branch was
-// left as someone's work (Left) or already stood at the base (Stands). Cleared after every row,
-// `legion state` stopped naming a refusal no write had answered, as the state's own words promise
-// ("no refusal of a branch Legion wrote since"). The control is the move, which clears it.
+// create (Moved, Made, and the create of a row that is no next change's) clears it, and a row that
+// wrote nothing leaves it, whether the branch was left as someone's work (Left), already stood at
+// the base (Stands), or already existed when a row that is no next change's asked GitHub to create
+// it, which GitHub answers "Reference already exists" and takes no write of. Cleared after every
+// row, `legion state` stopped naming a refusal no write had answered, as the state's own words
+// promise ("no refusal of a branch Legion wrote since"). The controls are the move and the two
+// creates, which each clear it.
 func TestOnlyAWriteGitHubTakesClearsTheBranchRefusal(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		refs     map[string]string
 		compared map[string]string
-		clears   bool
+		// create is a row of a generation that is no next change, which creates the branch
+		// rather than move it.
+		create bool
+		clears bool
 	}{
 		{name: "left as someone's work", refs: map[string]string{"main": nextBaseHead, nextBranch: nextLater},
 			compared: map[string]string{nextBaseHead + "..." + nextLater: "diverged"}},
 		{name: "already at the base", refs: map[string]string{"main": nextBaseHead, nextBranch: nextBaseHead}},
+		{name: "a create of a branch GitHub has", refs: map[string]string{"main": nextBaseHead, nextBranch: nextLater}, create: true},
 		{name: "control: moved", refs: map[string]string{"main": nextBaseHead, nextBranch: nextMergedHead}, clears: true},
+		{name: "control: made", refs: map[string]string{"main": nextBaseHead}, clears: true},
+		{name: "control: created", refs: map[string]string{"main": nextBaseHead}, create: true, clears: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := newNextBranchRig(t, tc.refs, tc.compared)
+			refusal := record.BranchRefusal{Issue: "LEGION-208", Generation: 2, Row: 9, Write: record.BranchWriteMove,
+				Kind: "graphql-forbidden", Reason: "the App cannot use GitHub's GraphQL API", RefusedAt: time.Now().UTC()}
+			from := mergedFrom("main")
+			if tc.create {
+				from, refusal.Write, refusal.Kind, refusal.Reason = nil, record.BranchWriteCreate, "forbidden", "the App cannot create a branch"
+			}
 			if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
-				_, err := r.runner.records.RefuseBranch(ctx, tx, record.BranchRefusal{Issue: "LEGION-208", Generation: 2, Row: 9, Write: record.BranchWriteMove,
-					Kind: "graphql-forbidden", Reason: "the App cannot use GitHub's GraphQL API", RefusedAt: time.Now().UTC()})
+				_, err := r.runner.records.RefuseBranch(ctx, tx, refusal)
 				return err
 			}); err != nil {
 				t.Fatalf("record the earlier refusal: %v", err)
 			}
-			r.run(mergedFrom("main"))
+			r.run(from)
 			var left int
 			if err := r.pool.QueryRow(context.Background(), `select count(*) from branch_refusals where issue = $1`, "LEGION-208").Scan(&left); err != nil {
 				t.Fatalf("count the refusals: %v", err)

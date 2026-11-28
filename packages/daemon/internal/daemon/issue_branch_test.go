@@ -336,7 +336,7 @@ func TestBranchCreationNamesTheOwnerItMintsFor(t *testing.T) {
 	putOutboxIssue(t, pool, records, issue)
 	runner := &outbox{log: quietLogger(), pool: pool, records: records, tokens: refusingOwnerTokens{}}
 	want := "mint the implement App token for zeta/tools: GitHub is down"
-	if err := runner.createBranch(context.Background(), issue); err == nil || err.Error() != want {
+	if _, err := runner.createBranch(context.Background(), issue); err == nil || err.Error() != want {
 		t.Errorf("createBranch with a refused mint = %v, want %q", err, want)
 	}
 }

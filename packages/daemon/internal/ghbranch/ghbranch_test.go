@@ -197,7 +197,7 @@ func TestCreateMakesTheBranchAtTheNamedBase(t *testing.T) {
 	for _, base := range []string{"main", "develop", "release/v7.1"} {
 		t.Run(base, func(t *testing.T) {
 			g := &github{refs: map[string]string{base: baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", base, nil); err != nil {
+			if _, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", base, nil); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/" + base}) {
@@ -225,7 +225,7 @@ func TestCreateReadsABaseWhoseNameHoldsURLSyntaxAsItself(t *testing.T) {
 	} {
 		t.Run(tc.base, func(t *testing.T) {
 			g := &github{refs: map[string]string{tc.base: baseCommit, tc.decoy: decoyCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", tc.base, nil); err != nil {
+			if _, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", tc.base, nil); err != nil {
 				t.Fatalf("Create at %q: %v", tc.base, err)
 			}
 			if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/" + tc.base}) {
@@ -241,7 +241,7 @@ func TestCreateReadsABaseWhoseNameHoldsURLSyntaxAsItself(t *testing.T) {
 // A base GitHub does not have is refused naming it, before anything is created.
 func TestCreateRefusesABaseGitHubDoesNotHave(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseCommit}}
-	err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "develop", nil)
+	_, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "develop", nil)
 	if err == nil || !strings.Contains(err.Error(), "read refs/heads/develop of acme/widgets") || len(g.creates) != 0 {
 		t.Fatalf("err=%v creates=%d, want a refusal naming refs/heads/develop and no create", err, len(g.creates))
 	}
@@ -322,15 +322,17 @@ func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
 // has run yet, and nothing a role reads comes from the branch's tree, since every phase's handoff
 // is a record on the issue's Dispatch issue rather than a file on the branch (sjawhar/legion#2354).
 // Create reads the base's ref and creates the branch there, and reads, posts or commits no tree:
-// the fake answers nothing else.
+// the fake answers nothing else. Create says it created the branch only where GitHub took the
+// create: a branch GitHub already has is no write, and neither is a create GitHub refused.
 func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-		body   string
-		want   string
+		name    string
+		status  int
+		body    string
+		want    string
+		created bool
 	}{
-		{name: "created", status: http.StatusCreated, body: `{"ref":"refs/heads/legion/WIDGETS-12","object":{"sha":"` + baseCommit + `"}}`},
+		{name: "created", status: http.StatusCreated, body: `{"ref":"refs/heads/legion/WIDGETS-12","object":{"sha":"` + baseCommit + `"}}`, created: true},
 		{name: "already exists", status: http.StatusUnprocessableEntity,
 			body: `{"message":"Reference already exists","documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference","status":"422"}`},
 		{name: "refused", status: http.StatusForbidden,
@@ -346,10 +348,13 @@ func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 			g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return tc.status, tc.body }}
 			api := g.serve(t)
 
-			err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", nil)
+			created, err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", nil)
 
 			if got := errorText(err); got != tc.want {
 				t.Fatalf("Create error = %q, want %q", got, tc.want)
+			}
+			if created != tc.created {
+				t.Fatalf("Create created = %v, want %v", created, tc.created)
 			}
 			want := map[string]string{"ref": "refs/heads/legion/WIDGETS-12", "sha": baseCommit}
 			if len(g.creates) != 1 || len(g.creates[0]) != 2 || g.creates[0]["ref"] != want["ref"] || g.creates[0]["sha"] != want["sha"] {
@@ -375,7 +380,7 @@ func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1", nil)
+	_, err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1", nil)
 
 	if want := `read refs/heads/release/v7.1 of acme/widgets: GitHub answered GET /git/ref/heads/release/v7.1 with 404: {"message":"Not Found","status":"404"}`; errorText(err) != want {
 		t.Fatalf("Create error = %q, want %q", errorText(err), want)
@@ -412,7 +417,7 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
 		api := g.serve(t)
 
-		err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
+		_, err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
 
 		var refused *leakguard.Refusal
 		if !errors.As(err, &refused) {
@@ -426,7 +431,7 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 			t.Errorf("GitHub was asked for %v and created %v, want nothing of either", g.reads(), g.creates)
 		}
 
-		if err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", rules); err != nil {
+		if _, err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", rules); err != nil {
 			t.Fatalf("Create of a clean branch name: %v", err)
 		}
 		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/legion/WIDGETS-12" || g.creates[0]["sha"] != baseCommit {
@@ -438,7 +443,7 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 		t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
 		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
 
-		if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", nil); err != nil {
+		if _, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", nil); err != nil {
 			t.Fatalf("Create with no rules: %v", err)
 		}
 		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/"+branch || g.creates[0]["sha"] != baseCommit {

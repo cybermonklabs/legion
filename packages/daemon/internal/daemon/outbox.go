@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -5382,10 +5383,11 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 // issue's roles, each attempt logged with GitHub's answer, until one passes. A refusal the same
 // write meets again ends the row instead, and tells its architect once (permanentRefusal,
 // finishRefused), so the roles start without the write. A row whose write GitHub takes clears the
-// issue's refusals (record.Store.ClearBranchRefusals). A row of a generation the issue has left,
-// or of a tree that lingers, finishes without acting: the starts it held back act on neither. The
-// row of a next change carries where its branch starts (record.IssueBranch.From), and moves the
-// branch there instead (startBranchAtBase).
+// issue's refusals (record.Store.ClearBranchRefusals). A branch GitHub already has is no such
+// write (ghbranch.Create answers it not created), so a refusal of its write still stands. A row of
+// a generation the issue has left, or of a tree that lingers, finishes without acting: the starts
+// it held back act on neither. The row of a next change carries where its branch starts
+// (record.IssueBranch.From), and moves the branch there instead (startBranchAtBase).
 func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload record.IssueBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -5407,8 +5409,12 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 	if payload.From != nil {
 		return r.startBranchAtBase(ctx, row, issue, *payload.From)
 	}
-	if err := r.createBranch(ctx, issue); err != nil {
+	created, err := r.createBranch(ctx, issue)
+	if err != nil {
 		return fmt.Errorf("create the branch of %s, which its roles' starts wait for: %w", issue.Key, err)
+	}
+	if !created {
+		return nil
 	}
 	return r.branchWritten(ctx, issue.Key)
 }
@@ -5428,16 +5434,17 @@ func (r *outbox) branchWritten(ctx context.Context, issue string) error {
 // record names under now (serving), at the default branch the record names, unless GitHub
 // already has it, as the implement App for that repository's owner: the App of the roles that
 // write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
+// It answers whether GitHub created the branch, which a branch GitHub already had is not.
 // The create is a REST write, so a tree recorded before a transfer gets its branch on the
 // repository as GitHub holds it today rather than a write to an owner whose installation has
 // lost it. The ref name passes the deployment's private-name rules first, the ones boot compiled
 // (privateNameRules), so the create runs the same file every role runs.
-func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
+func (r *outbox) createBranch(ctx context.Context, issue record.Issue) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
 	defer cancel()
 	github, repo, err := r.branchClient(ctx, issue)
 	if err != nil {
-		return err
+		return false, err
 	}
 	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch, r.privateNameRules)
 }
@@ -5469,7 +5476,9 @@ func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubre
 // is behind the base (supervise's startedNote). Only a write GitHub took (Moved, Made) clears the
 // issue's refusals (branchWritten): a branch left or already at the base was written by nobody, so
 // a refusal of its write still stands. Each outcome writes in one transaction at most: the clear,
-// or the notice.
+// or the notice. An outcome Reset gains later is the row's error, naming it, until this switch
+// names it too: read as one of these, it would clear a refusal or tell the architect of a branch
+// left for something neither is.
 func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, issue record.Issue, from record.BranchFrom) error {
 	base := from.Base
 	if base == "" {
@@ -5493,15 +5502,18 @@ func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, is
 		return r.branchWritten(ctx, issue.Key)
 	case ghbranch.Stands:
 		return nil
+	case ghbranch.Left:
+		// The branch is someone's work, and the owning architect is told.
+		notice, err := record.NewOutboxRow(issue.Key, branchLeftNotice(issue.Key, from, result), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		return store.TransactWith(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+			return r.records.Enqueue(ctx, tx, notice)
+		})
 	}
-	// Left: the branch is someone's work, and the owning architect is told.
-	notice, err := record.NewOutboxRow(issue.Key, branchLeftNotice(issue.Key, from, result), r.now().UTC())
-	if err != nil {
-		return err
-	}
-	return store.TransactWith(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
-		return r.records.Enqueue(ctx, tx, notice)
-	})
+	return fmt.Errorf("move the branch of %s to %s for its next change: the move answered the outcome %q, which the row does not handle",
+		issue.Key, result.Base, result.Outcome)
 }
 
 // branchLeftNotice is the owning architect's notice of a next change's branch left where it
@@ -5525,7 +5537,11 @@ func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Resu
 // branchRefusedNotice is the owning architect's notice of a branch row GitHub refused for good
 // (finishRefused): the branch, whether the row created or moved it, the refusal's kind and the
 // row's error, that Legion does not try again, and that the issue's roles start without the write.
-// A person is who grants the App what it lacks, so the notice asks the architect to ask one.
+// A person is who grants the App what it lacks, so the notice asks the architect to ask one. The
+// row's error carries GitHub's answer, which GitHub wrote, bounded as the row kept it
+// (storetext.FarSideError), and the notice reaches the architect as text, so the error goes in as
+// data, as readError keeps a far side's text in a notice: one quoted string, labelled as the
+// write's error, which no line or word of it can leave.
 func branchRefusedNotice(refusal record.BranchRefusal) record.Notice {
 	branch := workspace.Bookmark(refusal.Issue)
 	wrote := fmt.Sprintf("Legion could not create branch %s on GitHub, and it will not try again.", branch)
@@ -5536,7 +5552,8 @@ func branchRefusedNotice(refusal record.BranchRefusal) record.Notice {
 		start = "The next change starts on the branch as it stands."
 	}
 	return record.Notice{Kind: record.BranchRefusedNotice, Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s The refusal is %s: %s. %s Ask a person to fix the refusal.", wrote, refusal.Kind, refusal.Reason, start)}
+		Reason: fmt.Sprintf("%s The refusal is %s. The error of the write, in quotes, is: %s. %s Ask a person to fix the refusal.",
+			wrote, refusal.Kind, strconv.Quote(refusal.Reason), start)}
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
