@@ -222,9 +222,13 @@ type routeDecl struct {
 	// person", which every one of them needs, and `approve`, the right to settle what a person
 	// settles, which the routes that decide a credential, a sign-in, a review, a decision's
 	// Keep or a token need as well. A person's browser holds both and `p0` besides, which no
-	// route needs: the one value of a field that needs it, a priority of 0 on an issue write, is
-	// checked in the write itself (refuseP0WithoutScope), since a route's declaration names a
-	// route and not what a request writes. Their personal tokens hold the set each token's row
+	// route needs: a write that makes work P0 needs it, and the write itself checks it, since a
+	// route's declaration names a route and not what a request writes. Such a write names a
+	// priority of 0 on an issue whose own priority is not 0 (refuseP0WithoutScope), moves an issue
+	// under another parent or clears its own priority so that it, or an issue under it that takes
+	// its priority from it, goes to P0 (refuseResolvedP0WithoutScope), or files a new issue with
+	// no priority under a parent that reads P0 from a session that is not that parent's architect
+	// (refuseNewChildP0WithoutScope). Their personal tokens hold the set each token's row
 	// names. A broker-issued token that acts for its person holds `person` alone
 	// (brokerTokenActor), except an approve-only token, which holds `person` and `approve` and
 	// calls only the routes that state ApproveOnly, and a Dispatch sign-in's token, which holds the

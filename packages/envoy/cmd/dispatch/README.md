@@ -229,10 +229,15 @@ a token acting for its person passes the gate and is refused inside the answer's
 The person makes those calls from their browser session, with a personal token they gave `approve`, or from an agent session on a box where they signed in, through the secrets broker's proxy with an approve-only token (below), which no file on the box holds.
 A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
-The OAuth scope `p0` opens no route: it gates one value of one field.
+The OAuth scope `p0` opens no route: it lets a write make work P0, and the write checks it itself.
 A priority of `0` on `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` needs `p0` when the write makes the issue's own priority `0`, from none or from another value.
-Keeping P0, lowering it, clearing it and priorities `1` to `3` need no scope.
-A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the stored issue, such as `409 ISSUE_CLOSED`, and the write writes no field and no event; a close that races a write lowering the priority from `0` can settle the issue's documents and is then refused (`PATCH /api/v1/issues/{key}`, below).
+An issue with no priority of its own takes the priority of the nearest issue above it that has one (`resolved_priority`, `GET /api/v1/issues`, below).
+So a move under another parent, and a clear of the issue's own priority, need `p0` where they make the issue, or an issue under it that takes its priority from it, go from `1` to `3`, or none, to `0`.
+A new issue with no priority of its own under a parent that reads P0 needs `p0` too, unless the writer's session is that parent's architect.
+A move that sets no parent, and the `unlink_children` of a status change, need no scope: a detach makes no issue P0.
+Keeping P0, lowering it, priorities `1` to `3` and a move that leaves each resolved priority as it was need no scope.
+A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the stored issue, such as `409 ISSUE_CLOSED`, and the write writes no field and no event.
+A close whose priorities move between the `PATCH`'s first read and its owner's lock can settle the issue's documents and is then refused (`PATCH /api/v1/issues/{key}`, below).
 A person's browser sign-in holds `person`, `approve` and `p0`.
 A personal token holds `p0` only where its maker gave it, at the mint or at a later change of its scopes, and may hold it alone.
 A mint that names no scopes gives every scope its maker holds except `p0`, for a browser and for a token alike.
@@ -404,7 +409,7 @@ Its reads are untouched: the machine reads everything its session may read, and 
 A broker token that names a person, a job's token and every other credential pass this check.
 A broker token that names a service, no person and no project under the project scope `named` passes it too, where before this release it was refused `401 BROKER_TOKEN_NOT_A_SESSION`: the broker mints it from a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<service account>==`), its service is that account, and each of its writes is recorded as the token's session acting for the account and for no person.
 Every verifier admits that shape only when its service is a Kubernetes account (`system:serviceaccount:<namespace>:<name>`) and it holds no OAuth scope, as the broker mints it.
-Such a token holds no OAuth scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED`, and so does a write that makes an issue's own priority `0`, which needs `p0`.
+Such a token holds no OAuth scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED`, and so does a write that needs `p0` (above).
 `GET /api/v1/whoami` answers `sign_in_required` from the same decision this check makes: true for a machine nobody has signed in on whose token may write, and false for every other credential, a job's token and this account token and every read-only token among them.
 A read-only token may name a service and no person too, an account entry's narrowed to reading among them, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
@@ -3065,14 +3070,19 @@ Migration `20261117100008_session_titles` creates `session_titles`, one row for 
 A session with no row is named by its id, as one with no titled event was.
 The table is new and declares no foreign key, so the migration locks only it and commits in milliseconds; the release before it neither reads nor writes it, and its census answers `0`.
 
-Migration `20261117100010_issues_unowned_p0` builds `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'`, the open P0 issues alone (161 rows in production on 2026-11-23, of 13,279 issues).
-`delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys`, the live hub's set of open P0 keys, repeat the predicate, so the planner reads the index and no other row of `issues`: the whole index for every project's read, one range of `project_key` for one project's.
-No index of `issues` held `priority` before it, so the read of every project, `ListUnownedP0`'s and `OpenP0Keys`', scanned every issue of every project.
-A read of one project, which this change adds, would without it read every issue of that project, through `issues_project_key_number_key`, the unique key on `(project_key, number)`.
+Migration `20261117100010_issues_unowned_p0` builds `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'`, the open issues whose own priority is 0 (161 rows in production on 2026-11-23, of 13,279 issues).
+No index of `issues` held `priority` before it, so a read of the open P0 issues scanned every issue of every project.
 The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), because every issue write, claim, route and status change writes `issues`:
 a concurrent build takes `SHARE UPDATE EXCLUSIVE`, which no read or write of an issue waits for.
 A failed build leaves an INVALID index of that name on `issues`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
 Its census answers `0`: an ordinary index refuses and rewrites no row.
+
+Migration `20261127112234_issues_done_p0` builds `issues_done_p0` on `issues (key) where priority = 0 and status = 'done'`, the done issues whose own priority is 0, `concurrently` and recovered from a failed build as `20261117100010` is.
+Its census answers `0` (`select 0;`) for the same reason: an ordinary, non-unique index refuses and rewrites no row, where a count of the rows it will hold, hundreds of done issues with an own P0 in production, is a census the deploy would refuse to apply.
+An issue with no priority of its own takes the priority of the nearest issue above it that has one, at any status and in any project, within `refs.IssueDepthCap` links (dispatch://INFRA-5793), so the open P0 issues are the issues not done whose resolved priority is 0, and a done P0 passes P0 to an open child.
+`delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys`, the live hub's set of open P0 keys, read them by one descent (`openP0Descent` in `internal/dispatch/delivery/unowned.go`): from every issue whose own priority is 0, the open ones through `issues_open_p0` and the done ones through `issues_done_p0`, each read repeating its index's predicate so the planner reads the whole of each and no other row of `issues` for them, then through `issues_parent_key` to the children whose own priority is null, their children whose own priority is null, and so on, at most `refs.IssueDepthCap` links, keeping what is not done and, for the unowned reads, has no claim and no route.
+A read of one project starts from every project's P0 issues too, since an issue of the project can take P0 from an issue of another, and keeps that project's issues of what the descent reaches.
+The live hub reads `OpenP0Keys` as it takes its event feed and in each recompute of a timeline or measures view, and between those reads applies the `resolved_priority` of each `issue.created`, `issue.updated` and `issue.closed` payload, the quiet ones included (`api/delivery_live_hub_intake.go`, `applyEventLocked`).
 
 Migration `20261117100015_events_session_titles` creates `events_session_title`, the function and the constraint trigger `after insert on events`, `deferrable initially deferred`, that writes each titled event of a session actor into `20261117100008`'s table under `on conflict (session_id) do update … where excluded.titled_at > session_titles.titled_at`.
 So the newest titled event keeps the title, and an event that carries no title takes none away.
@@ -5634,7 +5644,7 @@ Each item below names a path with its method and identity, then its purpose.
   `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first;
   or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `cursor`, which is the `next_cursor` the page before it answered.
   `limit` or `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`.
-  A row names the thread, its owner, its issue's priority, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
+  A row names the thread, its owner, its issue's own priority (`priority`), the priority that issue resolves to (`resolved_priority`) and the issue that priority comes from (`priority_from`), the last two always present and null on a row with no issue, its project, its subject, its root's deep link, the newest reply's author, first line and time, the caller's read mark, whether it is unread, how many writes they have not read, and its dismissal mark when it has been dismissed.
   A row of kind `ask`, `comment` or `message` also carries `root_author`, the actor who wrote the thread's root in the shape of the reply's `author`: the ask's asker, the root comment's author or the root message's author, as it is stored, so a root the Legion daemon wrote reads as its session, `legion-daemon:<PROJECT>`.
   An `agent` row carries none.
   `issue` or `artifact` narrows to one owner (both is `400 INVALID_QUERY`, and either leaves out every agent row, which has neither).
@@ -5651,7 +5661,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Mark every unread Inbox thread read in one write:
   `{read_through}` (RFC3339, required; missing, unparsable or more than a minute ahead of the server is `400 INVALID_STATE`), with the Inbox's own narrowing
-  — `kind` (`reply`, `agent`; both by default), `priority` (`P0`, `P1`, `P2`, `P3` and `none`), `urgency` (`low`, `med`, `high`, `blocking` and `none`), `project` (a project key and `none`), and `issue` or `artifact` — each absent list meaning every value.
+  — `kind` (`reply`, `agent`; both by default), `priority` (`P0`, `P1`, `P2`, `P3` and `none`, each matched against the priority the thread's issue resolves to), `urgency` (`low`, `med`, `high`, `blocking` and `none`), `project` (a project key and `none`), and `issue` or `artifact` — each absent list meaning every value.
   It marks exactly the threads `GET /api/v1/me/replies?state=unread` answers under that narrowing whose newest reply is at or before `read_through`, so a thread written in since stays unread and one already read past the mark keeps its later mark.
   Answers `{marked}`, how many threads it moved.
 
@@ -5767,7 +5777,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion board of the project its path names, from what Dispatch recorded of that project's daemon (the Legion state intake, Background loops above); the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
-  Twelve columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_children`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in `awaiting_children`, the open children the daemon lists it as blocked on, not blocker links), what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  Twelve columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_children`, `awaiting_person`, `held`), each card naming its issue's key, title, own priority, the priority it resolves to and the issue that priority comes from (`priority`, `resolved_priority`, `priority_from`), phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on (for a parent in `awaiting_children`, the open children the daemon lists it as blocked on, not blocker links), what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/issues/{key}/legion` (GET; cookie, trusted header, or bearer)
@@ -5894,7 +5904,8 @@ Each item below names a path with its method and identity, then its purpose.
   Filters are optional; `updated_since` is RFC3339 and inclusive, matching issue changes and later issue events.
   `closed_since` and `closed_before` are RFC3339 bounds on the time an issue was closed, `closed_since` inclusive and `closed_before` exclusive, so `closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-04T00:00:00Z` keeps an issue closed at midnight on the 3rd and not one closed at midnight on the 4th, and an open issue matches neither bound.
   A malformed `updated_since`, `closed_since` or `closed_before` is `400 INVALID_UPDATED_SINCE`, `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, and a `closed_before` at or before `closed_since` is `400 INVALID_CLOSED_WINDOW`.
-  `priority` repeats (`priority=0&priority=1`), each value `0`–`3` or `none` for an issue with no priority; any other value is `400 INVALID_PRIORITY`.
+  `priority` repeats (`priority=0&priority=1`), each value `0`–`3`, or `none` for an issue with no priority, and any other value is `400 INVALID_PRIORITY`.
+  A value matches the priority each issue resolves to (`resolved_priority`, below), so a child with no priority of its own under a P0 issue is listed under `0`, and `none` lists the issues that resolve none.
   `status` repeats (`status=todo&status=in_progress`) and keeps the issues standing in any status named; no `status`, or only blank ones, is every status.
   A value is matched as written and never refused, so a status the lifecycle does not hold, or one in another case, alone answers the empty list, as a lone `status` always has, and beside another status adds nothing.
   `route_status` (`live`, `no_holder` or `unknown`;
@@ -5909,7 +5920,7 @@ Each item below names a path with its method and identity, then its purpose.
     `moved=true` adds `moved_at` and `moved_by` to each summary standing in `backlog` or `icebox`: when the issue was moved there and who moved it, read from its newest `issue.updated` event that set one of the two statuses, as the second fault of `GET /api/v1/priorities` reads them;
     a summary standing elsewhere, or whose events do not reach back to the move, carries neither field, and a listing without `moved=true` reads no event and carries neither on any summary.
 
-  - Summaries contain `key`, `title`, `status`, `priority`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
+  - Summaries contain `key`, `title`, `status`, `priority`, `resolved_priority`, `priority_from`, `parent`, `assignee`, `route`, `route_status`, `route_holder`, `route_status_reason`, `updated_at`, `closed_at` (when the issue was closed, null while it is open), `last_seq`, and `open_asks`.
     Every issue read (this list, `?pinned=true`, and `GET /api/v1/issues/{key}`) resolves `route_status` against the process's one copy of the listener's `GET /v1/sessions`, stored in no table:
     that copy is at most 5 s old, one listener call refreshes it for every read that asks while it runs, and a listener that fails or does not answer within 2 s is asked again only after 5 s, every read in that window reading `unknown` at once.
     The status is `live` (a live session holds the role, or the session is live;
@@ -5917,6 +5928,15 @@ Each item below names a path with its method and identity, then its purpose.
     `route_status_reason` says why a route is `unknown`:
     `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
     A refilling list never makes a route `no_holder`.
+
+  - Every issue read carries three priority fields: this list, `?pinned=true`, `GET /api/v1/issues/{key}`, the issue a create or a `PATCH` answers, and the issue of each `issue.created`, `issue.updated` and `issue.closed` event.
+    `priority` is the issue's own priority, `0`–`3`, or null where it sets none.
+    `resolved_priority` is the priority the issue works at: its own, else that of the nearest issue above it on its parent chain that has one, in any project and within `refs.IssueDepthCap` links (32), else null.
+    `priority_from` is the key of the issue that `resolved_priority` comes from, and null where the priority is the issue's own or there is none.
+    Both are always present, and null where there is none, because the Legion daemon reads an absent `resolved_priority` as a Dispatch that resolves none (`packages/daemon/internal/dispatch/wire.go`).
+    One walk resolves them for every read, `refs.IssuePriorityTerms` in `internal/dispatch/refs/issues.go`.
+    A chain that reaches the cap with no priority resolves none, and the read refuses nothing.
+    Every reader that shows, filters, orders or counts issues by priority reads `resolved_priority`: the `priority` filter above, the Inbox's rows and its Mark all read, the open asks' order, the Legion board, the architecture tree and the delivery views ([Database migrations](#database-migrations), `20261127112234_issues_done_p0`).
 
 - `/api/v1/search?q=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
@@ -6084,9 +6104,6 @@ Each item below names a path with its method and identity, then its purpose.
   A parent of another project passes on no repository, components, `legion` label or assignee:
   `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  A priority of `0` needs the `p0` scope: without it the create is `403 OAUTH_SCOPE_REQUIRED` naming `p0`, before the duplicate check, and it writes nothing.
-  Priorities `1` to `3`, or none, need no scope; an inherited priority is not the new issue's own.
-  A create from a reference that Dispatch already imported answers that issue and sets no priority.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
   External references skip the check.
@@ -6101,6 +6118,16 @@ Each item below names a path with its method and identity, then its purpose.
   When Legion runs the new issue, because it or an issue of its own project above it carries the label `legion`, a create under a parent from a writer that is no person and no architect of the parent or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   A create under a parent of another project is judged as a root of the new issue's own project, which the check does not judge.
 
+  - A priority of `0` needs the `p0` scope: without it the create is `403 OAUTH_SCOPE_REQUIRED` naming `p0`, before the duplicate check, and it writes nothing.
+    A new issue with no priority of its own takes the priority its parent reads (`resolved_priority`), so a create with no priority under a parent that reads P0 needs `p0` too, unless the writer's session is the parent's architect (`refuseNewChildP0WithoutScope` in `internal/dispatch/api/p0_scope.go`).
+    That session is the one that the parent's own `architect` row of `issue_role_holders` names (`PUT /api/v1/issues/{key}/role-holders`, below), in whatever project the parent is.
+    While the parent's project's proven-sessions setting is on, that session counts only on a credential that proves it (`model.Actor.Proven`).
+    The architect of an issue further above, a session that holds another role of the parent, and the holder of the parent's claim do not count.
+    From them, and from every other credential without `p0`, such a create is `403 OAUTH_SCOPE_REQUIRED` naming `p0`, before the duplicate check, and it writes nothing.
+    A parent that does not exist, or one of a private project that the credential does not name, gets the answer it got before.
+    A priority of `1` to `3` needs no scope, and a create with no priority needs none where it names no parent, or a parent that does not read P0.
+    A create from a reference that Dispatch already imported answers that issue and sets no priority.
+
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
@@ -6111,10 +6138,17 @@ Each item below names a path with its method and identity, then its purpose.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
 
   - A priority of `0` needs the `p0` scope when the write makes the issue's own priority `0`, from none or from another value.
+    A move under another parent, and a clear of the issue's own priority (`priority: null`), need `p0` where they make the issue, or an issue under it that takes its priority from it, go from a resolved priority of `1` to `3`, or none, to `0` (`refuseResolvedP0WithoutScope` in `internal/dispatch/api/p0_scope.go`).
+    Each such issue under it resolves to what the issue passes down, so the check reads the issue alone: what it resolves to before the write, and after the write its own priority, else what its parent after the write resolves to.
+    The check reads the whole chain above the issue, its issues of projects the credential cannot see included, so a writer who cannot see a P0 issue's project still needs `p0` to move work under it.
+    A move that sets no parent (`parent: null`) needs no `p0`, since a detach only turns a priority that the issue took from above into none.
     A credential without `p0` is refused `403 OAUTH_SCOPE_REQUIRED` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="p0"`, before every refusal that reads the issue (`409 ISSUE_CHANGED` and `409 ISSUE_CLOSED` among them), and the write writes no field of the issue and no event of it.
-    A write that keeps priority `0` on an issue that holds it, lowers it, clears it or sets `1` to `3` needs no scope, and a priority that an issue above the issue has is none of its own.
-    For a close (`status: done`) that names priority `0` from a credential without `p0`, the `PATCH` reads the issue's own priority before it settles the documents, and refuses the close there, with no document version and no ask, where that priority is not `0`.
-    A close whose own priority moves away from `0` between that read and the owner's lock can settle the documents and is then refused, as a close the spec-writer check refuses can be.
+    A write that keeps priority `0` on an issue that holds it, lowers it or sets `1` to `3` needs no scope, and neither does a move that leaves each resolved priority as it was, such as a move of an issue that keeps a priority of its own.
+    For a close (`status: done`) from a credential without `p0` that names priority `0`, clears the issue's own priority or names a parent, the `PATCH` reads the issue's priorities before it settles the documents (`refuseP0BeforeSettlement`).
+    Where the write would make work P0, it refuses the close there, with no document version and no ask.
+    A close whose priorities move between that read and the owner's lock can settle the documents and is then refused, as a close the spec-writer check refuses can be.
+    Every `PATCH` that names a priority or a parent takes the deployment's dependency lock before any owner lock (`lockIssueDependencyWrite` in `internal/dispatch/api/issue_parent.go`), as a create under a parent and each step of a status change that unlinks a child do.
+    So no other write of a priority or a parent changes what this check reads, or what the `issue.updated` events that the write appends on the issues under it (below) say, before the write commits.
 
   - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
     A Legion issue carries the `legion` label, in any letter case, or is under an issue of its own project that carries it, and Dispatch judges the issue before the call and after it.
@@ -6184,6 +6218,7 @@ Each item below names a path with its method and identity, then its purpose.
   - `include_children` writes the status on each open issue under the issue, at any depth, that is not in the status's group.
 
   - `unlink_children` removes each open child from the issue, so each one becomes a root and keeps its status.
+    It needs no `p0`, whatever the priorities: a child it makes a root keeps its own priority, and a child with none then takes none, so the unlink makes no issue P0.
 
   - `include_parent` moves each ancestor that is not in work to `in_progress`, a `done` ancestor too.
 
@@ -7400,8 +7435,16 @@ Each item below names a path with its method and identity, then its purpose.
   Serve the dashboard static files.
 
 An event's payload says what its write moved, so a reader can refresh only what it shows (the dashboard's rules are `packages/dispatch/web/src/api/event-refresh.ts`).
-`issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `blocked_by`, `external_links`;
+`issue.created`, `issue.updated` and `issue.closed` carry `changed`, the fields whose value the write moved (`title`, `status`, `closed_at` for a close or a reopen, `rank`, `priority`, `resolved_priority`, `priority_from`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`, `blocked_by`, `external_links`;
 on `issue.created` every field the new issue holds a value in), and `ancestors`, the issue's parent chain, parent first up to the root (`[]` for a root).
+A write that moves what an issue passes down to the issues under it that take their priority from it (a change or a clear of its own priority, a move under another parent, a detach) appends one `issue.updated` on each of them, at any status and in any project, in the write's own transaction, after the write's own events, with the writer as its actor (`api/issue_patch.go`, `queueInheritedPriorityEvents`);
+each step of a status change that unlinks a child appends its own.
+Its payload is the issue whole as the write leaves it, and its `changed` names `resolved_priority`, `priority_from` or both, whichever moved, and nothing else:
+an own priority of 0 set or cleared on an issue under a P0 issue names `["priority_from"]` on each issue under it that takes its priority from it, whose priority stays 0.
+Such an event is quiet (`events.Quiet`): it is stored with `notify` false, wakes no route, claimant or author, and reaches the issue's topic with `quiet: true`, while the event log, the event feed and the live socket carry it.
+No other `issue.updated` names only those two fields, which is how the Legion daemon tells it apart (`resolvedOnly` in `packages/daemon/internal/intake/decode.go`).
+While the release rolls, a process of the build before that publishes such an event from the outbox marks its envelope `quiet: false`, since its `events.Quiet` does not know the event, and the stored `notify` false still wakes no route, claimant or author.
+A write that a process of the build before serves appends no such event and makes no move check, so a reader that follows an issue's resolved priority, as the Legion daemon and the delivery live hub do, also takes it again from each read of the issue.
 `thread_logins` is every login whose Inbox the write can have moved: which events carry it, and whom it names on each, is the `ThreadLogins` field of each event payload in `internal/dispatch/model/model.go`.
 On an issue event it is the sorted union of two sets, naming a login in both of them once:
 for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and the ask waits on them, and `[]` for any other status move;
