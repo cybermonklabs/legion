@@ -22,7 +22,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // createLabel is the label create sets on the secret it makes, to a value of its own
@@ -30,10 +30,10 @@ import (
 // exactly when that label holds its value: one that held the name before, or that another create of
 // the name made in between, carries no label or another's. It is a label and not an annotation,
 // since the policy's tags are the annotations. The broker reads it for one thing only: a secret
-// that carries it and holds no version is a create waiting for its value (secrets.Listing.Created
+// that carries it and holds no version is a create waiting for its value (secretstore.Listing.Created
 // and policy.ReasonPendingValue). It stays on the secret once its value is added, since removing it
 // would cost a create secretmanager.secrets.update.
-const createLabel = secrets.CreateLabel
+const createLabel = secretstore.CreateLabel
 
 // newCreateToken is a value for createLabel: 128 random bits as 32 lowercase hex digits, which a
 // Secret Manager label value admits. crypto/rand.Read never returns an error.

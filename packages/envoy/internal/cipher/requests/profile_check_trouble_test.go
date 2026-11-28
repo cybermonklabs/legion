@@ -27,13 +27,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // failingSecretRead is the broker's secrets reader with one source's read failing, which is the
 // Secrets Manager outage a check and a release both meet: the error is not "no such secret", so
 // neither reads it as a secret the policy no longer serves.
 type failingSecretRead struct {
-	secrets.Reader
+	secretstore.Reader
 	source string
 	err    error
 }

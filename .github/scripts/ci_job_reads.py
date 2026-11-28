@@ -2608,6 +2608,17 @@ BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
 echo "connections=$connections" >> "$GITHUB_OUTPUT\""""
+# ci-caches.yaml's fill of the go-browser-binaries family, which rule 25 of check-ci-filters.sh
+# holds: each entry is (the fill's job, the workflow and the job whose restore it fills, the
+# directory both run in, and the step pairs, each (the reader's step, the fill's step, the text
+# both run)). The texts are the ones the binaries job's own Exact entries (the dispatch_browser
+# gate's pinned_step calls below) pin, so the fill and the job run one text, which the cache keys
+# of the objects both make are computed from.
+BINARIES_FILL_JOB = "browser-binaries"
+BINARIES_FILLS = [(BINARIES_FILL_JOB, BROWSER_SITE, BROWSER_BINARIES, ENVOY, [
+    (BROWSER_BINARIES_STEP, f"{BROWSER_BINARIES_STEP}, as the binaries job does", BROWSER_BINARIES_SCRIPT),
+    (BROWSER_CONNECTIONS_STEP, f"{BROWSER_CONNECTIONS_STEP}, as the binaries job does", BROWSER_CONNECTIONS_SCRIPT),
+])]
 BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})"
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"

@@ -242,6 +242,16 @@ packages/envoy:
       - internal/cipher/projectaccess           # 7 s
       - cmd/cipher-helper                       # 5 s
       - internal/cipher/secrets                 # 4 s
+      - internal/cipher/awssdk
+      - internal/cipher/secretstore
+      - internal/cipher/secretstore/aws
+      - internal/cipher/secretstore/aws/awstest
+      - internal/cipher/secretstore/backends
+      - internal/cipher/secretstore/gcp
+      - internal/cipher/secretstore/gcp/gcptest
+      - internal/cipher/secretstore/memory
+      - internal/cipher/secretstore/secretstoretest
+      - internal/cipher/settingsfields
       - internal/cipher/e2e                     # 3 s
       - internal/cipher/ciphertest              # 2 s
       - internal/cipher/projectrepos            # 2 s

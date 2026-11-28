@@ -2374,7 +2374,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     units = step_holders(documents)
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     refused = set()
-    # Rule 25: what claims each gated job and step. A filter's read set is computed from the
+    # Rule 26: what claims each gated job and step. A filter's read set is computed from the
     # gates that declare it, and each gate names one job (and, for a step's gate, one step), so a
     # job gated on a filter that only another job's gate declares runs on a filter computed from
     # that other job's reads: it passes every other rule while nothing holds its own reads, which
@@ -3580,7 +3580,7 @@ def check_dead_patterns(data, expander: Expander, problems: list[Annotation]) ->
                                           f"filter to nothing; correct the globs or drop the line"))
 
 
-# Rule 26, what a Go test reads through `..`. A string of a Go file: a double-quoted literal with
+# Rule 27, what a Go test reads through `..`. A string of a Go file: a double-quoted literal with
 # its escapes, or a raw one.
 GO_STRING = r'"(?:[^"\\\n]|\\.)*"|`[^`]*`'
 # A filepath.Join or path.Join whose leading arguments are string literals, the first of them `..`
@@ -3676,7 +3676,7 @@ def directive_covers(d, path: str, expander: Expander) -> bool:
 
 def check_declared_reads(data, session: Session, expander: Expander, files: list, unreduced: dict,
                          problems: list[Annotation]) -> None:
-    """Rule 26: a test that reads a file outside its package through `..` names it in a //ci: line
+    """Rule 27: a test that reads a file outside its package through `..` names it in a //ci: line
     of its own file, when go list sees no such read, since the filters are computed from those
     lines: a line taken out leaves the read in no filter, and a change to that file then starts no
     job that runs the test (packages/daemon/internal/prompts/roles_test.go's three lines are the
@@ -3748,7 +3748,7 @@ def suggested_read(read: str, known: set) -> str:
 
 def reads_inside_module(data, session: Session, expander: Expander, files: list, unreduced: dict,
                         inside: dict) -> list:
-    """Rule 26's reads inside a test's module, ((the file, the path, the source text), the gates
+    """Rule 27's reads inside a test's module, ((the file, the path, the source text), the gates
     that miss it), in the order of `files` and of the reads: a read some gate misses, of the gates
     whose test runs compile the file. A test run compiles a file its listing names as a test file
     of a package it tests, or as a source of a package of its closure, which are the files whose
@@ -3800,7 +3800,7 @@ def reads_inside_module(data, session: Session, expander: Expander, files: list,
 
 
 def held_files(read: str, expander: Expander) -> set:
-    """The files a gate's go commands must read for rule 26 to count a read inside a test's module
+    """The files a gate's go commands must read for rule 27 to count a read inside a test's module
     as one go list sees: the file a path names; the files a glob matches, its Go test files aside;
     and the files directly in a directory, its Go test files aside, which are what go list reads
     of the directory of a package a gate builds. Only where that leaves none - a glob of Go test
@@ -4449,6 +4449,7 @@ def check() -> int:
     rules.check_cache_round_trip(documents, problems)
     rules.check_race_fill_packages(data.RACE_FILLS, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
+    rules.check_binaries_fill(data.BINARIES_FILLS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
