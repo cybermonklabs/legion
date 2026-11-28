@@ -333,8 +333,8 @@ type rlsWorld struct {
 }
 
 // seedRLSPeople records the world's people with their member kinds and the group rlsGroup with
-// rlsGrouped in it, written straight to the tables: a group's write still refuses a limited
-// member until INFRA-6168's work step 4 (access.ErrGroupMemberRestricted).
+// rlsGrouped in it, written straight to the tables (a group's write takes a limited member too,
+// access.PutGroup, since INFRA-6168's work step 4).
 func seedRLSPeople(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `

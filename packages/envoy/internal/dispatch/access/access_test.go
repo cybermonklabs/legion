@@ -22,7 +22,8 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // The people and projects of verification v15's seed, plus the group case R2 adds. PUB is public
 // and PRIV private; OTHER is private and lists only the group crew, whose members are dave, a
-// full member, and bob, the restricted member PRIV names directly.
+// full member, and bob, the restricted (limited) member PRIV names directly, whom the group
+// admits to OTHER as a direct listing would (plan D8).
 const (
 	alice  = "alice@example.com"  // a full member no access list names
 	bob    = "bob@other.example"  // a restricted member PRIV names
@@ -72,16 +73,19 @@ func personalToken(login string, projects ...string) model.Actor {
 	return model.Actor{Kind: "session", Owner: new(login), Credential: &model.Credential{Scopes: model.Scopes, TokenID: "token-of-" + login, Projects: projects}}
 }
 
-// seededCallers are the callers of the seed and what the rule answers each. A full member's token
-// sees each public project its person sees whatever it lists, and the private projects it lists
-// that its person sees, as an open viewer: carol's token naming PRIV sees PRIV and PUB, and alice's
-// sees PUB alone, since alice does not see PRIV. bob's token naming PRIV, a restricted member's, is
-// held to its list. A credential of no person sees each public project and the private projects it
-// lists (R3).
+// seededCallers are the callers of the seed and what the rule answers each, by the one formula: a
+// caller sees each project its person sees that is public, or that its list names, or every one
+// for the person's browser. A full member's token sees each public project its person sees
+// whatever it lists, and the private projects it lists that its person sees, as an open viewer:
+// carol's token naming PRIV sees PRIV and PUB, and alice's sees PUB alone, since alice does not see
+// PRIV. bob, a limited member, sees PRIV, which names him, and OTHER, through the group crew, and
+// no public project, since none names him; his token naming PRIV sees PRIV alone, OTHER being
+// private and unlisted. A credential of no person sees each public project and the private
+// projects it lists (R3).
 func seededCallers() []seededCaller {
 	return []seededCaller{
 		{"alice", cookie(alice), model.Viewer{Person: alice, Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
-		{"bob", cookie(bob), model.Viewer{Person: bob, Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}},
+		{"bob", cookie(bob), model.Viewer{Person: bob, Restricted: true, Sees: []string{"OTHER", "PRIV"}, AnyPrivate: true}},
 		{"carol", cookie(carol), model.Viewer{Person: carol, Open: true, Sees: []string{"PRIV", "PUB"}, AnyPrivate: true}},
 		{"dave", cookie(dave), model.Viewer{Person: dave, Open: true, Sees: []string{"OTHER", "PUB"}, AnyPrivate: true}},
 		{"carol's token naming PRIV", personalToken(carol, "PRIV"), model.Viewer{Person: carol, Open: true, Sees: []string{"PRIV", "PUB"}, AnyPrivate: true, Lists: []string{"PRIV"}}},
@@ -97,10 +101,11 @@ func seededCallers() []seededCaller {
 }
 
 // TestTheRuleOverTheSeededCallers holds Resolve to the rule for every caller of verification v15:
-// a person sees a project its access list names or that is public to a full member; a full
-// member's credential sees the public part of its person's and the listed part of its person's
-// private projects; a restricted member's credential sees its list within its person's; a
-// credential with no person sees public projects and the private ones it lists.
+// a person sees a project they own, that its access list names directly or through a group they
+// are a member of, or that is public to a full member; a credential sees what its person sees that
+// is public, or that its list names, or everything its person sees at the browser, a limited
+// member's as a full member's; a credential with no person sees public projects and the private
+// ones it lists.
 func TestTheRuleOverTheSeededCallers(t *testing.T) {
 	database := seedAccess(t)
 	for _, caller := range seededCallers() {
@@ -185,7 +190,6 @@ func TestCredentialSeesAgreesWithTheSQLRule(t *testing.T) {
 				person = viewer
 			}
 			credential.PersonSees = person.Sees
-			credential.Restricted = person.Restricted
 		}
 		for project, isPrivate := range private {
 			got, sql := credential.Sees(project, isPrivate), slices.Contains(viewer.Sees, project)
@@ -198,33 +202,6 @@ func TestCredentialSeesAgreesWithTheSQLRule(t *testing.T) {
 			if want := slices.Contains(caller.want.Sees, project); got != want {
 				t.Errorf("%s: Credential.Sees(%s) = %t, the rule says %t", caller.name, project, got, want)
 			}
-		}
-	}
-}
-
-// TestARestrictedMemberIsNeverAdmittedByAGroup (v24 R2): bob, restricted, is a member of the group
-// OTHER lists and sees nothing of OTHER, while dave, a full member of the same group, sees it.
-func TestARestrictedMemberIsNeverAdmittedByAGroup(t *testing.T) {
-	ctx := context.Background()
-	database := seedAccess(t)
-	for _, test := range []struct {
-		person string
-		sees   bool
-	}{{bob, false}, {dave, true}} {
-		viewer, err := Resolve(ctx, database.Pool, cookie(test.person))
-		if err != nil {
-			t.Fatalf("Resolve(%s): %v", test.person, err)
-		}
-		if got := slices.Contains(viewer.Sees, "OTHER"); got != test.sees {
-			t.Errorf("%s sees OTHER = %t, want %t: OTHER lists only the group crew, and %s is a member of it", test.person, got, test.sees, test.person)
-		}
-		var listed bool
-		if err := database.Pool.QueryRow(ctx, `select `+store.PersonSeesProjectSQL("$1", "(select member_kind from people where email = $1)", "p")+` from projects p where p.key = 'OTHER'`,
-			test.person).Scan(&listed); err != nil {
-			t.Fatalf("PersonSeesProjectSQL(%s): %v", test.person, err)
-		}
-		if listed != test.sees {
-			t.Errorf("PersonSeesProjectSQL(%s, OTHER) = %t, want %t", test.person, listed, test.sees)
 		}
 	}
 }
@@ -281,7 +258,8 @@ func nullable(value string) any {
 // seededCallers: alice, carol's token that lists no project and the shared token, three open
 // viewers that do not see PRIV; carol in the browser and carol's token that lists PRIV, open
 // viewers that see PRIV, since a full member's list decides only which private projects it sees;
-// bob, the restricted member PRIV names; and bob's token that lists PRIV, held to its list.
+// bob, the limited member PRIV names, who sees OTHER too through the group crew (plan D8); and
+// bob's token that lists PRIV, which sees PRIV alone, OTHER being private and unlisted.
 const (
 	byAlice         = "alice"
 	byBob           = "bob"
@@ -306,8 +284,8 @@ func passes(callers ...string) map[string]bool {
 // open viewer. A session passes for the viewer's own and the server's; for any other viewer, never
 // when it acted in a private project the viewer does not see (a session_projects pair: ses_priv and
 // ses_both to the open viewers that do not see PRIV, ses_priv_other, which acted in PRIV and in
-// OTHER, to every caller here), and otherwise for an open viewer, and for a restricted viewer
-// when it acted in a project the viewer sees. A session with no pair is
+// OTHER, to every caller here but bob, who sees both), and otherwise for an open viewer, and for a
+// restricted viewer when it acted in a project the viewer sees. A session with no pair is
 // judged by its listener record's projects: an open viewer reads it when the record names no
 // project the viewer does not see (ses_new_priv, whose record names PRIV, reaches no open viewer
 // that does not see PRIV; ses_new_mixed, whose record names PRIV and PUB, reaches carol alone), an
@@ -413,7 +391,7 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"SessionClause ses_priv", SessionClause("$2", "$1"), "ses_priv", passes(byBob, byBobPriv, byCarol, byCarolPriv), openAnd(byBob, byBobPriv)},
 		{"SessionClause ses_pub", SessionClause("$2", "$1"), "ses_pub", passes(byAlice, byCarol, byCarolPriv, byCarolUnlisted, byShared), openAnd()},
 		{"SessionClause ses_both", SessionClause("$2", "$1"), "ses_both", passes(byBob, byBobPriv, byCarol, byCarolPriv), openAnd(byBob, byBobPriv)},
-		{"SessionClause ses_priv_other", SessionClause("$2", "$1"), "ses_priv_other", passes(), openAnd(byBob, byBobPriv)},
+		{"SessionClause ses_priv_other", SessionClause("$2", "$1"), "ses_priv_other", passes(byBob), openAnd(byBob, byBobPriv)},
 		{"SessionClause ses_new_priv", SessionClause("$2", "$1"), "ses_new_priv", passes(byBob, byBobPriv, byCarol, byCarolPriv), openAnd()},
 		{"SessionClause ses_new_pub", SessionClause("$2", "$1"), "ses_new_pub", passes(byAlice, byCarol, byCarolPriv, byCarolUnlisted, byShared), openAnd()},
 		{"SessionClause ses_new_mixed", SessionClause("$2", "$1"), "ses_new_mixed", passes(byCarol, byCarolPriv), openAnd()},

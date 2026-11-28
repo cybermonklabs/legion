@@ -11,15 +11,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestCredentialCoversDecidesOnlyPrivateProjects (R3): a full member's list decides
-// only which private projects its credential reaches, and a restricted member's list narrows every
-// project. carol's token that lists PRIV covers PUB and PRIV, and not PRIV2; bob's token that lists
-// PRIV covers PRIV and not PUB; the shared token covers PUB and not PRIV. A restricted member's
-// token that lists none covers the public projects and no private one, since a private project
-// needs a token that lists it; a credential of no person that lists PRIV covers PRIV and PUB, and
-// one that lists none covers PUB alone (R3); a browser lists nothing and
-// covers every project. The empty project stands for every project and is not private, so each
-// credential covers it except a restricted member's that lists projects.
+// TestCredentialCoversDecidesOnlyPrivateProjects (R3, plan D8): a list decides only which private
+// projects its credential reaches, for every credential, a limited member's as a full member's
+// (its person's limit is Sees', not this test's). carol's token that lists PRIV covers PUB and
+// PRIV, and not PRIV2; a person's token that lists none covers the public projects and no private
+// one, since a private project needs a token that lists it; the shared token covers PUB and not
+// PRIV; a credential of no person that lists PRIV covers PRIV and PUB (R3); a browser lists
+// nothing and covers every project. A results token's write is held to its one project, private or
+// public (ResultsOnly, withinProjectScope's write rule): one of PRIV covers PRIV alone, and one of
+// PUB covers PUB alone. The empty project stands for every project and is not private, so each
+// credential covers it except a results token's.
 func TestCredentialCoversDecidesOnlyPrivateProjects(t *testing.T) {
 	private := map[string]bool{"": false, "PUB": false, "PRIV": true, "PRIV2": true}
 	for _, test := range []struct {
@@ -28,11 +29,12 @@ func TestCredentialCoversDecidesOnlyPrivateProjects(t *testing.T) {
 		covers []string
 	}{
 		{"carol's token that lists PRIV", Credential{Listed: []string{"PRIV"}, Person: true}, []string{"", "PRIV", "PUB"}},
-		{"bob's token that lists PRIV", Credential{Listed: []string{"PRIV"}, Person: true, Restricted: true}, []string{"PRIV"}},
 		{"the shared token", Credential{}, []string{"", "PUB"}},
-		{"bob's token that lists none", Credential{Person: true, Restricted: true}, []string{"", "PUB"}},
+		{"a person's token that lists none", Credential{Person: true}, []string{"", "PUB"}},
 		{"a token of no person that lists PRIV", Credential{Listed: []string{"PRIV"}}, []string{"", "PRIV", "PUB"}},
 		{"carol's browser", Credential{Person: true, Browser: true}, []string{"", "PRIV", "PRIV2", "PUB"}},
+		{"a results token of PRIV", Credential{Listed: []string{"PRIV"}, ResultsOnly: true}, []string{"PRIV"}},
+		{"a results token of PUB", Credential{Listed: []string{"PUB"}, ResultsOnly: true}, []string{"PUB"}},
 	} {
 		for project, isPrivate := range private {
 			if got, want := CredentialCovers(test.cred, project, isPrivate), slices.Contains(test.covers, project); got != want {

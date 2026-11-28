@@ -158,8 +158,9 @@ func groupChange(t *testing.T, appended []model.Event, name, change string) {
 }
 
 // Each write refuses what the rule cannot hold, and writes nothing when it does: an owner who is
-// not a full member, a group member who is restricted, a group no row holds, a project no row
-// holds, and a principal that is no email or no group name.
+// not a full member, a group no row holds, a project no row holds, and a principal that is no
+// email or no group name. A group takes a limited member as any other
+// (TestAGroupWriteTakesALimitedMember).
 func TestAccessWritesRefuseWhatTheRuleCannotHold(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -210,10 +211,6 @@ func TestAccessWritesRefuseWhatTheRuleCannotHold(t *testing.T) {
 			_, _, err := PutGroup(ctx, tx, broker, "accents", olga, []string{dave, "\u00c4@example.com"}, by)
 			return err
 		}, ErrPrincipalInput, "lowercase"},
-		{"a group member who is restricted", func(tx pgx.Tx) error {
-			_, _, err := PutGroup(ctx, tx, broker, "mixed", olga, []string{dave, bob}, by)
-			return err
-		}, ErrGroupMemberRestricted, bob},
 		{"a visibility that is neither", func(tx pgx.Tx) error {
 			_, _, err := SetVisibility(ctx, tx, broker, "PUB", "secret", by)
 			return err
@@ -234,7 +231,7 @@ func TestAccessWritesRefuseWhatTheRuleCannotHold(t *testing.T) {
 			}
 		})
 	}
-	if group, err := ReadGroup(ctx, database.Pool, "mixed"); !errors.Is(err, ErrGroupNotFound) {
+	if group, err := ReadGroup(ctx, database.Pool, "accents"); !errors.Is(err, ErrGroupNotFound) {
 		t.Fatalf("the refused group was stored: %+v, %v", group, err)
 	}
 }
@@ -246,6 +243,30 @@ func countEvents(t *testing.T, database *store.Store) int {
 		t.Fatalf("count events: %v", err)
 	}
 	return count
+}
+
+// TestARemovalOwesTheRevocationOfALimitedMemberAGroupAdmits (plan D8): a removal that takes a
+// project from a limited member owes the revocation of their machine logins whether the list
+// admits them directly or through a group, so a member removed through a group change owes as one
+// taken off the list does. bob, a limited member, is owed for PRIV, which names him, and for OTHER,
+// which lists the group crew he is a member of, and not for PUB, whose list names neither; dave, a
+// full member of crew, is owed nothing.
+func TestARemovalOwesTheRevocationOfALimitedMemberAGroupAdmits(t *testing.T) {
+	ctx := context.Background()
+	database := seedAccess(t)
+	for _, test := range []struct {
+		project, person string
+		owes            bool
+	}{
+		{"PRIV", bob, true},
+		{"OTHER", bob, true},
+		{"PUB", bob, false},
+		{"OTHER", dave, false},
+	} {
+		if owes, err := RemovalOwes(ctx, database.Pool, test.project, test.person); err != nil || owes != test.owes {
+			t.Errorf("RemovalOwes(%s, %s) = %t, %v, want %t", test.project, test.person, owes, err, test.owes)
+		}
+	}
 }
 
 // MemberKind and the membership answer read a person as the people table holds them: a full or

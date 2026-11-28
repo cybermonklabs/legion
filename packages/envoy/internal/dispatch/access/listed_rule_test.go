@@ -6,10 +6,11 @@ import (
 )
 
 // TestListedAgreesWithTheReadRule: outside sign-in admits an email exactly when Listed says some
-// project names it directly, and the person it admits is a restricted member, whom the read rule
-// admits to a project only by its owner or its access list naming them. So, for every seeded
-// person read as a restricted member, Listed is true exactly when the read rule shows them some
-// project: the two cannot drift apart.
+// project names it directly, by its owner or its access list. The read rule admits a restricted
+// (limited) member by those two arms and by a group its list names (plan D8), which Listed does
+// not read. So, for every seeded person read as a restricted member and taken out of every group,
+// Listed is true exactly when the read rule shows them some project: the two direct arms cannot
+// drift apart.
 func TestListedAgreesWithTheReadRule(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -23,6 +24,9 @@ func TestListedAgreesWithTheReadRule(t *testing.T) {
 			on conflict (email) do update set member_kind = 'restricted'
 		`, person); err != nil {
 			t.Fatalf("read %s as a restricted member: %v", person, err)
+		}
+		if _, err := tx.Exec(ctx, `delete from access_group_members where person = $1`, person); err != nil {
+			t.Fatalf("take %s out of every group: %v", person, err)
 		}
 		listed, err := Listed(ctx, tx, person)
 		if err != nil {

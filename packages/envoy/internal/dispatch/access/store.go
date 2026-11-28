@@ -19,18 +19,17 @@ import (
 // The refusals of the reads and writes below. Each is wrapped with what it names, so a caller
 // matches it with errors.Is and shows its text.
 var (
-	ErrProjectNotFound       = errors.New("no project has this key")
-	ErrGroupNotFound         = errors.New("no group has this name")
-	ErrOwnerNotAllowed       = errors.New("an owner is a full member who has signed in")
-	ErrGroupMemberRestricted = errors.New("a group holds full members only, and this person is a restricted member")
-	ErrPrincipalInput        = errors.New("a person is named by their email, and a group by its name")
-	ErrVisibilityInput       = errors.New("a project is public or private")
-	ErrListFull              = fmt.Errorf("an access list names at most %d people and groups", MaxPrincipals)
-	ErrGroupFull             = fmt.Errorf("a group holds at most %d members", MaxGroupMembers)
-	ErrSlackChannelInput     = errors.New("a Slack channel is named by its id, such as C0123456789")
-	ErrSlackChannelsFull     = fmt.Errorf("a project names at most %d Slack channels", MaxSlackChannels)
-	ErrGroupsPerOwnerFull    = fmt.Errorf("an owner holds at most %d groups", model.MaxGroupsPerOwner)
-	ErrSlackChannelShared    = errors.New("a Slack channel belongs to one private project")
+	ErrProjectNotFound    = errors.New("no project has this key")
+	ErrGroupNotFound      = errors.New("no group has this name")
+	ErrOwnerNotAllowed    = errors.New("an owner is a full member who has signed in")
+	ErrPrincipalInput     = errors.New("a person is named by their email, and a group by its name")
+	ErrVisibilityInput    = errors.New("a project is public or private")
+	ErrListFull           = fmt.Errorf("an access list names at most %d people and groups", MaxPrincipals)
+	ErrGroupFull          = fmt.Errorf("a group holds at most %d members", MaxGroupMembers)
+	ErrSlackChannelInput  = errors.New("a Slack channel is named by its id, such as C0123456789")
+	ErrSlackChannelsFull  = fmt.Errorf("a project names at most %d Slack channels", MaxSlackChannels)
+	ErrGroupsPerOwnerFull = fmt.Errorf("an owner holds at most %d groups", model.MaxGroupsPerOwner)
+	ErrSlackChannelShared = errors.New("a Slack channel belongs to one private project")
 )
 
 // The bounds of an access list and of a group.
@@ -138,18 +137,26 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed stri
 	return ReadOwner(ctx, tx, key)
 }
 
-// RemovalOwes reports whether a removal of the person login from project key's list owes the
-// revocation of their machine logins, as q reads it: the list names them and they are a restricted
-// member. It is the one rule for it: LockForAccessWrite reads it with no lock to decide whether to
-// take the person's approval lock first, and the removal route a later slice adds reads it again
-// under the project's lock, before it takes them off, to decide whether to record the debt. Its
-// error names the project and never the person (TestNoAccessErrorNamesAPerson).
+// RemovalOwes reports whether a removal that takes project key from the person login owes the
+// revocation of their machine logins, as q reads it before the removal: the list admits them, by
+// naming them or a group they are a member of, and they are a limited member (restricted). A group
+// admits a limited member as a direct listing does (store.PersonSeesProjectSQL), so a member
+// removed through a group change owes as one taken off the list does: taken out of a group key's
+// list names, or a member of a group taken off that list or deleted. It is the one rule for it:
+// LockForAccessWrite reads it with no lock to decide whether to take the person's approval lock
+// first, and the removal route a later slice adds, of a person or of a group change, reads it
+// again under the project's lock, before it takes them off, to decide whether to record the debt.
+// Its error names the project and never the person (TestNoAccessErrorNamesAPerson).
 func RemovalOwes(ctx context.Context, q Querier, key, login string) (bool, error) {
 	var owes bool
 	if err := q.QueryRow(ctx, `
-		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+		select (exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
+				or exists (
+					select 1 from project_access listed
+					join access_group_members member on member.group_name = listed.principal
+					where listed.project_key = $1 and listed.principal_kind = $5 and member.person = $3))
 			and exists (select 1 from people where email = $3 and member_kind = $4)
-	`, key, PrincipalPerson, model.CanonicalLogin(login), string(model.MemberRestricted)).Scan(&owes); err != nil {
+	`, key, PrincipalPerson, model.CanonicalLogin(login), string(model.MemberRestricted), PrincipalGroup).Scan(&owes); err != nil {
 		return false, fmt.Errorf("read whether a removal from project %s owes a machine-login revocation: %w", key, err)
 	}
 	return owes, nil
@@ -571,9 +578,9 @@ func AddPrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, 
 
 // RemovePrincipal takes a person or a group off project key's access list; one the list does not
 // name leaves it as it was. It appends project.access_changed in tx. Each person the list admitted
-// through the principal - the person, or a group's full members (store.PersonSeesProjectSQL's
-// group arm) - who no longer sees the project leaves it on every session tied to them as a project
-// it reached (store.RecordReachedProjects).
+// through the principal - the person, or every member of a group, limited members among them
+// (store.PersonSeesProjectSQL's group arm) - who no longer sees the project leaves it on every
+// session tied to them as a project it reached (store.RecordReachedProjects).
 func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, principal string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	name, err := principalOf(kind, principal)
 	if err != nil {
@@ -595,7 +602,7 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 		select exists (select 1 from target),
 			case when not exists (select 1 from removed) then '{}'::text[]
 				when $2 = 'person' then array[$3::text]
-				else `+groupFullMembersSQL("$3")+` end
+				else `+groupMembersAdmittedSQL("$3")+` end
 	`, key, kind, name).Scan(&project, &admitted); err != nil {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("take a %s off project %s: %w", kind, key, err)
 	}
@@ -616,12 +623,11 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	return access, event, nil
 }
 
-// groupFullMembersSQL is the members of the group nameExpr names that it admits to a project, as
-// a text[]: those whose people row is a full member's (store.PersonSeesProjectSQL's group arm).
-func groupFullMembersSQL(nameExpr string) string {
-	return `array(select member.person from access_group_members member
-		join people full_member on full_member.email = member.person and full_member.member_kind = 'full'
-		where member.group_name = ` + nameExpr + `)`
+// groupMembersAdmittedSQL is the members of the group nameExpr names, every one of whom it admits
+// to a project its list names, a limited member as a full one (store.PersonSeesProjectSQL's group
+// arm), as a text[].
+func groupMembersAdmittedSQL(nameExpr string) string {
+	return `array(select member.person from access_group_members member where member.group_name = ` + nameExpr + `)`
 }
 
 // RecordListedReach records, in a statement of its own, each private project of projects, the list
@@ -842,13 +848,13 @@ func ListGroups(ctx context.Context, q Querier, after string, limit int) (model.
 }
 
 // PutGroup makes group name, or writes it again: its owner, a full member, and exactly members,
-// each a person who is not a restricted member. It appends access_group.changed in tx. Who may
-// write the group is the caller's to decide first. A write that makes the group, or gives it to
-// another owner, is refused with ErrGroupsPerOwnerFull when that owner holds
-// model.MaxGroupsPerOwner groups already (roomForAGroup); a write that keeps the owner is not. Each
-// full member it takes out of the group who no longer sees a project whose list names the group
-// leaves that project on every session tied to them as a project it reached
-// (store.RecordReachedProjects).
+// each a person, a limited member as a full one: a group admits each of its members as a direct
+// listing does (store.PersonSeesProjectSQL). It appends access_group.changed in tx. Who may write
+// the group is the caller's to decide first. A write that makes the group, or gives it to another
+// owner, is refused with ErrGroupsPerOwnerFull when that owner holds model.MaxGroupsPerOwner groups
+// already (roomForAGroup); a write that keeps the owner is not. Each member it takes out of the
+// group who no longer sees a project whose list names the group leaves that project on every
+// session tied to them as a project it reached (store.RecordReachedProjects).
 func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner string, members []string, by model.Actor) (model.AccessGroup, model.Event, error) {
 	if !ValidGroupName(name) {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %q is no group name", ErrPrincipalInput, name)
@@ -873,15 +879,6 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	if len(people) > MaxGroupMembers {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %d given", ErrGroupFull, len(people))
 	}
-	var restricted []string
-	if err := tx.QueryRow(ctx, `
-		select array(select email from people where email = any($1) and member_kind = 'restricted' order by email collate "C")
-	`, people).Scan(&restricted); err != nil {
-		return model.AccessGroup{}, model.Event{}, fmt.Errorf("read the member kinds of group %s: %w", name, err)
-	}
-	if len(restricted) > 0 {
-		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %s", ErrGroupMemberRestricted, strings.Join(restricted, ", "))
-	}
 	var held string
 	switch err := tx.QueryRow(ctx, `select owner from access_groups where name = $1`, name).Scan(&held); {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -901,9 +898,9 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	`, name, ownerLogin).Scan(&created); err != nil {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("write group %s: %w", name, err)
 	}
-	// The members the write takes out of the group, each a full member it admitted to every
-	// project whose list names it, and those projects, which store.RecordReachedProjects keeps on
-	// the sessions of each such member who no longer sees one.
+	// The members the write takes out of the group, each one it admitted to every project whose
+	// list names it, and those projects, which store.RecordReachedProjects keeps on the sessions of
+	// each such member who no longer sees one.
 	var gone, listing []string
 	if err := tx.QueryRow(ctx, `
 		with gone as (
@@ -914,8 +911,7 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 			select $1, person from unnest($2::text[]) as person
 			on conflict do nothing
 		)
-		select array(select gone.person from gone
-				join people full_member on full_member.email = gone.person and full_member.member_kind = 'full'),
+		select array(select gone.person from gone),
 			array(select project_key from project_access where principal_kind = 'group' and principal = $1)
 	`, name, people).Scan(&gone, &listing); err != nil {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("write the members of group %s: %w", name, err)
@@ -975,15 +971,16 @@ func groupChangeEvent(name, change string, by model.Actor) model.Event {
 // event (recordProjectChanges: the project's owner and visibility) carries every write the lock
 // ordered first, and appends one project.access_changed for each project, in key order, and then
 // access_group.changed, all in tx. Who may delete the group is the caller's to decide first. Each
-// full member the group admitted to those projects who no longer sees one leaves it on every
-// session tied to them as a project it reached (store.RecordReachedProjects); the members are
-// read before the delete, which takes them with the group.
+// member the group admitted to those projects, a limited member as a full one, who no longer sees
+// one leaves it on every session tied to them as a project it reached
+// (store.RecordReachedProjects); the members are read before the delete, which takes them with the
+// group.
 func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string, by model.Actor) ([]model.Event, error) {
 	if err := LockGroupName(ctx, tx, name); err != nil {
 		return nil, err
 	}
 	var admitted []string
-	if err := tx.QueryRow(ctx, `select `+groupFullMembersSQL("$1"), name).Scan(&admitted); err != nil {
+	if err := tx.QueryRow(ctx, `select `+groupMembersAdmittedSQL("$1"), name).Scan(&admitted); err != nil {
 		return nil, fmt.Errorf("read the members of group %s: %w", name, err)
 	}
 	tag, err := tx.Exec(ctx, `delete from access_groups where name = $1`, name)

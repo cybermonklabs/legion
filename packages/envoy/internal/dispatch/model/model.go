@@ -159,11 +159,11 @@ type Credential struct {
 	// token as, which a successor's reply is held to (api's callerPrincipal and
 	// actsForSuccessorPrincipal). Empty for every other credential.
 	Principal string
-	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
-	// nil for every other credential until a later slice sets a personal token's
-	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
-	// access.CredentialCovers': for a full member's credential, and one that names no person, only
-	// which private projects it reaches; for a restricted member's, every project it reaches.
+	// Projects is the credential's list: a broker token's ciphertoken.Caller.Projects, sorted; a
+	// personal token's agent_tokens.projects, as its row holds it (api's personalTokenActor, which
+	// reads a read-only token's row as an empty list); and nil for every other credential. Empty
+	// is a credential that names none. What a list decides is access.CredentialCovers': only which
+	// private projects it reaches, for every credential, a limited member's as a full member's.
 	Projects []string
 	// ResultsOnly is a broker-issued token that writes only the results of its project's spec
 	// checks (ciphertoken.ScopeResults): one the secrets broker minted from a result entry for one

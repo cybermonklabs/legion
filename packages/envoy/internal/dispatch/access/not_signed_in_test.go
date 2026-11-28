@@ -9,8 +9,8 @@ import (
 )
 
 // TestTheReadsNameWhoHasNotSignedInYet: a list and a group may name a person nobody has signed in
-// as yet, whom the rule admits once they sign in (a group only as a full member), so the reads say
-// which of their people that is, and the page can show them as not signed in yet.
+// as yet, whom the rule admits once they sign in (by a group as by a direct listing), so the reads
+// say which of their people that is, and the page can show them as not signed in yet.
 func TestTheReadsNameWhoHasNotSignedInYet(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)

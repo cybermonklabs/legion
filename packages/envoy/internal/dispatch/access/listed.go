@@ -8,9 +8,9 @@ import (
 )
 
 // PersonDirectlyListedSQL is true when some project names the person personParam binds directly:
-// as its owner, or as a person on its access list. It has no group arm, by design: a restricted
-// member is admitted only by being named directly (v24 R2), so outside sign-in rests on this
-// read alone, whatever any group holds.
+// as its owner, or as a person on its access list. It has no group arm, by design: outside sign-in
+// rests on this read alone, whatever any group holds, though a group admits a limited member to
+// what the rule lets them see as a direct listing does (store.PersonSeesProjectSQL).
 func PersonDirectlyListedSQL(personParam string) string {
 	return fragment("PersonDirectlyListedSQL", fmt.Sprintf(`(exists (select 1 from projects where owner = %[1]s offset 0)
 		or exists (select 1 from project_access where principal_kind = 'person' and principal = %[1]s offset 0))`, personParam))

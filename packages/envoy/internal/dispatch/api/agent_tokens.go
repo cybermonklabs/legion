@@ -367,24 +367,27 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 // agent_read_tokens in one query, and answers the zero actor for a token neither table holds. A
 // row of agent_read_tokens is a read-only credential (model.Credential.ReadOnly), which the
 // read-only gate holds to the read class: its scopes are the person scope where the row holds it,
-// and never read, which marks the credential and is no scope a route can require. A token's use is
-// written to its own row at most once a minute, so a busy agent costs its row one write a minute
-// rather than one a request.
+// and never read, which marks the credential and is no scope a route can require. A row of
+// agent_tokens names its token's list of projects (agent_tokens.projects), which the credential
+// carries as Projects, so the token's viewer applies it (access.Resolve); a row of
+// agent_read_tokens carries no list and reads as an empty one. A token's use is written to its own
+// row at most once a minute, so a busy agent costs its row one write a minute rather than one a
+// request.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
-	var scopes []string
+	var scopes, projects []string
 	var revokedAt *time.Time
 	var readOnly bool
 	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select id::text, name, owner, scopes, revoked_at, false
+		select id::text, name, owner, scopes, projects, revoked_at, false
 		from agent_tokens
 		where token_hash = $1
 		union all
-		select id::text, name, owner, scopes, revoked_at, true
+		select id::text, name, owner, scopes, '{}'::text[], revoked_at, true
 		from agent_read_tokens
 		where token_hash = $1
-	`, hash[:]).Scan(&id, &name, &owner, &scopes, &revokedAt, &readOnly)
+	`, hash[:]).Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &readOnly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -404,7 +407,7 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	}
 	// The token's own row says what it may do, and it names the credential that acted: the
 	// person's token, not the person at a browser.
-	credential := &model.Credential{Scopes: scopes, TokenID: id, TokenName: name}
+	credential := &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects}
 	if readOnly {
 		credential.Scopes = slices.DeleteFunc(scopes, func(scope string) bool { return scope == model.ScopeRead })
 		credential.ReadOnly = true

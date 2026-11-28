@@ -8,13 +8,15 @@ import (
 )
 
 // PersonSeesProjectSQL is the rule for one person over one project row: true when the person,
-// whose member kind memberExpr answers, sees the project projectAlias names. The group arm
-// counts a member only through a people row of a full member, so a restricted member, or a login
-// nobody has signed in as, is never admitted by a group (v24 R2). It is the access package's
-// rule (access: the package comment), written here because the store's own RecordReachedProjects
-// reads it too, as a later slice's writes of a person's member kind (PgPeopleStore) do, and the
-// access package imports this one. It starts with the access package's marker and its own
-// name (access.Marker), as every fragment of that package does
+// whose member kind memberExpr answers, sees the project projectAlias names: they own it, its
+// access list names them, its list names a group they are a member of, or it is public and they
+// are a full member. The group arm reads the group's members alone (access_group_members), with no
+// people row, so a group admits a limited member as a direct listing does, and a member nobody has
+// signed in as yet from the moment they sign in: the rule is read only for a caller who has a
+// person. It is the access package's rule (access: the package comment), written here because the
+// store's own RecordReachedProjects reads it too, as a later slice's writes of a person's member
+// kind (PgPeopleStore) do, and the access package imports this one. It starts with the access
+// package's marker and its own name (access.Marker), as every fragment of that package does
 // (access.TestEverySQLFragmentStartsWithTheMarker).
 func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 	return PersonSeesProjectSQLIn("", personExpr, memberExpr, projectAlias)
@@ -35,7 +37,6 @@ func PersonSeesProjectSQLIn(schema, personExpr, memberExpr, projectAlias string)
 			select 1
 			from %[4]sproject_access listed
 			join %[4]saccess_group_members member on member.group_name = listed.principal
-			join %[4]speople full_member on full_member.email = member.person and full_member.member_kind = 'full'
 			where listed.project_key = %[3]s.key and listed.principal_kind = 'group' and member.person = %[1]s
 			offset 0)
 		or (%[3]s.visibility = 'public' and %[2]s = 'full'))`, personExpr, memberExpr, projectAlias, schema)
@@ -54,13 +55,13 @@ const SessionOwnerLock = "dispatch-session-owner"
 // not see as tx left it (PersonSeesProjectSQL; a person no people row holds reads as a full member,
 // as a broker token's person does in access.VisibleProjectsSQL). Its callers name only people who
 // saw the project before the change: the access package's writes name the person taken off the
-// list, a group's full members, the members taken out of a group and the owner the project was
-// taken from; a later slice's writes of a member kind (PgPeopleStore) are to name the person whose
-// kind they change, with the projects that person saw under the kind the row held. A switch of a
-// project to private records nothing for the people tied to a session (access:
-// projectMadePrivateFunctionBody). A session's transcript holds what it read while its person saw
-// the project, so the content rule reads each pair as a project the session acted in
-// (access.SessionContentClause); nothing removes one.
+// list, every member of a group taken off the list or deleted, limited members among them, the
+// members taken out of a group and the owner the project was taken from; a later slice's writes of
+// a member kind (PgPeopleStore) are to name the person whose kind they change, with the projects
+// that person saw under the kind the row held. A switch of a project to private records nothing
+// for the people tied to a session (access: projectMadePrivateFunctionBody). A session's
+// transcript holds what it read while its person saw the project, so the content rule reads each
+// pair as a project the session acted in (access.SessionContentClause); nothing removes one.
 //
 // It first takes each person's SessionOwnerLock, exclusive, in login order
 // (lockSessionOwnersSQL), so two changes that lock the same people never wait on each other in a

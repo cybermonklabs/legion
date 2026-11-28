@@ -122,12 +122,12 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 // middle of a refill a session can hold its pair in a project the viewer sees and not yet its pair
 // in a private project the viewer does not see. The arm of a viewer that is not open trusted the
 // pairs as the open arm, before it waited for the marker, did not: so while a project is private
-// and the marker is absent, bob, a restricted member who sees PRIV alone, and bob's token that
-// lists PRIV each read no session but bob's own - not ses_refilled, whose PRIV pair is back and
-// whose OTHER pair is not, nor ses_listed, which has no pair and a listener record naming PRIV (the
-// arm of a restricted viewer that reads a listed record). Once the marker is written both read
-// them again, and with no private project both read them by their pairs and records alone, marker
-// or none (R9).
+// and the marker is absent, bob, a limited member, and bob's token that lists PRIV, which sees PRIV
+// alone, each read no session but bob's own - not ses_refilled, whose PRIV pair is back and whose
+// OTHER pair is not, nor ses_listed, which has no pair and a listener record naming PRIV (the arm
+// of a restricted viewer that reads a listed record). Once the marker is written both read them
+// again, and with no private project both read them by their pairs and records alone, marker or
+// none (R9).
 //
 // Control: SessionClause passing the marker for an open viewer alone, as it did, and bob reads
 // ses_refilled and ses_listed while the refill is unfinished.
