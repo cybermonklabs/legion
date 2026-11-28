@@ -739,7 +739,10 @@ func TestOpen_EmptyBucketSucceeds(t *testing.T) {
 // restart when watch() hasn't populated the cache yet.
 
 // coldRegistry creates a Registry with an empty cache backed by the given KV buckets.
-// Its watcher is never started, so the cache stays cold for the test's lifetime.
+// Its watcher is never started, so the cache stays cold for the test's lifetime. Its clock (now)
+// and its timer clock (timers) are one fake at registryClockStart that nothing moves, so every
+// stamp it writes reads the test's clock and a claim's cleanup window never ends under the parallel
+// tests' load; a case that moves time sets a fake of its own (clockedColdRegistry).
 func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) {
 	t.Helper()
 	js, err := conn.JetStream(testnats.MaxWait(t))
@@ -758,7 +761,8 @@ func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) 
 	if err != nil {
 		t.Fatalf("wrap the role KV bucket: %v", err)
 	}
-	r := &Registry{roleKV: roles, now: time.Now, index: newSubjectIndex()}
+	still := clocktest.New(registryClockStart)
+	r := &Registry{roleKV: roles, now: still.Now, timers: still, index: newSubjectIndex()}
 	r.cache = newInterestCopy(r)
 	r.chunks = kvchunk.NewChunks(r.now)
 	handle, err := bus.WrapKeyValue(conn, kv)
@@ -2807,20 +2811,8 @@ func assertInterestMissing(t *testing.T, reg *Registry, sessionID string) {
 	}
 }
 
-// captureRegistryLogs makes a text handler over a buffer the process's default logger until t ends
-// (logtest.SetDefault), and returns the buffer: every line logged through slog.Default() lands in
-// it, whichever test logged it, so a test that calls it does not run beside the others. A test that
-// reads the lines of a registry, or of a watcher it builds, gives each a logger of its own instead
-// (ownLogs).
-func captureRegistryLogs(t *testing.T) *lockedBuffer {
-	t.Helper()
-	var logs lockedBuffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
-	return &logs
-}
-
-// ownLogs is a logger of the test's own, in captureRegistryLogs's text format, and the buffer it
-// writes: Open takes the logger through WithLogger, and a registry built without Open
+// ownLogs is a logger of the test's own, writing text lines (slog.NewTextHandler), and the buffer
+// it writes: Open takes the logger through WithLogger, and a registry built without Open
 // (coldRegistry) in its log field, which WithLogger fills and Registry.logger reads. The test reads
 // the buffer, and the process's default logger stays as it was, so the test runs beside the others.
 func ownLogs() (*lockedBuffer, *slog.Logger) {

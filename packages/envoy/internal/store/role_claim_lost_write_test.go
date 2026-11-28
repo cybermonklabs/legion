@@ -34,6 +34,7 @@ import (
 // record serves every process running under one session id, the session does hold the role, and
 // a rollback would leave that standing claim with no interest half naming it.
 func TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_claiming_under_a_lost_write"
@@ -48,9 +49,8 @@ func TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess(t *testing
 		"a claimant that states no process":                {claimant: "", standing: ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			conn, cleanup := connectNATS(t)
-			t.Cleanup(cleanup)
-			reg, _ := coldRegistry(t, conn)
+			t.Parallel()
+			reg, _, _, _ := clockedColdRegistry(t)
 			racing := &racingCreateKeyValue{KeyValue: reg.roleKV.Legacy()}
 			racing.beforeFirstCreate = func() {
 				claimRoleAs(t, reg, holder, "example-host", role, tc.standing)

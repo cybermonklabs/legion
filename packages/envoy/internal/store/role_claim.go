@@ -275,7 +275,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// started: the read that decides the rollback and the rollback itself still run, in the
 		// reserve of ctx's budget (claimCleanupContext), as rollBackClaimTopic's do. Every branch
 		// below returns, so the cleanup context is the loop's last.
-		cleanup, cancelCleanup := claimCleanupContext(ctx)
+		cleanup, cancelCleanup := r.claimCleanupContext(ctx)
 		defer cancelCleanup()
 		// The topic goes back only where the role did not end up with this session, which is
 		// the session's and not the process's: one interest record serves every process
@@ -339,7 +339,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	// in the reserve of ctx's budget, which writes nothing while the record carries it; a merge that
 	// fails is logged and changes nothing the claim answers, since the claim record, which every
 	// role route reads, stands.
-	ensureCtx, cancelEnsure := claimCleanupContext(ctx)
+	ensureCtx, cancelEnsure := r.claimCleanupContext(ctx)
 	if ensured, ensureErr := r.UpsertWithin(ensureCtx, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic}); ensureErr == nil {
 		item = ensured
 	} else {
@@ -401,14 +401,15 @@ func claimTriesContext(ctx context.Context) (context.Context, context.CancelFunc
 
 // claimCleanupContext is the context the work after a claim's tries runs under: ctx's own deadline,
 // whether or not ctx was cancelled first, since a claim whose caller went away still owes its
-// rollback, and claimCleanupWindow when ctx has no deadline. So a claim is answered inside ctx's
-// deadline, rollback included, however its tries ended.
-func claimCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+// rollback, and claimCleanupWindow when ctx has no deadline, on the registry's timer clock
+// (WithTimerClock), which a test that does not mean to race the window holds still. So a claim is
+// answered inside ctx's deadline, rollback included, however its tries ended.
+func (r *Registry) claimCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	detached := context.WithoutCancel(ctx)
 	if deadline, ok := ctx.Deadline(); ok {
 		return context.WithDeadline(detached, deadline)
 	}
-	return context.WithTimeout(detached, claimCleanupWindow)
+	return r.timerClock().WithTimeout(detached, claimCleanupWindow)
 }
 
 // rollBackClaimTopic is rollBackUnlessHeld for a claim that wrote nothing because its BeforeTry
@@ -417,7 +418,7 @@ func claimCleanupContext(ctx context.Context) (context.Context, context.CancelFu
 // fails is logged at WARN and changes nothing the claim answers: a topic it leaves gives nobody the
 // role.
 func (r *Registry) rollBackClaimTopic(ctx context.Context, req RoleClaimRequest, roleTopic string) {
-	cleanup, cancel := claimCleanupContext(ctx)
+	cleanup, cancel := r.claimCleanupContext(ctx)
 	defer cancel()
 	if _, _, err := r.rollBackUnlessHeld(cleanup, req, roleTopic); err != nil {
 		r.logger().Warn("registry role claim that wrote nothing left its claimant's role topic",

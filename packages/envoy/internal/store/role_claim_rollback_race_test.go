@@ -42,15 +42,15 @@ func (kv *afterGetKeyValue) Update(key string, value []byte, revision uint64) (u
 // claim that wrote nothing with no winner, whose topic the rollback removes; the second is a winner
 // that landed before the rollback's read, which the rollback reads and leaves alone.
 func TestAFailedClaimsRollbackKeepsTheTopicOfASameSessionClaimThatLandedMeanwhile(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{
 		"control: a claim that wrote nothing with no winner loses its topic",
 		"control: a same-session winner before the rollback's read keeps its topic",
 		"a same-session winner that lands while the rollback's read is in flight keeps its topic",
 	} {
 		t.Run(scenario, func(t *testing.T) {
-			conn, cleanup := connectNATS(t)
-			t.Cleanup(cleanup)
-			reg, _ := coldRegistry(t, conn)
+			t.Parallel()
+			reg, _, _, _ := clockedColdRegistry(t)
 			const role, a, b = "rollback-race", "ses_rollback_race_a", "ses_rollback_race_b"
 			if _, err := reg.SetRole(a, "machine", role, false); err != nil {
 				t.Fatal(err)
@@ -99,9 +99,8 @@ func TestAFailedClaimsRollbackKeepsTheTopicOfASameSessionClaimThatLandedMeanwhil
 // whose context then ended, while a claim of another process of the same session lands during the
 // rollback's read of the claim.
 func TestAContendedClaimsRollbackKeepsTheTopicOfASameSessionClaimThatLandedMeanwhile(t *testing.T) {
-	conn, cleanup := connectNATS(t)
-	t.Cleanup(cleanup)
-	reg, _ := coldRegistry(t, conn)
+	t.Parallel()
+	reg, _, _, _ := clockedColdRegistry(t)
 	const role, a, b = "rollback-race-contended", "ses_rollback_race_a", "ses_rollback_race_b"
 	if _, err := reg.SetRole(a, "machine", role, false); err != nil {
 		t.Fatal(err)

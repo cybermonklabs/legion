@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // noProcessClaimed is the moment every claim below is written at, on its registry's clock.
@@ -67,14 +68,8 @@ func claimForRelease(t *testing.T, path claimReleasePath, role, holder, instance
 	clock := func() time.Time { return noProcessClaimed.Add(time.Duration(elapsed.Load())) }
 	var reg *Registry
 	if path.viewed {
-		opened, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock))
-		if err != nil {
-			t.Fatalf("Open: %v", err)
-		}
-		t.Cleanup(opened.StopWatch)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := opened.WaitForCacheReady(ctx); err != nil {
+		opened := openRegistry(t, conn, WithClock(clock))
+		if err := opened.WaitForCacheReady(testwait.Context(t)); err != nil {
 			t.Fatalf("WaitForCacheReady: %v", err)
 		}
 		reg = opened
@@ -138,6 +133,7 @@ func raceFirstMarkWith(reg *Registry, wins func()) *racingUpdateKeyValue {
 // the hand-back read included. Control: a claim that names a process is freed by a release
 // that states that process and by nothing another process states.
 func TestARoleClaimThatNamesNoProcess(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_claim_names_no_process"
@@ -146,7 +142,9 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 	lane := contracts.RoleTopicPrefix + role
 	for _, path := range claimReleasePaths {
 		t.Run(path.name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("a release by a process that states its own frees nothing and marks nothing", func(t *testing.T) {
+				t.Parallel()
 				reg, _ := claimForRelease(t, path, role, holder, "")
 				seeded := storedRoleClaim(t, reg, role)
 
@@ -162,6 +160,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 
 			if path.handsBack {
 				t.Run("a hand-back that states no process marks the claim, no registration renews it, and the reaper frees it past the live window while its session registers", func(t *testing.T) {
+					t.Parallel()
 					reg, advance := claimForRelease(t, path, role, holder, "")
 					seeded := storedRoleClaim(t, reg, role)
 					alive := func(string) bool { return true }
@@ -201,7 +200,9 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 				})
 
 				t.Run("a hand-back that states no process and races", func(t *testing.T) {
+					t.Parallel()
 					t.Run("the holder's renewal marks the renewed claim", func(t *testing.T) {
+						t.Parallel()
 						reg, advance := claimForRelease(t, path, role, holder, "")
 						seeded := storedRoleClaim(t, reg, role)
 						advance(beat)
@@ -222,6 +223,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 						}
 					})
 					t.Run("an adoption by the first heartbeat marks the adopted claim", func(t *testing.T) {
+						t.Parallel()
 						reg, advance := claimForRelease(t, path, role, holder, "")
 						seeded := storedRoleClaim(t, reg, role)
 						advance(beat)
@@ -259,6 +261,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 							"naming a second process of the session": roleClaimSecondInstance,
 						} {
 							t.Run("a fresh grant"+moment.name+" "+name+" leaves the grant standing and unmarked", func(t *testing.T) {
+								t.Parallel()
 								reg, advance := claimForRelease(t, path, role, holder, "")
 								seeded := storedRoleClaim(t, reg, role)
 								var granted RoleClaim
@@ -285,6 +288,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 				})
 			} else {
 				t.Run("a deregistration that states no process frees nothing", func(t *testing.T) {
+					t.Parallel()
 					reg, _ := claimForRelease(t, path, role, holder, "")
 					seeded := storedRoleClaim(t, reg, role)
 
@@ -298,6 +302,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 			}
 
 			t.Run("the administrator's force frees it", func(t *testing.T) {
+				t.Parallel()
 				reg, _ := claimForRelease(t, path, role, holder, "")
 
 				releaseClaimOn(t, reg, path, holder, role, RoleReleaseAuthority{Force: true})
@@ -306,7 +311,9 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 			})
 
 			t.Run("control: a claim that names a process", func(t *testing.T) {
+				t.Parallel()
 				t.Run("a release that states that process frees it", func(t *testing.T) {
+					t.Parallel()
 					reg, _ := claimForRelease(t, path, role, holder, roleClaimInstance)
 
 					releaseClaimOn(t, reg, path, holder, role, releasedByItsProcess)
@@ -314,6 +321,7 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 					assertClaimFreed(t, reg, role)
 				})
 				t.Run("a release that states another process leaves it", func(t *testing.T) {
+					t.Parallel()
 					reg, _ := claimForRelease(t, path, role, holder, roleClaimInstance)
 					seeded := storedRoleClaim(t, reg, role)
 
@@ -394,6 +402,7 @@ func registerSessionWithLane(t *testing.T, reg *Registry, holder, role string) {
 // listener whose clock is behind), and a second registry that reads the stored record decides
 // the same way.
 func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_claim_adopted_once"
@@ -402,7 +411,9 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 	lane := contracts.RoleTopicPrefix + role
 	for _, clock := range adoptionClocks {
 		t.Run(clock.name, func(t *testing.T) {
+			t.Parallel()
 			t.Run("a claim a registration stating no process renewed is not taken by a second process", func(t *testing.T) {
+				t.Parallel()
 				first, second, renewer, advance := adoptionListeners(t, clock)
 				registerSessionWithLane(t, first, holder, role)
 				claimRoleAs(t, first, holder, "example-host", role, "")
@@ -437,6 +448,7 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 			})
 
 			t.Run("control: a claim no registration renewed is adopted by the first registration stating a process", func(t *testing.T) {
+				t.Parallel()
 				first, second, adopter, advance := adoptionListeners(t, clock)
 				registerSessionWithLane(t, first, holder, role)
 				claimRoleAs(t, first, holder, "example-host", role, "")
@@ -477,11 +489,13 @@ func TestARoleClaimThatNamesNoProcessIsAdoptedOnlyAtItsFirstHeartbeat(t *testing
 			})
 
 			t.Run("control: a claim an earlier build stored is adopted by the first registration stating a process", func(t *testing.T) {
+				t.Parallel()
 				for name, record := range map[string]string{
 					"one written before claims named a process": fmt.Sprintf(`{"holder_session_id":%q,"claimed_at":%d,"previous_session_id":""}`, holder, noProcessClaimed.UnixMilli()),
 					"one an earlier build renewed":              fmt.Sprintf(`{"holder_session_id":%q,"claimed_at":%d,"previous_session_id":"","renewed_at":%d}`, holder, noProcessClaimed.UnixMilli(), noProcessClaimed.Add(beat).UnixMilli()),
 				} {
 					t.Run(name, func(t *testing.T) {
+						t.Parallel()
 						first, _, adopter, advance := adoptionListeners(t, clock)
 						registerSessionWithLane(t, first, holder, role)
 						if _, err := first.roles().Legacy().Put(role, []byte(record)); err != nil {

@@ -895,7 +895,7 @@ func TestABusOutageUnderAReaperPassCostsNoPerRoleLineAndReapsEveryClaim(t *testi
 	logs, logger := ownLogs()
 	reg.log = logger
 	roles, holderOf := otherSessionsClaims("outage-role", outageRoleClaims)
-	putRoleClaimsInParallel(t, reg.roles().Legacy(), roles, holderOf)
+	putRoleClaimsInParallel(t, reg.roles().Legacy(), roles, holderOf, reg.now)
 	// Every holder is gone, so every claim of the bucket is the pass's to reap and every role
 	// is one the outage could cost a line.
 	gone := func(string) bool { return false }

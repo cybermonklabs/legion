@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // errClaimReadFailed and errClaimWriteFailed are the answers a countedKeyValue that fails gives a
@@ -219,6 +220,7 @@ func requireRenewalFailure(t *testing.T, reg *Registry, role, sessionID string, 
 // registering process. The control is the set from the copy alone - a record that names no role -
 // which renews nothing, because the copy no longer names the claim.
 func TestARenewRenewsAClaimTheCopyLostFromTheRecordItIsGiven(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "planner"
 		holder = "ses_renew_from_record"
@@ -271,6 +273,7 @@ func TestARenewRenewsAClaimTheCopyLostFromTheRecordItIsGiven(t *testing.T) {
 // write - and the renewal is handed the row that write returned. The registration's reads of the
 // interest bucket are logged, the renewal makes none, and the claim is renewed.
 func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "reviewer"
 		holder = "ses_stale_interest_cache"
@@ -284,14 +287,8 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 	stopInterestCache(rig.reg)
 
 	// Another listener grants the role: the claim and the lane topic in the bucket's row.
-	other, err := Open(t.Context(), rig.conn, WithReplicas(1), WithClock(rig.clock.Now))
-	if err != nil {
-		t.Fatalf("open the other listener's registry: %v", err)
-	}
-	t.Cleanup(other.StopWatch)
-	ready, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := other.WaitForCacheReady(ready); err != nil {
+	other := openRegistry(t, rig.conn, WithClock(rig.clock.Now))
+	if err := other.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady on the other listener's registry: %v", err)
 	}
 	claimRoleAs(t, other, holder, "m2", role, roleClaimInstance)
@@ -357,6 +354,7 @@ func TestTheSetReadFromTheStoreRenewsARoleAStaleInterestCacheHides(t *testing.T)
 // and UpsertWithin each write a topic of their own, and the bucket's row still carries the lane
 // topic after each.
 func TestTheMergeReadsTheRecordAndKeepsARoleTopicAStaleCacheLacks(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "merge-role"
 		holder = "ses_merge_reads_record"
@@ -410,6 +408,7 @@ func TestTheMergeReadsTheRecordAndKeepsARoleTopicAStaleCacheLacks(t *testing.T) 
 // leaves the record standing; and the next renewal that writes clears it. A role the record names
 // with no claim record is weighed and recorded as no failure.
 func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
+	t.Parallel()
 	const (
 		role      = "landing-role"
 		unclaimed = "unclaimed-role"
@@ -466,6 +465,7 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 // cached interest row, reading neither bucket, and for no other session or role. An entry as old
 // as the live window is pruned at the role claim reaper's pass, which is handed that window.
 func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testing.T) {
+	t.Parallel()
 	const (
 		holder    = "ses_failed_registration"
 		other     = "ses_other_registration"
@@ -531,7 +531,9 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 // none, and a lost copy lacks a claim the store gives the session. Each act is required to do what
 // the store's claim says: the renewal, the release, and the registration's controller notice lane.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
+	t.Parallel()
 	t.Run("renewal", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "direction-role"
 			holder = "ses_direction_holder"
@@ -543,8 +545,10 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// claim record holds, and the session's record names no such role: the copy alone puts
 		// the role in the set, and the claim record leaves it unrenewed.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			for name, storeHolder := range map[string]string{"another session": other, "no claim": ""} {
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					rig := newRepairRig(t, nil)
 					revision := uint64(1)
 					if storeHolder != "" {
@@ -580,6 +584,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// The store gives the session the role, the copy lost it, and the record the
 		// registration's write returned names the role's lane: the claim is renewed.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			rig := newRepairRig(t, nil)
 			claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 			settle(rig)
@@ -604,6 +609,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 	})
 
 	t.Run("release", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "direction-release-role"
 			holder = "ses_direction_releaser"
@@ -617,8 +623,10 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// the role in the deregistration's set, its claim is read once, and the claim record
 		// leaves it as the store holds it.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			for name, storeHolder := range map[string]string{"another session": other, "no claim": ""} {
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					rig := newRepairRig(t, nil)
 					revision := uint64(1)
 					if storeHolder != "" {
@@ -655,8 +663,10 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// deregistration does not read its record from, so the case runs again with that cache
 		// holding the session's row without the lane topic.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			for name, staleCache := range map[string]bool{"the role claim copy": false, "the role claim copy and the interest cache": true} {
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					rig := newRepairRig(t, nil)
 					claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 					settle(rig)
@@ -687,6 +697,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 	// session's consumer, and in the row its write stores exactly while the project's controller
 	// claim record names the session (controllerLaneRoles), and it reads that record once.
 	t.Run("controller lane", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "legion-DIRECTION-controller"
 			lane   = "notifications.legion.DIRECTION.controller"
@@ -700,6 +711,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// stored row holds the lane, as a registration made while it held the role left it, and
 		// the registration names the lane again: the lane leaves both.
 		t.Run("surplus", func(t *testing.T) {
+			t.Parallel()
 			for name, seed := range map[string]func(t *testing.T, rig *repairRig) uint64{
 				"another session": func(t *testing.T, rig *repairRig) uint64 {
 					claimRoleAs(t, rig.reg, other, "m1", role, roleClaimInstance)
@@ -715,6 +727,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 				},
 			} {
 				t.Run(name, func(t *testing.T) {
+					t.Parallel()
 					rig := newRepairRig(t, nil)
 					revision := seed(t, rig) + 1
 					putInterest(t, rig.interests, Interest{SessionID: holder, MachineID: "m1", Topics: []string{own, lane}}, rig.reg.now)
@@ -737,6 +750,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 		// names the lane keeps it, and so does the heartbeat after it that leaves the lane out of
 		// its body, which reads the claim for the lane its row holds.
 		t.Run("lost", func(t *testing.T) {
+			t.Parallel()
 			rig := newRepairRig(t, nil)
 			claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 			settle(rig)
@@ -760,13 +774,16 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 // working, which acts. The acts are the renewal, the release, and the registration's controller
 // notice lane.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
+	t.Parallel()
 	t.Run("renewal", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "held-role"
 			holder = "ses_held_on_failed_read"
 		)
 		for name, fails := range map[string]bool{"failed read": true, "reads working": false} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				rig := newRepairRig(t, nil)
 				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 				row := registered(t, rig.reg, holder)
@@ -801,12 +818,14 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 	// interest record for the caller's retry; with the read working it releases the claim and
 	// deletes the record.
 	t.Run("release", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "held-release-role"
 			holder = "ses_release_held_on_failed_read"
 		)
 		for name, fails := range map[string]bool{"failed read": true, "reads working": false} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				rig := newRepairRig(t, nil)
 				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 				claimed := storedRoleClaim(t, rig.reg, role)
@@ -843,6 +862,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 	// the session, so only the claim record refuses. With the read working the same registration
 	// plans the lane and stores it.
 	t.Run("controller lane", func(t *testing.T) {
+		t.Parallel()
 		const (
 			role   = "legion-HELD-controller"
 			lane   = "notifications.legion.HELD.controller"
@@ -851,6 +871,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 		own := contracts.AgentTopicPrefix + holder
 		for name, fails := range map[string]bool{"failed read": true, "reads working": false} {
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				rig := newRepairRig(t, nil)
 				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 				settle(rig)
@@ -903,6 +924,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 		// is no failed read: the registration plans and stores the rest of its row without that
 		// lane, rather than being refused at every heartbeat.
 		t.Run("a key NATS refuses", func(t *testing.T) {
+			t.Parallel()
 			const refused = "notifications.legion.HELD:bad.controller"
 			if role, lane := bus.ControllerNoticeRole(refused); !lane || role != "legion-HELD:bad-controller" {
 				t.Fatalf("ControllerNoticeRole(%s) = %q, %v; want legion-HELD:bad-controller, a controller notice lane", refused, role, lane)

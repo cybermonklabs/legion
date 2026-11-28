@@ -22,11 +22,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -50,16 +51,18 @@ const (
 // process releasedByItsProcess states, and its interest record, for the case to fill with the
 // records it cannot read. It seeds no other session's readable claim, because what these cases
 // count is the claims the sweep left behind and a readable stranger's claim is in neither count.
-// It returns the registry and the role bucket's own handle, taken before any counting handle is
-// installed over it, as its sibling does.
+// Its clock is a fake standing at registryClockStart, which the claims and the record are stamped
+// on. It returns the registry and the role bucket's own handle, taken before any counting handle
+// is installed over it, as its sibling does.
 func unreadableRoleBucketRegistry(t *testing.T, session string, held []string) (*Registry, natsgo.KeyValue) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
 	reg, rawInterests := coldRegistry(t, conn)
+	reg.now = clocktest.New(registryClockStart).Now
 	rawRoles := reg.roles().Legacy()
 	for _, role := range held {
-		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
+		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, reg.now())
 	}
 	// The record's only topic is not a role's, so the pass over it releases nothing and the
 	// claims below are the fallback's alone to release.
@@ -134,23 +137,24 @@ func storeRoleClaimsUnderRefusedKeys(t *testing.T, kv natsgo.KeyValue, holder st
 // one can. These two have tens of them, and each asserts the count of lines rather than their
 // contents alone.
 func TestTheDeregistrationsFallbackSummarizesTheClaimsItCannotReadInOneLinePerClass(t *testing.T) {
+	t.Parallel()
 	const (
 		undecodableLine = "role registry could not read stored claims while releasing a session's claims; they stay in the bucket, unreleased by this deregistration, and role and error are the first claim's"
 		refusedLine     = "role registry left stored claims it cannot read to the role reaper while releasing a session's claims; key_bytes and error are the first claim's"
 	)
 
 	t.Run("every claim of the bucket but the session's own is a record it cannot decode and one line carries them all", func(t *testing.T) {
-		logs := captureRegistryLogs(t)
+		t.Parallel()
 		const session = "ses_degraded_undecodable"
 		held := []string{"degraded-held-a", "degraded-held-b"}
 		reg, rawRoles := unreadableRoleBucketRegistry(t, session, held)
+		logs, logger := ownLogs()
+		reg.log = logger
 		// Named so they sort after the two the session holds, which makes the role the line
 		// carries the first of its own class rather than the first key of the bucket.
 		undecodable := storeUndecodableRoleClaims(t, rawRoles, "unreadable", degradedUndecodableClaims)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
+		if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket whose every other claim is a record this build cannot decode: %v, want both of its own claims released and no error", session, err)
 		}
 		if wrote := logLines(logs, undecodableLine); wrote != 1 {
@@ -193,19 +197,19 @@ func TestTheDeregistrationsFallbackSummarizesTheClaimsItCannotReadInOneLinePerCl
 	})
 
 	t.Run("claims under keys the bus refuses and records it cannot decode are counted apart, one line each", func(t *testing.T) {
-		logs := captureRegistryLogs(t)
+		t.Parallel()
 		const session = "ses_degraded_both_classes"
 		held := []string{"both-held-a", "both-held-b"}
 		reg, rawRoles := unreadableRoleBucketRegistry(t, session, held)
+		logs, logger := ownLogs()
+		reg.log = logger
 		// One bucket holding both classes: the counts are of different sizes and the line each
 		// carries must hold its own class's, which is what shows the two are counted apart
 		// rather than summed into whichever line is written first.
 		refused := storeRoleClaimsUnderRefusedKeys(t, rawRoles, "ses_legacy_holder", []string{"a", "b", "c", "d", "e"})
 		undecodable := storeUndecodableRoleClaims(t, rawRoles, "unreadable", degradedMixedUndecodable)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := reg.Remove(ctx, session, nil, releasedByItsProcess); err != nil {
+		if _, err := reg.Remove(testwait.Context(t), session, nil, releasedByItsProcess); err != nil {
 			t.Fatalf("Remove(%s) over a bucket holding claims of both classes it cannot read: %v, want both of its own claims released and no error", session, err)
 		}
 

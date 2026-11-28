@@ -13,6 +13,8 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // roleClaimInstance is the client instance a test claim names: the process that holds it, as a
@@ -24,6 +26,7 @@ const roleClaimInstance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 // write makes are one reading of the registry's clock, so a claim is renewed as of the instant it
 // lands and LastAnsweredAt reads it there.
 func TestAClaimThisBuildWritesNamesItsHoldersProcessAndWhenItLastAnswered(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -60,6 +63,7 @@ func TestAClaimThisBuildWritesNamesItsHoldersProcessAndWhenItLastAnswered(t *tes
 // was claimed, which is what keeps it inside a live window its holder is still inside. The bare
 // session id that build also stored carries neither a holder's process nor a time at all.
 func TestARecordWithNoProcessOrRenewalDecodesWithBothZeroAndIsReadAtItsClaimTime(t *testing.T) {
+	t.Parallel()
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC).UnixMilli()
 	for name, older := range map[string]struct {
 		record   string
@@ -72,6 +76,7 @@ func TestARecordWithNoProcessOrRenewalDecodesWithBothZeroAndIsReadAtItsClaimTime
 		"the bare session id an earlier build stored": {record: "ses_older"},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			claim, err := DecodeRoleClaim([]byte(older.record))
 			if err != nil {
 				t.Fatalf("decode %q: %v; want it read, since a missing field is not a record this build cannot read", older.record, err)
@@ -92,12 +97,15 @@ func TestARecordWithNoProcessOrRenewalDecodesWithBothZeroAndIsReadAtItsClaimTime
 // No reader of the role bucket reports a record of either older shape unreadable: the registry's
 // own read answers the holder each one names, the watched copy RolesHeldBy and the session
 // listing answer from gives that holder the role, and nothing is logged at WARN, which is how a
-// claim this build cannot read is reported (roleCache.Apply).
+// claim this build cannot read is reported (roleCache.Apply). The registry, its role claim scan
+// and its watchers log to a logger of the test's own (WithLogger); the lines of the bucket's open
+// (bus.EnsureKeyValue) go where slog.Default() points, and read no record a claim is stored in.
 func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t *testing.T) {
-	logs := captureRegistryLogs(t)
+	t.Parallel()
+	logs, logger := ownLogs()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -116,13 +124,8 @@ func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t
 		}
 	}
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	reg := openRegistry(t, conn, WithLogger(logger))
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
@@ -169,6 +172,7 @@ func renewedRoleClaim(t *testing.T, role, holder string) (*Registry, func(time.D
 // session bucket says of its holder - the renewal is the one thing that says the holder is still
 // there, and the sweep reads it before it asks anything else (ReapRoleClaims).
 func TestAClaimRenewedInsideTheLiveWindowIsKeptThoughItsHoldersSessionRecordIsGone(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_renewing_holder"
@@ -198,11 +202,13 @@ func TestAClaimRenewedInsideTheLiveWindowIsKeptThoughItsHoldersSessionRecordIsGo
 // the holder's session record is gone, and both the release and a sweep free the role for the
 // next claimant.
 func TestAClaimWhoseRenewalIsOlderThanTheLiveWindowIsFreed(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		liveWindow = time.Minute
 	)
 	t.Run("the release frees it", func(t *testing.T) {
+		t.Parallel()
 		const holder = "ses_lapsed_holder"
 		reg, advance := renewedRoleClaim(t, role, holder)
 		advance(liveWindow)
@@ -217,6 +223,7 @@ func TestAClaimWhoseRenewalIsOlderThanTheLiveWindowIsFreed(t *testing.T) {
 		assertRoleHolder(t, reg, role, "")
 	})
 	t.Run("the sweep frees it", func(t *testing.T) {
+		t.Parallel()
 		const holder = "ses_lapsed_sweep"
 		reg, advance := renewedRoleClaim(t, role, holder)
 		advance(liveWindow + time.Second)
@@ -236,6 +243,7 @@ func TestAClaimWhoseRenewalIsOlderThanTheLiveWindowIsFreed(t *testing.T) {
 // window and stale once it is older; a window of zero holds nothing renewed, and neither does a
 // record carrying no time at all.
 func TestClaimRenewedWithinWeighsEveryClaimAgainstTheWindowItIsGiven(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	const liveWindow = time.Minute
 	at := func(age time.Duration) int64 { return now.Add(-age).UnixMilli() }
@@ -253,6 +261,7 @@ func TestClaimRenewedWithinWeighsEveryClaimAgainstTheWindowItIsGiven(t *testing.
 		"a caller that configured no window":              {claim: RoleClaim{ClaimedAt: at(time.Second), RenewedAt: at(time.Second)}},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			if got := reg.ClaimRenewedWithin(tc.claim, tc.liveWindow); got != tc.want {
 				t.Fatalf("a claim claimed at %d and renewed at %d reads renewed=%t within %s, want %t",
 					tc.claim.ClaimedAt, tc.claim.RenewedAt, got, tc.liveWindow, tc.want)
@@ -283,13 +292,8 @@ func renewableRoleClaim(t *testing.T, role, holder, instance string) (*Registry,
 	t.Cleanup(cleanup)
 	claimed := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	var elapsed atomic.Int64
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	reg := openRegistry(t, conn, WithClock(func() time.Time { return claimed.Add(time.Duration(elapsed.Load())) }))
+	ctx := testwait.Context(t)
 	if err := reg.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
@@ -344,6 +348,7 @@ func renewRoleClaims(t *testing.T, reg *Registry, sessionID, instance string) (R
 // role was taken. Everything else on the record is the claim's own provenance and is left as the
 // claim that took the role left it.
 func TestARenewalFromTheProcessTheClaimNamesMovesTheRenewalAndNothingElse(t *testing.T) {
+	t.Parallel()
 	const (
 		role     = "legion-controller"
 		holder   = "ses_renewing_holder"
@@ -383,6 +388,7 @@ func TestARenewalFromTheProcessTheClaimNamesMovesTheRenewalAndNothingElse(t *tes
 // of its session. It is still the same claim, taken at the same moment from the same
 // predecessor, so nothing but the process and the renewal is written.
 func TestTheFirstRenewalOfAClaimThatNamesNoProcessAdoptsItForThatProcess(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_adopting_holder"
@@ -419,6 +425,7 @@ func TestTheFirstRenewalOfAClaimThatNamesNoProcessAdoptsItForThatProcess(t *test
 // Each registration's row names the role's lane, so the role is in the renewal's set and its
 // claim record is what leaves it alone, and none of these is a failure to record.
 func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_held_claim"
@@ -434,6 +441,7 @@ func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
 		"a registration of a session the claim does not name":   {claimInstance: roleClaimInstance, session: "ses_another_holder", instance: roleClaimInstance},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg, advance := renewableRoleClaim(t, role, holder, tc.claimInstance)
 			claimed := storedRoleClaim(t, reg, role)
 			advance(beat)
@@ -460,6 +468,7 @@ func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
 // It is never read again and written into the claim that won, which would stamp this process's
 // heartbeat on a claim it does not hold, and the registration that made it is not failed.
 func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_raced_holder"
@@ -515,6 +524,7 @@ func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testi
 // before the hand-back, which renews this very claim through this very call: without it a case
 // that proved nothing - a renewal that never happened at all - would read as this defect fixed.
 func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_handing_back"
@@ -578,6 +588,7 @@ func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
 // process that resumed the session's id - adopts it no more than it renews a claim naming another
 // process.
 func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_registering_no_process"
@@ -631,6 +642,7 @@ func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.
 // renewal frees the role. It is the control the hand-back case is read against - a renewal that
 // stopped for any other reason would make that case pass for the wrong reason.
 func TestAHoldersRegistrationsKeepItsClaimRenewedWhileItRuns(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		holder     = "ses_still_holding"

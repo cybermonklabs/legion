@@ -34,6 +34,7 @@ func assertRemovedTopics(t *testing.T, removed []string, want ...string) {
 // The release the claim's own process makes is the control: it frees the claim, so the lane
 // topic goes with it, exactly as it always did.
 func TestAReleaseKeepsTheLaneTopicOfAClaimItDidNotFree(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_release_keeps_topic"
@@ -47,6 +48,7 @@ func TestAReleaseKeepsTheLaneTopicOfAClaimItDidNotFree(t *testing.T) {
 		"the process the claim names":                 {authority: releasedByItsProcess, frees: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 
 			removed, err := reg.Remove(context.Background(), holder, []string{roleTopic, releaseKeptTopic}, tc.authority)
@@ -75,6 +77,7 @@ func TestAReleaseKeepsTheLaneTopicOfAClaimItDidNotFree(t *testing.T) {
 // an empty list: an empty list is how removeInterestTopics is told to delete the whole record,
 // which would cost the session every topic it has over a release that took nothing.
 func TestAReleaseThatKeepsEveryTopicItNamedLeavesTheRecordWhole(t *testing.T) {
+	t.Parallel()
 	const (
 		role   = "legion-controller"
 		holder = "ses_release_keeps_record"
@@ -104,6 +107,7 @@ func TestAReleaseThatKeepsEveryTopicItNamedLeavesTheRecordWhole(t *testing.T) {
 // freed the claim would hand the role to nobody, and a release that took the lane topic out of
 // the record would leave the second process holding a role its own record no longer names.
 func TestASecondProcessThatTookALapsedClaimKeepsItThroughTheFirstsRelease(t *testing.T) {
+	t.Parallel()
 	const (
 		role       = "legion-controller"
 		session    = "ses_resumed_under_one_id"

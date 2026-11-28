@@ -47,7 +47,10 @@ var scanClockStart = time.Date(2026, time.November, 22, 9, 0, 0, 0, time.UTC)
 //     the fake to the deadline, so no Open of the helper's ends on it.
 //
 // options are Open's own (WithLogger, WithClock, WithReplicas and the rest), passed through; the
-// helper sets the scan's seams itself, after them.
+// helper sets the scan's seams itself, after them. Before them it gives the registry a timer clock
+// (WithTimerClock) that nothing moves, so a claim's cleanup window (claimCleanupWindow) never ends
+// under the parallel tests' load; a case that starts one of the registry's loops passes a
+// WithTimerClock of its own, which it moves.
 func openOnScanClock(t testing.TB, ctx context.Context, conn *natsgo.Conn, options ...OpenOption) (*Registry, error) {
 	t.Helper()
 	fake := clocktest.New(scanClockStart)
@@ -58,7 +61,8 @@ func openOnScanClock(t testing.TB, ctx context.Context, conn *natsgo.Conn, optio
 	}
 	done := make(chan opened, 1)
 	go func() {
-		registry, err := Open(ctx, conn, append(slices.Clone(options), withRoleScanSeams(pace.seams(fake)))...)
+		withTimers := append([]OpenOption{WithTimerClock(clocktest.New(scanClockStart))}, options...)
+		registry, err := Open(ctx, conn, append(withTimers, withRoleScanSeams(pace.seams(fake)))...)
 		done <- opened{registry: registry, err: err}
 	}()
 	var result opened
