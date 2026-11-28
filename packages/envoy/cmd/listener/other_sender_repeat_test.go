@@ -43,6 +43,7 @@ import (
 // The controls: A's own repeat under K gets the whole stored copy, and a request with a token and
 // no session to a role nobody claims is refused 404 with nothing kept, whoever its token proves.
 func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	const alice, bob = "ses_other_sender_alice", "ses_other_sender_bob"
 
@@ -214,6 +215,7 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 // reads the key-taken answer, as it does for a repeat. The control is the keep's own copy,
 // answered whole with no duplicate.
 func TestAKeptAnswerOfAnotherSendersCopyIsDuplicateOutsideARepeat(t *testing.T) {
+	t.Parallel()
 	rig := newSenderLimitRig(t)
 	topic := contracts.RoleTopicPrefix + "kept-outside-" + id.New()
 	key := publishDedupePrefix + uuid.NewString()

@@ -719,6 +719,7 @@ func legionStatusChanges() []legionStatusChange {
 // daemon's hand-over, a status with the label added, is taken from the daemon's broker token and
 // refused from the shared token, though its body names the daemon's session.
 func TestALegionIssueStatusNeedsThePersonOrLegionStatusScope(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	rig.sendFromEach(t, append(legionStatusWrites(), legionWrite{
 		name: "a status write on an issue under no labelled issue", judged: false,
@@ -740,6 +741,7 @@ func TestALegionIssueStatusNeedsThePersonOrLegionStatusScope(t *testing.T) {
 // holds one. A write that keeps the label is taken from every credential that reaches the
 // handler: Legion written again as legion, a change of another label, and labels_add of a label.
 func TestTakingTheLegionLabelOffNeedsTheScopeToo(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	labelsWrite := func(labels []string, body map[string]any, written ...string) func(*testing.T, *legionStatusRig) legionPatch {
 		return func(t *testing.T, rig *legionStatusRig) legionPatch {
@@ -762,6 +764,7 @@ func TestTakingTheLegionLabelOffNeedsTheScopeToo(t *testing.T) {
 // from every credential that holds neither scope, and nothing changes. The label added alone is
 // taken, and so is an issue made under a labelled issue.
 func TestACallIsJudgedByTheLabelsAndChainBeforeAndAfterIt(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	writes, labelled := legionBeforeAndAfterWrites(t, rig)
 	rig.sendFromEach(t, writes)
@@ -803,6 +806,7 @@ func TestACallIsJudgedByTheLabelsAndChainBeforeAndAfterIt(t *testing.T) {
 // parent: the legion walk climbs only within the issue's own project, so that label makes it no
 // Legion issue. A browser sign-in makes the same move.
 func TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	writes, fixture := legionParentMoves(t, rig)
 	rig.sendFromEach(t, writes)
@@ -880,6 +884,7 @@ func TestAParentChangeThatLeavesNoLabelledAncestorNeedsTheScope(t *testing.T) {
 // refused from every credential that holds neither scope, and taken from every credential that
 // holds one.
 func TestTheLabelsRemovalNeedsTheScopeUnderALabelledParentToo(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	rig.sendFromEach(t, []legionWrite{legionLabelRemovalUnderALabelledParent(t, rig)})
 }
@@ -889,6 +894,7 @@ func TestTheLabelsRemovalNeedsTheScopeUnderALabelledParentToo(t *testing.T) {
 // under a labelled parent to no parent, or under an unlabelled root, and its labels and status
 // stay as they were.
 func TestALabelledIssueLeavesItsLabelledParentWithoutTheScope(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	shared := rig.credential(t, legionSharedToken)
 	parent := rig.issue(t, []string{"legion"}, "", "")
@@ -922,6 +928,7 @@ func TestALabelledIssueLeavesItsLabelledParentWithoutTheScope(t *testing.T) {
 // whose child is in work answers R26's code, not PARENT_STATUS_CONFLICT. A browser sign-in makes
 // the cascade over a labelled child in work.
 func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	shared := rig.credential(t, legionSharedToken)
 	for _, change := range legionStatusChanges() {
@@ -977,6 +984,7 @@ func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
 // The table's own check refuses a row that holds it, so a write that passes the API cannot store
 // one either.
 func TestNoMintHoldsLegionStatus(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	personal := personalTokenHolding(t, rig.database, model.ScopePerson, model.ScopeApprove)
 	signIn, personScoped := rig.credential(t, legionBrowserSignIn), rig.credential(t, legionPersonScopedToken)
@@ -1058,6 +1066,7 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 // of the fix name the actor parent-status-rule. Before the fix, the shared token sends the same
 // unlink as a PATCH, and R26 refuses it. So the guard was on for the deps that the fix runs with.
 func TestTheFixIsNotRefusedWithBothSettingsOn(t *testing.T) {
+	t.Parallel()
 	// The rule is off for the setup, because a person cannot make a pair that breaks the rule
 	// while it is on.
 	rig := newLegionStatusRig(t, true)
@@ -1104,6 +1113,7 @@ func TestTheFixIsNotRefusedWithBothSettingsOn(t *testing.T) {
 // @legion/contracts' ActorActSchema holds an act's scopes to. A person-scoped broker token's act
 // still records person.
 func TestADaemonsWriteRecordsNoScopeAnActCannotCarry(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	for _, c := range []struct {
 		name   string
@@ -1137,6 +1147,7 @@ func TestADaemonsWriteRecordsNoScopeAnActCannotCarry(t *testing.T) {
 // project's: the shared token's status write on an issue whose only labelled ancestor is of
 // another project is taken.
 func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	shared := rig.credential(t, legionSharedToken)
 	writes, deepest := legionDeepStatusWrites(t, rig)
@@ -1177,6 +1188,7 @@ func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
 // of legionStatusChanges that the shared token sends and that R26 refuses with the setting on, with
 // DISPATCH_PARENT_STATUS_RULE off too. The dry run among them is taken and writes nothing.
 func TestTheLegionStatusRefusalWaitsForItsSetting(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, false)
 	shared := rig.credential(t, legionSharedToken)
 	beforeAndAfter, _ := legionBeforeAndAfterWrites(t, rig)
@@ -1342,6 +1354,7 @@ func requireLegionCallRefused(t *testing.T, database *store.Store, issues []stri
 // taken. Each refusal says that an architect of an issue above writes done, backlog, icebox or
 // triage once its claim is ready (requireLegionStatusRefusal).
 func TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	parent := rig.issue(t, []string{"legion"}, "", "in_progress")
 	rig.publishRoles(t, parent, architectOf("ses_parent_architect"), issueRoleHolder{Role: "planner", Session: "ses_parent_planner"})
@@ -1513,6 +1526,7 @@ func TestTheOwningArchitectsProvenSessionWritesAnIssueUnderIt(t *testing.T) {
 // too, and its done sent with the removal of the legion label; its label removal alone and its
 // move out alone. The same done alone is taken on each of those issues.
 func TestTheArchitectsWriteTakesOnlyTheFourStatuses(t *testing.T) {
+	t.Parallel()
 	rig := newLegionStatusRig(t, true)
 	parent := rig.issue(t, []string{"legion"}, "", "in_progress")
 	rig.publishRoles(t, parent, architectOf("ses_parent_architect"))

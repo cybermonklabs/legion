@@ -21,10 +21,13 @@ import { coverage as docked } from "../../features/conversation/draft-matrix.doc
 import { coverage as edit } from "../../features/conversation/draft-matrix.edit.coverage";
 import { coverage as inlineReply } from "../../features/conversation/draft-matrix.inline-reply.coverage";
 import { coverage as issuePage } from "../../features/conversation/draft-matrix.issue-page.coverage";
+import { coverage as issuePageOutline } from "../../features/conversation/draft-matrix.issue-page-outline.coverage";
 import { coverage as phoneThread } from "../../features/conversation/draft-matrix.phone-thread.coverage";
+import { coverage as dashboardThreadItem } from "../../features/dashboard/draft-matrix.thread-item.coverage";
 import { coverage as ask } from "../../features/inbox/draft-matrix.ask.coverage";
 import { coverage as messageBox } from "../../features/inbox/draft-matrix.message-box.coverage";
 import { coverage as threadBox } from "../../features/inbox/draft-matrix.thread-box.coverage";
+import { coverage as threads } from "../../features/issue-page/threads/draft-matrix.threads.coverage";
 import { coverage as margin } from "../../features/margin/draft-matrix.margin.coverage";
 import { type CensusItem, composerCensus, keyParts } from "./census";
 import type { CoverageEntry } from "./coverage";
@@ -40,11 +43,17 @@ const MATRIX: readonly { readonly file: string; readonly entries: readonly Cover
   { entries: edit, file: "features/conversation/draft-matrix.edit.test.tsx" },
   { entries: inlineReply, file: "features/conversation/draft-matrix.inline-reply.test.tsx" },
   { entries: issuePage, file: "features/conversation/draft-matrix.issue-page.test.tsx" },
+  {
+    entries: issuePageOutline,
+    file: "features/conversation/draft-matrix.issue-page-outline.test.tsx",
+  },
   { entries: phoneThread, file: "features/conversation/draft-matrix.phone-thread.test.tsx" },
+  { entries: dashboardThreadItem, file: "features/dashboard/draft-matrix.thread-item.test.tsx" },
   { entries: ask, file: "features/inbox/draft-matrix.ask.test.tsx" },
   { entries: messageBox, file: "features/inbox/draft-matrix.message-box.test.tsx" },
   { entries: threadBox, file: "features/inbox/draft-matrix.thread-box.test.tsx" },
   { entries: margin, file: "features/margin/draft-matrix.margin.test.tsx" },
+  { entries: threads, file: "features/issue-page/threads/draft-matrix.threads.test.tsx" },
 ];
 
 const { items, unread } = composerCensus(process.env.COMPOSER_CENSUS_ROOT ?? WEB_SRC);

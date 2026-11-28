@@ -12,8 +12,11 @@ body: |-
   machine's relay receipts `notifications.envoy.relayreply.<machine id>.>`, and no role lane. A
   republish, and a direct get's answer, aimed at a `$JS.API.` subject are JetStream API requests in
   the account, the stored value as the body (an empty one aimed at a stream delete deletes the
-  stream), which is why the edge holds neither. Both refuse a machine id that is not one subject
-  token and a project list that is empty or not project keys, sorted, each once.
+  stream), which is why the edge holds neither. Its publish deny is the listener grant's:
+  Dispatch's lane and GitHub's lane. Both refuse a machine id that holds a wildcard, white space, a
+  control character or `%`, and a project list that is empty or not project keys, sorted, each
+  once. Both take a dotted machine id: its inbox prefix and relay receipts spell each dot as `%2E`,
+  as the listener's durable does, so each stays one subject token.
   `natsgrant/testdata/edge.golden.json` pins it for machine `m` and project `PRIV`. The session
   consumers' calls it keeps reach every consumer of the stream and hand any stored message to any
   subscriber of a subject the stream does not carry; a delivery travels under its stream subject,

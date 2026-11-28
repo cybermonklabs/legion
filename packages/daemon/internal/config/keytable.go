@@ -133,7 +133,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "state_dir", Default: "none: the daemon refuses a file that names no state directory", RequiredBy: "yes",
-			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own.",
+			Description: "The directory the daemon keeps its own state in; a relative path resolves against the configuration file's directory, and a switch of runtime needs a fresh one, since the locators a state directory holds are the runtime's own. A path that holds a line break, as the daemon resolves it, is refused: under tmux the working copy line every phase task opens with names a workspace directory under it and ends at its line break.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.StateDir = v }),
 		},
 		{
@@ -374,7 +374,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
-			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
+			Description: "How many counted review rounds an issue's task takes (`recordRound` in `internal/workflow/review.go` counts them, less the conflict rounds) before the daemon posts a message on the issue and sends the architect a `pr-blocked` notice, once for each value the cap holds. The cap moves nothing: the work goes on, and the architect decides what to do.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
 		},
 		{
@@ -608,7 +608,7 @@ var nestedKeys = []memberGroup{
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
 			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot, and again before each launch, and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
 		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
-			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
+			Description: "How the issues of this arm are done: `owner` writes its plan, and `default` runs the project's default steps. Legion takes from the owner of a `default` issue only a version that changes nothing but the text of its running task `default`. An experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
 	}},
 	{Path: "runtime.tmux", Members: []member{
 		{Name: "pane_env", Default: "a pane is told only what the runtime tells it", RequiredBy: "no",
@@ -654,7 +654,7 @@ var nestedKeys = []memberGroup{
 		{Name: "plugins", Default: "a relaunch installs the pair the release workflow linked into this binary", RequiredBy: "no",
 			Description: "The exact pi-legion and pi-envoy pair a stale-plugin relaunch installs into a kept pod, in place of the image's own copies."},
 		{Name: "repository_cache", Default: "every cache runs on the daemon's own sizes and intervals", RequiredBy: "no",
-			Description: "The cache pod of each repository a live record names, which an issue pod's feed is filled from before GitHub is asked for the rest."},
+			Description: "The cache pod of each repository a live record names, which workspace-init uses to fill an issue pod's clone before GitHub supplies its delta."},
 		{Name: "setup", Default: "a role starts its Oh My Pi with nothing run first", RequiredBy: "no",
 			Description: "A command, as an argv, every role runs in its working directory with its own environment before each start of its Oh My Pi, which starts only once the command exits 0. It may install an Oh My Pi plugin marketplace from GitHub: such an install renames a directory in the role's home overlay, and gVisor's opaque mark on that directory stopped the pod's sandbox until legion-v19.18.1 mounted the overlay with `userxattr` (dispatch://INFRA-1262); a command that must stop no role skips the daemon-launched controller and exits 0 whatever step fails, as this short form does: `[/bin/sh, -c, '[ -z \"$LEGION_CONTROLLER\" ] || exit 0; cd ~ || exit 0; omp plugin marketplace remove <name> >/dev/null 2>&1; timeout 120 omp plugin marketplace add <owner>/<repo> && timeout 60 omp plugin install <plugin>@<name> --force && omp plugin enable <plugin>@<name> || echo \"skills install failed\" >&2; omp plugin marketplace remove <name> >/dev/null 2>&1; exit 0']` (docs/kubernetes.md, Configuration, gives the full example, which names the step that failed, and explains each step)."},
 		{Name: "skills_repository", Default: "", RequiredBy: "no",
@@ -715,8 +715,8 @@ var nestedKeys = []memberGroup{
 			Description: "How long a cache outlives the last live record that names its repository before the orphan sweep deletes it with its volume and its Secret, in whole hours; a live record or a launch that names the repository again before that keeps its cache."},
 		{Name: "resources", Default: "the cache's container takes the daemon's own reservation", RequiredBy: "no",
 			Description: "What the cache pod's one container reserves and is bounded by, in a pod reservation's own six fields."},
-		{Name: "bucket", Default: "no bucket: an issue pod's feed comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
-			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's fetch downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
+		{Name: "bucket", Default: "no bucket: an issue pod's clone comes from the cache's `/tar` alone", RequiredBy: "when `service_account` is set",
+			Description: "The Cloud Storage bucket each cache keeps the packs it serves in, which an issue pod's provision downloads through the 15-minute signed addresses its cache gives it, falling back to `/tar`; set together with `service_account`, and both left out turn it off."},
 		{Name: "service_account", Default: "the cache pods run as `pod.service_account`, as every issue pod does", RequiredBy: "when `bucket` is set",
 			Description: "The Kubernetes ServiceAccount the cache pods alone run as, the one the bucket's grant goes to; it must differ from the account the issue pods run as (`pod.service_account`, or `default` while that is unset), so no issue pod holds a grant on the bucket, and from `pod.controller_service_account` where that is set, so the controller's pod holds none either."},
 	}},

@@ -678,6 +678,7 @@ func xidWindowIssueCloseWithOpenAsks(t *testing.T, f *xidFixture) {
 // fixture settles each document twenty milliseconds after a write, and each step waits for every
 // document to settle first, so the close settles nothing before its transaction.
 func TestXidWindowsUnderTheParentStatusRule(t *testing.T) {
+	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	f := newXidFixture(t, testServerOptions{settle: 20 * time.Millisecond, parentStatusRule: true}, "")
 	runXidSteps(t, f, true, []xidStep{
 		{"issue create under a parent", xidWindowIssueCreateUnderAParent},

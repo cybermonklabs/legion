@@ -306,6 +306,7 @@ func TestACleanStopDeletesTheConsumerOfACallerThatHungUpOnceItsRecordWasGone(t *
 // unqualified promise of a further delivery from the whole log, and the consumer after the stop,
 // which is the fact behind the half of the line this case falls on.
 func TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery(t *testing.T) {
+	t.Parallel()
 	rig, sessionID, _, _ := relayHoldingOneMessage(t, "ses_stopped_handover_")
 
 	stopSession(t, rig.mux, sessionID, "")

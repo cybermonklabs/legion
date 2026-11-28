@@ -50,11 +50,11 @@ import { messageDeliveryFields } from "./delivery-fixture";
 import "../agent-view/AgentConversationPage";
 import "../margin/Margin";
 import "./BroadcastPage";
-import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
+import { KEYED_SEND_LATE_TEXT } from "../writes/write-words";
 // The page itself is a lazy route of the app too, loaded here for the same reason.
 import "./AgentsPage";
 import type { AgentGroup } from "./agent-groups";
@@ -1004,6 +1004,84 @@ test("Agents draws four counted groups, the empty ones among them", async () => 
     for (const group of ["needs-you", "active", "idle", "quiet"] as const) {
       expect(groupToggle(region, group)).toHaveAttribute("aria-expanded", "true");
     }
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 3: a group whose length comes from data shows ten
+// entries, then one "+N" that shows the rest in place, and folds them back. A session's roles and
+// the composer's recipients are two such groups; each keeps every entry one press away.
+test("an Agents row shows ten roles and a +N for the rest, and the composer ten recipients", async () => {
+  const user = userEvent.setup();
+  const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
+  const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
+    ...agents[1],
+    roles: index === 0 ? roles : [],
+    session_id: `crowd-${index + 1}-session`,
+    title: `Crowd ${index + 1}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const row = card(region, "Crowd 1");
+    const group = row.querySelector<HTMLElement>('[data-layout-group="roles"]');
+    if (group === null) throw new Error("the roles group is missing");
+    const shown = () =>
+      [...group.children].filter((child) => !child.hasAttribute("data-layout-more"));
+    expect(shown().map((entry) => entry.textContent)).toEqual(roles.slice(0, 10));
+    await user.click(within(group).getByRole("button", { name: "+4, show all 14 roles" }));
+    expect(shown().map((entry) => entry.textContent)).toEqual(roles);
+    await user.click(within(group).getByRole("button", { name: "Show fewer roles" }));
+    expect(shown()).toHaveLength(10);
+
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    const recipients = within(screen.getByRole("region", { name: "Broadcast" })).getByRole("list", {
+      name: "Selected agents",
+    });
+    expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(10);
+    await user.click(within(recipients).getByRole("button", { name: "+2, show all 12 agents" }));
+    expect(within(recipients).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: the recipients the reader opened past their
+// "+N" stay open when an agent list that comes back empty takes the composer away while the
+// selection stands, and the composer comes back with the list.
+test("the composer's opened recipients are still open after an empty agent list takes it away and it comes back", async () => {
+  const user = userEvent.setup();
+  const crowd: Agent[] = Array.from({ length: 12 }, (_, index) => ({
+    ...agents[1],
+    roles: [],
+    session_id: `crowd-${index + 1}-session`,
+    title: `Crowd ${index + 1}`,
+  }));
+  const page = renderAgents({ listedAgents: crowd });
+  const recipients = () =>
+    within(screen.getByRole("region", { name: "Broadcast" })).getByRole("list", {
+      name: "Selected agents",
+    });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(within(region).getByRole("checkbox", { name: "Select all matching agents" }));
+    await user.click(within(recipients()).getByRole("button", { name: "+2, show all 12 agents" }));
+    expect(within(recipients()).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+
+    page.listAgents.mockResolvedValue([]);
+    await refetchAgents(page.queryClient);
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Broadcast" })).toBeNull());
+
+    page.listAgents.mockResolvedValue(crowd);
+    await refetchAgents(page.queryClient);
+    await screen.findByRole("region", { name: "Broadcast" });
+    expect(within(recipients()).getAllByRole("button", { name: /^Crowd \d+ ✕$/ })).toHaveLength(12);
+    expect(within(recipients()).getByRole("button", { name: "Show fewer agents" })).toBeTruthy();
   } finally {
     page.view.unmount();
     page.restore();
@@ -3204,10 +3282,21 @@ test("a selected session missing from an agent list that is not current is unkno
   expect(broadcastPlan(selected, failed, "aside").unchecked).toEqual([
     { reason: "couldn't check whether it is running", sessionID: planner.session_id },
   ]);
-  // Send counts it and does not refuse, even when it is the whole selection.
+  // Send counts it and does not refuse, even when it is the whole selection, and the notice names
+  // it with its reason: a phone's closed composer shows one chip, cut to one line.
   expect(
     broadcastSendState(broadcastPlan(selected, refilling, "aside"), "aside", "Status?")
-  ).toEqual({ label: "Send to 2", notice: null, refusal: null, refusalOnNotice: false });
+  ).toEqual({
+    label: "Send to 2",
+    notice: [
+      "Not confirmed: ",
+      { sessionId: planner.session_id, storedTitle: undefined },
+      ` (couldn't check whether it is running. ${AGENT_LIST_REFILLING})`,
+      ". It is still sent to, and the server checks it.",
+    ],
+    refusal: null,
+    refusalOnNotice: false,
+  });
   const alone = broadcastPlan(new Set([planner.session_id]), { ...refilling, agents: [] }, "btw");
   expect(broadcastSendState(alone, "btw", "Status?").label).toBe("Send to 1");
 });
@@ -3294,7 +3383,12 @@ test("a selected session listed without the mode on an agent list that is not cu
   ]);
   expect(broadcastSendState(broadcastPlan(selected, refilling, "btw"), "btw", "Status?")).toEqual({
     label: "Send to 2",
-    notice: null,
+    notice: [
+      "Not confirmed: ",
+      { sessionId: reviewer.session_id, storedTitle: undefined },
+      ` (couldn't check whether it is running. ${AGENT_LIST_REFILLING})`,
+      ". It is still sent to, and the server checks it.",
+    ],
     refusal: null,
     refusalOnNotice: false,
   });
@@ -3380,16 +3474,57 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     );
     expect(chips()[0]).not.toContain("no live session");
     expect(chips()[1]).toBe("Reviewer ✕");
-    expect(within(composer()).getByRole("heading", { level: 2 }).textContent).toBe(
-      "Broadcast to 2 of 2 selected"
-    );
+    const heading = within(composer()).getByRole("heading", { level: 2 });
+    expect(heading.textContent).toBe("Broadcast to 2 of 2 selected");
+    // A narrow screen ends the heading in an ellipsis, so its whole words are its title.
+    expect(heading).toHaveAttribute("title", "Broadcast to 2 of 2 selected");
     expect(within(composer()).queryByText(/Excluded:/)).not.toBeInTheDocument();
+    // The Reviewer takes Aside and not BTW, so the selection goes as an Aside, and the notice says
+    // why beside the Not confirmed line. The agent's name is an element of its own inside the
+    // line, so the line is read whole.
+    const notice = within(composer()).getByText(/^Not confirmed:/);
+    expect(notice.textContent).toContain("Sending as Aside: Reviewer");
+    // Nobody is refused or left out, so the line is context, in the muted tone, not a warning.
+    expect(notice.className).toContain("text-slate-500");
+    expect(notice.className).not.toContain("text-rose-700");
 
     const field = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, field, "Status?");
     await user.click(within(composer()).getByRole("button", { name: "Send to 2" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(1));
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A phone's closed composer shows one chip, cut to one line, and a touch reader has no hover to
+// read its title with. A recipient the list could not confirm is named in the notice with its
+// reason, in the page's text: here one is chosen alone, so no "+N" opens the chips either.
+test("the composer names a recipient the agent list could not confirm, and its reason, in its notice text", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    const composer = () => within(region).getByRole("region", { name: "Broadcast" });
+    // The last read that returned a list holds no Planner, and the next one fails: the list
+    // cannot vouch for it, so the chip names it by its id.
+    page.listAgents.mockResolvedValue([agents[1]]);
+    await refetchAgents(page.queryClient);
+    page.listAgents.mockRejectedValue(refillingError());
+    await refetchAgents(page.queryClient);
+    await screen.findByTestId("agent-list-refilling");
+
+    const notice = within(composer()).getByText(/^Not confirmed:/);
+    expect(notice.tagName).toBe("P");
+    expect(notice).not.toHaveAttribute("title");
+    expect(notice.textContent).toContain("session:planner-…");
+    expect(notice.textContent).toContain("couldn't check whether it is running");
   } finally {
     page.view.unmount();
     page.restore();
@@ -5264,6 +5399,51 @@ test("a row the reader opened keeps its draft when the window scrolls past it", 
     layout.scrollTo(0);
     expect(card(region, "Session 00")).toBe(opened);
     expect(field.value).toBe("Half a thought");
+  } finally {
+    layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 6: a row's roles the reader opened past their
+// "+N" stay open when the window stops drawing the row and draws it again. The row is not opened,
+// so the window unmounts it with the scroll; the page, not the row, holds the roles' state.
+test("a row's opened roles are still open when the window scrolls past the row and back", async () => {
+  const user = userEvent.setup();
+  const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
+  const listed = manySessions(60).map((session, index) =>
+    index === 5 ? { ...session, roles } : session
+  );
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: listed });
+  const rolesOf = (region: HTMLElement) =>
+    region.querySelector<HTMLElement>('[data-agent-row="session-05"] [data-layout-group="roles"]');
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Session 05", { exact: true });
+    await user.click(
+      within(card(region, "Session 05")).getByRole("button", { name: "+4, show all 14 roles" })
+    );
+    expect(rolesOf(region)).toHaveAttribute("data-layout-open");
+    // The press left the focus in the row, and the window keeps the focused row drawn: the focus
+    // goes to another row's box first, so this row is one the window lets go of.
+    act(() => {
+      card(region, "Session 00").focus();
+    });
+
+    layout.scrollTo(2_000);
+    // The row is gone from the page: nothing of it can hold the reader's choice.
+    expect(region.querySelector('[data-agent-row="session-05"]')).toBeNull();
+
+    layout.scrollTo(0);
+    const group = rolesOf(region);
+    expect(group).toHaveAttribute("data-layout-open");
+    expect(within(group as HTMLElement).getByText("role-14")).toBeTruthy();
+    expect(
+      within(card(region, "Session 05")).getByRole("button", { name: "Show fewer roles" })
+    ).toBeTruthy();
   } finally {
     layout.restore();
     page.view.unmount();

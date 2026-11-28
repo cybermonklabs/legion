@@ -572,7 +572,7 @@ func (r *pauseDaemonRig) boot() {
 	r.mu.Unlock()
 	r.reportListener()
 	logger := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.d = startDaemonWithin(r.t, r.cfg, r.o, logger, 90*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, r.o, logger)
 	testwait.Eventually(r.t, "run to hand the rig its supervisor", func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()

@@ -53,16 +53,17 @@
  * four-day-old table, 1.04 (at most 1.05) under the seven-day-old one, and 1.04 (at most 1.05)
  * with the table of 2026-11-27.
  *
- * A row's weight is the seconds it took on main (`e2e/shard-weights.json`, which
- * `e2e/tools/shard-weights.ts` writes from main's merged reports): the row's own median where the
- * table holds the row; else the mean row of its file, for a row added or renamed in a file the
- * table holds; else the median row of its project, and for a project the table has none for the
- * median of every project's. Each is an estimate from the same measurements, never nothing, so a
- * new row is placed on the day it lands and the split never refuses a run. How far those
- * estimates are from the truth is what makes the table worth reading again: each leg prints how
- * many of its rows were placed by a project's median (`e2e/shard-reporter.ts`), and
- * `tableWarnings` below says when the table is old enough, or the estimates many enough, that the
- * browser step's hang guard no longer covers the drift.
+ * A row's weight is the seconds it took on main, or on a full-lane run that `--run <id>` named
+ * (`e2e/shard-weights.json`, which `e2e/tools/shard-weights.ts` writes from main's merged reports
+ * and the report of each run `--run <id>` names): the row's own median where the table holds the
+ * row; else the mean row of its file, for a row added or renamed in a file the table holds; else
+ * the median row of its project, and for a project the table has none for the median of every
+ * project's. Each is an estimate from the same measurements, never nothing, so a new row is placed
+ * on the day it lands and the split never refuses a run. How far those estimates are from the
+ * truth is what makes the table worth reading again: each leg prints how many of its rows were
+ * placed by a project's median (`e2e/shard-reporter.ts`), and `tableWarnings` below says when the
+ * table is old enough, or the estimates many enough, that the browser step's hang guard no longer
+ * covers the drift.
  *
  * The placement is the longest-first greedy: the heaviest unit first, each onto the leg with the
  * least time so far. It is a function of the selection and the table alone - the units are sorted

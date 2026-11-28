@@ -118,6 +118,8 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 // publish waits there for a connection until the bus's 5 s publish bound runs out, and this call
 // must return long before that.
 func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
+	// Not parallel: it requires publishRefusalException to return within 500 ms against a
+	// reconnecting bus.
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {

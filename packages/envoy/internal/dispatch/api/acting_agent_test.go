@@ -539,6 +539,7 @@ func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
 // Dispatch relays names the token's owner as the approver, which the broker takes on Dispatch's
 // word (credential_requests.go).
 func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault).
 	for _, test := range []struct {
 		name    string
 		session string

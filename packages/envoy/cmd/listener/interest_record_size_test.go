@@ -138,11 +138,13 @@ func requireWideRegistrationRenews(t *testing.T, sessionID string, tokenBytes in
 // The case: 300 issue topics of about 3,950 bytes each, about 1.18 MB as JSON, past the server's
 // 1 MiB max payload.
 func TestARegistrationPastTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	requireWideRegistrationRenews(t, "ses_wide_long_topics", 3900, true)
 }
 
 // The control: the same 300 issue topics, each of about 50 bytes, under the max payload.
 func TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testing.T) {
+	t.Parallel()
 	requireWideRegistrationRenews(t, "ses_wide_short_topics", 10, false)
 }
 
@@ -151,6 +153,7 @@ func TestARegistrationUnderTheMaxPayloadIsStoredWholeAndRenewsItsClaim(t *testin
 // bucket's bound, with no Retry-After, and the client is not told to retry a write that cannot
 // land. A registration whose record fits the same bucket is the control: it is answered 200.
 func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
+	t.Parallel()
 	const valueBound = 4096
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
@@ -189,6 +192,9 @@ func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
 // control is the same topics under a wildcard that covers them, whose filter reduces to a few
 // subjects: it is answered 200, and its record, larger than one message, is stored in chunks.
 func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t *testing.T) {
+	// Not parallel: its two registrations of about 1.18 MB of topics must each be answered inside
+	// the route's own 3.5 s budget (sendRequestBudget), and load beside it stretched such a
+	// registration past it.
 	rig := newRoleClaimRenewalRig(t)
 	covered := wideTopics(300, 3900, "legion-controller")
 	if control := registerTopics(t, rig.subscribe, "ses_filter_reduces", covered); control.Code != http.StatusOK {
@@ -211,13 +217,15 @@ func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t
 	t.Logf("the refusal: %+v", refusal)
 }
 
-// requireStoppedSessionKnown registers sessionID's wide topics of tokenBytes letters each, stops
-// it cleanly and removes its interest row, as the reaper does for a session gone that long, so the
-// known-session record is the one store left that knows it. It then sends to the session and
-// publishes on a topic its wildcard covers, and requires the send to be stored for it (200,
-// stopped) rather than refused 404, the publish to count it as a recipient that is not connected,
-// and the record to hold every topic registered. Every one of the three is read and logged before
-// any is judged, so a run that fails names all three answers.
+// requireStoppedSessionKnown registers sessionID's wide topics of tokenBytes letters each, and a
+// team topic beside them, stops it cleanly and removes its interest row, as the reaper does for a
+// session gone that long, so the known-session record is the one store left that knows it. It then
+// sends to the session and publishes on the team topic, and requires the send to be stored for it
+// (200, stopped) rather than refused 404, the publish to count it as a recipient that is not
+// connected, and the record to hold every topic registered. The publish is on a team topic because
+// the publish route refuses a `notifications.dispatch.` topic, which Dispatch alone publishes. Every
+// one of the three is read and logged before any is judged, so a run that fails names all three
+// answers.
 //
 // The registration is the case's setup, and it is given the time left before the test binary's
 // deadline (budgetsUntilTheDeadline) in place of its 3.5 s: the known-session record is its last
@@ -226,11 +234,11 @@ func TestARegistrationWhoseConsumerFilterIsPastTheMaxPayloadIsAnsweredTooLarge(t
 // failed on a send answered 404 for a session it had just registered.
 func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) {
 	t.Helper()
-	const topic = "notifications.dispatch.issue.K-0.counted"
+	const topic = "notifications.team.counted"
 	rig := newRecipientRig(t)
 	budgetsUntilTheDeadline(t, rig.deps)
 	topics := wideTopics(300, tokenBytes, "legion-controller")
-	topics = topics[:len(topics)-1] // no role lane: the session holds no role
+	topics = append(topics[:len(topics)-1], topic) // no role lane: the session holds no role
 	rig.register(t, recipientSender, []string{topic})
 	rig.knownSessionRig.register(t, sessionID, map[string]any{"topics": topics})
 	rig.stop(t, sessionID)
@@ -261,10 +269,12 @@ func requireStoppedSessionKnown(t *testing.T, sessionID string, tokenBytes int) 
 // for its size, the registration answered 200 with a WARN, and the session had no record: the send
 // answered 404 and the publish counted nobody.
 func TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted(t *testing.T) {
+	t.Parallel()
 	requireStoppedSessionKnown(t, "ses_known_wide_long", 3900)
 }
 
 // The control: the same 300 topics, each of about 50 bytes, under the max payload.
 func TestAStoppedSessionUnderTheMaxPayloadIsSentToAndCounted(t *testing.T) {
+	t.Parallel()
 	requireStoppedSessionKnown(t, "ses_known_wide_short", 10)
 }

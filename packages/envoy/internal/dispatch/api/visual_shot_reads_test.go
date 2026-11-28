@@ -32,6 +32,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -182,6 +184,12 @@ type shotCorpus struct {
 	// document is refused them (ARTIFACT_LINKED), as the visual review's project-document page
 	// reads them.
 	runbook, runbookSlug string
+	// statements are the addresses of the spec's blocks, which stand for the statements a list
+	// of decision cards reads the first lines of in one batch of GET /api/v1/reference-targets
+	// on the Spec tab's margin and the Decisions tab (packages/dispatch/web/src/features/
+	// decision-card/useStatementExcerpts.ts): each by the address a decision's tie names it by
+	// (refs.BlockRef), sorted, as that batch names its set (referenceTargetsQuery).
+	statements []string
 }
 
 // shotReadPaths is the path this test sends each route of the list at, in its corpus, with the
@@ -211,6 +219,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/issues/{key}/coverage":               "/api/v1/issues/" + c.issue + "/coverage",
 		"/api/v1/issues/{key}/decisions":              "/api/v1/issues/" + c.issue + "/decisions",
 		"/api/v1/issues/{key}/events":                 "/api/v1/issues/" + c.issue + "/events",
+		"/api/v1/issues/{key}/handoffs":               "/api/v1/issues/" + c.issue + "/handoffs",
 		"/api/v1/issues/{key}/references":             "/api/v1/issues/" + c.issue + "/references?versions=latest",
 		"/api/v1/issues/{key}/results":                "/api/v1/issues/" + c.issue + "/results",
 		"/api/v1/issues/{key}/subscribers":            "/api/v1/issues/" + c.issue + "/subscribers",
@@ -229,6 +238,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/projects/{key}/artifacts":            "/api/v1/projects/" + c.project + "/artifacts",
 		"/api/v1/projects/{key}/artifacts/{slug}":     "/api/v1/projects/" + c.project + "/artifacts/" + c.runbookSlug,
 		"/api/v1/projects/{key}/legion/daemon":        "/api/v1/projects/" + c.project + "/legion/daemon",
+		"/api/v1/reference-targets":                   referenceTargetsOf(c.statements...),
 		"/api/v1/references":                          "/api/v1/references?to=dispatch://" + c.issue,
 		"/api/v1/settings/architecture-sources":       "/api/v1/settings/architecture-sources",
 		"/api/v1/settings/delivery":                   "/api/v1/settings/delivery",
@@ -335,6 +345,27 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 	if corpus.spec == "" {
 		t.Fatalf("%s holds no spec", full.key)
 	}
+	for _, block := range decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+corpus.spec+"/blocks", nil, "alice")) {
+		corpus.statements = append(corpus.statements, refs.BlockRef("dispatch://"+corpus.issue+"/spec", block.ID))
+	}
+	slices.Sort(corpus.statements)
+	if len(corpus.statements) < 2 {
+		t.Fatalf("%s's spec holds %d blocks, want two at least: a list of decision cards reads several statements in its one batch", corpus.issue, len(corpus.statements))
+	}
+	// Each address names a block that stands, so the batch the reads send is one a page sends.
+	named := dispatchRequest(t, handler, http.MethodGet, referenceTargetsOf(corpus.statements...), nil, "alice")
+	if named.Code != http.StatusOK {
+		t.Fatalf("read the names of %s's blocks: status=%d body=%s", corpus.issue, named.Code, named.Body.String())
+	}
+	targets := decodeBody[model.ReferenceTargets](t, named).Targets
+	if len(targets) != len(corpus.statements) {
+		t.Fatalf("the batch of %d statements answered %d members: %#v", len(corpus.statements), len(targets), targets)
+	}
+	for _, target := range targets {
+		if target.Gone || target.Name == "" {
+			t.Fatalf("the batch names %s, which names no block that stands: %#v", target.Ref, target)
+		}
+	}
 
 	sent := postBroadcast(t, handler, map[string]any{
 		"body": "Hold the **deploy** and report, run " + nonce + ".", "delivery": "steer", "session_ids": []string{"planner"},
@@ -362,14 +393,16 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 // shotLiveViews is the view this test subscribes for each live view kind the list names, over
 // its pipeline fixture, in the shape the shot pages send it: the Delivery page's timeline and
 // measures over the custom window its URL names and no facet, the Pipeline page pinned to an at,
-// and the event feed every page of the shell subscribes, from its start.
-func shotLiveViews() map[string]LiveView {
+// the event feed every page of the shell subscribes, from its start, and the Legion state of
+// issue, which an issue's Dashboard tab subscribes (packages/dispatch/web/src/api/legion-issue.ts).
+func shotLiveViews(issue string) map[string]LiveView {
 	from, to := pipelineFixtureTime(26, 0, 0), pipelineFixtureTime(33, 0, 0)
 	at := pipelineFixtureTime(32, 12, 0)
 	return map[string]LiveView{
 		deliveryLiveTimeline: {DeliveryLiveView: timelineRange(from, to, "")},
 		deliveryLiveMeasures: {DeliveryLiveView: measuresRange(from, to, "")},
 		deliveryLivePipeline: {DeliveryLiveView: livePipelineView(&at)},
+		legionIssueView:      {DeliveryLiveView: DeliveryLiveView{Kind: legionIssueView, Issue: issueMember(issue)}},
 		liveEventsView:       eventsView(),
 	}
 }
@@ -434,6 +467,7 @@ func liveAnswer(t *testing.T, client *socketClient, sub string) {
 // table, and a person's edit in the room, by the room and the table it appends to - so a tracer
 // that saw nothing, or a check that names nothing, cannot pass.
 func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	statements := &shotStatements{}
 	traced := storetest.TracedStore(t, database, statements)
@@ -456,7 +490,7 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	})
 	corpus := buildShotCorpus(t, asShotPerson(t, handler, cookie))
 	paths := shotReadPaths(corpus)
-	views := shotLiveViews()
+	views := shotLiveViews(corpus.issue)
 
 	listed := visualShotReads(t)
 	for _, pattern := range listed.Reads {

@@ -53,7 +53,7 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			seedServiceText(t, service, artifactID, "First.\n")
 			server := newTestServer(t, service)
 			url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID
-			socket, response, err := gws.DefaultDialer.Dial(url, http.Header{"X-Dispatch-User": []string{"mallory"}})
+			socket, response, err := documentDialer(t).Dial(url, http.Header{"X-Dispatch-User": []string{"mallory"}})
 			if err != nil {
 				t.Fatalf("connect a socket to document %s: response=%#v err=%v", artifactID, response, err)
 			}

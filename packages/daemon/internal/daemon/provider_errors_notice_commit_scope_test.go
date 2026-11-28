@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -94,7 +93,8 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 
 // A run of provider errors of a phase worker reaches the issue's architect on its own role topic,
 // as every notice of the issue does (deliverNotice), and the project's controller on the
-// controller topic, each as `provider-errors on <issue>` and each under its own row's key. The
+// controller's role topic, once the registered controller session holds it live, each as
+// `provider-errors on <issue>` and each under its own row's key. The
 // architect is who narrows the work the provider keeps refusing, and the controller is who
 // compacts or refreshes the claim's session, so the controller relays nothing
 // (#4065). A run of the tree's architect's own claim reaches the controller
@@ -103,6 +103,7 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 // reaches the architect above that child, here the root's, and never the child's own architect,
 // which still holds its role, so the controller relays nothing for it either.
 func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testing.T) {
+	t.Parallel()
 	const reason = "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"
 	for _, tc := range []struct {
 		name      string
@@ -159,6 +160,7 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 				architectClaim(t, sup, tc.issue, supervise.StateWorking)
 			}
 			publisher := &holderPublisher{}
+			publisher.holds(legionController, "ses-controller")
 			runner := &outbox{log: log, pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("run the notices: %v", err)
@@ -170,7 +172,7 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 			for _, published := range delivered {
 				byTopic[published.topic] = published
 			}
-			controller := notify.ControllerTopic("legion")
+			controller := controllerRoleTopic
 			topics := []string{controller}
 			var architect string
 			if tc.architect != "" {

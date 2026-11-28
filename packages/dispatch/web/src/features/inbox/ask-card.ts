@@ -12,7 +12,18 @@
 /** An ask card anywhere on the page, wherever it is rendered. */
 const ASK_CARD = "[data-ask-card]";
 
+/** An ask body that draws an ask to answer, anywhere on the page: `AskBody`'s root while its ask
+ *  takes an answer, the one element that carries `data-ask-answering`. Dashboard draws it with no
+ *  card around it, and a key pressed on its options and buttons is inside an ask all the same. A
+ *  settled ask's record is no such body: `AskCompletionCard` draws it with `data-ask-body` and
+ *  without this mark, outside every card (`AskCard`'s settled branch, `doc/AskBlockCard.tsx`), so
+ *  the page's keys work on its Change answer and Show earlier answers, as they do on `main`. */
+const ASK_ANSWERING = "[data-ask-answering]";
+
 /** Whether the reader is outside every ask card, so a page-level key is the page's to act on. */
 export function outsideAskCard(): boolean {
+  // The focus on an ask's answering controls is inside an ask, whether a card stands around them
+  // or not; anywhere else, only a card's own article holds the page's keys off.
+  if (document.activeElement?.closest(ASK_ANSWERING) != null) return false;
   return document.activeElement?.closest(ASK_CARD) == null;
 }

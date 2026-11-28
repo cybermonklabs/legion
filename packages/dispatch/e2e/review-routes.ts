@@ -165,6 +165,27 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
+    layers: bothLayers,
+    name: "issue-dashboard",
+    path: (seed) => `/issues/${seed.issue}/dashboard`,
+    pattern: "/issues/:key/*",
+    // Inside the tab's panel, which the page draws only once a reader opens the tab
+    // (`web/src/features/issue/IssuePage.tsx`): the count of what waits, drawn once the reads its
+    // items come from have answered; the tiles, drawn once the issue's read has
+    // (`web/src/features/dashboard/DashboardTab.tsx`); and the Checks passed tile's whole, which
+    // is 0 until the check results answer and then the seed's checks, which neither of the other
+    // two waits for. The tiles' own lists are named by a later read still, and are shut here.
+    ready: (page) => {
+      const panel = page.locator("#issue-dashboard-panel");
+      return [
+        panel.getByTestId("dashboard-waiting-count"),
+        panel.getByRole("region", { exact: true, name: "Progress" }),
+        panel.locator('[role="meter"][aria-label="Checks passed"]:not([aria-valuemax="0"])'),
+      ];
+    },
+  },
+  {
+    kind: "reviewed",
     layers: [...bothLayers, "shoot-phone"],
     name: "issue-spec",
     path: (seed) => `/issues/${seed.issue}/spec`,
@@ -199,7 +220,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
         ? [
             connected,
             page
-              .locator("[data-margin-item]")
+              .locator("[data-margin-item] [data-decision-statements]")
               .getByText("One command, a seeded corpus, a signed-in browser."),
           ]
         : [connected];
@@ -301,7 +322,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
     ready: (page) => [
       page.getByRole("region", { name: "Waiting for your review" }),
-      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
+      page
+        .locator("[data-decision-statements]")
+        .getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
     ],
   },
   {

@@ -148,8 +148,9 @@ case "$lane" in
     # nine of the reading list's walk (e2e/reading-rows.ts), and main's parse-count walk,
     # which holds every page those rows draw to no parse of a stored text on the page's
     # own thread, and the one place they are written: ci.yaml's dispatch-references job
-    # runs them on a pull request that changes what they test, so that document's checks
-    # read CI at the head rather than a run of an hour and a half by hand. Every
+    # runs them on a pull request that changes what they test and whose run does not run
+    # the full lane, whose `chromium` project holds every one of them, so that document's
+    # checks read CI at the head rather than a run of an hour and a half by hand. Every
     # Chromium row of them, `@pr` or not, so no grep. Each is a Playwright file
     # filter, a regular expression matched against a spec's absolute path, and each
     # matches the one file of that name under e2e/ and no other. A file added to this
@@ -207,12 +208,13 @@ esac
 # `./e2e/shard-reporter.ts` beside them, named here for the same reason: it is what makes
 # `--shard=$shard/$legs` this leg's share of the lane's row TIME rather than Playwright's share
 # of its row count. Each leg places every row of every project the lane selects by the row times
-# main measured (e2e/shard-weights.json) - a row on its own, or with the rows Playwright must run
-# in order beside it - and keeps its own; e2e/shard-split.ts says why the count split left one leg
-# a fifth heavier than the others, why a split by file came to do the same, and how every leg
-# computes one placement. Without it here the legs would split by count again, every row still run
-# once, and nothing red. It prints one line to the log before the first row: this leg's rows, the
-# row time it expects of this leg and of the run, and how many of its rows it placed by an estimate.
+# that main's full-lane runs, and each run that `--run <id>` named, measured
+# (e2e/shard-weights.json) - a row on its own, or with the rows Playwright must run in order beside
+# it - and keeps its own; e2e/shard-split.ts says why the count split left one leg a fifth heavier
+# than the others, why a split by file came to do the same, and how every leg computes one
+# placement. Without it here the legs would split by count again, every row still run once, and
+# nothing red. It prints one line to the log before the first row: this leg's rows, the row time
+# it expects of this leg and of the run, and how many of its rows it placed by an estimate.
 #
 # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
 # the run is piped into `tee`, and without the `||` a failing suite would end this script

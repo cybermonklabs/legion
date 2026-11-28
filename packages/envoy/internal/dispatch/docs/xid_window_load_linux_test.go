@@ -280,6 +280,9 @@ func threadCPU(t *testing.T) time.Duration {
 // one P is set inside the measured operation, since Measure runs its operation with idle Ps beside
 // it.
 func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to 1 inside the operation itself.
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
 		name   string
@@ -355,6 +358,9 @@ const xidHandoffNice = 19
 // one P is set inside the measured operation, since Measure runs its operation with idle Ps beside
 // it.
 func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also sets GOMAXPROCS to 1 inside the operation itself.
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	crowded := crowdACPU(t)

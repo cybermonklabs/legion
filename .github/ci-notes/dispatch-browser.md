@@ -15,7 +15,8 @@ Every browser job of the Dispatch suite, in one place. ci.yaml calls it from thr
 with a literal lane: dispatch-browser-pr with the pull-request lane on a pull request,
 dispatch-browser with the full lane in the merge queue, on a dispatched run and on a pull request
 labelled `full-ci` or `lane:dispatch_browser`, and dispatch-references with the references lane
-on a pull request that changes what the reference rows test; the nightly workflow calls it with
+on a pull request that changes what the reference rows test and whose run does not run that full
+lane; the nightly workflow calls it with
 the full lane, under the job id dispatch-browser. Each caller passes its own id as `job`, which
 GitHub puts before every job name of this file (`dispatch-browser-pr / shard (1)`) and which
 starts every artifact name, so two callers of one run share no artifact. The rows are spread
@@ -88,7 +89,8 @@ report step skips there and no check is posted.
 reference framework's Verification document names and the nine of the reading list's walk,
 with main's parse-count walk beside them, on the shard machines and the merge job alone,
 so a pull request that changes the reference framework gets those rows from CI at its head
-rather than from a run by hand. It gates nothing:
+rather than from a run by hand. It runs only where its run does not run the full lane, whose
+`chromium` project already holds every one of those rows, and it gates nothing:
 .github/ci-notes/ci.md#the-reference-rows-preview-job
 says why. The lane's spec files are written in one place, the `references)` arm of
 .github/scripts/dispatch-browser-shard-suite.sh, the script the shard job's browser step runs.
@@ -203,22 +205,23 @@ A leg's share is a share of the lane's row time, not of its rows. Playwright's o
 f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time.
 packages/dispatch/e2e/shard-reporter.ts, which the browser step names beside the failure
 reporter, takes the split over: every leg places every row of every project the lane selects
-by the row times main measured (packages/dispatch/e2e/shard-weights.json), heaviest first onto
-the lightest leg, and keeps its own rows. A row is placed on its own unless Playwright must run
-it in order with others - a `serial` or `default`-mode `describe`, or a file of a project that is
-not fully parallel - and then with them; every project of this lane is fully parallel and no
-spec sets a mode, so every row is its own unit today. Until 2026-11-27 the unit was the file,
-and on 2026-11-26 that left the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28
-merge-group runs of 17:03Z to 23:04Z): two files that had landed after the table was read,
-placed whole by their project's median row, held a median 853 s of the lane's 9,086 and sat on
-leg 4 and leg 2, the slowest two legs of every one of those runs. Placed row by row over those
-runs' own rows, the same table puts the heaviest leg at 1.03 times the mean at those runs' four
-legs, and at 1.10 at six.
+by the row times that main's full-lane runs, and each run that `--run <id>` named, measured
+(packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
+own rows. A row is placed on its own unless Playwright must run it in order with others - a
+`serial` or `default`-mode `describe`, or a file of a project that is not fully parallel - and
+then with them; every project of this lane is fully parallel and no spec sets a mode, so every
+row is its own unit today. Until 2026-11-27 the unit was the file, and on 2026-11-26 that left
+the heaviest leg at 1.21 times the mean (1.06 to 1.38 over the 28 merge-group runs of 17:03Z to
+23:04Z): two files that had landed after the table was read, placed whole by their project's
+median row, held a median 853 s of the lane's 9,086 and sat on leg 4 and leg 2, the slowest two
+legs of every one of those runs. Placed row by row over those runs' own rows, the same table
+puts the heaviest leg at 1.03 times the mean at those runs' four legs, and at 1.10 at six.
 packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
 what the unit is and why, how every leg computes one placement, and what a row with no
 measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
-again. Each leg prints its own line before its first row, `shard N of M, placed by measured row
-time: ...`, with the rows of it that were placed by an estimate.
+again, and `--run <id>` adds a named full-lane run's report. Each leg prints its own line before
+its first row, `shard N of M, placed by measured row time: ...`, with the rows of it that were
+placed by an estimate.
 
 Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
 of the selection it read, and the rows Playwright gave it to run
@@ -509,7 +512,7 @@ enough: `globalSetup` runs after the config has loaded. A workstation gets the b
 this step. It runs `build:dispatch`, the contracts entries Dispatch imports and no other
 (`.github/workflows/ci-job-dispatch-ui.yaml#Build contracts for the suites that spawn Playwright` says
 how that list grows), so it compiles no module the dispatch_browser filter's listed
-block leaves out - not ./legion-api, which no row loads.
+block leaves out.
 
 ## What the shard job's PostgreSQL reading records, and why it is a script
 
@@ -682,8 +685,9 @@ The week is what the guard holds, so each leg says when its table is past it: be
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
 before the run, or when a tenth of its rows sit in files the table has no entry for
 (`packages/dispatch/e2e/shard-split.ts#tableWarnings`). Either one means
-`bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at the count split's 1.21
-(read at four legs), a p90 leg on that runner would end near 1,063 s.
+`bun e2e/tools/shard-weights.ts --main 17` is due (`--run <id>` adds a named full-lane run's
+report); past the week, at the count split's 1.21 (read at four legs), a p90 leg on that runner
+would end near 1,063 s.
 
 ## Why the file store's address is set on the step and not in the environment
 

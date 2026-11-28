@@ -147,7 +147,7 @@ type RepositoryCacheConfig struct {
 	RetainHours    int
 	Resources      Reservation
 	// Bucket is `bucket`: the Cloud Storage bucket each cache keeps the packs it serves in, which
-	// an issue pod's fetch downloads through the short-lived signed addresses its cache gives it.
+	// an issue pod's provision downloads through the short-lived signed addresses its cache gives it.
 	// ServiceAccount is `service_account`: the Kubernetes ServiceAccount the cache pods alone run
 	// as, the one the bucket's grant goes to. The two are set together or not at all, and "" for
 	// both, the default, is off: each cache pod then runs as runtime.kubernetes.pod.service_account,
@@ -371,9 +371,9 @@ func (c SandboxConfig) AnyMicroVM() bool {
 	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
 }
 
-// PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
-// issue pod's one container and its two init containers, workspace-fetch and workspace-init,
-// carry Issue, and the controller's pod's one container Controller.
+// PodResources are the reservations of the two pods the daemon builds, each a whole pod's: an
+// issue pod's roles container and workspace-init carry Issue, and the controller's pod's one
+// container carries Controller.
 type PodResources struct {
 	Issue, Controller Reservation
 }
@@ -959,8 +959,8 @@ const defaultServiceAccount = "default"
 // write the bucket, and they write it as no other. A blank value is refused, as optionalString
 // refuses one, and so is one still holding a `${…}` placeholder (unfilledPlaceholder) and an
 // account that is no ServiceAccount's name (serviceAccountName). The bucket must have the shape
-// workspace.ValidBucketName holds it to, the one rule a fetch holds a /packs manifest's bucket to as
-// well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
+// workspace.ValidBucketName holds it to, the one rule a provision holds a /packs manifest's bucket
+// to as well. The account must not be the one the issue pods run as: pod.ServiceAccount, the file's
 // runtime.kubernetes.pod.service_account, or defaultServiceAccount where the file sets none, since
 // the bucket's grant to that account would reach every issue pod of the deployment. Nor may it be
 // pod.ControllerServiceAccount, the controller's own account where the file names one, since the
@@ -2161,9 +2161,9 @@ const (
 // refused, never ignored. The store is required, and must keep sessions in a database: `pvc`,
 // which an omitted `session_store` also settles to, is refused rather than taken as a silent default
 // (INFRA-80). It kept each session as a file on the issue's disk, and that disk is now the pod's
-// own generic ephemeral volume, deleted with it: the file would die with the pod, the next
-// launch's resume would fail on the missing file (internal/launcher's sessionWritten), and three
-// such failures retire the claim.
+// own generic ephemeral volume, deleted with it: the file would die with the pod, and the next
+// launch would find no session to resume, so the claim would start a fresh agent without that
+// conversation (internal/supervise's startFresh).
 func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store, error) {
 	name, err := readString(store, sessionStoreKey)
 	if err != nil {
@@ -2178,7 +2178,7 @@ func readSessionStore(store, dsnSecret, database *yaml.Node) (ompsessions.Store,
 	case ompsessions.StoreVolume:
 		return ompsessions.Store{}, errors.New(sessionStoreKey + " must name a store that keeps sessions in a database, and is required (INFRA-80):" +
 			" an issue pod's disk is the pod's own ephemeral volume, deleted with the pod, so a session kept as a file on it ('pvc', also what an omitted session_store means) dies with it," +
-			" the next launch's resume fails on the missing file (internal/launcher's sessionWritten), and three such failures retire the claim")
+			" and the next launch finds no session to resume, so the claim starts a fresh agent without that conversation (internal/supervise's startFresh)")
 	default:
 		// A name this runtime does not take is told the two it does, and not `pvc`: the kind above
 		// refuses that one by name with its own reason, and a list of accepted values that holds a

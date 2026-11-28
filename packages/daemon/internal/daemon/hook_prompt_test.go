@@ -105,8 +105,8 @@ func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
-	runner, sup, pool := hookRunner(t, publisher)
-	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	runner, _, pool := hookRunner(t, publisher)
+	implementer := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", firedHook, time.Now().Add(-time.Minute)))
 
 	if err := runner.RunOnce(ctx); err != nil {
@@ -248,21 +248,21 @@ func (l *storingListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // rekeyingPublisher is a daemon whose retry carries a message id of its own, the control of
 // TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce: each publish goes out under the row's
-// key with the attempt's number after it.
+// key with the attempt's number after it. Its role read is the wrapped listener's.
 type rekeyingPublisher struct {
-	notify.Publisher
+	outboxNotices
 	attempts int
 }
 
 func (p *rekeyingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
 	p.attempts++
-	return p.Publisher.PublishKept(ctx, topic, message, payload, fmt.Sprintf("%s:attempt-%d", key, p.attempts))
+	return p.outboxNotices.PublishKept(ctx, topic, message, payload, fmt.Sprintf("%s:attempt-%d", key, p.attempts))
 }
 
 // maybeStoredRow drives one hook-prompt row against a listener that stores its first publish and
 // answers it 503 maybe_stored, through the daemon's own publisher over HTTP (notify.HTTPPublisher)
 // wrapped by wrap, and answers why the holder did not receive the prompt once, or "".
-func maybeStoredRow(t *testing.T, wrap func(notify.Publisher) notify.Publisher) string {
+func maybeStoredRow(t *testing.T, wrap func(outboxNotices) outboxNotices) string {
 	t.Helper()
 	listener := &storingListener{stored: map[string]bool{}}
 	server := httptest.NewServer(listener)
@@ -303,13 +303,13 @@ func TestAHookPromptAnswered503MaybeStoredReachesItsHolderOnce(t *testing.T) {
 	t.Parallel()
 	t.Run("the retry carries the first publish's key", func(t *testing.T) {
 		t.Parallel()
-		if failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return p }); failure != "" {
+		if failure := maybeStoredRow(t, func(p outboxNotices) outboxNotices { return p }); failure != "" {
 			t.Fatal(failure)
 		}
 	})
 	t.Run("control: a retry under a new key", func(t *testing.T) {
 		t.Parallel()
-		failure := maybeStoredRow(t, func(p notify.Publisher) notify.Publisher { return &rekeyingPublisher{Publisher: p} })
+		failure := maybeStoredRow(t, func(p outboxNotices) outboxNotices { return &rekeyingPublisher{outboxNotices: p} })
 		if failure == "" {
 			t.Fatal("the row passed with each retry under a new key, so it does not show the retry's key keeps the holder to one copy")
 		}
@@ -404,7 +404,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 // hookRunner is an outbox runner over an isolated database holding LEGION-208 in implementing,
 // the phase a move back to implementing leaves it in, with the admission slot its work holds. It
 // drains on the caller's goroutine (RunOnce).
-func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
+func hookRunner(t *testing.T, publisher outboxNotices) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	runner, sup, pool := runnerIn(t, phase.Implementing, "in_progress", publisher, quietLogger())
 	holdSlot(t, pool, "LEGION-208")
@@ -414,7 +414,7 @@ func hookRunner(t *testing.T, publisher notify.Publisher) (*outbox, *supervisor,
 // runnerIn is an outbox runner over an isolated database holding LEGION-208 in phase at with
 // Dispatch status status, its tree admitted, and a supervisor with no claim on it yet. It
 // publishes to publisher, logs to log, and drains on the caller's goroutine (RunOnce).
-func runnerIn(t *testing.T, at phase.Phase, status string, publisher notify.Publisher, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
+func runnerIn(t *testing.T, at phase.Phase, status string, publisher outboxNotices, log *slog.Logger) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -447,6 +447,25 @@ func releasedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Ma
 	return machine
 }
 
+// recordedReleasedClaim is releasedClaim with the claim's row in the rig's database too, suspended
+// with the source `released`, as the store's own tests put it (store.Store.PutClaim). A daemon's
+// supervisor writes the row of every claim it holds (supervisor.Create, store.Store.AdmitClaim),
+// and a delivery wake takes nothing for a claim the record holds no row of
+// (store.Store.TakeDeliveryWake). The rig's supervisor writes its claims to a store of its own
+// (outboxClaimStore), so the row is put here, in the store the runner reads.
+func recordedReleasedClaim(t *testing.T, runner *outbox, role claim.Role) *supervise.Machine {
+	t.Helper()
+	machine := releasedClaim(t, runner.supervisor, role)
+	st, ok := runner.trees.(*store.Store)
+	if !ok {
+		t.Fatalf("the runner's trees are a %T, want the store the delivery wake reads the claim's row from", runner.trees)
+	}
+	if err := st.PutClaim(context.Background(), machine.Claim()); err != nil {
+		t.Fatalf("record the released %s's claim: %v", role, err)
+	}
+	return machine
+}
+
 // keptAcrossTheWake drives one role-message row for role's released claim on LEGION-208 through
 // the two attempts a released role meets, against a listener that answers a keep: false publish
 // to the role's topic notify.ErrNoHolder and keeps a kept publish for the role's next holder
@@ -458,10 +477,10 @@ func keptAcrossTheWake(t *testing.T, payload record.OutboxPayload, role claim.Ro
 	t.Helper()
 	ctx := context.Background()
 	publisher := &holderPublisher{keeps: true}
-	runner, sup, pool := hookRunner(t, publisher)
+	runner, _, pool := hookRunner(t, publisher)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
-	machine := releasedClaim(t, sup, role)
+	machine := recordedReleasedClaim(t, runner, role)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute)))
 	id := noticeRowID(t, pool)
 
@@ -531,7 +550,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	sup.deps.WakePace = parkedFor(clock, parkedTurn)
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))
 	publisher.setAbsent(topic)
-	machine := releasedClaim(t, sup, role)
+	machine := recordedReleasedClaim(t, runner, role)
 	row := mustOutboxRow(t, "LEGION-208", payload, time.Now().Add(-time.Minute))
 	enqueueOutbox(t, pool, runner.records, row)
 	row.ID = noticeRowID(t, pool)

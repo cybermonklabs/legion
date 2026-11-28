@@ -324,6 +324,7 @@ func TestCredentialRouteTransportFailureIsAgentSecretsUnavailable(t *testing.T) 
 // file and why it could not be read, never the path: the path here is a made-up token, as one
 // pasted where the path goes would be.
 func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	rig := newFakeBrokerRig(t)
 	const pasted = "madeUpAccountToken0123456789abcdef"
 	missing := filepath.Join(t.TempDir(), pasted)

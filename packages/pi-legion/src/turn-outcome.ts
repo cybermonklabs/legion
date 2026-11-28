@@ -194,8 +194,9 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         // daemon stores one outcome per `(generation, sequence)`, so a repeat of this report
         // writes the same cell and changes no count, and a turn that goes unreported is a turn
         // the daemon counts neither way — a refusal silently dropped is a run of refusals that
-        // comes up short. A refusal the daemon itself gives (a 4xx) will not pass on retry: it is
-        // warned about once and the turn goes uncounted, since nothing this pane can do fixes it.
+        // comes up short. A refusal the daemon itself gives (any answer in its refusal shape: a
+        // 4xx, or a 5xx such as a turn outcome it could not record) is not retried: it is warned
+        // about once and the turn goes uncounted, since nothing this pane can do fixes it.
         const outcome = await retryWhileDaemonRestarts("claims/turn-outcome", () =>
           deps.daemon().turnOutcome(request)
         );
