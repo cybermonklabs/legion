@@ -7,7 +7,7 @@ import { decisionsDocumentId } from "../decision-card/change-anchor";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { agentsOnlyIds } from "./agents-only";
+import { historyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
   type ChangeComment,
@@ -557,7 +557,7 @@ function addTurns(
 ): void {
   // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
   // tree draws from one under an approval request, which it does not.
-  const history = agentsOnlyIds(reads.comments, reads.messages, [
+  const history = historyIds(reads.comments, reads.messages, [
     ...(reads.issue.open_asks ?? []),
     ...(reads.asks ?? []),
   ]);

@@ -22,7 +22,7 @@ import {
   sessionOfAddress,
 } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { agentsOnlyIds } from "./agents-only";
+import { historyIds } from "./agents-only";
 import { CONTROL_LABELS, issueStatusWord, NODE_TYPE_NAMES } from "./page-words";
 
 /**
@@ -282,7 +282,7 @@ type HistoryLine = Pick<Extract<Dated, { kind: "event" }>, "block" | "descriptio
 /** The issue's history by day, newest first (`HistoryDay`). */
 export function buildHistory(input: HistoryInput): HistoryDay[] {
   const artifacts = new Map(input.artifacts.map((artifact) => [artifact.id, artifact]));
-  const agentsOnly = agentsOnlyIds(input.comments, input.messages, input.asks);
+  const agentsOnly = historyIds(input.comments, input.messages, input.asks);
   const approvals = new Set(input.asks.flatMap((ask) => (ask.kind === "approval" ? [ask.id] : [])));
   const entries: Dated[] = [];
   let previousStatus: string | undefined;

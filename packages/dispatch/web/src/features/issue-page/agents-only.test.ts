@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Actor, Ask, Comment, MessageRead } from "../../api/types";
-import { agentsOnlyIds, historyHoldsReply, isThreadsOnly } from "./agents-only";
+import { historyHoldsReply, historyIds, isThreadsOnly } from "./agents-only";
 
 /**
  * Which comments and messages the history in the panel draws, each thread whole, and the outline
@@ -67,7 +67,7 @@ function ids(
   messages: readonly MessageRead[],
   asks: readonly Pick<Ask, "id" | "kind">[] = []
 ): string[] {
-  return [...agentsOnlyIds(comments, messages, asks)].sort();
+  return [...historyIds(comments, messages, asks)].sort();
 }
 
 test("a thread whose root message the Legion daemon wrote is in the set with every message of it, a person's reply included", () => {

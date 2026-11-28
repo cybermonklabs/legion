@@ -34,7 +34,7 @@ import { ReferenceNamesProvider } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { chipName, drawnLine, FIRST_LINE_LIMIT, firstLineOf } from "./first-line";
-import { agentsOnlyItem } from "./issue-address";
+import { historyItem } from "./issue-address";
 import {
   buildIssueTree,
   lineWordsRaw,
@@ -2930,7 +2930,7 @@ test("an agent's reply under an approval request is no node until a person repli
   expect(nodeOf(root, "quiet"), "the agents' reply is drawn in the outline").toBeUndefined();
   expect(placementsOf(root, "asked").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
-  const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, undefined, asks);
+  const landing = (id: string) => historyItem({ id, kind: "item" }, comments, undefined, asks);
   expect(landing("quiet")).toBe("quiet");
   expect(landing("asked")).toBeUndefined();
 });

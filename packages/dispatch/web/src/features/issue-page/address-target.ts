@@ -14,12 +14,7 @@ import {
 import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/reference-target";
 import { buildIssuePath, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
-import {
-  type AddressTarget,
-  agentsOnlyItem,
-  type IssueAddress,
-  pathToTarget,
-} from "./issue-address";
+import { type AddressTarget, historyItem, type IssueAddress, pathToTarget } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { useFollowing } from "./slots/following";
 import { type EntryFocus, messageRecord } from "./threads/thread-address";
@@ -114,7 +109,7 @@ export function landingPath(to: string): string {
 
 /**
  * The chain from the issue down to the nearest node the tree `root` holds above `id`, a turn of
- * a thread the panel's history holds (`agentsOnlyItem`), which the outline draws no node for: the
+ * a thread the panel's history holds (`historyItem`), which the outline draws no node for: the
  * entry the turn was written under - the comment its write answered (`answers`, else the head of
  * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
  * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
@@ -263,7 +258,7 @@ interface Following {
  *
  * An ask, a comment or a message of the outline (`outlineItemRoute`) is told from the
  * conversation's reads where it is a turn of a thread the history holds, as the tree leaves
- * it out (`agentsOnlyItem`, with the asks the tree draws its nodes from: the issue's open asks
+ * it out (`historyItem`, with the asks the tree draws its nodes from: the issue's open asks
  * and the asks read), and lands on its nearest drawn ancestor (`agents-only`). Every other item
  * is read as the old page reads one (`useItemLanding`), and nothing is read for an item the tree
  * holds, or held earlier in the following. Its `turn` - an item of this issue beside no
@@ -360,7 +355,7 @@ export function useAddressFallback({
     () =>
       unheldId === undefined
         ? undefined
-        : agentsOnlyItem({ id: unheldId, kind: "item" }, comments, messages, [
+        : historyItem({ id: unheldId, kind: "item" }, comments, messages, [
             ...(openAsks ?? []),
             ...(asks ?? []),
           ]),

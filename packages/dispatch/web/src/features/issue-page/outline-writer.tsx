@@ -26,7 +26,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
-import { agentsOnlyIds, historyHoldsReply, issueAsks } from "./agents-only";
+import { historyHoldsReply, historyIds, issueAsks } from "./agents-only";
 import { FOOT_BOX } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { isStatement } from "./issue-tree";
@@ -334,7 +334,7 @@ export function OutlineWriterProvider({
       const { under } = asked;
       const everyAsk = issueAsks(openAsks, asks.data);
       const heldNow =
-        under !== undefined && agentsOnlyIds(comments.data, messages.data, everyAsk).has(under.id);
+        under !== undefined && historyIds(comments.data, messages.data, everyAsk).has(under.id);
       const history =
         under !== undefined && asked.to === "newest"
           ? historyHoldsReply(under, comments.data, messages.data, everyAsk)

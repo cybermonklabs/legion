@@ -9891,7 +9891,7 @@ test("an address naming a turn of a thread the history holds lands on its neares
 // reads are out, so the reader's zoom stands, with the focus where they put it.
 //
 // The ancestor is the issue, the outline's tab stop, as it is for every agents-only turn the
-// server stores (`agents-only.ts`'s `agentsOnlyIds`). A comment thread is agents-only only where
+// server stores (`agents-only.ts`'s `historyIds`). A comment thread is agents-only only where
 // no turn of it is under a question (`underQuestion`), none is a person's and its head is tied to
 // no text, and the tree draws
 // an ask only where it is a question (`tree-drafts.ts`'s `addAsks`): no agents-only comment hangs

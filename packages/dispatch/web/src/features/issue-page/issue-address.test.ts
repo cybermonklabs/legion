@@ -4,7 +4,7 @@ import { screen, waitFor } from "@testing-library/react";
 import type { Message } from "../../api/types";
 import { KEY } from "../decision-card/decision-fixture";
 import { conversationPath } from "./decisions-filter/decisions-parts";
-import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
+import { historyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { type NodeType, PRESET_ORDER, type Preset } from "./page-words";
 import { drawStage, stubReads } from "./slots/stage-fixtures";
@@ -287,7 +287,7 @@ test("an address naming an ask or a comment opens the outline, unless it pins a 
 // daemon began, a person's reply in it included. No other turn is the history's: a comment thread
 // a person wrote in, one whose head is tied to text and a reply under an ask are nodes of the
 // outline, and of the two agents' notes, Threads draws `agents-message`, which no person wrote
-// in, and the outline draws `asked-message`, which a person answered; `agentsOnlyItem` leaves
+// in, and the outline draws `asked-message`, which a person answered; `historyItem` leaves
 // both out of the history.
 test("an item of a thread the history holds is the history's, and no other item is", () => {
   const agent = { id: "session-1", kind: "session" } as const;
@@ -327,8 +327,7 @@ test("an item of a thread the history holds is the history's, and no other item 
       replies: [{ ...messageFixture, author: person, id: "answered-message" }],
     },
   ];
-  const landing = (id: string) =>
-    agentsOnlyItem({ id, kind: "item" }, comments, messages, undefined);
+  const landing = (id: string) => historyItem({ id, kind: "item" }, comments, messages, undefined);
   for (const id of [
     "agents-root",
     "agents-reply",
@@ -353,10 +352,10 @@ test("an item of a thread the history holds is the history's, and no other item 
   }
   // Nothing lands in the history until the reads that tell have answered, nor for a block.
   expect(
-    agentsOnlyItem({ id: "agents-root", kind: "item" }, undefined, undefined, undefined)
+    historyItem({ id: "agents-root", kind: "item" }, undefined, undefined, undefined)
   ).toBeUndefined();
   expect(
-    agentsOnlyItem({ id: "agents-root", kind: "block" }, comments, messages, undefined)
+    historyItem({ id: "agents-root", kind: "block" }, comments, messages, undefined)
   ).toBeUndefined();
 });
 

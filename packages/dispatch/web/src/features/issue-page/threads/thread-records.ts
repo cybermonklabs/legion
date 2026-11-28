@@ -26,7 +26,7 @@ import type {
 } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { buildIssuePath } from "../../refs/routes";
-import { agentsOnlyIds, isThreadsOnly } from "../agents-only";
+import { historyIds, isThreadsOnly } from "../agents-only";
 
 /** One thread as a route answers it. A row of a page carries the thread's `last_activity_at`,
  *  and the read of one thread by its id carries none. */
@@ -293,7 +293,7 @@ function askRecords(
   // ask where it draws that comment's thread (`agents-only.ts`).
   const askNode: RecordNode | undefined =
     ask.kind === "question" ? { id: ask.id, kind: "ask" } : undefined;
-  const agentsOnly = agentsOnlyIds(comments, undefined, [ask]);
+  const agentsOnly = historyIds(comments, undefined, [ask]);
   const commentNode = drawnEntry(agentsOnly, "comment");
   const shared: ThreadFields = {
     entry: (id) => (id === ask.id ? askNode : commentNode(id)),
@@ -342,7 +342,7 @@ function commentRecords(
   };
   // A reply stores its thread's head in `reply_to` and the comment it answers in `answers`.
   const parts = partsOf(root, replies, (reply) => reply.answers ?? head.id);
-  const agentsOnly = agentsOnlyIds([head, ...replies], undefined, undefined);
+  const agentsOnly = historyIds([head, ...replies], undefined, undefined);
   const shared: ThreadFields = {
     entry: drawnEntry(agentsOnly, "comment"),
     lastActivity,
@@ -357,7 +357,7 @@ function commentRecords(
 /**
  * The records of a message thread. Conversation draws no message of a thread only Threads draws
  * (`agents-only.ts`'s `isThreadsOnly`: no person wrote in it, and the Legion daemon did not begin
- * it), nor of one the history draws (`agentsOnlyIds`: the daemon began it), so no record of
+ * it), nor of one the history draws (`historyIds`: the daemon began it), so no record of
  * either links to a node. A record of any other thread that a reply with a quote begins links to
  * the message that reply answers.
  */
@@ -375,7 +375,7 @@ function messageRecords(
   };
   const parts = partsOf(root, replies, (reply) => reply.in_reply_to ?? first.id);
   const thread = { message: first, replies: [...replies] };
-  const agentsOnly = agentsOnlyIds(undefined, [thread], undefined);
+  const agentsOnly = historyIds(undefined, [thread], undefined);
   const shared: ThreadFields = {
     entry: isThreadsOnly(thread) ? () => undefined : drawnEntry(agentsOnly, "message"),
     lastActivity,

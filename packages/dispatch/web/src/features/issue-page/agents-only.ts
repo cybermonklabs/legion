@@ -49,7 +49,7 @@ function daemonBegan({ message }: MessageRead): boolean {
  * Pure, and the one place the rule is written: the outline, the history, the address of one of
  * these items and the landing of a write from the line at the foot read it alike.
  */
-export function agentsOnlyIds(
+export function historyIds(
   comments: readonly CommentTurn[] | undefined,
   messages: readonly MessageRead[] | undefined,
   asks: readonly Pick<Ask, "id" | "kind">[] | undefined
@@ -104,7 +104,7 @@ export function agentsOnlyIds(
  *
  * The address reads it (`thread-address.ts`'s `messageRecord`: a message of such a thread opens
  * in Threads), and so does the outline, which draws no node for its root or any reply
- * (`issue-tree.ts`'s `buildIssueTree`). The history's rule is `agentsOnlyIds` beside it.
+ * (`issue-tree.ts`'s `buildIssueTree`). The history's rule is `historyIds` beside it.
  */
 export function isThreadsOnly(thread: MessageRead): boolean {
   if (daemonBegan(thread)) return false;
@@ -152,13 +152,13 @@ export function historyHoldsReply(
             reply_to: answered.ask_id === null ? (answered.reply_to ?? answered.id) : null,
           },
         ];
-  return agentsOnlyIds(withComment, messages, asks).has(under.id);
+  return historyIds(withComment, messages, asks).has(under.id);
 }
 
 /**
  * The asks of an issue that tell a question from an approval request: `openAsks`, the asks the
  * issue read holds open (`IssueDetails.open_asks`), then `asks`, the asks read, `undefined` while
- * it has not answered. The rule above reads this one list wherever it is read (`agentsOnlyIds`'
+ * it has not answered. The rule above reads this one list wherever it is read (`historyIds`'
  * `asks`): the history (`IssueHistory.tsx`) and the landing of a write from the line at the foot
  * (`outline-writer.tsx`) take it from here, and the outline (`tree-drafts.ts`), which draws its
  * questions from it too, and the address of one of these items (`address-target.ts`) write the
