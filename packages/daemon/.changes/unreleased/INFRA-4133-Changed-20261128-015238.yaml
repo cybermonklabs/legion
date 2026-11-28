@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The worker image's and CI's jj is now `v0.46.0-sami.20261127-233400` (built from `sjawhar/jj`
+  commit `7697672143ff`), in place of `v0.46.0-sami.20261127-111037`. It keeps `sjawhar/jj#3`,
+  `#4`, `#5`, and `#6` and adds `sjawhar/jj#7`, which creates each new file once with its mode and
+  reads and writes files across the process's available CPUs with bounded bytes in flight. In the
+  gVisor issue-pod end-to-end proof on `rust-lang/crates.io-index` (389,557 files, 4 CPUs),
+  `workspace-init` fell from 144 s at the base to 61 s at the head (ratio 0.42), with the
+  `checkout` step taking 44.8 s (against 180.0 s on the unpinned build with step timing); on
+  `tmux/tmux`, `workspace-init` stayed at 3 s against 3 s at the base.
+time: 2026-11-28T01:52:38Z
+custom:
+    Issue: INFRA-4133
