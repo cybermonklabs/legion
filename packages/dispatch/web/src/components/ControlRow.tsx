@@ -48,8 +48,11 @@ const SLACK_PX = 0.5;
  *  slot the page fills itself may wrap inside itself (`wraps`), because a phone is 390 px wide
  *  and a row of the page's own controls - the Artifacts tab's staged upload, say - runs past that
  *  edge otherwise, where the reader cannot reach it. A wrap that is there before any narrowing
- *  adds no height when a narrowing goes on, which is R1's rule. `data-row-slot` marks it as the
- *  container a focused control in it is counted in, for the row's focus hand-off. */
+ *  adds no height when a narrowing goes on, which is R1's rule. While that slot holds a control
+ *  marked `data-row-line` - the priorities table's open New priority form - it draws no box of
+ *  its own (`contents`), so its controls are items of the first line, which wraps for them, and
+ *  the marked one takes a line of its own there (`ControlRow`). `data-row-slot` marks the slot as
+ *  the container a focused control in it is counted in, for the row's focus hand-off. */
 function Slot({
   children,
   className,
@@ -67,7 +70,9 @@ function Slot({
     : wraps
       ? "min-w-0 @min-[40rem]:shrink-0"
       : "shrink-0";
-  const wrap = wraps ? "flex-wrap @min-[40rem]:flex-nowrap" : "flex-nowrap";
+  const wrap = wraps
+    ? "flex-wrap @min-[40rem]:flex-nowrap has-[>[data-row-line]]:contents"
+    : "flex-nowrap";
   const own = `flex items-center gap-2 ${wrap} ${width}`;
   return (
     <div className={className === undefined ? own : `${own} ${className}`} data-row-slot="">
@@ -251,7 +256,8 @@ export interface ControlRowProps {
    *  does not fit that line is listed in the panel its `+N more` opens, never wrapped onto a
    *  further line. With none the row is its first line alone. */
   readonly chips?: ReactNode;
-  /** The page's own controls, such as the Inbox's **Mark all read**. */
+  /** The page's own controls, such as the Inbox's **Mark all read**. One of them marked
+   *  `data-row-line` takes a line of its own at the end of the first line while it is drawn. */
   readonly children?: ReactNode;
   /** The caller's outer layout alone - where the row sits on the page, and what space it keeps
    *  from what is above and below it. The order inside it is the row's. */
@@ -296,6 +302,12 @@ export interface ControlRowProps {
  *   that wrap is there before any narrowing, since no chip is in that line;
  * - every slot of the first line lays its own nodes out in one line in a row that wide, so a
  *   slot handed more to draw grows sideways, never downward;
+ * - but one control a page marks `data-row-line` - the priorities table's open New priority form,
+ *   which its reader opens - takes a line of its own: while it is drawn, the first line wraps at
+ *   every width and the slot of the page's own controls draws no box (`contents`), so its
+ *   controls are items of the first line and the marked one, at the line's end and as wide as
+ *   the line by its own classes (`order-last basis-full`), stands under the others rather than
+ *   run the row past its width. No narrowing, panel, menu or selection draws one;
  * - the chips line is drawn only while there is a chip, and it never wraps: its tallest item is
  *   one control, 44 px (32 px from `md` at the compact size), so it adds that line and the
  *   row's 8 px gap - 52 px - and nothing else moves. The line draws the chips that fit it, from
@@ -486,9 +498,11 @@ export function ControlRow({
       {/* One line in a row 40rem wide or more, by the row's own width; in a narrower row - a
           phone's, or the Inbox drawer's at any window - the line wraps, because a search box
           holding three characters beside a trigger is no search box. A row whose search box
-          takes a line of its own (`searchLine`) wraps below 61rem, the search box above. */}
+          takes a line of its own (`searchLine`) wraps below 61rem, the search box above. While
+          the page's own slot holds a control marked `data-row-line`, the line wraps at every
+          width, so that control takes a line of its own. */}
       <div
-        className={`flex min-w-0 flex-wrap items-start gap-2 ${searchLine ? "@min-[61rem]:flex-nowrap" : "@min-[40rem]:flex-nowrap"}`}
+        className={`flex min-w-0 flex-wrap items-start gap-2 has-[>[data-row-slot]>[data-row-line]]:flex-wrap ${searchLine ? "@min-[61rem]:flex-nowrap" : "@min-[40rem]:flex-nowrap"}`}
       >
         <Slot className={searchLine ? "@max-[61rem]:basis-full" : undefined} gives>
           {search}
