@@ -31,8 +31,8 @@ function textCounts(texts: TextCounts): string {
 
 /**
  * What Dispatch read of a form no text breaks: the count of each kind of text, or, when it read no
- * text of any kind, that it decided nothing about the form of `name`. Dispatch reads no list of
- * terms yet (form slice 2 reads it), so the line names no terms.
+ * text of any kind, that it decided nothing about the form of `name`. The line names no terms:
+ * `dispatch spec-form --terms` prints the list of terms of the root (`termLines`).
  */
 function readLine(texts: TextCounts, name: string, version: number): string {
   const read = Object.values(texts ?? {}).reduce((sum, count) => sum + count, 0);

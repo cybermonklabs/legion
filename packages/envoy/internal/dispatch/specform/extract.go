@@ -279,19 +279,20 @@ func (e *extraction) container(nodes []*pmdoc.Node, container string, termsLevel
 // heading reads a heading, with the blocks after it in its container: the heading Terms opens a
 // Terms part, which the next heading of its level or above closes, a heading that reads as Terms
 // in another form is a text of Kind heading, and a heading of a component or an interface is a
-// name, with the paragraph right under it as its purpose.
+// name, with the paragraph right under it as its purpose. Whether a heading reads as Terms is
+// decided on its words as the page shows them, with no mark of code font or of emphasis.
 func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 	level := pmdoc.HeadingLevel(node)
 	if e.termsLevel > 0 && level <= e.termsLevel {
 		e.termsLevel = 0
 	}
 	heading := e.read(node.Children)
-	if heading.words == "Terms" {
+	if heading.shown == "Terms" {
 		e.termsLevel = level
 		return
 	}
-	if readsAsTerms(heading.words) {
-		e.add(fmt.Sprintf("%q", heading.words), KindHeading, heading.words, Held{}, nil)
+	if readsAsTerms(heading.shown) {
+		e.add(fmt.Sprintf("%q", heading.shown), KindHeading, heading.words, Held{}, nil)
 		return
 	}
 	component := componentHeading.FindStringSubmatch(heading.words)

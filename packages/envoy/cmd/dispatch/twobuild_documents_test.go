@@ -558,7 +558,7 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 // that this build reads. The previous build knows no root of The Spec: its move takes no lock of a
 // list and writes the issue and its events alone. This build orders each definition of a root's
 // list by when it joined the list, the later of its approval and the event of the move that
-// brought it under the root, and both builds write that event (api/spec_form.go,
+// brought it under the root, and both builds write that event (api/spec_terms.go,
 // approvedSpecTexts). The row: through this build the person approves lease outside the root
 // first, then another definition under the root; the previous build then moves the first issue
 // under the root, and moves the keeper to a level inside the root. This build's list keeps the

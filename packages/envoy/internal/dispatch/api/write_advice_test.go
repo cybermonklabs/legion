@@ -987,7 +987,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example",
+		Store: database, Events: broker, Origins: testOrigins,
 	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {

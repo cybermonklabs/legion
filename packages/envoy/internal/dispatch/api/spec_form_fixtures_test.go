@@ -18,7 +18,8 @@ import (
 // The fixtures of the form tests (spec_form_*_test.go): the tree of issues under a named root, the
 // requests and answers of each approval route, the fixture texts of v-form and of a procedure with
 // the refusal that each gives, and the state that a refused write must leave as it was. The route
-// assertions are in spec_form_routes_test.go.
+// assertions are in spec_form_routes_test.go, and those of the list of terms in
+// spec_form_terms_routes_test.go.
 
 // formIssue is an issue the form tests made, with its spec.
 type formIssue struct {

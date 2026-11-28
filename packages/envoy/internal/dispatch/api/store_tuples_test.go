@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs/refstest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // TestTheStoreHoldsNodesAndAppendedTuples is this half of the check
@@ -394,7 +395,7 @@ func requireADeletedBlockStaysGone(t *testing.T, database *store.Store, artifact
 			t.Fatalf("begin the index of version %d: %v", version, err)
 		}
 		defer tx.Rollback(ctx)
-		_, won, written, err := refs.IndexBlocks(ctx, tx, artifactID, version, time.Now().UTC(), markdown, blocks, nil, nil, "")
+		_, won, written, err := refs.IndexBlocks(ctx, tx, artifactID, version, time.Now().UTC(), markdown, blocks, nil, nil, text.Origins{})
 		if err != nil {
 			t.Fatalf("index version %d: %v", version, err)
 		}

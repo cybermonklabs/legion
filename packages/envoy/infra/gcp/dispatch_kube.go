@@ -694,15 +694,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// window: a pod still being sent requests still answers them, and the image
 	// (debian:bookworm-slim) carries /bin/sleep. The kubelet spends the hook and the signalled
 	// shutdown inside the one terminationGracePeriodSeconds, so a wait is taken out of the
-	// server's shutdown unless the pod's budget covers both: the 35 s below is these 5 s of
-	// routing window plus the 30 s cmd/dispatch/shutdown.go builds its shutdown for
-	// (stopGrace = 30 * time.Second). The two values are coupled and neither may be raised alone; a
-	// wait the grace period does not cover spends the document service's five-second reserve and
-	// kills a write still waiting on a lock mid-commit.
-	// The listener's container waits the same 5 s for the same reason (sleepPreStop); the front
+	// server's shutdown unless the pod's budget covers both: the wait is preStopSeconds (5 s of
+	// routing window by default) and the grace period terminationGracePeriodSeconds (35 s by
+	// default), which newDispatchDrain refuses under that wait plus the 30 s
+	// cmd/dispatch/shutdown.go builds its shutdown for (stopGrace = 30 * time.Second, copied as
+	// dispatchStopGraceSeconds). So the wait is raised only beside a grace period that covers it,
+	// while a longer grace period may be set alone; a wait the grace period does not cover would
+	// spend the document service's five-second reserve and kill a write still waiting on a lock
+	// mid-commit.
+	// The listener's container waits its own 5 s for the same reason (sleepPreStop); the front
 	// door's tailscale container drains the Tailscale Service and logs its node out instead
 	// (tailnetPreStop).
-	appPreStop := sleepPreStop(5)
+	appPreStop := sleepPreStop(s.preStopSeconds)
 	// The app's container alone carries the broker relay and the GitHub App: the listener and the
 	// front door take neither.
 	appEnv := corev1.EnvVarArray{
@@ -720,13 +723,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// without it names no identity mode, and Dispatch keeps its default. DISPATCH_SERVER_URL is the
 	// address a reader is sent back to, so it is the url output's own derivation (serverURL) and
 	// never a second spelling of it.
-	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
-	// that only with signInPasskey, which needs outsideOrigin, so a deployment that sets none of the
-	// outside inputs renders byte for byte what it always rendered. DISPATCH_PARENT_STATUS_RULE=on
-	// comes next, only with parentStatusRule, in every mode: it is no sign-in setting, and after the
-	// origins it moves none of the variables above it. DISPATCH_LEGION_STATUS_SCOPE=on comes after
-	// it, or in its place without parentStatusRule, only with legionStatusScope and in every mode,
-	// for the same reasons.
+	// DISPATCH_SERVED_ORIGINS and then DISPATCH_FORMER_ORIGINS follow it, each only with a list to
+	// render; DISPATCH_OUTSIDE_ORIGIN follows them only with outsideOrigin, and
+	// DISPATCH_SIGNIN_PASSKEY follows that only with signInPasskey, which needs outsideOrigin; then
+	// DISPATCH_TRUSTED_PROXY_RANGES, only with trustedProxyRanges, in every mode. So a deployment
+	// that sets none of these inputs renders byte for byte what it always rendered.
+	// DISPATCH_PARENT_STATUS_RULE=on comes next, only with parentStatusRule, in every mode: it is
+	// no sign-in setting, and after the origins it moves none of the variables above it.
+	// DISPATCH_LEGION_STATUS_SCOPE=on comes after it, or in its place without parentStatusRule,
+	// only with legionStatusScope and in every mode, for the same reasons.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
@@ -743,11 +748,20 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
 	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
+	if len(s.servedOrigins) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_SERVED_ORIGINS", strings.Join(s.servedOrigins, ",")))
+	}
+	if len(s.formerOrigins) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_FORMER_ORIGINS", strings.Join(s.formerOrigins, ",")))
+	}
 	if s.outsideOrigin != "" {
 		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
 		if s.signInPasskey {
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"))
 		}
+	}
+	if len(s.trustedProxyRanges) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_TRUSTED_PROXY_RANGES", strings.Join(s.trustedProxyRanges, ",")))
 	}
 	if s.parentStatusRule {
 		appEnv = append(appEnv, valueEnv("DISPATCH_PARENT_STATUS_RULE", "on"))
@@ -918,7 +932,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appReady := readyProbe(8766, 10, 3, 3)
 	appReady.InitialDelaySeconds = pulumi.Int(5)
 	appPod := corev1.PodSpecArgs{
-		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
+		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(s.graceSeconds), EnableServiceLinks: pulumi.Bool(false),
 		InitContainers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("cloud-sql-proxy"), Image: pulumi.String(s.images.proxy), RestartPolicy: pulumi.String("Always"),

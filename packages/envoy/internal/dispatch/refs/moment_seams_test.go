@@ -228,8 +228,8 @@ func TestANewItemPlanBoundToAnItemIsThePlanOfThatItem(t *testing.T) {
 	createReferenceIssue(t, tx, "CORE-1", "CORE")
 
 	const body = "The first paragraph cites dispatch://CORE-2.\n\nThe second paragraph cites nothing."
-	located := text.ExtractAt(body, itemBlockServer)
-	plan, err := PlanNewItemIndex(ItemComment, body, itemBlockServer, located)
+	located := text.ExtractAt(body, testOrigins)
+	plan, err := PlanNewItemIndex(ItemComment, body, testOrigins, located)
 	if err != nil {
 		t.Fatalf("plan the body for a new item: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestANewItemPlanBoundToAnItemIsThePlanOfThatItem(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the index of comment %s: %v", item.id, err)
 		}
-		want, err := PlanItemIndex(index, ItemComment, item.id, body, itemBlockServer, item.at, located, nil)
+		want, err := PlanItemIndex(index, ItemComment, item.id, body, testOrigins, item.at, located, nil)
 		if err != nil {
 			t.Fatalf("plan the body for comment %s: %v", item.id, err)
 		}

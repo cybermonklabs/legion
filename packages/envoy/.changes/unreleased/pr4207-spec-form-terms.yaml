@@ -12,7 +12,11 @@ body: |-
   of its document from which each later approved version holds the term. Dispatch reads that move
   from the events of the issues, which each release writes for each move. So a move into the root,
   or inside it, changes no definition that the list holds, whichever release made the move. The
-  read of the other document names the listed one. When the document that the list keeps a term
+  read of the other document names the listed one. A judgment compares each definition with the
+  definition of its term that governs once the person approves the request: the first, in that
+  order, whose document the request does not name or names at a version that still defines the
+  term. So a request that drops the listed definition in one of its documents and adds the term in
+  another is judged against the definition that joined next. When the document that the list keeps a term
   from leaves the root, the list holds the definition that joined next. The name of a term is its
   bold text as the page shows it, so code font makes no second name. Dispatch compares the names
   of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run
@@ -31,8 +35,8 @@ body: |-
   definition. That holds until the person approves a version of the other document without the
   term. A line under a heading Terms that is no term line breaks it too. So does a
   heading whose text reads as Terms in another form, such as "## TERMS" or "## Terms:". Emphasis
-  is no part of that text, so
-  "## **Terms**" is the heading Terms. A line of the term-line form in another place is no
+  and code font are no part of that text, so "## **Terms**" and "## `Terms`" are the heading
+  Terms. A line of the term-line form in another place is no
   definition, and it adds no term. That holds also in a block quote, a list item, a callout, a
   decision block or a footnote. A line in code or in a table cell is no such line. It breaks the form when a
   definition defines its name. That is a term of the list, or a term line under Terms of any

@@ -64,13 +64,12 @@ func requireNoCarryOverATerm(t *testing.T, tree specFormTree, issue formIssue, w
 	t.Errorf("%s: the read of version 3 of %s names no second definition", why, issue.Key)
 }
 
-// The tester's TestTheCarryOfAnApprovalLetsNoSecondDefinitionOfAListedTermThroughFresh. X is
-// approved first, and Y, approved after it, holds zephyr in the list. The agent adds a decision
-// block to X whose option reads "- **zephyr**: …", and the person answers it. The version that the
-// answer writes defines zephyr again, so it takes no carried approval, and the list keeps Y's
-// definition: under Terms, as the tester wrote it, and under "## Wind", where the terms rule alone
-// refuses it. The control: under "## Wind", the same answer with a new name, sirocco, carries the
-// approval as before.
+// The carry of an approval lets no second definition of a listed term through. X is approved
+// first, and Y, approved after it, holds zephyr in the list. The agent adds a decision block to X
+// whose option reads "- **zephyr**: …", and the person answers it. The version that the answer
+// writes defines zephyr again, so it takes no carried approval, and the list keeps Y's definition:
+// under Terms, and under "## Wind", where the terms rule alone refuses it. The control: under
+// "## Wind", the same answer with a new name, sirocco, carries the approval as before.
 func TestTheAnswerCarryLetsNoSecondDefinitionOfAListedTermThrough(t *testing.T) {
 	for _, c := range []struct {
 		why, term, definition string
@@ -105,12 +104,12 @@ func TestTheAnswerCarryLetsNoSecondDefinitionOfAListedTermThrough(t *testing.T) 
 	}
 }
 
-// The tester's TestTheCarryOfAnApprovalLetsNoDocumentDefineATermTwiceFresh: a decision block
-// whose two options are two definitions of one new term. The version that the answer writes
-// defines the term two times, so it takes no carried approval: under Terms, as the tester wrote
-// it. Under "## Wind", an option that names a term that the spec defines under Terms carries no
-// approval either. The controls: under "## Wind", two options of one name that nothing defines
-// are prose, and two options of two names, carry the approval as before.
+// The carry of an approval lets no document define a term twice: a decision block whose two
+// options are two definitions of one new term. The version that the answer writes defines the term
+// two times, so it takes no carried approval: under Terms. Under "## Wind", an option that names a
+// term that the spec defines under Terms carries no approval either. The controls: under
+// "## Wind", two options of one name that nothing defines are prose, and two options of two names,
+// carry the approval as before.
 func TestTheAnswerCarryApprovesNoVersionThatDefinesATermTwice(t *testing.T) {
 	cold := termLine("bora", "The cold wind that falls from one mountain.")
 	for _, c := range []struct {

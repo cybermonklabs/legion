@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Kind is the kind of a text of The Spec.
@@ -138,14 +139,17 @@ type Term struct {
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
 // who signed in, the names of the system's components and interfaces that a person approved, the
-// server's address, and the pages of the server that show the document whose texts Check judges.
+// server's origins, and the pages of the server that show the document whose texts Check judges.
 type Context struct {
 	IsProjectKey func(key string) bool
 	PersonNames  []string // emails of signed-in people (people.email)
 	SystemNames  []string // approved component and interface names, which are nouns of the system
-	ServerURL    string
-	// Pages is each path of the dashboard that draws the document, under ServerURL, such as
-	// "/issues/ACME-1/spec" and "/issues/ACME-1/artifacts/spec" for a spec (text.DocumentPages):
+	// Origins is the server's origins, canonical first (text.ServerOrigins): a link at any of them
+	// is read as the record its page names, and an address with no scheme is read against the
+	// canonical one. The zero value names none, and a path is then read against a stand-in server.
+	Origins text.Origins
+	// Pages is each path of the dashboard that draws the document, under the canonical origin, such
+	// as "/issues/ACME-1/spec" and "/issues/ACME-1/artifacts/spec" for a spec (text.DocumentPages):
 	// each page reads an address with no scheme against itself. It is empty for texts of no one
 	// document of the server, such as the files of a tree.
 	Pages []string
@@ -194,11 +198,9 @@ func Check(ctx context.Context, c Context, in Input) ([]Finding, error) {
 			texts = append(texts, text)
 		}
 	}
-	read := len(texts)
 	for _, term := range in.Proposed {
-		texts = append(texts,
-			Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld},
-			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes})
+		name, definition := termTexts(term)
+		texts = append(texts, name, definition)
 	}
 	people := peopleNames(c, in)
 	notes := newFootnoteJudge(c, people, texts)
@@ -226,11 +228,18 @@ func Check(ctx context.Context, c Context, in Input) ([]Finding, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		name, definition := texts[read+2*at], texts[read+2*at+1]
+		name, definition := termTexts(term)
 		keep(name, breaks(c, people, name, notes))
 		keep(definition, append(terms.breaks(at, term, notes.sentences(definition.Notes)), breaks(c, people, definition, notes)...))
 	}
 	return findings, nil
+}
+
+// termTexts is the two texts of a proposed term that Check judges: its name, of Kind term, and its
+// definition, of Kind definition, each named by the term.
+func termTexts(term Term) (name, definition Text) {
+	return Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld},
+		Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes}
 }
 
 // oneLine is a text as ste-lint reads one line: its lines trimmed and joined by one space.

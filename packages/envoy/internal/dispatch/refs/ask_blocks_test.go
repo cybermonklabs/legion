@@ -18,8 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-const askPartServer = "https://dispatch.example"
-
 // askPartFixture opens a database, begins the transaction every assertion of a test reads, rolled
 // back when the test ends, and creates the issue its asks hang on.
 func askPartFixture(t *testing.T) pgx.Tx {
@@ -98,7 +96,7 @@ func indexAskPartsAt(t *testing.T, tx pgx.Tx, ask model.Ask, index int) []Target
 	if err != nil {
 		t.Fatalf("read the part index of ask %s: %v", ask.ID, err)
 	}
-	indexing, err := PlanAskParts(stored, NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer), ask, at)
+	indexing, err := PlanAskParts(stored, NewReader(ctx, tx, ask.Author, "ask", ask.ID, testOrigins), ask, at)
 	if err != nil {
 		t.Fatalf("index the parts of ask %s: %v", ask.ID, err)
 	}
@@ -506,7 +504,7 @@ func TestTheReconciliationIndexesAnAskOwedItsParts(t *testing.T) {
 	if want := []OwedItemBlock{{Kind: ItemAsk, ID: askID}}; !slices.Equal(owed, want) {
 		t.Fatalf("the items owed a block index = %v, want %v", owed, want)
 	}
-	indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], askPartServer)
+	indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], testOrigins)
 	if err != nil || !indexed {
 		t.Fatalf("index the owed ask = %v, %v; want it indexed", indexed, err)
 	}
@@ -517,7 +515,7 @@ func TestTheReconciliationIndexesAnAskOwedItsParts(t *testing.T) {
 	if again, err := OwedItemBlocks(ctx, database.Pool, 10); err != nil || len(again) != 0 {
 		t.Fatalf("the items owed after the index = %v, %v; want none", again, err)
 	}
-	if indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], askPartServer); err != nil || indexed {
+	if indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], testOrigins); err != nil || indexed {
 		t.Fatalf("index the ask again = %v, %v; want nothing indexed", indexed, err)
 	}
 }
@@ -572,7 +570,7 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 	ask := insertAsk(t, tx.Tx, "ACME-1", "Does #q1 still hold?", model.AskOption{Label: "Yes, as #q1 says"})
 
 	tx.queries = nil
-	reader := NewReader(ctx, tx, ask.Author, "ask", ask.ID, askPartServer)
+	reader := NewReader(ctx, tx, ask.Author, "ask", ask.ID, testOrigins)
 	replacement, err := PlanReplace(ctx, tx, "ask", ask.ID, text.Refs(reader.Mentions(ask.Question)), nil)
 	if err != nil {
 		t.Fatalf("plan the ask's question: %v", err)

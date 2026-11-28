@@ -923,7 +923,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 	}
 	// A reparent that brings covered documents under a root of The Spec changes the order of the
-	// root's list of terms (spec_form.go, approvedSpecTexts), which reads the move from this event.
+	// root's list of terms (spec_terms.go, approvedSpecTexts), which reads the move from this event.
 	// It takes the lock of the list it joins before its event, whose id then orders the arrival
 	// among the list's approvals.
 	if parentChanged {

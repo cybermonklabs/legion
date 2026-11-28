@@ -364,6 +364,32 @@ func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTerms(t *testing.T) {
 	}
 }
 
+// A heading in code font is the heading that the page shows: "## `Terms`" opens the part of Terms,
+// whose term line is a term, and "## `TERMS`" is a terms-heading finding named by the words the
+// page shows. Its body keeps the code font, as the body of every text does.
+func TestATermsHeadingInCodeFontIsReadAsThePageShowsIt(t *testing.T) {
+	got, err := ExtractDocument("spec.md", 12, "# Spec\n\n## `Terms`\n\n- **heartbeat**: A pulse of a pump.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Term{{Name: "heartbeat", Definition: "A pulse of a pump.", Where: where, NameHeld: Held{Shown: "heartbeat"}, DefinitionHeld: Held{Shown: "A pulse of a pump."}}}
+	if !reflect.DeepEqual(got.Terms, want) || len(got.Texts) != 0 {
+		t.Errorf("under ## `Terms`: Terms = %#v, Texts = %#v; want the term heartbeat and no text", got.Terms, got.Texts)
+	}
+	got, err = ExtractDocument("spec.md", 12, "# Spec\n\n## `TERMS`\n\n- **heartbeat**: A pulse of a pump.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := Text{Node: `"TERMS"`, Kind: KindHeading, Body: "`TERMS`", Where: where}
+	if len(got.Terms) != 0 || len(got.Texts) == 0 || !reflect.DeepEqual(got.Texts[0], text) {
+		t.Fatalf("under ## `TERMS`: Terms = %#v, Texts = %#v; want no term and first the heading text %#v", got.Terms, got.Texts, text)
+	}
+	detail := `it is no Terms heading, and a Terms heading has the form "## Terms" at any level`
+	if findings := check(planted(), Input{Texts: got.Texts[:1]}); !sameFindings(findings, []Finding{finding(text, "terms-heading", detail)}) {
+		t.Errorf("Check of the heading ## `TERMS` = %#v, want one terms-heading finding", findings)
+	}
+}
+
 // Under a heading Terms each line is a term line, so a decision block there breaks the form at its
 // question line, and the finding's detail tells the writer where the block goes: above the
 // heading, with the chosen definition under it after the answer. The control: the same block above
