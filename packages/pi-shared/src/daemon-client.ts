@@ -160,9 +160,12 @@ export interface LegionDaemonClient {
   /** `claim.ModelRequestsRequest`: a batch of the model requests of the sessions this host runs
    * for one launch of a claim, each under the id this host gave it
    * (`packages/pi-legion/src/model-requests.ts`). The answer is every id of the batch the daemon
-   * now holds (`LegionModelRequestsResponse`). */
+   * now holds (`LegionModelRequestsResponse`). `signal` aborts the request, its answer's body
+   * included: the reporter bounds each report's call and aborts it at its timeout
+   * (`MODEL_REQUEST_REPORT_TIMEOUT_MS`) rather than leave it open. */
   readonly modelRequests: (
-    input: z.input<typeof LegionModelRequestsRequest>
+    input: z.input<typeof LegionModelRequestsRequest>,
+    options?: { readonly signal?: AbortSignal }
   ) => Promise<z.output<typeof LegionModelRequestsResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
@@ -871,12 +874,13 @@ export function createLegionDaemonClient(
         LegionTurnOutcomeResponse,
         input
       ),
-    modelRequests: (input) =>
+    modelRequests: (input, options) =>
       post(
         "/legion/v1/claims/model-requests",
         LegionModelRequestsRequest,
         LegionModelRequestsResponse,
-        input
+        input,
+        options?.signal
       ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
     // async, so a request the contract refuses comes back as a rejected promise, not a throw.

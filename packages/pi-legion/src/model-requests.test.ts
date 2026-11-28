@@ -5,7 +5,9 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   createModelRequestsReporter,
+  MODEL_REQUEST_DUE_AFTER_MS,
   MODEL_REQUEST_REPORT_BOUND_MS,
+  MODEL_REQUEST_REPORT_TIMEOUT_MS,
   MODEL_REQUEST_SEND_MARGIN_MS,
   type ModelRequestCredential,
   type ModelRequestsReporter,
@@ -63,8 +65,9 @@ interface Rig {
  * The reporter over a stub daemon. `answer` answers each report of model requests, by the order it
  * arrived in, with the ids the daemon keeps, and defaults to every id of the batch; it may hold its
  * answer back by returning a promise, and `hold(ms)` resolves once `advance` has moved the clock
- * `ms` on, which holds the answer that long on the rig's clock. The clock and the timers are the
- * rig's: nothing waits on the wall clock.
+ * `ms` on, which holds the answer that long on the rig's clock, or rejects with the abort's reason
+ * once the report's request is aborted, as `fetch` does. The clock and the timers are the rig's:
+ * nothing waits on the wall clock.
  */
 function rig(
   options: {
@@ -84,17 +87,29 @@ function rig(
   const timers: { due: number; callback: () => void; cancelled: boolean }[] = [];
   /** How many answers the daemon holds on the rig's clock (`hold`). */
   let holding = 0;
-  const hold = (ms: number): Promise<void> => {
+  const hold = (ms: number, signal: AbortSignal | undefined): Promise<void> => {
     const held = Promise.withResolvers<void>();
     holding += 1;
-    timers.push({
+    const timer = {
       due: clock + ms,
       callback: () => {
         holding -= 1;
         held.resolve();
       },
       cancelled: false,
-    });
+    };
+    timers.push(timer);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        // An answer `advance` released already is no longer held.
+        if (timer.cancelled) return;
+        timer.cancelled = true;
+        holding -= 1;
+        held.reject(signal.reason);
+      },
+      { once: true }
+    );
     return held.promise;
   };
   const stub = (async (input, init) => {
@@ -106,7 +121,9 @@ function rig(
     }
     if (route !== "/legion/v1/claims/model-requests") throw new Error(`unexpected route ${route}`);
     attempts += 1;
-    if (options.answer !== undefined) return options.answer(body, attempts, hold);
+    if (options.answer !== undefined) {
+      return options.answer(body, attempts, (ms) => hold(ms, init?.signal ?? undefined));
+    }
     const requests = body.requests as { id: string }[];
     return Response.json({ kept: requests.map((request) => request.id) });
   }) as typeof fetch;
@@ -210,7 +227,7 @@ test("partial while active", async () => {
   const { reporter, batches, advance, now } = rig();
 
   reporter.messageEnded(role, answered(now()));
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS - 1);
+  await advance(MODEL_REQUEST_DUE_AFTER_MS - 1);
   expect(batches()).toEqual([]);
 
   await advance(1);
@@ -274,7 +291,7 @@ test("batch across minutes", async () => {
   const second = now();
   reporter.messageEnded(role, answered(second));
 
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS - 10_000 - 1);
+  await advance(MODEL_REQUEST_DUE_AFTER_MS - 10_000 - 1);
   expect(batches()).toEqual([]);
   await advance(1);
   const [batch] = batches();
@@ -307,7 +324,7 @@ test("a request read late goes by its own deadline, before the armed timer", asy
   expect(
     batches().map((batch) => (batch.requests as { id: string }[]).map(({ id }) => id).sort())
   ).toEqual([["req-1", "req-2"]]);
-  expect(now() - late).toBe(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS);
+  expect(now() - late).toBe(MODEL_REQUEST_DUE_AFTER_MS);
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
   expect(batches()).toHaveLength(1);
@@ -418,12 +435,10 @@ test("a report that falls due while another is on its way goes at once", async (
 
   const first = now();
   reporter.messageEnded(role, answered(first));
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS);
+  await advance(MODEL_REQUEST_DUE_AFTER_MS);
   // The first report reached the daemon at its request's end plus the bound less the margin, and
   // is held.
-  expect(reports).toEqual([
-    { ids: ["req-1"], sent: first + MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS },
-  ]);
+  expect(reports).toEqual([{ ids: ["req-1"], sent: first + MODEL_REQUEST_DUE_AFTER_MS }]);
 
   // The second request ended 12 s ago and is read only now: it falls due 3 s less the margin
   // from now.
@@ -466,10 +481,8 @@ test("the timer sends a request's report with room before the bound, for the sen
   expect(batches()).toHaveLength(1);
 });
 
-// The failure is the daemon's own 500, in its refusal shape: the shared restart retry
-// (`retryWhileDaemonRestarts`) asks again only an outage whose body is not the daemon's, such as a
-// proxy's page (`daemonUnreachable`), so this one comes back to the reporter, whose own wait is
-// what this case reads.
+// The daemon fails both reports with its own 500. Each report is one call, with no retry inside
+// it, so the failure comes back to the reporter, whose own wait is what this case reads.
 test("a failed batch waits before retrying and the earliest deadline goes first", async () => {
   const { reporter, batches, advance, now } = rig({
     credential: (session) => (session === ROLE_SESSION ? implementer : controller),
@@ -494,6 +507,67 @@ test("a failed batch waits before retrying and the earliest deadline goes first"
   expect(sessions().slice(2).sort()).toEqual([CONTROLLER_SESSION, ROLE_SESSION]);
   await advance(MODEL_REQUEST_REPORT_BOUND_MS);
   expect(sessions()).toHaveLength(4);
+});
+
+// S1 against a daemon that takes each report's connection and never answers, as a stalled or
+// restarting one does: each report's call is aborted `MODEL_REQUEST_REPORT_TIMEOUT_MS` after it
+// left, a failed call, so its requests go again under their ids a bound after the abort, and no
+// call leaves while one is open or while the hold after an aborted one holds sends: a stalled
+// daemon is never called in a loop. A turn runs on for two minutes, a request ending every 5 s, so
+// the timer falls due again and again; the run ends 30 s in and every 25 s after, each time in the
+// hold after an aborted call (from 24.75 s to 39.75 s, and every 25 s after).
+test("a report the daemon never answers is aborted at its timeout and goes again after the hold", async () => {
+  /** Each call: the ids it carries, and when it left and was aborted, on the rig's clock. */
+  const calls: { ids: string[]; sent: number; aborted?: number }[] = [];
+  let open = 0;
+  let mostOpen = 0;
+  const { reporter, advance, now, warned } = rig({
+    answer: async (body, _attempt, hold) => {
+      const call: (typeof calls)[number] = {
+        ids: (body.requests as { id: string }[]).map(({ id }) => id),
+        sent: now(),
+      };
+      calls.push(call);
+      open += 1;
+      mostOpen = Math.max(mostOpen, open);
+      // The daemon never answers: only the request's abort ends the hold, and rejects it.
+      await hold(Number.POSITIVE_INFINITY).catch((reason: unknown) => {
+        open -= 1;
+        call.aborted = now();
+        throw reason;
+      });
+      throw new Error("a daemon that never answers answered");
+    },
+  });
+
+  const runEnds = new Set([30_000, 55_000, 80_000, 105_000]);
+  for (let at = 0; at < 120_000; at += 5_000) {
+    reporter.messageEnded(role, answered(now()));
+    if (runEnds.has(at)) reporter.turnEnded();
+    await advance(5_000);
+  }
+  // The last call's abort.
+  await advance(MODEL_REQUEST_REPORT_TIMEOUT_MS);
+
+  // One call at a time: the first when its first request fell due, each after it a bound after the
+  // one before was aborted.
+  expect(mostOpen).toBe(1);
+  const cycle = MODEL_REQUEST_REPORT_TIMEOUT_MS + MODEL_REQUEST_REPORT_BOUND_MS;
+  expect(calls.map(({ sent }) => sent - START)).toEqual(
+    [0, 1, 2, 3, 4].map((index) => MODEL_REQUEST_DUE_AFTER_MS + index * cycle)
+  );
+  // Each call was aborted at its timeout, a failed call whose requests go again.
+  expect(calls.map(({ sent, aborted }) => (aborted ?? Number.NaN) - sent)).toEqual(
+    calls.map(() => MODEL_REQUEST_REPORT_TIMEOUT_MS)
+  );
+  expect(warned).toEqual(
+    calls.map(() => "legion: a report of model requests did not reach the daemon; it goes again")
+  );
+  // Each call carries again every id the one before carried.
+  for (const [index, call] of calls.entries()) {
+    const before = calls[index - 1];
+    if (before !== undefined) expect(call.ids).toEqual(expect.arrayContaining(before.ids));
+  }
 });
 
 test("an unanswered request expires without blocking fresh requests", async () => {
@@ -649,7 +723,7 @@ test("session inventory", async () => {
   // every request then.
   const during = now();
   endEach(during);
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS - MODEL_REQUEST_SEND_MARGIN_MS - 1);
+  await advance(MODEL_REQUEST_DUE_AFTER_MS - 1);
   expect(batches()).toEqual([]);
   await advance(1);
   expect(reported(0)).toEqual(want(during));
