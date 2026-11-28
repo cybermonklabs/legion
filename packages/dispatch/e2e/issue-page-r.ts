@@ -1045,7 +1045,8 @@ export async function closeRowMenu(page: Page, what: string): Promise<void> {
   await expect(rowMenu(page), `Escape leaves the menu of ${what} open`).toHaveCount(0);
 }
 
-/** Fails with `message` unless the open menu's entry `word` is grey, with `reason` in the menu. */
+/** Fails with `message` unless the open menu's entry `word` is grey, with `reason` in the menu
+ *  and on the entry itself. */
 export async function expectGrey(
   page: Page,
   word: string,
@@ -1054,6 +1055,7 @@ export async function expectGrey(
 ): Promise<void> {
   await expect(menuEntry(page, word), message).toHaveAttribute("aria-disabled", "true");
   await expect(rowMenu(page), message).toContainText(reason);
+  await expect(menuEntry(page, word), `${message}: the entry itself`).toContainText(reason);
 }
 
 /** Fails with `message` unless the open menu's entry `word` is drawn and not grey. */

@@ -7,6 +7,7 @@ import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
 import { useDocumentAdmissions } from "./document-admission";
+import type { MoveEntry } from "./graph-edit/placement";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { roomTarget, takesCaret, useRoomFacts } from "./model-rows/room-target";
@@ -23,7 +24,6 @@ import {
   holdEditorAtBlock,
   holdEditsToBlock,
   loadEditsHold,
-  type MoveEntry,
   putKeptCaret,
   selectInEditor,
   selectionIntoBlock,

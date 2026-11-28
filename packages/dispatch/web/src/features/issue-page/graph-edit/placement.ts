@@ -1,5 +1,4 @@
 import { blockFragment } from "../../refs/block-reference";
-import type { MoveEntry } from "../node-caret";
 import type { ANSWER_LINES } from "../page-words";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
@@ -43,6 +42,10 @@ export const ENTRIES = [
 ] as const satisfies readonly (keyof Placement)[];
 
 export type Entry = (typeof ENTRIES)[number];
+
+/** The four moves of a node that Graph's editor keys make (R4), as the node menu's entries name
+ *  them: Indent, Outdent, Move up and Move down. */
+export type MoveEntry = Extract<Entry, "indent" | "move_down" | "move_up" | "outdent">;
 
 /** The kinds Retype offers (R5), in order. `statement` is the tree read's supertag `requirement`. */
 export const RETYPE_KINDS = ["criterion", "statement", "check", "plan_task"] as const;

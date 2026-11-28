@@ -15,7 +15,6 @@ import { refreshQueries } from "../../../api/query-refresh";
 import { newSendKey } from "../../../lib/send-key";
 import { plainWrite, writesOf } from "../../writes/write-store";
 import type { Outline } from "../lenses/lens-reads";
-import type { MoveEntry } from "../node-caret";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { nextTreeCursor } from "../tree-read/tree-nodes";
 import {
@@ -29,6 +28,7 @@ import {
   type Entry,
   type GreyReason,
   type MoveBody,
+  type MoveEntry,
   names,
   type Place,
   type PlacementRow,
@@ -141,9 +141,12 @@ export interface RefusalContext {
 export interface NodeLine {
   readonly text: string;
   readonly container?: string;
-  readonly again?: () => Promise<MoveOutcome | DeleteOutcome>;
-  /** Whether `again` moves the node, a move or a new row's placing, and not a delete. */
-  readonly moves?: boolean;
+  readonly again?: {
+    /** Makes the act again. */
+    readonly act: () => Promise<MoveOutcome | DeleteOutcome>;
+    /** Whether `act` moves the node, a move or a new row's placing, and not a delete. */
+    readonly moves: boolean;
+  };
 }
 
 /** How a move ended: taken; refused, sent or with its page unread; or dropped unsent, with the
@@ -630,15 +633,18 @@ function refuse(client: QueryClient, chain: Chain, error: unknown): void {
   act.done({ line, status: "refused" });
   for (const move of dropped) move.done(DROPPED);
   if (line.reads) chain.reads = true;
-  const again =
-    act.kind === "move"
-      ? () => pressMove(client, chain.issue, chain.node, act)
-      : act.kind === "place"
-        ? () => placeNode(client, chain.issue, chain.node, act.body, act.entry)
-        : () => pressDelete(client, chain.issue, chain.node, act.count);
+  const again = {
+    act:
+      act.kind === "move"
+        ? () => pressMove(client, chain.issue, chain.node, act)
+        : act.kind === "place"
+          ? () => placeNode(client, chain.issue, chain.node, act.body, act.entry)
+          : () => pressDelete(client, chain.issue, chain.node, act.count),
+    moves: act.kind !== "delete",
+  };
   writeLine(client, chain, line.text, dropped.length, {
     ...(line.container === undefined ? {} : { container: line.container }),
-    ...(line.retry ? { again, moves: act.kind !== "delete" } : {}),
+    ...(line.retry ? { again } : {}),
   });
 }
 

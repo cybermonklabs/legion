@@ -11,6 +11,7 @@ import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { canHoldFocus } from "./focus-keeper";
+import type { MoveEntry } from "./graph-edit/placement";
 import { GRAPH_EDIT_META } from "./graph-edit/room-writes";
 import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
 
@@ -170,10 +171,6 @@ export const MAC_PLATFORM = /Mac|iP(hone|[oa]d)/;
 
 /** A place in the page, as each end of a selection is one. */
 export type Point = readonly [node: Node, offset: number];
-
-/** The four moves of a node that Graph's editor keys make (INFRA-5705's R4), as the node menu's
- *  entries name them (`graph-edit/placement.ts`): Indent, Outdent, Move up and Move down. */
-export type MoveEntry = "indent" | "move_down" | "move_up" | "outdent";
 
 /** The two keys of a new node that Graph's editor takes with the caret at the end of a block's
  *  text (INFRA-5705's R3): Enter, a new row below (`new_below`, the menu's entry), and

@@ -3,12 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
-import type { EndKey, MoveEntry } from "../node-caret";
+import type { EndKey } from "../node-caret";
 import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
 import type { EditedRow, MoveKeyBridge } from "../useNodeEditing";
 import { useNodeActs } from "./node-writes";
-import { isTyped, NOT_ADMITTED } from "./placement";
+import { isTyped, type MoveEntry, NOT_ADMITTED } from "./placement";
 import {
   type NodeDrawnRow,
   placementRowOf,

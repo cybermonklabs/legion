@@ -29,7 +29,6 @@ import {
   lensActFor,
   step,
 } from "../lenses/LensMenu";
-import type { MoveEntry } from "../node-caret";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, LENS_WORDS } from "../page-words";
 import { abortOnReaderAct } from "../useNodeEditing";
@@ -46,6 +45,7 @@ import {
   ENTRIES,
   type Entry,
   type GreyReason,
+  type MoveEntry,
   type Placement,
   RETYPE_KINDS,
   type RetypeKind,
@@ -208,7 +208,7 @@ function keepInView(
   edit: RowEdit,
   id: string,
   node: string,
-  moves: boolean
+  { moves }: { readonly moves: boolean }
 ): (outcome: MoveOutcome | DeleteOutcome) => void {
   const { key } = edit.outline.issue;
   const acts = abortOnReaderAct();
@@ -360,7 +360,7 @@ export function RowMenu({
   const pickMove = (entry: MoveEntry) => {
     if (readId === undefined) return;
     finish();
-    const kept = keepInView(client, edit, node.id, readId, true);
+    const kept = keepInView(client, edit, node.id, readId, { moves: true });
     void writes.move(readId, entry, edit.row).then(kept);
   };
 
@@ -760,12 +760,12 @@ export function RowEditLine({
   const own = editor?.lineOf?.(node);
   const line = written ?? (own === undefined ? undefined : { text: own });
   if (line === undefined) return null;
-  const { again, container, moves } = line;
+  const { again, container } = line;
   let press: (() => void) | undefined;
   if (again !== undefined && readId !== undefined) {
     press = () => {
-      const kept = keepInView(client, edit, node.id, readId, moves === true);
-      void again().then((outcome) => {
+      const kept = keepInView(client, edit, node.id, readId, again);
+      void again.act().then((outcome) => {
         if (outcome.status === "count_moved") edit.outline.confirmDelete(readId, outcome.count);
         kept(outcome);
       });
