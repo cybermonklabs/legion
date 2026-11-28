@@ -34,8 +34,8 @@ type podWorkspace struct {
 
 // newPodWorkspace provisions WIDGETS-42's workspace of acme/widgets with workspace.Provision and
 // the issue pod's source (workspace.ForIssuePod, with no repository cache), whose GitHub is a bare
-// remote of the test's own holding README.md on main. jj is the jj every command of the fixture
-// and the provision runs.
+// remote of the test's own holding README.md on main (provisionPodWorkspace). jj is the jj every
+// command of the fixture and the provision runs.
 func newPodWorkspace(t *testing.T, jj string) podWorkspace {
 	t.Helper()
 	root := t.TempDir()
@@ -56,6 +56,22 @@ func newPodWorkspace(t *testing.T, jj string) podWorkspace {
 	fixture.Run(seed, "git", "add", "README.md")
 	fixture.Run(seed, "git", "commit", "--quiet", "-m", "the default branch")
 	fixture.Run(seed, "git", "push", "--quiet", remote, "main")
+	return provisionPodWorkspace(t, jj, remote, 2*time.Minute)
+}
+
+// provisionPodWorkspace provisions WIDGETS-42's workspace of acme/widgets with workspace.Provision
+// and the issue pod's source (workspace.ForIssuePod, with no repository cache), whose GitHub is
+// remote, a bare repository holding main. budget is the provision runner's slow-command budget,
+// which bounds each of its commands but the shared clone's size-following steps and the
+// checkout, which take bounds of their own (workspace.CloneTimeout, workspace.CheckoutTimeout).
+// jj is the jj every command of the fixture and the provision runs.
+func provisionPodWorkspace(t *testing.T, jj, remote string, budget time.Duration) podWorkspace {
+	t.Helper()
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	// Provisioning reaches a remote over https alone (GIT_ALLOW_PROTOCOL=https on each process it
 	// starts), so its git is a wrapper that adds the file transport the stand-in remote takes.
@@ -73,7 +89,6 @@ func newPodWorkspace(t *testing.T, jj string) podWorkspace {
 		}
 		tools[name] = wrapper
 	}
-	const budget = 2 * time.Minute
 	run := podRunner{remote: remote, Runner: workspace.NewRunnerIn(fixtureenv.Isolated(home), budget, tools)}
 	logf := func(line string) { t.Logf("provisioning logged: %s", line) }
 	token := func() (string, error) { return "ghs_test", nil }
@@ -176,6 +191,15 @@ func (w podWorkspace) adopt(user string) {
 // the shim, whose log a caller reads.
 func (w podWorkspace) adoptWith(user, bin string, budget int) (shimwire.AdoptWorkingCopyResult, *running) {
 	w.t.Helper()
+	p, r := w.startShim(bin)
+	return w.askAdoption(p, user, budget), r
+}
+
+// startShim starts the real shim in the workspace, as a runtime starts one for a role, with bin
+// first on PATH, where the jj the shim runs is, and answers the daemon's end of its connection,
+// opened, and the shim, whose log a caller reads.
+func (w podWorkspace) startShim(bin string) (*peer, *running) {
+	w.t.Helper()
 	w.t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	path := socketPath(w.t)
 	daemon := listen(w.t, path)
@@ -186,12 +210,19 @@ func (w podWorkspace) adoptWith(user, bin string, budget int) (shimwire.AdoptWor
 	r := run(w.t, cfg, newClock())
 	p := daemon.accept(w.t)
 	p.open(w.t)
+	return p, r
+}
+
+// askAdoption sends the shim on p the adoption's frame, as the daemon does before a phase task,
+// under user's identity and within budget milliseconds, and answers the shim's result.
+func (w podWorkspace) askAdoption(p *peer, user string, budget int) shimwire.AdoptWorkingCopyResult {
+	w.t.Helper()
 	p.send(w.t, shimwire.AdoptWorkingCopy{ID: "adopt", JJUser: user, JJEmail: user + "@example.test", TimeoutMs: budget})
 	got, ok := p.next(w.t).(shimwire.AdoptWorkingCopyResult)
 	if !ok {
 		w.t.Fatalf("the shim answered %#v, want the adoption's result", got)
 	}
-	return got, r
+	return got
 }
 
 // The adoption snapshots nothing (--ignore-working-copy), so what a role wrote on disk and no jj
