@@ -30,10 +30,11 @@ import (
 // reads such a block as its text stands.
 //
 // It is one recursive statement for every block, which walks up each block's holders through
-// document_blocks's primary key and reads each holder's text through document_block_texts's, so a
-// request costs one statement however many blocks it reads, and no blocks cost none. The walk of
-// a block ends at a block at the document's top level, and at a block met twice (the statement's
-// cycle clause), so it ends even where the rows go round.
+// document_blocks's primary key, one lookup a step (the lateral's limit keeps the planner from
+// joining the whole table instead), and reads each holder's text through document_block_texts's,
+// so a request costs one statement however many blocks it reads, and no blocks cost none. The
+// walk of a block ends at a block at the document's top level, and at a block met twice (the
+// statement's cycle clause), so it ends even where the rows go round.
 func BlockContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (map[DocumentBlock][]string, error) {
 	if len(blocks) == 0 {
 		return nil, nil
@@ -50,7 +51,11 @@ func BlockContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (ma
 			union all
 			select chain.ordinality, d.artifact_id, d.block_id, d.parent_block_id, d.node_address is not null, chain.depth + 1
 			from chain
-			join document_blocks d on d.artifact_id = chain.artifact_id and d.block_id = chain.parent_block_id
+			cross join lateral (
+				select d.artifact_id, d.block_id, d.parent_block_id, d.node_address from document_blocks d
+				where d.artifact_id = chain.artifact_id and d.block_id = chain.parent_block_id
+				limit 1
+			) d
 		) cycle block_id set looped using path
 		select chain.ordinality,
 		       coalesce(array_agg(held.text order by chain.depth desc) filter (where chain.depth > 0), '{}')
@@ -140,9 +145,9 @@ func BlockContainersAt(ctx context.Context, q Queryer, block DocumentBlock, vers
 			where chain.to_kind = $4
 		)
 		select exists (
-		           select 1 from pinned
-		           join graph_tuples t on t.from_kind = $4 and t.from_id = pinned.blocks || $2 and t.kind = $5
-		             and t.at <= pinned.at
+		           select 1 from graph_tuples t
+		           where t.from_kind = $4 and t.from_id = (select blocks from pinned) || $2 and t.kind = $5
+		             and t.at <= (select at from pinned)
 		       ),
 		       exists (select 1 from chain cross join pinned where chain.to_kind = $6 and chain.to_id = pinned.ref_key)
 		         and not exists (select 1 from holders where holders.text is null),
