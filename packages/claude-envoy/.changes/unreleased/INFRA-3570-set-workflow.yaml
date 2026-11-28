@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: INFRA-3570
+body: |-
+  The plugin declares daemon API contract 145, which adds `POST /legion/v1/workflow`, the
+  architect's choice of the workflow an issue runs. The `legion` MCP tool is unchanged: it serves
+  the phase operations alone, and the architect's `set_workflow` is not one of them.

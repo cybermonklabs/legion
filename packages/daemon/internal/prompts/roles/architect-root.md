@@ -48,6 +48,10 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 `done`, so a child filed later leaves the root working beside its children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
+Where the root or a child of your decomposition will run a workflow other than its project's
+default, a sentence of that summary before its last names each such issue, the workflow it will
+run and your reason for it, so the person sees at the approval each issue that will not run the
+project's default.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
 to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
 admission slot, while you stay live to

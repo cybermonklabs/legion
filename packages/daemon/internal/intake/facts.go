@@ -941,6 +941,18 @@ type SignOff struct{ Issue string }
 
 func (SignOff) isFact() {}
 
+// SetWorkflow records an issue's architect choosing the sequence of phases the issue walks, by
+// its name in the library (phase.Sequences), and the reason it gives, before the issue's first
+// phase starts (dispatch://INFRA-3570). The workflow decides whether the project offers that
+// sequence and whether the issue's line is still open, and refuses it otherwise.
+type SetWorkflow struct {
+	Issue    string
+	Workflow string
+	Reason   string
+}
+
+func (SetWorkflow) isFact() {}
+
 // GateRegistered records a design document and its current version, with what register_gate read
 // of Dispatch's approval of it, so a person's review given before the architect registered is
 // applied at registration. ApprovedVersion is the version Dispatch showed approved, set only when

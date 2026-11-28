@@ -1,0 +1,14 @@
+kind: Added
+custom:
+  Issue: INFRA-3570
+body: |-
+  The `legion` tool's `set_workflow` (the architect's; `issue`, `workflow`, `reason`) sets the
+  workflow an issue runs, one of `default` (every phase), `light` (implementing, reviewing and
+  merging alone) and `no-planner` (every phase but planning), with `reason`, the architect's own
+  words for why, which the daemon keeps with the choice and shows in `legion state`. The daemon
+  refuses a name it does not know (`WORKFLOW_UNKNOWN`), a name the deployment does not offer the
+  issue's project (`WORKFLOW_NOT_OFFERED`: a project whose deployment lists no workflows runs only
+  `default`, so nothing changes until an operator opts the project in), and any name once the
+  issue's first phase has started (`WORKFLOW_AFTER_START`), so the architect sets it before it
+  releases the child or registers the gate; like `sign_off`, it waits out a daemon restart. The
+  plugin declares daemon API contract 145, which adds `POST /legion/v1/workflow`.

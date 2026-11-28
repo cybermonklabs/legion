@@ -95,6 +95,7 @@ function recordingDaemon(options: {
     "phaseBackward",
     "phaseRetry",
     "signOff",
+    "setWorkflow",
     "rootClose",
     "childPark",
     "childRerun",
@@ -190,6 +191,13 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
+  "set_workflow (issue, workflow, reason) sets the workflow an issue runs, one of default (every phase), light " +
+  "(implementing, reviewing and merging alone) and no-planner (every phase but planning), with reason, your own " +
+  "words for why it runs that one, which the daemon keeps with the choice and shows in legion state. The daemon " +
+  "refuses a name it does not know (WORKFLOW_UNKNOWN), a name the deployment does not offer the issue's project " +
+  "(WORKFLOW_NOT_OFFERED: a project whose deployment lists no workflows runs only default, so nothing changes until " +
+  "an operator opts the project in) and any name once the issue's first phase has started (WORKFLOW_AFTER_START), " +
+  "so set it before you release the child or register the gate. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, admission, each " +
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
@@ -287,6 +295,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "close_root",
         "park_child",
         "rerun_child",
+        "set_workflow",
         "read_record",
         "read_release_records",
         "handoff_complete",
@@ -330,9 +339,14 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     reason: {
       type: "string",
       description:
-        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
+        "close_root's, request_backward_move's, retry_or_escalate's and set_workflow's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it",
     },
     decision: { type: "string", enum: ["retry", "escalate"] },
+    workflow: {
+      type: "string",
+      description:
+        "set_workflow's workflow, the named sequence of phases the issue runs: default, light or no-planner",
+    },
     summary: { type: "string" },
     verdict: { type: "string", enum: ["pass", "pending", "fail"] },
     wake_at: { type: "string" },
@@ -634,6 +648,78 @@ test("retry_or_escalate takes a reason", async () => {
     isError: true,
     content: [{ type: "text", text: "retry_or_escalate requires reason" }],
   });
+  expect(calls).toHaveLength(before);
+});
+
+// The architect's set_workflow (dispatch://INFRA-3570) hands the daemon the issue, the workflow
+// and the reason it was given. The name is passed on unread, a name the daemon's library does not
+// hold included: that library is the one list of names, and its WORKFLOW_UNKNOWN refusal is what
+// the agent reads. The operation is an architect's alone, and a call that names no workflow or no
+// reason is refused before any grant is minted, as close_root's call without a reason is.
+test("set_workflow reaches the daemon with the issue, the workflow and the reason it was given", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const run = async (session: LegionToolSession, parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: noControllerGrant,
+      onPhaseCompleted: () => undefined,
+      onUpdateAnswered: () => undefined,
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", parameters, undefined, undefined, context());
+  const architect = claimSession("architect");
+  const reason = "a one-file change with no design question";
+
+  for (const workflow of ["light", "no-planner", "default", "lite"]) {
+    await expect(
+      run(architect, { op: "set_workflow", issue: "LEGION-209", workflow, reason })
+    ).resolves.toMatchObject({ details: {} });
+    expect(calls.at(-1)).toEqual([
+      "setWorkflow",
+      { grantId: "grant-208", issue: "LEGION-209", workflow, reason },
+    ]);
+  }
+
+  const before = calls.length;
+  const refusals = [
+    [{ op: "set_workflow", issue: "LEGION-209", reason }, "set_workflow requires workflow"],
+    [
+      { op: "set_workflow", issue: "LEGION-209", workflow: "light" },
+      "set_workflow requires reason",
+    ],
+    [
+      { op: "set_workflow", issue: "LEGION-209", workflow: "light", reason: "" },
+      "set_workflow requires reason",
+    ],
+    [
+      { op: "set_workflow", issue: "LEGION-209", workflow: "light", reason, note: "x" },
+      'set_workflow does not accept field "note"; it takes issue, workflow, reason',
+    ],
+  ] as const;
+  for (const [parameters, text] of refusals) {
+    await expect(run(architect, parameters)).resolves.toEqual({
+      content: [{ type: "text", text }],
+      details: {},
+      isError: true,
+    });
+  }
+  const refused: readonly LegionToolSession[] = [
+    claimSession("implementer"),
+    { kind: "controller", sessionID: "ses_controller" },
+  ];
+  for (const session of refused) {
+    await expect(
+      run(session, { op: "set_workflow", issue: "LEGION-208", workflow: "light", reason })
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [
+        { type: "text", text: `set_workflow is not available to a ${session.kind} session` },
+      ],
+    });
+  }
   expect(calls).toHaveLength(before);
 });
 

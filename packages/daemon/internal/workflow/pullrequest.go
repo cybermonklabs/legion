@@ -468,7 +468,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		}
 		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
 	}
-	row, ok := e.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	walks, err := e.sequenceOf(issue)
+	if err != nil {
+		return nil, err
+	}
+	row, ok := e.row(walks, issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}

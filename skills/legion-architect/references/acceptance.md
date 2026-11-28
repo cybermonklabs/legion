@@ -131,6 +131,11 @@ The daemon keeps this order from its fixed table; you start none of its steps:
 5. The merge lands under the repository's rules, the daemon reads it and closes the issue; a
    root's close waits until the rest of its tree has left the workflow.
 
+That order is the `default` workflow's. An issue on another workflow keeps its own workflow's
+order, which its workers' tasks list on their `Workflow:` line, and a step above whose phase that
+workflow does not hold does not happen for it (`skill://legion-architect` says how an issue's
+workflow is chosen and read).
+
 A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
 `retro` or `merging` the role holding the phase makes the `request_backward_move`.
 A merge the merger cannot make arrives while the merger holds `merging`, so the merger makes the

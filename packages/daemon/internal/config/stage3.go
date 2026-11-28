@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -98,6 +99,19 @@ type Project struct {
 	// role the file named when it opened keeps that role, and moving the key to off ends no
 	// check that is already open.
 	ProductionCheck claim.Role
+	// Workflow is `workflow`, the sequence of phases an issue of the project walks when its
+	// architect chose none (dispatch://INFRA-3570): a name of the compiled library
+	// (phase.Sequences), and empty for a project that names none, which runs the compiled default
+	// (phase.DefaultSequenceName). It decides the line of an issue whose first phase starts after a
+	// load, never one already running, whose record names the line it started on
+	// (record.Issue.Workflow).
+	Workflow string
+	// Workflows is `workflows`, the sequences the project's architects may choose for an issue
+	// with `set_workflow`, each a name of the library, in the file's order; nil when the file names
+	// none, which offers no choice at all, the default's own name included, so every issue of the
+	// project walks Workflow and this setting changes nothing until an operator opts the project
+	// in.
+	Workflows []string
 }
 
 // ProductionCheckOff is the one word of `production_check` that takes the check away, which the
@@ -266,7 +280,50 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, fmt.Errorf("%s.production_check must be %s or %s (got %q)", key, ProductionCheckOff, claim.RoleTester, word)
 		}
 	}
+	if workflow := fields["workflow"]; workflow != nil {
+		name, err := stringOf(workflow, key+".workflow")
+		if err != nil {
+			return Project{}, nil, err
+		}
+		if project.Workflow, err = workflowName(name, key+".workflow"); err != nil {
+			return Project{}, nil, err
+		}
+	}
+	if workflows := fields["workflows"]; workflows != nil {
+		if project.Workflows, err = readWorkflows(workflows, key+".workflows"); err != nil {
+			return Project{}, nil, err
+		}
+	}
 	return project, warnings, nil
+}
+
+// workflowName is name when the compiled library holds a sequence of that name, and a refusal
+// naming key, the library's names and the value otherwise, as `production_check` refuses a word
+// it does not take. A name is the library's or nothing: the daemon generates an issue's table
+// from the library's sequence of that name, and a line the library does not hold has no table.
+func workflowName(name, key string) (string, error) {
+	if _, ok := phase.SequenceFor(name); !ok {
+		return "", fmt.Errorf("%s must be one of %s (got %q)", key, strings.Join(phase.SequenceNames(), ", "), name)
+	}
+	return name, nil
+}
+
+// readWorkflows is a project's `workflows`: names of the library, each named once, in the file's
+// order. An empty list offers nothing, as an absent key does.
+func readWorkflows(value *yaml.Node, key string) ([]string, error) {
+	names, err := readStrings(value, key)
+	if err != nil || len(names) == 0 {
+		return nil, err
+	}
+	for index, name := range names {
+		if _, err := workflowName(name, fmt.Sprintf("%s[%d]", key, index)); err != nil {
+			return nil, err
+		}
+		if slices.Index(names, name) != index {
+			return nil, fmt.Errorf("%s names %s twice", key, name)
+		}
+	}
+	return names, nil
 }
 
 // readSlackChannels is a project's `slack_channels`: Slack channel ids, each named once. An empty

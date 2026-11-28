@@ -24,6 +24,7 @@ import {
   LegionReleaseRecordsRequest,
   LegionReleaseRecordsResponse,
   LegionRootCloseRequest,
+  LegionSetWorkflowRequest,
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
@@ -161,6 +162,11 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly signOff: (
     input: z.input<typeof LegionSignOffRequest>
+  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The architect's `set_workflow`: the named sequence of phases `issue` runs and its `reason`,
+   * which the daemon takes only before the issue's first phase starts (dispatch://INFRA-3570). */
+  readonly setWorkflow: (
+    input: z.input<typeof LegionSetWorkflowRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
@@ -302,14 +308,19 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * applies at most once however often it arrives may run through it: `handoff_complete` (a repeat
  * is answered HANDOFF_ALREADY_RECORDED, or, once the completion moved the issue, refused as no
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
- * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
- * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again) and
- * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
- * cell its first attempt wrote). `call` is the whole
- * operation, grant mint included, since grants live in the daemon's memory and do not survive
- * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
- * the dropped one may have been applied.
+ * nothing), `set_workflow` (a repeat names the same workflow and reason, which an issue whose
+ * first phase has not started already holds, so writing them again changes nothing, and an issue
+ * whose first phase has started refuses it as WORKFLOW_AFTER_START and changes nothing),
+ * `register_gate` (its fact is keyed by the gate's issue, generation, document, version and
+ * Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate takes as a
+ * re-registration of the same document and tells no one again) and `claims/turn-outcome` (one
+ * outcome per claim, generation and sequence, so a repeat writes the cell its first attempt
+ * wrote). `set_workflow` is in the set because it is safe there and is the step its next ones
+ * rest on: an architect sets the workflow just before it releases the child or registers the
+ * gate, and a call a restart refused that it does not make again before that step leaves the
+ * issue on the default workflow. `call` is the whole operation, grant mint included, since grants
+ * live in the daemon's memory and do not survive its restart. `onRetrying` is told once. A daemon
+ * refusal after a dropped attempt is told that the dropped one may have been applied.
  */
 export async function retryWhileDaemonRestarts<T>(
   label: string,
@@ -533,6 +544,8 @@ export function createLegionDaemonClient(
       post("/legion/v1/phase/retry", LegionPhaseRetryRequest, LegionEmptyResponse, input),
     signOff: (input) =>
       post("/legion/v1/signoff", LegionSignOffRequest, LegionEmptyResponse, input),
+    setWorkflow: (input) =>
+      post("/legion/v1/workflow", LegionSetWorkflowRequest, LegionEmptyResponse, input),
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childPark: (input) =>

@@ -91,8 +91,8 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // GitHub's own merge state for the head rides along on the same fact: it is what says whether
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
-// once the state is recorded - this read is the one that moves an approved issue to accepting, as
-// often as not. The base the read names is recorded with
+// once the state is recorded - this read is the one that moves an approved issue on from
+// reviewing, as often as not. The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
 // read that answers for a base push already recorded clears the push's mark, the two having been
@@ -803,11 +803,12 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 	return reason
 }
 
-// implementationReady moves issue from implementing to testing on the implementer's completion of
-// the round that row records, once the pull request pr is recorded open or merged
-// (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
-// reads no CI result: a settlement that arrived while the implementer worked moved nothing and
-// moves nothing now, since the roles were told what it said when it arrived (checks,
+// implementationReady moves issue on from implementing — to testing on the default sequence, to
+// the next phase of the issue's own sequence on another, reviewing on light — on the
+// implementer's completion of the round that row records, once the pull request pr is recorded
+// open or merged (TriggerImplementationReady: a record closed without merging, or none, moves
+// nothing). It reads no CI result: a settlement that arrived while the implementer worked moved
+// nothing and moves nothing now, since the roles were told what it said when it arrived (checks,
 // dispatch://INFRA-714/spec R1).
 func (e *Engine) implementationReady(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest) error {
 	return e.transition(ctx, tx, issue, TriggerImplementationReady, "", row, pr, "")

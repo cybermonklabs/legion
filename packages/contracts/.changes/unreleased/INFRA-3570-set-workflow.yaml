@@ -1,0 +1,7 @@
+kind: Added
+custom:
+  Issue: INFRA-3570
+body: |-
+  Daemon API contract 145: `LegionSetWorkflowRequest` is the request of `POST /legion/v1/workflow`
+  (`grantId`, `issue`, `workflow`, `reason`), the architect's choice of the workflow an issue runs
+  and its own words for why, and its answer is the empty body (`workflow.json`).

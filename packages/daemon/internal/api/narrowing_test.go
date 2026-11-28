@@ -239,22 +239,33 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
 	// that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(workflowContract-1))
 
-		if bytes.Contains(body, []byte(`"assignments"`)) {
-			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",
-				assignmentsContract, body)
+		if bytes.Contains(body, []byte(`"workflow"`)) || bytes.Contains(body, []byte(`"workflowReason"`)) {
+			t.Errorf("the body served to a pod below %d carries `workflow` or `workflowReason`, the keys that contract added: %s",
+				workflowContract, body)
 		}
-		want := narrowingsExpected(assignmentsContract - 1)
+		want := narrowingsExpected(workflowContract - 1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), assignmentsContract-1, len(want), narrowings)
+				len(narrowings), workflowContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
 			if line.Dropped != want[i] {
 				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
-					i, assignmentsContract-1, line.Dropped, want[i])
+					i, workflowContract-1, line.Dropped, want[i])
 			}
+		}
+	})
+
+	// The workflow line is named here as a literal for the reason the assignments line below is:
+	// a row taken out of stateNarrowings and its strip applied beside the loop would take the
+	// expectation of every test that reads the table with it, and only a literal fails.
+	t.Run("the workflow narrowing names its own keys in the log", func(t *testing.T) {
+		const dropped = "the issues' workflow and workflowReason"
+		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(workflowContract-1))
+		if len(narrowings) != 1 || narrowings[0].Dropped != dropped {
+			t.Fatalf("a caller at %d was served the lines %+v, want the one saying it dropped %q", workflowContract-1, narrowings, dropped)
 		}
 	})
 

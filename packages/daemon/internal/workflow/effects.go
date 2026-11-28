@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -898,8 +899,22 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	return text
 }
 
+// continueLine opens every task a phase worker is sent, a start's (task) and a resume's
+// (ResumePhaseTask): the issue, its phase and, for an issue whose sequence is not the default,
+// that sequence's line with the role of each phase (prompts.WorkflowLine), so the worker reads
+// which steps hold for its issue (dispatch://INFRA-3570). A worker is sent a task only for a
+// started phase, and the first move of an issue writes the sequence it resolved to onto the copy
+// this reads before the start builds its task (Engine.transition), so the issue's record names
+// its sequence here and the project's default is never needed; a record past admitted that names
+// none ran the compiled default, which prints no line, as a default issue's task never did.
 func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+	text := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+	if walks, ok := issue.Sequence(""); ok {
+		if line := prompts.WorkflowLine(walks); line != "" {
+			text += " " + line
+		}
+	}
+	return text
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""
@@ -937,9 +952,10 @@ func ChildReenteredNotice(child, root string) record.Notice {
 }
 
 // ChildStartedNotice is the notice the tree's architect is told whenever a child of it starts
-// its first phase (Engine.StartFirstPhase), its reason saying why it starts now. waited is every
-// issue the child's mirror row still names, in Dispatch's own order, all of them done by now:
-// the last of them closed, which is what freed the child.
+// its first phase (Engine.StartFirstPhase), first — planning on the default sequence, the first
+// phase of the child's own sequence on another (dispatch://INFRA-3570) — its reason saying why it
+// starts now. waited is every issue the child's mirror row still names, in Dispatch's own order,
+// all of them done by now: the last of them closed, which is what freed the child.
 //
 // Empty, the child's own links say nothing about why it starts, and the reason says what is true
 // of every child the line starts instead: it reached the front of the waiting line and took a
@@ -953,10 +969,10 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
 // with — the daemon's notice routing sends one on a non-root child to the architect that owns it
 // — and not phase-finished: no phase of the child ended, it is beginning its first.
-func ChildStartedNotice(child, root string, waited []string) record.Notice {
-	reason := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, root, strings.Join(waited, ", "))
+func ChildStartedNotice(child, root string, first phase.Phase, waited []string) record.Notice {
+	reason := fmt.Sprintf("%s starts %s under %s: every issue it waited on (%s) is done", child, first, root, strings.Join(waited, ", "))
 	if len(waited) == 0 {
-		reason = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", child, root)
+		reason = fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", child, first, root)
 	}
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }

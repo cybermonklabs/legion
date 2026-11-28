@@ -1923,4 +1923,36 @@ package api
 // line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 144
+//
+// 145: dispatch://INFRA-3570 -- an issue's workflow: the sequence of phases it walks, chosen from
+// the daemon's compiled library (`default`, the whole line; `light`, implementing, reviewing and
+// merging; `no-planner`, the whole line without planning), and generated into its transition
+// table (internal/workflow's TableOf). Three shapes of the wire change with it.
+//
+// `POST /legion/v1/workflow` is new, the route the `legion` tool's `set_workflow` action calls:
+// its request is `{grantId, issue, workflow, reason}` (api.SetWorkflowRequest), all four required,
+// and its answer is the empty body every other write answers (EmptyResponse). It is the owning
+// architect's, as `sign_off` is (architectForIssue, architectOwns), and it is refused 400
+// WORKFLOW_UNKNOWN, naming the library's names, for a name the library does not hold; 409
+// WORKFLOW_NOT_OFFERED, naming the project and the names it offers, which may be none, for a name
+// the project's `projects.<KEY>.workflows` does not list; and 409 WORKFLOW_AFTER_START, naming the
+// phase the issue stands in, once the issue's first phase has started — anywhere but admitted and
+// awaiting_person, held included. A plugin built from this commit calling it against a daemon
+// older than 145 is answered 404, which is why the action and the route ship under one number.
+//
+// The state's issue carries `workflow` and `workflowReason` (api.Issue), absent where the record
+// holds none, and the body served a caller below 145 carries neither (stateFor, withoutWorkflow).
+// A started phase worker's task names its issue's workflow on a `Workflow:` line when that is not
+// the default (internal/prompts' WorkflowLine), which a task never carried before: a task is text
+// a worker reads and no strictly parsed shape, so that line alone would bump nothing, and the
+// task of an issue on the default reads word for word as it did.
+//
+// The change carries one store migration beside it, `20261116035434`, which adds the two columns
+// the record's workflow and reason are read from; a migration moves the daemon's own record and is
+// no part of this number. The two per-project keys of `legion.yaml`, `workflow` and `workflows`,
+// are no part of it either: an earlier loader refuses each by name, so a file that sets them takes
+// them out before an earlier image is pinned, and a project that sets neither runs every issue on
+// the compiled default and offers no choice, exactly as before.
+// (This change took 145, the number above main's 144 at d5e2a5fe4f, for the spike of
+// dispatch://INFRA-3570, which is never pushed and read no open pull request's number.)
+const DaemonAPIVersion = 145

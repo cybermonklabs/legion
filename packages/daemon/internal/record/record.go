@@ -216,6 +216,30 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// Workflow is the name of the sequence of phases the issue walks (phase.Sequence, the library
+	// phase.Sequences holds), and WorkflowReason the reason its architect gave for choosing it
+	// (dispatch://INFRA-3570). The architect writes both with `set_workflow`, through the
+	// workflow's setWorkflow, and only while no phase of the issue has started (SequenceOpen):
+	// once the issue leaves admitted, its line is fixed, since a line changed under a running
+	// issue could leave it standing in a phase the new line does not walk, where no row moves it.
+	//
+	// The empty name chooses nothing: an issue standing at admitted runs its project's default
+	// (`projects.<KEY>.workflow`), and the compiled default (phase.DefaultSequenceName) where the
+	// project names none. The workflow's first move of the issue writes the name it resolved to
+	// here (workflow.Engine.transition), so a later change of the project's default never moves a
+	// running issue onto another line; that name carries no reason, since no architect gave one.
+	// An empty name on an issue already past admitted is a record written before this field
+	// existed, and it runs the compiled default, which is what it ran (Sequence).
+	//
+	// Both are the issue's work's, not one run's, so they go with the record across every new
+	// generation: a child handed over to a tree of its own carrying its phase keeps the line that
+	// phase stands in, which is the case that matters, since a cleared name would put the issue on
+	// another line in the middle of it (admit.Admission.readmit); a root re-admitted at admitted,
+	// a reopened child re-entered at admitted (workflow.Engine.ReenterChild) and a generation's
+	// cleared facts (Store.ClearGeneration) keep them too, and at admitted the architect may
+	// choose again before the new run's first phase starts.
+	Workflow       string
+	WorkflowReason string
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -2101,6 +2125,33 @@ func (i Issue) Standing() pods.Standing {
 // they say (blockers.Exempt); once it holds a slot, blockers.waitsOf reads its links like any
 // other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
+
+// SequenceOpen says whether the issue's sequence may still be chosen (Workflow): no phase of its
+// line has started, which is an issue standing at admitted or at awaiting_person, a root whose
+// architect waits on a person before the first phase (StandsAt). Every other place an issue
+// stands is on its line or past it — held among them, since a hold comes from a claim that
+// failed inside a started phase (workflow's claimFailed), and a hold released goes back to that
+// phase — and done, which a re-admission takes back to admitted before anything can start.
+func (i Issue) SequenceOpen() bool {
+	return StandsIn(i, phase.Admitted, phase.AwaitingPerson)
+}
+
+// Sequence is the line of phases the issue walks: the one its record names (Workflow), or, for a
+// record that names none, projectDefault while the issue's line is still open (SequenceOpen) —
+// the empty projectDefault being the compiled default — and the compiled default once it has
+// started, since a record past admitted with no name was written before the name existed and ran
+// the compiled default (Workflow says why the first move writes the name). It is false for a
+// name the library does not hold, which no route and no setting lets onto a record.
+func (i Issue) Sequence(projectDefault string) (phase.Sequence, bool) {
+	name := i.Workflow
+	if name == "" {
+		name = phase.DefaultSequenceName
+		if projectDefault != "" && i.SequenceOpen() {
+			name = projectDefault
+		}
+	}
+	return phase.SequenceFor(name)
+}
 
 // PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work
 // of issue, the record of the issue its claim works: the issue is in that phase and, for a task

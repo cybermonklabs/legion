@@ -289,14 +289,25 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		return
 	}
 	// The phase this completion is of is phase.Of's, and the issue's for the architect, which
-	// leaves none. The record a phase with a handoff ends with is read back and held to the
-	// completion before anything is recorded: always when the role works the issue's phase, and
-	// for a phase it left only when the completion names one. A completion of a left phase that
-	// names none is the engine's to decide (workflow's leftItsPhase), which answers
-	// HANDOFF_NOT_CURRENT_PHASE when the role's completion of that phase already stands or no role
-	// works the issue's phase. A phase that writes none takes no record, and a completion of such a
-	// phase that names one is refused.
-	of := phase.Of(grant.Role, issue.Phase)
+	// leaves none. It is read on the issue's own sequence, as the engine reads it (workflow's
+	// handoff), so the two hold the completion to one phase: the implementer's late completion is
+	// of retro only on a sequence that walks retro (dispatch://INFRA-3570). The project's default
+	// is not this route's to know, and Of needs none: the sequences answer differently only for an
+	// issue standing past implementing, which has started, so its record names its sequence or,
+	// written before the name existed, ran the compiled default (record.Issue.Sequence). A name
+	// the library does not hold is the engine's to refuse, and reads as the default here.
+	//
+	// The record a phase with a handoff ends with is read back and held to the completion before
+	// anything is recorded: always when the role works the issue's phase, and for a phase it left
+	// only when the completion names one. A completion of a left phase that names none is the
+	// engine's to decide (workflow's leftItsPhase), which answers HANDOFF_NOT_CURRENT_PHASE when the
+	// role's completion of that phase already stands or no role works the issue's phase. A phase
+	// that writes none takes no record, and a completion of such a phase that names one is refused.
+	walks, known := issue.Sequence("")
+	if !known {
+		walks = phase.DefaultSequence()
+	}
+	of := phase.Of(grant.Role, issue.Phase, walks)
 	if of == "" {
 		of = issue.Phase
 	}

@@ -208,6 +208,8 @@ var settingsExcluded = map[string]string{
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Project.Workflow":                "the project's default workflow, which a reader reads where it decides something: on each started issue's own `workflow` in the state, since the first move of an issue writes the workflow it resolved to (dispatch://INFRA-3570)",
+	"Project.Workflows":               "the workflows the project offers its architects, which `set_workflow`'s WORKFLOW_NOT_OFFERED names to the one reader who acts on it (dispatch://INFRA-3570)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"StallLimits.CallBound":           "derived: LEGION_STALL_CALL_BOUND_MS in the daemon's environment, not a legion.yaml key",
 	"StallLimits.CallGrace":           "derived: LEGION_STALL_CALL_GRACE_MS in the daemon's environment, not a legion.yaml key",

@@ -7,7 +7,13 @@ the pull request. Every path it cites is in cybermonklabs/legion.
 The order, in full: the tester's evidence green → the reviewer's approval of the head → the
 architect's acceptance, in `accepting` → retro → the merger's merge of the head it read, which
 closes the issue → the production check after the close, which the project's `production_check`
-setting gives to a role or takes away. Every handoff is a record on the Dispatch issue, never a
+setting gives to a role or takes away. That order is the `default` workflow's. The task of an
+issue on any other workflow carries a `Workflow:` line, which lists that issue's phases in order
+with the role of each and is the one list of its steps: a step above whose phase the line does not
+list (the tester's evidence is `testing`'s, the architect's acceptance `accepting`'s, retro
+`retro`'s) is no step of that issue's merge gate, and the section below on that step does not
+apply to it. A task with no `Workflow:` line is of an issue on the `default` workflow. Every
+handoff is a record on the Dispatch issue, never a
 commit, so the head that merges carries none. Retro commits nothing (*Retro*, below), so the
 approved head is the head that merges, and no Legion check holds the head that merges to the head
 the review approved in any case: a repository that wants its newest push reviewed says so in its

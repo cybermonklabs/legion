@@ -653,6 +653,18 @@ type Issue struct {
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
 	// the body the route serves a caller below 141 (stateFor, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
+	// Workflow is the name of the sequence of phases the issue walks (record.Issue.Workflow, one
+	// of the daemon's library: `default`, `light` or `no-planner`), and WorkflowReason the reason
+	// the issue's architect gave when it chose it with `set_workflow` (contract 145,
+	// dispatch://INFRA-3570). Workflow is absent for an issue whose record names none — one still
+	// at admitted that nobody chose for, which walks its project's default once it starts, and one
+	// recorded before the name existed, which walks the compiled default — and the record names
+	// the workflow an issue resolved to from its first move on, its project's default among them,
+	// with no reason, since no architect gave one. WorkflowReason is absent wherever no architect
+	// gave one. Both are absent from every issue of the body the route serves a caller below 145
+	// (stateFor, withoutWorkflow).
+	Workflow       string `json:"workflow,omitempty"`
+	WorkflowReason string `json:"workflowReason,omitempty"`
 }
 
 // AssignmentView is one experiment's answer for an issue as the state shows it

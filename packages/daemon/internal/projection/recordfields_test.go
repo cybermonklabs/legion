@@ -212,6 +212,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
 		},
 		HandoutSeq: 88, DeclaredSeq: 89, DeclaredAt: declaredAt,
+		Workflow: "light", WorkflowReason: "a one-line fix",
 	}
 	// The root the child reads its tree's facts from. It does not linger, a linger of the tree
 	// being what suppresses the hold's reason.
@@ -380,6 +381,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
 			"ancestry": issue.Ancestry,
+			"workflow": issue.Workflow, "workflowReason": issue.WorkflowReason,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

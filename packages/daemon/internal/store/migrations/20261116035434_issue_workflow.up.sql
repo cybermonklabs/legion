@@ -1,0 +1,34 @@
+-- 20261116035434_issue_workflow.up.sql — the line of phases an issue walks, and why its
+-- architect chose it (dispatch://INFRA-3570).
+--
+-- Before this release every issue walked one compiled line: planning, implementing, testing,
+-- reviewing, accepting, retro, merging. An issue's architect may now choose a lighter line from
+-- the daemon's library (internal/phase's Sequences: default, light, no-planner) with
+-- `set_workflow`, while no phase of the issue has started, and it gives a reason the state shows.
+-- workflow is the name of the line, and workflow_reason that reason.
+--
+-- The empty name is what every row this migration finds takes, and it is the truth about each of
+-- them: an issue still at admitted chose nothing, and runs its project's default, or the compiled
+-- default where the project names none; an issue past admitted ran the compiled default, which is
+-- the one line any daemon before this release could run, and the daemon reads its empty name so
+-- (record.Issue.Sequence). The first move this release makes of an issue writes the name the
+-- issue resolved to (workflow.Engine.transition), so a later change of a project's default never
+-- moves a running issue onto another line. The empty reason is the truth as well: no architect
+-- gave one. Nothing is backfilled, and no row's work changes.
+--
+-- Rolling the image back needs nothing: the release before this one neither selects nor writes
+-- either column, and both are not null with a default, so its own insert into issues still
+-- succeeds, and its update leaves both columns as they stand. Every issue that release runs
+-- walks the compiled default whatever its row names, so an issue an architect set onto another
+-- line walks the default under it from wherever it stands, which every phase of a lighter line
+-- is a phase of. Rolling forward again after it needs nothing either: an issue that release
+-- started from admitted keeps the empty name, which this release reads past admitted as the
+-- compiled default that issue ran, and an issue set onto a lighter line before the roll back
+-- resumes that line from the phase it stands in, which that line holds unless the release before
+-- moved it onto a phase only the default walks; such an issue stands where no row of its line
+-- moves it, and `update issues set workflow = 'default' where key = '<KEY>';` with the daemon
+-- stopped puts it back on the default. This directory keeps no down migrations, and dropping the
+-- columns by hand is `alter table issues drop column workflow, drop column workflow_reason;`
+-- with the daemon stopped.
+alter table issues add column workflow text not null default '';
+alter table issues add column workflow_reason text not null default '';

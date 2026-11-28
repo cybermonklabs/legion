@@ -38,6 +38,7 @@ func TestArchitectFactRoutesRejectMissingGrantID(t *testing.T) {
 		"/legion/v1/phase/backward",
 		"/legion/v1/phase/retry",
 		"/legion/v1/signoff",
+		"/legion/v1/workflow",
 		"/legion/v1/children/park",
 		"/legion/v1/children/rerun",
 	} {
