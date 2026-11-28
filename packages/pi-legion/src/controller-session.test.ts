@@ -75,7 +75,7 @@ interface Told {
 /** What `daemonLaunchedController`'s daemon and Envoy answer, each optional. */
 interface DaemonAnswers {
   readonly claims?: readonly EnvoyStep[];
-  readonly subscribe?: (topic: string) => Promise<void>;
+  readonly subscribe?: (topic: string, sessionID: string) => Promise<void>;
   readonly slackChannels?: string;
   readonly ready?: () => Response;
   readonly register?: () => Response | Promise<Response>;
@@ -89,14 +89,14 @@ interface DaemonAnswers {
  * `answers.slackChannels` as its LEGION_SLACK_CHANNELS, none by default), against a daemon that
  * answers its health, its registration and its ready, the last with `answers.ready` (a 204 by
  * default). Envoy's one bound instance answers each role claim with the next of `claims` and each
- * subscription with `subscribe` of its topic (both default to landing), recording each. The host's
- * stop is `answers.hostStop`; by default none has begun. Every exit is recorded, in `exits` and as
- * `exit <code>` on `answers.steps`, and `exited` settles at the first. The session takes each
- * message the process hands it unless `answers.tell` throws for it, which refuses it as
- * `pi.sendMessage` throws. Every line the Oh My Pi log takes, every message the session took
- * (`told`), every daemon route, role claim and subscription in the order they were asked
- * (`order`), and the session each subscription was asked for with its topic (`subscribedFor`) is
- * recorded too.
+ * subscription with `subscribe` of its topic and the session it names (both default to landing),
+ * recording each. The host's stop is `answers.hostStop`; by default none has begun. Every exit is
+ * recorded, in `exits` and as `exit <code>` on `answers.steps`, and `exited` settles at the first.
+ * The session takes each message the process hands it unless `answers.tell` throws for it, which
+ * refuses it as `pi.sendMessage` throws. Every line the Oh My Pi log takes, every message the
+ * session took (`told`), every daemon route, role claim and subscription in the order they were
+ * asked (`order`), and the session each subscription was asked for with its topic
+ * (`subscribedFor`) is recorded too.
  */
 function daemonLaunchedController(answers: DaemonAnswers) {
   process.env.LEGION_CONTROLLER = "1";
@@ -144,7 +144,7 @@ function daemonLaunchedController(answers: DaemonAnswers) {
       subscriptions.push(topic);
       subscribedFor.push(`${sessionID} ${topic}`);
       order.push(`subscribe ${topic}`);
-      await answers.subscribe?.(topic);
+      await answers.subscribe?.(topic, sessionID);
     },
     sessionID: () => CONTROLLER_SESSION,
   });
@@ -506,6 +506,7 @@ interface WatchedRun {
   readonly subscriptions: readonly string[];
   readonly order: readonly string[];
   readonly told: readonly Told[];
+  readonly subscribedFor: readonly string[];
   readonly exits: readonly number[];
 }
 
@@ -519,6 +520,19 @@ function toldWatched(run: WatchedRun): string[] {
   return run.told
     .filter(({ message }) => message.customType === WATCHED_NOTICE)
     .map(({ message }) => String(message.content));
+}
+
+/** The watched topics' subscriptions a row's controller asked Envoy for, in order, each with the
+ * session it named (`subscribedFor`). */
+function watchedFor(run: WatchedRun): string[] {
+  return run.subscribedFor.filter((each) =>
+    [NIGHTLY_SCHEDULE, NIGHTLY_DISPATCH].some((topic) => each.endsWith(` ${topic}`))
+  );
+}
+
+/** The lines a row's controller wrote to the Oh My Pi log at error level. */
+function errorLines(run: { readonly lines: readonly { readonly level: string }[] }) {
+  return run.lines.filter(({ level }) => level === "error");
 }
 
 /** A row's controller launched with a Slack channel, so its claim follows a Slack topic too. */
@@ -1021,18 +1035,37 @@ test("watched workflows: a topic told it waits is told it waits again in the ses
   }
 });
 
-// A `/new` or `/resume` ends the old session's watched task at once, before the re-claim queues.
-// An attempt of the old session's that was in flight at the change answers afterwards: pi-envoy
-// refuses it, since the context's session has moved, or answers it 503. Either way the pane's new
-// session is told no failure and no wait of that attempt, the old task asks for no topic left, and
-// the re-claim's own subscriptions, once it has registered, are told as any claim's are.
+/** `run`'s context on a pane whose one session manager answers `session()`, read live: Oh My Pi's
+ * `/new` and `/resume` move the manager every context of the pane already holds, in place, and
+ * the session change's re-claim runs only later (`afterSessionChange` in extensions/legion.ts). */
+function paneOn(run: { readonly context: SessionContext }, session: () => string): SessionContext {
+  return { ...run.context, sessionManager: { getSessionId: session } } as unknown as SessionContext;
+}
+
+/** pi-envoy's refusal of a notice subscription that names a session its context is no longer on
+ * (`subscribeNoticeNow` in packages/pi-envoy/extensions/envoy.ts): a plain `Error`, which is no
+ * 503, no refusal for the stop and none for a role no longer held. */
+const noActiveSession = (sessionID: string): Error =>
+  new Error(`Envoy has no active session for Legion notice subscription: ${sessionID}`);
+
+/** Envoy's subscriptions as pi-envoy's bridge answers them on a pane on `session()`: one that names
+ * another session is refused (`noActiveSession`), and one that names it is answered `answer`. */
+function servingOnly(session: () => string, answer: (topic: string) => Promise<void>) {
+  return (topic: string, sessionID: string): Promise<void> =>
+    sessionID === session() ? answer(topic) : Promise.reject(noActiveSession(sessionID));
+}
+
+// A session change's re-claim ends the watched task that exists as it starts, before it queues
+// behind the claim chain and registers. An attempt of that task in flight as the re-claim starts,
+// answered after that and before the re-claim registers, by pi-envoy's refusal or by a 503, tells
+// the pane nothing and logs nothing, and the old task asks for no topic left; the re-claim's own
+// subscriptions, once it has registered, are told as any claim's are. The old claim's context
+// here still reads the old session, so what ends the old task is that abort alone: the rows after
+// these move the context's session before any re-claim runs.
 for (const { answer, oldAnswer } of [
   {
     answer: "a refusal",
-    oldAnswer: () =>
-      new Error(
-        `Envoy has no active session for Legion notice subscription: ${CONTROLLER_SESSION}`
-      ),
+    oldAnswer: () => noActiveSession(CONTROLLER_SESSION),
   },
   { answer: "a 503", oldAnswer: withheld },
 ] as const) {
@@ -1120,6 +1153,207 @@ for (const { answer, oldAnswer } of [
     } finally {
       jest.useRealTimers();
       registration.resolve();
+      run.controller.stop();
+      run.stopSink();
+    }
+  });
+}
+
+// The host moves the pane's session manager first at a `/new` or `/resume`; the re-claim, whose
+// start aborts the old watched task, runs only after pi-envoy's own handler and the session's
+// title (`afterSessionChange` in extensions/legion.ts), and registers later still, if ever. In
+// between, the old task's attempts name a session pi-envoy no longer serves, and what the old task
+// tells reaches the session the pane is on now. So the task reads its claim's context at each
+// attempt, at each 503 and at each answer: once that context is on another session, it asks Envoy
+// nothing more, tells nothing, leaves what the process owes as it was, and ends. In each row below
+// the claim's context moves in place, and no re-claim runs until the row runs one.
+
+test("watched workflows: an old-session retry after a 503, due once the host moved the session and before the re-claim runs, is not made, tells the new session nothing and logs no error", async () => {
+  jest.useFakeTimers();
+  let session = CONTROLLER_SESSION;
+  const run = watchingController({
+    subscribe: servingOnly(
+      () => session,
+      (topic) => (topic === NIGHTLY_SCHEDULE ? Promise.reject(withheld()) : Promise.resolve())
+    ),
+  });
+  try {
+    await run.controller.handleSessionStart(paneOn(run, () => session));
+    await turnsUntil(() => run.lines.length > 0, "the old session's 503 log line", ROW_TURNS);
+    for (let spare = 0; spare < 20; spare++) await settled();
+    expect(toldWatched(run)).toEqual([expect.stringContaining(WITHHELD)]);
+    session = "ses_controller_after_new";
+    jest.advanceTimersByTime(120_000);
+    for (let spare = 0; spare < 50; spare++) await settled();
+
+    expect(watchedFor(run)).toEqual([`${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`]);
+    expect(run.told).toHaveLength(1);
+    expect(errorLines(run)).toEqual([]);
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
+// The landed notice the old session's wait promised is owed to whichever session the pane is on
+// once a subscription of the topic lands for it: an old-session subscription that lands after the
+// move tells nothing and leaves the notice owed, and the new session's re-claim tells it.
+test("watched workflows: an old-session subscription that lands after the host moved the session tells the new session nothing, and the new session's re-claim whose subscription lands tells it the topic landed", async () => {
+  jest.useFakeTimers();
+  let session = CONTROLLER_SESSION;
+  const oldAttempt = Promise.withResolvers<void>();
+  let scheduleAsks = 0;
+  const run = watchingController({
+    subscribe: servingOnly(
+      () => session,
+      (topic) => {
+        if (topic !== NIGHTLY_SCHEDULE) return Promise.resolve();
+        scheduleAsks += 1;
+        if (scheduleAsks === 1) return Promise.reject(withheld());
+        return scheduleAsks === 2 ? oldAttempt.promise : Promise.resolve();
+      }
+    ),
+  });
+  const pane = paneOn(run, () => session);
+  const after = "ses_controller_after_new";
+  try {
+    await run.controller.handleSessionStart(pane);
+    await turnsUntil(() => run.lines.length > 0, "the old session's 503 log line", ROW_TURNS);
+    jest.advanceTimersByTime(1_000);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_SCHEDULE) === 2,
+      "the old session's retry asked for",
+      ROW_TURNS
+    );
+    expect(toldWatched(run)).toEqual([expect.stringContaining(WITHHELD)]);
+    session = after;
+    oldAttempt.resolve();
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(run.told).toHaveLength(1);
+    expect(asked(run, NIGHTLY_DISPATCH)).toBe(0);
+
+    await run.controller.reclaimAfterSessionChange(pane);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 1,
+      "the re-claim's next watched topic asked for",
+      ROW_TURNS
+    );
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(watchedFor(run)).toEqual([
+      `${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`,
+      `${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`,
+      `${after} ${NIGHTLY_SCHEDULE}`,
+      `${after} ${NIGHTLY_DISPATCH}`,
+    ]);
+    const told = toldWatched(run);
+    expect(told).toHaveLength(2);
+    expect(told[1]).not.toContain(WITHHELD);
+    expect(told[1]).toContain(NIGHTLY_SCHEDULE);
+    expect(run.told.map(({ options }) => options)).toEqual([NO_TURN, NO_TURN]);
+    expect(errorLines(run)).toEqual([]);
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
+// A claim in flight at the change, past its role claim, finds the session moved once its notice
+// topic lands: the re-claim's abort found no watched task of it, and it starts none.
+test("watched workflows: a claim whose notice-topic subscription lands after the host moved the session asks for no watched topic for the old session", async () => {
+  let session = CONTROLLER_SESSION;
+  const notice = Promise.withResolvers<void>();
+  const run = daemonLaunchedController({
+    subscribe: servingOnly(
+      () => session,
+      (topic) => (topic === NOTICE_TOPIC ? notice.promise : Promise.resolve())
+    ),
+  });
+  try {
+    const claiming = run.controller.handleSessionStart(paneOn(run, () => session));
+    await until("the notice topic asked for", () => asked(run, NOTICE_TOPIC));
+    session = "ses_controller_after_new";
+    notice.resolve();
+    await settledWithin("the claim, once its notice topic landed", claiming);
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(run.subscribedFor).toEqual([`${CONTROLLER_SESSION} ${NOTICE_TOPIC}`]);
+    expect(run.posted).toContain("/legion/v1/claims/ready");
+    expect(run.told).toEqual([]);
+    expect(run.lines).toEqual([]);
+    expect(run.exits).toEqual([]);
+  } finally {
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
+// The old session's task is held on its first watched topic as the host moves the session, and
+// then that attempt answers. Whatever it answers, the task asks for no further topic, tells
+// nothing, and leaves nothing owed: the new session's re-claim, whose subscriptions all land at
+// their first try, tells nothing either.
+for (const { answer, oldAnswer } of [
+  { answer: "lands", oldAnswer: undefined },
+  { answer: "is answered 503", oldAnswer: withheld },
+  { answer: "is refused by pi-envoy", oldAnswer: () => noActiveSession(CONTROLLER_SESSION) },
+] as const) {
+  test(`watched workflows: an old-session task whose watched subscription, held as the host moves the session, then ${answer} asks for no further topic, tells nothing and leaves the new session's re-claim nothing to tell`, async () => {
+    jest.useFakeTimers();
+    let session = CONTROLLER_SESSION;
+    const oldAttempt = Promise.withResolvers<void>();
+    let scheduleAsks = 0;
+    const run = watchingController({
+      subscribe: servingOnly(
+        () => session,
+        (topic) =>
+          topic === NIGHTLY_SCHEDULE && ++scheduleAsks === 1
+            ? oldAttempt.promise
+            : Promise.resolve()
+      ),
+    });
+    const pane = paneOn(run, () => session);
+    const after = "ses_controller_after_new";
+    try {
+      await run.controller.handleSessionStart(pane);
+      await turnsUntil(
+        () => asked(run, NIGHTLY_SCHEDULE) === 1,
+        "the old session's first watched topic asked for",
+        ROW_TURNS
+      );
+      session = after;
+      if (oldAnswer === undefined) oldAttempt.resolve();
+      else oldAttempt.reject(oldAnswer());
+      for (let spare = 0; spare < 20; spare++) await settled();
+      jest.advanceTimersByTime(120_000);
+      for (let spare = 0; spare < 50; spare++) await settled();
+
+      expect(watchedFor(run)).toEqual([`${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`]);
+      expect(run.told).toEqual([]);
+      expect(errorLines(run)).toEqual([]);
+
+      await run.controller.reclaimAfterSessionChange(pane);
+      await turnsUntil(
+        () => asked(run, NIGHTLY_DISPATCH) === 1,
+        "the re-claim's last watched topic asked for",
+        ROW_TURNS
+      );
+      for (let spare = 0; spare < 20; spare++) await settled();
+
+      expect(watchedFor(run)).toEqual([
+        `${CONTROLLER_SESSION} ${NIGHTLY_SCHEDULE}`,
+        `${after} ${NIGHTLY_SCHEDULE}`,
+        `${after} ${NIGHTLY_DISPATCH}`,
+      ]);
+      expect(run.told).toEqual([]);
+      expect(errorLines(run)).toEqual([]);
+      expect(run.exits).toEqual([]);
+    } finally {
+      jest.useRealTimers();
       run.controller.stop();
       run.stopSink();
     }

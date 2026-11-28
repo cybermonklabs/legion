@@ -154,10 +154,10 @@ export function createControllerSession(
   // The watched topics whose landed notice this process owes: each one it told a session waits
   // after a 503 and has not yet told landed (`subscribeWatchedTopic`), with the session it told the
   // wait, or undefined once a failure other than a 503 followed it, so the next 503 tells it again.
-  // A later registration or a session change ends the watched task of the claim that told it, so
-  // the map is the process's: whichever claim's subscription of such a topic lands tells the
-  // session it landed, and a claim for a session the map does not name tells that session the
-  // topic waits.
+  // A later registration or a session change ends the watched task of the claim that told it, and
+  // a task whose claim's context moved to another session leaves the map as it is, so the map is
+  // the process's: whichever claim's subscription of such a topic lands tells the session it
+  // landed, and a claim for a session the map does not name tells that session the topic waits.
   const watchedToldWaiting = new Map<string, string | undefined>();
   // The watched subscriptions of the last claim that finished, which a later registration aborts,
   // and a session change's re-claim as it starts (`reclaimAfterSessionChange`): the claim they were
@@ -168,20 +168,26 @@ export function createControllerSession(
    * Subscribes this process's watched workflows for the session of a claim that has just finished
    * (`claimWith`), in a task the claim does not wait for (`subscribeWatchedTopics`). Each claim
    * subscribes the same list for its own session, as each claim subscribes the Slack channels. A
-   * later registration, a session change or the session's stop ends the task.
+   * later registration, a session change or the session's stop ends the task. `liveSession` reads
+   * the session the claim's context is on now: a claim that finds it moved off `sessionID` (a
+   * `/new` or `/resume` while the claim ran, past its role claim) starts no task, since the
+   * session change's re-claim found no task of this claim to end, and makes its own.
    */
   const subscribeWatchedWorkflows = (
     sessionID: string,
+    liveSession: () => string,
     claimToken: string,
     envoyContext: SessionContext | undefined,
     topics: readonly WatchedTopic[]
   ): void => {
+    if (liveSession() !== sessionID) return;
     const subscriptions = new AbortController();
     watchedSubscriptions = subscriptions;
     subscribeWatchedTopics(
       {
         pi,
         sessionID,
+        liveSession,
         claimToken,
         envoyContext,
         stopHeard: () => stopped.abort(),
@@ -644,8 +650,15 @@ export function createControllerSession(
     claimWidget = undefined;
     // The project's watched workflows, once the rest of the claim is done: after the ready, or
     // for the operator's controller after its notice topic, and in a task the claim does not wait
-    // for (`subscribeWatchedWorkflows`).
-    subscribeWatchedWorkflows(sessionID, registration.claimToken, envoyContext, watched);
+    // for (`subscribeWatchedWorkflows`). The claim's own context says which session the pane is on
+    // now, since `envoyContext` is undefined for a command's context.
+    subscribeWatchedWorkflows(
+      sessionID,
+      () => context.sessionManager.getSessionId(),
+      registration.claimToken,
+      envoyContext,
+      watched
+    );
   };
 
   /**
@@ -790,10 +803,13 @@ export function createControllerSession(
       }
       return;
     }
-    // The watched task running now, if any, was made for another session or transcript: its
-    // attempts name a session that Envoy may no longer serve, and what they are answered would be
-    // told to this session. So it ends here, not once the re-claim below has queued and
-    // registered, which it may never do; that re-claim makes its own once it has.
+    // A watched task that exists as this re-claim starts was made for another session or
+    // transcript, so it ends here rather than once the re-claim below has queued and registered,
+    // which it may never do; that re-claim makes its own once it has. This abort reaches only such
+    // a task, and the host moved the session before this runs: what keeps this session from
+    // hearing the old one's attempts, before this abort and after it, is that a watched task tells
+    // nothing once its claim's context is on another session (`subscribeWatchedTopic`), and that a
+    // claim in flight at the change starts none (`subscribeWatchedWorkflows`).
     watchedSubscriptions?.abort();
     watchedSubscriptions = undefined;
     const notices: { readonly message: string; readonly level: "info" | "warning" }[] = [];

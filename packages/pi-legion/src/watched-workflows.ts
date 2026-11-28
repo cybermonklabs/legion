@@ -26,6 +26,10 @@ interface WatchedClaim {
   readonly pi: PiApi;
   /** The session the controller's registration names. */
   readonly sessionID: string;
+  /** The session the claim's context is on now: its session manager's id, read live. The host
+   * moves it at a `/new` or `/resume`, before the session change's re-claim runs; once it is not
+   * `sessionID`, the task asks and tells nothing more (`subscribeWatchedTopic`). */
+  readonly liveSession: () => string;
   /** The role the claim took, which each watched subscription lasts as long as. */
   readonly claimToken: string;
   /** The context the claim hands Envoy's bridge with each of its own subscriptions. */
@@ -40,6 +44,16 @@ interface WatchedClaim {
    * it waits, and a claim tells its own session of a wait the map does not name that session for
    * (`subscribeWatchedTopic`). */
   readonly toldWaiting: Map<string, string | undefined>;
+}
+
+/** What a watched task's attempt throws, before it reaches Envoy, once the claim's context is on
+ * another session than the one the task subscribes for (`subscribeWatchedTopic`). */
+class SessionMovedError extends Error {
+  override readonly name = "SessionMovedError";
+
+  constructor(sessionID: string) {
+    super(`the pane moved off session ${sessionID}`);
+  }
 }
 
 /** The watched workflows `registration` names (`watchedWorkflows`), one topic per event of each
@@ -131,20 +145,33 @@ function tellWatched(pi: PiApi, content: string): void {
  * the stop, a session change or a later registration - nothing more is asked or said: an attempt
  * in flight at the abort says nothing whatever it is answered, a 503 included, since
  * `claimRoleAgainOnBusy` calls no `log` once the signal has aborted.
+ *
+ * At a `/new` or `/resume` the host moves the claim's context to another session first, and the
+ * session change's re-claim aborts `signal` only later, if it gets that far. So the task reads the
+ * context's session (`liveSession`) before each attempt, at each 503 and at each answer, at that
+ * moment: once it is not `sessionID`, the task speaks for a session the pane has left. It makes no
+ * attempt (the attempt throws `SessionMovedError` before it reaches Envoy), tells nothing, leaves
+ * `toldWaiting` as it was, so a landed notice it owed stays owed to the claim of the session the
+ * pane is on now, and ends, with one debug line where an attempt failed.
  */
 async function subscribeWatchedTopic(
-  { pi, sessionID, claimToken, envoyContext, stopHeard, toldWaiting }: WatchedClaim,
+  { pi, sessionID, liveSession, claimToken, envoyContext, stopHeard, toldWaiting }: WatchedClaim,
   { entry, event, topic }: WatchedTopic,
   signal: AbortSignal
 ): Promise<boolean> {
   const watched = `watched workflow ${entry}'s ${event} runs (topic ${topic})`;
+  const sessionMoved = (): boolean => liveSession() !== sessionID;
   try {
     await claimRoleAgainOnBusy(
-      () => subscribeLegionNotice(sessionID, topic, envoyContext, claimToken),
+      async () => {
+        if (sessionMoved()) throw new SessionMovedError(sessionID);
+        await subscribeLegionNotice(sessionID, topic, envoyContext, claimToken);
+      },
       { what: `subscription of ${watched}`, again: "subscribing it again" },
       {
         log: (line, error) => {
           logger.warn(`[legion] ${line}`);
+          if (sessionMoved()) return;
           if (toldWaiting.get(topic) === sessionID) return;
           toldWaiting.set(topic, sessionID);
           tellWatched(
@@ -157,6 +184,12 @@ async function subscribeWatchedTopic(
     );
   } catch (error) {
     if (signal.aborted) return false;
+    if (error instanceof SessionMovedError || sessionMoved()) {
+      logger.debug(
+        `[legion] the pane moved off session ${sessionID}, so that session's watched subscriptions end at the one of ${watched}, telling the session the pane is on now nothing; a claim of that session subscribes its own.`
+      );
+      return false;
+    }
     if (claimRefusedForStop(error)) {
       stopHeard();
       return false;
@@ -178,7 +211,7 @@ async function subscribeWatchedTopic(
     );
     return true;
   }
-  if (signal.aborted) return false;
+  if (signal.aborted || sessionMoved()) return false;
   if (toldWaiting.delete(topic)) {
     tellWatched(
       pi,
@@ -196,7 +229,8 @@ async function subscribeWatchedTopic(
  * an edge listener withheld its GitHub topics. The task subscribes `topics` one after the other
  * (`subscribeWatchedTopic`). A failure the task did not expect ends it with one error line, and
  * reaches the claim no more than the notices do (`tellWatched`). Once `signal` aborts (the stop, a
- * session change or a later registration), no further topic is asked for.
+ * session change or a later registration), or the claim's context is on another session
+ * (`subscribeWatchedTopic`), no further topic is asked for.
  */
 export function subscribeWatchedTopics(
   claim: WatchedClaim,
