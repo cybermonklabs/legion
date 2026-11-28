@@ -75,14 +75,7 @@ func TestRunJitteredWaitsMoreThanNineTenthsAndAtMostOneIntervalAfterEveryPass(t 
 					})
 				}()
 				time.Sleep(6 * interval)
-				cancel()
-				// A blocking receive would let a loop that ignored cancellation keep ticking.
-				synctest.Wait()
-				select {
-				case <-done:
-				default:
-					t.Fatal("RunJittered had not returned once its context ended")
-				}
+				stop(t, "RunJittered", cancel, done)
 
 				at := passes.times()
 				if len(at) < 6 {
@@ -192,25 +185,17 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 	const interval = 300 * time.Millisecond
 	const name = "issue-ask-repair"
 	first := tickDue.Add(interval)
+	database := storetest.Open(t)
 	t.Run("first tick", func(t *testing.T) {
 		t.Parallel()
-		leases := leasesOf(t, storetest.Open(t))
+		leases := leasesOf(t, database)
 		fake := clocktest.New(tickDue)
 		ran := make(chan time.Time, 1)
-		ctx, stop := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			duty.RunLeasedOn(ctx, fake, nil, leases, name, interval, duty.TickAfterInterval, func(context.Context) {
-				select {
-				case ran <- fake.Now():
-				default:
-				}
-			})
-		}()
-		t.Cleanup(func() {
-			stop()
-			testwait.Receive(t, "the fixed-cadence loop to return after cancellation", done)
+		startLeasedLoop(t, fake, nil, leases, name+"/first-tick", interval, func(context.Context) {
+			select {
+			case ran <- fake.Now():
+			default:
+			}
 		})
 
 		fake.AwaitArmedAt(t, "the first issue-ask-repair tick", first)
@@ -228,7 +213,7 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 
 	t.Run("cancel during the first pass", func(t *testing.T) {
 		t.Parallel()
-		leases := leasesOf(t, storetest.Open(t))
+		leases := leasesOf(t, database)
 		fake := clocktest.New(tickDue)
 		entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 		letPassReturn := sync.OnceFunc(func() { close(release) })
@@ -236,7 +221,7 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 		waitCtx := testwait.Context(t)
 		go func() {
 			defer close(done)
-			duty.RunLeasedOn(ctx, fake, nil, leases, name, interval, duty.TickAfterInterval, func(context.Context) {
+			duty.RunLeasedOn(ctx, fake, nil, leases, name+"/cancel", interval, duty.TickAfterInterval, func(context.Context) {
 				close(entered)
 				select {
 				case <-release:
@@ -250,15 +235,12 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 			testwait.Receive(t, "the loop to finish after releasing its first pass", done)
 		})
 
-		testwait.Until(t, "the first tick of the loop to cancel to arm before its pass starts", func() ([]time.Time, bool) {
-			select {
-			case <-entered:
-				t.Fatal("the loop entered its first pass before the test fired its first tick")
-			default:
-			}
-			armed := fake.Armed()
-			return armed, len(armed) == 1 && armed[0].Equal(first)
-		})
+		fake.AwaitArmedAt(t, "the first tick of the loop to cancel", first)
+		select {
+		case <-entered:
+			t.Fatal("the loop entered its first pass before the test fired its first tick")
+		default:
+		}
 		fake.Set(first)
 		testwait.Receive(t, "the first pass to enter", entered)
 		stop()

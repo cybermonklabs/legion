@@ -175,6 +175,7 @@ func RunLeasedAfterEachPass(ctx context.Context, leases Leases, name string, int
 func RunLeasedAfterEachPassOn(ctx context.Context, c clock.Clock, logger *slog.Logger, leases Leases, name string, interval time.Duration, pass func(context.Context, time.Duration) time.Duration) {
 	period := interval
 	due := c.Now()
+	var timer clock.Timer
 	for ctx.Err() == nil {
 		wait := interval
 		Exclusive(ctx, logger, leases, name, due, period, func(ctx context.Context) {
@@ -184,7 +185,11 @@ func RunLeasedAfterEachPassOn(ctx context.Context, c clock.Clock, logger *slog.L
 		if ctx.Err() != nil {
 			return
 		}
-		timer := c.NewTimer(wait)
+		if timer == nil {
+			timer = c.NewTimer(wait)
+		} else {
+			timer.Reset(wait)
+		}
 		select {
 		case <-ctx.Done():
 			timer.Stop()

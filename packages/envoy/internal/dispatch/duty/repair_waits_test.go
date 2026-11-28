@@ -57,6 +57,8 @@ func TestTheFiveMinuteReadsWaitAtMostFiveMinutesBetweenPasses(t *testing.T) {
 							duty.RunJittered(ctx, loop.interval, func() bool { return false }, func(context.Context, time.Time) { passes.record() })
 						}()
 						time.Sleep(20 * loop.interval)
+						// Inline rather than woken_test.go's stop, so this file still names only
+						// what the comment above lists and runs against an older build.
 						cancel()
 						synctest.Wait()
 						select {

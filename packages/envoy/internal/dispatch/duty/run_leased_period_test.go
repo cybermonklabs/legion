@@ -77,7 +77,7 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 		const periods = 7
 
 		gate := &periodGate{}
-		ctx, stop := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		booted := time.Now()
 		go func() {
@@ -90,13 +90,7 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 		// has run through every one of them half an interval past the last tick - a moment at
 		// which no tick is due, so the cancel races nothing.
 		time.Sleep((periods-1)*interval + interval/2)
-		stop()
-		synctest.Wait()
-		select {
-		case <-done:
-		default:
-			t.Fatal("RunLeasedUnderGate had not returned once its context ended")
-		}
+		stop(t, "RunLeasedUnderGate", cancel, done)
 
 		served := gate.periods()
 		first := duty.PeriodBoundary(booted, interval)

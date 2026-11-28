@@ -17,11 +17,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// startLoggedLeasedLoop starts a process with its own log and waits for it to stop at cleanup.
-func startLoggedLeasedLoop(t *testing.T, fake *clocktest.Fake, leases duty.Leases, name string, interval time.Duration, pass func(context.Context)) *logtest.Buffer {
+// startLeasedLoop runs the loop and waits for it to stop at cleanup.
+func startLeasedLoop(t *testing.T, fake *clocktest.Fake, logger *slog.Logger, leases duty.Leases, name string, interval time.Duration, pass func(context.Context)) {
 	t.Helper()
-	logs := &logtest.Buffer{}
-	logger := slog.New(slog.NewTextHandler(logs, nil))
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -30,8 +28,16 @@ func startLoggedLeasedLoop(t *testing.T, fake *clocktest.Fake, leases duty.Lease
 	}()
 	t.Cleanup(func() {
 		stop()
-		testwait.Receive(t, "the logged leased loop to return after cancellation", done)
+		testwait.Receive(t, "the leased loop to return after cancellation", done)
 	})
+}
+
+// startLoggedLeasedLoop starts a process with its own log and waits for it to stop at cleanup.
+func startLoggedLeasedLoop(t *testing.T, fake *clocktest.Fake, leases duty.Leases, name string, interval time.Duration, pass func(context.Context)) *logtest.Buffer {
+	t.Helper()
+	logs := &logtest.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	startLeasedLoop(t, fake, logger, leases, name, interval, pass)
 	return logs
 }
 

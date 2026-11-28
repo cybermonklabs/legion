@@ -192,16 +192,14 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	var (
 		lapsed bool
 		named  uuid.UUID
-		ahead  int64
 	)
 	if err := locker.QueryRow(ctx, `
-		select clock_timestamp() >= expires_at, holder, (extract(epoch from expires_at - clock_timestamp()) * 1000000)::bigint
-		from duty_holds where name = $1`, holdName).Scan(&lapsed, &named, &ahead); err != nil {
+		select clock_timestamp() >= expires_at, holder
+		from duty_holds where name = $1`, holdName).Scan(&lapsed, &named); err != nil {
 		t.Fatalf("read the row once Lost closed: %v", err)
 	}
-	margin := time.Duration(ahead) * time.Microsecond
 	if lapsed {
-		t.Fatalf("Lost closed %s after the row lapsed on the database's clock", -margin)
+		t.Fatal("the row had lapsed on the database's clock when Lost closed")
 	}
 	if named != holder {
 		t.Fatalf("the row names %s, want the holder %s: the loss must come from the deadline, not a take-over", named, holder)
@@ -209,7 +207,6 @@ func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	if got := hold.Deadline(); got.After(fake.Now()) {
 		t.Errorf("Lost is closed but the deadline %s is after the hold's clock at %s", got, fake.Now())
 	}
-	t.Logf("Lost closed %s before the row's expiry on the database's clock", margin)
 }
 
 // Release frees the name at once, so a standby takes it on its next try, and wakes every session
@@ -347,8 +344,8 @@ func TestHoldZeroRowRenewalClosesLost(t *testing.T) {
 // The second renewal stays unanswered until its context ends. All other statements reach the database.
 type unansweredRenewal struct {
 	duty.Holds
-	clock *clocktest.Fake
-	left  chan struct{}
+	clock      *clocktest.Fake
+	unanswered chan struct{}
 
 	mu   sync.Mutex
 	sent []time.Time
@@ -361,7 +358,7 @@ func (u *unansweredRenewal) Exec(ctx context.Context, sql string, args ...any) (
 		second := len(u.sent) == 2
 		u.mu.Unlock()
 		if second {
-			close(u.left)
+			close(u.unanswered)
 			<-ctx.Done()
 			return pgconn.CommandTag{}, ctx.Err()
 		}
@@ -387,7 +384,7 @@ func TestAHoldRenewsAgainAtOnceAfterARenewalDrawsNoAnswer(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	fake := clocktest.New(tickDue)
-	db := &unansweredRenewal{Holds: database.Pool, clock: fake, left: make(chan struct{})}
+	db := &unansweredRenewal{Holds: database.Pool, clock: fake, unanswered: make(chan struct{})}
 	opts := duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second, Clock: fake}
 	hold := mustTakeHold(t, db, uuid.New(), opts)
 
@@ -408,7 +405,7 @@ func TestAHoldRenewsAgainAtOnceAfterARenewalDrawsNoAnswer(t *testing.T) {
 
 	fake.AwaitArmedAt(t, "the second renewal", second)
 	fake.Set(second)
-	testwait.Receive(t, "the second renewal to reach the wrapper and draw no answer", db.left)
+	testwait.Receive(t, "the second renewal to reach the wrapper and draw no answer", db.unanswered)
 	fake.AwaitArmedAt(t, "the unanswered renewal's bound at 15 s", third)
 	fake.Set(third)
 
@@ -507,7 +504,7 @@ func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 func databaseNow(t *testing.T, database *store.Store) time.Time {
 	t.Helper()
 	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
+	if err := database.Pool.QueryRow(testwait.Context(t), `select now()`).Scan(&now); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
 	return now

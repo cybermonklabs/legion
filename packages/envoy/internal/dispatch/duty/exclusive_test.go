@@ -621,11 +621,7 @@ func TestExclusiveCountsALateTickInThePeriodItWasDueIn(t *testing.T) {
 // databasePeriodBoundary returns the start of the database's current period.
 func databasePeriodBoundary(t *testing.T, database *store.Store, period time.Duration) time.Time {
 	t.Helper()
-	var now time.Time
-	if err := database.Pool.QueryRow(testwait.Context(t), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database clock: %v", err)
-	}
-	return duty.PeriodBoundary(now, period)
+	return duty.PeriodBoundary(databaseNow(t, database), period)
 }
 
 // movePassBack moves every boundary recorded for name back by age, which is how a period that has

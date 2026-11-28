@@ -39,15 +39,16 @@ func runLoop(loop duty.WokenLoop, exclusive duty.ExclusiveFunc) (cancel context.
 	return cancel, finished
 }
 
-// stop checks that WokenLoop returns after cancellation without another wake or tick.
-func stop(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
+// stop checks that the loop returns after cancellation without another wake or tick.
+// A blocking receive would let a loop that ignored its cancel keep ticking until go test's alarm.
+func stop(t *testing.T, loop string, cancel context.CancelFunc, done <-chan struct{}) {
 	t.Helper()
 	cancel()
 	synctest.Wait()
 	select {
 	case <-done:
 	default:
-		t.Fatal("WokenLoop had not returned once its context ended")
+		t.Fatalf("%s had not returned once its context ended", loop)
 	}
 }
 
@@ -90,7 +91,7 @@ func TestAWokenLoopRunsOnceAtStartAndThenNothingWhileIdle(t *testing.T) {
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0)
 	})
 }
@@ -121,7 +122,7 @@ func TestAWokenLoopReportsIdleOnlyWithNothingOwedOrDue(t *testing.T) {
 		time.Sleep(time.Minute)
 		signal(wake)
 		time.Sleep(time.Minute)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 10*time.Second, time.Minute)
 		var reported []time.Duration
 		for _, at := range idles.times() {
@@ -156,7 +157,7 @@ func TestWakesInsideTheMinimumGapCollapseIntoOnePass(t *testing.T) {
 
 		signal(wake)
 		synctest.Wait()
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second, 20*time.Second)
 	})
 }
@@ -194,7 +195,7 @@ func TestAWakeDuringAPassEarnsAPassAfterIt(t *testing.T) {
 		signal(wake)
 		close(release)
 		time.Sleep(time.Minute)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second)
 	})
 }
@@ -218,7 +219,7 @@ func TestADueTimeAPassReturnsFiresOnce(t *testing.T) {
 			},
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 30*time.Second)
 	})
 }
@@ -250,7 +251,7 @@ func TestALaterPassesDueTimeReplacesTheEarlierOne(t *testing.T) {
 		time.Sleep(10 * time.Second)
 		signal(wake)
 		time.Sleep(2 * time.Hour)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 10*time.Second, 70*time.Second)
 	})
 }
@@ -275,7 +276,7 @@ func TestADueTimeWaitsOutTheMinimumGap(t *testing.T) {
 			},
 		}, noLease(t))
 		time.Sleep(time.Hour)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 		wantPassesAt(t, &passes, booted, 0, 5*time.Second, 10*time.Second)
 	})
 }
@@ -327,7 +328,7 @@ func TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns(t *testing.T) {
 			Pass:   func(context.Context) time.Time { passes.record(); return time.Time{} },
 		}, lease.exclusive)
 		time.Sleep(time.Hour)
-		stop(t, cancel, done)
+		stop(t, "WokenLoop", cancel, done)
 
 		lease.mu.Lock()
 		defer lease.mu.Unlock()
@@ -356,13 +357,7 @@ func TestAWokenLoopReturnsAtOnceWhenItsContextEnds(t *testing.T) {
 	returnsAtOnce := func(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
 		t.Helper()
 		synctest.Wait()
-		cancel()
-		synctest.Wait()
-		select {
-		case <-done:
-		default:
-			t.Fatal("the loop had not returned once its context ended")
-		}
+		stop(t, "WokenLoop", cancel, done)
 	}
 	idlePass := func(context.Context) time.Time { return time.Time{} }
 

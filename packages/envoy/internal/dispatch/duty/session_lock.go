@@ -46,7 +46,7 @@ var errLockNotHeld = errors.New("the unlock reports this session did not hold th
 // the unlock, and otherwise what failed, for the caller to log beside what the lock was for. conn
 // is released or closed whatever the answer, so the caller does not use it again.
 func FreeSessionLock(conn *pgxpool.Conn, unlock string, args ...any) error {
-	return freeSessionLock(clock.Real(), conn, nil, unlock, args...)
+	return FreeSessionLockOn(clock.Real(), conn, unlock, args...)
 }
 
 // FreeSessionLockOn is FreeSessionLock with the unlock and any connection close bounded on c.
@@ -72,6 +72,8 @@ func FreeSessionLockThenReset(conn *pgxpool.Conn, reset func(context.Context, *p
 	return freeSessionLock(clock.Real(), conn, reset, unlock, args...)
 }
 
+// freeSessionLock is FreeSessionLockThenReset with the bound of the unlock, the reset and the
+// close on c.
 func freeSessionLock(c clock.Clock, conn *pgxpool.Conn, reset func(context.Context, *pgx.Conn) error, unlock string, args ...any) error {
 	if conn.Conn().IsClosed() {
 		conn.Release()

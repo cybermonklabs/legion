@@ -29,7 +29,7 @@ func stepLeasedLoops(t *testing.T, step time.Duration, firesAfterStep int) []wal
 	pass := func(context.Context) {}
 	first := startLoggedLeasedLoop(t, fake, leasesOf(t, database), name, wallStepInterval, pass)
 	var second *logtest.Buffer
-	fire := func(step time.Duration) wallStepTick {
+	fire := func(wallOffset time.Duration) wallStepTick {
 		t.Helper()
 		loops := 1
 		var secondBefore int
@@ -46,7 +46,7 @@ func stepLeasedLoops(t *testing.T, step time.Duration, firesAfterStep int) []wal
 		if second != nil && second.Len() > secondBefore {
 			logs = second
 		}
-		return wallStepTick{wall: at.Add(step), leasedTick: nextLeasedTick(t, logs, name, "the wall-step tick")}
+		return wallStepTick{wall: at.Add(wallOffset), leasedTick: nextLeasedTick(t, logs, name, "the wall-step tick")}
 	}
 
 	ticks := []wallStepTick{fire(0)}
