@@ -48,5 +48,5 @@ func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testin
 	// the message given back and creates it again.
 	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	awaitRelayFrame(t, returned, stored, 20*time.Second)
+	waitForRelayEvent(t, returned, stored)
 }

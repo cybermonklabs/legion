@@ -1,14 +1,12 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -17,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -47,9 +46,8 @@ import (
 // and a topic under it is one the deployed stream captures and this build does not store. Each
 // step reports its own result, so a step that fails does not hide the steps after it.
 func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing.T) {
-	// Not parallel: it requires the listener's client to read a narrowing of the stream within 2 s,
-	// inside the 5 s a fenced filter write has (sessionConsumerCallTimeout), and holds a 500 ms
-	// quiet window after each consumer's wanted messages in which no other may arrive (delivered).
+	// Serial: step 5 reads the new subjects during the second pass of the write.
+	// The production fence still gives both passes a single wall-clock budget.
 	const (
 		teamT      = "notifications.team.t"
 		teamU      = "notifications.team.u"
@@ -67,7 +65,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	}
 	url := testnats.URL(t)
 	deployNewerBuildsStream(t, url, "notifications.x.*")
-	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithStreamSubjectsRefresh(100*time.Millisecond))
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1), bus.WithPromptReconnect())
 	if err != nil {
 		t.Fatalf("connect the listener: %v", err)
 	}
@@ -77,11 +75,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
 	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		relays.stop(ctx)
-	})
+	t.Cleanup(func() { testwait.Returns(t, "the session relays to stop", func() { relays.stop(testwait.Context(t)) }) })
 	registry := rig.harness.registry
 	raw := testnats.Connect(t, url)
 	t.Cleanup(raw.Close)
@@ -97,25 +91,25 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		t.Fatalf("the stream's subjects are %v, want the newer build's notifications.x.* among them", original.Config.Subjects)
 	}
 
-	// narrow narrows the named subjects as the quiesce does, leaving the others as they are, and
-	// waits until the listener's client has read it, judged on probe, within bound.
-	narrow := func(t *testing.T, probe string, bound time.Duration, subjects ...string) bool {
+	// An owning client reads the deployed subjects in its reconnect hook. Drive that
+	// read on this same client instead of waiting for its periodic refresh.
+	readCapture := func(t *testing.T, probe string, captures bool) {
+		t.Helper()
+		before := client.HookedConnectionEvents()
+		if err := client.Connection().ForceReconnect(); err != nil {
+			t.Fatalf("reconnect the listener to read the deployed subjects: %v", err)
+		}
+		testwait.Eventually(t, "the listener's reconnect hooks to read the deployed subjects", func() bool {
+			return client.HookedConnectionEvents() > before
+		})
+		if got := client.DeployedStreamCaptures(probe); got != captures {
+			t.Fatalf("the listener read deployed capture of %s as %t, want %t", probe, got, captures)
+		}
+	}
+	narrow := func(t *testing.T, probe string, subjects ...string) {
 		t.Helper()
 		bustest.NarrowStream(t, js, func(subject string) bool { return !slices.Contains(subjects, subject) })
-		deadline := time.Now().Add(bound)
-		for client.DeployedStreamCaptures(probe) {
-			if time.Now().After(deadline) {
-				t.Errorf("the listener's client did not read the narrowing of %v within %s", subjects, bound)
-				return false
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
-		return true
-	}
-	restore := func(t *testing.T, probe string) {
-		t.Helper()
-		bustest.RestoreStream(t, js, original.Config)
-		bustest.AwaitDeployedCapture(t, client, probe, true, 15*time.Second)
+		readCapture(t, probe, false)
 	}
 	register := func(t *testing.T, sessionID string, topics ...string) interestSubscribeAnswer {
 		t.Helper()
@@ -130,7 +124,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	}
 	rowHolds := func(t *testing.T, sessionID string, topics ...string) {
 		t.Helper()
-		row, _, err := registry.RefreshAt(context.Background(), sessionID)
+		row, _, err := registry.RefreshAt(testwait.Context(t), sessionID)
 		if err != nil {
 			t.Fatalf("read the interest row of %s: %v", sessionID, err)
 		}
@@ -149,42 +143,40 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 			}
 		}
 	}
-	// delivered pulls sessionID's consumer for the subjects of want messages, acking each, and
-	// then reads for half a second more.
-	delivered := func(t *testing.T, sessionID string, want int) []string {
+	// Pull through a marker stored after the messages under test. The consumer
+	// returns messages in stream order, so an extra match precedes the marker.
+	delivered := func(t *testing.T, sessionID, markerSubject string) []string {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
+		marker := listenerTestEnvelope(markerSubject, "narrowed-marker-"+sessionID)
+		ack, err := js.Publish(markerSubject, marshalListenerEnvelope(t, marker), natsgo.Context(ctx))
+		if err != nil {
+			t.Fatalf("store the marker for %s on %s: %v", sessionID, markerSubject, err)
+		}
 		pull, err := rig.consumers.Pull(ctx, sessionID)
 		if err != nil {
 			t.Fatalf("pull the consumer of %s: %v", sessionID, err)
 		}
 		defer pull.Stop()
 		var subjects []string
-		for len(subjects) < want+1 {
-			wait := 5 * time.Second
-			if len(subjects) >= want {
-				wait = 500 * time.Millisecond
-			}
-			next, cancelNext := context.WithTimeout(ctx, wait)
-			msg, err := pull.Next(next)
-			cancelNext()
+		for {
+			msg, err := pull.Next(ctx)
 			if err != nil {
-				break
+				t.Fatalf("read the consumer of %s through marker sequence %d: %v", sessionID, ack.Sequence, err)
 			}
-			subjects = append(subjects, msg.Subject)
 			if err := msg.Ack(); err != nil {
 				t.Fatalf("ack %s: %v", msg.Subject, err)
 			}
+			if msg.StreamSeq == ack.Sequence {
+				return subjects
+			}
+			subjects = append(subjects, msg.Subject)
 		}
-		return subjects
 	}
 
 	register(t, sesA, teamT, newerX)
 	filterHolds(t, "the first registration", sesA, teamT, newerX)
-	if !narrow(t, teamT, 15*time.Second, "notifications.team.>", "notifications.x.*") {
-		t.FailNow()
-	}
+	narrow(t, teamT, "notifications.team.>", "notifications.x.*")
 
 	t.Run("step 1, a registration while narrowed", func(t *testing.T) {
 		answer := register(t, sesA, teamT, newerX)
@@ -199,8 +191,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	})
 
 	t.Run("step 2, the rebuilds while narrowed", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		reads := 0
 		rig.deps.consumers.afterStoredRowRead = func() { reads++ }
 		defer func() { rig.deps.consumers.afterStoredRowRead = nil }()
@@ -251,7 +242,8 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 	})
 
 	t.Run("step 5, a narrowing between a fenced write's two passes", func(t *testing.T) {
-		restore(t, teamT)
+		bustest.RestoreStream(t, js, original.Config)
+		readCapture(t, teamT, true)
 		passes := 0
 		rig.deps.consumers.afterStoredRowRead = func() {
 			passes++
@@ -262,13 +254,14 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 					t.Errorf("store %s on %s's row: %v", teamU, sesA, err)
 				}
 			case 2:
-				// The correction pass's build, made with the narrowing read: at most 2 s of the
-				// fence's 5 s, so its own write keeps the rest.
-				narrow(t, teamT, 2*time.Second, "notifications.team.>", "notifications.x.*")
+				// The correction must build its filter from the newly narrowed subjects.
+				narrow(t, teamT, "notifications.team.>", "notifications.x.*")
 			}
 		}
-		rig.deps.consumers.storedFilterWrite(context.Background(), registry, sesA, "narrowed test")
-		rig.deps.consumers.afterStoredRowRead = nil
+		defer func() { rig.deps.consumers.afterStoredRowRead = nil }()
+		if err := rig.deps.consumers.storedFilterWrite(testwait.Context(t), registry, sesA, "narrowed test"); err != nil {
+			t.Errorf("the fenced write did not settle: %v", err)
+		}
 		if passes != 2 {
 			t.Errorf("the fenced write made %d passes, want the write and its correction", passes)
 		}
@@ -277,9 +270,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 
 	t.Run("step 6, the agent subject narrowed too", func(t *testing.T) {
 		own := "notifications.agent.ACME." + sesC
-		if !narrow(t, contracts.LegacyAgentSubject(sesC), 15*time.Second, "notifications.agent.>") {
-			return
-		}
+		narrow(t, contracts.LegacyAgentSubject(sesC), "notifications.agent.>")
 		if answer := register(t, sesC, own); notRegistered(answer, sesC, own) {
 			t.Errorf("warnings %q name %s, the session's own agent subject", answer.Warnings, own)
 		}
@@ -294,10 +285,10 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 				t.Fatalf("store a message on %s after the restore: %v", subject, err)
 			}
 		}
-		if got := delivered(t, sesA, len(published)); !slices.Equal(got, published) {
+		if got := delivered(t, sesA, contracts.LegacyAgentSubject(sesA)); !slices.Equal(got, published) {
 			t.Errorf("the consumer of %s delivered %v, want %v", sesA, got, published)
 		}
-		if got := delivered(t, sesB, 1); !slices.Equal(got, []string{teamT}) {
+		if got := delivered(t, sesB, contracts.LegacyAgentSubject(sesB)); !slices.Equal(got, []string{teamT}) {
 			t.Errorf("the consumer of %s delivered %v, want %v", sesB, got, []string{teamT})
 		}
 	})
@@ -318,8 +309,7 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 		if _, err := kv.Put(sesD, earlier); err != nil {
 			t.Fatalf("store %s's row as an earlier build stored it: %v", sesD, err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		if _, outcome, _ := rig.deps.consumers.storedFilterStep(ctx, registry, sesD, "narrowed test"); outcome != filterWriteLanded {
 			t.Errorf("storedFilterStep for %s answered %v, want a write that landed", sesD, outcome)
 		}
@@ -335,11 +325,8 @@ func TestASessionKeepsAStoredTopicInItsFilterWhileTheStreamIsNarrowed(t *testing
 				t.Fatalf("store a message on %s: %v", subject, err)
 			}
 		}
-		if got, want := delivered(t, sesD, 2), []string{lane, teamV}; !slices.Equal(got, want) {
+		if got, want := delivered(t, sesD, contracts.LegacyAgentSubject(sesD)), []string{lane, teamV}; !slices.Equal(got, want) {
 			t.Errorf("the consumer of %s delivered %v, want %v", sesD, got, want)
 		}
 	})
 }
-
-// natsgoUnused keeps the natsgo import for the JetStream context type the rig reads through.
-var _ natsgo.JetStreamContext

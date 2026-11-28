@@ -1,15 +1,82 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+func subscribeExceptionFrames(t *testing.T, client *bus.Client, subject string) <-chan *natsgo.Msg {
+	t.Helper()
+	received := make(chan *natsgo.Msg, 32)
+	sub, err := client.Conn.ChanSubscribe(subject, received)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", subject, err)
+	}
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	if err := client.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+		t.Fatalf("flush the exception subscription to %s: %v", subject, err)
+	}
+	return received
+}
+
+// exceptionFramesThroughMarker reads the exception subscription through a later publish
+// on the same connection. Call it after the handler returns or the durable has acknowledged.
+func exceptionFramesThroughMarker(t *testing.T, client *bus.Client, received <-chan *natsgo.Msg, topic string) []contracts.Envelope {
+	t.Helper()
+	subject := bus.ExceptionTopicPrefix + topic
+	marker := "test exception marker " + id.New()
+	if err := client.Conn.Publish(subject, []byte(marker)); err != nil {
+		t.Fatalf("publish the marker on %s: %v", subject, err)
+	}
+	var exceptions []contracts.Envelope
+	for {
+		msg := testwait.Receive(t, "the next exception frame through the marker on "+subject, received)
+		if msg.Subject == subject && string(msg.Data) == marker {
+			return exceptions
+		}
+		var exception contracts.Envelope
+		if err := json.Unmarshal(msg.Data, &exception); err != nil {
+			t.Fatalf("decode the exception on %s: %v", msg.Subject, err)
+		}
+		exceptions = append(exceptions, exception)
+	}
+}
+
+func requireFanoutException(t *testing.T, exceptions []contracts.Envelope, item contracts.Envelope, sessionID string) {
+	t.Helper()
+	if len(exceptions) != 1 {
+		t.Fatalf("the exception lane carried %d exceptions, want one delivery_failed for %s", len(exceptions), sessionID)
+	}
+	exception := exceptions[0]
+	if err := exception.Validate(); err != nil {
+		t.Fatalf("exception envelope validation: %v", err)
+	}
+	if exception.Source != "envoy" || exception.SourceEventID != item.EventID || exception.Topic != bus.ExceptionTopicPrefix+item.Topic {
+		t.Fatalf("exception source, source event and topic = %q, %q, %q; want %q, %q, %q",
+			exception.Source, exception.SourceEventID, exception.Topic, "envoy", item.EventID, bus.ExceptionTopicPrefix+item.Topic)
+	}
+	var got deliveryExceptionPayload
+	if err := json.Unmarshal([]byte(exception.Payload), &got); err != nil {
+		t.Fatalf("decode exception payload: %v", err)
+	}
+	want := deliveryExceptionPayload{
+		OriginalTopic: item.Topic, EventID: item.EventID, Reason: "delivery_failed",
+		RecipientSession: sessionID, PayloadSummary: item.PayloadSummary, Payload: item.Payload,
+		DedupeKey: item.DedupeKey, Source: item.Source, SourceSession: item.SourceSession,
+	}
+	if got != want {
+		t.Fatalf("delivery exception payload = %+v; want %+v", got, want)
+	}
+}
 
 // The fan-out reports its own refusal of a message on a followed topic for every recipient it
 // delivers to: a session on the core path and one whose entry is gone. Each refusal records its
@@ -103,12 +170,12 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 				// turns on the entry this path read -- an attempt record is left only for a
 				// session whose entry it read and nothing reaches (fanoutDelivery) -- so the
 				// message goes to the handler once that read answers, never on the write alone.
-				waitFor(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
+				testwait.Eventually(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 					_, err := harness.sessions.Get(sessionID)
 					return err == nil
 				})
 			}
-			probe := exceptionProbe(t, harness.client)
+			probe := subscribeExceptionFrames(t, harness.client, bus.ExceptionTopicPrefix+">")
 
 			handler := harness.handler
 			if tc.core {
@@ -117,16 +184,11 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 			item := listenerTestEnvelope(topic, "fanout-refusal-"+id.New())
 			item.Payload = tc.payload
 			handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-			if err := harness.client.Conn.Flush(); err != nil {
-				t.Fatalf("flush the exception the fan-out published: %v", err)
-			}
-
+			exceptions := exceptionFramesThroughMarker(t, harness.client, probe, topic)
 			if tc.wantException {
-				if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != sessionID {
-					t.Fatalf("the exception names recipient %q, want %q", recipient, sessionID)
-				}
-			} else {
-				noException(t, probe)
+				requireFanoutException(t, exceptions, item, sessionID)
+			} else if len(exceptions) != 0 {
+				t.Fatalf("the exception lane carried %d exceptions, want none", len(exceptions))
 			}
 			if harness.config.dedupeCache.Seen(item.DedupeKey, sessionID) {
 				t.Fatalf("the fan-out recorded %s as having taken a message it was refused", sessionID)
@@ -171,11 +233,11 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	// The attempt record this test is about is left only for a session whose entry the fan-out
 	// read, so the message goes to the handler once that read answers rather than on the write
 	// alone (the wait above the table).
-	waitFor(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
+	testwait.Eventually(t, "the seeded entry of "+sessionID+" to be readable", func() bool {
 		_, err := harness.sessions.Get(sessionID)
 		return err == nil
 	})
-	probe := exceptionProbe(t, harness.client)
+	probe := subscribeExceptionFrames(t, harness.client, bus.ExceptionTopicPrefix+">")
 
 	// The refusal: a delivery mode this entry does not advertise. The core lane carries it, as it
 	// carries every message such a session is fanned out, the durable path acknowledging a stored
@@ -184,22 +246,16 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	item.Payload = `{"delivery":{"mode":"btw"}}`
 	message := marshalListenerEnvelope(t, item)
 	harness.coreHandler(&natsgo.Msg{Data: message})
-	if err := harness.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the exception the fan-out published: %v", err)
-	}
-	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != sessionID {
-		t.Fatalf("the exception names recipient %q, want %q", recipient, sessionID)
-	}
+	requireFanoutException(t, exceptionFramesThroughMarker(t, harness.client, probe, topic), item, sessionID)
 	if !harness.config.attemptCache.Seen(item.DedupeKey, sessionID) {
 		t.Fatalf("the fan-out published the exception of %s and recorded no attempt for it: every redelivery inside the window raises another", sessionID)
 	}
 
 	// The identical message again, as a redelivery of the same stored copy reaches this listener.
 	harness.coreHandler(&natsgo.Msg{Data: message})
-	if err := harness.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the redelivery: %v", err)
+	if got := exceptionFramesThroughMarker(t, harness.client, probe, topic); len(got) != 0 {
+		t.Fatalf("the exception lane carried %d exceptions after an identical redelivery, want none", len(got))
 	}
-	noException(t, probe)
 	if logs := harness.logs.String(); !strings.Contains(logs, "listener attempt-dedupe skip") {
 		t.Fatalf("the redelivery of %s was not the attempt-dedupe skip:\n%s", sessionID, logs)
 	}
@@ -239,7 +295,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 			rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
 			relayed := "ses_consumer_mode_" + id.New()
 			topic := "notifications.github.acme.consumer-mode-" + id.New() + ".mention"
-			exceptions := exceptionProbe(t, rig.harness.client)
+			exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+">")
 
 			// The session under test: on consumer delivery, following the topic, and advertising
 			// no delivery mode at all.
@@ -259,7 +315,7 @@ func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
 			}
 			awaitFanoutFinished(t, rig, durable, ack.Sequence)
 
-			if reasons := deliveryExceptionsFor(t, exceptions, relayed, 2*time.Second); len(reasons) != 1 || reasons[0] != "delivery_failed" {
+			if reasons := deliveryExceptionsFor(t, rig.harness.client, exceptions, topic, relayed); len(reasons) != 1 || reasons[0] != "delivery_failed" {
 				t.Fatalf("the exception lanes carried %v for the session on consumer delivery, want one delivery_failed: its relay judges nothing, so the fan-out reports the refusal", reasons)
 			}
 			if rig.harness.config.attemptCache.Seen(item.DedupeKey, relayed) {
@@ -302,8 +358,8 @@ func TestTheRelaySendsAFollowedTopicTheDurablePathAlsoReads(t *testing.T) {
 	}
 
 	rig.relays.setOwned(true)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.receive(t, 1), item)
+	rig.noneThroughMarker(t, standIn, relayed)
 }
 
 // A message on a topic the session that published it follows is skipped for that session as an
@@ -328,7 +384,7 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 	other := "ses_echo_other_" + run
 	topic := "notifications.team.echo-" + run
 	standIn := startSessionStandIn(t, rig.url, other, answerDone)
-	exceptions := exceptionProbe(t, rig.harness.client)
+	exceptions := subscribeExceptionFrames(t, rig.harness.client, bus.ExceptionTopicPrefix+">")
 	for _, sessionID := range []string{sender, other} {
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", topic))
 		if entry := rig.entry(t, sessionID); entry.Delivery != session.DeliveryConsumer {
@@ -352,7 +408,7 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", sessionID)
 		}
 	}
-	if reasons := deliveryExceptionsFor(t, exceptions, sender, 2*time.Second); len(reasons) != 0 {
+	if reasons := deliveryExceptionsFor(t, rig.harness.client, exceptions, topic, sender); len(reasons) != 0 {
 		t.Fatalf("the exception lanes carried %v for %s, want none: the message it published itself is skipped, not failed", reasons, sender)
 	}
 	var echoes []string
@@ -368,6 +424,6 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 	// The message the fan-out handed to nobody is still the other session's to receive: the
 	// relay of its own consumer is what sends it.
 	rig.relays.setOwned(true)
-	requireFrames(t, standIn.collect(t, 1, 15*time.Second), item)
-	standIn.none(t, time.Second)
+	requireFrames(t, standIn.receive(t, 1), item)
+	rig.noneThroughMarker(t, standIn, other)
 }

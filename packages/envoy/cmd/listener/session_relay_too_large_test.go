@@ -3,7 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -40,21 +39,17 @@ func storeEnvelopeOfSize(t *testing.T, rig *relayRig, subject string, size int) 
 	return item, ack.Sequence
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: a relay's receipt wait of 500 ms, which the silent session's pause waits out.
-//
 // A stored message can fit the server's max payload while its relay frame, the same bytes with
 // the relay's headers, does not, and NATS refuses that frame however often it is sent. The relay
 // acknowledges such a message, writes one WARN naming the session, the event and the stream
 // sequence, and goes on, so the session's next message arrives. A relay that restarted at the ack
 // floor at each refusal would deliver the session nothing after that message until the stream's
-// retention took it (dispatch://INFRA-3918). The refused frame never went out, so the relay waits
-// for no receipt of it: under a receipt wait shorter than the row's own wait, the relay does not
-// pause the session. The controls: a message half the limit is relayed as any other, with no
-// WARN; and a session that answers no frame is paused once its receipt wait has passed, with one
-// line.
+// retention took it (dispatch://INFRA-3918). The refused frame never went out, so no frame
+// awaits a receipt once the marker is acknowledged. A message half the limit is relayed with no
+// WARN. A session that answers no frame is paused once its receipt wait ends, with one INFO line.
 func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
-	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 500*time.Millisecond)
+	t.Parallel()
+	rig, fake := newRelayRigOnFakeClock(t)
 	limit := int(rig.harness.client.Conn.MaxPayload())
 
 	t.Run("a message 64 bytes under the limit is acknowledged with one WARN", func(t *testing.T) {
@@ -65,9 +60,17 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		large, largeSeq := storeEnvelopeOfSize(t, rig, agent, limit-64)
 		marker, markerSeq := rig.storeEvent(t, agent)
 
-		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
-		standIn.none(t, time.Second)
+		standIn.noneBefore(t, marker)
 		awaitAcked(t, rig.consumers, sessionID, markerSeq)
+		func() {
+			rig.relays.framesMu.Lock()
+			defer rig.relays.framesMu.Unlock()
+			for _, frame := range rig.relays.frames {
+				if frame.run.sessionID == sessionID {
+					t.Fatalf("the relay still awaits a receipt for send %d after acknowledging the marker", frame.sentSeq)
+				}
+			}
+		}()
 		warnings := edgeSessionLogLines(rig.harness.logs.String(), "WARN", relayTooLargeLine, sessionID)
 		if len(warnings) != 1 || warnings[0]["event_id"] != large.EventID || warnings[0]["stream_seq"] != float64(largeSeq) {
 			t.Fatalf("the relay wrote %+v, want one WARN %q naming event %s at stream sequence %d", warnings, relayTooLargeLine, large.EventID, largeSeq)
@@ -85,7 +88,7 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		half, _ := storeEnvelopeOfSize(t, rig, agent, limit/2)
 		marker, markerSeq := rig.storeEvent(t, agent)
 
-		requireFrames(t, standIn.collect(t, 2, 15*time.Second), half, marker)
+		requireFrames(t, standIn.receive(t, 2), half, marker)
 		awaitAcked(t, rig.consumers, sessionID, markerSeq)
 		if warnings := edgeSessionLogLines(rig.harness.logs.String(), "WARN", relayTooLargeLine, sessionID); len(warnings) != 0 {
 			t.Fatalf("the relay wrote %+v for a message half the limit, want no WARN", warnings)
@@ -100,12 +103,9 @@ func TestRelayStoredNearLimitEnvelopeDoesNotBlockFollowingFrame(t *testing.T) {
 		rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 		marker, _ := rig.storeEvent(t, agent)
 
-		requireFrames(t, standIn.collect(t, 1, 15*time.Second), marker)
-		waitFor(t, "the relay to pause the silent session", func() bool {
-			return len(edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayPausedPrefix, sessionID)) > 0
-		})
-		if n := len(edgeSessionLogLines(rig.harness.logs.String(), "INFO", relayPausedPrefix, sessionID)); n != 1 {
-			t.Fatalf("the relay paused the silent session %d times, want once:\n%s", n, rig.harness.logs.String())
-		}
+		requireFrames(t, standIn.receive(t, 1), marker)
+		expireProbeReceipt(t, fake)
+		fake.AwaitArmedAt(t, "the silent session's pause backoff", fake.Now().Add(relayPauseFirst))
+		requireOnePause(t, rig)
 	})
 }

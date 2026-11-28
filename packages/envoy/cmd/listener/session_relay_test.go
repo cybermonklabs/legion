@@ -1342,39 +1342,22 @@ func awaitFanoutFinished(t *testing.T, rig *relayRig, durable string, seq uint64
 	awaitDurableState(t, rig.harness.client, durable, 0, seq)
 }
 
-// deliveryExceptionsFor reads the delivery exceptions for sessionID that arrive on exceptions
-// within window, each as its reason, and ignores those for any other session.
-func deliveryExceptionsFor(t *testing.T, exceptions *natsgo.Subscription, sessionID string, window time.Duration) []string {
+// deliveryExceptionsFor returns the reasons already published for sessionID. Call it
+// after awaitFanoutFinished: fanoutDelivery publishes through applyDeliveryOutcome
+// before it acks the durable on the same connection (deliveryMessage.finalize).
+func deliveryExceptionsFor(t *testing.T, client *bus.Client, exceptions <-chan *natsgo.Msg, topic, sessionID string) []string {
 	t.Helper()
-	deadline := time.Now().Add(window)
 	var reasons []string
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return reasons
-		}
-		msg, err := exceptions.NextMsg(remaining)
-		if errors.Is(err, natsgo.ErrTimeout) {
-			return reasons
-		}
-		if err != nil {
-			t.Fatalf("read the exception lane of %s: %v", sessionID, err)
-		}
-		var envelope contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-			t.Fatalf("decode the exception on %s: %v", msg.Subject, err)
-		}
-		var payload struct {
-			Reason           string `json:"reason"`
-			RecipientSession string `json:"recipient_session"`
-		}
+	for _, envelope := range exceptionFramesThroughMarker(t, client, exceptions, topic) {
+		var payload deliveryExceptionPayload
 		if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
-			t.Fatalf("decode the exception payload on %s: %v", msg.Subject, err)
+			t.Fatalf("decode the exception payload on %s: %v", envelope.Topic, err)
 		}
 		if payload.RecipientSession == sessionID {
 			reasons = append(reasons, payload.Reason)
 		}
 	}
+	return reasons
 }
 
 // awaitLogLine waits for the listener to log line and reports the last line if it does not.
