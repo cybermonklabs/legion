@@ -4536,13 +4536,17 @@ type GraphReferences struct {
 // write different prefixes, as where a code block before it in the same quote holds the same bytes
 // after a quote marker of its own, takes its prefix from its own range in its document's parse, or
 // from the first such start where that parse gives it no range or where the request has already
-// read the 16 documents it reads at most for such blocks and for footnote definitions. Where the
-// block index records no container of a document's block, a typed block has the prefix its closing
-// fence carries taken off each line after the first, as the coverage and the results reads take
-// it, and any other block answers the tree of its stored text as it stands. A block of a comment,
-// a message or an ask whose closing fence stands four spaces or a tab in answers the tree of its
-// whole stored text, its opening line included, since that fence closes nothing in its text. Only
-// a member whose Kind is block carries one, and only for a caller that sent `Dispatch-Trees: 1`.
+// read the 16 documents it reads at most for such blocks and for footnote definitions. A
+// document's block whose placement in its outermost container's text passes the request's budget
+// of placement work takes its prefix from its own range in its document's parse too, within those
+// 16 documents, and past them, or where that parse gives it no range, reads as a block whose
+// containers the block index does not record. Where the block index records no container of a
+// document's block, a typed block has the prefix its closing fence carries taken off each line
+// after the first, as the coverage and the results reads take it, and any other block answers the
+// tree of its stored text as it stands. A block of a comment, a message or an ask whose closing
+// fence stands four spaces or a tab in answers the tree of its whole stored text, its opening line
+// included, since that fence closes nothing in its text. Only a member whose Kind is block carries
+// one, and only for a caller that sent `Dispatch-Trees: 1`.
 type ReferenceTarget struct {
 	Ref  string `json:"ref"`
 	Kind string `json:"kind"`

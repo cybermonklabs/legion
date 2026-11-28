@@ -372,12 +372,12 @@ func (s *server) readDecisions(
 // rendering writes no id for it and no node of the parse holds it, and its labels are each label
 // the document defines that its text writes as a call, up to case. markdown is the document as it
 // stands, and this read reads no block's containers from its parse, so that parse works out no
-// ranges of its nested blocks, which only a pin's read and a read of an ambiguous block read
-// (footnoteParseOf). markdown's parse is read only where some decision's text holds a call at all
-// (`[^`), since a decision that calls no footnote has no labels to read, and what the labels are
-// read from is kept, so this read parses again no markdown an earlier read parsed
-// (footnoteParses). A markdown the parser refuses leaves every decision the tree of its text
-// alone; the failure is logged.
+// ranges of its nested blocks, which only a pin's read and a read of an ambiguous block, or of
+// one whose placement passed its request's budget, read (footnoteParseOf). markdown's parse is
+// read only where some decision's text holds a call at all (`[^`), since a decision that calls
+// no footnote has no labels to read, and what the labels are read from is kept, so this read
+// parses again no markdown an earlier read parsed (footnoteParses). A markdown the parser refuses
+// leaves every decision the tree of its text alone; the failure is logged.
 func decisionFootnotes(artifactID, markdown string, decisions []model.Decision) map[int]blockTreeSource {
 	var texts map[int]drawnText
 	for index := range decisions {

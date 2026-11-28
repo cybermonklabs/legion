@@ -38,7 +38,11 @@ body: |-
   Such a block's document takes one of the request's 16 documents, as a document whose text calls
   a note does, and one read and one parse of it serve both; past the 16, the block keeps the first
   start's prefix. A block whose starts all write the same prefix takes that prefix without a
-  parse, so it takes none of the 16 unless its text calls a note. Before, a fenced code block
+  parse, so it takes none of the 16 unless its text calls a note. One request reads each
+  distinct outermost container's text once and places each distinct block text once, and a
+  budget of the work its placements do bounds the rest: a block whose placement passes it takes
+  its range from its document's parse within the 16, and past those is drawn as a block whose
+  containers the index does not record, which the request's log line counts. Before, a fenced code block
   there could hold its closing fence as code, a paragraph's line in a quote could open a quote of
   its own, a list in a list item could draw its second item inside its first, and a list in a
   quote could draw its second item in a quote of its own. Where the block index records no block

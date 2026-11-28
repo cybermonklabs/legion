@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,6 +47,28 @@ func TestAContainersPrefixIsWhatItsLeadWritesBeforeEachLaterLine(t *testing.T) {
 			}
 		})
 	}
+}
+
+// placedPrefix is what the containers of a document's block write before each of its lines after
+// the first, and whether the block is ambiguous, where outer is the stored text of the block's
+// outermost container, the block at the document's top level that holds it, and text is the
+// block's own stored text: text placed in the placement index of outer made for text alone
+// (newContainerIndex), with a budget no placement passes, so that containerIndex.place never stops
+// for its budget and never answers unplaced. It is "" and not ambiguous where text holds one line,
+// which has no later line, and where no place's bytes are text's.
+//
+// The block is ambiguous where its bytes stand at two or more starts that container syntax allows
+// in outer, each up to where a line of outer ends, and two of those starts write different
+// prefixes, before its own or after it: outer alone cannot tell which start is the block's, since
+// the container can hold the block's bytes after another lead too, as in the code of a code block,
+// and prefix is then the first start's, which the block's read replaces with the one its
+// document's parse gives it (calledFootnotes, rangedPrefix). The block's own start is one of them,
+// so where every start writes one prefix, that prefix is the block's, the only one the parse could
+// answer, and the block is not ambiguous.
+func placedPrefix(outer, text string) (prefix string, ambiguous bool) {
+	unlimited := math.MaxInt
+	prefix, ambiguous, _ = newContainerIndex(outer).place(text, &unlimited)
+	return prefix, ambiguous
 }
 
 // listWhoseLinesRepeatItsBlock is a top-level list whose lines repeat the text of the block it
@@ -195,14 +218,14 @@ func mebibyteListOfParagraphs() (list string, texts []string) {
 	return strings.Join(items, "\n"), texts
 }
 
-// placeRequest is the prefix of each of texts, the stored texts of document blocks one request
-// of the batched reference read names, and whether each is ambiguous, where outer is the stored
-// text of their one outermost container, as blockTrees answers them before it reads any document:
-// the blocks named in the answer refs.OutermostContainers gives, each held by that one container,
-// are placed in the order of texts by the placement blockTrees makes (containerPlacements). It
-// holds that answer and that loop and nothing more, so that it stands for how a request places its
-// blocks, and a change to that placement changes no line of it.
-func placeRequest(outer string, texts []string) (prefixes []string, ambiguous []bool) {
+// requestPlacements is the placement of each of texts, the stored texts of document blocks one
+// request of the batched reference read names, where outer is the stored text of their one
+// outermost container, as blockTrees places them before it reads any document: the blocks named
+// in the answer refs.OutermostContainers gives, each held by that one container, are placed in the
+// order of texts, with one budget for the request, by the placement blockTrees makes
+// (containerPlacements). It holds that answer and that call and nothing more, so that it stands for
+// how a request places its blocks, and a change to that placement changes no line of it.
+func requestPlacements(outer string, texts []string) []blockPlacement {
 	holder := refs.DocumentBlock{ArtifactID: "document", BlockID: "list"}
 	outermost := refs.Outermost{
 		Holders: make(map[refs.DocumentBlock]refs.DocumentBlock, len(texts)),
@@ -213,10 +236,17 @@ func placeRequest(outer string, texts []string) (prefixes []string, ambiguous []
 		blocks[index] = refs.DocumentBlock{ArtifactID: holder.ArtifactID, BlockID: "paragraph-" + strconv.Itoa(index)}
 		outermost.Holders[blocks[index]] = holder
 	}
-	placements := newContainerPlacements(outermost)
+	left := placementWorkMax
+	return containerPlacements(outermost, blocks, texts, &left)
+}
+
+// placeRequest is the prefix of each of texts and whether each is ambiguous, where one request
+// places them in outer (requestPlacements).
+func placeRequest(outer string, texts []string) (prefixes []string, ambiguous []bool) {
+	placed := requestPlacements(outer, texts)
 	prefixes, ambiguous = make([]string, len(texts)), make([]bool, len(texts))
-	for index, text := range texts {
-		prefixes[index], ambiguous[index] = placements.prefix(blocks[index], text)
+	for index, placement := range placed {
+		prefixes[index], ambiguous[index] = placement.prefix, placement.ambiguous
 	}
 	return prefixes, ambiguous
 }
@@ -441,25 +471,28 @@ func listWithDistinctCopies() (list string, texts []string) {
 // placeRequestAsDocument is the prefix each of texts takes where one request of the batched
 // reference read names their blocks, where markdown is their document's markdown and outer the
 // stored text of their one outermost container: the prefix one request places each at
-// (placeRequest), and, for each that the placement leaves to its document's parse, an ambiguous
-// block, the prefix of the first nested block of that parse whose bytes are its text where one is
-// (rangedPrefix), as blockTrees resolves it through calledFootnotes, which parses the document
-// once, with its nested blocks' ranges, for all of them (footnoteParseOf). A text the parse gives
-// no range keeps the placement's prefix. It holds that resolution and nothing more, so that it
-// stands for how the batched read resolves a request's blocks: a change to which blocks the
-// placement leaves to the parse changes its body alone, and no case that calls it.
+// (requestPlacements), and, for each that the placement leaves to its document's parse, an
+// ambiguous block or one whose placement passed the request's budget, the prefix of the first
+// nested block of that parse whose bytes are its text where one is (rangedPrefix), as blockTrees
+// resolves it through calledFootnotes, which parses the document once, with its nested blocks'
+// ranges, for all of them (footnoteParseOf). A text the parse gives no range keeps the
+// placement's prefix. It holds that resolution and nothing more, so that it stands for how the
+// batched read resolves a request's blocks: a change to which blocks the placement leaves to the
+// parse changes its body alone, and no case that calls it.
 func placeRequestAsDocument(markdown, outer string, texts []string) []string {
-	prefixes, ambiguous := placeRequest(outer, texts)
+	placed := requestPlacements(outer, texts)
+	prefixes := make([]string, len(texts))
 	var nested [][2]int
 	parsed := false
-	for index, text := range texts {
-		if !ambiguous[index] {
+	for index, placement := range placed {
+		prefixes[index] = placement.prefix
+		if !placement.ambiguous && !placement.unplaced {
 			continue
 		}
 		if !parsed {
 			nested, parsed = footnoteParseOf(markdown, "document", true).Nested, true
 		}
-		if prefix, found := rangedPrefix(markdown, nested, text); found {
+		if prefix, found := rangedPrefix(markdown, nested, texts[index]); found {
 			prefixes[index] = prefix
 		}
 	}

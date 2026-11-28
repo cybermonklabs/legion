@@ -128,33 +128,36 @@ func withoutStandInDefinitions(tree json.RawMessage, count int) (json.RawMessage
 
 // footnoteDocumentsMax is how many documents one request of the batched reference read
 // (blockTrees) or of the reference graph's read (readGraphFootnotes) reads and parses for the
-// footnote definitions its texts call and the containers of its ambiguous blocks
-// (calledFootnotes). The new issue page reads four documents of an issue - its spec, its plan, its
-// Verification document and its decisions document - so 16 holds the issue's own and those of
-// three issues whose blocks it names. A parse of a document of 25 to 43 KB takes 8.5 to 13.4 ms
-// (decisionCuts), so 16 parses that footnoteParses does not hold take about 215 ms at that size,
-// where the 256 documents that one batched read can name (contracts.ReferenceTargetsMax) would
-// take about 3.4 s. A parse that works out the ranges of the markdown's nested blocks, as every
-// parse of a version a pin names does and a parse of a latest version does where the request has
-// an ambiguous block of that document, renders the parse once more for them (footnoteParseOf,
-// nestedBlocks), about 38% more time: 1.30 ms beside a parse of 3.41 ms for a document of 39,573
-// bytes, so 16 such parses take about 300 ms at that size. A request reads at most one version a
-// pin names, the one its node's pin names (readGraphFootnotes).
+// footnote definitions its texts call and the containers of its ambiguous and its unplaced blocks
+// (calledFootnotes, blockPlacement). The new issue page reads four documents of an issue - its
+// spec, its plan, its Verification document and its decisions document - so 16 holds the issue's
+// own and those of three issues whose blocks it names. A parse of a document of 25 to 43 KB takes
+// 8.5 to 13.4 ms (decisionCuts), so 16 parses that footnoteParses does not hold take about 215 ms
+// at that size, where the 256 documents that one batched read can name
+// (contracts.ReferenceTargetsMax) would take about 3.4 s. A parse that works out the ranges of the
+// markdown's nested blocks, as every parse of a version a pin names does and a parse of a latest
+// version does where the request has an ambiguous or an unplaced block of that document, renders
+// the parse once more for them (footnoteParseOf, nestedBlocks), about 38% more time: 1.30 ms
+// beside a parse of 3.41 ms for a document of 39,573 bytes, so 16 such parses take about 300 ms at
+// that size. A request reads at most one version a pin names, the one its node's pin names
+// (readGraphFootnotes).
 const footnoteDocumentsMax = 16
 
 // footnoteDocuments is what one request reads of its documents for the trees of their blocks'
 // texts, over all of its calls of calledFootnotes and its read of a pin's containers
 // (readGraphPrefixes): read, how many documents those calls of calledFootnotes have read, for the
-// notes their texts call or the containers of their ambiguous texts, a document whose read failed
-// included; unread, how many they left unread once read reached footnoteDocumentsMax;
-// ambiguousUnread, how many ambiguous texts those unread documents hold, texts two of whose starts
-// in their outermost container's text write different prefixes (placedPrefix), each of which
-// keeps the prefix of the first start its read placed it at (documentBlockPrefix); and pinned, by
-// document and version, what the request's read of each version a pin names answered
-// (markdownAt).
+// notes their texts call or the containers of their ambiguous and their unplaced texts, a document
+// whose read failed included; unread, how many they left unread once read reached
+// footnoteDocumentsMax; ambiguousUnread, how many ambiguous texts those unread documents hold,
+// texts two of whose starts in their outermost container's text write different prefixes
+// (containerIndex.place), each of which keeps the prefix of the first start its read placed it at
+// (documentBlockPrefix); unplacedUnread, how many unplaced texts they hold, texts whose placement
+// passed what the request had left of placementWorkMax, each of which keeps the prefix of a text
+// whose containers the block index does not record; and pinned, by document and version, what the
+// request's read of each version a pin names answered (markdownAt).
 type footnoteDocuments struct {
-	read, unread, ambiguousUnread int
-	pinned                        map[documentVersion]markdownRead
+	read, unread, ambiguousUnread, unplacedUnread int
+	pinned                                        map[documentVersion]markdownRead
 }
 
 // documentVersion names one version of a document: the document's id and the version's number.
@@ -171,16 +174,19 @@ type markdownRead struct {
 }
 
 // warnUnread logs one line for a request whose calls of calledFootnotes left a document unread,
-// naming route, the read the request is of, the count of documents it did not read, and the count
-// of the ambiguous texts of those documents, two of whose starts write different prefixes, each
-// left at the first start its read placed it at; a request that read every document it named logs
-// nothing. It is called once, after the request's last call of calledFootnotes.
+// naming route, the read the request is of, the count of documents it did not read, the count of
+// the ambiguous texts of those documents, two of whose starts write different prefixes, each left
+// at the first start its read placed it at, and the count of their unplaced texts, whose placement
+// passed what the request had left of placementWorkMax, each read as a text whose containers the
+// block index does not record; a request that read every document it named logs nothing. It is
+// called once, after the request's last call of calledFootnotes.
 func (d *footnoteDocuments) warnUnread(route string) {
 	if d.unread == 0 {
 		return
 	}
 	slog.Warn("dispatch: leave the footnote definitions and nested blocks of documents past one request's bound unread for their blocks' trees",
-		"read", route, "unread_documents", d.unread, "ambiguous_unread", d.ambiguousUnread, "footnote_documents_max", footnoteDocumentsMax)
+		"read", route, "unread_documents", d.unread, "ambiguous_unread", d.ambiguousUnread, "unplaced_unread", d.unplacedUnread,
+		"footnote_documents_max", footnoteDocumentsMax)
 }
 
 // markdownAt is the markdown of version of the document artifactID (documentMarkdownAt). A
@@ -212,10 +218,12 @@ func (d *footnoteDocuments) markdownAt(ctx context.Context, s *server, artifactI
 // calledFootnotes is what the documents of texts, document blocks' texts by key, give each of
 // them beside its text: called, the source of its tree (blockTreeSource), the footnotes it calls
 // that its document defines outside it, for the texts that hold a call at all (`[^`); and placed,
-// what its containers write before each of its lines after the first, for the ambiguous texts
-// (drawnText), whose bytes stand at two or more starts that container syntax allows in their
-// outermost container's text, where two of those starts write different prefixes, which that
-// text alone cannot tell apart (placedPrefix). A text that calls a note is a slice of its document,
+// what its containers write before each of its lines after the first, for the texts whose
+// placement in their outermost container's text leaves that to their document's parse
+// (drawnText): the ambiguous, whose bytes stand at two or more starts that container syntax allows
+// in that text, where two of those starts write different prefixes, which that text alone cannot
+// tell apart, and the unplaced, whose placement passed what the request had left of
+// placementWorkMax (containerIndex.place). A text that calls a note is a slice of its document,
 // so it holds no definition the document writes outside the block, and read alone it reads a call
 // of such a label as text. A key names a text, not a block: the batched reference read keys each
 // block's stored text by its target (blockTrees), and the reference graph's read draws one block
@@ -224,56 +232,60 @@ func (d *footnoteDocuments) markdownAt(ctx context.Context, s *server, artifactI
 //
 // keys is the keys of texts in the order in which the request first names each text, and the
 // documents are taken in the order in which keys first names a text of each that holds a call or
-// is ambiguous; a document none of whose texts here is either is not read and takes no place.
-// budget is what the request reads of its documents (footnoteDocuments), what it has spent of
-// footnoteDocumentsMax over all of its calls among them: while the bound has room, each document
-// spends one place and is read, and a document whose read fails spends its place too, so that the
-// request's order alone decides which documents are read; once the bound is spent, a document is
-// not read and is counted unread in budget, with its ambiguous texts, and its texts have no entry
-// in either answer, so they keep the tree of their stored text alone, as a text whose document
-// cannot be read does, and an ambiguous text keeps the prefix of the first start its caller placed
-// it at. What footnoteParses holds never decides which documents are read, nor whether the request
-// read a document's markdown before, so the same request answers the same trees. The caller logs
-// the counts of unread documents and ambiguous texts once the request's last call is done
+// is ambiguous or unplaced; a document none of whose texts here is any of those is not read and
+// takes no place. budget is what the request reads of its documents (footnoteDocuments), what it
+// has spent of footnoteDocumentsMax over all of its calls among them: while the bound has room,
+// each document spends one place and is read, and a document whose read fails spends its place
+// too, so that the request's order alone decides which documents are read; once the bound is
+// spent, a document is not read and is counted unread in budget, with its ambiguous and its
+// unplaced texts, and its texts have no entry in either answer, so they keep the tree of their
+// stored text alone, as a text whose document cannot be read does, and the prefix their caller
+// placed them at: an ambiguous text the prefix of its first start, and an unplaced one the prefix
+// of a text whose containers the block index does not record. What footnoteParses holds never
+// decides which documents are read, nor whether the request read a document's markdown before, so
+// the same request answers the same trees. The caller logs the counts of unread documents and of
+// their ambiguous and unplaced texts once the request's last call is done
 // (footnoteDocuments.warnUnread).
 //
 // version is the version of their documents the texts were cut from, 0 for the latest. Each
 // document is read and parsed once, however many of its blocks' texts texts holds, and that one
-// parse serves both the notes its texts call and its ambiguous texts. Its id, and the id it holds
-// each block under, are the ones the text's entry holds (drawnText): the batched reference read
-// takes them from refs.BlockTexts, which reads them from the block index (document_blocks) with
-// the block's text, and the reference graph's read from the node it draws the text for
-// (graphDocumentBlock). Its latest markdown is read through TextWithToken: the block index cut
-// each stored text from the markdown the document's latest version stored, and TextWithToken
-// answers that markdown itself, without rendering the document, where that version is still the
-// document's state and a room of this process holds it, and from the read cache by the
-// document's stamp where no room holds it; Text renders a room's tree on every read. Any other
+// parse serves both the notes its texts call and its ambiguous and unplaced texts. Its id, and the
+// id it holds each block under, are the ones the text's entry holds (drawnText): the batched
+// reference read takes them from refs.BlockTexts, which reads them from the block index
+// (document_blocks) with the block's text, and the reference graph's read from the node it draws
+// the text for (graphDocumentBlock). Its latest markdown is read through TextWithToken: the block
+// index cut each stored text from the markdown the document's latest version stored, and
+// TextWithToken answers that markdown itself, without rendering the document, where that version
+// is still the document's state and a room of this process holds it, and from the read cache by
+// the document's stamp where no room holds it; Text renders a room's tree on every read. Any other
 // version's markdown is the one that version stored (documentMarkdownAt), which the request reads
 // once however many of its reads need it (footnoteDocuments.markdownAt): the reference graph's
 // read reads the version a pin names for the block's containers before it reads it here. The
 // markdown's parse as a rendering is kept by the markdown's sum (footnoteParses). The labels are
 // read from it given the map of the document's texts that hold a call (footnotesCalledIn), whose
-// answer is merged into called, and an ambiguous text's prefix is that of the first nested block
-// of the parse whose bytes are the text (rangedPrefix, footnoteParse.Nested). A parse of any
-// version but the latest works out the ranges of the markdown's nested blocks, which the
-// reference graph's read of a pin's containers reads too, and a parse of the latest works them out
-// only where an ambiguous text of the document needs them (footnoteParseOf). So no read parses a
-// markdown again while its entry stays kept, but a read with ranges that finds it kept only
-// without them, which parses it once more and keeps the ranges. An ambiguous text whose parse
-// gives it no range, as a parse whose rendering is not its markdown gives none, has no entry in
-// placed and keeps the prefix of its first start. A text whose document cannot be read or parsed
-// has no entry and keeps the tree of its stored text alone; the failure is logged.
+// answer is merged into called, and the prefix of an ambiguous or an unplaced text is that of the
+// first nested block of the parse whose bytes are the text (rangedPrefix, footnoteParse.Nested). A
+// parse of any version but the latest works out the ranges of the markdown's nested blocks, which
+// the reference graph's read of a pin's containers reads too, and a parse of the latest works them
+// out only where an ambiguous or an unplaced text of the document needs them (footnoteParseOf). So
+// no read parses a markdown again while its entry stays kept, but a read with ranges that finds it
+// kept only without them, which parses it once more and keeps the ranges. An ambiguous or an
+// unplaced text whose parse gives it no range, as a parse whose rendering is not its markdown gives
+// none, has no entry in placed and keeps the prefix its caller placed it at. A text whose document
+// cannot be read or parsed has no entry and keeps the tree of its stored text alone; the failure
+// is logged.
 func calledFootnotes[K comparable](ctx context.Context, s *server, keys []K, texts map[K]drawnText, version int, budget *footnoteDocuments) (called map[K]blockTreeSource, placed map[K]string) {
 	// order is the ids of the documents to read, in the order in which keys first names a text
-	// of each that holds a call or is ambiguous, calling each one's texts that hold a call, by
-	// key, and ambiguous the keys of each one's ambiguous texts.
+	// of each that holds a call or whose prefix its parse is to give, calling each one's texts
+	// that hold a call, by key, and ranged the keys of each one's texts whose prefix its parse is
+	// to give, the ambiguous and the unplaced.
 	var order []string
 	calling := map[string]map[K]drawnText{}
-	ambiguous := map[string][]K{}
+	ranged := map[string][]K{}
 	for _, key := range keys {
 		text := texts[key]
-		calls := strings.Contains(text.text, "[^")
-		if !calls && !text.ambiguous {
+		calls, parsed := strings.Contains(text.text, "[^"), text.ambiguous || text.unplaced
+		if !calls && !parsed {
 			continue
 		}
 		artifactID := text.block.ArtifactID
@@ -284,8 +296,8 @@ func calledFootnotes[K comparable](ctx context.Context, s *server, keys []K, tex
 		if calls {
 			calling[artifactID][key] = text
 		}
-		if text.ambiguous {
-			ambiguous[artifactID] = append(ambiguous[artifactID], key)
+		if parsed {
+			ranged[artifactID] = append(ranged[artifactID], key)
 		}
 	}
 	if len(order) == 0 {
@@ -295,7 +307,13 @@ func calledFootnotes[K comparable](ctx context.Context, s *server, keys []K, tex
 	for _, artifactID := range order {
 		if budget.read == footnoteDocumentsMax {
 			budget.unread++
-			budget.ambiguousUnread += len(ambiguous[artifactID])
+			for _, key := range ranged[artifactID] {
+				if texts[key].unplaced {
+					budget.unplacedUnread++
+				} else {
+					budget.ambiguousUnread++
+				}
+			}
 			continue
 		}
 		budget.read++
@@ -304,11 +322,11 @@ func calledFootnotes[K comparable](ctx context.Context, s *server, keys []K, tex
 			slog.Warn("dispatch: read a document's footnote definitions and nested blocks for its blocks' trees", "artifact", artifactID, "error", err)
 			continue
 		}
-		parse := footnoteParseOf(markdown, artifactID, version != 0 || len(ambiguous[artifactID]) > 0)
+		parse := footnoteParseOf(markdown, artifactID, version != 0 || len(ranged[artifactID]) > 0)
 		if wanted := calling[artifactID]; len(wanted) > 0 {
 			maps.Copy(called, footnotesCalledIn(parse, wanted))
 		}
-		for _, key := range ambiguous[artifactID] {
+		for _, key := range ranged[artifactID] {
 			if prefix, found := rangedPrefix(markdown, parse.Nested, texts[key].text); found {
 				placed[key] = prefix
 			}
@@ -344,14 +362,16 @@ func (s *server) documentMarkdownAt(ctx context.Context, artifactID string, vers
 // footnotesCalledIn read the footnotes it calls: block, where the block stands, the id of its
 // document and its own block id; text, the text itself, a block's stored text, a decision's
 // section of decisions.md, or a text of a document's block the reference graph's read draws, an
-// edge's excerpt among them; and ambiguous, whether text is a block's whole stored text whose
-// bytes stand at two or more starts that container syntax allows in its outermost container's
-// text, where two of those starts write different prefixes (documentBlockPrefix), whose
-// containers' prefix calledFootnotes then reads from its document's parse.
+// edge's excerpt among them; ambiguous, whether text is a block's whole stored text whose bytes
+// stand at two or more starts that container syntax allows in its outermost container's text,
+// where two of those starts write different prefixes; and unplaced, whether text is a block's
+// whole stored text whose placement in that text passed what the request had left of
+// placementWorkMax (blockPlacement). calledFootnotes reads the containers' prefix of an ambiguous
+// or an unplaced text from its document's parse. A text is never both.
 type drawnText struct {
-	block     refs.DocumentBlock
-	text      string
-	ambiguous bool
+	block               refs.DocumentBlock
+	text                string
+	ambiguous, unplaced bool
 }
 
 // footnotesCalledIn is, by key, the source of the tree of each text of texts (blockTreeSource),
@@ -404,19 +424,21 @@ func footnotesCalledIn[K comparable](parse footnoteParse, texts map[K]drawnText)
 // on, is not empty, which is a block that stands in a container. footnotesCalledIn reads the
 // first three. Nested is read for the prefix of the containers of an ambiguous block, whose bytes
 // stand at two or more starts that container syntax allows in its outermost container's text,
-// where two of those starts write different prefixes (calledFootnotes, rangedPrefix), and of a
-// pinned block's containers at a version the graph store states no parent of it at
+// where two of those starts write different prefixes, and of an unplaced block, whose placement in
+// that text passed what its request had left of placementWorkMax (calledFootnotes, rangedPrefix),
+// and of a pinned block's containers at a version the graph store states no parent of it at
 // (readGraphPrefixes, nestedPrefix). Only a parse made for a version a pin names, or for a latest
-// version where a read has an ambiguous block of that document, works out Nested, and every other
-// parse of a latest version holds none, whatever blocks its markdown nests; the key the entry is
-// kept under says which it is (footnoteParseKey). Only a typed block's markdown writes its id, and
-// every other block's id is one the parse mints, which names no block a text is cut from and would
-// make the entry depend on more than the markdown, so Called holds the typed blocks alone, and
-// Nested holds ranges, not ids. The ranges are those that the rendering of the parse gives its
-// blocks (pmdoc.RenderWithBlockOffsets), which name the blocks' bytes in the markdown only where
-// that rendering is the markdown byte for byte: where it is not, Nested holds none, such a pin
-// reads as one whose containers the block index does not record (nestedPrefix), and such an
-// ambiguous block keeps the prefix of its first start (documentBlockPrefix).
+// version where a read has an ambiguous or an unplaced block of that document, works out Nested,
+// and every other parse of a latest version holds none, whatever blocks its markdown nests; the
+// key the entry is kept under says which it is (footnoteParseKey). Only a typed block's markdown
+// writes its id, and every other block's id is one the parse mints, which names no block a text is
+// cut from and would make the entry depend on more than the markdown, so Called holds the typed
+// blocks alone, and Nested holds ranges, not ids. The ranges are those that the rendering of the
+// parse gives its blocks (pmdoc.RenderWithBlockOffsets), which name the blocks' bytes in the
+// markdown only where that rendering is the markdown byte for byte: where it is not, Nested holds
+// none, such a pin reads as one whose containers the block index does not record (nestedPrefix),
+// and such an ambiguous or unplaced block keeps the prefix its placement gave it
+// (documentBlockPrefix).
 type footnoteParse struct {
 	Read    bool                `json:"read"`
 	Called  map[string][]string `json:"called,omitempty"`
@@ -426,22 +448,22 @@ type footnoteParse struct {
 
 // footnoteParseOf is the footnoteParse of markdown, a markdown of the document artifactID, with
 // Nested worked out where ranged, for a version a pin names and for a latest version where a read
-// has an ambiguous block of that document (calledFootnotes), and with none otherwise. It is the
-// entry footnoteParses keeps of markdown with ranges (footnoteParseKey), which answers either
-// read; else, for a read without ranges, the entry kept of it without them; else the one read
-// from its parse as a rendering, Called and Defined from the parse and, where ranged, Nested from
-// the rendering of the parse with its blocks' ranges (nestedBlocks), which is then kept. So a
-// markdown is parsed at most once while an entry of it stays kept, but for a read with ranges that
-// finds it kept only without them, as where a read of the latest version with no ambiguous block
-// came first and a pin names that version's number, or a read of an ambiguous block of it comes
-// next: that read parses the markdown once more and keeps the ranges, so a pin and an ambiguous
-// block read the same Nested whatever the reads before them, and the same request answers the same
-// trees and the same ETag. A refusal is kept with ranges whatever the read asked, since a markdown
-// the parser refuses holds no block to range, so it too is parsed at most once while its entry
-// stays kept; it is logged, with artifactID, by the parse that meets it. A parse that does not
-// render back to the markdown keeps no ranges, which is no fault of the read and is not logged.
-// Two reads that miss one entry at once both parse the markdown, and the entry the first keeps
-// stands.
+// has an ambiguous or an unplaced block of that document (calledFootnotes), and with none
+// otherwise. It is the entry footnoteParses keeps of markdown with ranges (footnoteParseKey),
+// which answers either read; else, for a read without ranges, the entry kept of it without them;
+// else the one read from its parse as a rendering, Called and Defined from the parse and, where
+// ranged, Nested from the rendering of the parse with its blocks' ranges (nestedBlocks), which is
+// then kept. So a markdown is parsed at most once while an entry of it stays kept, but for a read
+// with ranges that finds it kept only without them, as where a read of the latest version with no
+// ambiguous or unplaced block came first and a pin names that version's number, or a read of an
+// ambiguous or an unplaced block of it comes next: that read parses the markdown once more and
+// keeps the ranges, so a pin and an ambiguous or unplaced block read the same Nested whatever the
+// reads before them, and the same request answers the same trees and the same ETag. A refusal is
+// kept with ranges whatever the read asked, since a markdown the parser refuses holds no block to
+// range, so it too is parsed at most once while its entry stays kept; it is logged, with
+// artifactID, by the parse that meets it. A parse that does not render back to the markdown keeps
+// no ranges, which is no fault of the read and is not logged. Two reads that miss one entry at
+// once both parse the markdown, and the entry the first keeps stands.
 func footnoteParseOf(markdown, artifactID string, ranged bool) footnoteParse {
 	sum := pmdoc.TextSum(markdown)
 	held, ok := footnoteParses.Get(footnoteParseKey{sum: sum, ranged: true})
@@ -483,11 +505,11 @@ func footnoteParseOf(markdown, artifactID string, ranged bool) footnoteParse {
 
 // nestedBlocks is footnoteParse.Nested of markdown, whose parse as a rendering is tree, which
 // footnoteParseOf works out for a read with ranges alone, of a version a pin names or of a latest
-// version a read of an ambiguous block names: the range of each block that the rendering of tree
-// gives a range (pmdoc.RenderWithBlockOffsets), every block but a list item, where its bytes hold
-// more than one line and its lead is not empty; and none where that rendering is not markdown byte
-// for byte, since only then are its ranges the blocks' bytes in markdown. The rendering adds about
-// 38% to the time of the parse (footnoteDocumentsMax).
+// version a read of an ambiguous or an unplaced block names: the range of each block that the
+// rendering of tree gives a range (pmdoc.RenderWithBlockOffsets), every block but a list item,
+// where its bytes hold more than one line and its lead is not empty; and none where that rendering
+// is not markdown byte for byte, since only then are its ranges the blocks' bytes in markdown. The
+// rendering adds about 38% to the time of the parse (footnoteDocumentsMax).
 func nestedBlocks(markdown string, tree *pmdoc.Node) [][2]int {
 	rendering, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
 	if err != nil || rendering != markdown {
@@ -513,24 +535,24 @@ const footnoteParseEntryBytes = 256
 // block's id (a UUID) with the labels it calls, about 14 for each block of more than one line in a
 // container, the two offsets of its range, beside the labels the document defines and the charge
 // for the entry itself (footnoteParseEntryBytes). Only the entry of a version a pin names, or of a
-// latest version that a read of an ambiguous block of it parsed, holds ranges (footnoteParseOf),
-// and the entries of the other latest versions hold none. So the bound holds the entries of about
-// 500 documents of 40 typed blocks each and no ranges, as the entry of a latest version holds but
-// where a read had an ambiguous block of it, of about 300 documents that hold 100 nested blocks
-// beside, and of thousands with few, each of which saves a parse of 8.5 to 13.4 ms for a document
-// of 25 to 43 KB (decisionCuts). A markdown read both without ranges and with them, as a latest
-// version and as a version a pin names or a latest version a read of an ambiguous block names, can
-// be kept twice (footnoteParseKey). It is a sliver of the bounds the display trees
-// (pmdoc.DisplayCacheBytes) and the decision cuts (documentCutsBytes) of the same process are held
-// to.
+// latest version that a read of an ambiguous or an unplaced block of it parsed, holds ranges
+// (footnoteParseOf), and the entries of the other latest versions hold none. So the bound holds
+// the entries of about 500 documents of 40 typed blocks each and no ranges, as the entry of a
+// latest version holds but where a read had an ambiguous or an unplaced block of it, of about 300
+// documents that hold 100 nested blocks beside, and of thousands with few, each of which saves a
+// parse of 8.5 to 13.4 ms for a document of 25 to 43 KB (decisionCuts). A markdown read both
+// without ranges and with them, as a latest version and as a version a pin names or a latest
+// version a read of an ambiguous or an unplaced block names, can be kept twice (footnoteParseKey).
+// It is a sliver of the bounds the display trees (pmdoc.DisplayCacheBytes) and the decision cuts
+// (documentCutsBytes) of the same process are held to.
 const footnoteParsesBytes = 1 << 20
 
 // footnoteParseKey is what footnoteParses keeps an entry under: sum, the SHA-256 of its markdown
 // (pmdoc.TextSum), and ranged, whether the parse it holds worked out the ranges of the markdown's
 // nested blocks (footnoteParse.Nested), apart from whether it holds any: a parse made for a
-// version a pin names, or for a latest version a read of an ambiguous block names, did, and a
-// refusal, which holds no block to range, is kept as one that did (footnoteParseOf). The cache
-// keeps one value under one key until it drops it (bytelru.Cache.PutSize), so the entry with
+// version a pin names, or for a latest version a read of an ambiguous or an unplaced block names,
+// did, and a refusal, which holds no block to range, is kept as one that did (footnoteParseOf). The
+// cache keeps one value under one key until it drops it (bytelru.Cache.PutSize), so the entry with
 // ranges that such a read keeps of a markdown kept without them stands beside that entry rather
 // than in its place. Every read looks for the entry with ranges first, so the one without them is
 // read no more once the one with them is kept, and leaves the cache as its least recently used

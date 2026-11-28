@@ -17,12 +17,12 @@ import (
 // is held by the list. The outermost container's text and the block's own are slices of one
 // markdown, the document's latest, so a reader finds the block's text inside that container's and
 // reads off the line the block starts on what its containers write before each of its later lines
-// (api's placedPrefix). The block's own text cannot tell that prefix from what the block writes of
-// its own: `- b` then `  - c` is a list whose item b holds a list, or, in a list item two columns
-// in, a list of two items. The outermost container starts its line, and so does each of its lines
-// after the first, so the line the block starts on is whole in its text, and what every container
-// of the block writes on that line is there: the texts of the containers inside it add nothing,
-// and are not read.
+// (api's containerIndex.place). The block's own text cannot tell that prefix from what the block
+// writes of its own: `- b` then `  - c` is a list whose item b holds a list, or, in a list item two
+// columns in, a list of two items. The outermost container starts its line, and so does each of
+// its lines after the first, so the line the block starts on is whole in its text, and what every
+// container of the block writes on that line is there: the texts of the containers inside it add
+// nothing, and are not read.
 //
 // A block has no container in the answer where it stands at the document's top level, its row
 // naming its node and no parent, and where its outermost container cannot be read: the index
@@ -47,9 +47,12 @@ import (
 // container it is. So a request costs one statement however many blocks it reads, no blocks cost
 // none, and the answer names each block's container (Outermost.Holders) and holds each
 // container's text once (Outermost.Texts), so the blocks of one list carry the list's text once,
-// and a caller that places them in it makes one placement index of it for all of them (api's
-// blockTrees). The walk of a block ends at a block at the document's top level, and at a block
-// met twice (the statement's cycle clause), so it ends even where the rows go round.
+// and a caller that places them in it reads that text's bytes once, into one placement index of it
+// for all of them, and places each distinct text of them once (api's containerPlacements), each
+// test of a line in constant time, within one bound of the work of the tests that pass the hashes
+// for the whole request, past which a block takes its range from its document's parse (api's
+// placementWorkMax). The walk of a block ends at a block at the document's top level, and at a
+// block met twice (the statement's cycle clause), so it ends even where the rows go round.
 func OutermostContainers(ctx context.Context, q Queryer, blocks []DocumentBlock) (Outermost, error) {
 	if len(blocks) == 0 {
 		return Outermost{}, nil
