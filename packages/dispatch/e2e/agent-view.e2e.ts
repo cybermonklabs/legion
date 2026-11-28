@@ -31,7 +31,7 @@ import { connect, watchLiveSockets } from "./live-socket-watch";
 import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -199,14 +199,19 @@ interface LiveViewLayout {
   /** The document's scrollable height and the layout viewport's height. */
   documentHeight: number;
   viewportHeight: number;
-  /** The visual viewport's bottom edge, in the layout viewport's coordinates. */
+  /** The visual viewport's top and bottom edges, in the layout viewport's coordinates. */
+  visualTop: number;
   visualBottom: number;
+  /** The view's header, the row with `← Agents` and the session's name: its own edges. */
+  headerTop: number;
+  headerBottom: number;
   composerTop: number;
   composerBottom: number;
   /** The row under the message box (R6), which is the view's last element: its own edges. */
   footerTop: number;
   footerBottom: number;
-  /** The newest turn's bottom edge, and the thread's own top edge and scroll position. */
+  /** The newest turn's edges, and the thread's own top edge and scroll position. */
+  newestTop: number;
   newestBottom: number;
   threadTop: number;
   threadScrollTop: number;
@@ -214,8 +219,10 @@ interface LiveViewLayout {
   mainPaddingBottom: number;
   threadScrollHeight: number;
   threadClientHeight: number;
-  /** The live view's own bottom edge: the row under the message box, or the line under that
-   *  row where a switch or a notice puts one. */
+  /** The live view's own top and bottom edges. Its bottom is the row under the message box, or
+   *  the line under that row where a switch or a notice puts one; with a phone's keyboard up,
+   *  the view is laid over the visual viewport and its edges are that viewport's. */
+  viewTop: number;
   viewBottom: number;
 }
 
@@ -233,6 +240,7 @@ function liveViewLayout(page: Page): Promise<LiveViewLayout> {
     const conversation = byTestId("agent-conversation").getBoundingClientRect();
     const composer = byTestId("agent-composer").getBoundingClientRect();
     const footer = byTestId("agent-composer-footer").getBoundingClientRect();
+    const header = byTestId("agent-view-header").getBoundingClientRect();
     const turns = thread.querySelectorAll('[data-testid^="agent-message-"]');
     const newest = turns[turns.length - 1]?.getBoundingClientRect();
     if (newest === undefined) throw new Error("no turns");
@@ -244,16 +252,21 @@ function liveViewLayout(page: Page): Promise<LiveViewLayout> {
       documentHeight: document.documentElement.scrollHeight,
       footerBottom: footer.bottom,
       footerTop: footer.top,
+      headerBottom: header.bottom,
+      headerTop: header.top,
       mainBottom: main.getBoundingClientRect().bottom,
       mainPaddingBottom: Number.parseFloat(getComputedStyle(main).paddingBottom),
       newestBottom: newest.bottom,
+      newestTop: newest.top,
       threadClientHeight: thread.clientHeight,
       threadScrollHeight: thread.scrollHeight,
       threadScrollTop: thread.scrollTop,
       threadTop: thread.getBoundingClientRect().top,
       viewBottom: conversation.bottom,
+      viewTop: conversation.top,
       viewportHeight: window.innerHeight,
       visualBottom: viewport.offsetTop + viewport.height,
+      visualTop: viewport.offsetTop,
     };
   }, FRONT_LIVE_VIEW);
 }
@@ -364,34 +377,39 @@ async function rebuildThroughResubscribe(
 
 /** iOS Safari's keyboard: the composer takes focus and only the visual viewport shrinks, to
  *  `height`, panned `offsetTop` px down the page (Safari pans it to bring a low input into view).
- *  `<main>` is capped in the same task as the resize event (a deferred write would leave a frame
- *  with the composer behind the keyboard), and the composer then sits one page gutter above the
- *  visual viewport's bottom edge. */
+ *  In the same task as the resize event (a deferred write would leave a frame with the composer
+ *  behind the keyboard), `<main>` is capped at the visual viewport's bottom edge and the live view
+ *  is laid over the visual viewport, edge to edge: its header at the top of what the person sees
+ *  and its composer just above the keyboard. */
 async function raiseKeyboard(page: Page, height: number, offsetTop = 0): Promise<void> {
   await frontLiveView(page).getByTestId("agent-composer").locator("textarea").focus();
   const sameTask = await page.evaluate(
-    ({ visualHeight, visualTop }) => {
+    ({ front, visualHeight, visualTop }) => {
       const viewport = window.visualViewport;
       const main = document.querySelector<HTMLElement>('[data-testid="main-content"]');
-      if (viewport === null || main === null) throw new Error("no visualViewport or main");
+      const view = document.querySelector<HTMLElement>(
+        `${front} [data-testid="agent-conversation"]`
+      );
+      if (viewport === null || main === null || view === null) {
+        throw new Error("no visualViewport, main or live view");
+      }
       Object.defineProperty(viewport, "height", { configurable: true, get: () => visualHeight });
       Object.defineProperty(viewport, "offsetTop", { configurable: true, get: () => visualTop });
       viewport.dispatchEvent(new Event("resize"));
+      const box = view.getBoundingClientRect();
       return {
         expected: visualTop + visualHeight - main.getBoundingClientRect().top,
         maxHeight: getComputedStyle(main).maxHeight,
+        view: { bottom: box.bottom, top: box.top },
       };
     },
-    { visualHeight: height, visualTop: offsetTop }
+    { front: FRONT_LIVE_VIEW, visualHeight: height, visualTop: offsetTop }
   );
   expect(Number.parseFloat(sameTask.maxHeight)).toBeCloseTo(sameTask.expected, 1);
-  await expect
-    .poll(async () => {
-      const layout = await liveViewLayout(page);
-      return layout.visualBottom - layout.mainPaddingBottom - layout.viewBottom;
-    })
-    .toBe(0);
-  expect((await liveViewLayout(page)).visualBottom).toBe(offsetTop + height);
+  expect(sameTask.view).toEqual({ bottom: offsetTop + height, top: offsetTop });
+  const layout = await liveViewLayout(page);
+  expect(layout.visualBottom).toBe(offsetTop + height);
+  expect(layout.composerBottom).toBeLessThanOrEqual(layout.visualBottom);
 }
 
 /** The keyboard closes: the visual viewport is the whole window again and the composer blurs,
@@ -405,12 +423,131 @@ async function lowerKeyboard(page: Page): Promise<void> {
     viewport.dispatchEvent(new Event("resize"));
   });
   await frontLiveView(page).getByTestId("agent-composer").locator("textarea").blur();
+  await expectKeyboardDown(page);
+}
+
+/** With the keyboard down the view is back in the page, and the conversation has the screen: the
+ *  view ends one page gutter above the bottom of the screen. */
+async function expectKeyboardDown(page: Page): Promise<void> {
   await expect
     .poll(async () => {
       const layout = await liveViewLayout(page);
       return layout.viewportHeight - layout.mainPaddingBottom - layout.viewBottom;
     })
     .toBe(0);
+}
+
+/** What a phone's keyboard leaves of the `iphone` project's 664 px page: about half of it, as a
+ *  phone's keyboard with its row of suggestions takes. */
+const KEYBOARD_LEAVES = 328;
+
+/** A phone's keyboard as iOS Safari raises it, tied to focus as on the phone: up while a textarea
+ *  has focus and down once none has, so a blur puts it away and a tap on the box brings it back.
+ *  Only the visual viewport changes: it is `height` px tall, panned `offsetTop` px down the page,
+ *  as Safari pans it to show a low box. A later call changes the keyboard the next focus raises. */
+async function keyboardFollowsFocus(page: Page, height: number, offsetTop = 0): Promise<void> {
+  await page.evaluate(
+    (keyboard) => {
+      const viewport = window.visualViewport;
+      if (viewport === null) throw new Error("no visualViewport");
+      const held = window as unknown as { __keyboard?: { height: number; offsetTop: number } };
+      const installed = held.__keyboard !== undefined;
+      held.__keyboard = keyboard;
+      if (installed) return;
+      const follow = (up: boolean) => {
+        const now = held.__keyboard;
+        if (up && now !== undefined) {
+          Object.defineProperty(viewport, "height", { configurable: true, get: () => now.height });
+          Object.defineProperty(viewport, "offsetTop", {
+            configurable: true,
+            get: () => now.offsetTop,
+          });
+        } else {
+          Reflect.deleteProperty(viewport, "height");
+          Reflect.deleteProperty(viewport, "offsetTop");
+        }
+        viewport.dispatchEvent(new Event("resize"));
+      };
+      document.addEventListener("focusin", (event) => {
+        follow(event.target instanceof HTMLTextAreaElement);
+      });
+      document.addEventListener("focusout", (event) => {
+        follow(event.relatedTarget instanceof HTMLTextAreaElement);
+      });
+    },
+    { height, offsetTop }
+  );
+}
+
+/** With the keyboard up the person sees the visual viewport alone. The view's header and its
+ *  composer are whole inside it, and so is the newest turn: below the thread's top edge and above
+ *  the composer, so no part of it is behind the composer or the keyboard. */
+async function expectNewestTurnWholeOnScreen(page: Page): Promise<void> {
+  await expect(async () => {
+    const layout = await liveViewLayout(page);
+    expect(
+      layout.headerTop,
+      "the header's top edge, against the screen's top"
+    ).toBeGreaterThanOrEqual(layout.visualTop);
+    expect(
+      layout.composerBottom,
+      "the composer's bottom edge, against the keyboard's top"
+    ).toBeLessThanOrEqual(layout.visualBottom);
+    expect(
+      layout.newestTop,
+      "the newest turn's top edge, against the top of the thread on screen"
+    ).toBeGreaterThanOrEqual(Math.max(layout.threadTop, layout.visualTop));
+    expect(
+      layout.newestBottom,
+      "the newest turn's bottom edge, against the composer's top"
+    ).toBeLessThanOrEqual(layout.composerTop);
+  }).toPass({ timeout: 5_000 });
+}
+
+/** Puts in the report what the person sees, the visual viewport cut out of the page, and the
+ *  layout measured there, under `name`. */
+async function attachScreen(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const layout = await liveViewLayout(page);
+  const path = testInfo.outputPath(`${name}.png`);
+  await page.screenshot({
+    clip: {
+      height: layout.visualBottom - layout.visualTop,
+      width: page.viewportSize()?.width ?? 0,
+      x: 0,
+      y: layout.visualTop,
+    },
+    path,
+  });
+  await testInfo.attach(name, { contentType: "image/png", path });
+  await testInfo.attach(`${name}.json`, {
+    body: JSON.stringify(layout, null, 2),
+    contentType: "application/json",
+  });
+}
+
+/** The newest turn is whole on screen with the keyboard up, which the report shows under `name`,
+ *  and the thread scrolls under the person's finger: back to its first turn, which is then on
+ *  screen above the composer, and on to the newest turn again. */
+async function expectReadableWithKeyboardUp(
+  page: Page,
+  testInfo: TestInfo,
+  name: string
+): Promise<void> {
+  try {
+    await expectNewestTurnWholeOnScreen(page);
+  } finally {
+    await attachScreen(page, testInfo, name);
+  }
+  const layout = await liveViewLayout(page);
+  expect(layout.threadScrollHeight).toBeGreaterThan(layout.threadClientHeight);
+  await scrollThreadTo(page, 0);
+  const first = await frontLiveView(page).getByText("Turn 0:").boundingBox();
+  if (first === null) throw new Error("the first turn is not laid out");
+  const scrolled = await liveViewLayout(page);
+  expect(first.y).toBeGreaterThanOrEqual(Math.max(scrolled.threadTop, scrolled.visualTop));
+  expect(first.y).toBeLessThan(scrolled.composerTop);
+  await scrollThreadTo(page, "bottom");
+  await expectNewestTurnWholeOnScreen(page);
 }
 
 test.beforeEach(async () => {
@@ -1415,24 +1552,29 @@ test("on a phone the live view never scrolls the page, keeps its header and comp
 
     // Chromium on Android, told `interactive-widget=resizes-content`, opens the keyboard by
     // shrinking the layout viewport, which already fits the shell above it. With the composer
-    // unfocused <main> carries no cap; focused, the cap equals <main>'s own height, so it moves
-    // nothing, and the composer sits one gutter above the keyboard either way.
+    // unfocused <main> carries no cap and the view stays in the page. Focused, the cap equals
+    // <main>'s own height, so it moves nothing, and the view lies over the screen above the
+    // keyboard, edge to edge, with the composer whole inside it.
     const composerInput = page.getByTestId("agent-composer").locator("textarea");
     await page.setViewportSize({ height: 500, width: 390 });
     expect(await mainCap(page)).toEqual({ capped: false, fitsOwnHeight: false });
     await expectViewportBound(page);
     await composerInput.focus();
-    // The pair discriminates jointly: mainCap says a cap is present and not larger than <main>,
-    // and expectViewportBound's gutter check is the one that proves the cap moves nothing, so it
-    // is not redundant beside it.
     await expect.poll(() => mainCap(page)).toEqual({ capped: true, fitsOwnHeight: true });
-    await expectViewportBound(page);
+    await expect
+      .poll(async () => {
+        const layout = await liveViewLayout(page);
+        return { bottom: layout.viewBottom, top: layout.viewTop };
+      })
+      .toEqual({ bottom: 500, top: 0 });
+    expect((await liveViewLayout(page)).composerBottom).toBeLessThanOrEqual(500);
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
     await composerInput.blur();
     await page.setViewportSize({ height: 844, width: 390 });
 
     // iOS Safari opens it by shrinking only the visual viewport. A reader at the newest turn
-    // raises the keyboard: the composer sits one page gutter above it, and the newest turn stays
-    // in view above the composer.
+    // raises the keyboard: the view lies over the visual viewport, its composer just above the
+    // keyboard, and the newest turn stays in view above the composer.
     await scrollThreadTo(page, "bottom");
     await raiseKeyboard(page, 500);
     await expect(page.getByRole("link", { name: "← Agents" })).toBeInViewport({ ratio: 1 });
@@ -1452,9 +1594,163 @@ test("on a phone the live view never scrolls the page, keeps its header and comp
     expect((await liveViewLayout(page)).threadScrollTop).toBe(reading);
 
     // Safari also pans the visual viewport down the page to bring a low input into view: the cap
-    // and the gutter follow the visual viewport's bottom in page coordinates, offsetTop included.
+    // and the view follow the visual viewport in page coordinates, offsetTop included.
     await raiseKeyboard(page, 500, 120);
     await lowerKeyboard(page);
+  } finally {
+    await context.close();
+  }
+});
+
+// Reported on 2026-11-28: on a phone the live view could not be used to type to an agent. With the
+// keyboard up, the shell's header, the page's gutters and the row under the message box left the
+// thread a strip too short for one turn, and Safari's pan put the view's header above the screen.
+// Each keyboard here comes up from a tap on the box, as a person raises it, at the project's own
+// 390 x 664 page.
+test("on a phone the live view keeps the newest turn whole above the composer and the keyboard, and its thread scrolls while the keyboard is up @phone @phone-only", async ({
+  browser,
+}, testInfo) => {
+  const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000b0a01" };
+  await setLiveSessions([planner, phone]);
+  await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/agents/${phone.session_id}/live`);
+    await expect(page.getByText("Turn 39:")).toBeVisible();
+    const box = frontLiveView(page).getByTestId("agent-composer").locator("textarea");
+    // iOS Safari zooms the page into a box whose text is smaller than 16 px as it takes focus,
+    // and the page stays zoomed once the keyboard is down.
+    expect(
+      await box.evaluate((input) => Number.parseFloat(getComputedStyle(input).fontSize))
+    ).toBeGreaterThanOrEqual(16);
+
+    // Chromium on Android, told `interactive-widget=resizes-content`, shrinks the layout viewport.
+    const screen = page.viewportSize();
+    if (screen === null) throw new Error("the page has no viewport size");
+    await scrollThreadTo(page, "bottom");
+    await box.tap();
+    await page.setViewportSize({ height: KEYBOARD_LEAVES, width: screen.width });
+    await expectReadableWithKeyboardUp(page, testInfo, "android-keyboard");
+    await box.blur();
+    await page.setViewportSize(screen);
+    await expectKeyboardDown(page);
+
+    // iOS Safari shrinks only the visual viewport, and pans it down the page to show a low box:
+    // here as far as it goes, so the visual viewport ends at the page's bottom edge.
+    for (const { name, offsetTop } of [
+      { name: "ios-keyboard", offsetTop: 0 },
+      { name: "ios-keyboard-panned", offsetTop: screen.height - KEYBOARD_LEAVES },
+    ]) {
+      await keyboardFollowsFocus(page, KEYBOARD_LEAVES, offsetTop);
+      await scrollThreadTo(page, "bottom");
+      await box.tap();
+      await expectReadableWithKeyboardUp(page, testInfo, name);
+      await box.blur();
+      await expectKeyboardDown(page);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+/** What the person writes before they put the keyboard away. */
+const DRAFT = "Deploy once the tests pass";
+
+// The keyboard covers half a phone's screen, and the person puts it away to read the conversation
+// without losing what they are writing: with the control beside Send, or with a tap on the
+// conversation, as in a phone's own messaging apps.
+test("on a phone the live view puts the keyboard away from its own control or a tap on the conversation, and keeps the draft @phone @phone-only", async ({
+  browser,
+}, testInfo) => {
+  const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000b0a02" };
+  await setLiveSessions([planner, phone]);
+  await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/agents/${phone.session_id}/live`);
+    await expect(page.getByText("Turn 39:")).toBeVisible();
+    await keyboardFollowsFocus(page, KEYBOARD_LEAVES);
+    const box = frontLiveView(page).getByTestId("agent-composer").locator("textarea");
+    await box.tap();
+    await box.fill(DRAFT);
+    const keyboardUp = await liveViewLayout(page);
+
+    const hide = frontLiveView(page).getByRole("button", { name: "Hide keyboard" });
+    await expect(hide).toBeVisible();
+    await hide.tap();
+    // The box lost its focus, which is what puts a phone's keyboard away, and it holds the draft.
+    await expect(box).not.toBeFocused();
+    await expect(box).toHaveValue(DRAFT);
+    // The conversation has the screen again: the view ends one gutter above the screen's bottom,
+    // the row under the message box is back, and the thread is taller than with the keyboard up.
+    await expectKeyboardDown(page);
+    await expect(frontLiveView(page).getByTestId("agent-composer-footer")).toBeVisible();
+    expect((await liveViewLayout(page)).threadClientHeight).toBeGreaterThan(
+      keyboardUp.threadClientHeight
+    );
+    await attachScreen(page, testInfo, "keyboard-put-away");
+
+    // A tap on the conversation puts it away too.
+    await box.tap();
+    await expect(box).toBeFocused();
+    await frontLiveView(page).getByText("Turn 39:").tap();
+    await expect(box).not.toBeFocused();
+    await expect(box).toHaveValue(DRAFT);
+    await expectKeyboardDown(page);
+  } finally {
+    await context.close();
+  }
+});
+
+// Once the keyboard is away, the person brings it back to go on writing: with the same control,
+// which puts the caret back where it was, or with a tap on the box, as on any phone.
+test("on a phone the live view brings the keyboard back with the draft and the caret where they were, from its own control or a tap on the box @phone @phone-only", async ({
+  browser,
+}, testInfo) => {
+  const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000b0a03" };
+  await setLiveSessions([planner, phone]);
+  await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  try {
+    await page.goto(`/agents/${phone.session_id}/live`);
+    await expect(page.getByText("Turn 39:")).toBeVisible();
+    await keyboardFollowsFocus(page, KEYBOARD_LEAVES);
+    const box = frontLiveView(page).getByTestId("agent-composer").locator("textarea");
+    await box.tap();
+    await box.fill(DRAFT);
+    // The caret after "Deploy", and the keyboard away.
+    await box.evaluate((input: HTMLTextAreaElement) => input.setSelectionRange(6, 6));
+    const hide = frontLiveView(page).getByRole("button", { name: "Hide keyboard" });
+    await expect(hide).toBeVisible();
+    await hide.tap();
+    await expect(box).not.toBeFocused();
+
+    // The same control brings it back: the box has the focus and the draft, and the caret is
+    // where it was, so what the person types next goes there.
+    await frontLiveView(page).getByRole("button", { name: "Show keyboard" }).tap();
+    await expect(box).toBeFocused();
+    await expect(box).toHaveValue(DRAFT);
+    expect(
+      await box.evaluate((input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd])
+    ).toEqual([6, 6]);
+    await page.keyboard.type(" now");
+    await expect(box).toHaveValue("Deploy now once the tests pass");
+    try {
+      await expectNewestTurnWholeOnScreen(page);
+    } finally {
+      await attachScreen(page, testInfo, "keyboard-back");
+    }
+
+    // A tap on the box brings it back as well, with the draft.
+    await frontLiveView(page).getByText("Turn 39:").tap();
+    await expect(box).not.toBeFocused();
+    await box.tap();
+    await expect(box).toBeFocused();
+    await expect(box).toHaveValue("Deploy now once the tests pass");
+    await expectNewestTurnWholeOnScreen(page);
   } finally {
     await context.close();
   }
