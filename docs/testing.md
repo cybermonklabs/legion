@@ -872,26 +872,47 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 `packages/envoy/internal/dispatch/legion`, the Legion state intake, waits rather than computes:
 while its tests waited on the real clock, the whole package used 2 % of one core over the 913 s it
 took alone on a four-CPU CI runner (`/usr/bin/time -v`, job 140689032093). So a test here waits on
-an event or on a fake clock, never through a span of real time, and the tests run beside each
-other, `storetest.DefaultParallel` of them at once (the package's `TestMain` calls
-`storetest.SetDefaultParallel`).
+an event or on a fake clock, but for the few waits through a span of real time named below, and
+the tests run beside each other, `storetest.DefaultParallel` of them at once (the package's
+`TestMain` calls `storetest.SetDefaultParallel`).
 
 The intake reads `internal/clock`'s clock (`Intake.clock`, `clock.Real()` in production), and the
 rig (`intakeRig`) hands each intake it starts a `clocktest.Held()` fake (`intakeClock`), whose
 timers fire only when the test moves it. A hand-back the intake makes is armed on that fake
 (`Intake.handBackAfter`, the rig's `park`), and so is a deferred starting point (`startLater`), so
-each ends when the test moves the clock past it, never by waiting in real time. A stalled read
-moves the intake's clock on by `RequestTimeout` and then ends at once with no answer
-(`fakeDaemon.stalls`), so it fails at its stall. A test checks that something did not happen after
-a barrier on the project's runner (`rig.drained`), or once the rig is quiet (`rig.quiet`: every
-message delivered, nothing in hand, every wake handled, and the same counts before and after a
-barrier on each runner), not after a span. `rig.runUntil` waits for a condition, and each time the
-rig is quiet and the condition does not hold, it moves the clock to the earliest deadline armed on
-it, within the budget of moves the test gives it.
+each ends at a move of the clock, never by itself. The fake's moment is the wall clock plus the
+moves made on it, so a due time is a lower bound: wall time brings each deadline nearer while the
+test runs, and once wall time has made a deadline due, the next move of any size fires it, a
+`rig.runUntil` move of 0 included. A stalled read moves the intake's clock on by `RequestTimeout`
+and then ends at once with no answer (`fakeDaemon.stalls`), so it fails at its stall. A test checks
+that something did not happen after a barrier on the project's runner (`rig.drained`), or once the
+rig is quiet (`rig.quiet`: every message delivered, nothing in hand, every wake handled, and the
+same counts before and after a barrier on each runner), not after a span. `rig.runUntil` waits for
+a condition, and each time the rig is quiet and the condition does not hold, it moves the clock to
+the earliest deadline armed on it, within the budget of moves the test gives it. That budget
+bounds the moves `runUntil` makes, not what wall time made due: a hand-back armed past the budget
+by less than the wall time since it was armed still comes back within it. So a test whose
+assertion is the length of a hand-back checks the delay the hand-back's line names (`heldLine`).
 
-`TestAFailedWholeReadSetsNoRun` is the one test that keeps production's hand-back
-(`rig.startHandingBackOnNATS`), so NATS's own `NakWithDelay` and its redelivery after the delay
-stay proven end to end in this package.
+These waits pass a span of real time, and stay:
+
+- `TestAFailedWholeReadSetsNoRun` is the one test that keeps production's hand-back
+  (`rig.startHandingBackOnNATS`), so it waits for NATS's own redelivery a `holdAtLeast`, one
+  second, after `NakWithDelay`, and that redelivery stays proven end to end in this package.
+- The read rule's seeds (`read_rule_model_test.go`) keep the fallback waits they had at the merge
+  base: `settle` waits up to 10 s for every message to reach the intake, and `burstStep` up to 3 s
+  for the burst's read to be decided, up to 5 s for the messages that fill the runner to wait
+  behind it, and up to 5 s for the messages past the cap to reach the intake. Each ends at its
+  condition, and passes its whole span where its condition does not come. The take-over of a
+  burst whose message past a gap holds the read waits up to 3 s for that message to be judged:
+  parked, its read at the daemon, or acknowledged, which ends the wait where the message holds no
+  read. A take-over that finds the burst's read held at its daemon waits for the client's window
+  (`readRuleWindow`, 3 s) to end that read; no seed of `readRuleRows` does.
+- `TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute`'s daemon answers each read 200 ms late
+  in real time (`fakeDaemon.slows`).
+
+Every other bounded wait here (`rig.waitFor`, the deadline of a `rig.runUntil`, a `testwait.Holds`
+before a check) ends at its condition, and its bound is the moment the test fails.
 
 A test that runs an intake holds a rig of its own: its own database (`storetest.Open`), its own
 NATS account (`testnats.URL`), its own fake daemons and its own intake, whose clock, logger

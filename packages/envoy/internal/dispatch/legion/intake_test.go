@@ -3149,10 +3149,14 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 	rig.awaitStartingRead("INFRA")
 
 	// A gap whose read the daemon refuses: the read is owed, the gap is not applied, and it goes
-	// back to the stream until the read is due.
+	// back to the stream until the read is due. The rig withholds that hand-back (withholdOf): it is
+	// armed on no clock, so the move of the clock past the minute below does not bring the gap back,
+	// and the stop below drops it.
 	daemon.refuses(http.StatusServiceUnavailable)
+	gap := rig.withholdOf(rig.lastStreamSeq() + 1)
 	rig.publish("INFRA", change(15, "INFRA-1", moved("phase", "merging")))
 	rig.settledHolding(1)
+	gap.await()
 	if c := cursorOf(t, rig.database, "INFRA"); !c.readOwed || c.lastSeq == nil || *c.lastSeq != 10 {
 		t.Fatalf("the cursor after the refused gap read is %+v, want it at 10 with the read owed", c)
 	}
@@ -3166,9 +3170,11 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 	}
 
 	// A minute on, the gap's redelivery makes the owed read, and the daemon refuses it again. The
-	// gap went back to the stream for that minute. A take-over creates the durable again at its ack
-	// floor and delivers the gap again at once, so the test does not wait the minute out; the
-	// take-over's own call for INFRA's read joins the read the gap holds and makes none.
+	// gap went back to the stream for that minute, and the rig withholds that hand-back, so the
+	// move of the clock past the minute does not bring it back and the stop drops it. A take-over
+	// creates the durable again at its ack floor and delivers the gap again at once, so the test
+	// does not wait the minute out; the take-over's own call for INFRA's read joins the read the gap
+	// holds and makes none.
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	rig.stop()
 	rig.start()
@@ -3337,8 +3343,11 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 // the delay is below its ack wait (consumerConfig).
 //
 // The rig parks the second gap's hand-back on its clock, which nothing moves while LINUX's events
-// are applied, and INFRA's daemon serves no read meanwhile; the test then moves the clock to the
-// hand-back's end (nextDue), and the redelivery makes the owed read.
+// are applied, and INFRA's daemon serves no read meanwhile; the test then runs the rig until the
+// owed read is made (runUntil), which moves the clock to the hand-back's end once the rig is
+// quiet, as long as its moves add up to left at the most, and fails as the wait it replaces did,
+// left and 10 s after the second gap in real time: a hand-back armed for longer than what was
+// left of the minute, by more than the wall time since it was parked, fails the test.
 func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	t.Parallel()
 	// left is what is left of INFRA's minute when its second gap arrives.
@@ -3400,21 +3409,20 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 
 	// The owed read comes with no further message of INFRA: the second gap's redelivery makes it
 	// once the minute has passed, and nothing reads INFRA while the message waits out its
-	// hand-back. That hand-back is the one deadline armed on the rig's clock, and the clock moves
-	// to it (nextDue).
-	back, armed := rig.clock.nextDue()
+	// hand-back. That hand-back is the one deadline armed on the rig's clock, and runUntil moves
+	// the clock to it once the rig is quiet, within left.
+	_, armed := rig.clock.nextDue()
 	if _, parked := rig.parked()[holder]; !parked || !armed {
 		t.Fatalf("control: the second gap's hand-back is not the deadline armed on the rig's clock once LINUX's events are applied: parked %v, armed %v", rig.parked(), rig.clock.Armed())
 	}
 	if served := infra.served(); served != 2 {
 		t.Fatalf("INFRA's daemon served %d reads while the second gap's message waited out its hand-back, want the starting read and the first gap's: the owed read was made before the minute ended", served)
 	}
-	rig.clock.advance(max(back.Sub(rig.clock.peek()), 0))
 	within := left + 10*time.Second
-	rig.waitFor(time.Until(owed.Add(within)), func() bool { return infra.served() >= 3 }, func() string {
-		return fmt.Sprintf("INFRA's daemon served %d reads in the %s after the owed gap, want its owed read made with no further message, within the %s left of the minute and one redelivery",
+	if !rig.runUntil(func() bool { return infra.served() >= 3 }, left, time.Until(owed.Add(within))) {
+		t.Fatalf("INFRA's daemon served %d reads in the %s after the owed gap, want its owed read made with no further message, within the %s left of the minute and one redelivery",
 			infra.served(), time.Since(owed).Round(time.Second), left)
-	})
+	}
 	rig.awaitWholeReads(4)
 	rig.settled()
 

@@ -121,7 +121,10 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 //
 // Each hand-back is armed on the rig's clock, which runUntil moves on to its end once the rig is
 // quiet. The hand-back a write comes at is withheld (withhold) until the write and its wake have
-// landed, so the write comes while the message waits that hand-back out.
+// landed, so the write comes while the message waits that hand-back out. Where the write names
+// another daemon, that daemon's stall moves the clock RequestTimeout on before the test lets the
+// hand-back go, which brings it back whatever its length, so the test checks the delay its line
+// names: holdAtLeast, as every hand-back after a stalled read.
 //
 // At f77fd4c7 each write of the setting deletes the project's cursor (settingWritten), and the
 // count of the hold's hand-backs with it (read_holds), so the message's next redelivery holds the
@@ -189,6 +192,17 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 				return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
 			}
 			if test.another {
+				// The hand-back the write came at, which the rig withheld until the write had landed,
+				// is armed for holdAtLeast, as every hand-back after a stalled read: the read is due
+				// again at once. The new daemon's stall moved the clock RequestTimeout on before the
+				// test let it go, which brings it back whatever its length, so its length is checked
+				// on the line that logged it.
+				last := test.writes[len(test.writes)-1]
+				line := rig.logRecords(heldLine)[last-1]
+				if delay, _ := line["delay"].(float64); time.Duration(delay) != holdAtLeast {
+					t.Errorf("hand-back %d of the message, which the write that named another daemon came at, is %s long, want holdAtLeast (%s), as every hand-back after a stalled read: %v",
+						last, time.Duration(delay), holdAtLeast, line)
+				}
 				const within = 10 * time.Second
 				if !rig.runUntil(acknowledged, within, within) {
 					t.Fatalf("the message of the daemon the setting named before was not finished within %s of the write that named another daemon, %d hand-backs in all, %d at the write: %+v",
@@ -601,9 +615,14 @@ func requireHoldEndedWithinElevenMinutes(t *testing.T, rig *intakeRig, holder ui
 // durable over when the intake's clock is left short of ReadRetryAfter after that start. Neither
 // the take-over nor the message's redelivery reads INFRA before then: the take-over owes no read,
 // and the redelivery holds the gap read until it is due. The rig parks that hand-back on its
-// clock, and once it is parked the test moves the clock to the end of it. Then the redelivery
-// makes one read, the gap read, which starts at least ReadRetryAfter after the read the stop cut
-// short, and the take-over has deferred no call: nothing reads INFRA again.
+// clock, and once it is parked the test runs the rig until INFRA is read again (runUntil), which
+// moves the clock to the end of the hand-back once the rig is quiet, as long as its moves add up
+// to left at the most, and fails as the wait it replaces did, left and 15 s on in real time: a
+// hand-back armed past the read's due time by more than the wall time since the take-over fails
+// the test. Then the redelivery makes one read, the gap read, which starts at least ReadRetryAfter
+// after the read the stop cut short, and the take-over has deferred no call: nothing reads INFRA
+// again. A redelivery that reads INFRA at once parks nothing, and the check of the read's start
+// judges it as soon as its read is recorded.
 //
 // At cdc5fd84 the start of a read the stop cut short was lost: readWhole kept it in memory only
 // and returned before any write. The cursor kept the starting read's start, so the message's
@@ -650,20 +669,17 @@ func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
 	rig.clock.advance(due.Add(-left).Sub(rig.clock.Now()))
 	rig.start()
 	// The take-over delivers the message again, which holds the gap read for what is left of the
-	// minute: the rig parks its hand-back on its clock, the one deadline armed there, and the clock
-	// then moves to it (nextDue, the deadline the hand-back is armed for).
-	testwait.Until(t, "the redelivered message's hand-back for the gap read to be parked on the rig's clock", func() (time.Time, bool) {
-		at, parked := rig.parked()[holder]
-		return at, parked
+	// minute: the rig parks its hand-back on its clock. A redelivery that reads INFRA at once parks
+	// nothing and records its read, so the wait ends at that read too, and the clock moves only
+	// where the hand-back is parked.
+	readAgain := func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }
+	parked := testwait.Until(t, "the redelivered message's hand-back for the gap read to be parked on the rig's clock, or INFRA to be read again", func() (bool, bool) {
+		_, parked := rig.parked()[holder]
+		return parked, parked || readAgain()
 	})
-	back, armed := rig.clock.nextDue()
-	if !armed {
-		t.Fatalf("control: nothing is armed on the rig's clock once the redelivered message's hand-back is parked: %v", rig.parked())
+	if parked && !rig.runUntil(readAgain, left, left+15*time.Second) {
+		t.Fatalf("INFRA was not read again once the minute after the read the stop cut short ended: its cursor is %s", cursorOf(t, rig.database, "INFRA"))
 	}
-	rig.clock.advance(max(back.Sub(rig.clock.peek()), 0))
-	rig.waitFor(left+15*time.Second, func() bool { return len(wholeReadsOf(t, rig.database, "INFRA")) >= 2 }, func() string {
-		return fmt.Sprintf("INFRA was not read again once the minute after the read the stop cut short ended: its cursor is %s", cursorOf(t, rig.database, "INFRA"))
-	})
 	requireWholeRead(t, wholeReadsOf(t, rig.database, "INFRA")[1], ReadReasonGap, true)
 	if started := lastReadStartedAt(t, rig, "INFRA"); started.Before(due) {
 		t.Errorf("the read after the take-over began %s after the read the stop cut short, on the intake's clock, want at least %s",
@@ -701,12 +717,14 @@ func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
 // person writes INFRA's setting naming another daemon, which refuses each read once the test lets
 // it go at the daemon's gate (holds), and moves the intake's clock RequestTimeout on as each read
 // reaches it, as a read that waits out the production window does. That move brings the old
-// message back from its last hand-back, and its delivery waits behind the write's starting read on
-// the project's runner until the test lets that read go, so it is finished within readWindow and
-// a second of the write, and the new daemon has served the write's own starting read alone by
-// then. The later message is acknowledged while the owed read it calls for is held at the new
-// daemon's gate, and once the test lets that read go and INFRA's runner has run what was queued
-// behind it, the new daemon has served that one read more. Each read reaches its daemon once.
+// message back from its last hand-back whatever its length, so the test checks the length that
+// hand-back's line names: holdAtLeast, as every hand-back after a stalled read. The old message's
+// delivery waits behind the write's starting read on the project's runner until the test lets
+// that read go, so it is finished within readWindow and a second of the write, and the new daemon
+// has served the write's own starting read alone by then. The later message is acknowledged while
+// the owed read it calls for is held at the new daemon's gate, and once the test lets that read go
+// and INFRA's runner has run what was queued behind it, the new daemon has served that one read
+// more. Each read reaches its daemon once.
 //
 // At 3e6a6784 the old message's redelivery waits on the project's runner behind the write's
 // starting read of the new daemon, then makes the new daemon's read owed for retry
@@ -732,6 +750,12 @@ func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *t
 	// the rig is quiet.
 	if !rig.runUntil(func() bool { return len(rig.logRecords(heldLine)) >= 2 }, 2*time.Minute, 2*time.Minute) {
 		t.Fatalf("the message went back %d times, want 2 before the write", len(rig.logRecords(heldLine)))
+	}
+	// The write's starting read below moves the clock RequestTimeout on, which brings the second
+	// hand-back back whatever its length, so its length is checked on the line that logged it.
+	if delay, _ := rig.logRecords(heldLine)[1]["delay"].(float64); time.Duration(delay) != holdAtLeast {
+		t.Errorf("the message's second hand-back, which the write naming another daemon comes at, is %s long, want holdAtLeast (%s): the read before it lasted RequestTimeout on the intake's clock, so the read is due again at once",
+			time.Duration(delay), holdAtLeast)
 	}
 	named := newFakeDaemon(t, "")
 	named.refuses(http.StatusServiceUnavailable)

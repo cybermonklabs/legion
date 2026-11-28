@@ -769,15 +769,24 @@ func (m *readRuleModel) burstStep() {
 		// The message past the gap holds the read where it is not due, and makes it, held, where it
 		// is; the take-over cuts such a read short and brings the message back either way. Its
 		// hand-back is withheld (withholdOf) until the stop has dropped it, so the clock's move past
-		// the minute does not bring it back: the take-over does.
+		// the minute does not bring it back: the take-over does. The take-over waits, up to 3 s of
+		// wall-clock time, for the message to be judged: parked, as the read's holder; its read at
+		// the daemon; or acknowledged, as a message that holds no read is. The durable's ack floor
+		// stays below a message the rig holds parked, the holder of the read the cursor owes, so the
+		// message is acknowledged once it is delivered and every message the durable has not
+		// acknowledged is one the rig holds parked, which the message is not.
 		s := m.setting.store
 		m.commit(s, 1)
 		holder := m.rig.lastStreamSeq() + 1
 		withheld := m.rig.withholdOf(holder)
 		m.publish(s, false, m.commit(s, 1)...)
 		testwait.Holds(3*time.Second, 20*time.Millisecond, func() bool {
-			_, parked := m.rig.parked()[holder]
-			return parked || held.fake.served() > before
+			parked := m.rig.parked()
+			if _, out := parked[holder]; out || held.fake.served() > before {
+				return true
+			}
+			info := m.rig.consumerInfo()
+			return info.NumPending == 0 && info.Delivered.Stream >= holder && info.NumAckPending == len(parked)
 		})
 		m.rig.clock.advance(ReadRetryAfter + time.Second)
 		before = held.fake.served()
@@ -1158,7 +1167,9 @@ func (m *readRuleModel) intakeIdle() bool {
 // held back judged after it among it, is what settle waited out; a message parked to come back on
 // the rig's clock, which keeps the intake from being idle until the clock moves past its delay, is
 // held for redelivery, and the check is not made then; and otherwise the intake is idle, and the
-// check is made.
+// check is made. Nothing moves the rig's clock or delivers a message from settle's quiet on, so an
+// intake that is not idle then, or whose durable's ack floor moves while the cursor is read, fails
+// the test, not the invariant: the rig let something run that settle did not wait out.
 func (m *readRuleModel) checkIdleCursor(index int) {
 	var floor uint64
 	idle := func() bool {
@@ -1173,6 +1184,15 @@ func (m *readRuleModel) checkIdleCursor(index int) {
 		m.t.Fatalf("the rig was quiet with no message parked, and the intake is not idle since, though nothing moved its clock: %+v", m.rig.state())
 	}
 	seen := floor
+	// unmoved fails the test as the check above does where the intake is not idle any more, or the
+	// durable's ack floor moved, once the cursor has been read: the cursor read is then not the
+	// state of an idle intake.
+	unmoved := func() {
+		if !idle() || floor != seen {
+			m.t.Fatalf("the rig was quiet with no message parked, and the intake is not idle, or the durable's ack floor moved from %d to %d, while INFRA's cursor was read, though nothing moved its clock: %+v",
+				seen, floor, m.rig.state())
+		}
+	}
 	c := cursorOf(m.t, m.rig.database, "INFRA")
 	if c.readOwed {
 		return
@@ -1183,10 +1203,12 @@ func (m *readRuleModel) checkIdleCursor(index int) {
 			`select state_url from legion_event_cursors where project = 'INFRA'`).Scan(&stateURL); err != nil {
 			m.t.Fatalf("read the URL INFRA's cursor follows: %v", err)
 		}
-		// The intake did nothing while the cursor was read.
-		if stateURL != m.setting.fake.URL || !idle() || floor != seen {
+		// A cursor that follows no URL, a write's reset, is read at the next message, settings
+		// change or take-over.
+		if stateURL != m.setting.fake.URL {
 			return
 		}
+		unmoved()
 		m.fail(index, 2, "the intake is idle, and INFRA's cursor is %s: it follows %s's URL, holds no store and owes no read, so no message of the daemon is applied and none calls for a read. INFRA's whole reads: %s",
 			c, m.setting.name, m.readList())
 	}
@@ -1197,9 +1219,7 @@ func (m *readRuleModel) checkIdleCursor(index int) {
 		if s.id != *c.stateID || s.published <= int(*c.lastSeq) {
 			continue
 		}
-		if !idle() || floor != seen {
-			return
-		}
+		unmoved()
 		m.fail(index, 2, "the intake is idle, and INFRA's cursor is %s: it owes no read, though the stream delivered %s's messages through %d, past the cursor. A project quiet from here stays behind. INFRA's whole reads: %s",
 			c, s.name, s.published, m.readList())
 	}
