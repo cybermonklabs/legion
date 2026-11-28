@@ -1914,8 +1914,17 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 			before := currentValues(t, rig.database, "INFRA")
 			rig.clock.advance(ReadRetryAfter / 2)
 			rig.intake.SettingsChanged(t.Context())
+			// The rig withholds the first message's hand-back (withholdOf): it is armed on no
+			// clock, so the move of the clock past the minute below does not bring the message
+			// back, and the next message is the one that finds the read due. Its due time on the
+			// intake's clock is the end of the failed read's minute.
+			first := rig.withholdOf(rig.lastStreamSeq() + 1)
 			rig.publish("INFRA", change(5, "INFRA-1", moved("phase", "implementing")))
 			rig.settledHolding(1)
+			if _, due := first.await(); due.Before(lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)) {
+				t.Errorf("the first message went back until %s on the intake's clock, want until the read is due, ReadRetryAfter after the failed read began at %s",
+					due.Format(time.RFC3339Nano), lastReadStartedAt(t, rig, "INFRA").Format(time.RFC3339Nano))
+			}
 			rig.publish("INFRA", change(6, "INFRA-1", claimMoved("planner", "idle")))
 			rig.settledHolding(1)
 			if served := daemon.served(); served != 1 {
@@ -1936,7 +1945,8 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 
 			// Past ReadRetryAfter, the next message reads the daemon again, and this time the
 			// read is good: the cursor takes its stateSeq and owes nothing. The first message
-			// comes back from the stream only once its own delay has passed.
+			// still waits out its hand-back, which the rig withholds, so it does not come back
+			// meanwhile and make the read itself.
 			daemon.serves(daemonState("INFRA", 7, strings.Replace(issue, `"planning"`, `"testing"`, 1)))
 			rig.clock.advance(ReadRetryAfter/2 + time.Second)
 			rig.publish("INFRA", change(7, "INFRA-1", moved("phase", "testing")))
@@ -3114,6 +3124,12 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	release := infra.holds(t)
 	linuxAt := map[int]string{40: "implementing", 120: "testing", 200: "reviewing"}
 	linuxSeq := 20
+	// The first message past stateMaxWaiting since the burst's read began goes back to the stream
+	// until the next read is due, the rig's first hand-back: the rig withholds it (withhold), so it
+	// is armed on no clock, the move of the clock past that minute below does not bring it back, and
+	// INFRA's daemon's own next event is the message that makes the owed read. Its due time on the
+	// intake's clock is the end of the burst's read's minute.
+	holding := rig.withhold(1)
 	// The burst's first message makes its read, and the rest are published once that read is in
 	// flight: a message judged beside the runner before the read began would owe the gap that read
 	// is then made for, so the read would clear it, and the boot would come first in the reasons
@@ -3148,6 +3164,10 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 	}
 	release()
 	rig.settledHolding(1)
+	if _, due := holding.await(); due.Before(lastReadStartedAt(t, rig, "INFRA").Add(ReadRetryAfter)) {
+		t.Errorf("the message past the cap went back until %s on the intake's clock, want until the next read is due, ReadRetryAfter after the burst's read began at %s",
+			due.Format(time.RFC3339Nano), lastReadStartedAt(t, rig, "INFRA").Format(time.RFC3339Nano))
+	}
 
 	if served := infra.served(); served != 2 {
 		t.Errorf("INFRA's daemon served %d reads, want the starting read and one for the whole burst", served)
@@ -3173,6 +3193,7 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 		t.Errorf("LINUX's daemon served %d reads, want the starting one alone", served)
 	}
 
+	// The held message still waits out its hand-back, which the rig withholds.
 	rig.clock.advance(ReadRetryAfter)
 	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
 	rig.settledHolding(1)
@@ -3205,6 +3226,10 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 // is the one message of the durable's window that waits for an ack, and LINUX's events are applied
 // throughout. That redelivery counts toward no drop: the durable's MaxDeliver is -1, no limit, and
 // the delay is below its ack wait (consumerConfig).
+//
+// The rig parks the second gap's hand-back on its clock, which nothing moves while LINUX's events
+// are applied, and INFRA's daemon serves no read meanwhile; the test then moves the clock to the
+// hand-back's end (nextDue), and the redelivery makes the owed read.
 func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	// left is what is left of INFRA's minute when its second gap arrives.
 	const left = 8 * time.Second
@@ -3235,6 +3260,12 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	infra.serves(daemonState("INFRA", 14, strings.Replace(planning("INFRA"), `"planning"`, `"testing"`, 1)))
 	rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "testing")))
 	owed := time.Now()
+	holder := rig.lastStreamSeq()
+	// The second gap's message goes back to the stream for what is left of the minute: the rig
+	// parks its hand-back on its clock before the hand-back is logged (heldLine), and nothing moves
+	// that clock until the test does below, so LINUX's events are applied while the message waits
+	// it out.
+	rig.awaitLogRecords(heldLine, 1)
 
 	// LINUX's events are applied while INFRA's read is owed. Once each is acknowledged, the window
 	// holds what waits for an ack, which is INFRA's message alone.
@@ -3258,7 +3289,17 @@ func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
 	}
 
 	// The owed read comes with no further message of INFRA: the second gap's redelivery makes it
-	// once the minute has passed.
+	// once the minute has passed, and nothing reads INFRA while the message waits out its
+	// hand-back. That hand-back is the one deadline armed on the rig's clock, and the clock moves
+	// to it (nextDue).
+	back, armed := rig.clock.nextDue()
+	if _, parked := rig.parked()[holder]; !parked || !armed {
+		t.Fatalf("control: the second gap's hand-back is not the deadline armed on the rig's clock once LINUX's events are applied: parked %v, armed %v", rig.parked(), rig.clock.Armed())
+	}
+	if served := infra.served(); served != 2 {
+		t.Fatalf("INFRA's daemon served %d reads while the second gap's message waited out its hand-back, want the starting read and the first gap's: the owed read was made before the minute ended", served)
+	}
+	rig.clock.advance(max(back.Sub(rig.clock.peek()), 0))
 	within := left + 10*time.Second
 	rig.waitFor(time.Until(owed.Add(within)), func() bool { return infra.served() >= 3 }, func() string {
 		return fmt.Sprintf("INFRA's daemon served %d reads in the %s after the owed gap, want its owed read made with no further message, within the %s left of the minute and one redelivery",
@@ -3371,7 +3412,8 @@ func oneTo(n int) []any {
 // message, the cursor names no holder and counts no hand-back, and the read stays owed for retry.
 // INFRA's next message makes that read, and the daemon answers it. The intake's clock jumps
 // ReadRetryAfter less holdAtLeast at each reading (intakeClock.jumps), so each hand-back is
-// holdAtLeast long rather than a minute, and each redelivery finds the read due.
+// holdAtLeast long rather than a minute, and each redelivery finds the read due. Each hand-back is
+// armed on the rig's clock, which runUntil moves on to its end once the rig is quiet.
 //
 // The test catches a bound other than 10 hand-backs: a lower one lets the message go before its
 // 11th read, and a higher one sends it back after its 11th failed read.
@@ -3387,14 +3429,16 @@ func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T
 	rig.clock.jumps(ReadRetryAfter - holdAtLeast)
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 	holder := rig.lastStreamSeq()
+	// Each hand-back is armed on the rig's clock for holdAtLeast: runUntil moves the clock to it
+	// once the rig is quiet, stateMaxHolds hand-backs of holdAtLeast at the most.
 	var info *natsgo.ConsumerInfo
-	rig.waitFor(time.Minute, func() bool {
+	if !rig.runUntil(func() bool {
 		info = rig.consumerInfo()
 		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
-	}, func() string {
-		return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d reads and %d hand-backs: %+v",
+	}, stateMaxHolds*holdAtLeast, time.Minute) {
+		t.Fatalf("the message that holds INFRA's read is not acknowledged after %d reads and %d hand-backs: %+v",
 			daemon.served()-1, len(rig.logRecords(heldLine)), info)
-	})
+	}
 
 	if served := daemon.served(); served != 1+failures {
 		t.Errorf("INFRA's daemon served %d reads, want the starting read and %d that failed", served, failures)
@@ -3458,6 +3502,8 @@ func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T
 // redeliveries make, and it goes back after each; its third redelivery makes the read, the daemon
 // answers it, and the message is acknowledged with the read's state applied. The clock jumps from
 // the first hand-back on, as in TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks.
+// Each hand-back is armed on the rig's clock, which nothing moves before the jump is set, and which
+// runUntil then moves on to its end once the rig is quiet.
 func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
 	const left = 3 * time.Second
 	rig := newIntakeRig(t)
@@ -3478,8 +3524,21 @@ func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
 	rig.publish("INFRA", change(14, "INFRA-1", moved("phase", "testing")))
 	holder := rig.lastStreamSeq()
 	rig.settledHolding(1)
+	// The first hand-back, for what is left of the minute, is parked on the rig's clock, which
+	// nothing moves until runUntil does: the message comes back only once the jump is set.
+	if _, parked := rig.parked()[holder]; !parked {
+		t.Fatalf("control: the second gap's first hand-back is not parked on the rig's clock as the jump is set: %v", rig.parked())
+	}
 	rig.clock.jumps(ReadRetryAfter - holdAtLeast)
-	rig.settled()
+	// runUntil moves the clock to the end of each hand-back once the rig is quiet: left for the
+	// first, and holdAtLeast at the most for each of the two after the refused reads.
+	var info *natsgo.ConsumerInfo
+	if !rig.runUntil(func() bool {
+		info = rig.consumerInfo()
+		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
+	}, left+2*holdAtLeast, 20*time.Second) {
+		t.Fatalf("the intake has not acknowledged through stream sequence %d: %+v", holder, info)
+	}
 
 	if served := daemon.served(); served != 5 {
 		t.Errorf("INFRA's daemon served %d reads, want the starting read, the first gap's and three the second gap's redeliveries made", served)
@@ -3588,12 +3647,17 @@ func TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder(t *testing.T) 
 // durable again and starts the message's own delivery count again at 1, does not start the count
 // again. INFRA's daemon refuses every read after its good starting read, and a gap's message holds
 // the read and goes back after each read it makes that fails; the clock jumps as in
-// TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks. After at least before
-// hand-backs the intake stops and a second intake takes the durable over. The message goes back
-// stateMaxHolds times in all, the second intake counting on from where the first stopped, and its
-// next delivery is acknowledged and logged at WARN, with no holder and no count left on the cursor.
+// TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks. After before hand-backs the
+// intake stops and a second intake takes the durable over. The message goes back stateMaxHolds
+// times in all, the second intake counting on from where the first stopped, and its next delivery
+// is acknowledged and logged at WARN, with no holder and no count left on the cursor.
+//
+// The hand-back numbered before is withheld (withhold), so the stop lands while the message waits
+// that hand-back out, drops it, and the take-over delivers the message again. Each other hand-back
+// is armed on the rig's clock, which runUntil moves on to its end once the rig is quiet.
 func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
-	// before is how many hand-backs the first intake makes at the least before it stops.
+	// before is how many hand-backs the first intake makes before it stops: the last of them is
+	// withheld until the stop.
 	const before = 4
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -3603,11 +3667,16 @@ func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
 
 	daemon.refuses(http.StatusServiceUnavailable)
 	rig.clock.jumps(ReadRetryAfter - holdAtLeast)
+	// The rig withholds the message's hand-back numbered before (withhold), so the stop comes while
+	// the message waits it out: the stop drops it, and the take-over delivers the message again.
+	// Each other hand-back is armed on the rig's clock for holdAtLeast, and runUntil moves the clock
+	// to it once the rig is quiet.
+	rig.withhold(before)
 	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
 	holder := rig.lastStreamSeq()
-	rig.waitFor(30*time.Second, func() bool { return len(rig.logRecords(heldLine)) >= before }, func() string {
-		return fmt.Sprintf("the message went back %d times, want %d before the take-over", len(rig.logRecords(heldLine)), before)
-	})
+	if !rig.runUntil(func() bool { return len(rig.logRecords(heldLine)) >= before }, stateMaxHolds*holdAtLeast, 30*time.Second) {
+		t.Fatalf("the message went back %d times, want %d before the take-over", len(rig.logRecords(heldLine)), before)
+	}
 	rig.stop()
 	first := len(rig.logRecords(heldLine))
 	if first >= stateMaxHolds {
@@ -3616,13 +3685,13 @@ func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
 
 	rig.start()
 	var info *natsgo.ConsumerInfo
-	rig.waitFor(time.Minute, func() bool {
+	if !rig.runUntil(func() bool {
 		info = rig.consumerInfo()
 		return info.AckFloor.Stream >= holder && info.NumAckPending == 0 && info.NumPending == 0
-	}, func() string {
-		return fmt.Sprintf("the message that holds INFRA's read is not acknowledged after %d hand-backs, %d of them before the take-over: %+v",
+	}, stateMaxHolds*holdAtLeast, time.Minute) {
+		t.Fatalf("the message that holds INFRA's read is not acknowledged after %d hand-backs, %d of them before the take-over: %+v",
 			len(rig.logRecords(heldLine)), first, info)
-	})
+	}
 
 	deliveries := rig.heldValues(holder, "delivery")
 	if len(deliveries) != stateMaxHolds {
@@ -3633,6 +3702,10 @@ func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
 	split := slices.Index(deliveries[1:], any(float64(1))) + 1
 	if want := append(oneTo(split), oneTo(stateMaxHolds-split)...); split == 0 || !slices.Equal(deliveries, want) {
 		t.Errorf("the message went back at its deliveries %v, want two runs from 1, one to each durable", deliveries)
+	}
+	if split != first {
+		t.Errorf("the message went back at its deliveries %v, the second durable's run from 1 after %d of them, want after the %d logged before the take-over",
+			deliveries, split, first)
 	}
 	if got := rig.heldValues(holder, "handBack"); !slices.Equal(got, oneTo(stateMaxHolds)) {
 		t.Errorf("the cursor counted the hand-backs %v, want %v across the take-over", got, oneTo(stateMaxHolds))
@@ -3710,28 +3783,24 @@ func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
 // a project counts from the start of the first, so a held read against a daemon that accepts the
 // connection and never answers holds the durable's ack floor for about 11 minutes at the most, not
 // for RequestTimeout more at each read. After INFRA's good starting read its daemon stops
-// answering: each read the intake makes waits until the client's window ends, window in the rig,
-// and the daemon moves the intake's clock RequestTimeout on at each read, as a read that waits out
-// the production window takes. A gap's message makes a read that times out and goes back to the
-// stream holding the read. That read began RequestTimeout before it failed, so its minute is over
-// and the hand-back is holdAtLeast long, and the redelivery makes the read again. The message goes
-// back stateMaxHolds times, each holdAtLeast long, and is then acknowledged: on the intake's clock
-// it held the floor for its 11 reads of RequestTimeout each and 10 hand-backs of holdAtLeast, about
-// 11 minutes.
+// answering: each read the intake makes fails at its stall (fakeDaemon.stalls), and the daemon
+// moves the intake's clock RequestTimeout on at each read, as a read that waits out the production
+// window takes. A gap's message makes a read that times out and goes back to the stream holding the
+// read. That read began RequestTimeout before it failed, so its minute is over and the hand-back is
+// holdAtLeast long, and the redelivery makes the read again. The message goes back stateMaxHolds
+// times, each holdAtLeast long, and is then acknowledged: on the intake's clock it held the floor
+// for its 11 reads of RequestTimeout each and 10 hand-backs of holdAtLeast, about 11 minutes. Each
+// read reaches the daemon once.
+//
+// Each hand-back is armed on the rig's clock, which runUntil moves on to its end once the rig is
+// quiet.
 func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 	const failures = stateMaxHolds + 1
-	// window is the client's window in the rig: every Client shares the default transport, which
-	// waits that long for the daemon's answer, so a read of a daemon that never answers ends then.
+	// window is the client's window in the rig (windowed): a guard for the good starting read,
+	// which must not hang, since a stalled read ends at its stall.
 	const window = 200 * time.Millisecond
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = window
-	shared := http.DefaultTransport
-	http.DefaultTransport = transport
-	t.Cleanup(func() {
-		http.DefaultTransport = shared
-		transport.CloseIdleConnections()
-	})
 	rig := newIntakeRig(t)
+	rig.windowed(window)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	rig.start()
@@ -3782,6 +3851,7 @@ func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 		t.Errorf("on the intake's clock the message held the ack floor for %s, want at least the %s of its %d reads and less than a minute more",
 			held.Round(time.Second), reads, failures)
 	}
+	rig.requireReadsServed("INFRA", daemon)
 }
 
 // TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone: the delivery that sends a message
