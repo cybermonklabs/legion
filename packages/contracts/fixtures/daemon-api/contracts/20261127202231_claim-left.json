@@ -1,0 +1,90 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "claimLeft",
+        "claimLeft.at",
+        "claimLeft.holder",
+        "claimLeft.reason"
+      ],
+      "addValues": {
+        "claimLeft.reason": [
+          "controller",
+          "daemon",
+          "held-an-hour",
+          "issue-runs",
+          "operator-tree",
+          "other-tree",
+          "person",
+          "refused",
+          "unattributed",
+          "unread",
+          "works-now"
+        ]
+      }
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "issues.*.claimLeft",
+        "issues.*.claimLeft.at",
+        "issues.*.claimLeft.holder",
+        "issues.*.claimLeft.reason"
+      ],
+      "addValues": {
+        "issues.*.claimLeft.reason": [
+          "controller",
+          "daemon",
+          "held-an-hour",
+          "issue-runs",
+          "operator-tree",
+          "other-tree",
+          "person",
+          "refused",
+          "unattributed",
+          "unread",
+          "works-now"
+        ]
+      }
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": [
+    {
+      "answer": "state",
+      "keyPath": "issues.*.claimLeft.reason",
+      "values": [
+        "controller",
+        "daemon",
+        "held-an-hour",
+        "issue-runs",
+        "operator-tree",
+        "other-tree",
+        "person",
+        "refused",
+        "unattributed",
+        "unread",
+        "works-now"
+      ]
+    },
+    {
+      "answer": "issue-record",
+      "keyPath": "claimLeft.reason",
+      "values": [
+        "controller",
+        "daemon",
+        "held-an-hour",
+        "issue-runs",
+        "operator-tree",
+        "other-tree",
+        "person",
+        "refused",
+        "unattributed",
+        "unread",
+        "works-now"
+      ]
+    }
+  ]
+}

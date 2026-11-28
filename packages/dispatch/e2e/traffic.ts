@@ -2,8 +2,9 @@ import { expect, type Frame, type Page, type Request } from "@playwright/test";
 
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
- *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
- *  request, so none of these counts it. */
+ *  the page's live socket (`/ws/live`). Playwright can report the socket's upgrade as a request
+ *  that stays in flight for as long as the socket is open, so a request whose path starts with
+ *  `/ws/` is left out of the requests in flight (`isLiveSocket`), and no count here holds it. */
 export interface Traffic {
   /** Path and query of each GET under `/api/` since the last `reset`. */
   readonly gets: string[];
@@ -12,6 +13,24 @@ export interface Traffic {
   /** Whether no request has been in flight for `ms`, as `watchInFlight` counts one. */
   quietFor(ms: number): boolean;
   reset(): void;
+}
+
+/** Whether a request is the page's live socket: its path starts with `/ws/`. The socket stays open
+ *  for the page's whole life and is no read of the page, so no watcher of a page's requests holds
+ *  it in flight. In a CI trace the upgrade of a load's `GET /ws/live` (status 101) was reported as
+ *  a request that stayed open 29,998.5 ms, though every read had answered within 0.5 s. */
+export function isLiveSocket(url: URL): boolean {
+  return url.pathname.startsWith("/ws/");
+}
+
+/** Whether `request` loads a new document into the page's main frame. Such a load ends every
+ *  request of the document it replaces, and Playwright reports no end for some of them: three
+ *  reads Settings still had open stayed in flight after a load of an issue, so a watch started on
+ *  Settings never went quiet. So `refetch-budget.e2e.ts`'s own watcher drops what is in flight
+ *  when such a load starts; the two watchers here drop a request of the old document only once
+ *  its frame commits the new one (`watchInFlight`). */
+export function loadsDocument(page: Page, request: Request): boolean {
+  return request.isNavigationRequest() && request.frame() === page.mainFrame();
 }
 
 /** A URL as a navigation commits it: the fragment is never sent, so a frame's URL is compared with
@@ -33,7 +52,8 @@ function withoutFragment(url: string): string {
  * what the new document sends count as before. A navigation inside one document
  * (`history.pushState`, a fragment) sends no navigation request, and a navigation request that
  * ends without a commit (it fails, or is answered 204 or 205) stops being its frame's, so such a
- * change of URL ends no count.
+ * change of URL ends no count. The live socket's upgrade (`isLiveSocket`) never counts at all:
+ * Playwright can report it as a request in flight for as long as the socket is open.
  */
 function watchInFlight(page: Page): (ms: number) => boolean {
   /** Each request in flight, by the frame whose next commit of a new document ends its count.
@@ -52,6 +72,7 @@ function watchInFlight(page: Page): (ms: number) => boolean {
     if (navigating.get(request.frame()) === request) navigating.delete(request.frame());
   };
   page.on("request", (request) => {
+    if (isLiveSocket(new URL(request.url()))) return;
     const navigation = request.isNavigationRequest();
     if (navigation) navigating.set(request.frame(), request);
     inFlight.set(request, navigation ? null : request.frame());
@@ -129,9 +150,9 @@ export interface RouteCount {
 export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
-  /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
-   *  only the ones counted here, as `watchInFlight` counts one. This is how the recorded baseline
-   *  measures one load
+  /** Whether nothing has been in flight for `ms` - every request the page makes but the live
+   *  socket's upgrade (`isLiveSocket`), not only the ones counted here, as `watchInFlight` counts
+   *  one. This is how the recorded baseline measures one load
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read

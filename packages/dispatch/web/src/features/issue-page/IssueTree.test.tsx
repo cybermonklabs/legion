@@ -10160,6 +10160,43 @@ test("a failed names read draws its line over the tree with every row drawn, and
   }
 });
 
+// A names line that stands again for a failure it already counted has said it, and is drawn
+// without speaking. The names read of the tree's set is refused; a comment goes, the names read of
+// the smaller set answers, and the line leaves. The comment comes back: the names read is back on
+// the first set, which holds no answer and the refusal the line counted, and runs again, so the
+// line stands again, its words and its Retry drawn with no live role.
+test("a names line that stands again for a failure it counted is drawn without speaking", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  const out = Promise.withResolvers<never>();
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await failedLines(container, 1, "names");
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        TWO_THREADS.filter((comment) => comment.id !== "reply-b")
+      );
+    });
+    await failedLinesGone(container, "names");
+    names.mockReturnValueOnce(out.promise as never);
+    await act(async () => {
+      body.client.setQueryData(["comments", KEY], TWO_THREADS);
+    });
+    await failedLines(container, 1, "names");
+    expect(
+      body.view.getByText(STATE_LINES.names_unreadable),
+      "the names' line said again a failure it had counted"
+    ).not.toHaveAttribute("role");
+    expect(body.view.queryByRole("alert"), "a line standing again spoke").toBeNull();
+  } finally {
+    await act(async () => out.resolve({ targets: [] } as never));
+    names.mockRestore();
+  }
+});
+
 // A failed read of the outline's own was silent too: with the asks' read failed the reads settled,
 // no question's node was built, and the page opened on the first row as if nothing waited on the
 // reader, with nothing said. The read's line is drawn over the tree, the rows the other reads hold
