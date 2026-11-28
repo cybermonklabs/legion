@@ -313,6 +313,26 @@ export function progressText(progress: IssueProgress | undefined, sep: string): 
   return parts.join(sep);
 }
 
+/**
+ * The priority an issue works at, as every line of the command that prints one writes it:
+ * `P0 (from ACME-1)` where the issue has none of its own and takes it from the nearest issue above
+ * it that has one (`priority_from`), `P2` where it is the issue's own, and undefined where the
+ * issue resolves none. From a Dispatch release that sends no `resolved_priority`, the line prints
+ * the issue's own `priority`, as it did before the server resolved one.
+ */
+export function priorityText(issue: {
+  readonly priority: number | null;
+  readonly resolved_priority?: number | null;
+  readonly priority_from?: string | null;
+}): string | undefined {
+  if (issue.resolved_priority === undefined) {
+    return issue.priority === null ? undefined : `P${issue.priority}`;
+  }
+  if (issue.resolved_priority === null) return undefined;
+  const from = issue.priority_from ?? null;
+  return `P${issue.resolved_priority}${from === null ? "" : ` (from ${from})`}`;
+}
+
 /** Which repository the issue targets and where it came from: its own, or resolved through its
  *  parent chain and the project's default repository. A Dispatch server from before the
  *  repository fields sends neither field, and its answer is unknown, never none: none means the
@@ -475,6 +495,7 @@ export function issueSummary(
   if (issue.external_links === undefined) {
     throw new Error("Dispatch issue is missing external_links");
   }
+  const priority = priorityText(issue);
   return [
     `Title: ${issue.title}`,
     `Key: ${issue.key}`,
@@ -485,7 +506,7 @@ export function issueSummary(
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
     `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, { read: issue, asOf })}`,
-    ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
+    ...(priority === undefined ? [] : [`Priority: ${priority}`]),
     `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
     componentsLine(issue.components, asOf),
     advancesLine(issue),

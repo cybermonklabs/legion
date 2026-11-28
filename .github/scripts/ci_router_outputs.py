@@ -48,7 +48,8 @@ false.
 Usage: ci_router_outputs.py <workflow> --filters <file> --event <name> [--ref <ref>] [--sha <sha>]
   [--base <sha>] [--pull-base <sha>] [--input <name>=<value>]... [--label <name>]...
   [--verdict <filter>=<value>]... [--verdicts <true|false>] [--step-outputs <id>=<file>]...
-  [--filter-step | --generate-step | --concurrency | --steps <job> [--changes-result <result>]]
+  [--filter-step | --generate-step | --concurrency | --step-env <step name>
+   | --steps <job> [--changes-result <result>]]
        ci_router_outputs.py <workflow> --label-readers
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --filters is
 the changes job's filters, which it computes when it runs (.github/scripts/ci-filters-generate.sh)
@@ -63,9 +64,10 @@ than the first parent when main has moved since the branch's base (98 of 149 pul
 the changes job's step <id> as that step wrote them, a GITHUB_OUTPUT file of `<name>=<value>`
 lines, in place of running or modelling it (the generate step's, for one: ci-filters-generate.sh
 writes every_filter=true there when it falls open). --filter-step prints whether the filter step
-runs and the `base` and `ref` it is handed when it starts; --generate-step prints the
+runs and the `base`, `ref` and `filters` it is handed when it starts; --generate-step prints the
 CI_FILTERS_BASE the filter generation step is handed when it starts, its whole `env:` evaluated
-there; --concurrency prints the workflow's concurrency `group` and
+there; --step-env prints, as one JSON object, the whole `env:` of the changes job's step of that
+name, evaluated when it starts, and refuses a step that is skipped; --concurrency prints the workflow's concurrency `group` and
 `cancel-in-progress`. --steps <job> prints instead, for the workflow that job of <workflow>
 calls, `<step>=<true|false>` for each step whose `if:` reads an input the job fills from the
 changes job, with that job's `with:` evaluated over those outputs and needs.changes.result
@@ -326,6 +328,11 @@ def run_step(step, env, context):
     return outputs
 
 
+def evaluated_env(step, evaluator):
+    """A step's whole `env:`, every value evaluated by `evaluator` and written as text_of writes it."""
+    return {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
+
+
 def run_steps(job, context, filter_outputs, base, given):
     """Each step of the job in order, as the runner takes them, its outputs into
     context["steps"] under its `id`: a step given with --step-outputs has those outputs, the
@@ -356,8 +363,7 @@ def run_steps(job, context, filter_outputs, base, given):
         elif step_id == "generate":
             outputs = {}
         elif "run" in step:
-            env = {str(name): text_of(interpolate(value, evaluator)) for name, value in (step.get("env") or {}).items()}
-            outputs = run_step(step, env, context)
+            outputs = run_step(step, evaluated_env(step, evaluator), context)
         else:
             raise Refused(f"step {step_id} uses {step.get('uses')}, whose outputs this reader does not model")
         context["steps"][step_id] = {"outputs": outputs}
@@ -371,6 +377,15 @@ def started_step(started, chosen, what):
     if len(found) != 1:
         raise Refused(f"the changes job holds {len(found)} {what}, not one")
     return found[0]
+
+
+def step_env(started, chosen, what):
+    """The whole `env:` of the one step `chosen` picks, every value evaluated as the runner evaluates
+    it when the step starts; a skipped step is refused, since it is handed no env."""
+    step, at_start, ran = started_step(started, chosen, what)
+    if not ran:
+        raise Refused(f"the {what} is skipped, so it is handed no env")
+    return evaluated_env(step, Evaluator(at_start))
 
 
 def dispatch_inputs(document, event, given):
@@ -430,6 +445,13 @@ def steps_of(workflow, document, job_id, outputs, context, result):
     return out
 
 
+def label_readers(outputs):
+    """The outputs of the changes job whose expression reads the pull request's labels, found in
+    the text rather than by evaluating it, so a broken term cannot drop an output from the list.
+    --label-readers prints them, and lane-verdicts.py reads them."""
+    return [name for name, expression in outputs.items() if "github.event.pull_request.labels" in str(expression)]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
@@ -450,13 +472,13 @@ def main():
     parser.add_argument("--steps")
     parser.add_argument("--changes-result", default="success")
     parser.add_argument("--step-outputs", action="append", default=[])
+    parser.add_argument("--step-env")
     args = parser.parse_args()
     document = yaml.safe_load(Path(args.workflow).read_text())
     outputs = document["jobs"]["changes"]["outputs"]
     if args.label_readers:
-        for name, expression in outputs.items():
-            if "github.event.pull_request.labels" in str(expression):
-                print(name)
+        for name in label_readers(outputs):
+            print(name)
         return 0
     if not args.event or not args.filters:
         parser.error("--event and --filters are required unless --label-readers is given")
@@ -515,18 +537,16 @@ def main():
             step, at_start, ran = started_step(started, lambda s: s.get("id") == "filter", "step of id filter")
             with_ = step.get("with") or {}
             print(f"runs={text_of(ran)}")
-            for key in ("base", "ref"):
+            for key in ("base", "ref", "filters"):
                 print(f"{key}={text_of(interpolate(with_.get(key, ''), Evaluator(at_start)))}")
             return 0
         if args.generate_step:
-            step, at_start, ran = started_step(started, lambda s: "ci-filters-generate.sh" in str(s.get("run", "")),
-                                               "step that runs ci-filters-generate.sh")
-            if not ran:
-                raise Refused("the step that runs ci-filters-generate.sh is skipped, so it is handed no env")
-            # Every value of the step's env, as the runner evaluates it when the step starts.
-            env = {str(name): text_of(interpolate(value, Evaluator(at_start)))
-                   for name, value in (step.get("env") or {}).items()}
+            env = step_env(started, lambda s: "ci-filters-generate.sh" in str(s.get("run", "")),
+                           "step that runs ci-filters-generate.sh")
             print(f"filters-base={env.get('CI_FILTERS_BASE', '')}")
+            return 0
+        if args.step_env:
+            print(json.dumps(step_env(started, lambda s: s.get("name") == args.step_env, f"step named {args.step_env!r}")))
             return 0
     except Refused as refusal:
         print(f"ci_router_outputs: {refusal}", file=sys.stderr)

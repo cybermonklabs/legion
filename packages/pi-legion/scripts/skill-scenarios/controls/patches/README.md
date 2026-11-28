@@ -83,9 +83,9 @@ label that carries the trim, and the Job stops building E's tree. Its drop is go
 replaces it: at #5564's head `e42a6ceaf799`, `git grep -i -E 'fresh agent|agent of an earlier|fresh
 or an earlier|earlier agent'` over `packages/daemon/internal/prompts`, `skills`,
 `packages/pi-legion/src` and `packages/pi-shared/src` finds the two texts E drops and no other. At a
-label without the trim, E's tree keeps the bullet. `rig.test.ts`'s row "E's manifest applies to this
-checkout's own two files" holds E to the texts a label of this checkout carries, so a change that
-deletes one of E's two texts fails that row before it reaches a Job.
+label without the trim, E's tree keeps the bullet. No unit test holds E to the texts a label of this
+checkout carries: a change that deletes one of E's two texts stops the Job's build of E's tree,
+since `label_tree` refuses a drop it finds other than once.
 
 | Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `64d99a04992` | Count at `main` `1a37a9ffe738` |
 | --- | --- | --- | --- | --- | --- |
@@ -95,8 +95,5 @@ Every form takes `plan.md:80-82` out, so the architect skill an owner loads name
 earlier plans in no form, and only the owner's prompt part can name it: D, whose prompt part names
 no such read, is then a control of that part alone. The lines are three the change wrote in place
 of two of `main`'s, so the text occurs 0 times at the older `main`, and no form's tree builds there.
-The manifests leave the Dispatch CLI's `plans` help unchanged. `rig.test.ts`'s row "no form's tree
-of this checkout's own two files holds a line of plan.md that names `dispatch plans --project`"
-holds each form's tree of this checkout's own two files to no such line, and this checkout's own
-`plan.md` to one at least, so the drop is no no-op. `../pr-4902-head/README.md` names what else
-must change with these lines.
+The manifests leave the Dispatch CLI's `plans` help unchanged. `../pr-4902-head/README.md` names
+what else must change with these lines.

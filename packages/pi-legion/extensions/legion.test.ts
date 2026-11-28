@@ -16,20 +16,25 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  githubDefaultBranchWorkflowSubject,
   type IssueKey,
+  isGithubDefaultBranchWorkflowSubject,
   LEGION_ROLES,
   type LegionRole,
   LISTENER_CALL_ATTEMPTS,
   roleToken,
+  slackMentionTopic,
 } from "@legion/contracts";
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
+  type LegionControllerRegistration,
 } from "@legion/contracts/legion-api";
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
+import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import { LEGION_FALLBACK_ENTRY } from "@legion/pi-shared/fallback-cooldown";
 import { noteInjectedUserTurn, noteTypedUserTurn } from "@legion/pi-shared/injected-user-turns";
 import {
@@ -1334,6 +1339,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         managedSessions: new Set(),
         regained: undefined,
         slackRoleOwned: false,
+        watchedWorkflowsRoleOwned: false,
       },
       injectedUserTurns: new Map(),
       bootstrappedSession: { file: undefined },
@@ -4422,14 +4428,11 @@ interface LaunchedController {
   readonly nextSoftClaim: () => Promise<void>;
 }
 
-/** The session `legion controller start` launches against the daemon: the `LEGION_CONTROLLER`
- * marker, and the controller capability as a 0600 file behind `LEGION_CONTROLLER_SECRET_FILE`
- * (`packages/daemon/cmd/legion/controller.go`). The stub answers the claim registration with
- * the controller's registration (or `register`'s answer, when it gives one), mints grants (or
- * answers `grant`'s refusal), takes an issue-status write, and 404s every other daemon path as
- * the daemon's catch-all does; its Envoy side keeps a role holder and an interest registry, as
- * the listener does, and names no holder while `listener.lost` is set. */
-async function launchedController(options: {
+/** One entry of a controller registration's `watchedWorkflows` (contract entry 20261127193422). */
+type WatchedWorkflow = NonNullable<LegionControllerRegistration["watchedWorkflows"]>[number];
+
+/** What `launchedController`'s daemon and Envoy answer, and the controller's environment. */
+interface LaunchedControllerOptions {
   readonly sessionId: string;
   readonly register?: (
     body: Record<string, unknown>
@@ -4453,16 +4456,30 @@ async function launchedController(options: {
   readonly stateFixture?: string;
   /** Called with each request's path as the stub takes it, before it answers. */
   readonly onRequest?: (path: string) => void;
-  /** Tried for each request after it is recorded and before the stub's own routes: a `Response`
-   * it returns is the answer, so a test can refuse one listener call. A test cannot wrap the
-   * stub's `fetch` itself — the Envoy client captures it when the pane binds. */
-  readonly answer?: (path: string) => Response | undefined;
+  /** Tried for each request, with its body, after it is recorded and before the stub's own
+   * routes: a `Response` it returns is the answer, so a test can refuse one listener call. A test
+   * cannot wrap the stub's `fetch` itself — the Envoy client captures it when the pane binds. */
+  readonly answer?: (
+    path: string,
+    body: Record<string, unknown> | undefined
+  ) => Response | undefined;
   /** The listener's answer to a `/v1/roles/set` for the controller role, in place of its own
    * registry's when it gives one. */
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
   /** The host's answer to each `sendUserMessage` (`createPi`'s): taken unless a test says. */
   readonly sendUserMessage?: () => Promise<void>;
-}): Promise<LaunchedController> {
+  /** The project's watched workflows the controller's registration names; none unless given. */
+  readonly watchedWorkflows?: readonly WatchedWorkflow[];
+}
+
+/** The session `legion controller start` launches against the daemon: the `LEGION_CONTROLLER`
+ * marker, and the controller capability as a 0600 file behind `LEGION_CONTROLLER_SECRET_FILE`
+ * (`packages/daemon/cmd/legion/controller.go`). The stub answers the claim registration with
+ * the controller's registration (or `register`'s answer, when it gives one), mints grants (or
+ * answers `grant`'s refusal), takes an issue-status write, and 404s every other daemon path as
+ * the daemon's catch-all does; its Envoy side keeps a role holder and an interest registry, as
+ * the listener does, and names no holder while `listener.lost` is set. */
+async function launchedController(options: LaunchedControllerOptions): Promise<LaunchedController> {
   const project = options.project ?? "omp";
   const token = `legion-${project}-controller`; // fixture-secret: the controller's claim token, the role the daemon and the listener name it by; no client holds it
   const registration = {
@@ -4470,6 +4487,9 @@ async function launchedController(options: {
     role: "controller",
     generation: 2,
     secret: fixtureSecret("reg"),
+    ...(options.watchedWorkflows === undefined
+      ? {}
+      : { watchedWorkflows: options.watchedWorkflows }),
   };
   const stateDir = controllerStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
@@ -4511,7 +4531,7 @@ async function launchedController(options: {
     const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
     requests.push({ path: url.pathname, body });
     options.onRequest?.(url.pathname);
-    const answered = options.answer?.(url.pathname);
+    const answered = options.answer?.(url.pathname, body);
     if (answered !== undefined) return answered;
     if (url.pathname === "/legion/v1/claims/register") {
       return (await options.register?.(body)) ?? Response.json(registration);
@@ -4619,6 +4639,31 @@ async function launchedController(options: {
     holder: () => holder,
     nextSoftClaim: () => softClaim.promise,
   };
+}
+
+/** The controller the daemon launched: its boot token in place of the operator's capability, no
+ * start message, `channels` as the daemon names them, and `options` as `launchedController` takes
+ * them. The environment is set before the extensions load, as a pod's is. */
+async function daemonController(
+  sessionId: string,
+  channels: string | undefined,
+  options: Omit<LaunchedControllerOptions, "sessionId" | "stateFixture"> = {}
+): Promise<LaunchedController> {
+  const secrets = await mkdtemp(path.join(os.tmpdir(), "legion-controller-boot-"));
+  temporaryPaths.push(secrets);
+  const bootFile = path.join(secrets, "LEGION_BOOT_TOKEN");
+  await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+  process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+  if (channels === undefined) delete process.env.LEGION_SLACK_CHANNELS;
+  else process.env.LEGION_SLACK_CHANNELS = channels;
+  const controller = await launchedController({
+    ...options,
+    sessionId,
+    stateFixture: "state-controller-claim.json",
+  });
+  delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+  delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+  return controller;
 }
 
 /** What a command's `context.ui.notify` told the operator. */
@@ -6974,25 +7019,6 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           request.path === "/v1/interests/subscribe" &&
           JSON.stringify(request.body).includes("notifications.slack.")
       );
-    /** The controller the daemon launched: its boot token in place of the operator's capability,
-     * no start message, and `channels` as the daemon names them. The environment is set before
-     * the extensions load, as a pod's is. */
-    const daemonController = async (sessionId: string, channels: string | undefined) => {
-      const secrets = await mkdtemp(path.join(os.tmpdir(), "legion-controller-boot-"));
-      temporaryPaths.push(secrets);
-      const bootFile = path.join(secrets, "LEGION_BOOT_TOKEN");
-      await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-      process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-      if (channels === undefined) delete process.env.LEGION_SLACK_CHANNELS;
-      else process.env.LEGION_SLACK_CHANNELS = channels;
-      const controller = await launchedController({
-        sessionId,
-        stateFixture: "state-controller-claim.json",
-      });
-      delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-      delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-      return controller;
-    };
     /** A new Oh My Pi process resuming `sessionId`, whose transcript records the role claim, under
      * the channels its launch names. */
     const resume = async (first: LaunchedController, sessionId: string, channels: string) => {
@@ -7258,6 +7284,426 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         );
       });
     }
+  });
+
+  // The project's watched workflows, which the daemon names in the controller's registration
+  // (`watchedWorkflows`) under both launch forms. The controller follows one default-branch topic
+  // for each event of each entry, for as long as it holds its role, subscribed once the rest of
+  // its claim is done and never registered as a plain interest, so the role's end hands them back
+  // with its lane. Envoy's answer to one of them stops nothing of the claim: a topic the edge
+  // refuses for the session's projects is dropped and named to the session, as pi-envoy drops any
+  // such topic, and one the edge withholds while it cannot read the project's repositories (503
+  // `repositories_unknown`) is named to the session and registered again after a growing wait. A
+  // resumed controller drops every such topic its stored row holds before it claims, since the
+  // edge judges that row's GitHub topics at each registration: a restored one would refuse the
+  // role claim and the notice lane through such an outage. A process keeps the list its first
+  // registration names for its whole life, as it keeps its Slack channels.
+  describe("watched workflows", () => {
+    const lane = "notifications.legion.omp.controller";
+    const mention = slackMentionTopic("C00000000");
+    const nightly: WatchedWorkflow = {
+      owner: "acme",
+      repo: "widgets",
+      workflow: "nightly.yaml",
+      events: ["schedule", "workflow_dispatch"],
+    };
+    const release: WatchedWorkflow = {
+      owner: "acme",
+      repo: "gadgets",
+      workflow: "release.yml",
+      events: ["push"],
+    };
+    const scheduled = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "schedule"
+    );
+    const dispatched = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "workflow_dispatch"
+    );
+    const pushed = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "release.yml",
+      "completed",
+      "push"
+    );
+    /** The watched workflows' topics among `topics`, in the order they were given in. */
+    const watchedAmong = (topics: readonly string[]) =>
+      topics.filter((topic) => isGithubDefaultBranchWorkflowSubject(topic));
+    const topicsOf = (body: Record<string, unknown> | undefined): readonly unknown[] =>
+      Array.isArray(body?.topics) ? body.topics : [];
+    /** What the controller's process told its session of its watched workflows, with each
+     * message's delivery. */
+    const toldWatched = (controller: LaunchedController) =>
+      controller.sentMessages.flatMap((message, at) =>
+        "customType" in message && message.customType === "legion-watched-workflows"
+          ? [{ content: String(message.content), options: controller.sentMessageOptions[at] }]
+          : []
+      );
+    /** Every text the session was shown as a message or a held notice: Envoy holds a notice for
+     * a host that is not settled, which these contexts never are, in the session's transcript. */
+    const shown = (controller: LaunchedController): string[] => [
+      ...controller.sentMessages.flatMap((message) =>
+        "content" in message && typeof message.content === "string" ? [message.content] : []
+      ),
+      ...controller.entries.flatMap(({ data }) =>
+        typeof data === "object" && data !== null && "content" in data ? [String(data.content)] : []
+      ),
+    ];
+    /** The edge listener's 503 to a registration while it cannot read the project's
+     * repositories. */
+    const repositoriesUnknown = () =>
+      Response.json(
+        { error: "the project's repositories could not be read", reason: "repositories_unknown" },
+        { status: 503 }
+      );
+
+    test("watched workflows: the daemon's controller registers each entry's topics while it holds its role, and unregisters them when the role ends", async () => {
+      const controller = await daemonController("ses_controller_watched", "", {
+        watchedWorkflows: [nightly],
+      });
+      const ticks: (() => void)[] = [];
+      const refused = Promise.withResolvers<void>();
+      const context = controller.context("ses_controller_watched");
+      await controller.handlers.get("session_start")?.(
+        {},
+        {
+          ...context,
+          setInterval: (callback) => ticks.push(callback),
+          ui: {
+            notify: (message) => {
+              if (message.includes("this session no longer holds it")) refused.resolve();
+            },
+          },
+        }
+      );
+      await until("the registration that carries both watched topics", () =>
+        registeredTopics(controller.requests, "ses_controller_watched").includes(dispatched)
+      );
+
+      expect(controller.exits).toEqual([]);
+      const held = registeredTopics(controller.requests, "ses_controller_watched");
+      expect(watchedAmong(held)).toEqual([scheduled, dispatched]);
+      expect(held).toContain(lane);
+      expect(watchedAmong(await followedTopics(controller, context))).toEqual([
+        scheduled,
+        dispatched,
+      ]);
+
+      // Another session takes the controller role, and this one's next heartbeat is refused.
+      envoyPluginInterface().bootstrappedSession.file = undefined;
+      const second = await createPi();
+      legionExtension(second.pi);
+      await second.handlers.get("session_start")?.({}, controller.context("ses_controller_other"));
+      for (const tick of ticks) tick();
+      await refused.promise;
+      await turn();
+      const requestsBeforeEnd = controller.requests.length;
+      for (const tick of ticks) tick();
+      await turn();
+
+      // The role's lane and its watched topics go back to the listener together, and the
+      // registration that follows carries none of them.
+      expect(unregisteredTopics(controller.requests, "ses_controller_watched")).toEqual([
+        [lane, scheduled, dispatched],
+      ]);
+      const afterEnd = registeredTopics(
+        controller.requests.slice(requestsBeforeEnd),
+        "ses_controller_watched"
+      );
+      expect(afterEnd).toContain("notifications.agent.ses_controller_watched");
+      expect(afterEnd).not.toContain(lane);
+      expect(watchedAmong(afterEnd)).toEqual([]);
+      expect(watchedAmong(await followedTopics(controller, context))).toEqual([]);
+    });
+
+    test("watched workflows: the operator's controller subscribes its registration's list", async () => {
+      const controller = await launchedController({
+        sessionId: "ses_controller_operator_watched",
+        watchedWorkflows: [nightly, release],
+      });
+      const context = controller.context("ses_controller_operator_watched");
+      expect(await startOperatorController(controller, context)).toEqual([]);
+      await until("the registration that carries the three watched topics", () =>
+        registeredTopics(controller.requests, "ses_controller_operator_watched").includes(pushed)
+      );
+
+      expect(controller.exits).toEqual([]);
+      expect(
+        watchedAmong(registeredTopics(controller.requests, "ses_controller_operator_watched"))
+      ).toEqual([scheduled, dispatched, pushed]);
+      expect(watchedAmong(await followedTopics(controller, context))).toEqual([
+        scheduled,
+        dispatched,
+        pushed,
+      ]);
+      // The lane is registered, with the role claim, before any watched topic is.
+      const registrations = interestTopics(
+        controller.requests,
+        "/v1/interests/subscribe",
+        "ses_controller_operator_watched"
+      );
+      const laneAt = registrations.findIndex((topics) => topics.includes(lane));
+      expect(laneAt).toBeGreaterThanOrEqual(0);
+      expect(registrations.findIndex((topics) => watchedAmong(topics).length > 0)).toBeGreaterThan(
+        laneAt
+      );
+      expect(toldWatched(controller)).toEqual([]);
+    });
+
+    test("watched workflows: a resumed controller drops the watched topics its stored row holds before it claims, and subscribes only its registration's list", async () => {
+      let resumed = false;
+      let withheldAfterResume = 0;
+      const controller: LaunchedController = await daemonController(
+        "ses_controller_watched_resume",
+        "",
+        {
+          watchedWorkflows: [nightly],
+          // The project's list has changed by the time the session is resumed.
+          register: () =>
+            resumed
+              ? Response.json({ ...controller.registration, watchedWorkflows: [release] })
+              : undefined,
+          // From the resume on, the edge cannot read the repository of the first launch's
+          // entry, and answers 503 to a registration that carries one of its topics.
+          answer: (route, body) => {
+            if (!resumed || route !== "/v1/interests/subscribe") return undefined;
+            const topics = topicsOf(body);
+            if (!topics.includes(scheduled) && !topics.includes(dispatched)) return undefined;
+            withheldAfterResume += 1;
+            return repositoriesUnknown();
+          },
+        }
+      );
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_watched_resume")
+      );
+      await until("the first launch's watched registration", () =>
+        registeredTopics(controller.requests, "ses_controller_watched_resume").includes(dispatched)
+      );
+
+      // A new Oh My Pi process resumes the session: its transcript records the role claim, and
+      // the listener's stored row holds the first launch's watched topics.
+      envoyPluginInterface().bootstrappedSession.file = undefined;
+      resumed = true;
+      const requestsBefore = controller.requests.length;
+      const resumedProcess = await createPi();
+      legionExtension(resumedProcess.pi);
+      const context = controller.context("ses_controller_watched_resume");
+      const resumedContext: SessionContext = {
+        ...context,
+        sessionManager: {
+          ...context.sessionManager,
+          getBranch: () => [
+            { type: "custom", customType: "envoy-role-claim", data: { role: controller.token } },
+          ],
+        },
+      };
+      await resumedProcess.handlers.get("session_start")?.({}, resumedContext);
+      await until("the resumed process's watched registration", () =>
+        registeredTopics(
+          controller.requests.slice(requestsBefore),
+          "ses_controller_watched_resume"
+        ).includes(pushed)
+      );
+
+      const resumedRequests = controller.requests.slice(requestsBefore);
+      const removal = resumedRequests.findIndex(
+        (request) => request.path === "/v1/interests/unsubscribe"
+      );
+      expect(removal).toBeGreaterThanOrEqual(0);
+      expect(
+        resumedRequests.findIndex((request) => request.path === "/v1/roles/set")
+      ).toBeGreaterThan(removal);
+      expect(unregisteredTopics(resumedRequests, "ses_controller_watched_resume")).toEqual([
+        [scheduled, dispatched],
+      ]);
+      // No registration of the resumed process carried the first launch's topics, so the edge
+      // refused none of them, and the claim went through.
+      expect(withheldAfterResume).toBe(0);
+      expect(controller.exits).toEqual([]);
+      expect(controller.holder()).toBe("ses_controller_watched_resume");
+      expect(
+        watchedAmong(registeredTopics(resumedRequests, "ses_controller_watched_resume"))
+      ).toEqual([pushed]);
+      expect(watchedAmong(await followedTopics(resumedProcess, resumedContext))).toEqual([pushed]);
+    });
+
+    // A later claim in the same process and the same session, here `/legion-claim-controller`
+    // typed in the daemon's controller, whose registration names another list: the process keeps
+    // the list its first registration named. Through the real Envoy plugin, the later claim's
+    // watched task registers the first list's topics again, no registration carries a topic only
+    // the new list names, and no watched topic leaves the listener's row.
+    test("watched workflows: a later claim of the same session whose registration names another list registers the first list's topics again, never the new list's own, and unregisters nothing watched", async () => {
+      const session = "ses_controller_watched_relisted";
+      let typed = false;
+      const controller: LaunchedController = await daemonController(session, "", {
+        watchedWorkflows: [nightly],
+        register: () =>
+          typed
+            ? Response.json({
+                ...controller.registration,
+                watchedWorkflows: [{ ...nightly, events: ["schedule"] }, release],
+              })
+            : undefined,
+      });
+      const context = controller.context(session);
+      await controller.handlers.get("session_start")?.({}, context);
+      await until("the first claim's watched registration", () =>
+        registeredTopics(controller.requests, session).includes(dispatched)
+      );
+
+      typed = true;
+      const requestsBefore = controller.requests.length;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined)
+        throw new Error("controller claim command was not registered");
+      await claimCommand.handler("", commandContext(context));
+      // The registrations after the later claim's ready: its watched task's, one per topic.
+      const watchedRegistrations = () => {
+        const requests = controller.requests.slice(requestsBefore);
+        const ready = requests.findIndex((request) => request.path === "/legion/v1/claims/ready");
+        if (ready === -1) return [];
+        return interestTopics(requests.slice(ready + 1), "/v1/interests/subscribe", session);
+      };
+      await until(
+        "the later claim's two watched registrations",
+        () => watchedRegistrations().length >= 2
+      );
+
+      expect(controller.exits).toEqual([]);
+      expect(controller.holder()).toBe(session);
+      for (const topics of watchedRegistrations()) {
+        expect(watchedAmong(topics)).toEqual([scheduled, dispatched]);
+      }
+      for (const topics of interestTopics(
+        controller.requests,
+        "/v1/interests/subscribe",
+        session
+      )) {
+        expect(topics).not.toContain(pushed);
+      }
+      expect(watchedAmong(unregisteredTopics(controller.requests, session).flat())).toEqual([]);
+      expect(watchedAmong(await followedTopics(controller, context))).toEqual([
+        scheduled,
+        dispatched,
+      ]);
+      expect(toldWatched(controller)).toEqual([]);
+    });
+
+    test("watched workflows: a topic the edge refuses 403 repository_not_in_project is dropped and named to the session, and the notice and Slack topics stay", async () => {
+      let refusals = 0;
+      const controller = await daemonController("ses_controller_watched_refused", "C00000000", {
+        watchedWorkflows: [{ ...nightly, events: ["schedule"] }],
+        answer: (route, body) => {
+          if (route !== "/v1/interests/subscribe" || !topicsOf(body).includes(scheduled)) {
+            return undefined;
+          }
+          refusals += 1;
+          return Response.json(projectRefusal([scheduled]), { status: 403 });
+        },
+      });
+      const ticks: (() => void)[] = [];
+      const context: SessionContext = {
+        ...controller.context("ses_controller_watched_refused"),
+        setInterval: (callback) => ticks.push(callback),
+      };
+      await controller.handlers.get("session_start")?.({}, context);
+      const refusedNotices = () =>
+        shown(controller).filter((text) => text.includes("Envoy topics refused"));
+      await until("the session told of the refused topic", () => refusedNotices().length > 0);
+      // One more heartbeat: it registers what the session follows now, and asks for no refused
+      // topic again.
+      const registrationsBefore = interestTopics(controller.requests, "/v1/interests/subscribe");
+      for (const tick of ticks) tick();
+      await until(
+        "the heartbeat's registration",
+        () =>
+          interestTopics(controller.requests, "/v1/interests/subscribe").length >
+          registrationsBefore.length
+      );
+      await turn();
+
+      expect(refusedNotices()).toHaveLength(1);
+      expect(refusedNotices()[0]).toContain(scheduled);
+      expect(refusedNotices()[0]).toContain("repository_not_in_project");
+      expect(refusals).toBe(1);
+      expect(controller.exits).toEqual([]);
+      const followed = await followedTopics(controller, context);
+      expect(followed).toContain(lane);
+      expect(followed).toContain(mention);
+      expect(followed).not.toContain(scheduled);
+      const registered = registeredTopics(controller.requests, "ses_controller_watched_refused");
+      expect(registered).toContain(lane);
+      expect(registered).toContain(mention);
+      expect(registered).not.toContain(scheduled);
+      // Envoy named the refusal: the controller's process tells nothing of its own.
+      expect(toldWatched(controller)).toEqual([]);
+    });
+
+    test("watched workflows: a registration the edge answers 503 repositories_unknown leaves the claim and the other topics, tells the session the entry, and registers the watched topic again until the edge takes it", async () => {
+      let withholding = true;
+      let withheld = 0;
+      let taken = 0;
+      const controller = await daemonController("ses_controller_watched_withheld", "C00000000", {
+        watchedWorkflows: [{ ...nightly, events: ["schedule"] }],
+        answer: (route, body) => {
+          if (route !== "/v1/interests/subscribe" || !topicsOf(body).includes(scheduled)) {
+            return undefined;
+          }
+          if (!withholding) {
+            taken += 1;
+            return undefined;
+          }
+          withheld += 1;
+          return repositoriesUnknown();
+        },
+      });
+      const context = controller.context("ses_controller_watched_withheld");
+      await controller.handlers.get("session_start")?.({}, context);
+      await until("the session told the withheld entry", () => toldWatched(controller).length > 0);
+
+      const [waiting] = toldWatched(controller);
+      for (const named of ["acme/widgets/nightly.yaml", scheduled, "repositories_unknown"]) {
+        expect(waiting?.content).toContain(named);
+      }
+      expect(waiting?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+      // The claim stands, and so do its other topics.
+      expect(controller.exits).toEqual([]);
+      expect(controller.holder()).toBe("ses_controller_watched_withheld");
+      const followed = await followedTopics(controller, context);
+      expect(followed).toContain(lane);
+      expect(followed).toContain(mention);
+      expect(followed).not.toContain(scheduled);
+
+      withholding = false;
+      await until("the watched topic registered again and taken", () => taken > 0);
+      await until(
+        "the session told that the topic landed",
+        () => toldWatched(controller).length > 1
+      );
+
+      expect(withheld).toBeGreaterThan(0);
+      const told = toldWatched(controller);
+      expect(told).toHaveLength(2);
+      expect(told[1]?.content).toContain(scheduled);
+      expect(told[1]?.content).not.toContain("repositories_unknown");
+      expect(told[1]?.options).toEqual({ deliverAs: "steer", triggerTurn: false });
+      expect(await followedTopics(controller, context)).toEqual(
+        expect.arrayContaining([lane, mention, scheduled])
+      );
+      expect(controller.exits).toEqual([]);
+    });
   });
 
   // The subscription is the registration that carries the lane (INFRA-771), and the registration

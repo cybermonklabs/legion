@@ -5,11 +5,13 @@ import {
   dispatchDocumentSubject,
   GHOSTWISPR_TOPIC_PREFIX,
   ghostWisprSubject,
+  githubDefaultBranchWorkflowSubject,
   githubJobSubject,
   githubPushSubject,
   githubResourceSubject,
   githubSubject,
   githubWorkflowSubject,
+  isGithubDefaultBranchWorkflowSubject,
   legacyAgentSubject,
   SUBJECT_MAX_BYTES,
   sanitizeSubjectSegment,
@@ -453,6 +455,82 @@ describe("githubWorkflowSubject", () => {
     const workflow = githubWorkflowSubject("acme", "widgets", "ci.yml", "completed");
     const repoLevel = githubSubject("acme", "widgets", "workflow");
     expect(workflow.startsWith(`${repoLevel}.`)).toBe(true);
+  });
+});
+
+// A run of a workflow on its repository's default branch, of the repository's own head, is also
+// published under a subject that names its trigger event. Each segment is one, sanitized as the
+// workflow subject's file is; the Go side's GithubDefaultBranchWorkflowSubject builds the same
+// subject from the dotted row below (TestGithubSubjectsWriteADottedOwnerOrNameAsOneSegment in
+// packages/envoy/internal/contracts).
+describe("githubDefaultBranchWorkflowSubject", () => {
+  test("names the run's file, action and event after default_branch.workflow", () => {
+    // The type names the subject too, so a caller that builds one holds its literal.
+    const subject: "notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule" =
+      githubDefaultBranchWorkflowSubject(
+        "acme",
+        "widgets",
+        "nightly.yaml",
+        "completed",
+        "schedule"
+      );
+    expect(subject).toBe(
+      "notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule"
+    );
+  });
+
+  test("writes a dotted owner, repository and file each as one segment", () => {
+    expect(
+      githubDefaultBranchWorkflowSubject(
+        "acme.co",
+        "site.io",
+        "ci.yml",
+        "completed",
+        "workflow_dispatch"
+      )
+    ).toBe(
+      "notifications.github.acme_co.site_io.default_branch.workflow.ci_yml.completed.workflow_dispatch"
+    );
+  });
+
+  test("writes whitespace and wildcards in a file or an event as _", () => {
+    expect(
+      githubDefaultBranchWorkflowSubject("acme", "widgets", "my ci*.yml", "completed", "a>b")
+    ).toBe("notifications.github.acme.widgets.default_branch.workflow.my_ci__yml.completed.a_b");
+  });
+
+  test("is consistent with githubSubject prefix", () => {
+    const copy = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "ci.yml",
+      "completed",
+      "push"
+    );
+    expect(copy.startsWith(`${githubSubject("acme", "widgets", "default_branch")}.workflow.`)).toBe(
+      true
+    );
+  });
+
+  test("isGithubDefaultBranchWorkflowSubject holds for what it builds and for nothing else", () => {
+    expect(
+      isGithubDefaultBranchWorkflowSubject(
+        githubDefaultBranchWorkflowSubject("acme.co", "site.io", "ci.yml", "completed", "schedule")
+      )
+    ).toBe(true);
+    for (const subject of [
+      githubWorkflowSubject("acme", "widgets", "ci.yml", "completed"),
+      githubJobSubject("acme", "widgets", 500, "completed"),
+      githubSubject("acme", "widgets", "default_branch"),
+      "notifications.github.acme.widgets.default_branch.workflow.ci_yml.completed",
+      "notifications.github.acme.widgets.default_branch.workflow.ci_yml.completed.schedule.extra",
+      "notifications.github.acme.widgets.default_branch.workflow.ci_yml.completed.",
+      "notifications.github.acme..default_branch.workflow.ci_yml.completed.schedule",
+      "notifications.github.acme.widgets.default_branch.push.ci_yml.completed.schedule",
+      "notifications.slack.acme.widgets.default_branch.workflow.ci_yml.completed.schedule",
+    ]) {
+      expect([subject, isGithubDefaultBranchWorkflowSubject(subject)]).toEqual([subject, false]);
+    }
   });
 });
 

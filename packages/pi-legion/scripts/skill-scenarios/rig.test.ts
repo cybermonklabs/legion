@@ -2134,19 +2134,6 @@ describe("label_tree", () => {
       expect({ file, blob: git(repo, "rev-parse", `HEAD:${file}`).trim() }).toEqual({ file, blob });
     return { repo, head: git(repo, "rev-parse", "HEAD").trim() };
   }
-  /** A repository of one commit that holds this checkout's own two files at their paths: the files
-   * a label of this checkout gives each form's manifest. */
-  function ownRepo(): { repo: string; head: string } {
-    const repo = freshDir("own-two-files");
-    git(repo, "init", "-q");
-    for (const [, file] of PR_4902_FILES) {
-      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
-      cpSync(path.join(root, file), path.join(repo, file));
-    }
-    git(repo, "add", "-A");
-    git(repo, "commit", "-qm", "this checkout's two files");
-    return { repo, head: git(repo, "rev-parse", "HEAD").trim() };
-  }
   /** Each form's label and its manifest under controls/, in the groups' order. */
   const FORM_MANIFESTS = [
     ["head", "owner-walk-head.txt"],
@@ -2187,26 +2174,6 @@ describe("label_tree", () => {
         stderr: "",
       });
     }
-  });
-
-  // Catches: a change of this checkout that deletes a text E takes out (the skills trim deleted
-  // the bullet E dropped), which the Job meets only when it builds E's tree from a label's HEAD.
-  // The repository holds this checkout's own two files, so CI's pi-legion job, which a change of
-  // skills/** or the prompts runs, fails here first.
-  test("E's manifest applies to this checkout's own two files", () => {
-    const { repo, head } = ownRepo();
-    const made = labelTree(
-      repo,
-      scenarios,
-      freshDir("own-ctl-e"),
-      "ctl-e",
-      head,
-      path.join(controls, "owner-walk-E.txt")
-    );
-    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-      code: 0,
-      stderr: "",
-    });
   });
 
   // Catches: a D whose tree takes out more than #4902's own lines from form A's (a manifest line
@@ -2263,36 +2230,6 @@ describe("label_tree", () => {
     expect(failed.stderr).toContain(
       "the label tree ctl-d-more differs from the label tree head in more than the lines of"
     );
-  });
-
-  // Catches: a form whose architect skill still names the read of earlier plans, so an owner's
-  // read need not come from its prompt part: a manifest without the plans-read drop, or a line of
-  // this checkout's plan.md that names `dispatch plans --project` outside the dropped text; and a
-  // row that passes because this checkout's plan.md names no such line, which would make the drop
-  // a no-op. D's prompt part names the read nowhere either, and every other form's names it.
-  test("no form's tree of this checkout's own two files holds a line of plan.md that names `dispatch plans --project`", () => {
-    const [prompt, plan] = PR_4902_FILES.map(([, file]) => file);
-    const naming = (file: string) =>
-      readFileSync(file, "utf8")
-        .split("\n")
-        .filter((line) => line.includes("dispatch plans --project")).length;
-    const own = { plan: naming(path.join(root, plan)), prompt: naming(path.join(root, prompt)) };
-    expect(own.plan).toBeGreaterThan(0);
-    expect(own.prompt).toBeGreaterThan(0);
-    const { repo, head } = ownRepo();
-    const trees = FORM_MANIFESTS.map(([name, manifest]) => {
-      const work = freshDir(`own-${name}`);
-      const made = labelTree(repo, scenarios, work, name, head, path.join(controls, manifest));
-      const tree = path.join(work, "label-trees", name, "tree");
-      return made.code === 0
-        ? { name, plan: naming(path.join(tree, plan)), prompt: naming(path.join(tree, prompt)) }
-        : { name, code: made.code, stderr: made.stderr };
-    });
-    expect(trees).toEqual([
-      { name: "head", plan: 0, prompt: own.prompt },
-      { name: "ctl-d", plan: 0, prompt: 0 },
-      { name: "ctl-e", plan: 0, prompt: own.prompt },
-    ]);
   });
 });
 

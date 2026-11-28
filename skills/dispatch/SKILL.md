@@ -92,5 +92,5 @@ A bare id or path, or `dispatch://` outside Dispatch, is no link: give the `http
 
 ## Setup and the HTTP API
 
-- Use a personal token from **Settings → Agent tokens**, as `DISPATCH_TOKEN` or `dispatch.token` in the session's `envoy.json`.
+- A person signs a session in (`dispatch login --help`); else a personal token from **Settings → Agent tokens**, as `DISPATCH_TOKEN` or `dispatch.token` in the session's `envoy.json`.
 - `GET /api/v1` lists every route; never guess one. Branch on an error's `code`, not its text.

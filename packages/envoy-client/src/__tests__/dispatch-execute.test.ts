@@ -56,6 +56,7 @@ import {
   type DispatchWriteRetry,
 } from "../dispatch-http";
 import { followedAsk } from "../dispatch-subscribe";
+import { messageFor } from "../errors";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -2016,6 +2017,35 @@ describe("executeDispatchTool", () => {
         fetchImpl: fetchImpl as typeof fetch,
       })
     ).rejects.toThrow("it predates search paging and ignored offset 20");
+  });
+
+  // A search whose statement ran past Dispatch's bound answers 503 SEARCH_TIMEOUT, naming the
+  // bound. Asking again at once costs the database the bound again and finds nothing more, so
+  // the command asks once, and the line it prints is Dispatch's own with the bound in it: the
+  // command prints `messageFor` of what the call threw (dispatch-cli.ts).
+  test("dispatch_search answered 503 SEARCH_TIMEOUT asks once and prints the bound", async () => {
+    const refusal =
+      "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query";
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      requests.push(target.pathname + target.search);
+      return response({ code: "SEARCH_TIMEOUT", error: refusal }, 503);
+    };
+
+    const failure: unknown = await executeDispatchTool({
+      tool: "dispatch_search",
+      args: { query: "astrolabe" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).catch((error: unknown) => error);
+
+    expect(messageFor(failure)).toBe(`SEARCH_TIMEOUT: ${refusal}`);
+    expect(requests).toEqual(["/api/v1/search?q=astrolabe"]);
   });
 
   test("dispatch_search reports no results for an accepted stop-word query", async () => {
@@ -7000,6 +7030,60 @@ describe("executeDispatchTool", () => {
         "version 1 and ref dispatch://DSP-42/artifact/notes-md@v2 name two versions; name the version once",
       ]);
     });
+
+    // A tab of an issue's page that is a view of the issue (Verification, Plan, Steps, Artifacts,
+    // Collaborators) names no document. Each tool that takes `ref` as the owner it acts on would
+    // act on the issue, or on the issue's primary document, in the tab's place: doc-read and
+    // doc-edit read or write the spec, a comment writes on the issue, and a suggestion writes on a
+    // document. Each is refused before any request, by the tab's `dispatch://` reference and by the
+    // dashboard's URL alike. The hint names a document for every tool but the comment, which takes
+    // an issue alone.
+    test("the tools that act on a ref's owner refuse a view tab of an issue, by its link and by its reference", async () => {
+      const ops = [{ op: "replace", find: "old line", with: "new line" }];
+      const tools: {
+        tool: string;
+        named: string;
+        hint: string;
+        input: (ref: string) => Record<string, unknown>;
+      }[] = [
+        {
+          tool: "dispatch_doc_read",
+          named: "doc-read",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref }),
+        },
+        {
+          tool: "dispatch_doc_edit",
+          named: "doc-edit",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, ops }),
+        },
+        {
+          tool: "dispatch_comment",
+          named: "comment",
+          hint: "",
+          input: (ref) => ({ ref, body: "Seen." }),
+        },
+        {
+          tool: "dispatch_suggest",
+          named: "suggest",
+          hint: " and artifact <the document's slug>",
+          input: (ref) => ({ ref, quote: "old line", replace_with: "new line" }),
+        },
+      ];
+      for (const tab of ["verification", "plan", "steps", "artifacts", "collaborators"]) {
+        for (const ref of [
+          `dispatch://DSP-42/${tab}`,
+          `http://dispatch.test/issues/DSP-42/${tab}`,
+        ]) {
+          for (const { tool, named, hint, input } of tools) {
+            expect(await problemsOf(tool, input(ref))).toEqual([
+              `ref dispatch://DSP-42/${tab} names the ${tab} tab on DSP-42; dispatch ${named} would act on DSP-42 and drop the tab: read it with dispatch read, or name DSP-42 with issue DSP-42${hint}`,
+            ]);
+          }
+        }
+      }
+    });
   });
 
   test("an ask on one owner cites another issue's comment or an issue, as a citation only", async () => {
@@ -11729,7 +11813,8 @@ describe("executeDispatchTool", () => {
   // `Applied 1 ops (version 3)` reads the same whether the edit wrote a list or a paragraph of
   // dashes, so the server reads back what it wrote and the command prints it (INFRA-1520 R6). It
   // prints under the decision-block lines: the tool description promises those come after the
-  // result's first line, and up to 2000 bytes of markdown above them would not keep that promise.
+  // result's first line, and up to 2,000 characters of markdown above them would not keep that
+  // promise.
   test("prints the decision block's check under the Applied line and the markdown it wrote under that", async () => {
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const path = new URL(String(url)).pathname;

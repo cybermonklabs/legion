@@ -63,7 +63,7 @@ const testCurlEnv = "LEGION_CMD_TEST_CURL"
 // start, on this binary run again as `legion`, and on the wall-clock bounds some of them prove —
 // so one at a time the package kept about half of one of CI's four CPUs busy, and go test's
 // default of GOMAXPROCS would leave most of that idle. A -parallel on the command line still wins
-// only because TestMain sets this default before testBinaryDeadline parses the command line
+// only because TestMain sets this default before testwait.BinaryDeadline parses the command line
 // (flag.Parse): the set must stay above that call, or this default would replace a -parallel the
 // command line names.
 const cmdTestParallelism = 8
@@ -94,7 +94,7 @@ func TestMain(m *testing.M) {
 		// public_leak_check.py its stand-in carries as the one the read rule was proven against
 		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
-			ghReadsProvenCheck.sha256 = proven
+			ghProvenCheckSHA256 = proven
 		}
 		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
 		// test binary reads the variable; the legion binary has none, and its guards run the
@@ -128,8 +128,8 @@ func TestMain(m *testing.M) {
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
 		main()
 	}
-	// The package's default -parallel (cmdTestParallelism), set before testBinaryDeadline below
-	// parses the command line, so a -parallel there still replaces it.
+	// The package's default -parallel (cmdTestParallelism), set before testwait.BinaryDeadline
+	// below parses the command line, so a -parallel there still replaces it.
 	if err := flag.Set("test.parallel", strconv.Itoa(cmdTestParallelism)); err != nil {
 		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
 		os.Exit(1)
@@ -141,10 +141,11 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
-	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
-	// here and in every run of it as `legion` (boundByTheDeadline). After MustGuard, which takes
-	// LEGION_* variables out of the environment.
-	if deadline, ok := testBinaryDeadline(); ok {
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline
+	// (testwait.BinaryDeadline), here and in every run of it as `legion`, and in the `legion` it
+	// builds (boundByTheDeadline). After MustGuard, which takes LEGION_* variables out of the
+	// environment.
+	if deadline, ok := testwait.BinaryDeadline(); ok {
 		if err := boundByTheDeadline(deadline); err != nil {
 			fmt.Fprintln(os.Stderr, "TestMain:", err)
 			os.Exit(1)
@@ -918,6 +919,17 @@ func deploysIgnoredLine(key string) string {
 	return "projects." + key + ".deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml\n"
 }
 
+// watchedWorkflowsCheckLine is the line `legion config check` prints for a project whose
+// `watched_workflows` names entries, each entry quoted with the events it resolved to, and no
+// line for a project that names none.
+func watchedWorkflowsCheckLine(key string, entries ...string) string {
+	quoted := make([]string, len(entries))
+	for i, entry := range entries {
+		quoted[i] = fmt.Sprintf("%q", entry)
+	}
+	return "projects." + key + ".watched_workflows: [" + strings.Join(quoted, ", ") + "] — the project's controller hears each workflow's completed runs on its repository's default branch, of the events after its @, and no run a pull request names\n"
+}
+
 // demoProjectLines are the two lines of the one DEMO project workflowConfig and
 // kubernetesCheckConfig declare, which names neither `production_check` nor `default_steps`
 // (TestConfigCheckPrintsEachProjectsProductionCheck,
@@ -1087,6 +1099,27 @@ func TestConfigCheckPrintsEachProjectsDefaultSteps(t *testing.T) {
 		productionCheckTesterLine("DEMO") + "projects.DEMO.default_steps: [planner, implementer, tester, reviewer, acceptance:owner]" + runs +
 		productionCheckTesterLine("OTHER") + "projects.OTHER.default_steps: [implementer, reviewer]" + runs +
 		tmuxCapabilityGaps + tmuxPauseUnavailable
+	if code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
+// `legion config check` prints a project's `watched_workflows` after its other two lines, each
+// entry with the events it resolved to, `schedule` for the one that names none, and prints no
+// such line for a project that names none, so a file without the key prints what it printed
+// before.
+func TestConfigCheckPrintsEachProjectsWatchedWorkflows(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
+	legionState(t)
+	config := projectsConfig(t, "projects:\n  DEMO:\n    watched_workflows:\n"+
+		"      - acme/widgets/x.yaml@schedule,push\n      - acme/widgets/y.yml\n  OTHER: {}\n")
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines +
+		watchedWorkflowsCheckLine("DEMO", "acme/widgets/x.yaml@schedule,push", "acme/widgets/y.yml@schedule") +
+		projectLines("OTHER") + tmuxCapabilityGaps + tmuxPauseUnavailable
 	if code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
