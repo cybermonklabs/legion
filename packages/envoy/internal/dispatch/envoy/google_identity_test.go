@@ -212,17 +212,32 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 		if err := testwait.Receive(t, "the caller whose context ended during the mint to stop waiting", shortAnswer); !errors.Is(err, ErrAccountToken) {
 			t.Fatalf("a caller whose context ended during the mint = %v, want ErrAccountToken", err)
 		}
+		// Each of the three callers reads its context's Done only once it waits on the mint in
+		// flight (googleIdentity.token's select), or once it sends a mint of its own, so its probe
+		// closing is the fact that it is in: the mint is released only then.
 		results := make(chan string, 3)
-		for range 3 {
+		probes := make([]*probedContext, 3)
+		for caller := range probes {
+			probes[caller] = &probedContext{Context: context.Background(), probe: make(chan struct{})}
 			go func() {
-				got, err := identity.token(context.Background(), time.Now())
+				got, err := identity.token(probes[caller], time.Now())
 				if err != nil {
 					got = "error: " + err.Error()
 				}
 				results <- got
 			}()
 		}
-		testwait.Span(t, 100*time.Millisecond, sharedMintWhy)
+		testwait.Until(t, "the three callers to wait on the mint in flight", func() (int, bool) {
+			waiting := 0
+			for _, caller := range probes {
+				select {
+				case <-caller.probe:
+					waiting++
+				default:
+				}
+			}
+			return waiting, waiting == len(probes)
+		})
 		open()
 		for caller := range 3 {
 			if got := testwait.Receive(t, fmt.Sprintf("caller %d of the shared mint to answer once the mint is released", caller+1), results); got != token {
@@ -235,9 +250,16 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 	})
 }
 
-// sharedMintWhy is why the shared-mint row holds a span before it releases the mint: the three
-// callers must be waiting on the mint in flight, so that one which minted on its own would ask the
-// metadata server a second time.
-const sharedMintWhy = "a caller waiting on the mint in flight leaves no state to read: googleIdentity counts no waiters " +
-	"on its mint, the mint does real HTTP I/O to the metadata stand-in, which synctest cannot hold, and no later " +
-	"action is ordered behind a caller's wait"
+// probedContext is a context whose Done closes probe the first time a caller reads it: a caller of
+// googleIdentity.token reads it only once it waits on a mint in flight, so a probe that has closed
+// says that caller is waiting.
+type probedContext struct {
+	context.Context
+	probe chan struct{}
+	once  sync.Once
+}
+
+func (c *probedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.probe) })
+	return c.Context.Done()
+}

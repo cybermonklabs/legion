@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ func TestACallDeadlineEndsAHeldSendAtItsOwnMoment(t *testing.T) {
 		listener.Close()
 	}()
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	deadline := start.Add(2 * CallWindow)
 	send := func(ctx context.Context, client *Client) <-chan error {
 		answered := make(chan error, 1)
 		go func() {
@@ -42,7 +44,6 @@ func TestACallDeadlineEndsAHeldSendAtItsOwnMoment(t *testing.T) {
 
 	t.Run("a moment", func(t *testing.T) {
 		fake := clocktest.New(start)
-		deadline := start.Add(2 * CallWindow)
 		answered := send(context.Background(), New(listener.URL, WithClock(fake), WithCallDeadline(clock.DeadlineAt(deadline, true))))
 		testwait.Receive(t, "the held send to reach the listener", reached)
 		if armed := fake.AwaitArmed(t, "the send's window", 1); !armed[0].Equal(deadline) {
@@ -62,38 +63,31 @@ func TestACallDeadlineEndsAHeldSendAtItsOwnMoment(t *testing.T) {
 		}
 	})
 
-	t.Run("a moment beside WithTimeout", func(t *testing.T) {
-		fake := clocktest.New(start)
-		deadline := start.Add(2 * CallWindow)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		answered := send(ctx, New(listener.URL, WithClock(fake), WithCallDeadline(clock.DeadlineAt(deadline, true)), WithTimeout(CallWindow/2)))
-		testwait.Receive(t, "the held send to reach the listener", reached)
-		// The window is armed before the request leaves (roundTrip), so a send at the listener
-		// has armed whatever window it has.
-		if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(deadline) {
-			t.Fatalf("a send given WithTimeout after WithCallDeadline armed %v on its clock, want its window at the deadline %v alone", armed, deadline)
-		}
-		cancel()
-		if err := testwait.Receive(t, "the held send to end with its context", answered); !errors.Is(err, context.Canceled) {
-			t.Fatalf("a send given both options, its context cancelled = %v, want the context's error", err)
-		}
-	})
-
-	t.Run("no end", func(t *testing.T) {
-		fake := clocktest.New(start)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		answered := send(ctx, New(listener.URL, WithClock(fake), WithCallDeadline(clock.DeadlineAt(time.Time{}, false))))
-		testwait.Receive(t, "the held send to reach the listener", reached)
-		// The window is armed before the request leaves (roundTrip), so a send at the listener
-		// has armed whatever window it has.
-		if armed := fake.Armed(); len(armed) != 0 {
-			t.Fatalf("a send with no end armed %v on its clock, want no window", armed)
-		}
-		cancel()
-		if err := testwait.Receive(t, "the held send to end with its context", answered); !errors.Is(err, context.Canceled) {
-			t.Fatalf("a send with no end, its context cancelled = %v, want the context's error", err)
-		}
-	})
+	// A send whose window is not reached ends with its own context: the window it armed is all
+	// the row reads, so each case is its options and the windows they arm on the client's clock.
+	for _, row := range []struct {
+		name    string
+		options []Option
+		armed   []time.Time
+	}{
+		{name: "a moment beside WithTimeout", options: []Option{WithCallDeadline(clock.DeadlineAt(deadline, true)), WithTimeout(CallWindow / 2)}, armed: []time.Time{deadline}},
+		{name: "no end", options: []Option{WithCallDeadline(clock.DeadlineAt(time.Time{}, false))}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := clocktest.New(start)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			answered := send(ctx, New(listener.URL, append([]Option{WithClock(fake)}, row.options...)...))
+			testwait.Receive(t, "the held send to reach the listener", reached)
+			// The window is armed before the request leaves (roundTrip), so a send at the listener
+			// has armed whatever window it has.
+			if armed := fake.Armed(); !slices.EqualFunc(armed, row.armed, time.Time.Equal) {
+				t.Fatalf("a send armed %v on its clock, want %v", armed, row.armed)
+			}
+			cancel()
+			if err := testwait.Receive(t, "the held send to end with its context", answered); !errors.Is(err, context.Canceled) {
+				t.Fatalf("a send whose window was not reached, its context cancelled = %v, want the context's error", err)
+			}
+		})
+	}
 }

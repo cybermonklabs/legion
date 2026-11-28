@@ -46,7 +46,7 @@ func writeAccountToken(t *testing.T, path, token string) {
 }
 
 // replaceAccountToken is writeAccountToken's write, for a caller off the test's goroutine (a
-// stand-in's hook), which reports a failure with Errorf rather than end a goroutine it does not own.
+// stand-in's hook), which reports a failure with t.Error rather than end a goroutine it does not own.
 func replaceAccountToken(path, token string) error {
 	next := path + ".next"
 	if err := os.WriteFile(next, []byte(token+"\n"), 0o600); err != nil {
