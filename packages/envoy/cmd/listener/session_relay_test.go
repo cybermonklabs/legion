@@ -17,6 +17,8 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -56,8 +58,8 @@ func newRelayRigReceipt(t *testing.T, first, max, receipt time.Duration) *relayR
 
 // newRelayRigUnowned bounds the same backoff, for a task that does not hold its machine's durable
 // binding yet: it relays nothing, and no relay starts, until the test calls
-// rig.relays.setOwned(true). A test that must run the durable path before any relay orders them
-// this way rather than by timing.
+// rig.relays.setOwned(true). A test can set the relay's clock and first nak delay before that call.
+// A test that must run the durable path before any relay orders them this way rather than by timing.
 func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 	t.Helper()
 	return newRelayRigUnownedAs(t, first, max, nil)
@@ -629,7 +631,7 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 	run := &relayRun{resume: make(chan uint64, 1)}
 	run.wake(1)
 	goesOn := make(chan bool, 1)
-	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
+	go func() { goesOn <- run.waitRetry(context.Background(), clock.Real(), time.Hour) }()
 	select {
 	case ok := <-goesOn:
 		if !ok {
@@ -1010,6 +1012,68 @@ func TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamO
 	}
 }
 
+// Hand-over returns frames stamped at the same instant in the order the relay sent them, not
+// the order their tokens happen to come out of the run's map. An open pull on the same consumer
+// sees the order of the naks; a restart at the ack floor would restore stream order itself.
+func TestAHandOverReturnsFramesSentAtTheSameInstantInStreamOrder(t *testing.T) {
+	t.Parallel()
+	now := time.Unix(0, 0)
+	fake := clocktest.New(now)
+	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	rig.relays.clock = fake
+	rig.relays.setOwned(true)
+
+	sessionID := "ses_relay_tied_" + id.New()
+	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	const held = 16
+	items := make([]contracts.Envelope, 0, held)
+	stored := make([]uint64, 0, held)
+	for range held {
+		item, seq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+		items = append(items, item)
+		stored = append(stored, seq)
+	}
+	frames := standIn.receive(t, held)
+	requireFrames(t, frames, items...)
+	func() {
+		rig.relays.framesMu.Lock()
+		defer rig.relays.framesMu.Unlock()
+		for _, sent := range frames {
+			reply := sent.msg.Reply
+			token := reply[strings.LastIndexByte(reply, '.')+1:]
+			frame := rig.relays.frames[token]
+			if frame == nil {
+				t.Fatalf("seq %d is not held by the relay before hand-over", sent.seq)
+			}
+			if !frame.sentAt.Equal(now) {
+				t.Fatalf("seq %d was stamped %s, want the same fake time as every frame: %s", sent.seq, frame.sentAt, now)
+			}
+		}
+	}()
+	fake.AwaitArmedAt(t, "the pull's receipt deadline", now.Add(relayReceiptWait))
+
+	ctx := testwait.Context(t)
+	pull, err := rig.consumers.Pull(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("pull the session's consumer as its next owner: %v", err)
+	}
+	defer pull.Stop()
+	rig.relays.setOwned(false)
+	for i, want := range stored {
+		msg, err := pull.Next(ctx)
+		if err != nil {
+			t.Fatalf("pull returned %d of %d frames after hand-over: %v", i, held, err)
+		}
+		if msg.StreamSeq != want {
+			t.Fatalf("frames stamped at the same instant came back out of stream order: frame %d was seq %d, want %d", i+1, msg.StreamSeq, want)
+		}
+		if msg.Delivered != 2 {
+			t.Fatalf("seq %d came back as delivery %d, want its second delivery", msg.StreamSeq, msg.Delivered)
+		}
+	}
+}
+
 // A session that re-registers through another listener moves to it: the first stops relaying it at
 // once and the second relays it, so each frame comes from exactly one listener, the one the session
 // last registered through. What orders the row is the first listener's own hand-over line, which
@@ -1331,11 +1395,7 @@ func (a *nakLadderAcker) last() time.Duration {
 // rung before it, and never one the shift overflowed.
 func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 	t.Parallel()
-	if relayNakDelay<<relayNakShiftMax < relayNakDelayMax {
-		t.Fatalf("relayNakDelay << relayNakShiftMax is %s, under the ceiling %s: the ladder stops below its own ceiling and the guard no longer bounds the shift",
-			relayNakDelay<<relayNakShiftMax, relayNakDelayMax)
-	}
-	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
+	relays := &sessionRelays{nakDelay: relayNakDelay, replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
 	run := &relayRun{sessionID: "ses_nak_ladder", outstanding: map[string]*relayFrame{}}
 	acker := &nakLadderAcker{}
 	// nakAt refuses one frame of delivery count delivered, as a session that cannot take it
@@ -1364,11 +1424,31 @@ func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
 			t.Errorf("the nak of delivery %d asked the server for %s, want %s", delivered, got, want)
 		}
 	}
-	for _, delivered := range []uint64{0, uint64(relayNakShiftMax) + 2, 1000, math.MaxUint64} {
+	for _, delivered := range []uint64{0, 7, 1000, math.MaxUint64} {
 		if got := nakAt(delivered); got != relayNakDelayMax {
 			t.Errorf("the nak of delivery %d asked the server for %s, want the ceiling %s", delivered, got, relayNakDelayMax)
 		}
 	}
+
+	t.Run("short first rung", func(t *testing.T) {
+		const ms = time.Millisecond
+		short := []time.Duration{50 * ms, 100 * ms, 200 * ms, 400 * ms, 800 * ms,
+			1600 * ms, 3200 * ms, 6400 * ms, 12800 * ms, 25600 * ms, 30 * time.Second, 30 * time.Second}
+		for i, want := range short {
+			delivered := uint64(i + 1)
+			if got := relayNakDelayFor(50*ms, delivered); got != want {
+				t.Errorf("with a 50 ms first rung, the nak of delivery %d asked for %s, want %s", delivered, got, want)
+			}
+		}
+		for _, delivered := range []uint64{0, 1<<63 - 1, 1 << 63, 1<<63 + 1, math.MaxUint64} {
+			if got := relayNakDelayFor(50*ms, delivered); got != relayNakDelayMax {
+				t.Errorf("with a 50 ms first rung, the nak of delivery %d asked for %s, want the ceiling %s", delivered, got, relayNakDelayMax)
+			}
+		}
+		if got := relayNakDelayFor(time.Duration(math.MaxInt64), math.MaxUint64); got != relayNakDelayMax {
+			t.Errorf("with the largest first rung and delivery count, the nak asked for %s, want the ceiling %s", got, relayNakDelayMax)
+		}
+	})
 }
 
 // The nak ladder is the whole bound on how often a frame nobody can take is relayed: the session
@@ -1404,7 +1484,7 @@ func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing
 	if flat := relays(func(uint64) time.Duration { return relayNakDelay }); flat != 259_201 {
 		t.Fatalf("a flat %s delay counts %d deliveries over %s, want 259,201", relayNakDelay, flat, retention)
 	}
-	if got := relays(relayNakDelayFor); got != 8_644 {
+	if got := relays(func(delivered uint64) time.Duration { return relayNakDelayFor(relayNakDelay, delivered) }); got != 8_644 {
 		t.Errorf("the nak ladder relays a refused frame %d times over the stream's %s retention, want 8,644: 6 deliveries in the first 31 s, then one every %s", got, retention, relayNakDelayMax)
 	}
 }
