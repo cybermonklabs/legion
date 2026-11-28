@@ -35,14 +35,20 @@ type adoptReport struct {
 
 	written, updated, merged, removed []string
 	fixtureRemoved                    bool
+	// taken are the old layout's shared files written as the new side holds them: routes_table.go
+	// and routes_shapes.go always, and read_classes.go where the new side holds one.
+	taken []string
+	// readClassesRemoved is set where the new side removed read_classes.go, and so did this.
+	readClassesRemoved bool
 
 	// conflicted are route files the three-way merge left markers in.
 	conflicted []string
 	// decide are routes the two sides each changed in a way no merge settles: one side removed
 	// the route the other changed.
 	decide []string
-	// carry are the old-layout side's edits to routes_table.go and routes_shapes.go outside the
-	// moved entries, each a diff of that file's shared code from the merge base to that side.
+	// carry are the old-layout side's edits to routes_table.go, routes_shapes.go and
+	// read_classes.go outside the moved entries, each a diff of that file's shared code from the
+	// merge base to that side.
 	carry []string
 	// unmerged are the paths git still holds in conflict once the run is done.
 	unmerged []string
@@ -70,7 +76,14 @@ func (r *adoptReport) print(w io.Writer) {
 			fmt.Fprintf(w, "  %s: %s\n", list.what, path.Join(apiDir, name))
 		}
 	}
-	fmt.Fprintf(w, "  took %s and %s from %s\n", path.Join(apiDir, tableFile), path.Join(apiDir, shapesFile), r.newSide)
+	took := make([]string, len(r.taken))
+	for index, name := range r.taken {
+		took[index] = path.Join(apiDir, name)
+	}
+	fmt.Fprintf(w, "  took %s from %s\n", spokenList(took), r.newSide)
+	if r.readClassesRemoved {
+		fmt.Fprintf(w, "  removed %s, which %s does not hold\n", path.Join(apiDir, readClassesFile), r.newSide)
+	}
 	if r.fixtureRemoved {
 		fmt.Fprintf(w, "  removed %s, which the new layout does not commit\n", path.Join(apiDir, routesFixture))
 	}
@@ -94,6 +107,14 @@ func (r *adoptReport) print(w io.Writer) {
 	for _, line := range r.stale {
 		fmt.Fprintf(w, "  names a declaration the old layout had: %s\n", line)
 	}
+}
+
+// spokenList is names as a sentence lists them: "a", "a and b", "a, b and c".
+func spokenList(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 }
 
 // routeWrite is one file this step writes once the merge is made, with the index stages git
@@ -131,7 +152,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		return nil, fmt.Errorf("read %s's %s: %w", into, tableFile, err)
 	}
 	report := &adoptReport{}
-	var oldRev, newRev, hereSide, thereSide string
+	var oldRev, newRev string
 	switch {
 	case hereOld && thereOld:
 		return nil, fmt.Errorf("the branch and %s both hold the old route table: neither side has the layout to adopt, and nothing is merged", into)
@@ -145,7 +166,10 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		oldRev, newRev = there, here
 	}
 	report.oldSide, report.newSide = report.oldName+" "+oldRev[:12], report.newName+" "+newRev[:12]
-	hereSide, thereSide = "the branch "+here[:12], into+" "+there[:12]
+	hereSide, thereSide := report.oldSide, report.newSide
+	if !hereOld {
+		hereSide, thereSide = thereSide, hereSide
+	}
 	base, err := repo.line("merge-base", here, there)
 	if err != nil {
 		return nil, fmt.Errorf("the branch and %s share no merge base, so there is no old layout to split their routes from, and nothing is merged (%w)", into, err)
@@ -160,7 +184,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("split the merge base's routes: %w", err)
 	}
-	branchFiles, err := splitOldLayout(gitTree{repo, oldRev})
+	oldFiles, err := splitOldLayout(gitTree{repo, oldRev})
 	if err != nil {
 		return nil, fmt.Errorf("split %s's routes: %w", report.oldSide, err)
 	}
@@ -191,7 +215,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		return write, nil
 	}
 	names := slices.Sorted(maps.Keys(baseFiles))
-	for name := range branchFiles {
+	for name := range oldFiles {
 		if _, inBase := baseFiles[name]; !inBase {
 			names = append(names, name)
 		}
@@ -199,8 +223,8 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	slices.Sort(names)
 	for _, name := range names {
 		baseContent, inBase := baseFiles[name]
-		branchContent, inBranch := branchFiles[name]
-		if inBase && inBranch && bytes.Equal(baseContent, branchContent) {
+		oldContent, inOld := oldFiles[name]
+		if inBase && inOld && bytes.Equal(baseContent, oldContent) {
 			continue
 		}
 		// Only the new side holds route files, so the merge leaves each one as the new side holds
@@ -209,20 +233,20 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		if err != nil {
 			return nil, err
 		}
-		write := routeWrite{name: name, content: branchContent}
+		write := routeWrite{name: name, content: oldContent}
 		switch {
 		case !inBase: // the old-layout side added it
 			switch {
 			case !inTree:
 				report.written = append(report.written, name)
-			case bytes.Equal(current, branchContent):
+			case bytes.Equal(current, oldContent):
 				continue // the new side added the same route, so the merge holds it already
 			default:
-				if write, err = merge(name, current, nil, branchContent); err != nil {
+				if write, err = merge(name, current, nil, oldContent); err != nil {
 					return nil, err
 				}
 			}
-		case !inBranch: // the old-layout side removed it
+		case !inOld: // the old-layout side removed it
 			switch {
 			case !inTree:
 			case bytes.Equal(current, baseContent):
@@ -240,20 +264,42 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			case bytes.Equal(current, baseContent):
 				report.updated = append(report.updated, name)
 			default:
-				if write, err = merge(name, current, baseContent, branchContent); err != nil {
+				if write, err = merge(name, current, baseContent, oldContent); err != nil {
 					return nil, err
 				}
 			}
 		}
 		writes = append(writes, write)
 	}
-	for _, name := range []string{tableFile, shapesFile} {
+	// The old layout's shared files are taken whole from the new side, whose text of each is the
+	// new layout's, and the old-layout side's edit to each outside the moved entries is printed
+	// for the person to carry by hand, since nothing can place it mechanically.
+	baseTree, oldTree := gitTree{repo, base}, gitTree{repo, oldRev}
+	for _, name := range []string{tableFile, shapesFile, readClassesFile} {
 		content, err := newSide.read(name)
-		if err != nil {
+		switch {
+		case err == nil:
+			writes = append(writes, routeWrite{name: name, content: content})
+			report.taken = append(report.taken, name)
+		case name == readClassesFile && errors.Is(err, os.ErrNotExist):
+			// read_classes.go is #4557's, and a new side made before #4557 holds none, so nothing
+			// is written for it. Where the merge base holds one, the new side removed it, and so
+			// does this: its readClasses entries are the route files' now and its other edits are
+			// carried below, and git and jj otherwise leave an old-layout side's change to it in
+			// conflict with the removal. Where the merge base holds none, the old-layout side added
+			// it with #4557 and the merge adds it cleanly, with the types that side's Read fields
+			// name. It is left as that side wrote it, and since it is not taken, the stale-line
+			// check names its readClasses for the person.
+			if _, inBase, err := readIfPresent(baseTree, name); err != nil {
+				return nil, err
+			} else if inBase {
+				remove = append(remove, name)
+				report.readClassesRemoved = true
+			}
+		default:
 			return nil, err
 		}
-		writes = append(writes, routeWrite{name: name, content: content})
-		carried, err := sharedCodeChange(repo, name, gitTree{repo, base}, gitTree{repo, oldRev}, report.oldName)
+		carried, err := sharedCodeChange(repo, name, baseTree, oldTree, report.oldName)
 		if err != nil {
 			return nil, err
 		}
@@ -261,7 +307,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			report.carry = append(report.carry, carried)
 		}
 	}
-	if _, err := (gitTree{repo, oldRev}).read(routesFixture); err == nil {
+	if _, err := oldTree.read(routesFixture); err == nil {
 		if _, err := newSide.read(routesFixture); err != nil {
 			remove = append(remove, routesFixture)
 			report.fixtureRemoved = true
@@ -289,7 +335,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if report.unmerged, err = repo.unmerged(); err != nil {
 		return nil, err
 	}
-	if report.stale, err = staleLines(filepath.Join(repo.root, apiDir)); err != nil {
+	if report.stale, err = staleLines(filepath.Join(repo.root, apiDir), report.taken); err != nil {
 		return nil, err
 	}
 	return report, nil
@@ -325,16 +371,22 @@ func writeTheMerge(repo gitRepo, writes []routeWrite, remove []string) error {
 // route files took over - the rows of routes() and the side maps' entries - as a diff from the
 // merge base, and empty where that side changed nothing else of it. side is how the report names
 // that side: the branch, or the revision merged.
+//
+// It is empty too where the merge base or that side holds no such file. Only read_classes.go can
+// be missing, since the split read the table and the shapes at both, and a side without it was
+// made before #4557: the old-layout side then never had it, or added it whole with #4557, which
+// the new side's own read_classes.go holds where there is one, and the merge leaves as that side
+// wrote it where there is none.
 func sharedCodeChange(repo gitRepo, name string, base, old tree, side string) (string, error) {
-	baseContent, err := base.read(name)
+	baseContent, inBase, err := readIfPresent(base, name)
 	if err != nil {
 		return "", err
 	}
-	oldContent, err := old.read(name)
+	oldContent, inOld, err := readIfPresent(old, name)
 	if err != nil {
 		return "", err
 	}
-	if bytes.Equal(baseContent, oldContent) {
+	if !inBase || !inOld || bytes.Equal(baseContent, oldContent) {
 		return "", nil
 	}
 	baseShared, err := sharedCode(name, baseContent)
@@ -356,9 +408,9 @@ func sharedCodeChange(repo gitRepo, name string, base, old tree, side string) (s
 		side, path.Join(apiDir, name), diff), nil
 }
 
-// sharedCode is an old-layout file with every moved entry cut out: the elements of the side maps
-// and of the two key lists, readScopeRoutes and approveScopeRoutes, the rows of routes() and the
-// test hooks' rows, each list left as {…}.
+// sharedCode is an old-layout file with every moved entry cut out: the elements of the side maps,
+// readClasses among them, and of the two key lists, readScopeRoutes and approveScopeRoutes, the
+// rows of routes() and the test hooks' rows, each list left as {…}.
 func sharedCode(name string, content []byte) (string, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, name, content, parser.ParseComments|parser.SkipObjectResolution)
@@ -368,7 +420,7 @@ func sharedCode(name string, content []byte) (string, error) {
 	type cut struct{ from, to int }
 	var cuts []cut
 	offset := func(pos token.Pos) int { return fset.Position(pos).Offset }
-	for _, mapName := range []string{writeClassesName, idRoutesName, routeScopesName, readScopeRoutesName, approveRoutesName, routeShapesName} {
+	for _, mapName := range []string{writeClassesName, idRoutesName, routeScopesName, readScopeRoutesName, approveRoutesName, routeShapesName, readClassesName} {
 		if literal := packageLiteral(file, mapName); literal != nil {
 			cuts = append(cuts, cut{offset(literal.Lbrace) + 1, offset(literal.Rbrace)})
 		}
@@ -465,9 +517,10 @@ func (g gitRepo) diffText(from, to string) (string, error) {
 	return text, nil
 }
 
-// staleLines is every line of package api, route files and the two resolved files aside, that
-// names a declaration the old layout had, as file:line: text.
-func staleLines(dir string) ([]string, error) {
+// staleLines is every line of package api that names a declaration the old layout had, as
+// file:line: text, aside from the route files and the files taken whole from the new side, whose
+// text is the new layout's.
+func staleLines(dir string, taken []string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -475,7 +528,7 @@ func staleLines(dir string) ([]string, error) {
 	var lines []string
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || isRouteFile(name) || name == tableFile || name == shapesFile {
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || isRouteFile(name) || slices.Contains(taken, name) {
 			continue
 		}
 		content, err := os.ReadFile(filepath.Join(dir, name))

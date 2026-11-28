@@ -119,8 +119,9 @@ func (r *scratchRepo) commit(message string) string {
 	return strings.TrimSpace(r.git("rev-parse", "HEAD"))
 }
 
-// moveMain makes main the new layout: the old layout split into its route files, and the two
-// files the split leaves holding shared code alone.
+// moveMain makes main the new layout: the old layout split into its route files, and the files
+// the split leaves holding shared code alone, read_classes.go among them where the old layout
+// holds one (#4557's).
 func (r *scratchRepo) moveMain() map[string][]byte {
 	r.t.Helper()
 	r.git("checkout", "-q", "main")
@@ -133,8 +134,44 @@ func (r *scratchRepo) moveMain() map[string][]byte {
 	}
 	r.write(tableFile, "package api\n\n// The new layout's shared code.\n")
 	r.write(shapesFile, "package api\n\n// The new layout's shared shapes.\n")
+	if _, err := os.Stat(r.path(readClassesFile)); err == nil {
+		r.write(readClassesFile, "package api\n\n// The new layout's read classes.\n")
+	}
 	r.commit("one file per route")
 	return files
+}
+
+// moveTheRead commits, on the branch checked out, the old layout as #4557 left it: a route's read
+// is an entry of readClasses in read_classes.go, not a name in readScopeRoutes. It answers the
+// commit.
+func (r *scratchRepo) moveTheRead() string {
+	r.t.Helper()
+	r.write(tableFile, fixture(r.t, "testdata/main_routes_table.go.txt"))
+	r.write(shapesFile, fixture(r.t, "testdata/main_routes_shapes.go.txt"))
+	r.write(readClassesFile, fixture(r.t, "testdata/old_read_classes.go.txt"))
+	return r.commit("the read moves into read_classes.go")
+}
+
+// The branch's own edits to read_classes.go: the read class of the route it adds, and a helper
+// beside the map, which is shared code no route file holds.
+const (
+	branchReadEntry  = "\t\"GET /api/v1/adopt-test-a\": {Writes: readWritesState, WriteNote: \"The branch's route writes its own row.\"},\n"
+	branchReadHelper = "\n// branchReadHelper is the branch's own, beside the map.\nfunc branchReadHelper() string { return \"the branch's read helper\" }\n"
+)
+
+// changeReadClassesOn makes a branch from base, which holds read_classes.go, that adds GET
+// /api/v1/adopt-test-a with its read class, removes GET /api/v1/limits' read class, and writes a
+// helper of its own outside the map. It answers the branch's head.
+func (r *scratchRepo) changeReadClassesOn(branch, base string) string {
+	r.t.Helper()
+	r.addRouteOn(branch, base, "a")
+	classes := cutLine(r.t, r.read(readClassesFile), "\t\"GET /api/v1/limits\":")
+	hooks := strings.Index(classes, "\t// The test hooks' GET rows")
+	if hooks < 0 {
+		r.t.Fatal("read_classes.go holds no test hooks' entries to add the branch's read class above")
+	}
+	r.write(readClassesFile, classes[:hooks]+branchReadEntry+classes[hooks:]+branchReadHelper)
+	return r.commit("the branch changes its read classes")
 }
 
 // addRouteOn makes a branch from the base commit that adds one route in the old layout.
@@ -603,7 +640,7 @@ func TestTheStepRefusesATreeItDidNotStart(t *testing.T) {
 			t.Fatalf("the step ran in a tree holding a change, or named none: %v", err)
 		}
 		if !strings.Contains(err.Error(), "git -C "+shellQuoted(repo.root)+" stash -u") {
-			t.Errorf("the refusal names no git command that acts on the adopted tree: %v", err)
+			t.Fatalf("the refusal names no git command that acts on the adopted tree: %v", err)
 		}
 		// And it runs once the change is put away by the commands the refusal names. A plain
 		// `git stash` would leave the untracked file, and the run after it would be refused again.
@@ -627,7 +664,7 @@ func TestTheStepRefusesATreeItDidNotStart(t *testing.T) {
 		// A bare `jj new` acts on the repository of the shell it is pasted into, which is not the
 		// adopted one where the step ran with -C.
 		if !strings.Contains(err.Error(), "jj -R "+shellQuoted(repo.root)+" new") {
-			t.Errorf("the refusal names no jj command that acts on the adopted workspace: %v", err)
+			t.Fatalf("the refusal names no jj command that acts on the adopted workspace: %v", err)
 		}
 		// The person describes the change, as the refusal says, and runs the commands it names.
 		if output, err := repo.run("jj", "describe", "-m", "a change of the person's own"); err != nil {
@@ -751,6 +788,183 @@ func TestTheAdoptStepResolvesAJJMerge(t *testing.T) {
 	if err != nil || strings.TrimSpace(listed) == "" {
 		t.Fatalf("jj's merge commit does not hold %s: %v %q", file, err, listed)
 	}
+}
+
+// A branch made after #4557 changes readClasses in read_classes.go: it adds a route with its read
+// class, removes another route's, and writes a helper beside the map. read_classes.go is taken
+// whole from main, as routes_table.go and routes_shapes.go are, so under git and under jj the
+// merge holds it in conflict nowhere: the branch's read classes are in the route files the step
+// wrote, and its helper is the one edit printed for the person to carry by hand. The step once
+// took the table and the shapes alone, and left read_classes.go in conflict.
+func TestReadClassesIsTakenWholeFromTheNewSide(t *testing.T) {
+	setUp := func(t *testing.T) (*scratchRepo, string) {
+		repo := newScratchRepo(t)
+		head := repo.changeReadClassesOn("branch-a", repo.moveTheRead())
+		repo.moveMain()
+		return repo, head
+	}
+	t.Run("git", func(t *testing.T) {
+		repo, head := setUp(t)
+		repo.git("checkout", "-q", "branch-a")
+		report, err := repo.adoptMain()
+		if err != nil {
+			t.Fatalf("adopt: %v", err)
+		}
+		repo.tookReadClassesWhole(t, head, report, repo.git("diff", "--name-only", "--diff-filter=U"))
+		// Staged as every file the step writes is: the working tree holds what the index does.
+		if unstaged := repo.git("diff", "--name-only", "--", filepath.Join(apiDir, readClassesFile)); unstaged != "" {
+			t.Fatalf("%s is written and not staged", unstaged)
+		}
+	})
+	t.Run("jj", func(t *testing.T) {
+		repo, head := setUp(t)
+		found := repo.jjOn("branch-a")
+		report, err := adopt(found, "main")
+		if err != nil {
+			t.Fatalf("adopt: %v", err)
+		}
+		conflicts, err := repo.run("jj", "file", "list", "-r", "@", "-T", `if(conflict, path ++ "\n")`)
+		if err != nil {
+			t.Fatalf("jj file list: %v: %s", err, conflicts)
+		}
+		repo.tookReadClassesWhole(t, head, report, conflicts)
+	})
+}
+
+// tookReadClassesWhole holds one run over the branch changeReadClassesOn made, whose head is head,
+// to what TestReadClassesIsTakenWholeFromTheNewSide says. conflicts is every path the version
+// control still holds in conflict, one a line.
+func (r *scratchRepo) tookReadClassesWhole(t *testing.T, head string, report *adoptReport, conflicts string) {
+	t.Helper()
+	var out bytes.Buffer
+	report.print(&out)
+	readClasses := apiDir + "/" + readClassesFile
+	if strings.TrimSpace(conflicts) != "" || len(report.unmerged) > 0 {
+		t.Fatalf("the merge still holds in conflict:\n%s\nand the report names %v, want nothing:\n%s", conflicts, report.unmerged, out.String())
+	}
+	if got, want := r.read(readClassesFile), r.git("show", "main:"+readClasses); got != want {
+		t.Fatalf("%s holds\n%s\nwant main's, taken whole:\n%s", readClasses, got, want)
+	}
+	split, err := splitOldLayout(gitTree{gitRepo{root: r.root}, head})
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, _ := routeFileName("GET", "/api/v1/adopt-test-a")
+	limits, _ := routeFileName("GET", "/api/v1/limits")
+	if !slices.Equal(report.written, []string{added}) || !slices.Equal(report.updated, []string{limits}) {
+		t.Fatalf("the step wrote %v and updated %v, want %s and %s:\n%s", report.written, report.updated, added, limits, out.String())
+	}
+	if got := r.read(added); got != string(split[added]) || !strings.Contains(got, "The branch's route writes its own row.") {
+		t.Fatalf("%s holds\n%s\nwant the branch's route with its read class:\n%s", added, got, split[added])
+	}
+	if got := r.read(limits); got != string(split[limits]) || strings.Contains(got, "Read:") {
+		t.Fatalf("%s holds\n%s\nwant the branch's route, whose read class it removed:\n%s", limits, got, split[limits])
+	}
+	if len(report.carry) != 1 || !strings.Contains(report.carry[0], readClasses) || !strings.Contains(report.carry[0], "branchReadHelper") {
+		t.Fatalf("the report carries %q, want the branch's helper in %s alone:\n%s", report.carry, readClasses, out.String())
+	}
+	if strings.Contains(report.carry[0], "adopt-test-a") || strings.Contains(report.carry[0], "/api/v1/limits") {
+		t.Fatalf("the carry holds readClasses entries the route files took over:\n%s", report.carry[0])
+	}
+	if len(report.stale) > 0 {
+		t.Fatalf("the report names stale lines %v:\n%s", report.stale, out.String())
+	}
+	if took := tookLine(out.String()); !strings.Contains(took, readClasses) || !strings.Contains(took, report.newSide) {
+		t.Fatalf("the report's line of what it took is %q, want it to name %s, taken from %s:\n%s", took, readClasses, report.newSide, out.String())
+	}
+}
+
+// tookLine is the line of a printed report that names the files taken whole from the new side.
+func tookLine(report string) string {
+	for line := range strings.Lines(report) {
+		if strings.HasPrefix(line, "  took ") {
+			return line
+		}
+	}
+	return ""
+}
+
+// read_classes.go is #4557's, so a side can hold none. Each row is one such merge, and none leaves
+// the file in conflict:
+//   - a branch made before #4557 merges a main that holds one: main's is taken whole, and nothing
+//     is carried from a file the branch never had;
+//   - main removed it and the branch changed it: it is removed, as main removed it, which settles
+//     git's conflict between the two, and the branch's edit outside the map is printed to carry;
+//   - the branch added it with #4557 and main, made before #4557, holds none: the merge adds it as
+//     the branch wrote it, nothing is taken for it, and its readClasses is named as stale.
+func TestReadClassesWhereASideHoldsNone(t *testing.T) {
+	readClasses := apiDir + "/" + readClassesFile
+	adopted := func(t *testing.T, repo *scratchRepo) (*adoptReport, string) {
+		t.Helper()
+		repo.git("checkout", "-q", "branch-a")
+		report, err := repo.adoptMain()
+		if err != nil {
+			t.Fatalf("adopt: %v", err)
+		}
+		var out bytes.Buffer
+		report.print(&out)
+		if conflicts := repo.git("diff", "--name-only", "--diff-filter=U"); conflicts != "" || len(report.unmerged) > 0 {
+			t.Fatalf("the merge still holds in conflict:\n%s\nand the report names %v, want nothing:\n%s", conflicts, report.unmerged, out.String())
+		}
+		return report, out.String()
+	}
+
+	t.Run("the branch was made before #4557", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		repo.addRouteOn("branch-a", strings.TrimSpace(repo.git("rev-parse", "HEAD")), "a")
+		repo.moveMain()
+		repo.write(readClassesFile, "package api\n\n// The new layout's read classes.\n")
+		repo.commit("main holds read_classes.go")
+		report, out := adopted(t, repo)
+		if got, want := repo.read(readClassesFile), repo.git("show", "main:"+readClasses); got != want {
+			t.Fatalf("%s holds\n%s\nwant main's, taken whole:\n%s", readClasses, got, want)
+		}
+		if !strings.Contains(tookLine(out), readClasses) || report.left() {
+			t.Fatalf("the report does not name %s among what it took, or leaves work:\n%s", readClasses, out)
+		}
+	})
+
+	t.Run("main removed it and the branch changed it", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		repo.changeReadClassesOn("branch-a", repo.moveTheRead())
+		repo.moveMain()
+		repo.git("rm", "-q", "--", readClasses)
+		repo.commit("main removes read_classes.go")
+		report, out := adopted(t, repo)
+		if _, err := os.Stat(repo.path(readClassesFile)); !os.IsNotExist(err) {
+			t.Fatalf("%s is still on disk: %v", readClasses, err)
+		}
+		if listed := repo.git("ls-files", "--", readClasses); listed != "" {
+			t.Fatalf("git's index still holds %s", listed)
+		}
+		if strings.Contains(tookLine(out), readClasses) || !strings.Contains(out, "removed "+readClasses) {
+			t.Fatalf("the report names %s among what it took, or not as removed:\n%s", readClasses, out)
+		}
+		if len(report.carry) != 1 || !strings.Contains(report.carry[0], readClasses) || !strings.Contains(report.carry[0], "branchReadHelper") {
+			t.Fatalf("the report carries %q, want the branch's helper in %s alone:\n%s", report.carry, readClasses, out)
+		}
+	})
+
+	t.Run("the branch added it and main holds none", func(t *testing.T) {
+		repo := newScratchRepo(t)
+		repo.git("checkout", "-q", "-b", "branch-a")
+		repo.moveTheRead()
+		repo.moveMain()
+		report, out := adopted(t, repo)
+		if got := repo.read(readClassesFile); got != fixture(t, "testdata/old_read_classes.go.txt") {
+			t.Fatalf("%s holds\n%s\nwant the branch's, which the merge added", readClasses, got)
+		}
+		if strings.Contains(tookLine(out), readClasses) {
+			t.Fatalf("the report names %s among what it took from main, which holds none:\n%s", readClasses, out)
+		}
+		named := false
+		for _, line := range report.stale {
+			named = named || strings.HasPrefix(line, readClasses+":") && strings.Contains(line, "var readClasses")
+		}
+		if !named {
+			t.Fatalf("the report does not name %s's readClasses as stale:\n%s", readClasses, out)
+		}
+	})
 }
 
 // Splitting the frozen old layout writes one route file per row, each named by routeFileName and
