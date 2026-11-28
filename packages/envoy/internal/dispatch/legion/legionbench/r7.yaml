@@ -19,6 +19,14 @@
 #   python3 -c 'import os, re, sys; names = ("RUN", "HEAD", "SCALE", "AFTER", "READ_TIMEOUT", "ARMS", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN", "BUCKET"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("r7.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < r7.yaml > "$TMPDIR/r7.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/r7.yaml" && kubectl -n builds create -f "$TMPDIR/r7.yaml"
+# The pod holds no service-account token, so it cannot read its node's labels, and the downward
+# API gives it only the node's name, which its MARK start line prints. So the submitter reads the
+# node's machine type once the pod runs (and again for a retried pod, which may run on another
+# node), with <job> the name the create prints:
+#   node=$(kubectl -n builds get pods -l batch.kubernetes.io/job-name=<job> --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].spec.nodeName}')
+#   kubectl get node "$node" -o jsonpath='{.metadata.labels.node\.kubernetes\.io/instance-type}'
+# The submitter records that type with the run's result, beside the path of its log, and compares
+# the run only with runs on the same type.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -29,11 +37,13 @@ metadata:
     ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
-    # About 2 hours on 8 CPUs and 32 GiB of a Spot build machine: three builds, one load at ten
-    # times the run volume, and three arms of a whole read and 5 minutes after it.
-    ${LABEL_DOMAIN}/cost-usd: "1.20"
-    ${LABEL_DOMAIN}/expected-cpu-hours: "16"
-    ${LABEL_DOMAIN}/expected-memory-gib-hours: "64"
+    # About 20 minutes on 8 CPUs and 32 GiB of an on-demand machine of the class default, which
+    # tries E2 first, then C4D, then other families: three builds, one load at ten times the run
+    # volume, and three arms of a whole read and 5 minutes after it. The cost is an estimate of 21
+    # minutes at C4D's rate, about twice E2's.
+    ${LABEL_DOMAIN}/cost-usd: "0.20"
+    ${LABEL_DOMAIN}/expected-cpu-hours: "3"
+    ${LABEL_DOMAIN}/expected-memory-gib-hours: "12"
     ${LABEL_DOMAIN}/branch: "legion/INFRA-5577"
     ${LABEL_DOMAIN}/head: "${HEAD}"
 spec:
@@ -49,7 +59,9 @@ spec:
         ${LABEL_DOMAIN}/kind: legion-r7-bench
         ${LABEL_DOMAIN}/omp-session: *omp-session
         # A timed run: the holds and waits are milliseconds of this pod's CPU, which must not be
-        # shared, so build-cpu-burst leaves the request at the limit.
+        # shared. Without this label build-cpu-burst would set the CPU request from the kind's row
+        # in build-kind-sizes for this namespace and class where that is under the limit, or to
+        # under half the limit for a kind with no row, and the pod would share its CPU.
         ${LABEL_DOMAIN}/cpu-qos: "guaranteed"
       annotations:
         ${LABEL_DOMAIN}/omp-session-title: *omp-session-title
@@ -60,7 +72,7 @@ spec:
       activeDeadlineSeconds: 14400
       terminationGracePeriodSeconds: 30
       nodeSelector:
-        cloud.google.com/compute-class: build
+        cloud.google.com/compute-class: default
       volumes:
       # The clone and its sleep control's worktree, the Go caches, the builds, the Postgres data with
       # its WAL (one database at ten times the run volume) and the logs.

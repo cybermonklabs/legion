@@ -23,6 +23,15 @@
 #   python3 -c 'import os, re, sys; names = ("RUN", "BENCH", "MAIN", "HEAD", "SCALE", "HEAD_FACTS", "DURATION", "PROFILE", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN", "BUCKET"); missing = [n for n in names if not os.environ.get(n)]; missing and sys.exit("r8.yaml: set " + ", ".join(missing)); sys.stdout.write(re.sub(r"\$\{(" + "|".join(names) + r")\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < r8.yaml > "$TMPDIR/r8.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/r8.yaml" && kubectl -n builds create -f "$TMPDIR/r8.yaml"
+# The pod holds no service-account token, so it cannot read its node's labels, and the downward
+# API gives it only the node's name, which its MARK start line prints. So the submitter reads the
+# node's machine type once the pod runs (and again for a retried pod, which may run on another
+# node), with <job> the name the create prints:
+#   node=$(kubectl -n builds get pods -l batch.kubernetes.io/job-name=<job> --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].spec.nodeName}')
+#   kubectl get node "$node" -o jsonpath='{.metadata.labels.node\.kubernetes\.io/instance-type}'
+# The submitter records that type with the run's result, beside the path of its log, and compares
+# the run only with runs on the same type. The two arms run in this one pod, so they share its node
+# and r8.sh's comparison of them holds on any type.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -33,11 +42,13 @@ metadata:
     ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
-    # About 2.5 hours on 8 CPUs and 32 GiB of a Spot build machine: two builds, two loads at ten
-    # times the run volume, two catch-ups and two 10-minute drives.
-    ${LABEL_DOMAIN}/cost-usd: "1.50"
-    ${LABEL_DOMAIN}/expected-cpu-hours: "20"
-    ${LABEL_DOMAIN}/expected-memory-gib-hours: "80"
+    # About half an hour on 8 CPUs and 32 GiB of an on-demand machine of the class default, which
+    # tries E2 first, then C4D, then other families: two builds, two loads at ten times the run
+    # volume, two catch-ups and two 10-minute drives. The cost is an estimate of 32 minutes at
+    # C4D's rate, about twice E2's.
+    ${LABEL_DOMAIN}/cost-usd: "0.30"
+    ${LABEL_DOMAIN}/expected-cpu-hours: "5"
+    ${LABEL_DOMAIN}/expected-memory-gib-hours: "18"
     ${LABEL_DOMAIN}/branch: "legion/INFRA-5577"
     ${LABEL_DOMAIN}/head: "${BENCH}"
 spec:
@@ -53,8 +64,10 @@ spec:
       labels:
         ${LABEL_DOMAIN}/kind: legion-r8-bench
         ${LABEL_DOMAIN}/omp-session: *omp-session
-        # A timed run: build-cpu-burst would lower the CPU request to 0.6 x the limit, and the two
-        # arms' recomputes are compared within this pod, which must not share its CPU.
+        # A timed run: the two arms' recomputes are compared within this pod, which must not share
+        # its CPU. Without this label build-cpu-burst would set the CPU request from the kind's row
+        # in build-kind-sizes for this namespace and class where that is under the limit, or to
+        # under half the limit for a kind with no row, and the pod would share its CPU.
         ${LABEL_DOMAIN}/cpu-qos: "guaranteed"
       annotations:
         ${LABEL_DOMAIN}/omp-session-title: *omp-session-title
@@ -65,7 +78,7 @@ spec:
       activeDeadlineSeconds: 14400
       terminationGracePeriodSeconds: 30
       nodeSelector:
-        cloud.google.com/compute-class: build
+        cloud.google.com/compute-class: default
       volumes:
       # Everything the run writes: the clone and its worktrees, the Go and Bun caches, the builds,
       # the Postgres data with its WAL (one database at ten times the run volume at a time: main's is
