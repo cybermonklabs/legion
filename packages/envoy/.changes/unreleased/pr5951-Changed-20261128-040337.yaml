@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A migration whose context ends while it waits behind a lock that the lock watch has read now
+  fails with `pgmigrate.LockTimeoutError`, which names that lock and the sessions holding it, in
+  place of `migration <name>: context canceled`. `errors.Is` still finds the context error, and
+  the runner does not try such a migration again. A production boot keeps its fixed retry bound:
+  3 attempts, 2 s apart. A caller can now give the runner another bound with
+  `pgmigrate.WithRetryPolicy`; the Dispatch store's test harnesses use
+  `pgmigrate.DeadlineRetryPolicy`, which retries until the test binary's deadline, so a parallel
+  test suite no longer fails when two test databases migrate behind one lock.
+time: 2026-11-28T04:03:37Z
+custom:
+    Issue: pr5951
