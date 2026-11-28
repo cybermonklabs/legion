@@ -1,8 +1,0 @@
-kind: Fixed
-body: |-
-    The `agent-secrets` skill gives the key path of one account's token in a GitHub profile's JSON
-    object of installations, `.installations["ACCOUNT"].token`, and links the section that shows how
-    to read it inside the command.
-time: 2026-11-28T11:22:56.153957801Z
-custom:
-    Issue: pr6036

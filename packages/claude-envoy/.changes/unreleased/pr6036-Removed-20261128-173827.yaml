@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+    The plugin ships the `agent-secrets`, `legion-architect` and `legion-controller` skills with no
+    `agent-secrets` command line: they point at `agent-secrets --help` for the run. Three of the
+    Legion skills' commands named flags `agent-secrets` refuses with exit 2, and ran nothing.
+time: 2026-11-28T17:38:27Z
+custom:
+    Issue: pr6036

@@ -12,11 +12,7 @@ Read this when `skill://legion-controller/references/operations.md` sends you he
 
 1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure the log shows, such as a lost runner. Never re-run to test a theory, or on a head a run already tested with the same inputs.
 2. A test that failed and passed on the same code is flaky: write it to the tree whose run it failed by a mention (`skill://legion-worker/references/findings.md#write-by-a-mention`), to be fixed at its cause.
-3. Re-run with that token, and name in `--reason` the run, the failure and the issue key. `LEGION_IMPLEMENT_APP` holds the JSON object of installations, which GitHub answers `401` as a token, so the command reads `<owner>`'s token out of it with `jq`, `<owner>` written as GitHub writes the login, and stops rather than send none. Never print the token or the variable:
-
-   ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<the run, the failure, the issue>' --target <owner>/<repo> -- sh -c 'token=$(printf %s "$LEGION_IMPLEMENT_APP" | jq -er ".installations[\"<owner>\"].token") || { echo "no token for <owner>" >&2; exit 1; }; printf "Authorization: Bearer %s\n" "$token" | curl -fsS -X POST -H @- https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>/rerun-failed-jobs'
-   ```
+3. Re-run with that token, `LEGION_IMPLEMENT_APP` narrowed to `<owner>/<repo>`, and name in `--reason` the run, the failure and the issue key: read `<owner>`'s token out of it as `agent-secrets --help` shows, and send it on standard input to a `curl -fsS` POST to `https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>/rerun-failed-jobs`. Never print the token or the variable.
 
 4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Step 3's exit 77 with no `agent-secrets:` grant line is a denial, and its exit 22 is GitHub's refusal, whose status curl prints. Name a denial, or a 4xx such as a run that cannot be re-run, in the day's report. Run step 3 again only after a 5xx, once, at a later wake, and name a second failure there.
 
@@ -37,10 +33,6 @@ Read this when `skill://legion-controller/references/operations.md` sends you he
 
 ## A reply to a GitHub mention
 
-Your `gh` only reads, so post the reply to a mention (`skill://legion-controller/references/wakes.md#github-mentions`) with the implement App token the secrets broker lends, narrowed to the repository: a `curl` POST with the token read out of the installations and sent on standard input, as step 3 of [A re-run of a CI run](#a-re-run-of-a-ci-run) sends the re-run. `<n>` is the number of the issue or pull request the mention is on:
-
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: reply to a GitHub mention' --target <owner>/<repo> -- sh -c 'token=$(printf %s "$LEGION_IMPLEMENT_APP" | jq -er ".installations[\"<owner>\"].token") || { echo "no token for <owner>" >&2; exit 1; }; printf "Authorization: Bearer %s\n" "$token" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments' sh '{"body":"<the link>"}'
-```
+Your `gh` only reads, so post the reply to a mention (`skill://legion-controller/references/wakes.md#github-mentions`) with the implement App token the secrets broker lends, narrowed to the repository: a `curl` POST with the token on standard input, as step 3 of [A re-run of a CI run](#a-re-run-of-a-ci-run) sends the re-run, to `https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments` with the body `{"body":"<the link>"}` and `<KEY>: reply to a GitHub mention` as its `--reason`. `<n>` is the number of the issue or pull request the mention is on.
 
 That reply is your one GitHub write for a mention. Exit 77 with no `agent-secrets:` grant line is a denial, and exit 22 is GitHub's refusal, whose status curl prints. Name either in your daily report, and do not post the reply again.

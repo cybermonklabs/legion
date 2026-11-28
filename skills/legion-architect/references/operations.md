@@ -30,11 +30,7 @@ It changes the root spec only where it changes the Summary, a requirement, a che
 
 ## The token the secrets broker lends
 
-The implement App token the secrets broker lends (`skill://agent-secrets`) takes three GitHub writes of your tree's work: a re-run of your tree's CI run, the enqueue, arming, dequeue or disarming of a pull request no merger merges, and a comment on a pull request your `gh` does not reach. Any other write your `gh` cannot make is a finding (`skill://legion-worker/references/findings.md`). Take it narrowed to the one repository, read `<owner>`'s token out of the JSON of installations with `jq`, and call `curl`, never `gh`:
-
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: <the write, and why>' --target <owner>/<repo> -- sh -c 'token=$(printf %s "$LEGION_IMPLEMENT_APP" | jq -er ".installations[\"<owner>\"].token") || { echo "no token for <owner>" >&2; exit 1; }; printf "Authorization: Bearer %s\n" "$token" | curl -fsS -X POST -H @- --data-binary "$1" <url>' sh '<the JSON body>'
-```
+The implement App token the secrets broker lends as `LEGION_IMPLEMENT_APP` (`skill://agent-secrets`) takes three GitHub writes of your tree's work: a re-run of your tree's CI run, the enqueue, arming, dequeue or disarming of a pull request no merger merges, and a comment on a pull request your `gh` does not reach. Any other write your `gh` cannot make is a finding (`skill://legion-worker/references/findings.md`). Take it narrowed to the one repository, read `<owner>`'s token out of it as `agent-secrets --help` shows, and make the write with `curl -fsS`, never `gh`.
 
 - Keep the call in single quotes and give `curl` the header on standard input, so the token is in no command's arguments. Never print the token.
 - Name in `--reason` the write, why you make it, and your issue's key.
