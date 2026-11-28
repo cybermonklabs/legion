@@ -15,7 +15,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `carried-gate-opened` | Start and release nothing. |
 | `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review; tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting no surface reaches the changed path: build one in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
-| `pr-blocked` | Decide in this turn, as "A capped pull request" below says. |
+| `pr-blocked` | Decide in this turn, as "A capped pull request" in wake-routing-steps.md says. |
 | `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in acceptance.md). |
 | `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head (no `topic`): sort its `reason` as your role prompt says. |
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
@@ -27,7 +27,7 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `child-release-stalled` | Read the parent's record (`read_record`); release the parent first when the reason says so, then the child again. A parent that never records is a finding. |
 | `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) and release it again. A missing named App is a `dispatch ask` on the child's issue; release the child once it is installed. |
 | `worker-died` | A phase worker: the issue is held; `retry_or_escalate` with `retry` for an agent or transient failure (its `reason` says what changed), `escalate` for an environmental one or a prompt too large for its pod. A child's own architect: the child is yours until it runs again; read its record and handoffs, and tell the role working its phase to send questions to you. A finished role: nothing is held; read its handoff. |
-| `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. Two reasons are none of these, and neither is a stall of the worker. One says the claim `did not get its task` because `sends of this task have failed with an answer`: the worker answers and is kept, and the daemon sends the task again at each sweep; read `The last answer was:` at the reason's end and get its cause fixed, a stale `index.lock` for example. The other says the claim `has waited` to be sent its phase task while `another claim of the issue, is in a turn`: do nothing while the turn the reason names runs, since the daemon sends the task when it ends. |
+| `worker-stalled` | The daemon relaunched or queued the turn, retries its relaunch, let a suspension already waiting for the claim run instead, or failed the claim. Judge from the reason whether the work needs your decision. A stop the runtime did not confirm, or one worker that stalls again and again, is a finding: open its ask yourself. `sends of this task have failed with an answer` and `has waited` stop nothing: fix the cause the reason's last answer names (a stale `index.lock`, for example); for a hold, do nothing while the turn the reason names runs. |
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the agent, ask its holder to resume it ("An agent of your tree that needs an action" in operations.md). |
 | `session-lost`, `session-forgotten` | Yours alone: the worker's session is gone and a fresh agent runs the role. Bring it up to date as "A lost session" in wake-routing-steps.md says. |
 | `provider-errors` | "An agent of your tree that needs an action" in operations.md. |
@@ -38,23 +38,3 @@ Where a row says to ask a person, a child's own architect asks the architect abo
 | `status-reasserted` | Ask a person when the status write the daemon set back reads as a wish to stop the tree. |
 | `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names, then free or report the bytes as "A full issue volume" in wake-routing-steps.md says. |
 | A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
-
-## A capped pull request
-
-A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
-Only requests for changes count: no tester's fail, no move back.
-Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
-
-- **Narrow**: the change is sound but each round finds more around it.
-  Tell the implementer, and a reviewer step where there is one, which checks the next round answers, dropping no requirement.
-  A correctness finding or a clear fix in a touched file stays in this pull request.
-
-- **Split**: part of the work cannot settle here.
-  On a child, it becomes a child of this issue's parent (a child's own architect sends it up with `envoy_publish`);
-  that parent's architect files it with `--blocked-by <this issue>` and releases it at once.
-  On the root, open a `dispatch ask`; the part stays a requirement until the person says otherwise.
-
-- **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.
-  A later notice accepts again only when its round found less.
-
-A finding that changes what the spec requires or a check proves is also a spec change, never instead of the choice.
