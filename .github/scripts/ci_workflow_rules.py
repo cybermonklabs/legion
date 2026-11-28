@@ -681,13 +681,15 @@ def if_spelt(step: dict) -> str:
 
 
 # The inputs of actions/setup-go that choose the Go a job builds with: go-version-file and
-# go-version, its version, and go-download-base-url, the distribution setup-go downloads it from -
-# another distribution's toolchain has another build ID, so every object misses. Rule 25 holds
-# them alike on both sides of an entry before each paired step, since the readers' restore-keys
-# carry no Go version. A setup-go step with an `if:` of its own may install no Go at all, so the
-# rule refuses it; one that gives neither go-version-file nor go-version installs none, so it
-# counts as no setup-go step.
-SETUP_GO_INPUTS = ("go-version-file", "go-version", "go-download-base-url")
+# go-version, its version; go-download-base-url, the distribution setup-go downloads it from -
+# another distribution's toolchain has another build ID, so every object misses; and architecture,
+# the architecture whose Go setup-go installs - that Go's default GOARCH changes the key of every
+# object, and the readers' restore-keys carry only runner.arch. Rule 25 holds them alike on both
+# sides of an entry before each paired step, since the readers' restore-keys carry no Go version.
+# A setup-go step with an `if:` of its own may install no Go at all, so the rule refuses it; one
+# that gives neither go-version-file nor go-version installs none, so it counts as no setup-go
+# step.
+SETUP_GO_INPUTS = ("go-version-file", "go-version", "go-download-base-url", "architecture")
 
 
 def setup_go_for(job: dict, step: dict) -> dict | None:
@@ -721,9 +723,9 @@ def check_binaries_fill(fills: list, problems: list) -> None:
     under a key computed from the command that made it - the compiler's flags, CGO_ENABLED and
     the other GO* variables that enter the build, and the source it compiles - so a fill whose
     steps drift from the reader's saves an entry with which the reader compiles again each package
-    whose key the drift changes, and nothing fails: with a cgo drift, 427 of the binaries job's
-    1,034 packages on every run, as measured on go-envoy-test, filled with cgo on; with another
-    Go, every package.
+    whose key the drift changes, and nothing fails: with a cgo drift, the binaries job's build step
+    compiles again 427 of the 1,034 packages of its whole build closure on every run, as measured
+    on a go-envoy-test entry, a family filled with cgo on; with another Go, every package.
 
     So each step of a pair, the fill's and the reader's, must exist and run the entry's text,
     compared as an Exact entry compares a step's (pin_difference: the whole text, nothing parsed),
@@ -741,8 +743,8 @@ def check_binaries_fill(fills: list, problems: list) -> None:
     nothing.
 
     Both jobs must set Go up alike before each pair: the last actions/setup-go step before each
-    paired step (setup_go_for) must give the same go-version-file, go-version and
-    go-download-base-url (SETUP_GO_INPUTS) on both sides, each compared as text, an absent one as
+    paired step (setup_go_for) must give the same SETUP_GO_INPUTS - go-version-file, go-version,
+    go-download-base-url and architecture - on both sides, each compared as text, an absent one as
     empty, or the error names the fill's file, its job, the paired step and both setups. A side
     with no such step fails, naming its file, its job and the paired step, since that step then
     builds on whatever Go the runner carries; a setup-go step that gives neither go-version-file
@@ -752,8 +754,10 @@ def check_binaries_fill(fills: list, problems: list) -> None:
     installs Go, and else to set both jobs' Go up from one go-version-file, such as the go.mod of
     the entry's directory. Go keys every object on the toolchain that compiled it -
     go-download-base-url chooses the distribution setup-go downloads, and another distribution's
-    toolchain has another build ID - and the readers' restore-keys carry no Go version, so an
-    entry a fill on another Go saved is restored, and every object of it misses. And each step of
+    toolchain has another build ID; architecture chooses the architecture whose Go setup-go
+    installs, and that Go's default GOARCH changes the key of every object - and the readers'
+    restore-keys carry no Go version and, of the architecture, only runner.arch, so an entry a
+    fill on another Go saved is restored, and every object of it misses. And each step of
     the reader's job whose run: holds a go command (go_lines) must be the reader's step of a pair:
     the fill does not run any other, so the job restores the entry and that step's own packages
     miss on every run, with nothing failing.
@@ -831,8 +835,7 @@ def check_binaries_fill(fills: list, problems: list) -> None:
                                                 f"text, elsewhere, under another environment or not at all saves an entry "
                                                 f"with which {reader_path}'s {reader_job} job compiles again each package "
                                                 f"whose key the drift changes or whose object it leaves out, with nothing "
-                                                f"failing (with a cgo drift, 427 of its 1,034 packages; with another Go, "
-                                                f"every one); make both steps run the pair's text there again, or change "
+                                                f"failing; make both steps run the pair's text there again, or change "
                                                 f"the table with both"))
             if None in found:
                 continue

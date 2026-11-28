@@ -550,9 +550,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # The binaries job's Go: its restore-keys carry no Go version, so rule 25 of
-      # check-ci-filters.sh holds this step's go-version-file, go-version and go-download-base-url
-      # to that job's, before each step the two jobs pair.
+      # The binaries job's Go: its restore-keys carry no Go version, and of the architecture only
+      # runner.arch, not the one whose Go setup-go installs (that Go's default GOARCH changes the
+      # key of every object), so rule 25 of check-ci-filters.sh holds this step's go-version-file,
+      # go-version, go-download-base-url and architecture to that job's, before each step the two
+      # jobs pair.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

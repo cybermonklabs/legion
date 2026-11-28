@@ -5798,14 +5798,15 @@ check "fails" "$(is "$status" 1)"
 check "naming the reader's file, its job and the step the table pairs" \
   "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job binaries has no step \"Build the binaries the browser suite runs\", which .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs with \"Build the binaries the browser suite runs, as the binaries job does\" of the other side")"
 
-# The readers' restore-keys carry no Go version, so an entry a fill on another Go saved is restored
-# and every object of it misses: the last actions/setup-go step before each paired step gives the
-# same go-version-file, go-version and go-download-base-url on both sides, a job with no such step
-# before a paired step fails, one that gives neither go-version-file nor go-version counts as none,
-# and one with an `if:` of its own is refused.
+# The readers' restore-keys carry no Go version, and of the architecture only runner.arch, so an
+# entry a fill on another Go saved is restored and every object of it misses: the last
+# actions/setup-go step before each paired step gives the same go-version-file, go-version,
+# go-download-base-url and architecture on both sides, a job with no such step before a paired
+# step fails, one that gives neither go-version-file nor go-version counts as none, and one with
+# an `if:` of its own is refused.
 setup_go_step=$'      - id: setup-go\n        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: mod/go.mod\n'
 go_reason="the restore-keys of .github/workflows/dispatch-browser.yaml's binaries job carry no Go version, so that job restores an entry a fill on another Go saved, and every object of it misses, with nothing failing"
-go_inputs="give both jobs' actions/setup-go steps the same go-version-file, go-version and go-download-base-url"
+go_inputs="give both jobs' actions/setup-go steps the same go-version-file, go-version, go-download-base-url and architecture"
 fill_go_build="::error file=.github/workflows/ci-caches.yaml::job browser-binaries's last actions/setup-go step before \"Build the binaries the browser suite runs, as the binaries job does\" gives "
 fill_go_connections="::error file=.github/workflows/ci-caches.yaml::job browser-binaries's last actions/setup-go step before \"Read the connections each stack's Postgres must allow, as the binaries job does\" gives "
 reader_go_build=".github/workflows/dispatch-browser.yaml's binaries job's last before \"Build the binaries the browser suite runs\", the step .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs with it, gives "
@@ -5901,6 +5902,16 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "naming the fill's file, its job, the paired step and both setups, the base URL with them" \
   "$(contains "$out" "${fill_go_build}\`go-version-file: mod/go.mod, go-download-base-url: https://example.invalid/dl\`, where ${reader_go_build}\`go-version-file: mod/go.mod\`: $go_reason; $go_inputs")"
+check "and not the reader's file" "$(is "$(contains "$out" "file=.github/workflows/dispatch-browser.yaml::")" false)"
+
+echo "case: the fill sets up the Go of another architecture than the reader's"
+binaries_case binaries-fill-architecture
+replace "$root/.github/workflows/ci-caches.yaml" "          go-version-file: mod/go.mod" \
+  $'          go-version-file: mod/go.mod\n          architecture: x86'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the fill's file, its job, the paired step and both setups, the architecture with them" \
+  "$(contains "$out" "${fill_go_build}\`go-version-file: mod/go.mod, architecture: x86\`, where ${reader_go_build}\`go-version-file: mod/go.mod\`: $go_reason; $go_inputs")"
 check "and not the reader's file" "$(is "$(contains "$out" "file=.github/workflows/dispatch-browser.yaml::")" false)"
 
 # A go command of the reader's job that no pair names is one the fill does not run, so its own

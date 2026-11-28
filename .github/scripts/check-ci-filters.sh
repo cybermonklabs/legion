@@ -403,23 +403,25 @@
 #      other env: name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or $GITHUB_PATH or
 #      running `go env -w`, and no shell or container, naming the file, the step and its first
 #      line that differs; before each paired step, a fill job whose last actions/setup-go step
-#      gives another go-version-file, go-version or go-download-base-url than the reader job's last
-#      before the step it pairs with, each compared as text, naming the file, the job, the paired
-#      step and both; a job of either side with no setup-go step before a paired step that gives a
-#      go-version-file or go-version (one that gives neither installs no Go, and counts as none),
-#      which then builds on whatever Go the runner carries, naming the file, the job and the step,
-#      and saying to set Go up there as the other side's job does where that job's installs Go,
-#      else to set both jobs' Go up from one go-version-file, such as the go.mod of the pair's
-#      directory; that setup-go step with an `if:` of its own, which may install no Go at all,
-#      naming the file, the job, the step and the `if:`; a step of the reader job whose run: holds
-#      a go command and that no pair names, naming the file, the job and the step: the fill does
-#      not run it, so the job restores the entry and that step's own packages miss on every run; a
-#      job or step of either side that is gone, each in its own words; and an entry that names no
-#      pair, an empty text or a workflow the tree does not have. An object's cache key holds the
-#      compiler's flags, CGO_ENABLED and the other GO* variables that enter the build, with the
-#      source it compiles, so a fill that drifts saves an entry with which the job compiles again
-#      each package whose key the drift changes, and nothing fails: with a cgo drift, 427 of the
-#      job's 1,034 packages, as measured on a go-envoy-test entry, a family filled with cgo on;
+#      gives another go-version-file, go-version, go-download-base-url or architecture than
+#      the reader job's last before the step it pairs with, each compared as text, naming the
+#      file, the job, the paired step and both; a job of either side with no setup-go step
+#      before a paired step that gives a go-version-file or go-version (one that gives neither
+#      installs no Go, and counts as none), which then builds on whatever Go the runner
+#      carries, naming the file, the job and the step, and saying to set Go up there as the
+#      other side's job does where that job's installs Go, else to set both jobs' Go up from
+#      one go-version-file, such as the go.mod of the pair's directory; that setup-go step
+#      with an `if:` of its own, which may install no Go at all, naming the file, the job, the
+#      step and the `if:`; a step of the reader job whose run: holds a go command and that no
+#      pair names, naming the file, the job and the step: the fill does not run it, so the job
+#      restores the entry and that step's own packages miss on every run; a job or step of
+#      either side that is gone, each in its own words; and an entry that names no pair, an
+#      empty text or a workflow the tree does not have. An object's cache key holds the
+#      compiler's flags, CGO_ENABLED and the other GO* variables that enter the build, with
+#      the source it compiles, so a fill that drifts saves an entry with which the job
+#      compiles again each package whose key the drift changes, and nothing fails: with a cgo
+#      drift, the binaries job's build step compiles again 427 of the 1,034 packages of its
+#      whole build closure, as measured on a go-envoy-test entry, a family filled with cgo on;
 #      with another Go, every package. GOCACHE and a step's `if:` are refused although neither
 #      enters a key: a GOCACHE sends the objects away from the `~/.cache/go-build` the fill saves,
 #      which leaves the fill saving an empty entry, and a step that does not run compiles nothing,
@@ -432,7 +434,9 @@
 #      says so where it lists no script Run). The setup-go inputs are compared because the readers'
 #      restore-keys do not carry the Go version: an entry a fill on another Go saved is restored,
 #      and every object of it misses - go-download-base-url chooses the distribution setup-go
-#      downloads, and another distribution's toolchain has another build ID. Not compared: a job's
+#      downloads, and another distribution's toolchain has another build ID; architecture chooses
+#      the architecture whose Go setup-go installs, and that Go's default GOARCH changes the key of
+#      every object, while the restore-keys carry only `runner.arch`. Not compared: a job's
 #      `if:` - the fill job's is `inputs.only != 'dispatch-builds'`, the selection every fill job
 #      of ci-caches.yaml but dispatch-builds carries, and no rule holds a fill job's `if:` for any
 #      family; the runner, whose OS and architecture the readers' restore-keys carry too, so an

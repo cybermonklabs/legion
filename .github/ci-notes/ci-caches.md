@@ -553,9 +553,11 @@ with, in its directory, so the entry holds each object under the key that job as
 ci_job_reads.py's BINARIES_FILLS gives the two texts, the binaries job's own Exact entries pin
 them, and rule 25 of check-ci-filters.sh fails the check when a step of either side runs another
 text, in another directory or under an env or an earlier step that can move what go compiles,
-when the two jobs set Go up from another go-version-file, go-version or go-download-base-url,
-which the readers' restore-keys do not carry, and when the job runs a go command in a step no pair
-names. So a change to the job's step changes the table and the fill with it.
+when the two jobs set Go up from another go-version-file, go-version, go-download-base-url or
+architecture, which the readers' restore-keys do not carry (they carry `runner.arch`, not the
+architecture of the Go setup-go installs, whose default GOARCH changes the key of every object),
+and when the job runs a go command in a step no pair names. So a change to the job's step changes
+the table and the fill with it.
 
 The job restored go-envoy-test before, whose objects are compiled with cgo on. With
 `CGO_ENABLED=0`, net and os/user build other files, so every package above them has other cache
