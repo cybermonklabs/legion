@@ -1,5 +1,5 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useRef } from "react";
 
 import type { ArtifactOwner, DeclineAskInput, WriteBounds } from "../../api/client";
 import type { Ask } from "../../api/types";
@@ -12,6 +12,7 @@ import {
   borderDefault,
   cardHoverBorder,
   focusBorder,
+  growingField,
   inlineWarningText,
   linkHoverText,
   linkText,
@@ -39,6 +40,7 @@ import { UnsentBox } from "../inbox/AskThread";
 import type { OwnedAsk } from "../inbox/ask-name";
 import { askTurnHolder } from "../inbox/ask-turn";
 import { askUrgency } from "../inbox/ask-urgency";
+import { handOffFocus, useAnswerFormFocus } from "../inbox/useAnswerFormFocus";
 import { type AskAnswerForm, clarificationRefusal } from "../inbox/useAskAnswerForm";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
@@ -97,42 +99,6 @@ const ON_PAGE = {
   quiet: pageQuietText,
   warning: pageStateText.waiting,
 } as const;
-
-/** Moves focus from inside the form to the form's nearest focusable ancestor instead of letting
- *  it fall to the document body, so j/k/Enter/Escape still start from the same place: whoever
- *  caused the loss, and with no scroll. In the Inbox's list layout that ancestor is the ask's own
- *  row, the reader's own place, so the focus goes to no other row; a row whose ask was answered
- *  or withdrawn elsewhere stays in the list, with the card's closed state, while it holds the
- *  focus. In the reading column it is the column's own focus stop. The Inbox's j, k and Enter
- *  answer from either. */
-function handOffFocus(form: HTMLElement): void {
-  if (!form.contains(document.activeElement)) return;
-  form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
-}
-
-/** The form's callback ref. When the form leaves while a control inside it has focus - the body
- *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
- *  hand-off without any event, which moves the focus to the form's nearest focusable ancestor,
- *  the list layout's row or the reading column's focus stop, with no scroll (`handOffFocus`);
- *  React detaches a ref before removing its node, so the form is still in the document when this
- *  cleanup runs. The form is also kept in `formRef` for the disabled-control hand-off below. The
- *  callback must be stable across renders: React re-runs a changed callback ref's cleanup on
- *  every commit, and that cleanup can move focus. */
-function useFormRef(): [
-  { current: HTMLFormElement | null },
-  (form: HTMLFormElement | null) => (() => void) | undefined,
-] {
-  const formRef = useRef<HTMLFormElement | null>(null);
-  const track = useCallback((form: HTMLFormElement | null) => {
-    formRef.current = form;
-    if (form === null) return undefined;
-    return () => {
-      formRef.current = null;
-      handOffFocus(form);
-    };
-  }, []);
-  return [formRef, track];
-}
 
 /** The project of the document an ask was asked on: the Inbox row's `document`, else the
  *  caller's `owner`, else the document the ask is anchored to. */
@@ -281,12 +247,14 @@ export function AskBody({
     completed,
     displayedAsk,
     edits,
+    formRefusal,
     isApproval,
     mutation,
     nothingToAskBack,
     otherSelected,
     reasonFieldShownBefore,
     reasonRequired,
+    requiresReason,
     refusedWhileOut,
     refusing,
     selectRealOption,
@@ -298,6 +266,7 @@ export function AskBody({
     startChanging,
     submit,
     submitHint,
+    takeFormRefusalFocus,
     toggleOther,
     submitGuard,
     threadQuery,
@@ -314,35 +283,34 @@ export function AskBody({
   // Picking Request changes moves the person straight to the field the server insists on. The
   // form keeps whether the field stood for a reason at the last commit
   // (`reasonFieldShownBefore`), so the field takes the focus as it comes to, and a body drawn
-  // again for the form - after its record - moves none.
+  // again for the form - after its record - moves none. Only the person's own pick moves the
+  // focus, so the intent is recorded as the option is picked: a refusal of the form also picks
+  // Request changes, in each card of the ask, and leaves the focus where the person pressed
+  // (`useAnswerFormFocus`).
+  const focusReasonOnShow = useRef(false);
   useEffect(() => {
     if (reasonRequired === reasonFieldShownBefore.current) return;
     reasonFieldShownBefore.current = reasonRequired;
-    if (reasonRequired) {
+    if (reasonRequired && focusReasonOnShow.current) {
       answerFieldRef.current?.textarea()?.focus();
     }
+    focusReasonOnShow.current = false;
   }, [reasonRequired, reasonFieldShownBefore]);
-  // A control that disables itself under the reader's focus - Ask back once its text is sent and
-  // the form no longer refuses - would have the browser drop focus to the document body (in the
-  // Inbox, out of the row, which then lets the row go) with nothing the body could act on
-  // afterwards; the same hand-off as a vanishing form, in the commit that disables it, before the
-  // browser looks. While the form refuses a press (`refusing`, `useAskAnswerForm`), its controls
-  // are `aria-disabled`, not `disabled`, so this moves no focus then.
-  const [formRef, trackForm] = useFormRef();
-  useLayoutEffect(() => {
-    const form = formRef.current;
-    const active = document.activeElement;
-    if (form !== null && active instanceof HTMLElement && active.matches(":disabled")) {
-      handOffFocus(form);
-    }
+  // Where the focus goes as the form changes under it: off a vanishing form or a control that
+  // disables itself under the reader's focus, and back to the pressed control after a refusal of
+  // the form (`useAnswerFormFocus`).
+  const [formRef, trackForm] = useAnswerFormFocus({
+    formRefusal,
+    pending: mutation.isPending,
+    takeFormRefusalFocus,
   });
   const tooltips = useTooltips();
   // Ask back instead takes the focus as it is drawn, once: this one callback, stable across
-  // renders as `useFormRef`'s is, focuses it once, since a focus taken at each render would move
-  // the reader's focus while a write is out - from Answer with it anyway, say, whose answer is
-  // out. The choice leaves the page, and the button with it, once the form stops refusing after
-  // the clarification lands, and a focus the button still holds then goes where the form's own
-  // hand-off puts it, not to the body.
+  // renders as the form's callback ref (`useAnswerFormFocus`) is, focuses it once, since a focus
+  // taken at each render would move the reader's focus while a write is out - from Answer with it
+  // anyway, say, whose answer is out. The choice leaves the page, and the button with it, once the
+  // form stops refusing after the clarification lands, and a focus the button still holds then
+  // goes where the form's own hand-off puts it, not to the body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -406,11 +374,13 @@ export function AskBody({
           paste or drop (`refusing`). Inside `NoTooltips` the box is the page's
           (`ON_PAGE.field`), with its label and the line under it in the page's words. The
           Inbox's Enter puts the caret in the box by its `data-ask-answer` (`askAnswer`), as its
-          1 to 9 find an option by `data-ask-option` (`Inbox.tsx`). */}
+          1 to 9 find an option by `data-ask-option` (`Inbox.tsx`). It grows with its text up to
+          half the window (`growingField`), so a reason that Dispatch wrote after a form refusal
+          shows whole and Answer stays on the screen. */}
       <MentionField
         askAnswer={true}
         body={answerText}
-        className="font-normal"
+        className={`font-normal ${growingField}`}
         fieldClassName={tooltips ? undefined : ON_PAGE.field}
         fieldRef={answerFieldRef}
         hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
@@ -768,7 +738,9 @@ export function AskBody({
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
-                  if (!refusing) selectRealOption(option.label);
+                  if (refusing) return;
+                  focusReasonOnShow.current = requiresReason(option.label);
+                  selectRealOption(option.label);
                 }}
                 option={option}
                 palette={palette}

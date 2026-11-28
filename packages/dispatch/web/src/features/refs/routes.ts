@@ -149,18 +149,29 @@ export const INBOX_FILTER_VOCABULARY: Readonly<
   urgency: INBOX_URGENCY_VALUES,
 };
 
-export type IssueTab =
-  | "spec"
-  | "verification"
-  | "plan"
-  | "steps"
-  | "conversation"
-  | "children"
-  | "artifacts"
-  | "activity"
-  | "decisions"
-  | "dashboard"
-  | "collaborators";
+/** Every tab of the issue page, each the path segment that opens it (`/issues/<KEY>/<tab>`). The
+ *  dashboard's pages file (`dashboard-pages-file.ts`) is generated from this list, so a tab added
+ *  here reaches the server's and the agent client's readers of a dashboard address, unless its
+ *  page names nothing in text, as Dashboard's does (`parseIssuePath`). */
+export const ISSUE_TABS = [
+  "spec",
+  "verification",
+  "plan",
+  "steps",
+  "conversation",
+  "children",
+  "artifacts",
+  "activity",
+  "decisions",
+  "dashboard",
+  "collaborators",
+] as const;
+export type IssueTab = (typeof ISSUE_TABS)[number];
+
+/** The path segments under an issue that open one of its documents by slug
+ *  (`/issues/<KEY>/artifacts/<slug>`): the plural the dashboard writes, and the singular it reads
+ *  as the same page. */
+export const ISSUE_DOCUMENT_SEGMENTS = ["artifacts", "artifact"] as const;
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
 export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
@@ -196,6 +207,10 @@ const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
+/** A document of an issue by slug, under any segment of `ISSUE_DOCUMENT_SEGMENTS`. */
+const issueDocumentPathPattern = new RegExp(
+  `^(?:${ISSUE_DOCUMENT_SEGMENTS.join("|")})/([^/?#\\s]+)$`
+);
 /** The slug Dispatch gives a document, the one a reference can name. */
 const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
@@ -231,8 +246,12 @@ const machinePathPattern = /^\/machines\/([^/]+)$/;
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 
-/** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
-const legacyLogReferencePattern = /^log$/;
+/** The segment a `dispatch://` reference writes the conversation tab as: agents write the
+ *  conversation as `dispatch://KEY/log`, and the browser path is `/conversation`. The reader of a
+ *  reference (`parseIssueReference`) takes it, and the dashboard's pages file writes the
+ *  conversation's reference as it (`dashboard-pages-file.ts`). Every other tab is written in a
+ *  reference as its own name. */
+export const CONVERSATION_REFERENCE_SEGMENT = "log";
 
 export function isProjectRoute(
   route: DispatchRoute | DispatchReferenceRoute
@@ -369,7 +388,7 @@ function parseIssueReference(key: string, target: string | undefined): IssueRout
   if (plain !== undefined) {
     return { key, kind: plain };
   }
-  if (legacyLogReferencePattern.test(target) || target === "conversation") {
+  if (target === CONVERSATION_REFERENCE_SEGMENT || target === "conversation") {
     return { key, kind: "conversation" };
   }
   const artifact = target.match(issueArtifactReferencePattern);
@@ -516,7 +535,7 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
     const record = decodedSegment(thread[1] ?? "");
     return record === undefined ? undefined : { key, kind: "threads", record };
   }
-  const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
+  const artifact = target.match(issueDocumentPathPattern);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
   }

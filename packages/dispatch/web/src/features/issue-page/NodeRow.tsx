@@ -42,6 +42,7 @@ import { deletedLineText, postDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
 import { namesBlockByLine, useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference, referenceHref } from "../refs/routes";
+import { DIALOG_RETURN_ATTRIBUTE } from "../shell/useDialog";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import type { PointMark } from "./current-point";
@@ -314,6 +315,9 @@ export function NodeRow({
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={tabStop ? 0 : -1}
+      // A dialog opened from one of the row's acts, which go as the row loses the focus to it,
+      // gives the focus back to the row as it closes (decision 396).
+      {...{ [DIALOG_RETURN_ATTRIBUTE]: "" }}
     >
       {/* One faint guide per level above the row, each at the middle of that level's bullet
           (the prototype's `.tn > .kids`, 9 px into a level 23 px wide, and 8 px into one 17 px

@@ -13,7 +13,7 @@ body: |-
   check refuses a call that is a gh alias (exit 3) and a call whose aliases it cannot read (exit 2),
   and `legion gh` exits 2 for both. One `gh pr view` through `legion gh` took a median of 1.22 s
   on `leak-check-v31` and 1.02 s on `leak-check-v21`, in ten runs of each in one gVisor pod.
-  `legion gh`'s list of reads is proven against `leak-check-v31` (`ghReadsProvenCheck`), so a call
+  `legion gh`'s list of reads is proven against `leak-check-v31` (`ghroute.ReadsProvenCheckTag`), so a call
   that writes nothing still skips the visibility read in a pod on the new pin.
 
   A deployment that names the check's manifest digest (`leak_check.manifest_sha256` in
