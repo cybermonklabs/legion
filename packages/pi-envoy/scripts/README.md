@@ -174,7 +174,12 @@ where it stood or a pass had already removed it, and a row whose claimant must b
 decided inside the window, its holder having answered for the claim immediately before. A row
 that waits the window out waits for the listener to say so, never for a sleep.
 
-Eighteen rows are printed, each with its outcome:
+Eighteen rows are driven, and each prints its verdict line as it ends: `PASS: <row> — <evidence>`
+or `FAIL: <row> — <the first check that failed>`, so that CI's record of when each line of the
+smoke's log was written times each row
+([When each shell harness ran its cases](../../../docs/testing.md#when-each-shell-harness-ran-its-cases)).
+The run ends with `SMOKE ROLE TAKEOVER PASS:`, or with the rows that did not hold, each as
+`did not hold: <row> — <the check that failed>`, and then `SMOKE ROLE TAKEOVER FAIL:`. The rows:
 
 - **row 1**, twice — a claim under the id that holds the role is granted because nobody renewed
   the standing claim inside the live window: an Oh My Pi plugin reload, and a Claude Code channel

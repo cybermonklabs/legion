@@ -172,7 +172,11 @@ type stepModelsStandin struct {
 	// marker is what the prompt that starts a step carries: the pane's own phase in a task of the
 	// daemon's, or the capture's one prompt.
 	marker string
-	steps  []stepModelsStep
+	// subagentLine is what only an Oh My Pi subagent's own system prompt holds
+	// (deepWorkerSystemLine), empty for a Claude Code pane, whose subagent's request carries
+	// stepModelsSubagentMarker instead.
+	subagentLine string
+	steps        []stepModelsStep
 	// events reaches the run's driver, nil for a capture, which no driver drives. stopped closes
 	// when the run ends, which lets a held answer go.
 	events  chan<- stepModelsEvent
@@ -194,12 +198,13 @@ type stepModelsStandin struct {
 
 // newStepModelsStandin serves one pane's endpoint under name. For an Oh My Pi implementer, name is
 // also the provider half of its model (standinModel). For a Claude Code pane it is a label alone.
-func newStepModelsStandin(t *testing.T, name string, harness runtime.Backend, served, asked, marker string, token claim.Token, steps []stepModelsStep,
+// subagentLine is the stand-in's subagentLine.
+func newStepModelsStandin(t *testing.T, name string, harness runtime.Backend, subagentLine, served, asked, marker string, token claim.Token, steps []stepModelsStep,
 	events chan<- stepModelsEvent, stopped <-chan struct{},
 ) *stepModelsStandin {
 	t.Helper()
 	s := &stepModelsStandin{
-		modelStandin: &modelStandin{name: name}, token: token, harness: harness, served: served, asked: asked, marker: marker,
+		modelStandin: &modelStandin{name: name}, token: token, harness: harness, subagentLine: subagentLine, served: served, asked: asked, marker: marker,
 		steps: steps, events: events, stopped: stopped,
 	}
 	s.serve(t, s)
@@ -253,9 +258,10 @@ func (s *stepModelsStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) 
 	}()
 	turn := readStepModelsTurn([]byte(body))
 	served := servedResponse{Claim: string(s.token), Asked: turn.model, Model: s.served, Turn: turn.shape}
-	served.Subagent = strings.Contains(turn.system, deepWorkerSystemLine)
 	if s.harness == runtime.BackendClaude {
 		served.Subagent = strings.Contains(turn.firstUser, stepModelsSubagentMarker)
+	} else {
+		served.Subagent = strings.Contains(turn.system, s.subagentLine)
 	}
 	// Every turn of a session offers the session's tools. A request that offers none is the
 	// harness's own upkeep, no turn of the session. Oh My Pi asks its "routing hint" calls while a
@@ -1110,13 +1116,14 @@ func (r *stepModelsLive) serveStandins() {
 		"A": {{ended, ended, stopped}, {failed, failed}},
 		"B": {{ended, ended}, {failed, stopped}},
 	}
+	subagentLine := deepWorkerSystemLine(t, r.root)
 	for _, issue := range r.issues {
 		script := scripts[issue.name]
 		lower := strings.ToLower(issue.name)
 		implementer := "smimplementer" + lower
-		r.panes[issue.implementer] = newStepModelsStandin(t, implementer, runtime.BackendOmp, implementer+standinModelID, implementer+standinModelID,
+		r.panes[issue.implementer] = newStepModelsStandin(t, implementer, runtime.BackendOmp, subagentLine, implementer+standinModelID, implementer+standinModelID,
 			"Phase: "+string(phase.Implementing)+".", issue.implementer, script[0], r.events, r.done)
-		r.panes[issue.tester] = newStepModelsStandin(t, "smtester"+lower, runtime.BackendClaude, stepModelsClaudeModel, stepModelsClaudeModel,
+		r.panes[issue.tester] = newStepModelsStandin(t, "smtester"+lower, runtime.BackendClaude, "", stepModelsClaudeModel, stepModelsClaudeModel,
 			"Phase: "+string(phase.Testing)+".", issue.tester, script[1], r.events, r.done)
 	}
 	r.spare = newPaneStandin(t, stepModelsSpareProvider)
@@ -2138,7 +2145,7 @@ func (r *stepModelsLive) captureClaude(name, served string) *stepModelsCapture {
 			t.Fatal(err)
 		}
 	}
-	standin := newStepModelsStandin(t, name, runtime.BackendClaude, served, stepModelsClaudeModel, stepModelsCaptureMarker,
+	standin := newStepModelsStandin(t, name, runtime.BackendClaude, "", served, stepModelsClaudeModel, stepModelsCaptureMarker,
 		claim.Token(name), []stepModelsStep{{}}, nil, r.done)
 	capture := &stepModelsCapture{name: name, stream: r.evidenceFileAt(name + "-stream.jsonl"), projects: r.evidenceFileAt(name + "-projects")}
 	stdout, err := os.Create(capture.stream)

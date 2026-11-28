@@ -315,9 +315,8 @@ wait_for() {
 # ---- the results -------------------------------------------------------------------------------
 # One row of R8's table (or one of A5's own claims), its outcome and the evidence for it. A failed
 # check never stops the run: every row is driven, so one run says which rows hold and which do not.
-row_names=()
-row_outcomes=()
-row_details=()
+row_count=0
+failed_rows=()
 current_row=""
 current_failure=""
 current_evidence=""
@@ -355,15 +354,20 @@ evidence() {
   current_evidence="$1"
 }
 
+# end_row: prints the row's verdict line, `PASS: <row> — <evidence>` or `FAIL: <row> — <its first
+# failure>`, as the row ends. CI's harness pool stamps each line with the time it was written, and
+# .github/scripts/harness_case_times.py reads a row's verdict line as the moment the row ended, so
+# a verdict printed later would give the row a false time. The end of the run lists each failed
+# row again, in a form that reader takes for no case.
 end_row() {
-  row_names+=("$current_row")
+  local outcome=PASS detail="$current_evidence"
   if [[ -n "$current_failure" ]]; then
-    row_outcomes+=("FAIL")
-    row_details+=("$current_failure")
-  else
-    row_outcomes+=("PASS")
-    row_details+=("$current_evidence")
+    outcome=FAIL
+    detail="$current_failure"
+    failed_rows+=("${current_row} — ${current_failure}")
   fi
+  row_count=$((row_count + 1))
+  printf '%s: %s — %s\n' "$outcome" "$current_row" "$detail"
   current_row=""
 }
 
@@ -1113,17 +1117,13 @@ row10_live_restart
 note "every row is driven; the rows took $((SECONDS - started_at))s"
 
 printf '\n'
-failures=0
-for index in "${!row_names[@]}"; do
-  printf '%s: %s — %s\n' "${row_outcomes[$index]}" "${row_names[$index]}" "${row_details[$index]}"
-  [[ "${row_outcomes[$index]}" == PASS ]] || failures=$((failures + 1))
-done
-printf '\n'
-if ((failures > 0)); then
+if ((${#failed_rows[@]} > 0)); then
+  printf 'did not hold: %s\n' "${failed_rows[@]}"
+  printf '\n'
   printf 'SMOKE ROLE TAKEOVER FAIL: %d of %d rows did not hold against %s\n' \
-    "$failures" "${#row_names[@]}" "$listener_under_test"
+    "${#failed_rows[@]}" "$row_count" "$listener_under_test"
   exit 1
 fi
 passed=1
 printf 'SMOKE ROLE TAKEOVER PASS: all %d rows held against %s\n' \
-  "${#row_names[@]}" "$listener_under_test"
+  "$row_count" "$listener_under_test"

@@ -1605,9 +1605,11 @@ type ConflictRead struct {
 // (workflow's MergeForwardAskEnded), and a delivery where the listener names no holder is credited
 // to the launch the row was sent at. The ask is sent again to a later launch of that role while
 // the merge of the head is still owed to it and no row of the ask is queued for it: at that
-// launch's ready (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not
-// reach it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped
-// or whose agent reported its own exit takes no row of the ask queued after it ended. It is
+// launch's ready (workflow's askAgainAtLaunch); at the end of a row of the ask that did not reach
+// it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped or
+// whose agent reported its own exit takes no row of the ask queued after it ended; and, to the
+// merger, at a move into merging (workflow's askMergerAtEntry), since a row of its ask that ended
+// while the issue stood outside merging reached no launch. It is
 // stored as the jsonb of pull_requests.merge_forward (migration
 // 20261119003157), null for nil;
 // the jsonb takes Earlier, Role, Withdrawn and SentLaunch with no migration of their own, and
@@ -3511,10 +3513,10 @@ type QueuedSupervise struct {
 	Age      time.Duration
 }
 
-// RoleClaim is a claim as RoleRun reads it: its state, the word for what last failed it
-// (failure_cause), the tree it is in, who suspended it while it is suspended, the newest start
-// the outbox ran against it (last_start_row), the update round it is in (update_round), the write
-// mark its retirement took (retired_at_write_mark), the phase entry
+// RoleClaim is a claim as RoleRun reads it: its state, its launch (generation), the word for what
+// last failed it (failure_cause), the tree it is in, who suspended it while it is suspended, the
+// newest start the outbox ran against it (last_start_row), the update round it is in
+// (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
 // it was last given work of (given_entry), the moment its agent last said it was ready
 // (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
 // handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
@@ -3527,6 +3529,10 @@ type QueuedSupervise struct {
 // readyWorkerTask).
 type RoleClaim struct {
 	State supervise.ClaimState
+	// Launch is the claim's launch (claims.generation, supervise.Claim.Generation). Its one reader
+	// is the move into merging, which tells the merger's launch the merge forward it owes
+	// (workflow's askMergerAtEntry).
+	Launch uint64
 	// FailureCause is the word for what failed the claim as its machine holds it
 	// (supervise.Claim.FailureCause; failure_cause and held_for read by supervise.DecodeCause),
 	// "" for a claim no failure is recorded on, which a retry's admission clears (supervise's
