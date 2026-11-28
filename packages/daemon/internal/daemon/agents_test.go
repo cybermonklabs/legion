@@ -49,10 +49,12 @@ func launchSpecsOf(rt *fake.Runtime, token claim.Token) []runtime.SpawnSpec {
 func sessionFile(c *stepClaimant) string { return "/sessions/" + c.session + ".jsonl" }
 
 // relaunchedAs is c's pane coming up in the launch the daemon makes of its claim after before
-// launches of it: the launch must run role and resume c's session. The earlier process's pane is
-// gone, as a relaunch ends it, so its stream closes; the new pane says hello with the launch's boot
-// token once the daemon has let the old stream go (helloAcked), registers in that same session and
-// says ready, as the plugin does. The claimant then works role. It answers the launch's spec.
+// launches of it: the launch must run role and resume c's session, by its file and by its id, the
+// id a Sandbox launch resumes an Oh My Pi role by (runtime.SpawnSpec.ResumeSessionID). The earlier
+// process's pane is gone, as a relaunch ends it, so its stream closes; the new pane says hello with
+// the launch's boot token once the daemon has let the old stream go (helloAcked), registers in that
+// same session and says ready, as the plugin does. The claimant then works role. It answers the
+// launch's spec.
 func (r *ownerStepsRig) relaunchedAs(c *stepClaimant, before int, role claim.Role) runtime.SpawnSpec {
 	t := r.t
 	t.Helper()
@@ -60,9 +62,9 @@ func (r *ownerStepsRig) relaunchedAs(c *stepClaimant, before int, role claim.Rol
 		return len(launchSpecsOf(r.rt, c.token)) > before
 	})
 	launch := lastLaunch(t, r.rt, c.token)
-	if launch.Role != role || launch.ResumeSessionFile != sessionFile(c) {
-		t.Fatalf("the daemon relaunched %s as %s resuming %q, want it as %s resuming %s, its own session", c.token, launch.Role,
-			launch.ResumeSessionFile, role, sessionFile(c))
+	if launch.Role != role || launch.ResumeSessionFile != sessionFile(c) || launch.ResumeSessionID != c.session {
+		t.Fatalf("the daemon relaunched %s as %s resuming %q by the session id %q, want it as %s resuming %s by the session id %s, its own session",
+			c.token, launch.Role, launch.ResumeSessionFile, launch.ResumeSessionID, role, sessionFile(c), c.session)
 	}
 	c.mu.Lock()
 	old := c.sh

@@ -37,7 +37,7 @@ import (
 // begins with the settlement's identity (intake.SettlementIdentity), by which it is matched to
 // the listener's line that published the settlement, and is written once for each identity
 // (logDroppedSettlement).
-func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
+func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Token) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
 		return intake.Result{}, err
@@ -556,16 +556,18 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // with the base's tip (dispatch://INFRA-3320 R11, R12), so the settlement is recorded and no
 // message goes out.
 //
-// A role whose released pod this same settlement woke is told nothing: its wake task already
+// The claim whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
 // would reach it as a second wake of one release, described to the worker as something somebody
-// published to its role topic. woken is that role, "" when the settlement woke nobody, and every
-// other role — a live one, and one the wake did not reach — is told as before.
+// published to its role topic. woken is that claim (wakeOnSettlement), "" when the settlement woke
+// nobody, and it is left out whichever of the roles above names it: one agent can work the
+// phase's step and the implementer's, as the steps of one key make it (dispatch://INFRA-4112 R5).
+// Every other claim — a live one, and one the wake did not reach — is told as before.
 //
 // A holder this daemon cannot name is an error here, and with it the settlement's whole
 // transaction: the settlement moves no issue, so there is nothing kept by telling the rest, and
 // the next settlement of the head asks again.
-func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Role) error {
+func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, told string, woken claim.Token) error {
 	settled := settledChecks(*pr)
 	if settled == "" || settled == told {
 		return nil
@@ -580,22 +582,18 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	// The architect told is the one that owns the issue now (owningArchitect): the issue's own
 	// while its claim holds its role, else the nearest one above it that does, else the tree
 	// root's. A phase the architect itself holds (accepting) is that same architect's acceptance,
-	// so it is told once, as the owner; and an architect this settlement woke would be the issue's
-	// own released claim, which holds its role and so is that owner too.
-	recipients := []roleRecipient{}
-	if woken != claim.RoleArchitect {
-		owner, err := e.owningArchitect(ctx, tx, *issue)
-		if err != nil {
-			return err
-		}
-		recipients = append(recipients, roleRecipient{issue: owner, role: claim.RoleArchitect, row: issue.Key})
+	// so it is told once, as the owner.
+	owner, err := e.owningArchitect(ctx, tx, *issue)
+	if err != nil {
+		return err
 	}
+	recipients := []roleRecipient{{issue: owner, role: claim.RoleArchitect, row: issue.Key}}
 	roles := []claim.Role{issue.RoleAt(record.StandsAt(*issue))}
 	if !record.StandsIn(*issue, phase.Merging) {
 		roles = append(roles, claim.RoleImplementer)
 	}
 	for _, role := range roles {
-		if role == claim.RoleArchitect || role == woken {
+		if role == claim.RoleArchitect {
 			continue
 		}
 		recipients = append(recipients, roleRecipient{issue: issue.Key, role: role, row: issue.Key})
@@ -606,6 +604,9 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 	}
 	body := fmt.Sprintf("Pull request #%d: %s. Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", pr.Number, settled)
 	for _, to := range addressed {
+		if to.token == woken {
+			continue
+		}
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 			return err
 		}

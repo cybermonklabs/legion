@@ -351,7 +351,10 @@ func (e *Engine) withdrawUnowed(ctx context.Context, tx pgx.Tx, issue record.Iss
 
 // askAgainAtLaunch sends the record's ask again at the ready of a launch of the asked role's claim
 // (askAgain). The ready is a fact (intake.ClaimReady) the daemon applies once for each launch of a
-// claim (claimReady); the ready of a role no merge forward asks reads nothing more.
+// claim (claimReady), and it names the role the claim's step has now: one agent can work the asked
+// role's step and the step of the role the ready names, as the steps of one key make it, so the
+// ready of that claim asks again whichever of its roles it names (dispatch://INFRA-4112 R5). The
+// ready of a claim no merge forward asks reads nothing more.
 //
 // The asked role's claim can end while the ask is owed: it fails (claimFailed), an operator stops
 // it, or its agent reports its own exit (supervise's stop and exit, which write no workflow fact).
@@ -383,8 +386,8 @@ func (e *Engine) askAgainAtLaunch(ctx context.Context, tx pgx.Tx, issue record.I
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a merge forward still owed is asked again at its role's new launch", "issue", issue.Key,
-		"tree", issue.Tree, "role", fact.Role, "launch", fact.Launch, "phase", record.StandsAt(issue), "pullRequest", pr.Number,
-		"head", pr.MergeForward.Head, "askedIn", pr.MergeForward.Phase)
+		"tree", issue.Tree, "role", fact.Role, "asked", pr.MergeForward.Asked(), "launch", fact.Launch, "phase", record.StandsAt(issue),
+		"pullRequest", pr.Number, "head", pr.MergeForward.Head, "askedIn", pr.MergeForward.Phase)
 	return nil
 }
 
@@ -485,22 +488,27 @@ func (e *Engine) holdSentWorker(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return e.holdStartedWorker(ctx, tx, issue, pr)
 }
 
-// askAgain sends the record's ask of issue's pull request again to role at launch, a launch of
-// role's claim token later than the one the ask was last told (record.MergeForward.SentLaunch),
-// while the merge of the head is still owed to role where issue stands (owedAsk) and no row of
-// that ask is queued for role and head (record.Store.QueuedMergeForwardAsk). The row names token
-// (record.MergeForwardMessage.Claim), the claim launch is of, and carries launch
-// (record.MergeForwardMessage.SentLaunch), and the record's ask is left as it is: the launch is
-// recorded only once a row of the ask is delivered (MergeForwardAskEnded), and while the row is
-// queued no second one is written. It answers the pull request, nil where it sent nothing. Launch
-// 0 is no launch: a claim that failed or retired, or one the daemon holds none of, is asked at the
-// ready of its next launch. A pull request that is not open and a tree that lingers tell nobody.
-// Its callers are a launch's ready (askAgainAtLaunch) and the move into merging
-// (askMergerAtEntry), each with the claim of the worker on role's step (record.WorkerClaim), and
-// the end of a row of the ask (MergeForwardAskEnded), with the claim the row reached, which the
-// daemon's executor makes without an engine, so it writes the row through store (queuedRow).
+// askAgain sends the record's ask of issue's pull request again to the role it asks, at launch, a
+// launch of token later than the one the ask was last told (record.MergeForward.SentLaunch), while
+// the merge of the head is still owed to that role where issue stands (owedAsk) and no row of that
+// ask is queued for that role and head (record.Store.QueuedMergeForwardAsk). token is the claim of
+// role's worker. Where role is the role asked, that is the claim the ask goes to. Where role is
+// another, the ask goes to token only where token is also the claim of the worker on the asked
+// role's step (record.ReadWorkerClaim): one agent works both steps, as the steps of one key make
+// it, so a launch of that claim is a launch of the asked role's (dispatch://INFRA-4112 R5).
+// The row names token (record.MergeForwardMessage.Claim), the claim launch is of,
+// and carries launch (record.MergeForwardMessage.SentLaunch), and the record's ask is left as it
+// is: the launch is recorded only once a row of the ask is delivered (MergeForwardAskEnded), and
+// while the row is queued no second one is written. It answers the pull request, nil where it sent
+// nothing. Launch 0 is no launch: a claim that failed or retired, or one the daemon holds none of,
+// is asked at the ready of its next launch. A pull request that is not open and a tree that
+// lingers tell nobody. Its callers are a launch's ready (askAgainAtLaunch) and the move into
+// merging (askMergerAtEntry), each with the claim of the worker on role's step
+// (record.WorkerClaim), and the end of a row of the ask (MergeForwardAskEnded), with the row's
+// role and the claim the row reached, which the daemon's executor makes without an engine, so it
+// writes the row through store (queuedRow).
 func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token, launch uint64, now time.Time) (*record.PullRequest, error) {
-	if launch == 0 || !record.MergeForwardReaches(record.MergeForwardAsk, role) || !record.InWorkflow(issue) {
+	if launch == 0 || !record.InWorkflow(issue) {
 		return nil, nil
 	}
 	pr, err := store.PullRequest(ctx, tx, issue.Key)
@@ -508,16 +516,25 @@ func askAgain(ctx context.Context, store record.Store, tx pgx.Tx, issue record.I
 		return nil, err
 	}
 	asked, owed := owedAsk(issue, *pr)
-	if !owed || asked.Asked() != role || launch <= asked.SentLaunch {
+	if !owed || launch <= asked.SentLaunch {
 		return nil, nil
 	}
-	if queued, err := store.QueuedMergeForwardAsk(ctx, tx, issue.Key, role, asked.Head); err != nil || queued {
+	if asked.Asked() != role {
+		project, err := claim.ProjectToken(issue.Project)
+		if err != nil {
+			return nil, err
+		}
+		if owner, err := record.ReadWorkerClaim(ctx, store, tx, project, issue.Key, asked.Asked()); err != nil || owner != token {
+			return nil, err
+		}
+	}
+	if queued, err := store.QueuedMergeForwardAsk(ctx, tx, issue.Key, asked.Asked(), asked.Head); err != nil || queued {
 		return nil, err
 	}
 	if lingers, err := record.TreeLingers(ctx, store, tx, issue.Tree); err != nil || lingers {
 		return nil, err
 	}
-	ask := mergeForwardMessageOf(issue, *pr, role, token, record.MergeForwardAsk, asked.Why)
+	ask := mergeForwardMessageOf(issue, *pr, asked.Asked(), token, record.MergeForwardAsk, asked.Why)
 	ask.SentLaunch = launch
 	row, err := queuedRow(ctx, tx, store, issue.Key, ask, now)
 	if err != nil {
@@ -656,7 +673,11 @@ func mergeForwardMessageOf(issue record.Issue, pr record.PullRequest, role claim
 // the workspace, merge nothing where it is the merger, and wait for the landed message, which
 // mergeForwardLanded sends it as the worker of that phase. The record's ask is left as it is. A
 // tree that lingers tells nobody, and neither does a step whose role the engine's deployment no
-// longer defines (lostRole), as mergeForwardWorker tells it nothing.
+// longer defines (lostRole), as mergeForwardWorker tells it nothing. Nor is a worker held whose
+// claim is the asked role's, one agent on both steps as the steps of one key make it
+// (dispatch://INFRA-4112 R5): the ask covers the hold, which would tell that agent to wait for a
+// merge that is its own to make, as mergeForward names that claim once, with the ask
+// (addressRoles), and the ready of each launch of that claim asks it again (askAgainAtLaunch).
 func (e *Engine) holdStartedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) error {
 	if pr == nil {
 		return nil
@@ -669,12 +690,26 @@ func (e *Engine) holdStartedWorker(ctx context.Context, tx pgx.Tx, issue record.
 		return err
 	}
 	asked := pr.MergeForward
+	if one, err := e.oneAgent(ctx, tx, issue, worker, asked.Asked()); err != nil || one {
+		return err
+	}
 	if err := e.tellRole(ctx, tx, issue, pr, worker, record.MergeForwardHold, asked.Why); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a worker waits for a merge forward another role was asked", "issue", issue.Key, "tree", issue.Tree,
 		"role", worker, "phase", record.StandsAt(issue), "pullRequest", pr.Number, "head", asked.Head, "asked", asked.Asked(), "askedIn", asked.Phase)
 	return nil
+}
+
+// oneAgent says whether one agent works the steps of the roles a and b of issue now: the claim of
+// the worker on each one's step (workerClaim) is one claim, as the steps of one key make it.
+func (e *Engine) oneAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, a, b claim.Role) (bool, error) {
+	first, err := e.workerClaim(ctx, tx, issue, a)
+	if err != nil {
+		return false, err
+	}
+	second, err := e.workerClaim(ctx, tx, issue, b)
+	return err == nil && first == second, err
 }
 
 // clearMergeForward drops the merge forward the record holds for issue's pull request
@@ -712,15 +747,26 @@ func (e *Engine) clearMergeForward(ctx context.Context, tx pgx.Tx, issue string)
 // already ran - that step stands before the place the issue stands at on the walk's line
 // (Walk.passedStep) - stands on a review of the old head, so the reviewer is asked to read the
 // merge and approve the new head or request changes (record.MergeForwardReview), and the record
-// keeps that the review was asked for (ReviewAsked), which the merger's task (task) and the
-// landed the merger is told in merging (record.MergeForwardMessage.Message) read. In the default
-// steps that is an issue in accepting, retro or merging. At step the review names the role of the
-// running step, the worker the landed reaches, which it tells beside the architect
+// keeps that the review was asked for (ReviewAsked) where a row of that review is queued, which
+// the merger's task (task) and the landed the merger is told in merging
+// (record.MergeForwardMessage.Message) read: a reviewer whose claim runs in the slot of a role the
+// deployment lost is asked nothing, and no merger waits for an approval nobody was asked for. In
+// the default steps that is an issue in accepting, retro or merging. At step the review names the
+// role of the running step, the worker the landed reaches, which it tells beside the architect
 // (record.MergeForwardMessage.Worker), since no phase names that role. A reviewer step still to
 // come reviews the head the issue stands at when it runs, so it is asked nothing now. A task whose
 // plan has no reviewer step stands on no review of the old head, no reviewer step runs for it, and
 // a merger told to wait for a reviewer's approval would wait for good, so nothing is asked and the
 // merger goes on at the new head.
+//
+// The landed and the review say different things: the landed tells the worker to go on with its
+// step at the new head, and the review asks for an approval or a request for changes, with no
+// completion. Neither covers the other, so each is addressed on its own (addressRoles, which
+// names each claim once within one message's recipients), and one agent that works the worker's
+// step and the reviewer's, as the steps of one key make it, gets both (dispatch://INFRA-4112 R5).
+// The reviewer that is itself the worker the landed reaches is told the review alone, which names
+// the new head as the landed does.
+//
 // The daemon records no decision outside reviewing, so that review is the roles' to hold to the
 // head they merge. The architect and the role asked are told nothing more: the architect's
 // checks-red notice already said the merge was asked for, and the role asked pushed it; in merging
@@ -742,38 +788,43 @@ func (e *Engine) mergeForwardLanded(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	review := w.passedStep(at, phase.Reviewing)
-	var recipients []roleRecipient
+	landing := record.MergeForwardMessage{Head: asked.Head, Landed: pr.HeadSHA, Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}
+	messages := make([]record.MergeForwardMessage, 0, 2)
 	worker, told := e.mergeForwardWorker(issue, at, record.MergeForwardLanded)
-	if told && owedTo(issue, *asked) {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: worker, row: issue.Key})
+	// The reviewer as the worker is told the review alone, which covers the landed.
+	if told && owedTo(issue, *asked) && (!review || worker != claim.RoleReviewer) {
+		toWorker := landing
+		toWorker.Role, toWorker.Step = worker, record.MergeForwardLanded
+		messages = append(messages, toWorker)
 	}
 	if review {
-		recipients = append(recipients, roleRecipient{issue: issue.Key, role: claim.RoleReviewer, row: issue.Key})
-	}
-	addressed, err := e.addressRoles(ctx, tx, issue.Project, recipients, nil)
-	if err != nil {
-		return err
-	}
-	for _, to := range addressed {
-		// As in mergeForward: no message to a claim whose slot is a role the deployment lost.
-		if lostSlot(to.token, e.cfg.Deployment) {
-			continue
+		toReviewer := landing
+		toReviewer.Role, toReviewer.Step = claim.RoleReviewer, record.MergeForwardReview
+		if at == phase.Step {
+			toReviewer.Worker = worker
 		}
-		role := to.role
-		message := record.MergeForwardMessage{Role: role, Claim: to.token, Step: record.MergeForwardLanded, Head: asked.Head, Landed: pr.HeadSHA,
-			Base: asked.Base, Phase: at, PullRequest: pr.Number, Why: asked.Why}
-		if review && role == claim.RoleReviewer {
-			message.Step = record.MergeForwardReview
-			if at == phase.Step {
-				message.Worker = worker
-			}
-		}
-		if err := e.enqueue(ctx, tx, to.issue, message); err != nil {
+		messages = append(messages, toReviewer)
+	}
+	reviewAsked := false
+	for _, message := range messages {
+		addressed, err := e.addressRoles(ctx, tx, issue.Project, []roleRecipient{{issue: issue.Key, role: message.Role, row: issue.Key}}, nil)
+		if err != nil {
 			return err
+		}
+		for _, to := range addressed {
+			// As in mergeForward: no message to a claim whose slot is a role the deployment lost.
+			if lostSlot(to.token, e.cfg.Deployment) {
+				continue
+			}
+			message.Claim = to.token
+			if err := e.enqueue(ctx, tx, to.issue, message); err != nil {
+				return err
+			}
+			reviewAsked = reviewAsked || message.Step == record.MergeForwardReview
 		}
 	}
 	landed := *asked
-	landed.Landed, landed.ReviewAsked = pr.HeadSHA, review
+	landed.Landed, landed.ReviewAsked = pr.HeadSHA, reviewAsked
 	pr.MergeForward = &landed
 	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return err

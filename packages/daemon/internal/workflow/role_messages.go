@@ -34,8 +34,12 @@ type addressedRole struct {
 // tellGateMoved, mergeForward, mergeForwardLanded, tellRole, awaitChildren): the claim of the
 // worker on each recipient's role's step (record.WorkerClaim over the recipient issue's phases
 // rows, read in tx), in the order given and each token once, so a role named twice - the
-// implementer that also holds the phase, two roles one keyed agent works - is told once. A
-// recipient with no role is a phase no worker holds, and is nobody.
+// implementer that also holds the phase, two roles one keyed agent works - is told once. The
+// recipients are those of one message, or of messages one of which covers the others (the ask of
+// a merge forward covers its hold): a sender whose roles are owed messages that say different
+// things, none covering another, addresses each message on its own, so one agent that works two
+// of those roles' steps gets each (mergeForwardLanded's landed and review, dispatch://INFRA-4112
+// R5). A recipient with no role is a phase no worker holds, and is nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
 // six senders choose of how the collection runs: nil ends the collection with that error, and so

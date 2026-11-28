@@ -529,7 +529,9 @@ func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supe
 // agent that works the phase's step (Engine.workerClaim), and it is woken only where it stands
 // released: another released claim of the same role, an earlier version's agent, does not work
 // the step. A head that settles again as each of its checks finishes wakes the pod no second time,
-// because the role's resume is still open.
+// because the role's resume is still open. It answers the claim it woke, "" where it woke none:
+// that claim's task names the settlement, so the settlement's role messages leave it out, whichever
+// of its roles they name (tellChecks).
 //
 // Asking the apply step also keeps a settlement delivered late, or replayed from a message the
 // intake gave up on, however late, from waking anyone where the record will not take it for the
@@ -539,7 +541,7 @@ func (e *Engine) listenerWakeInRelease(ctx context.Context, tx pgx.Tx, held supe
 // remembers for the head when its fence was reset, so it is stale exactly where it is with the
 // fence standing, and the woken worker's task would otherwise name a verdict that is no longer
 // the head's.
-func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
+func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Token, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
 	}
@@ -582,7 +584,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	if err != nil || !woken {
 		return "", err
 	}
-	return role, nil
+	return worker, nil
 }
 
 // settlementDetail names the head and what its settlement came to, which is what the woken role's

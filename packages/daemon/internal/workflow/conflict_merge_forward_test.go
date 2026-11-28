@@ -152,6 +152,102 @@ func TestAMergeForwardMessageNamesTheClaimOfItsRolesStep(t *testing.T) {
 	}
 }
 
+// One agent that works two steps gets each message no other message to it covers
+// (dispatch://INFRA-4112 R5). In the plan `implementer reviewer:a tester:a` key a's agent,
+// `…-reviewer`, ran the reviewer's step and runs the tester's, and a merge forward lands while the
+// issue is in testing, after the reviewer's step: the landed tells the tester to go on with its
+// step at the new head, and the review asks the reviewer to approve that head or request changes,
+// with no completion. Neither covers the other, so the one claim of key a gets both, the review
+// naming the head the merge left, and the record of the pull request keeps that the review was
+// asked (ReviewAsked), which holds the merger's merge to the reviewer's approval. The control is
+// the plan `implementer reviewer tester`, whose tester's claim gets the landed and whose
+// reviewer's claim gets the review.
+func TestTheAgentOfAKeyIsAskedToReviewAMergeThatLandsWhileItTests(t *testing.T) {
+	t.Parallel()
+	keyA := seededClaim(t, claim.RoleReviewer)
+	for _, tc := range []struct {
+		name             string
+		steps            []string
+		reviewer, tester claim.Token
+	}{
+		{name: "key a's agent on the reviewer's and the tester's steps", steps: []string{"implementer", "reviewer:a", "tester:a"},
+			reviewer: keyA, tester: keyA},
+		{name: "control: the reviewer and the tester on steps of no key", steps: []string{"implementer", "reviewer", "tester"},
+			reviewer: seededClaim(t, claim.RoleReviewer), tester: seededClaim(t, claim.RoleTester)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := plannedConflictIssue(t, phase.Testing, settledGreen("lint"), tc.steps...)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: tc.reviewer, StepTask: "a", StepPlace: 2, Entry: 1})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: tc.tester, StepTask: "a", StepPlace: 3, Entry: 1})
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			asked := len(mergeForwardMessages(t, pool))
+			landsMergeForward(t, pool)
+
+			landing := func(role claim.Role, token claim.Token, step record.MergeForwardStep) record.MergeForwardMessage {
+				return record.MergeForwardMessage{Role: role, Claim: token, Step: step, Head: conflictHead, Landed: forwardHead, Base: "main",
+					Phase: phase.Testing, PullRequest: 42, Why: record.ConflictCheckNotGreen}
+			}
+			want := []record.MergeForwardMessage{landing(claim.RoleTester, tc.tester, record.MergeForwardLanded),
+				landing(claim.RoleReviewer, tc.reviewer, record.MergeForwardReview)}
+			mf := recordedPR(t, pool, "LEGION-208").MergeForward
+			if got := mergeForwardMessages(t, pool)[asked:]; !reflect.DeepEqual(got, want) {
+				t.Errorf("the landing queued %+v while the record's merge forward is %+v, want %+v: the tester's claim told the head that landed and the reviewer's claim asked to review it",
+					got, mf, want)
+			}
+			if mf == nil || mf.Landed != forwardHead || !mf.ReviewAsked {
+				t.Errorf("the record's merge forward = %+v, want it landed at %s with the review asked", mf, forwardHead)
+			}
+		})
+	}
+}
+
+// One agent asked to merge the base forward is never held for that merge, and each launch of it is
+// asked again while the merge is owed (dispatch://INFRA-4112 R5). In the plan `implementer:a
+// tester:a` key a's agent, `…-implementer`, ran the implementer's step and runs the tester's, so the
+// ask of the implementer made in testing reaches its claim, and the tester's hold, which tells the
+// tester to stop writing while the implementer merges, does not: the ask covers it (mergeForward).
+// The ask is delivered to the claim's launch 1, and the ready of its launch 2 names the role of its
+// step now, the tester. That launch may run a fresh session, which holds no earlier message, so it
+// is asked the merge again (askAgainAtLaunch) and held by nothing (holdSentWorker): a hold would
+// have it wait for a merge that is its own to make. The control is `implementer tester`, whose
+// tester's launch 2 is held, and asked nothing.
+func TestAKeyedAgentAskedToMergeIsAskedAgainAtItsNextLaunchAndNeverHeld(t *testing.T) {
+	t.Parallel()
+	why := record.ConflictCheckNotGreen
+	implementer := seededClaim(t, claim.RoleImplementer)
+	for _, tc := range []struct {
+		name   string
+		steps  []string
+		tester claim.Token
+		// asked is what the confirmed conflict queues, and again what the ready of launch 2 of the
+		// tester's step's claim queues.
+		asked, again []record.MergeForwardMessage
+	}{
+		{name: "key a's agent on the implementer's and the tester's steps", steps: []string{"implementer:a", "tester:a"}, tester: implementer,
+			asked: []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why)},
+			again: []record.MergeForwardMessage{sentAgain(implementerAsked(t, phase.Testing, why), 2)}},
+		{name: "control: the tester on a step of no key", steps: []string{"implementer", "tester"}, tester: seededClaim(t, claim.RoleTester),
+			asked: []record.MergeForwardMessage{implementerAsked(t, phase.Testing, why), heldIn(t, claim.RoleTester, phase.Testing, why)},
+			again: []record.MergeForwardMessage{heldIn(t, claim.RoleTester, phase.Testing, why)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := plannedConflictIssue(t, phase.Testing, settledGreen("lint"), tc.steps...)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: implementer, StepTask: "a", StepPlace: 1, Entry: 1})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: tc.tester, StepTask: "a", StepPlace: 2, Entry: 1})
+			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, tc.asked) {
+				t.Fatalf("the confirmed conflict queued %+v, want %+v", got, tc.asked)
+			}
+			asksDelivered(t, pool, 1)
+			before := len(mergeForwardMessages(t, pool))
+			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.ClaimReady{Issue: "LEGION-208", Role: claim.RoleTester, Launch: 2})
+			if got := mergeForwardMessages(t, pool)[before:]; !reflect.DeepEqual(got, tc.again) {
+				t.Errorf("the ready of launch 2 of the tester's step's claim queued %+v, want %+v", got, tc.again)
+			}
+		})
+	}
+}
+
 // conflictConfirms is the due time of every second read of a conflict the outbox holds, in the
 // order written, each of them a read of #42 at conflictHead due a minute after the first read it
 // carries (record.ConflictConfirm.FirstReadAt).

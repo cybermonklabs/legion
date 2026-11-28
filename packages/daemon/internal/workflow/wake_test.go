@@ -830,26 +830,44 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 // message of the settlement that woke it, and a release takes one resume whatever else reaches it
 // — so the record names the cause that brought the pod back, `checks`, rather than describing the
 // daemon's own settlement to the worker as a message somebody published to its topic. The
-// architect is told as before, since no settlement wakes it.
+// architect is told as before, since no settlement wakes it. The claim the settlement woke is told
+// nothing whichever role names it (dispatch://INFRA-4112 R5): in the plan `implementer:a tester:a`
+// key a's agent, `…-implementer`, ran the implementer's step and runs the tester's, so the
+// settlement in testing wakes that claim as the tester, and the implementer, whose code the checks
+// ran on and who is that same claim, is told nothing either.
 func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		phase phase.Phase
 		woken claim.Role
+		// agent is the role whose own token is the claim the settlement wakes: woken itself, or
+		// the role of a key's first step, whose claim works woken's step.
+		agent claim.Role
 		// told is every role the settlement must still reach, each exactly once: the roles
-		// tellChecks addresses less the one this settlement woke.
+		// tellChecks addresses less the claim this settlement woke.
 		told []claim.Role
 	}{
-		{"the implementer holds the phase", phase.Implementing, claim.RoleImplementer,
+		{"the implementer holds the phase", phase.Implementing, claim.RoleImplementer, claim.RoleImplementer,
 			[]claim.Role{claim.RoleArchitect}},
-		{"the tester holds it, and the implementer is told", phase.Testing, claim.RoleTester,
+		{"the tester holds it, and the implementer is told", phase.Testing, claim.RoleTester, claim.RoleTester,
 			[]claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
+		{"key a's agent holds the tester's step and the implementer's, and the implementer is that claim", phase.Testing, claim.RoleTester,
+			claim.RoleImplementer, []claim.Role{claim.RoleArchitect}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newWakeRig(t)
 			setWakeIssuePhase(t, rig.pool, tc.phase)
-			if tc.woken != claim.RoleImplementer {
+			switch {
+			case tc.agent != tc.woken:
+				// The agent's claim took the role of the step it works now (supervise's re-role), and
+				// that step's phases row names it.
+				agent := wakeToken(t, tc.agent)
+				if _, err := rig.pool.Exec(context.Background(), `update claims set role = $2 where token = $1`, string(agent), string(tc.woken)); err != nil {
+					t.Fatalf("give the %s claim the %s's role: %v", tc.agent, tc.woken, err)
+				}
+				seedPhase(t, rig.pool, record.PhaseRow{Issue: "LEGION-208", Role: tc.woken, Claim: agent, StepTask: "a", StepPlace: 2, Entry: 1})
+			case tc.woken != claim.RoleImplementer:
 				seedReleasedClaim(t, rig.pool, tc.woken, "session-"+string(tc.woken))
 			}
 			rig.apply("settled", settlement("head1", "build"))
@@ -862,13 +880,13 @@ func TestASettlementTellsTheRoleItWokeNoMessageOfItself(t *testing.T) {
 			slices.Sort(told)
 			slices.Sort(want)
 			if !slices.Equal(told, want) {
-				t.Errorf("the settlement's role messages = %v, want %v: the %s it woke is told by its wake task alone",
-					told, want, tc.woken)
+				t.Errorf("the settlement's role messages = %v, want %v: the claim %s it woke is told by its wake task alone",
+					told, want, wakeToken(t, tc.agent))
 			}
 
 			// The listener reports that very message, which is the sequence the defect was in.
 			rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole,
-				Role: string(wakeToken(t, tc.woken)), At: wakeAt, Report: "report-1"})
+				Role: string(wakeToken(t, tc.agent)), At: wakeAt, Report: "report-1"})
 			oneWake(t, rig.pool, tc.woken, pods.WakeChecks, "head1", "build")
 		})
 	}
