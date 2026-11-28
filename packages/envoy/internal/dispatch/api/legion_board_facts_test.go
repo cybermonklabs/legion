@@ -91,8 +91,10 @@ func writeLegionFacts(t *testing.T, database *store.Store, now time.Time) time.T
 	return oldest
 }
 
-// writeLegionFactsCursor writes the facts consumer's three cursor rows, each stamped at the moment
-// given, which is what the header's facts_cursor_age_seconds is measured from.
+// writeLegionFactsCursor writes the cursor row of each of the facts consumer's three feeds, each
+// stamped at the moment given, which is what the header's facts_cursor_age_seconds is measured
+// from (the row of the observations read ahead of a held one is left out: CursorAge reads the
+// oldest stamp of the rows there are).
 func writeLegionFactsCursor(t *testing.T, database *store.Store, at time.Time) {
 	t.Helper()
 	legionExec(t, database, `

@@ -168,13 +168,16 @@ func (c *consumer) head(t *testing.T, statement string) int64 {
 	return position
 }
 
-// feedHeads is where the three feeds stand, by the cursor each is read by.
+// feedHeads is where the feeds stand, by the cursor each is read by: the observations' head for
+// both of that feed's cursors, which a pass that holds no observation leaves there.
 func (c *consumer) feedHeads(t *testing.T) map[string]int64 {
 	t.Helper()
+	observations := c.head(t, `select coalesce(max(id), 0) from legion_observations`)
 	return map[string]int64{
-		eventsCursor:       c.head(t, `select coalesce(max(id), 0) from events`),
-		observationsCursor: c.head(t, `select coalesce(max(id), 0) from legion_observations`),
-		changesCursor:      c.head(t, `select coalesce(max(seq), 0) from delivery_changes`),
+		eventsCursor:            c.head(t, `select coalesce(max(id), 0) from events`),
+		observationsCursor:      observations,
+		observationsAheadCursor: observations,
+		changesCursor:           c.head(t, `select coalesce(max(seq), 0) from delivery_changes`),
 	}
 }
 
@@ -207,10 +210,10 @@ func outside(got, want []string) []string {
 }
 
 // TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor: one pass over a seeded project
-// writes a row for every issue the rig says carries Legion phase work, and leaves each of the
-// three cursors at the head of its own feed. An observation after the moment a pass computes at
-// is no input of that pass: the observations' page stops below it and the pass says it held an
-// input back, and a pass at a later moment reads it.
+// writes a row for every issue the rig says carries Legion phase work, and leaves each cursor at
+// the head of its own feed. An observation after the moment a pass computes at is no input of
+// that pass: the observations' page holds it, the observations cursor stays below it, and the
+// pass says it held an input back, and a pass at a later moment reads it.
 func TestOnePassWritesEveryIssueWithPhaseWorkAndAdvancesEveryCursor(t *testing.T) {
 	run := newConsumer(t, 4)
 	// A merged pull request of one issue, whose insert the delivery trigger logs as a change,

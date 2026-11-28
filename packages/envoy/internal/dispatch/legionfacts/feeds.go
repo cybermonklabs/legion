@@ -17,7 +17,7 @@ import (
 // feeds.go holds the three feeds one page of a pass reads and the cursors it reads them from: a
 // page of the issues' events, a page of the daemon's observations and a page of the delivery
 // changes. Each page answers the issues its rows name and where its feed now stands. This file
-// also holds the read of the three cursor rows and the write that moves them.
+// also holds the read of the cursor rows and the write that moves them.
 //
 // It stands apart from the loop (consumer.go) because each feed carries rules of its own: where
 // a page stops, which issues a row of it names, and when its cursor may move. The loop reads a
@@ -43,13 +43,13 @@ type pages struct {
 }
 
 // readPages is one page of each of the three feeds, read from where each cursor stands. now is
-// the pass's moment, which the rows are computed as of and the observations' page stops below a
-// row newer than (readObservationPage); checked is this page's own reading of the consumer's
-// clock (passPage), which the change cursor is judged at and a read of the change log to its end
-// is stamped with.
+// the pass's moment, which the rows are computed as of and the observations' page holds a row
+// newer than (readObservationPage); checked is this page's own reading of the consumer's clock
+// (passPage), which the change cursor is judged at and a read of the change log to its end is
+// stamped with.
 //
 // A database holding no cursor row at all (committed false) has committed no pass, because every
-// pass writes the three together (advanceCursors), so every feed would be read from its start. It
+// pass writes the cursors together (advanceCursors), so every feed would be read from its start. It
 // is read from its head instead (readFeedHeads): the first page of such a pass computes every
 // project whole, because no project has a record of a whole read, and a whole project is computed
 // from the history itself rather than from the feeds, so the pages below that head hold nothing the
@@ -121,7 +121,8 @@ func readPages(ctx context.Context, q Querier, cursors feedCursors, committed bo
 // cursors of a database no pass has committed on start, the change cursor stamped checked, the
 // page's own reading of the clock, since a move to the log's head is a read of it to its end. The
 // events feed's head is the safe horizon rather than the newest id, because an event above the
-// horizon may still be committing and a later pass reads it (readEventPage).
+// horizon may still be committing and a later pass reads it (readEventPage). The observations
+// feed holds no row there, so it has read through its head and read nothing ahead of it.
 func readFeedHeads(ctx context.Context, q Querier, safe int64, checked time.Time) (pages, error) {
 	var observations int64
 	if err := q.QueryRow(ctx, `select coalesce(max(id), 0) from legion_observations`).Scan(&observations); err != nil {
@@ -133,21 +134,23 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64, checked time.Time
 	}
 	return pages{
 		events:       feed{position: safe},
-		observations: feed{position: observations},
+		observations: feed{position: observations, ahead: observations},
 		changes:      feed{position: changes.Seq, at: changes.At, readAt: checked},
 	}, nil
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
 // filings it read (the events feed alone reads any), whether the page was full, and whether it
-// stopped below a row newer than the pass's moment (held, which the observations' page alone
-// answers, readObservationPage). at and readAt are the changes feed's alone, which the change
-// cursor keeps for the lost-cursor rule (delivery.CursorLost): at is when the change at position
-// was recorded, nil where no change holds position, and readAt when a page last read the change
-// log to its end, the page's own reading of the clock where it did and the cursor's earlier one
-// where its page was full.
+// holds a row newer than the pass's moment (held, which the observations' page alone answers,
+// readObservationPage). ahead is the observations feed's alone: the last id its page read, which
+// stands above position while the page holds a row. at and readAt are the changes feed's alone,
+// which the change cursor keeps for the lost-cursor rule (delivery.CursorLost): at is when the
+// change at position was recorded, nil where no change holds position, and readAt when a page
+// last read the change log to its end, the page's own reading of the clock where it did and the
+// cursor's earlier one where its page was full.
 type feed struct {
 	position int64
+	ahead    int64
 	at       *time.Time
 	readAt   time.Time
 	touches  []touch
@@ -535,17 +538,38 @@ func sessionIssues(ctx context.Context, q Querier, sessions, retitled, titles []
 	return worked, filed, nil
 }
 
-// readObservationPage is the page of the daemon's observations after the cursor: up to limit
-// rows above after and observed at or before now, the pass's moment, each naming its project,
-// its issue, whether it moves that issue between trees and whether it moves the project's
-// admission block in what a waiting reason reads.
+// readObservationPage is the page of the daemon's observations the cursor has not read: the rows
+// above cursor.through and at or below cursor.ahead observed after cursor.aheadAt, which an
+// earlier page held, and up to limit rows above cursor.ahead. Each row observed at or before now,
+// the pass's moment, names its project, its issue, whether it moves that issue between trees and
+// whether it moves the project's admission block in what a waiting reason reads.
 //
-// The page stops below the first row observed after now (feed.held), as the events page stops at
+// A row observed after now is held (feed.held): it names no issue, as the events page stops at
 // the safe horizon, so no pass names an issue for an input newer than the moment its rows are of.
 // A row's observed_at is the read's time or the daemon's commit time of its event, which can be
 // past Dispatch's clock when the daemon's runs ahead (legion's recordObservations), and a pass
 // that catches up a backlog reads rows committed after it read its moment. The pass says it held
 // that row back, and the loop asks for another soon (runPass), whose later moment reads it.
+//
+// The page reads on past a held row. The ids are global, so a page that stopped there would hold
+// every later row of every project behind one daemon's clock: a daemon that leads Dispatch's
+// clock by more than Freshness would hold every project's observed rows past it. So the page
+// answers where it stands as two ids, which the feed's two cursor rows keep beside now, the moment
+// the page read at (observationCursor): position, the id below the first row it still holds, or
+// ahead where it holds none, at or below which every row has been read; and ahead, the last id it
+// read. A row between the two observed at or before now has been read, by this page or an earlier
+// one, and a row observed after it is still held, which a later page reads again and names once a
+// pass's moment has passed it. A pass whose moment stands before the moment of the page before
+// it, on a clock that ran back, can read a row between the two a second time, which computes
+// again the rows the first read wrote.
+//
+// A held row counts against limit as any row above cursor.ahead does, and the held rows between
+// the two ids are read beside the limit: they are the rows a daemon wrote while its clock led.
+// The range between the two ids is one scan of the primary key, over every row read since the
+// first row still held, which keeps the rows observed after cursor.aheadAt.
+//
+// A cursor.ahead below cursor.through, where no row holds the ahead cursor, is read as
+// cursor.through: nothing between the two is held.
 //
 // An observation of legion.FieldTree is the daemon naming the issue's tree, and that is a move
 // of the same kind as a parent link moving: it takes the issue out of the tree it stood in and
@@ -578,51 +602,66 @@ func sessionIssues(ctx context.Context, q Querier, sessions, retitled, titles []
 // at once, but every insert into the table takes the observations' lock immediately before it
 // draws its ids and holds it to its commit (legion.ObservationsLockKey): no writer can hold a
 // lower id open while a higher one commits, and the ids a reader pages by are commit order.
-func readObservationPage(ctx context.Context, q Querier, after int64, now time.Time, limit int) (feed, error) {
+func readObservationPage(ctx context.Context, q Querier, cursor observationCursor, now time.Time, limit int) (feed, error) {
+	ahead := max(cursor.ahead, cursor.through)
 	rows, err := q.Query(ctx, `
-		select observation.id, observation.observed_at, observation.project, observation.issue_key, observation.field = $2,
-		       observation.issue_key = $3 and observation.field = $4,
-		       case when observation.issue_key = $3 and observation.field = $4
+		select observation.id, observation.observed_at, observation.project, observation.issue_key, observation.field = $4,
+		       observation.issue_key = $5 and observation.field = $6,
+		       case when observation.issue_key = $5 and observation.field = $6
 		            then nullif(observation.value, 'null'::jsonb) end,
-		       case when observation.issue_key = $3 and observation.field = $4 then (
+		       case when observation.issue_key = $5 and observation.field = $6 then (
 		           select nullif(earlier.value, 'null'::jsonb)
 		           from legion_observations earlier
 		           where earlier.project = observation.project and earlier.issue_key = observation.issue_key
 		             and earlier.field = observation.field and earlier.observed_at < observation.observed_at
 		           order by earlier.observed_at desc
 		           limit 1) end
-		from legion_observations observation
-		where observation.id > $1
+		from (
+		    (select id from legion_observations where id > $1 and id <= $2 and observed_at > $3)
+		    union all
+		    (select id from legion_observations where id > $2 order by id limit $7)
+		) as unread
+		join legion_observations observation on observation.id = unread.id
 		order by observation.id
-		limit $5
-	`, after, legion.FieldTree, legion.AdmissionKey, legion.FieldAdmission, limit)
+	`, cursor.through, ahead, cursor.aheadAt, legion.FieldTree, legion.AdmissionKey, legion.FieldAdmission, limit)
 	if err != nil {
-		return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
+		return feed{}, fmt.Errorf("read the Legion observations after %d: %w", cursor.through, err)
 	}
 	defer rows.Close()
-	page := feed{position: after}
+	page := feed{ahead: ahead}
+	var firstHeld int64
+	read := 0
 	for rows.Next() {
 		var id int64
 		var observed time.Time
 		var touched touch
 		var block, before []byte
 		if err := rows.Scan(&id, &observed, &touched.project, &touched.issue, &touched.moved, &touched.admission, &block, &before); err != nil {
-			return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
+			return feed{}, fmt.Errorf("read the Legion observations after %d: %w", cursor.through, err)
+		}
+		if id > ahead {
+			page.ahead = id
+			read++
 		}
 		if observed.After(now) {
-			page.held = true
-			break
+			if !page.held {
+				page.held, firstHeld = true, id
+			}
+			continue
 		}
-		page.position = id
 		if touched.admission {
 			touched.admission = blockMoved(before, block)
 		}
 		page.touches = append(page.touches, touched)
 	}
 	if err := rows.Err(); err != nil {
-		return feed{}, fmt.Errorf("read the Legion observations after %d: %w", after, err)
+		return feed{}, fmt.Errorf("read the Legion observations after %d: %w", cursor.through, err)
 	}
-	page.full = len(page.touches) == limit
+	page.position = page.ahead
+	if page.held {
+		page.position = firstHeld - 1
+	}
+	page.full = read == limit
 	return page, nil
 }
 
@@ -782,20 +821,34 @@ const lostMergesQuery = `
 		  and request.unfetchable_at is null)`
 
 // feedCursors is where the three feeds stand, the rows of issue_facts_cursor: the id of the last
-// event and of the last observation a committed page read, and the change cursor
-// (delivery.ChangeCursor), which the lost-cursor rule judges.
+// event a committed page read, where the observations feed stands (observationCursor), and the
+// change cursor (delivery.ChangeCursor), which the lost-cursor rule judges.
 type feedCursors struct {
-	events, observations int64
-	changes              delivery.ChangeCursor
+	events       int64
+	observations observationCursor
+	changes      delivery.ChangeCursor
 }
 
-// readCursors is where each feed stands: the ids the last committed page read through of the
-// events and of the observations, and the change cursor's seq, when the change at it was recorded
-// (At, nil for a position no change holds) and when a page last read the change log to its end
-// (ReadAt, the row's updated_at), which the lost-cursor rule reads (delivery.CursorLost). A feed
-// with no row stands at 0, which is a feed this database has read nothing of. It answers false
-// where no row exists at all, a database no pass has committed on, which is what readPages reads
-// its feeds' heads for.
+// observationCursor is where the observations feed stands, which two rows of issue_facts_cursor
+// keep (readObservationPage): through, the observations cursor's position, at or below which a
+// committed page has read every row; ahead, the position of the cursor of the rows read ahead
+// (observationsAheadCursor), the last id a committed page read, which stands above through while
+// a row between the two is held; aheadAt, that row's at, the moment the page that wrote it read
+// at, so a row between the two observed after it is still held and one observed at or before it
+// has been read; and stamped, the observations cursor's updated_at, the moment of the last pass
+// that ended holding no row (readPage), which CursorAge reads.
+type observationCursor struct {
+	through, ahead   int64
+	aheadAt, stamped time.Time
+}
+
+// readCursors is where each feed stands: the id the last committed page read through of the
+// events, where the observations feed stands (observationCursor), and the change cursor's seq,
+// when the change at it was recorded (At, nil for a position no change holds) and when a page
+// last read the change log to its end (ReadAt, the row's updated_at), which the lost-cursor rule
+// reads (delivery.CursorLost). A cursor with no row stands at 0, which is a feed this database
+// has read nothing of. It answers false where no row exists at all, a database no pass has
+// committed on, which is what readPages reads its feeds' heads for.
 func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
 	rows, err := q.Query(ctx, `select name, position, at, updated_at from issue_facts_cursor where name = any($1::text[])`, cursorNames)
 	if err != nil {
@@ -817,7 +870,12 @@ func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
 		case eventsCursor:
 			cursors.events = position
 		case observationsCursor:
-			cursors.observations = position
+			cursors.observations.through, cursors.observations.stamped = position, stamped
+		case observationsAheadCursor:
+			cursors.observations.ahead = position
+			if at != nil {
+				cursors.observations.aheadAt = *at
+			}
 		case changesCursor:
 			cursors.changes = delivery.ChangeCursor{Seq: position, At: at, ReadAt: stamped}
 		}
@@ -828,16 +886,20 @@ func readCursors(ctx context.Context, q Querier) (feedCursors, bool, error) {
 	return cursors, committed, nil
 }
 
-// advanceCursors writes the three cursors as cursors holds them, the rows readCursors reads back:
-// the events and the observations cursors at the ids this page read through, each stamped with
-// now, the moment its pass ran at, and the change cursor at its seq with when the change there was
-// recorded (At), stamped with its ReadAt, when a page last read the change log to its end. A
-// cursor whose feed held nothing new keeps its position, and the events and the observations
-// cursors take the new stamp: the pass covered the feed up to there. The change cursor's stamp
-// moves only with a read of the change log to its end (readChangePage), so a pass that catches up
-// a backlog of changes a full page at a time leaves it at the last read of the whole log, which
-// is what the lost-cursor rule reads (delivery.CursorLost). CursorAge measures from the oldest of
-// the three stamps.
+// advanceCursors writes the cursors as cursors holds them, the rows readCursors reads back: the
+// events cursor at the id this page read through, stamped with now, the moment its pass ran at;
+// the observations cursor at the id this page read every row through, stamped as cursors holds it
+// (observationCursor.stamped), and the cursor of the observations read ahead at the last id this
+// page read, with the moment it read them at (at) and stamped with now; and the change cursor at
+// its seq with when the change there was recorded (At), stamped with its ReadAt, when a page last
+// read the change log to its end. A cursor whose feed held nothing new keeps its position, and
+// the events cursor and the cursor of the observations read ahead take the new stamp: the pass
+// covered the feed up to there. The observations cursor's stamp moves only with a pass that ends
+// holding no row (readPage), so while a row is held CursorAge grows with the hold. The change
+// cursor's stamp moves only with a read of the change log to its end (readChangePage), so a pass
+// that catches up a backlog of changes a full page at a time leaves it at the last read of the
+// whole log, which is what the lost-cursor rule reads (delivery.CursorLost). CursorAge measures
+// from the oldest of the stamps.
 //
 // It runs in the transaction that wrote the rows the positions cover (writePass), after that
 // transaction has locked the table (lockCursors) and found the logs not reset since the page read
@@ -851,9 +913,9 @@ func advanceCursors(ctx context.Context, tx pgx.Tx, cursors feedCursors, now tim
 		on conflict (name) do update
 		set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
 	`, cursorNames,
-		[]int64{cursors.events, cursors.observations, cursors.changes.Seq},
-		[]*time.Time{nil, nil, cursors.changes.At},
-		[]time.Time{now, now, cursors.changes.ReadAt})
+		[]int64{cursors.events, cursors.observations.through, cursors.observations.ahead, cursors.changes.Seq},
+		[]*time.Time{nil, nil, &cursors.observations.aheadAt, cursors.changes.At},
+		[]time.Time{now, cursors.observations.stamped, now, cursors.changes.ReadAt})
 	if err != nil {
 		return fmt.Errorf("move the Legion facts' cursors: %w", err)
 	}
@@ -883,12 +945,12 @@ func lockCursors(ctx context.Context, tx pgx.Tx) error {
 // rows differ from page.from, or are gone, where the page read rows. Where the page read none
 // (page.committed false, so it read its feeds from their heads, readFeedHeads) a reset leaves the
 // cursors as it found them, and the page's own positions say it: a position above the newest id of
-// the log it pages (the events, and the observations the observations feed reads) is a position in
-// a log that went, since no row of either log is deleted but by a reset, and a position at or
-// below it cannot have been placed above a reset log's ids. The page that read cursor rows is not
-// judged by its positions: a cursor row above its log's newest id there is a log whose newest row
-// was deleted, which no reset says, and a write refused for it would be refused by every pass
-// after it.
+// the log it pages (the events, and the observations the observations feed reads, of which the
+// page holds two positions) is a position in a log that went, since no row of either log is
+// deleted but by a reset, and a position at or below it cannot have been placed above a reset
+// log's ids. The page that read cursor rows is not judged by its positions: a cursor row above its
+// log's newest id there is a log whose newest row was deleted, which no reset says, and a write
+// refused for it would be refused by every pass after it.
 func resetSinceRead(ctx context.Context, tx pgx.Tx, page pageRead) (bool, error) {
 	now, committed, err := readCursors(ctx, tx)
 	if err != nil {
@@ -906,28 +968,35 @@ func resetSinceRead(ctx context.Context, tx pgx.Tx, page pageRead) (bool, error)
 	`).Scan(&events, &observations); err != nil {
 		return false, fmt.Errorf("read the newest ids of the logs the Legion facts' feeds page: %w", err)
 	}
-	return page.to.events > events || page.to.observations > observations, nil
+	return page.to.events > events || page.to.observations.through > observations || page.to.observations.ahead > observations, nil
 }
 
 // sameCursors is whether two readings of the cursor rows (readCursors) hold the same positions,
-// the same moments of the change they rest on and the same stamps.
+// the same moments of the rows they rest on and the same stamps.
 func sameCursors(a, b feedCursors) bool {
-	return a.events == b.events && a.observations == b.observations &&
+	return a.events == b.events &&
+		a.observations.through == b.observations.through && a.observations.ahead == b.observations.ahead &&
+		a.observations.aheadAt.Equal(b.observations.aheadAt) && a.observations.stamped.Equal(b.observations.stamped) &&
 		a.changes.Seq == b.changes.Seq && a.changes.ReadAt.Equal(b.changes.ReadAt) &&
 		(a.changes.At == nil) == (b.changes.At == nil) && (a.changes.At == nil || a.changes.At.Equal(*b.changes.At))
 }
 
-// CursorAge answers how long ago the consumer last read its feeds, as the oldest of the three
-// cursors' updated_at measured against now, and false when no cursor row exists at all, which is a
+// CursorAge answers how long ago the consumer last read its feeds, as the oldest of the cursors'
+// updated_at measured against now, and false when no cursor row exists at all, which is a
 // database no pass has committed on. It is what the board's header reads to say how fresh the
 // stored facts are.
 //
-// Every pass stamps the events and the observations cursors with the moment it ran at, whether or
-// not that feed held anything new, and the change cursor with the moment one of its pages last
-// read the change log to its end (advanceCursors). So the age is the time since the last pass
-// ran, or since a pass last read the change log to its end, whichever is older: a pass catching
-// up a backlog of changes reads as old as its last read of the whole log. It is not how long ago
-// the last change arrived. A pass runs on a wake alone (Run), so in a deployment where nothing is
+// Every pass stamps the events cursor and the cursor of the observations read ahead with the
+// moment it ran at, whether or not that feed held anything new; the observations cursor with that
+// moment where the pass ended holding no observation; and the change cursor with the moment one
+// of its pages last read the change log to its end (advanceCursors). So the age is the time since
+// the last pass ran, since the last pass that held no observation, or since a pass last read the
+// change log to its end, whichever is oldest. A pass that holds an observation newer than its
+// moment, which a daemon whose clock leads Dispatch's writes (readObservationPage), leaves the
+// observations cursor's stamp at the last pass that held none, so the age grows with the hold
+// while that observation's row waits, until a pass reads it and holds none. A pass catching up a
+// backlog of changes reads as old as its last read of the whole log. It is not how long ago the
+// last change arrived. A pass runs on a wake alone (Run), so in a deployment where nothing is
 // written the age grows with the clock while the stored facts lose nothing: an open issue's facts
 // are closed at the reader's clock (Row.At), and nothing a pass reads has moved. A caller whose
 // clock stands behind the writing process's reads a negative age, as it would of any moment

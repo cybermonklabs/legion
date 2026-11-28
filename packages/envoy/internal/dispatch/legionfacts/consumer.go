@@ -102,18 +102,23 @@ const horizonRetry = 250 * time.Millisecond
 const feedPage = 1000
 
 // The cursors, one row of issue_facts_cursor each, named for the feed it is read by (feedCursors).
-// The events and the observations cursors hold the id of the last row of their feed a committed
-// page read, stamped with the moment its pass ran; the change cursor is a delivery.ChangeCursor,
-// stamped with when a page last read the change log to its end.
+// The events cursor holds the id of the last event a committed page read, stamped with the moment
+// its pass ran. The observations feed has two (observationCursor): the observations cursor holds
+// the id at or below which a committed page read every observation, stamped with the moment of
+// the last pass that ended holding none, and the cursor of the observations read ahead holds the
+// last id a committed page read, past a row it held, with the moment it read them at (its at),
+// stamped with the moment its pass ran. The change cursor is a delivery.ChangeCursor, stamped
+// with when a page last read the change log to its end.
 const (
-	eventsCursor       = "events"
-	observationsCursor = "legion_observations"
-	changesCursor      = "delivery_changes"
+	eventsCursor            = "events"
+	observationsCursor      = "legion_observations"
+	observationsAheadCursor = "legion_observations_ahead"
+	changesCursor           = "delivery_changes"
 )
 
-// cursorNames is the three in one list, which is how a pass reads them (readCursors) and the
+// cursorNames is the four in one list, which is how a pass reads them (readCursors) and the
 // order it writes them in (advanceCursors).
-var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
+var cursorNames = []string{eventsCursor, observationsCursor, observationsAheadCursor, changesCursor}
 
 // Deps is what Run needs of the server.
 type Deps struct {
@@ -293,10 +298,10 @@ func runPass(ctx context.Context, deps Deps, sched schedule, held *duty.Backoff)
 // the event whose commit woke it among them, says so, and the loop asks for another soon, which
 // reads it once the horizon has passed it (runPass). The moment the pass computes at is read after
 // the horizon, so no event the pass reads is newer than the moment its rows are of. The
-// observations feed has no horizon, so its page stops below an observation newer than that moment
-// (readObservationPage), and a pass whose page stopped there says it held an input back as well.
-// A pass whose write found a reset says it too, and the next pass reads the reset logs from their
-// heads.
+// observations feed has no horizon, so its page holds an observation newer than that moment and
+// reads the rows of every project past it (readObservationPage), and a pass whose page held one
+// says it held an input back as well. A pass whose write found a reset says it too, and the next
+// pass reads the reset logs from their heads.
 func pass(ctx context.Context, deps Deps, sched schedule) ([]string, bool, error) {
 	safe, err := safeHorizon(ctx, deps)
 	if err != nil {
@@ -347,7 +352,7 @@ func safeHorizon(ctx context.Context, deps Deps) (int64, error) {
 
 // nextPage is what one page tells its pass of the page after it (passPage): whether to read one
 // at all, because a feed holds more rows, and whether it must carry the work no feed names
-// (unfed); and what it tells the pass itself: whether its observations' page stopped below an
+// (unfed); and what it tells the pass itself: whether its observations' page holds an
 // observation newer than the pass's moment (held, readObservationPage).
 type nextPage struct {
 	more, unfed, held bool
@@ -355,7 +360,7 @@ type nextPage struct {
 
 // passPage is one page of one pass: it reads where each feed stands, reads a page of each,
 // computes the rows those pages name, and writes those rows, the deletion of the stale rows
-// inside the set it stated, and the three cursors in one transaction. It answers the keys whose
+// inside the set it stated, and the cursors in one transaction. It answers the keys whose
 // stored rows it changed and what the page after it owes (nextPage).
 //
 // unfed says the page carries the work no feed names: the whole read of a project the running
@@ -522,14 +527,25 @@ func readPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		computed = append(computed, one)
 	}
 
+	// The observations cursor's stamp moves only with a pass that ends holding no row, which is a
+	// page with no page after it that held none. A page a later page of its pass follows keeps the
+	// stamp as well, since it cannot know whether that page holds a row. While a row is held the
+	// stamp stays at the last pass that held none, so the cursors' age (CursorAge) grows with the
+	// hold.
+	stamped := now
+	if read.observations.held || read.more {
+		stamped = cursors.observations.stamped
+	}
 	return pageRead{
 		from:      cursors,
 		committed: committed,
 		computed:  computed,
 		to: feedCursors{
-			events:       read.events.position,
-			observations: read.observations.position,
-			changes:      delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
+			events: read.events.position,
+			observations: observationCursor{
+				through: read.observations.position, ahead: read.observations.ahead, aheadAt: now, stamped: stamped,
+			},
+			changes: delivery.ChangeCursor{Seq: read.changes.position, At: read.changes.at, ReadAt: read.changes.readAt},
 		},
 		now:  now,
 		next: nextPage{more: read.more, unfed: read.unfed, held: read.observations.held},
@@ -629,7 +645,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // writePass writes every project's rows and filings under the build self runs in, deletes the
 // stale rows and filings inside the sets each project's pass stated (a project whose record names
 // a newer build has its stale rows and filings stamped instead, WriteProject and WriteFilings),
-// records the projects it computed whole and moves the three cursors, all in one transaction. It
+// records the projects it computed whole and moves the cursors, all in one transaction. It
 // answers the keys whose stored rows changed, the deleted and stamped keys among them, because a
 // row that went is a change of the stored facts as much as a row that moved. A failure leaves the
 // cursors and the marks where they were, so the next pass reads the same rows again.
