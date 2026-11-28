@@ -9,6 +9,7 @@ import {
   agentStreamFramesSubject,
   DELIVERY_CAPABILITIES,
   type DeliveryCapability,
+  isGithubDefaultBranchWorkflowSubject,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -202,6 +203,7 @@ import {
   type LegionRoleClaim,
   type LegionRoleClaimInstance,
   legionRoleClaimBridge,
+  RoleNotHeldError,
 } from "@legion/pi-shared/role-claim-bridge";
 import { RoleClaimStoppingError } from "@legion/pi-shared/role-claim-stopping";
 import { dispatchCommandHead } from "@legion/pi-shared/shell-command";
@@ -240,7 +242,6 @@ import {
   createRegistrationState,
   type DialLimit,
   type RegistrationInput,
-  type RoleSnapshot,
   type TaskHandle,
 } from "../src/registration-state";
 import { createRoleTopicFollows, ROLE_TOPICS_VAR, readRoleTopics } from "../src/role-topics";
@@ -804,6 +805,22 @@ const busUnansweredRemoval = (what: string): string =>
   `envoy: the listener's message bus did not answer a request to take ${what} out of the registry. ` +
   "The registry may already be without them. " +
   "The session's next registration sets its consumer's filter to the topics the registry holds.";
+
+/**
+ * Records `pending` as the latest promise of `key` in `latest`, settled either way, so whoever
+ * waits for it waits for it to end without taking on its rejection. It leaves `latest` once it
+ * has ended, unless a later one took its place by then.
+ */
+function recordLatest<K>(latest: Map<K, Promise<void>>, key: K, pending: Promise<unknown>): void {
+  const settled = pending.then(
+    () => undefined,
+    () => undefined
+  );
+  latest.set(key, settled);
+  void settled.then(() => {
+    if (latest.get(key) === settled) latest.delete(key);
+  });
+}
 
 export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   // Every notice, tool answer and tool error this extension gives the host passes the scrub of
@@ -3664,19 +3681,6 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     roleTopics: roleTopicFollows,
   });
 
-  // Follows `topic` unless it served a role that has ended since `snapshot` was taken: a
-  // role-bound subject is not followed again, and one whose role ends meanwhile is dropped
-  // before any registration can carry it. Answers whether the topic is still wanted.
-  const followUnlessRoleEnds = (topic: string, snapshot: RoleSnapshot): boolean => {
-    const roleEnded = () =>
-      snapshot.roleBound && registrationState.roleEndCount() !== snapshot.endsBefore;
-    if (roleEnded()) return false;
-    follow(topic);
-    if (!roleEnded()) return true;
-    unfollow(topic);
-    return false;
-  };
-
   /**
    * The registrations on the wire, by the session each registers. A `DELETE /v1/sessions/<id>`
    * that overtakes one is undone when it lands: the listener writes the record again, and a
@@ -3691,16 +3695,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
    *  through here: a pass's, through its handle, and the one outside any queue. */
   const trackRegistration = <T>(id: string, registering: Promise<T>): Promise<T> => {
     if (id === "") return registering;
-    // Tracked as a settled-either-way promise, so a deregistration waits for the call to leave
-    // the wire without taking on its rejection.
-    const settled = registering.then(
-      () => undefined,
-      () => undefined
-    );
-    registrationsInFlight.set(id, settled);
-    void settled.then(() => {
-      if (registrationsInFlight.get(id) === settled) registrationsInFlight.delete(id);
-    });
+    // Recorded settled either way (`recordLatest`), so a deregistration waits for the call to
+    // leave the wire without taking on its rejection.
+    recordLatest(registrationsInFlight, id, registering);
     return registering;
   };
 
@@ -4157,7 +4154,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // topic is unsubscribed from the listener and never restored: a restored topic would be
     // followed for as long as the session runs, outliving the controller role, and the controller
     // hears its listed channels through the topics its role owns (pi-legion's
-    // controller-session.ts).
+    // controller-session.ts). In a controller of either launch form (the bridge's
+    // `watchedWorkflowsRoleOwned`) the same holds for every default-branch workflow topic
+    // (`isGithubDefaultBranchWorkflowSubject`), its watched workflows' topics, for one more
+    // reason: an edge listener judges the GitHub topics of the session's stored row at each
+    // registration, so a restored one would refuse the role claim and every other topic while the
+    // edge cannot read the project's repositories. Both kinds go in one removal.
     // The topics the newest ledger state names come back too: the listener reaps a dead session's
     // interests after its grace, and the transcript still says what the session followed. A topic
     // it unfollowed is absent from that state.
@@ -4168,11 +4170,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     //    ledger does not remember as the session's own. A process that ended never closed it
     //    (`session_shutdown` deregisters, and a kill runs nothing), so the row still holds it.
     //    It is not followed as the session's own; the role this session wants opens it below.
-    //  - Retired: a Slack topic in the daemon-launched controller.
+    //  - Retired: a Slack topic in the daemon-launched controller, or a default-branch workflow
+    //    topic in a controller of either launch form.
     //  - Followed again, so the registration that ends this pass carries it and the session's
     //    consumer relays what the stream kept for it.
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
+    const watchedRetired = publishedInterface?.roleClaim.watchedWorkflowsRoleOwned === true;
     const registered = registry.known ? (registry.row?.topics ?? []) : [];
     const remembered = rememberedSubjects(activeSessionContext?.sessionManager.getEntries() ?? []);
     const own = new Set(remembered);
@@ -4182,7 +4186,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
         ? "lane"
         : roleTopics.names(topic) && !own.has(topic)
           ? "role"
-          : slackRetired && slackTopicChannel(topic) !== undefined
+          : (slackRetired && slackTopicChannel(topic) !== undefined) ||
+              (watchedRetired && isGithubDefaultBranchWorkflowSubject(topic))
             ? "retired"
             : "follow";
     const fates = new Map(
@@ -4195,8 +4200,8 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // did not answer and one for any other failure.
     if (retired.length > 0)
       await handle.unregisterTopics(sessionID, retired, {
-        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
-        busUnanswered: busUnansweredRemoval("a resumed controller's retired Slack topics"),
+        failed: "envoy: could not unregister a resumed controller's retired role-owned topics",
+        busUnanswered: busUnansweredRemoval("a resumed controller's retired role-owned topics"),
       });
     // A topic followed as the session's own is its own even where a role's claims are already in
     // place (a host move with no hold, or a pass whose move decided nothing): `follow` adds
@@ -4965,23 +4970,18 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
   };
 
-  const subscribeNotice: LegionNoticeSubscription = async (
+  const subscribeNoticeNow: LegionNoticeSubscription = async (
     targetSessionID,
     topic,
     callerContext,
     whileHolding
   ) => {
-    // A subscription that lasts while this session holds a role is part of that role's claim:
-    // once this session's stop has begun it is refused in the claim's words
-    // (`RoleClaimStoppingError`), at its start as the claim is, and after each wait and when a
-    // step fails, so the Legion controller reads it as its session's stop. The stop hands the
-    // role back next.
-    if (whileHolding !== undefined) {
-      refuseBridgeWhileStopping(targetSessionID, whileHolding, "notice subscription");
-    }
-    const refuseWhileStopping = (): void => {
-      if (whileHolding !== undefined) refuseClaimWhileStopping(whileHolding);
-    };
+    // A subscription through the bridge lasts while this session holds the role `whileHolding`
+    // names, so it is part of that role's claim: once this session's stop has begun it is refused
+    // in the claim's words (`RoleClaimStoppingError`), at its start as the claim is, and after
+    // each wait and when a step fails, so the Legion controller reads it as its session's stop.
+    // The stop hands the role back next.
+    refuseBridgeWhileStopping(targetSessionID, whileHolding, "notice subscription");
     const context = callerContext ?? activeSessionContext;
     if (context === undefined || context.sessionManager.getSessionId() !== targetSessionID) {
       throw new Error(
@@ -4996,52 +4996,85 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       try {
         await establishForBridge(context);
       } catch (error) {
-        refuseWhileStopping();
+        refuseClaimWhileStopping(whileHolding);
         throw error;
       }
     }
-    let marked: readonly string[] = [];
-    if (whileHolding !== undefined) {
-      // A role move still in flight could end the role just after the subscription opens, so the
-      // role is read once every move started before this call has landed.
-      await registrationState.roleMoves.settled();
-      refuseWhileStopping();
-      if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
-        throw new Error(
-          `Envoy session ${targetSessionID} does not hold role ${whileHolding} for a notice subscription`
-        );
-      }
-      // Marked before the subscription opens, so the registration it leads to already carries
-      // them as the role's, which the role's end closes and unregisters together, and a move the
-      // model starts from here on sees them.
-      marked = registrationState.markRoleBoundSubjects(
-        expandSubscriptionTopics([topic]),
-        whileHolding
-      );
+    // A role move still in flight could end the role just after the subscription opens, so the
+    // role is read once every move started before this call has landed.
+    await registrationState.roleMoves.settled();
+    refuseClaimWhileStopping(whileHolding);
+    // In words the Legion plugin reads by name (`refusedForRoleNotHeld`): its controller stops
+    // subscribing its role's watched workflows on it.
+    if (!registrationState.holdsRoleTopic(ROLE_TOPIC_PREFIX + whileHolding)) {
+      throw new RoleNotHeldError(targetSessionID, whileHolding);
     }
-    // Taken once the subjects are marked: nothing awaits between the two.
-    const snapshot = registrationState.roleSnapshot(topic);
+    // Marked before the subscription opens, so the registration it leads to already carries
+    // them as the role's, which the role's end closes and unregisters together, and a move the
+    // model starts from here on sees them.
+    const marked = registrationState.markRoleBoundSubjects(
+      expandSubscriptionTopics([topic]),
+      whileHolding
+    );
+    // How many roles had ended once the subjects were marked, nothing awaited between the two: a
+    // role that ends after it drops those marks itself.
+    const endsBefore = registrationState.roleEndCount();
+    // The subjects this call newly followed, which a failure takes back.
+    const followedHere = followNew(topic);
     try {
-      if (!followUnlessRoleEnds(topic, snapshot)) return;
-      // A subscription that lasts beyond any role is the session's own, even on a subject the
-      // deployment's role topics already follow: claimed here, the role's end leaves it.
-      if (whileHolding === undefined) {
-        roleTopicFollows.claimOwn(topic);
-      }
       // The registration is what tells the listener this session follows the topic, so a
       // subscription is open only once it lands.
       await registerSession();
     } catch (error) {
-      // Nothing opened, so nothing may keep the session's role in place on its behalf. A role that
+      // Nothing opened, so nothing this call followed or marked may outlast it: it takes back the
+      // subjects it newly followed and the ones it marked. A renewal of a subscription the session
+      // already holds, as every claim of the Legion controller makes, followed and marked nothing,
+      // so its failure leaves the working subscription followed and bound to its role. No later
+      // subscription of this topic, through the bridge or the model's `envoy_subscribe`, has
+      // started yet (`inTopicTurns`), so none of them followed what this takes back. A role that
       // ended meanwhile already dropped these marks, and a newer subscription may hold them now.
-      if (registrationState.roleEndCount() === snapshot.endsBefore) {
-        unfollow(topic);
+      if (registrationState.roleEndCount() === endsBefore) {
+        for (const subject of followedHere) followed.delete(subject);
         registrationState.unmarkRoleBoundSubjects(marked);
       }
-      refuseWhileStopping();
+      refuseClaimWhileStopping(whileHolding);
       throw error;
     }
   };
+
+  // The last subscription asked for each topic, a plugin's through the bridge (`subscribeNotice`)
+  // or the model's `envoy_subscribe`, settled either way, until it has ended (`recordLatest`).
+  const subscriptionTurns = new Map<string, Promise<void>>();
+
+  // Subscriptions of one topic run one after the other, whether a plugin asked for them through
+  // the bridge or the model through `envoy_subscribe`: each starts once every one asked before it
+  // of any of its `topics` has ended, landed or failed, and is then the last asked of each. So what
+  // a failed bridge subscription takes back (`subscribeNoticeNow`) is never a subject a later
+  // subscription of that topic followed, and a later one follows the topic again after an earlier
+  // one's failure dropped it. Subscriptions of different topics do not wait for each other, and one
+  // asked while none of its topics runs starts at once.
+  const inTopicTurns = <T>(topics: readonly string[], subscribe: () => Promise<T>): Promise<T> => {
+    const before = topics.flatMap((topic) => {
+      const turn = subscriptionTurns.get(topic);
+      return turn === undefined ? [] : [turn];
+    });
+    const subscribing = before.length === 0 ? subscribe() : Promise.all(before).then(subscribe);
+    for (const topic of topics) recordLatest(subscriptionTurns, topic, subscribing);
+    return subscribing;
+  };
+
+  // A bridge subscription takes the turns of the subjects its topic expands to, as the model's
+  // `envoy_subscribe` takes those of its expanded `topics`, so a wildcard `X.>` and a call naming
+  // its base `X` wait for each other.
+  const subscribeNotice: LegionNoticeSubscription = (
+    targetSessionID,
+    topic,
+    callerContext,
+    whileHolding
+  ) =>
+    inTopicTurns(expandSubscriptionTopics([topic]), () =>
+      subscribeNoticeNow(targetSessionID, topic, callerContext, whileHolding)
+    );
 
   const claimInstance: LegionRoleClaimInstance = {
     claim,
@@ -6041,53 +6074,59 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
           // subject nothing is ever delivered on. A private stream subject is left out of the
           // registration without a word, as it always was (`refuseUncapturedTopics`).
           refuseUncapturedTopics(sessionID, legacyAgentSubject(sessionID), requested);
-          const added: string[] = [];
-          const already: string[] = [];
-          // A subject only the held role wanted is the session's own too from here on, so the
-          // role's end leaves it followed and the ledger records it.
-          let claimed = false;
-          for (const topic of requested) {
-            (follow(topic) ? added : already).push(topic);
-            if (roleTopicFollows.claimOwn(topic)) claimed = true;
-          }
-          let warnings: readonly string[] | undefined;
-          let registrationError: string | undefined;
-          // The topics this call's own registration was refused, whatever another registration
-          // or an unsubscribe did to what the session follows meanwhile.
-          const dropped: string[] = [];
-          if (added.length > 0) {
-            try {
-              warnings = (await registerSession(dropped)).warnings;
-            } catch (error) {
-              registrationError = messageFor(error);
+          // It follows once each subscription already asked of its topics has ended, a plugin's
+          // through the bridge or an earlier call of this tool, and is then the last asked of each
+          // (`inTopicTurns`): so a bridge subscription that fails takes back no topic this call
+          // reports followed.
+          return await inTopicTurns(requested, async () => {
+            const added: string[] = [];
+            const already: string[] = [];
+            // A subject only the held role wanted is the session's own too from here on, so the
+            // role's end leaves it followed and the ledger records it.
+            let claimed = false;
+            for (const topic of requested) {
+              (follow(topic) ? added : already).push(topic);
+              if (roleTopicFollows.claimOwn(topic)) claimed = true;
             }
-          }
-          // A new follow is stamped now, so the session's consumer relays what is published from
-          // here on and nothing the stream stored before it; a role's subject claimed as the
-          // session's own is now recorded as its own.
-          if (added.length > 0 || claimed) await ledgerFollowedChanged();
-          // An edge listener refuses a topic of no project of the session's token, and the
-          // registration drops it from what the session follows (`registerWithRelay`): the caller
-          // asked for it by name, so it is told by name, not reported subscribed.
-          const refused = added.filter((topic) =>
-            expandSubscriptionTopics([topic]).some((subject) => dropped.includes(subject))
-          );
-          const kept = added.filter((topic) => !refused.includes(topic));
-          const lines = [`Subscribed: ${kept.join(", ") || "(none new)"}`];
-          if (refused.length > 0) {
-            lines.push(
-              `Refused by the listener for this session's projects: ${refused.join(", ")}`
+            let warnings: readonly string[] | undefined;
+            let registrationError: string | undefined;
+            // The topics this call's own registration was refused, whatever another registration
+            // or an unsubscribe did to what the session follows meanwhile.
+            const dropped: string[] = [];
+            if (added.length > 0) {
+              try {
+                warnings = (await registerSession(dropped)).warnings;
+              } catch (error) {
+                registrationError = messageFor(error);
+              }
+            }
+            // A new follow is stamped now, so the session's consumer relays what is published
+            // from here on and nothing the stream stored before it; a role's subject claimed as
+            // the session's own is now recorded as its own.
+            if (added.length > 0 || claimed) await ledgerFollowedChanged();
+            // An edge listener refuses a topic of no project of the session's token, and the
+            // registration drops it from what the session follows (`registerWithRelay`): the
+            // caller asked for it by name, so it is told by name, not reported subscribed.
+            const refused = added.filter((topic) =>
+              expandSubscriptionTopics([topic]).some((subject) => dropped.includes(subject))
             );
-          }
-          if (warnings !== undefined && warnings.length > 0) {
-            lines.push(`Warnings: ${warnings.join("; ")}`);
-          }
-          return toolSuccess(lines.join("\n"), {
-            added: kept,
-            already,
-            ...(refused.length === 0 ? {} : { refused }),
-            ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }),
-            ...(registrationError === undefined ? {} : { registrationError }),
+            const kept = added.filter((topic) => !refused.includes(topic));
+            const lines = [`Subscribed: ${kept.join(", ") || "(none new)"}`];
+            if (refused.length > 0) {
+              lines.push(
+                `Refused by the listener for this session's projects: ${refused.join(", ")}`
+              );
+            }
+            if (warnings !== undefined && warnings.length > 0) {
+              lines.push(`Warnings: ${warnings.join("; ")}`);
+            }
+            return toolSuccess(lines.join("\n"), {
+              added: kept,
+              already,
+              ...(refused.length === 0 ? {} : { refused }),
+              ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }),
+              ...(registrationError === undefined ? {} : { registrationError }),
+            });
           });
         }
         case EnvoyToolOperation.unsubscribe: {
