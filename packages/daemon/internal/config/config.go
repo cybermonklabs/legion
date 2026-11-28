@@ -688,10 +688,14 @@ func keyShape(name string) bool {
 }
 
 // tokenShaped reports whether name holds a token's run: a keyHexRun, or a keyAlphanumericRun that
-// holds a digit. No key of the configuration and no name of a role holds one, and a token pasted
-// where a key or a role's name goes does, though it can fit both grammars: a 32-hex API key that
-// starts with a letter fits the role grammar (claim.IsRole). So every reader of a role's name
-// refuses such a name before any refusal can name it, by its line or its place.
+// holds a digit. No key of the configuration and no name of a role holds one. Both runs are of
+// lower-case letters and digits, so it finds a lower-case token, a hex key or a base36 token,
+// and seldom a token of mixed case (`ghp_…`, `sk-ant-…`, a base64 token), which rarely holds
+// such a run. So it is never a reader's guard alone: a reader names a name as written only when
+// it fits that reader's grammar too, the key grammar (keyShape) or the role grammar
+// (roleWordShape), neither of which a token holding an upper-case letter fits; tokenShaped refuses
+// the lower-case token that fits one, such as a 32-hex API key that starts with a letter, which
+// fits the role grammar (claim.IsRole).
 func tokenShaped(name string) bool {
 	if keyHexRun.MatchString(name) {
 		return true
@@ -712,9 +716,6 @@ func roleName(role claim.Role) bool {
 
 // keyShapeWords is keyShape as a refusal says it.
 const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit"
-
-// tokenRunWords is tokenShaped as a refusal of a role's name says it.
-const tokenRunWords = "a run of 8 hex digits or of 10 letters and digits with a digit, as a token does and no role's name does"
 
 // unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
 // mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of

@@ -313,18 +313,23 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	// production_check is read by the key's presence rather than by its value: a project that
 	// names no key gets the tester, and the one word that takes the check away, `off`, is the
-	// empty role. A bare `off` reaches the reader as the string, as `memory.mode`'s does.
+	// empty role. A bare `off` reaches the reader as the string, as `memory.mode`'s does. Any other
+	// word is refused naming it only when it has a key's shape (keyShape); one of no key's shape,
+	// which can be a token pasted where the word goes, is refused by its line alone.
 	project.ProductionCheck = claim.RoleTester
 	if check := fields["production_check"]; check != nil {
 		word, err := stringOf(check, key+".production_check")
 		if err != nil {
 			return Project{}, nil, err
 		}
-		switch word {
-		case ProductionCheckOff:
+		switch {
+		case word == ProductionCheckOff:
 			project.ProductionCheck = ""
-		case string(claim.RoleTester):
+		case word == string(claim.RoleTester):
 			project.ProductionCheck = claim.RoleTester
+		case !keyShape(word):
+			return Project{}, nil, fmt.Errorf("%s.production_check at line %d has no key's shape (%s): it must be %s or %s",
+				key, check.Line, keyShapeWords, ProductionCheckOff, claim.RoleTester)
 		default:
 			return Project{}, nil, fmt.Errorf("%s.production_check must be %s or %s (got %q)", key, ProductionCheckOff, claim.RoleTester, word)
 		}
@@ -338,11 +343,13 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 }
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
-// plan's grammar (plan.ParseSteps). It refuses an empty list, an entry that is not one step, and
-// a step whose role holds a token's run (tokenShaped), that one by its place alone, never as
-// written. It judges nothing else of the steps: the roles and types they may name are the
-// deployment's (`roles`, `role_types`), read in any order beside this key, so
-// checkDeploymentRoleKeys judges them once the whole file is read.
+// plan's grammar (plan.ParseSteps). It refuses an empty list, and an entry that is not one step,
+// a role or role:key whose role and key are each a word of the role grammar (roleWordShape), by its
+// place alone (roleEntryAt): the entry is judged before it is parsed, since the plan's refusal
+// quotes the word, and a token pasted where a step goes is no word of the grammar. It judges
+// nothing else of the steps: the roles and types they may name are the deployment's (`roles`,
+// `role_types`), read in any order beside this key, so checkDeploymentRoleKeys judges them once
+// the whole file is read.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
 	if err != nil {
@@ -351,17 +358,17 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	if len(words) == 0 {
 		return nil, fmt.Errorf("%s names no step", key)
 	}
+	const step = "an entry is one step, a role or role:key, each"
 	steps := make([]plan.Step, 0, len(words))
 	for index, word := range words {
-		if tokenShaped(word) {
-			return nil, fmt.Errorf("%s entry %d names a role holding %s", key, index+1, tokenRunWords)
+		role, stepKey, keyed := strings.Cut(word, ":")
+		if !roleWordShape(role) || keyed && !roleWordShape(stepKey) {
+			return nil, roleEntryAt(key, index, step)
 		}
+		// The plan's refusal quotes the word, so it is refused by its place here too.
 		parsed, err := plan.ParseSteps(word)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", key, err)
-		}
-		if len(parsed) != 1 {
-			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
+		if err != nil || len(parsed) != 1 {
+			return nil, roleEntryAt(key, index, step)
 		}
 		steps = append(steps, parsed[0])
 	}

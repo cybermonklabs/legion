@@ -53,22 +53,39 @@ func TestTheCheckAcrossKeysSeesEveryKeyItJudges(t *testing.T) {
 	}
 }
 
-// A token pasted where a role's name goes is named by its line or its place, never as written,
-// though it fits the role grammar (claim.IsRole, `^[a-z][a-z0-9-]{0,31}$`): a 32-hex API key that
-// starts with a letter, and a short lower-case base36 token. Such a token passes the role grammar,
-// which takes a role of the deployment, so each reader of a role's name refuses a name holding a
-// token's run (tokenShaped) before any refusal can name it: the three role-keyed settings, a role
-// `roles` defines, a hook's `roles`, a project's `default_steps` and an experiment's `roles`. A
-// `default_steps` entry is judged before it is parsed as a step, so an entry no step's grammar
-// takes (a 32-hex key that starts with a digit, or a role and a token in one entry) is named by its
-// number too. The control is a role of the grammar that no token is (`ghost`), named as written by
-// the check across keys.
+// A token pasted where a role's name or a type goes is named by its line, its place or its field,
+// never as written. Two shapes fit the role grammar (claim.IsRole, `^[a-z][a-z0-9-]{0,31}$`): a
+// 32-hex API key that starts with a letter, and a short lower-case base36 token; each reader
+// refuses them for holding a token's run (tokenShaped). The others fall outside the grammar and
+// hold no such run, so the grammar check is the only guard against them: a `ghp_` token of 36
+// base62 characters, a 40-character base64 token and an `sk-ant-api03-` token, each of mixed case,
+// and a 40-hex token, which is longer than the grammar's 32 characters. Every reader of a role's
+// name or a type is tried: the three role-keyed settings, a role `roles` defines, a role's type,
+// `role_types`, a hook's `roles`, a project's `default_steps`, an experiment's `roles`, and a
+// project's `production_check`, which takes the tester's name or `off` and names another word only
+// when it has a key's shape (keyShape). A `default_steps` entry is judged before it is parsed as a
+// step, so an entry no step's grammar takes (a 32-hex key that starts with a digit, or a role and a
+// token in one entry) is named by its number too. The control is a role of the grammar that no
+// token is (`ghost`), named as written by the check across keys.
 //
 // It reads the refusal's text for each 8-character piece of the token, not whether a guard ran or
 // which error was returned. The leak this test exists for was a guard that ran, on a path the
 // printer had already passed: a check that a guard was called would have passed then too. Keep it
 // on the text whatever the readers become.
 func TestATokenThatFitsTheRoleGrammarIsNeverPrinted(t *testing.T) {
+	// Made-up tokens of real shapes, none of them a credential. Each prefix is joined at run time,
+	// as cmd/legion's ghFakeToken is, so the source holds no literal of a credential's shape for a
+	// leak check to stop.
+	var (
+		gitHubToken    = "ghp" + "_" + "FAKE0tokenONLY1forTHE2configTESTS3xZ"
+		base64Token    = "FAKEsecretKEY/forTHE+configTESTS/onlyAB1"
+		anthropicToken = "sk-ant" + "-api03-" + strings.Repeat("Fake0Key_For0Config-Tests0Only-", 3) + "AA"
+	)
+	for _, token := range []string{gitHubToken, base64Token, anthropicToken} {
+		if tokenShaped(token) {
+			t.Fatalf("the token %.7s… holds a token's run, so it does not show that the grammar refuses a token tokenShaped misses", token)
+		}
+	}
 	hookOf := func(role string) string {
 		return "hooks: [{name: nudge, on: work_back, every: 1, roles: [" + role + "], prompt: Look again.}]\n"
 	}
@@ -83,22 +100,37 @@ func TestATokenThatFitsTheRoleGrammarIsNeverPrinted(t *testing.T) {
 			}
 		}
 	}
-	for _, token := range []string{"deadbeefcafe0123456789abcdef0123", "kq7zm2xw9rt4pvn8ys3lgj5"} {
-		for name, body := range map[string]string{
-			"worker_backends":             minimalFile + "worker_backends: {" + token + ": omp}\n",
-			"role_config_files":           minimalFile + "role_config_files: {" + token + ": [/etc/a.yml]}\n",
-			"worker_stall_backstop_hours": minimalFile + "worker_stall_backstop_hours: {" + token + ": 6}\n",
-			"roles":                       minimalFile + "roles: {" + token + ": {type: testing, prompt_file: checker.md}}\n",
-			"a hook's roles":              minimalFile + hookOf(token),
-			"default_steps":               stepsOf(token),
-			"an experiment's roles":       experimentsFile("{alpha: {roles: [implementer, "+token+"], variants: [{name: only}]}}", ""),
+	for _, token := range []struct{ shape, text string }{
+		{"32-hex", "deadbeefcafe0123456789abcdef0123"},
+		{"base36", "kq7zm2xw9rt4pvn8ys3lgj5"},
+		{"40-hex", "deadbeefcafe0123456789abcdef0123456789ab"},
+		{"ghp", gitHubToken},
+		{"base64", base64Token},
+		{"sk-ant", anthropicToken},
+	} {
+		// The first line after minimalFile is line 18; the line of the DEMO project is line 7.
+		for name, reader := range map[string]struct{ body, place string }{
+			"worker_backends":             {minimalFile + "worker_backends: {" + token.text + ": omp}\n", " at line 18 "},
+			"role_config_files":           {minimalFile + "role_config_files: {" + token.text + ": [/etc/a.yml]}\n", " at line 18 "},
+			"worker_stall_backstop_hours": {minimalFile + "worker_stall_backstop_hours: {" + token.text + ": 6}\n", " at line 18 "},
+			"roles":                       {minimalFile + "roles: {" + token.text + ": {type: testing, prompt_file: checker.md}}\n", " at line 18 "},
+			"a role's type":               {minimalFile + "roles: {checker: {type: " + token.text + ", prompt_file: checker.md}}\n", "roles.checker.type "},
+			"role_types":                  {minimalFile + "role_types: [security, " + token.text + "]\n", "role_types entry 2 "},
+			"a hook's roles":              {minimalFile + hookOf(token.text), "hooks[0].roles entry 1 "},
+			"default_steps":               {stepsOf(token.text), "projects.DEMO.default_steps entry 2 "},
+			"an experiment's roles": {experimentsFile("{alpha: {roles: [implementer, "+token.text+"], variants: [{name: only}]}}", ""),
+				"projects.DEMO.experiments.alpha.roles entry 2 "},
+			"production_check": {productionCheckFile(token.text), "projects.DEMO.production_check at line 7 "},
 		} {
-			t.Run(name+"/"+token[:3], func(t *testing.T) {
-				_, err := Load(configFileWith(t, body, "checker.md"), noEnv)
+			t.Run(name+"/"+token.shape, func(t *testing.T) {
+				_, err := Load(configFileWith(t, reader.body, "checker.md"), noEnv)
 				if err == nil {
-					t.Fatalf("Load took the token as a role's name, want it refused")
+					t.Fatalf("Load took the token as a role's name or a type, want it refused")
 				}
-				holdsNoPiece(t, err, token)
+				if !strings.Contains(err.Error(), reader.place) {
+					t.Fatalf("the refusal %q does not name %q", err, reader.place)
+				}
+				holdsNoPiece(t, err, token.text)
 			})
 		}
 	}
@@ -184,10 +216,10 @@ func TestADeploymentRolesOverlaysAreJudgedAsAnIssueRolesAre(t *testing.T) {
 
 // A hook's `roles` and a project's `default_steps` take a role the deployment defines; a file
 // that defines no such role is refused with the text of any other name no role holds, which for
-// `default_steps` is the plan's own refusal of a role nobody defines. The judgments of
-// `default_steps` run once the whole file is read, in the order of the projects' keys, so a
-// refusal of an earlier key comes first, and of two projects the one whose key sorts first is
-// told.
+// `default_steps` is the plan's own refusal of a role nobody defines, and a name outside the role
+// grammar is refused by its place (roleEntryAt). The judgments of `default_steps` run once the
+// whole file is read, in the order of the projects' keys, so a refusal of an earlier key comes
+// first, and of two projects the one whose key sorts first is told.
 func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 	const hook = "hooks: [{name: nudge, on: work_back, every: 1, roles: [checker], prompt: Look again.}]\n"
 	steps := func(projects string) string {
@@ -215,7 +247,7 @@ func TestAHooksRolesAndDefaultStepsTakeARoleOfTheDeployment(t *testing.T) {
 		{"a hook of a name no role holds", rolesFile(t, checkerRole+strings.Replace(hook, "[checker]", "[ghost]", 1), "checker.md"),
 			`hooks[0].roles names "ghost", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger, checker)`},
 		{"a hook of a name outside the grammar", rolesFile(t, checkerRole+strings.Replace(hook, "[checker]", "[Checker]", 1), "checker.md"),
-			`hooks[0].roles names "Checker", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`},
+			"hooks[0].roles entry 1 is outside the role grammar: a role's name is " + roleGrammarWords},
 		{"default_steps of the role without roles", configFileWith(t, steps("  DEMO: {default_steps: [implementer, checker]}\n")),
 			"projects.DEMO.default_steps: step 2 of task default names the role checker, which neither the deployment nor the plan defines."},
 		{"default_steps this release refuses for another cause", configFileWith(t, steps("  DEMO: {default_steps: [tester]}\n")),

@@ -315,7 +315,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: roleTypesKey, Default: "a role's type is one of Legion's five: `design`, `planning`, `implementation`, `testing`, `review`", RequiredBy: "no",
-			Description: "The types of a step the deployment adds to Legion's five, which a role of `roles` may then have: each a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, none of the five and named once.",
+			Description: "The types of a step the deployment adds to Legion's five, which a role of `roles` may then have: each a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit, none of the five and named once.",
 			Read:        reads(readRoleTypes, func(f *fileConfig, v []plan.Type) { f.RoleTypes = v }),
 		},
 		{
