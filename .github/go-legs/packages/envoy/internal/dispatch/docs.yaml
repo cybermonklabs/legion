@@ -1043,6 +1043,7 @@
   - TestOffsetBlocksCarriesTheAttributesTheRenderFound
   - TestOutsideReviewColdAgentVersionLastHuman  # 0.8 s
   - TestPanickingColdLoadFailsTheRoomAndRecovers  # 0.7 s
+  - TestParkedBytesTheClosedIssuesGateRefusesCloseTheirRoomForItsIssue
   - TestPgVersionedConformance  # 0.9 s
   - TestQuiesceFlushesEveryLiveDocumentAndLeavesTheServiceUsable  # 0.5 s
   - TestQuoteMarkSettlesLegacyTableWithoutCanonicalizing  # 0.7 s
