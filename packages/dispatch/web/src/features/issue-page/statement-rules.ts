@@ -96,9 +96,11 @@ export function coverageStatements(
  * every result of the check (`pass_stands`, main's e98fc56ef8): a pass recorded before a later
  * fail still stands, while a retracted pass, a pass recorded against an older wording of the
  * check and a pass at a commit the check no longer compares with stand for nothing. A check that
- * reads the live deploy never comes here: `checkStanding` reads it from `pass_stands`
- * (`liveStanding`), as the server's `liveResultStands` decides it. The other states read what no
- * pass standing is:
+ * reads the live deploy comes here only for an answer of `no` for no result, which the server
+ * gives before any deploy logic, where it compared the check with nothing (`liveResultStands`,
+ * as `newestResultStands` for a code check), and every result of it then stands at another
+ * commit; `checkStanding` reads every other answer for it from `pass_stands` (`liveStanding`),
+ * as `liveResultStands` decides it. The other states read what no pass standing is:
  *
  * - **`no-result`,** no result recorded at all, which the results say by themselves.
  * - **`unreadable`,** a payload carrying no `pass_stands` at all, which is a server that does
@@ -163,8 +165,9 @@ export interface CheckStanding {
    *  basis, a pass or a fail, where one is there; else the newest result that stands at all,
    *  and none for a check the server says passed with no pass at its basis in the read. For a
    *  check that reads the live deploy it is the result the server's answer names
-   *  (`pass_stands.results`), where the read holds it, and where that answer is no result over
-   *  results the check holds, the newest of them that stands. Absent where none stands. */
+   *  (`pass_stands.results`), where the read holds it, but for an answer of `no` for no result,
+   *  which `checkStanding` reads as any check's: the newest result that stands. Absent where
+   *  none stands. */
   readonly stands?: CheckResult;
 }
 
@@ -201,15 +204,16 @@ export interface CheckStanding {
  * its reason - no deploy of the program, no result since its deploy, a program the check leaves
  * unnamed, a deploy at a commit that does not hold the merge, or a read that failed. A pass at
  * its basis says nothing of it, so with no deploy, or after a deploy at another commit, the page
- * says what the route says: it cannot tell. `no` for no result is what the server answers where
- * it compared the check with nothing - the issue's pull request has not merged, or it has no pull
- * request or branch - and it says nothing of the results the check holds, since the record route
- * takes an `after_merge` result before the merge. So it reads as `checkState` reads a check with
- * nothing standing at its basis: No result where the check holds no result at all, Retracted
- * where every result was withdrawn, and else Out of date, standing on the newest result that
- * stands, and never No result over the results drawn under it. One whose payload carries no
- * `pass_stands` reads Could not read, whatever results it holds. Every other check is read as
- * the rest of this says.
+ * says what the route says: it cannot tell. `no` for no result is no answer about the deploy:
+ * the server gives it where it compared the check with nothing - the issue's pull request has
+ * not merged, or it has no pull request or branch - before any deploy logic, in
+ * `liveResultStands` as in `newestResultStands` for a code check, and every result of the check
+ * then stands at another commit (`commitStands` answers `other_commit`). So that answer is read
+ * as any check's is, as the rest of this says: No result where the check holds no result at
+ * all, Retracted where every result was withdrawn, and else Out of date, standing on the newest
+ * result that stands, and never No result over the results drawn under it, which the record
+ * route takes before the merge. One whose payload carries no `pass_stands` reads Could not read,
+ * whatever results it holds. Every other check is read as the rest of this says.
  *
  * **The latest evidence at the basis decides.** A check with no result reads No result, and one
  * whose payload carries no `pass_stands` reads Could not read, as `checkState` reads them. Else,
@@ -225,7 +229,9 @@ export interface CheckStanding {
  * Cannot tell, or Failed for a newest fail at a commit Dispatch could not place.
  */
 export function checkStanding(check: CheckStateReads): CheckStanding {
-  if (readsTheLiveDeploy(check)) return liveStanding(check);
+  if (readsTheLiveDeploy(check) && check.pass_stands?.reason !== "no_result") {
+    return liveStanding(check);
+  }
   const standing = newestFirst(standingResults(check));
   // The newest result that stands for something at the commit the server names for the check:
   // over the check's words now and at its basis (`standingCommit`). A check with no result has
@@ -256,22 +262,13 @@ function readsTheLiveDeploy(check: CheckStateReads): boolean {
  *  which of the results that deploy counts is the server's to say (`markNotCounted`), so nothing
  *  the page reads of the results itself decides it: the check stands on the result the answer
  *  names, the newest one that deploy counts, and on none where the answer names none or the read
- *  does not hold the one named. Where the answer is `no` for no result, the server compared the
- *  check with nothing (its issue's pull request has not merged, or it has no pull request or
- *  branch) and answers so over whatever results the check holds, which the record route takes
- *  before the merge. That answer says nothing of them, so the check reads as `checkState` reads
- *  one with nothing standing at its basis: No result with no result at all, Retracted with every
- *  result withdrawn, and else Out of date on the newest result that stands, as `checkStanding`
- *  stands an `older` check. */
+ *  does not hold the one named. An answer of `no` for no result never comes here: the server
+ *  gives it before any deploy logic, where it compared the check with nothing, so
+ *  `checkStanding` reads it on the code path, as it reads any check's. */
 function liveStanding(check: CheckStateReads): CheckStanding {
   const answer = check.pass_stands;
   if (answer === undefined) return { state: "unreadable" };
   if (answer.answer === "unknown") return { state: "unmarked" };
-  if (answer.answer === "no" && answer.reason === "no_result") {
-    if ((check.results ?? []).length === 0) return { state: "no-result" };
-    const stands = newestFirst(standingResults(check))[0];
-    return stands === undefined ? { state: "retracted" } : { stands, state: "older" };
-  }
   const named = answer.results?.[0];
   const stands = (check.results ?? []).find((result) => result.id === named);
   const state = answer.answer === "yes" ? "passed" : "failed";
