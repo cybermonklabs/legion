@@ -3048,11 +3048,30 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault")
 }
 
-// applySessionFact applies one of the two session facts on a goroutine of its own, bounded by
-// readyReleaseTimeout: the machine calls both inside its own decision, so neither waits for the
-// database. A failure is logged and is not the daemon's end — the report is a report, and the
-// start it describes has already been decided. A claim on no issue, the daemon's own controller,
-// has nobody to tell.
+// claimWriteRefused applies the fact that the store refused a claim write for good (supervise's
+// Deps.ClaimWriteRefused, D10 and D11 of dispatch://INFRA-4099's plan): the workflow tells the
+// architect that providerErrorRunReached's rule names and the controller (workflow's
+// claimWriteRefused). The machine tells it inside the refused decision, once for each refusal,
+// with the claim as memory held it; the event id names the claim, the refused claim's generation,
+// the SQLSTATE and the constraint, so a second refusal with the same key, made again at the next
+// window or by the next boot's machine over the same row, is marked applied already
+// (intake.ApplyFact) and tells nobody. A refusal the store made in Go has no SQLSTATE, and its
+// rule word stands in the constraint's place (supervise.RowRefusedError.Rule), so its id has an
+// empty SQLSTATE between two colons. The controller's own claim and a claim with no issue are told
+// to nobody (applySessionFact): the refusal's line in the machine's log is the whole of its record.
+func (w *workflowRuntime) claimWriteRefused(r supervise.WriteRefusal) {
+	c := r.Claim
+	w.applySessionFact(c, fmt.Sprintf("claim-write-refused:%s:%d:%s:%s", c.Token, r.Generation, r.SQLState, r.Constraint),
+		intake.ClaimWriteRefused{Issue: c.Issue, Role: c.Role, Tree: c.Tree, Store: r.Store, Stored: r.Stored, Refused: r.Refused,
+			Generation: r.Generation, SQLState: r.SQLState, Constraint: r.Constraint},
+		"apply a claim write the store refused")
+}
+
+// applySessionFact applies one of the facts a machine tells inside its own decision — the two
+// session facts and a refused claim write — on a goroutine of its own, bounded by
+// readyReleaseTimeout, so none of them waits for the database. A failure is logged and is not the
+// daemon's end — the report is a report, and what it describes has already been decided. A claim
+// on no issue, the daemon's own controller, has nobody to tell.
 func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact intake.Fact, what string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return

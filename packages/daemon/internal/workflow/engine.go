@@ -362,6 +362,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionLost(ctx, tx, fact)
 	case intake.SessionStoreFault:
 		return e.sessionStoreFault(ctx, tx, fact)
+	case intake.ClaimWriteRefused:
+		return e.claimWriteRefused(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
 	case intake.ControllerMemoryGuardKill:
@@ -1946,6 +1948,69 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
+}
+
+// claimWriteRefused tells who must know that the store refused a claim write for good
+// (intake.ClaimWriteRefused): the architect the notice's walk reaches, unless the claim is the
+// tree root's own architect, and the controller, in a row of its own queued here as
+// sessionStoreFault queues one. The roles told are those a run of provider errors tells (the
+// daemon's providerErrorRunReached):
+//
+//   - a phase worker's claim tells the architect that owns the issue and the controller;
+//   - the tree root's architect's own claim tells the controller alone, since its notice would
+//     reach the claim it is about;
+//   - a child's own architect's claim tells the architect above that child, where the walk of
+//     the notice's kind starts (record.NoticeStartsAtParent), and the controller.
+//
+// The fact's event id keeps the telling to once for each claim, generation, SQLSTATE and
+// constraint (the daemon's workflowRuntime.claimWriteRefused), so nothing here counts. An issue
+// the record does not hold tells nobody.
+func (e *Engine) claimWriteRefused(ctx context.Context, tx pgx.Tx, fact intake.ClaimWriteRefused) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	tellsArchitect := !claim.IsTreeArchitect(fact.Role, issue.Key, fact.Tree)
+	notice := record.Notice{Kind: record.ClaimWriteRefusedNotice, Role: fact.Role,
+		Reason: claimWriteRefusedReason(issue.Key, fact, tellsArchitect)}
+	if tellsArchitect {
+		if err := e.notice(ctx, tx, issue.Key, notice); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(notice))
+}
+
+// claimWriteRefusedReason is the reason of a claim-write-refused notice, built from the fact's
+// fields alone: what the store refused and what the daemon did, then what each reader does. The
+// architect's part is left out where no architect is told (tellsArchitect). The controller's part
+// names supervise's two log lines whole (supervise.RefusedWriteLine, supervise.RereadLine): the
+// refused write, with its store call, states, SQLSTATE and constraint, and the read of the claim's
+// row after it. The constraint is the server's name for it or the store's rule word, so it is
+// quoted as a Go string (strconv.Quote), as the session faults quote their detail: a quote or a
+// newline in it stays inside the sentence.
+func claimWriteRefusedReason(issue string, fact intake.ClaimWriteRefused, tellsArchitect bool) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "The daemon did not keep the new state of the %s claim of %s at generation %d, because the store refused the claim write. ",
+		fact.Role, issue, fact.Generation)
+	fmt.Fprintf(&out, "The store call was %s. The state in the store is %s, and the refused state was %s. ", fact.Store, fact.Stored, fact.Refused)
+	switch {
+	case fact.SQLState == "":
+		fmt.Fprintf(&out, "The store refused the write before it sent a statement, so there is no SQLSTATE, and the constraint is the store's rule %s. ",
+			strconv.Quote(fact.Constraint))
+	case fact.Constraint == "":
+		fmt.Fprintf(&out, "The SQLSTATE is %s, and the server named no constraint. ", fact.SQLState)
+	default:
+		fmt.Fprintf(&out, "The SQLSTATE is %s, and the constraint is %s. ", fact.SQLState, strconv.Quote(fact.Constraint))
+	}
+	out.WriteString("The daemon put the claim back to the row in the store, and it asks the agent for its state. ")
+	if tellsArchitect {
+		out.WriteString("Architect: act only if the role stays stuck for more than one probe interval (probe_interval_seconds). " +
+			"Then send the claim and this notice to the controller. ")
+	}
+	fmt.Fprintf(&out, "Controller: treat this as a defect of the daemon. In the daemon's log, find the lines %s and %s for this claim. "+
+		"File the defect with the claim, the SQLSTATE and the constraint.", strconv.Quote(supervise.RefusedWriteLine), strconv.Quote(supervise.RereadLine))
+	return out.String()
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM

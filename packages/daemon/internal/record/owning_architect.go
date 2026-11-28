@@ -20,13 +20,15 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 // A child's close or status change: it tells of the child's own run starting, leaving, coming back
 // or closing, which is not the child's own architect to judge (a leave suspends that architect and
 // a close as done retires it, in workflow's leave), and the architect above it decides what the
-// rest of the tree does. And a worker-died, a worker-stalled or a provider-errors about an
-// issue's own architect (role is claim.RoleArchitect): the notice is about that architect, so the
-// architect above it must hear it, and the tree root's own architect, which has none above it,
-// hears its own worker-died and worker-stalled (the walk from the root ends at the root,
-// OwningIssue); the daemon writes no architect row for the root architect's own provider-errors
-// (daemon's providerErrorRunReached), since that wake would reach the session the provider keeps
-// refusing.
+// rest of the tree does. And a worker-died, a worker-stalled, a provider-errors or a
+// claim-write-refused about an issue's own architect (role is claim.RoleArchitect): the notice is
+// about that architect, so the architect above it must hear it, and the tree root's own
+// architect, which has none above it, hears its own worker-died and worker-stalled (the walk from
+// the root ends at the root, OwningIssue); the daemon writes no architect row for the root
+// architect's own provider-errors (daemon's providerErrorRunReached), since that wake would reach
+// the session the provider keeps refusing, nor for its own claim-write-refused (workflow's
+// claimWriteRefused), since that notice would reach the claim it is about, and the controller's
+// copy reaches the role that files the defect.
 //
 // Any of these notices on a child with no parent goes to the tree root, never to the child's own
 // architect: a failed claim is passed over by the walk anyway, but a stalled one still holds its
@@ -35,7 +37,7 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, fromPar
 // lands. On a root each walk ends at the root, as every walk from the root does.
 func NoticeStartsAtParent(kind NoticeKind, role claim.Role) bool {
 	aboutItsArchitect := role == claim.RoleArchitect &&
-		(kind == "worker-died" || kind == "worker-stalled" || kind == ProviderErrorsNotice)
+		(kind == "worker-died" || kind == "worker-stalled" || kind == ProviderErrorsNotice || kind == ClaimWriteRefusedNotice)
 	return aboutItsArchitect || kind == "child-closed" || kind == "child-status"
 }
 

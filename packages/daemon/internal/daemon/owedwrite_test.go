@@ -377,6 +377,10 @@ type owedWriteRig struct {
 	// and an operator read it by.
 	logs  *syncBuffer
 	write time.Duration
+	// extend is what a test sets in each boot's Deps beside the rig's own, before the boot
+	// restores a claim (supervise.NewMachine copies its Deps), nil for nothing: the hook a refused
+	// write tells, a broker, a clock the test moves.
+	extend func(*supervise.Deps)
 }
 
 // newOwedWriteRig seeds each role's claim in a database of its own and supervises them, with
@@ -438,6 +442,9 @@ func (r *owedWriteRig) boot() {
 		BoundWrite:     store.BoundAfterAcquire,
 		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
+	}
+	if r.extend != nil {
+		r.extend(&sup.deps)
 	}
 	r.t.Cleanup(sup.stop)
 	stored, err := sup.Claims(r.ctx)

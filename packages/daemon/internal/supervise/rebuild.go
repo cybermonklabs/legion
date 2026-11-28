@@ -16,14 +16,15 @@ import (
 // reaches the store (withheld); a read that fails holds every decision until a read lands
 // (awaitRead). The decisions D1 to D5 and D9 of that issue's plan are the design this file builds.
 
-// rereadLine is the line of a claim read again after a refused claim write, at Info
-// (settleRefusal, reread): the refused write's own line (refusedWriteLine) says what was refused,
+// RereadLine is the line of a claim read again after a refused claim write, at Info
+// (settleRefusal, reread): the refused write's own line (RefusedWriteLine) says what was refused,
 // and this one what the machine holds now, the state of the row it was built again over, the
 // pending delivery that row holds and the end of the window its writes wait out
 // (Machine.writesWaitUntil); a read that lands after one that failed adds the events the wait
-// dropped (Machine.rereadDropped). It is pinned as a constant for the reason refusedWriteLine
-// is: an operator and a production check read the pair of lines whole.
-const rereadLine = "supervise: the claim was read again from the store after a refused write"
+// dropped (Machine.rereadDropped). It is pinned as a constant for the reason RefusedWriteLine
+// is: an operator and a production check read the pair of lines whole. It is exported for the
+// reason RefusedWriteLine is: the claim-write-refused notice names both lines whole.
+const RereadLine = "supervise: the claim was read again from the store after a refused write"
 
 // rereadFailedLine is the line of a read after a refused claim write that failed or answered no
 // row, at Warn, at each try (reread): the claim decides nothing until a read lands, and the read
@@ -156,7 +157,7 @@ func (m *Machine) reread(ctx context.Context, attrs ...any) {
 		}
 		attrs = append(attrs, "dropped", total, "droppedEvents", dropped)
 	}
-	m.log.Info(rereadLine, attrs...)
+	m.log.Info(RereadLine, attrs...)
 }
 
 // awaitRead is handle while a read of the claim's row is owed after a refused claim write

@@ -260,7 +260,7 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		if held := len(h.m.owedWrite.reports); held != 2 {
 			t.Fatalf("the mark holds %d reports, want the two working transitions whose writes failed", held)
 		}
-		written := len(h.records.of(refusedWriteLine))
+		written := len(h.records.of(RefusedWriteLine))
 
 		// The outage lifts, and what refuses the repair is the server itself: a unique
 		// violation is a decision about that very write, which R2 never makes again.
@@ -282,7 +282,7 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 		if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady}) {
 			t.Fatalf("the daemon was told %v, want the ready alone: the owed working names a state the store never took", seen)
 		}
-		lines := h.records.of(refusedWriteLine)[written:]
+		lines := h.records.of(RefusedWriteLine)[written:]
 		if len(lines) != 1 {
 			t.Fatalf("the drop wrote %d lines, want the one that is the whole record of it: %v", len(lines), lines)
 		}

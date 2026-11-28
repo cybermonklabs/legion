@@ -1425,6 +1425,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "merge-holds-changed", Role: claim.RoleArchitect, Reason: MergeHoldsChangedReason("LEGION")},
 		{Kind: ProviderErrorsNotice, Role: claim.RoleImplementer,
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
+		{Kind: ClaimWriteRefusedNotice, Role: claim.RoleImplementer,
+			Reason: "The daemon did not keep the new state of the implementer claim of LEGION-208 at generation 3, because the store refused the claim write. " +
+				"The store call was PutClaim. The state in the store is idle, and the refused state was suspended."},
 		{Kind: "task-stopped", Role: claim.RoleReviewer, Phase: phase.Reviewing, StoppedBy: "legion-legion-legion-208-architect",
 			Reason: "task a of LEGION-208 was stopped by its owner, the architect legion-legion-legion-208-architect"},
 		{Kind: "plan-not-taken", Role: claim.RoleArchitect,

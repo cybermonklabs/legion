@@ -707,7 +707,7 @@ func TestAClaimWriteRefusedForGoodIsLogged(t *testing.T) {
 			t.Fatalf("turn start %d returned %v, want the store's refusal", n, err)
 		}
 		h.wantState(StateReady)
-		lines := h.records.of(refusedWriteLine)
+		lines := h.records.of(RefusedWriteLine)
 		if len(lines) != n {
 			t.Fatalf("after refusal %d the refusal's line was written %d times, want %d", n, len(lines), n)
 		}
@@ -1028,7 +1028,7 @@ func TestARefusedWriteWhoseReadFailsDecidesNothingUntilARead(t *testing.T) {
 		}
 		h.wantBuiltAsAtStart(false)
 		h.wantMemoryIsTheRow()
-		lines := h.records.of(rereadLine)
+		lines := h.records.of(RereadLine)
 		if len(lines) != 1 {
 			t.Fatalf("the read that landed was logged %d times, want once", len(lines))
 		}

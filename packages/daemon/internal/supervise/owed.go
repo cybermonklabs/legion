@@ -88,7 +88,7 @@ const owedWriteLine = "supervise: a claim write the database did not take"
 // caught up from one that is still behind.
 const repairedWriteLine = "supervise: a claim write the database did not take was made"
 
-// refusedWriteLine is the one message a claim write the rule refuses is logged under, at Error
+// RefusedWriteLine is the one message a claim write the rule refuses is logged under, at Error
 // (refusedWrite): the store, the server or the driver judged the row memory holds, so the same
 // write fails again for as long as memory holds it (SortClaimWriteFailure). Its attributes are
 // the store call, the state the row last held (Machine.rowState), the state memory held at the
@@ -96,8 +96,10 @@ const repairedWriteLine = "supervise: a claim write the database did not take wa
 // constraint the server names or the store's rule word (RowRefusedError.Rule), and the error; a
 // refused repair adds what the dropped mark held. It is pinned as a constant for the reason
 // owedWriteLine is: a search for it is the search for every refused claim write, and each one is
-// a defect of the daemon or of its schema that a person has to read.
-const refusedWriteLine = "supervise: a claim write the store refused"
+// a defect of the daemon or of its schema that a person has to read. It is exported because the
+// claim-write-refused notice names it whole, for its controller to find (workflow's
+// claimWriteRefusedReason), so the line logged and the line named are one constant.
+const RefusedWriteLine = "supervise: a claim write the store refused"
 
 // claimWriteAgainLine is the line of a store call of a decision that the claim-write bound cut
 // short and that the decision makes again at once (Machine.write), at Warn: the database answered
@@ -196,7 +198,7 @@ func (m *Machine) sortWriteFailure(method string, err error) WriteFailure {
 	return kind
 }
 
-// refusedWrite logs a claim write the rule refused under refusedWriteLine, at Error, tells the
+// refusedWrite logs a claim write the rule refused under RefusedWriteLine, at Error, tells the
 // daemon once through Deps.ClaimWriteRefused (D10 of dispatch://INFRA-4099's plan), and records the
 // refusal on the machine (Machine.refusal): no other claim write of the decision reaches the store,
 // and the decision ends by building the machine again over the claim's row (settleRefusal, D2).
@@ -216,7 +218,7 @@ func (m *Machine) refusedWrite(method string, err error, more ...any) {
 		state: m.claim.State, generation: m.claim.Generation}
 	attrs := append([]any{"store", method, "stored", m.rowState, "refused", m.claim.State,
 		"generation", m.claim.Generation, "sqlstate", sqlstate, "constraint", constraint, "error", err}, more...)
-	m.log.Error(refusedWriteLine, attrs...)
+	m.log.Error(RefusedWriteLine, attrs...)
 	if m.deps.ClaimWriteRefused != nil {
 		m.deps.ClaimWriteRefused(WriteRefusal{Claim: copyClaim(m.claim), Store: method, Stored: m.rowState,
 			Refused: m.claim.State, Generation: m.claim.Generation, SQLState: sqlstate, Constraint: constraint, Err: err})
@@ -522,7 +524,7 @@ const (
 var errWritesWait = errors.New("supervise: the claim's writes wait out the probe interval after a refused write")
 
 // WriteRefusal is one claim write the rule refused, as the machine tells it (Deps.ClaimWriteRefused,
-// D10 of dispatch://INFRA-4099's plan): the fields of refusedWriteLine, and the claim the store
+// D10 of dispatch://INFRA-4099's plan): the fields of RefusedWriteLine, and the claim the store
 // refused.
 type WriteRefusal struct {
 	// Claim is the claim as memory held it at the refusal: the claim the write tried to record.

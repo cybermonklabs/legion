@@ -1394,7 +1394,7 @@ type Deps struct {
 	ProviderErrorRunReached func(c Claim, reason string)
 	// ClaimWriteRefused is told of each claim write the rule refuses (SortClaimWriteFailure,
 	// refusedWrite), once for each refusal, with the claim as memory held it and the fields of
-	// refusedWriteLine: the store, the server or the driver judged the row memory holds, which is
+	// RefusedWriteLine: the store, the server or the driver judged the row memory holds, which is
 	// a defect of the daemon or of its schema that a person has to read (D10 of
 	// dispatch://INFRA-4099's plan). Nil tells no one. It is called inside the machine's decision,
 	// so it returns at once and does its work elsewhere.
@@ -1702,7 +1702,7 @@ type Machine struct {
 	// rowState is the state the claim's row holds as far as this machine knows: the state of the
 	// claim it was built from (NewMachine), and then of each claim write that landed — a write of
 	// the claim's row, alone or with a delivery, a retirement, an admission, a release of names and
-	// a pause's stop; a write of the delivery alone leaves it. It is what refusedWriteLine and
+	// a pause's stop; a write of the delivery alone leaves it. It is what RefusedWriteLine and
 	// the refusal hook name as the stored state beside memory's (D10 of dispatch://INFRA-4099's
 	// plan), since a refused write leaves the row where the last landed one put it.
 	rowState ClaimState
@@ -1722,7 +1722,7 @@ type Machine struct {
 	// until that try (rereadWait), and every other event is dropped (awaitRead).
 	rereadOwed bool
 	// rereadDropped is how many events of each kind a read owed dropped (awaitRead), named in the
-	// line of the read that lands (rereadLine) and cleared with it; nil for none.
+	// line of the read that lands (RereadLine) and cleared with it; nil for none.
 	rereadDropped map[eventKind]int
 	// writesWaitUntil is the end of the window after a read that landed (D5 of
 	// dispatch://INFRA-4099's plan), the zero time for none: until then no claim write reaches the
