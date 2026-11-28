@@ -2224,7 +2224,8 @@ pass "the tunnel's local port comes from the deployment file, and 16060 is its d
 # cannot read the profiling port can never be judged on pass criterion (e).
 : >"$fake/tunnel-refuses"
 runs_before=$(wc -l <"$fake/loadgen-run.log")
-run_vm step --config "$config" 2x 2 --duration 10m
+# The bound is the seam's 4 s, so the poll runs to its end in two naps rather than thirty.
+LOADTEST_VM_TUNNEL_SECONDS=4 run_vm step --config "$config" 2x 2 --duration 10m
 ((RC != 0)) || fail "step ran with a profiling tunnel that does not answer"
 grep -q 'step 2x is refused' "$tmp/out" || fail "the refusal does not name the step"
 grep -q 'pool acquire waiters p50 = 0' "$tmp/out" ||
@@ -2235,6 +2236,22 @@ grep -q 'pool acquire waiters p50 = 0' "$tmp/out" ||
   fail "a refused step left its directory, so it cannot run again under its own name"
 rm -f "$fake/tunnel-refuses"
 pass "a step whose profiling tunnel does not answer is refused by name, before any load, and leaves no directory behind"
+
+# The seam's bound is checked with the arguments, before any machine. Unchecked, a bad value is
+# read only once the tunnel's first probe fails -- abc as an unbound variable, 0 as a bound already
+# spent -- so a step would reset the deployment and open the tunnel before it was refused, or run
+# whole on a bound nobody meant. The step's name is one no step of this part has taken, so a step
+# that went past its arguments would reach a machine.
+for tunnel_seconds in abc 0; do
+  : >"$fake/actions.log"
+  LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds run_vm step --config "$config" seam 1 --duration 10m
+  ((RC != 0)) || fail "step ran with LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds"
+  grep -qF "LOADTEST_VM_TUNNEL_SECONDS is '$tunnel_seconds'" "$tmp/out" ||
+    fail "the refusal of LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds does not name the variable and its value"
+  [ ! -s "$fake/actions.log" ] ||
+    fail "a step with LOADTEST_VM_TUNNEL_SECONDS=$tunnel_seconds reached a machine: $(cat "$fake/actions.log")"
+done
+pass "a LOADTEST_VM_TUNNEL_SECONDS that is not a whole number of seconds above 0 refuses the step by name before it reaches a machine"
 
 # The tunnel's identity (dispatch://INFRA-988). The tunnel is an ssh the generator VM runs
 # itself, and the only key those machines accept is the run's own OS Login key, which is made

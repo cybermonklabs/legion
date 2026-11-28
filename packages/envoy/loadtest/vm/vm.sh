@@ -253,6 +253,8 @@
 # cgroup.jsonl, steps/, curves/ and logs/. up names the run in <root>/current, and every
 # later subcommand takes that run unless --run names another.
 #
+# LOADTEST_VM_TUNNEL_SECONDS (default 60) bounds the profiling tunnel: a seam for vm.test.sh alone.
+#
 # A step whose machine is stopped is discarded, never recorded: each machine stops itself 72
 # hours after it starts (R11), and a machine that is gone is not a Dispatch failure. step reads
 # every machine's Compute API status before the reset and again after the load; any one of them
@@ -296,8 +298,11 @@ RUN_SLACK_SECONDS=900
 # How long the stub embedder is given to write its certificate before up gives up on it.
 STUB_EMBED_SECONDS=60
 # How long the step's profiling tunnel is given to answer before the step is refused, and how
-# long between two reads through it.
-TUNNEL_SECONDS=60
+# long between two reads through it. LOADTEST_VM_TUNNEL_SECONDS sets the first: a seam for
+# vm.test.sh alone, which gives one case a bound of a few seconds, so that its refused step ends
+# after two naps rather than thirty. No deployment sets it, and unset it is 60. parse refuses a
+# value that is not a whole number of seconds above 0, before any subcommand reaches a machine.
+TUNNEL_SECONDS=${LOADTEST_VM_TUNNEL_SECONDS:-60}
 TUNNEL_POLL_SECONDS=2
 # The port the tunnel listens on, on the load machine, and the command that opens it there. Both
 # are the deployment file's to change (ports.pprof_tunnel, pprof_tunnel_command): that machine's
@@ -480,6 +485,7 @@ parse() {
     esac
   done
   [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://INFRA-1051's, and nothing of it is named in this script)"
+  [[ $TUNNEL_SECONDS =~ ^[1-9][0-9]*$ ]] || die "$CMD: LOADTEST_VM_TUNNEL_SECONDS is '$TUNNEL_SECONDS', not a whole number of seconds above 0"
   CONFIG=$(abs_file --config "${OPT[config]}")
   jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CMD: --config $CONFIG is not readable JSON"
   cfg_load
