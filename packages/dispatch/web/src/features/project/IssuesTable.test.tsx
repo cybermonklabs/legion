@@ -109,7 +109,9 @@ function Route(): ReactNode {
 }
 const restores: (() => void)[] = [];
 afterEach(() => {
-  for (const restore of restores.splice(0)) restore();
+  // Last in, first out: a stub laid over another comes off first, so a row that draws the List
+  // twice leaves the `clientHeight` it found.
+  for (const restore of restores.splice(0).reverse()) restore();
   localStorage.clear();
 });
 /** Draws the List over `issues`. `full` answers the listing that holds the closed issues, and
@@ -1537,11 +1539,11 @@ test("Clear selection hands the focus to the checkbox of the issue marked last u
 // height the action's settle changes change the box. At 390x664 the box went from 434 to 414 px a
 // frame after the bar's going, and a landing shown whole in the old box stood below the new one
 // (builds Jobs `infra-3135-infra-3135-r30q-frames` and `-r30r-frames`). So the List makes its box
-// current in the commit that lets the bar go, in its `returnFocus`, before the bar's hand-off
-// reads it. Here the pager
-// stands far below the window, so the box is its floor: 492 px while the action's rows are 150 px
-// tall, 432 once they are 130. The row now at the marked rows' place has its checkbox at 480 to
-// 500 then: partly in the old box, and out of the new one.
+// current right before each landing of the bar's hand-off, through `MarkedList`'s `fit`, which
+// the List gives `model.layout.fitHeight` (`IssuesTable.tsx`). Here the pager stands far below the
+// window, so the box is its floor: 492 px while the action's rows are 150 px tall, 432 once they
+// are 130. The row now at the marked rows' place has its checkbox at 480 to 500 then: partly in
+// the old box, and out of the new one.
 test("Take out of epic lands its focus wholly in the box the List draws once the action settles", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockImplementation(
@@ -1822,7 +1824,7 @@ test("with the foot's pass still to come as the bar goes, the List gives its box
   restores.push(() => Reflect.deleteProperty(document, "elementsFromPoint"));
   const float = render(<FootFloat />);
   // Taken away before the List, so no pass is asked for once the case is over.
-  restores.unshift(() => float.unmount());
+  restores.push(() => float.unmount());
   await user.click(mark);
   await afterFrameAndTasks();
   expect(main.style.paddingBottom).toBe("100px");
@@ -1914,7 +1916,7 @@ test("when the List's landing scrolls its box off its end, the kept foot room is
     floatNode = null;
     float.unmount();
   };
-  restores.unshift(() => {
+  restores.push(() => {
     box.scrollTop = 0;
     unmountFloat();
     footPassNow();
@@ -2131,10 +2133,12 @@ test("Start next over three queued issues from the bar, its steps answered one a
 
 /** What `pressMadeIn` answered of `bar` once the page had answered the next `type` event on
  *  `target`, else undefined: whether the press the reader made then (`armHandOff`) holds the bar.
- *  A listener on the document hears the event after React has run the page's own handlers for
- *  it. A form's submit comes after the click on its submit button, so a submit is read there. */
+ *  A listener on the document hears a click or a submit after React has run the page's own
+ *  handlers for it, and one on the window hears a key after the page's keymap has
+ *  (`KeymapProvider`), which closes a dialog on Escape. A form's submit comes after the click on
+ *  its submit button, so a submit is read there. */
 function pressAtBarOn(
-  type: "click" | "submit",
+  type: "click" | "keydown" | "submit",
   target: Element,
   bar: Element
 ): { readonly read: boolean | undefined } {
@@ -2142,8 +2146,9 @@ function pressAtBarOn(
   const listen = (event: Event) => {
     if (event.target === target) heard.read = pressMadeIn(bar);
   };
-  document.addEventListener(type, listen);
-  restores.push(() => document.removeEventListener(type, listen));
+  const on: EventTarget = type === "keydown" ? window : document;
+  on.addEventListener(type, listen);
+  restores.push(() => on.removeEventListener(type, listen));
   return heard;
 }
 
@@ -2212,23 +2217,26 @@ test("Move to epic confirmed in its question hands the focus to the row now at t
 
 // A Cancel or an Escape in the bar's Move to epic question writes nothing and arms nothing at the
 // bar's root: the dialog closes, gives the focus back to the bar's Move it came from, held now
-// that no epic is staged, and the bar stays with both rows marked.
-for (const [how, answer] of [
+// that no epic is staged, and the bar stays with both rows marked. Each is read where it lands:
+// the click on Cancel, and Escape's keydown on the confirm, which the question focuses as it
+// opens.
+for (const [how, type, on, answer] of [
   [
+    "Cancel",
+    "click",
     "Cancel",
     (user: UserEvent, asked: HTMLElement) =>
       user.click(within(asked).getByRole("button", { name: "Cancel" })),
   ],
-  ["Escape", (user: UserEvent) => user.keyboard("{Escape}")],
+  ["Escape", "keydown", "Move into work too", (user: UserEvent) => user.keyboard("{Escape}")],
 ] as const) {
   test(`${how} in the bar's Move to epic question leaves the focus on the bar's Move`, async () => {
     const user = userEvent.setup();
     const { asked, bar, sent } = await askedToMoveIntoWork(user);
-    const cancel = within(asked).getByRole("button", { name: "Cancel" });
-    const heard = pressAtBarOn("click", cancel, bar);
+    const heard = pressAtBarOn(type, within(asked).getByRole("button", { name: on }), bar);
     await answer(user, asked);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(heard.read).toBe(how === "Cancel" ? false : undefined);
+    expect(heard.read).toBe(false);
     expect(focusedName()).toBe("Move");
     await afterFrameAndTasks();
     expect(focusedName()).toBe("Move");
@@ -3184,6 +3192,7 @@ function stubScrollBoxWidth(width: number, edge = 2): void {
     });
     restores.push(() => {
       if (original !== undefined) Object.defineProperty(HTMLElement.prototype, name, original);
+      else Reflect.deleteProperty(HTMLElement.prototype, name);
     });
   }
 }
@@ -3604,12 +3613,16 @@ test("Start next on a selection larger than the page asks first", async () => {
 test("Clear filters restores the default view rather than loading every closed issue", async () => {
   const user = userEvent.setup();
   const { listing } = table([issue("CORE-1")], "?q=rank&status=done");
-  await user.click(await screen.findByRole("button", { name: "Clear filters" }));
+  const clear = await screen.findByRole("button", { name: "Clear filters" });
+  const reads = listing.mock.calls.length;
+  await user.click(clear);
   await waitFor(() =>
     expect(screen.getByTestId("route-search")?.textContent ?? "").not.toContain("nofilter")
   );
   expect(screen.getByTestId("route-search").textContent).not.toContain("status=");
-  expect(listing.mock.calls.every(([options]) => options?.open !== false)).toBe(true);
+  // The press starts a read, and every read after it asks for the open issues alone.
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  expect(listing.mock.calls.slice(reads).filter(([options]) => options?.open !== true)).toEqual([]);
 });
 
 // The List draws its toolbar while it reads issues it has not loaded, as the Board draws its
@@ -5561,13 +5574,16 @@ test("the open statuses draw no chip, and taking a Status chip off goes back to 
   const { listing } = table([issue("CORE-1"), issue("CORE-2", { status: "done" })], "?status=done");
   await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
   const chip = screen.getByRole("button", { name: "Remove Status: Done filter" });
+  const reads = listing.mock.calls.length;
   await user.click(chip);
   await waitFor(() =>
     expect(screen.getByTestId("route-search").textContent).not.toContain("status=")
   );
   expect(screen.getByTestId("route-search").textContent).not.toContain("nofilter");
   expect(screen.queryByRole("button", { name: /^Remove Status: / })).toBeNull();
-  expect(listing.mock.calls.every(([options]) => options?.open !== false)).toBe(true);
+  // The press starts a read, and every read after it asks for the open issues alone.
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  expect(listing.mock.calls.slice(reads).filter(([options]) => options?.open !== true)).toEqual([]);
 });
 
 // The listing columns exist only where they mean something: a project's own table would name its
@@ -6923,7 +6939,7 @@ test("a filling layout's table is as wide as the room inside its box, beside a s
       table: list.style.width,
       title: within(list).getByRole("columnheader", { name: /^Title/ }).style.width,
     }).toEqual({ table: `${606 - edge}px`, title: `${title}px` });
-    for (const restore of restores.splice(0)) restore();
+    for (const restore of restores.splice(0).reverse()) restore();
     localStorage.clear();
   }
 });
@@ -6948,7 +6964,7 @@ test("a layout's pins keep Title pinned in a 606 px box, where the registry's wo
       .filter((cell) => cell.style.left !== "")
       .map((cell) => (cell.textContent ?? "").replace(/[▲▼]|Filter$/g, "") || "-");
     expect(pinned.at(-1)).toBe(last);
-    for (const restore of restores.splice(0)) restore();
+    for (const restore of restores.splice(0).reverse()) restore();
     localStorage.clear();
   }
 });

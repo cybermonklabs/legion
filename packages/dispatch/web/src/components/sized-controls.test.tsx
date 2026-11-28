@@ -7,45 +7,28 @@ import type {
   SortingState,
 } from "@tanstack/react-table";
 import { render } from "@testing-library/react";
-import { type ComponentType, type ReactNode, useState } from "react";
+import { type ReactNode, useState } from "react";
 
-import { ColumnFilter, type ColumnFilterProps } from "./ColumnFilter";
+import { ColumnFilter } from "./ColumnFilter";
 import type { ControlSize } from "./control-names";
 import {
   DataTable,
   type DataTableModel,
   type DataTableNames,
-  type DataTableProps,
   type RowNoun,
   useDataTable,
 } from "./DataTable";
-import { Pager, type PagerProps } from "./Pager";
-import { SelectionBar, type SelectionBarProps } from "./SelectionBar";
+import { Pager } from "./Pager";
+import { SelectionBar } from "./SelectionBar";
 import { type LayoutColumns, useTableLayout } from "./table-layout";
 
 // INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z):
 // spec v8, R2, "Each control takes its size from the page, comfortable or compact, as a value the
 // page passes and never as a copy of the component". `SearchBox`, `PanelTrigger`, `Chip`,
-// `ColumnsMenu` and `ControlRow` take `size` and draw `controlPadding[size]`; at 3fce6150
-// `Pager`, `SelectionBar`, `ColumnFilter` and `DataTable` take no size, so a page cannot pass one.
-// Each is given a size here through a cast, because its props have no `size` at 3fce6150, so this
-// file type-checks there and each test fails on what the control draws: the classes of every
-// element it draws at `compact` and at `comfortable`, which are the same where the size is not
+// `ColumnsMenu` and `ControlRow` take `size`, and so do `Pager`, `SelectionBar`, `ColumnFilter`
+// and `DataTable`: each test here draws one of these four at `compact` and at `comfortable`, and
+// fails on what it draws, the classes of every element, which are the same where the size is not
 // read.
-
-/** Each control as a page would draw it with a size, which its props do not name yet. */
-const SizedPager = Pager as unknown as ComponentType<
-  PagerProps<Deploy> & { readonly size?: ControlSize }
->;
-const SizedSelectionBar = SelectionBar as unknown as ComponentType<
-  SelectionBarProps & { readonly size?: ControlSize }
->;
-const SizedColumnFilter = ColumnFilter as unknown as ComponentType<
-  ColumnFilterProps<Deploy> & { readonly size?: ControlSize }
->;
-const SizedDataTable = DataTable as unknown as ComponentType<
-  DataTableProps<Deploy> & { readonly size?: ControlSize }
->;
 
 /** A row that is not an issue. */
 interface Deploy {
@@ -133,13 +116,7 @@ function useDeploys(): DataTableModel<Deploy> {
 function PagerAt({ size }: { size: ControlSize }): ReactNode {
   const model = useDeploys();
   return (
-    <SizedPager
-      noun={NOUN}
-      pageSizes={[2, 10]}
-      size={size}
-      table={model.table}
-      testId="deploys-pager"
-    />
+    <Pager noun={NOUN} pageSizes={[2, 10]} size={size} table={model.table} testId="deploys-pager" />
   );
 }
 
@@ -151,7 +128,7 @@ function ColumnFiltersAt({ size }: { size: ControlSize }): ReactNode {
         const column = model.table.getColumn(id);
         if (column === undefined) throw new Error(`the deploys table has no ${id} column`);
         return (
-          <SizedColumnFilter
+          <ColumnFilter
             column={column}
             counts={COUNTS}
             key={id}
@@ -171,7 +148,7 @@ function DataTableAt({ size }: { size: ControlSize }): ReactNode {
   const model = useDeploys();
   const [openFilter, setOpenFilter] = useState<string>();
   return (
-    <SizedDataTable
+    <DataTable
       empty="No deploys match."
       filterCounts={COUNTS}
       label="Deploys"
@@ -223,9 +200,9 @@ test("R2: the Pager takes its size from the page - compact and comfortable draw 
 
 test("R2: the SelectionBar takes its size from the page - compact and comfortable draw different classes", () => {
   const bar = (size: ControlSize) => (
-    <SizedSelectionBar count={2} label="Selected rows" size={size}>
+    <SelectionBar count={2} label="Selected rows" size={size}>
       <button type="button">Clear selection</button>
-    </SizedSelectionBar>
+    </SelectionBar>
   );
   expect(drawnClasses(bar("compact"))).not.toEqual(drawnClasses(bar("comfortable")));
 });

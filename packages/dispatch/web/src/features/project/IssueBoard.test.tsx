@@ -1412,10 +1412,9 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   }
 });
 
-// What `IssueFilters.test.tsx` proved about the Board's filter strip, now that the Board draws
-// that strip itself as the one shared control row (INFRA-3135): the trigger over the filter
-// panel, the chips of the narrowings that are on, and the open-or-closed state the reader's
-// browser keeps under `project.issue-filters`.
+// The Board's control row (`ControlRow`): the trigger over the filter panel, the chips of the
+// narrowings that are on, and the open-or-closed state the reader's browser keeps under
+// `project.issue-filters`.
 function LocationSearch(): ReactNode {
   return <output data-testid="location-search">{useLocation().search}</output>;
 }
@@ -1581,9 +1580,9 @@ test("restores every filter from the URL and writes changes back to it", async (
     );
     await user.click(screen.getByRole("button", { name: "Remove Search: guid filter" }));
 
-    // Clicking into the search box closed the label picker, as it does in a browser, and the
-    // press on the chip beside it closed the filter panel the picker was in; Clear labels is
-    // inside that panel, so the reader opens it again.
+    // Clicking into the search box, a press outside the filter panel, closed the panel and the
+    // label picker in it, as it does in a browser; Clear labels is inside that panel, so the
+    // reader opens it again.
     await openFilters();
     await user.click(screen.getByRole("button", { name: "Labels · 2" }));
     await user.click(screen.getByRole("button", { name: "Clear labels" }));

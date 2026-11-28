@@ -430,15 +430,16 @@ test("the bar going while the focus is outside it moves nothing", () => {
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(filter).toHaveFocus();
-    // On the body, where the reader had left it before the bar went: the bar never held it, so
-    // it is not the bar's to hand on.
+    // On the body, where the reader had left it before the bar went: nothing armed the bar's
+    // hand-off, and the bar never held the focus, so it is not the bar's to hand on.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
     act(() => filter.blur());
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(document.activeElement).toBe(document.body);
     expect(asked).toBe(0);
-    // The same going with the focus inside the bar does hand it on: what kept it still above is
-    // that the bar did not hold it.
+    // The same going after the reader's press on Clear selection, which arms the bar's hand-off
+    // and leaves the focus in the bar, does hand it on: what kept it still above is that no press
+    // was armed, and the bar did not hold the focus either.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
     pressInBar("Clear selection");
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
@@ -531,8 +532,9 @@ test("a control the reader moved the focus off moves nothing when it later goes 
     expect(screen.getByRole("toolbar", { name: "Selected rows" })).toBeInTheDocument();
     expect(document.activeElement).toBe(document.body);
     expect(asked).toBe(0);
-    // The same going with the focus still on Select all does hand it on: what kept it still
-    // above is that the reader had moved the focus off.
+    // The same going after the reader's press on Select all, which arms the bar's hand-off and
+    // leaves the focus on it, does hand it on: what kept it still above is that no press was
+    // armed, and the reader had moved the focus off besides.
     view.rerender(<MarkedList count={1} returnFocus={returnFocus} selectAll={selectAll} />);
     pressInBar("Select all");
     view.rerender(<MarkedList count={3} returnFocus={returnFocus} />);
@@ -544,19 +546,22 @@ test("a control the reader moved the focus off moves nothing when it later goes 
 });
 
 // INFRA-3135's review round 1, R10: the bar's hand-off keeps its sight rule. The bar's line of
-// actions scrolls sideways, and the reader had scrolled it so far that the focused Clear selection
-// was out of their sight when a refetch emptied the selection and took the bar away. The bar
-// hands the focus to no row, so the list is not scrolled to one the reader did not pick.
-test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", () => {
+// actions scrolls sideways, and the reader pressed Clear selection, then, while the press's write
+// was out, scrolled the line so far that the focused Clear selection was out of their sight when
+// the selection emptied and took the bar away. The bar hands the focus to no row, so the list is
+// not scrolled to one the reader did not pick.
+test("the bar going with a control the reader scrolled out of sight hands the focus to nothing", async () => {
   let asked = 0;
   const returnFocus = () => {
     asked += 1;
     return rowBox("CORE-2");
   };
   const view = render(<MarkedList count={2} returnFocus={returnFocus} />);
+  let answered: () => void = () => undefined;
   try {
-    const clear = screen.getByRole("button", { name: "Clear selection" });
-    act(() => clear.focus());
+    const clear = pressInBar("Clear selection");
+    // The host holds the press through its write, as the Inbox and the List hold theirs.
+    answered = holdHandOff();
     // The line 300 px wide at the foot of the window, scrolled until Clear selection is 400 px
     // past its left edge.
     const line = clear.parentElement as HTMLElement;
@@ -565,12 +570,16 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
     act(() => {
       line.dispatchEvent(new Event("scroll"));
     });
+    // The armed press reads what the reader can see of the focused control at each frame.
+    await act(nextFrame);
     view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
     expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
     expect(rowBox("CORE-2")).not.toHaveFocus();
     expect(document.activeElement).toBe(document.body);
     expect(asked).toBe(0);
   } finally {
+    answered();
+    disarm();
     view.unmount();
   }
 });
@@ -2597,7 +2606,7 @@ test.each([
 
 // INFRA-3135, round 29 (the architect's rulings of 2026-11-26 04:0xZ): a landing is owed only
 // until the reader's own next action (`READER_ACTS`), which is the invariant that keeps this
-// hand-off from being the app-wide rescue this pull request removes. The reader acts while the
+// hand-off from being an app-wide rescue of every focus a page drops. The reader acts while the
 // press's rows are still listed, and the act ends what is owed at once, so the commit that takes
 // those rows away lands nothing. Where the act left the focus is read once it has been answered:
 // a task after its keyup, its pointerup, or the wheel. Here the act leaves the focus on the body,
@@ -2781,7 +2790,7 @@ test("the row marked last still listed under the list's sticky head takes the fo
   }
 });
 
-test("Clear selection at the window's bottom edge scrolls just the cut, without the root's scroll padding", () => {
+test("the bar's Dismiss with the row marked last at the window's bottom edge scrolls just the cut, without the root's scroll padding", () => {
   const view = render(<PlacedList count={1} last="CORE-1" listed={["CORE-1"]} />);
   const mark = rowBox("CORE-1");
   let top = window.innerHeight - 6;

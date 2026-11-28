@@ -436,9 +436,10 @@ test("another writer's save keeps the line break a reader typed after a list's l
 });
 
 // The fields this tab's save sent follow its answer from its landing on, and the reader types once
-// it has landed - the fields are disabled while it is out. A line break typed then after the
-// list's last entry stays as typed when the read the landing started answers the same record,
-// with the caret where the reader left it, so the next name is an entry of its own.
+// it has landed - the fields are held, `aria-disabled` and read-only, while it is out. A line
+// break typed then after the list's last entry stays as typed when the read the landing started
+// answers the same record, with the caret where the reader left it, so the next name is an entry
+// of its own.
 test("text a reader types after their save landed stays as typed when the read that landing started answers", async () => {
   const user = userEvent.setup();
   const saved = {

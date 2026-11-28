@@ -21,11 +21,12 @@ the last 7 days always shows the latest 7; a custom range keeps its dates. The p
 84 days, and refuses a longer custom range, saying so. Changing the window clears a dragged
 stretch.
 
-The window, the search box, every filter (Repository, Parent agent, Session, Dispatch issue,
-Priority, Component, Author, rework, and whether a pull request has deployed) and the list's sort
-are written into the address, so a link shows the same figures to whoever opens it. Dragging
-across the timeline narrows the measures to the stretch you dragged over; the timeline itself
-keeps the whole window. **clear brush window** puts the measures back.
+The window, the search box, every filter (Repository, Parent agent, Session, Issue, Priority,
+Component, Author, rework, and whether a pull request has deployed) and the list's sort are
+written into the address, so a link shows the same figures to whoever opens it. Dragging across
+the timeline narrows the timeline, the list, the count of pull requests and the measures to the
+stretch you dragged over; the filters keep counting the whole window. **clear brush window** puts
+the whole window back.
 
 The **Priority** filter reads the priority that a pull request's Dispatch issue works at: its own,
 or the one it inherits from the nearest issue above it that has one (see

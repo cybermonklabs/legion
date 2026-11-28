@@ -211,8 +211,8 @@ export function IssueTableStatus({
 type ToolbarPanel = "flags" | "view";
 
 /**
- * The one row the List's controls sit in: the search box, the trigger over the three flags that
- * narrow no column of the table, the chips of every narrowing that is on - the issues a link
+ * The one row the List's controls sit in: the search box, the trigger over the three flags
+ * (Needs you, Unread and Unclaimed), the chips of every narrowing that is on - the issues a link
  * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
  * draws), the columns menu, and the display menu carrying the grouping.
  * A column's filter is set on that column's header, where `ColumnFilter` draws it, and its chip
@@ -252,8 +252,8 @@ export function IssueTableToolbar({
     const next = on ? [...rest, UNCLAIMED_FACET] : rest;
     claim?.setFilterValue(next.length === 0 ? undefined : next);
   };
-  // The three narrowings that are no column of this table, and so the ones the row's own
-  // trigger holds.
+  // The three flags the row's own trigger holds: Needs you and Unread, which are no column of
+  // this table, and Unclaimed, the Claimed by column's "Nobody or lapsed" (above).
   const flagged = [
     { label: "Needs you", on: flags.needsYou, remove: () => flags.setNeedsYou(false) },
     { label: "Unread", on: flags.unread, remove: () => flags.setUnread(false) },
@@ -411,8 +411,9 @@ export function IssueTableToolbar({
  * Its groups, in this order: Count ("N selected" and "Select all N matching"), Start next, Move
  * (the epic list and its Move), Epic (Take out of epic, New epic from these) and Clear. A screen
  * too narrow for one line moves the last groups that do not fit to the next line whole, so every
- * action stays in sight and nothing scrolls sideways; the bar stands at the foot of the screen,
- * where the List keeps room for its whole height (`SelectionBar`'s `BAR_LINE`).
+ * action stays in sight and nothing scrolls sideways. Below `sm` the bar stands under the header;
+ * from `sm` up it stands at the foot of the screen, where the List keeps room for its whole
+ * height (`SelectionBar`'s `BAR_LINE`).
  */
 export function IssueTableSelection({
   barRef,

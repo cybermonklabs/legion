@@ -1,9 +1,11 @@
 // The delivery timeline's facets, as the page's address and its filters name them. Every facet,
 // and the search, is applied server-side (`GET /api/v1/delivery/timeline`, `api/delivery.go`),
-// which also answers each facet's counts, so this module holds only the shapes and labels the page
-// shares: the `Filters` the address carries, the query parameter each facet is sent as, the
-// placeholder values a PR with no issue, priority, component or session reads as, and the
-// display-only repository shortening. No React, no fetch.
+// which also answers each facet's counts, so this module holds only the shapes, labels and small
+// helpers the page shares: the `Filters` the address carries, the query parameter each facet is
+// sent as, the placeholder values a PR with no issue, priority, component or session reads as,
+// the display-only repository shortening, a count of pull requests in words (`prCount`), a
+// lookup by a table's own keys (`ownEntry`) and the `?priority=` values as Dispatch reads them
+// (`priorityValues`). No React, no fetch.
 import type { DeliveryFacet, DeliveryPR } from "../../../api/types";
 
 export type ReworkFacet = "value" | "rework";
@@ -79,7 +81,8 @@ export function shortRepoLabel(allRepoKeys: readonly string[], repo: string): st
   return collides ? repo : bare;
 }
 
-/** The page's facet selections and search, as its URL carries them; empty selects everything. */
+/** The page's facet selections and search, as its address carries them; empty selects
+ *  everything. */
 export interface Filters {
   repo: string[];
   parentAgent: string[];

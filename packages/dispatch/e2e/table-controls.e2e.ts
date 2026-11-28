@@ -1996,8 +1996,13 @@ test("the project List, the Board and the Agents page open the rows their parame
     "?nofilter=, ?size= and ?page= page the whole list"
   ).toEqual(every);
   await page.goto("/projects/CORE/issues?group=status");
+  // The Todo group's heading line, which only a grouped table draws: the status bar's Todo
+  // count above the table is drawn whatever `?group=` says.
   await expect(
-    page.getByRole("button", { name: /^Todo/ }).first(),
+    page
+      .getByRole("table", { name: "Project issues table" })
+      .getByRole("row")
+      .filter({ has: page.getByRole("button", { exact: true, name: "Collapse Todo, 6 issues" }) }),
     "?group= bands the table"
   ).toBeVisible();
 

@@ -180,11 +180,11 @@ export function PrioritiesPage(): ReactNode {
         return changed;
       });
   }, [unknownTab, update]);
-  // The keys every table of the application is walked with (`j`, `k`, `x`, `o`, Enter), which
-  // each table registers in the `project` scope. The registry holds one table's per page
-  // (`components/table-keys.ts`), and each tab draws exactly one table, so the keys
-  // are that table's: the priorities, or a fault list. The work under a priority is on its own
-  // page, which turns the scope on for that table alone.
+  // The keys this page's tables are walked with (`j`, `k`, `o`, Enter, and `x` in a table that
+  // selects rows), which each of them registers in the `project` scope. The registry holds one
+  // table's per page (`components/table-keys.ts`), and each tab draws exactly one table, so the
+  // keys are that table's: the priorities, or a fault list. The work under a priority is on its
+  // own page, which turns the scope on for that table alone.
   useKeymapScope("project");
   // Each priority's title by its id, which the backlog-or-icebox list's Advances column names a
   // priority by, with its place in the order: the map holds them in the order the read answers

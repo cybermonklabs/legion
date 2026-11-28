@@ -1329,7 +1329,7 @@ test("the keyboard moves a priority one place, as the drag does", async () => {
   ]);
 });
 
-test("j, k, x and Enter act on the priorities, a row opened or not", async () => {
+test("j, k and Enter act on the priorities and x is no key of theirs, a row opened or not", async () => {
   const user = userEvent.setup();
   const { editors } = page(FIFTEEN, [issue("CORE-1", ["legion-first"])]);
   const first = await screen.findByRole("row", { name: "#1 Legion works reliably first" });

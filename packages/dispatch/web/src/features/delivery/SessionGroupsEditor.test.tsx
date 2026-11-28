@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { afterFrameAndTasks } from "../../__tests__/frames";
-import { pressHeld } from "../../__tests__/held-press";
+import { heldNotDisabled, pressHeld } from "../../__tests__/held-press";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -588,8 +588,8 @@ test("Delete group of the only group keeps the focus, held, until its live updat
     await user.click(deleting);
     await landAndDraw(deleting, [], editor);
 
-    const createGroup = screen.getByRole("button", { name: "Create group" });
-    expect(createGroup.getAttribute("aria-disabled")).toBe("true");
+    const createGroup = screen.getByRole("button", { name: "Create group" }) as HTMLButtonElement;
+    expect(heldNotDisabled(createGroup, "Create group")).toBe(true);
   } finally {
     restoreFocus();
     cleanup();
