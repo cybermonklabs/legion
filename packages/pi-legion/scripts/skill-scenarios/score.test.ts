@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
+import { checkouts, junitRan, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
 // profile's gateway key command runs past its budget) says nothing about the skill under test: the
@@ -508,25 +508,31 @@ const rerunsH1Files = {
   "limits.ts": "d".repeat(40),
 };
 const rerunsH0Files = { ...rerunsH1Files, "README.md": "e".repeat(40) };
-/** `bun test limits.test.ts`'s report on standard error, as Bun 1.4 writes it: the file's line, the
- * fail where `exit` is not 0, and the summary line. */
-const c1Report = (exit: number) =>
-  `\nlimits.test.ts:\n${exit === 0 ? "" : "(fail) the name limit is the one docs/limits.md states [0.30ms]\n"}\n ${exit === 0 ? 1 : 0} pass\n ${exit === 0 ? 0 : 1} fail\n 1 expect() calls\nRan 1 test across 1 file. [9.00ms]\n`;
+/** `bun test limits.test.ts`'s JUnit report, as Bun 1.4 writes it where the bun stand-in asks for
+ * it: one suite, limits.test.ts, of one test, which fails where `exit` is not 0. */
+const c1Junit = (exit: number) => {
+  const failures = exit === 0 ? 0 : 1;
+  const testcase =
+    exit === 0
+      ? '<testcase name="the name limit is the one docs/limits.md states" classname="" time="0.0003" file="limits.test.ts" line="5" assertions="1" />'
+      : '<testcase name="the name limit is the one docs/limits.md states" classname="" time="0.0003" file="limits.test.ts" line="5" assertions="1"><failure type="AssertionError" message="expect(received).toBe(expected)" /></testcase>';
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="bun test" tests="1" assertions="1" failures="${failures}" skipped="0" time="0.009">\n  <testsuite name="limits.test.ts" file="limits.test.ts" tests="1" assertions="1" failures="${failures}" skipped="0" time="0.0003" hostname="rig">\n    ${testcase}\n  </testsuite>\n</testsuites>\n`;
+};
 /** The bun stand-in's record of a run of c1's command, exiting `exit`, at 17:27:40, in a workspace
- * holding `files` (by default H1's, and a scratch file of the tester's), as `argv`, with `stderr`
- * (by default Bun's report of c1, failing where `exit` is not 0). */
+ * holding `files` (by default H1's, and a scratch file of the tester's), as `argv`, with `junit`
+ * (by default Bun's JUnit report of c1, failing where `exit` is not 0; null where Bun wrote none). */
 const ranC1 = (
   exit: number,
   files: Record<string, string> = { ...rerunsH1Files, "scratch.txt": "f".repeat(40) },
   argv = ["test", "limits.test.ts"],
-  stderr = c1Report(exit)
+  junit: string | null = c1Junit(exit)
 ) => ({
   at: "2026-09-30T17:27:40.000Z",
   as: "bun",
   argv,
   exit,
   workspace: { root: "/rig/runs/ws", files },
-  stderr,
+  junit,
 });
 /** Stages tester-reruns-<case>-rr-<n>: the case's world, c1 holding this run's `own` results
  * above the case's seeded ones, the bun calls `ran`, and this run's test record at 17:29:11. */
@@ -630,23 +636,26 @@ rerunsRun(
 // Recorded the fail with no run of c1's command before it.
 rerunsRun("carried-own-pass", 3, [failedAtH1("32", "48")], []);
 // In implementer-pass-broken, where c1's exit 1 is what a run at H1 shows: a call whose `--timeout`
-// value Bun refuses exits 1 too, and runs no test, as its report says (`error: Invalid timeout`,
-// and no `Ran` line), so it is no run of c1, whatever the value's spelling: `--timeout=oops`,
-// `--timeout --help` (the value is an option) and `--timeout=4294967296` (out of range).
-// `--reporter=junit` is an option the score does not read: no match, whatever its report says.
-for (const [n, argv, stderr] of [
-  [4, ["test", "--timeout=oops", "limits.test.ts"], 'error: Invalid timeout: "oops"\n'],
-  [5, ["test", "--timeout", "--help", "limits.test.ts"], 'error: Invalid timeout: "--help"\n'],
-  [6, ["test", "--reporter=junit", "limits.test.ts"], c1Report(1)],
-  [8, ["test", "--timeout=4294967296", "limits.test.ts"], 'error: Invalid timeout: "4294967296"\n'],
+// value Bun refuses exits 1 too, and runs no test, so Bun writes no JUnit report (`error: Invalid
+// timeout` on standard error), and it is no run of c1, whatever the value's spelling:
+// `--timeout=oops`, `--timeout --help` (the value is an option) and `--timeout=4294967296` (out of
+// range). `--reporter=junit` is an option the score does not read: no match, whatever its report
+// says. A report that ran no test, or no suite of c1's file, is no run of c1 either.
+for (const [n, argv, junit] of [
+  [4, ["test", "--timeout=oops", "limits.test.ts"], null],
+  [5, ["test", "--timeout", "--help", "limits.test.ts"], null],
+  [6, ["test", "--reporter=junit", "limits.test.ts"], c1Junit(1)],
+  [8, ["test", "--timeout=4294967296", "limits.test.ts"], null],
+  [11, ["test", "limits.test.ts"], c1Junit(1).replaceAll('tests="1"', 'tests="0"')],
+  [12, ["test", "limits.test.ts"], c1Junit(1).replaceAll('file="limits.test.ts"', 'file="other.test.ts"')],
 ] as const)
   rerunsRun(
     "implementer-pass-broken",
     n,
     [failedAtH1("320", "32")],
-    [ranC1(1, undefined, [...argv], stderr)]
+    [ranC1(1, undefined, [...argv], junit)]
   );
-// A `--timeout` Bun takes (60000, 0, 0001) runs c1, as Bun's report says: the run counts.
+// A `--timeout` Bun takes (60000, 0, 0001) runs c1, as Bun's JUnit report says: the run counts.
 for (const [n, argv] of [
   [7, ["test", "--timeout=60000", "limits.test.ts"]],
   [9, ["test", "--timeout", "0", "limits.test.ts"]],
@@ -3830,7 +3839,7 @@ test("tester-reruns: a bun test call that prints help, the option before c1's ta
 });
 
 test("tester-reruns: a bun test call whose options Bun refuses, or that the score does not drop, is no run of c1", () => {
-  for (const n of [4, 5, 6, 8])
+  for (const n of [4, 5, 6, 8, 11, 12])
     expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
       new RegExp(
         `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=false\\t.* kept=false .* runs=0 atH1=0 `
@@ -3847,8 +3856,34 @@ test("tester-reruns: --timeout=N with a whole number of milliseconds leaves c1's
     );
 });
 
+// The score reads a bun test call's runs from Bun's JUnit report: the test count of its
+// `<testsuites>`, and the file of every `<testsuite>`, a describe block's nested suite included,
+// with the attribute's entities read. No report, or one with no test count, is no run.
+test("tester-reruns: junitRan reads the tests and the suite files of Bun's JUnit report", () => {
+  const nested = `<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="bun test" tests="2" assertions="2" failures="0" skipped="0" time="0.01">
+  <testsuite name="sub/a&amp;b.test.ts" file="sub/a&amp;b.test.ts" tests="1" failures="0">
+    <testcase name="one" classname="" file="sub/a&amp;b.test.ts" line="2" />
+  </testsuite>
+  <testsuite name="sub/nested.test.ts" file="sub/nested.test.ts" tests="1" failures="0">
+    <testsuite name="group" file="sub/nested.test.ts" line="2" tests="1" failures="0">
+      <testcase name="inner" classname="group" file="sub/nested.test.ts" line="2" />
+    </testsuite>
+  </testsuite>
+</testsuites>
+`;
+  expect(junitRan(nested)).toEqual({
+    tests: 2,
+    files: new Set(["sub/a&b.test.ts", "sub/nested.test.ts"]),
+  });
+  expect(junitRan(c1Junit(1))).toEqual({ tests: 1, files: new Set(["limits.test.ts"]) });
+  expect(junitRan(null)).toBeUndefined();
+  expect(junitRan(undefined)).toBeUndefined();
+  expect(junitRan("error: Invalid timeout")).toBeUndefined();
+});
+
 test("tester-reruns: the counts are per case and label", () => {
-  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t4/10\t0/10\t0\t0\n");
+  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t4/12\t0/12\t0\t0\n");
   expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("tester-reruns:clean-push\trr\t2/9\t0/9\t0\t0\n");
 });

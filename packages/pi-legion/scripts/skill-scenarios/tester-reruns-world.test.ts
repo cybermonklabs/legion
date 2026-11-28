@@ -251,7 +251,6 @@ describe("tester-reruns", () => {
     git(path.join(runDir, "src"), "checkout", "-q", repo[at]);
     const ran = Bun.spawnSync([path.join(runDir, "bin", "bun"), ...argv], {
       cwd: path.join(runDir, "src"),
-      env: { ...process.env, NO_COLOR: "1" },
     });
     const [call] = readFileSync(path.join(runDir, "calls.jsonl"), "utf8")
       .trim()
@@ -334,13 +333,15 @@ describe("tester-reruns", () => {
       "tester-reruns",
     ]).stdout.toString();
 
-  // Bun's report changes with its caller's environment: GitHub's group form under CI's
-  // `GITHUB_ACTIONS`, and no passing test lines under an agent's `CLAUDECODE`, `AGENT` or
-  // `REPL_ID`. The record a score reads must not: the stand-in, run for real on c1 at H1, records
-  // one report whichever of them its caller sets, and that report holds c1's file line and the
-  // summary line the score reads.
+  // Bun's console report changes with its caller's environment: GitHub's group form under CI's
+  // `GITHUB_ACTIONS`, no passing test lines under an agent's `CLAUDECODE`, `AGENT` or `REPL_ID`,
+  // colour codes under `FORCE_COLOR`, and any option `BUN_OPTIONS` names. The record a score reads
+  // must not: the stand-in, run for real on c1 at H1 with the caller's environment passed through,
+  // records one JUnit report whichever of them its caller sets, and that report holds c1's suite
+  // and its one test. Each variant is set on its own over an environment that holds none of them,
+  // so the test reads the same in CI and in an agent's shell.
   test(
-    "tester-reruns: the bun stand-in records one report of c1 whatever CI or agent variable its caller sets",
+    "tester-reruns: the bun stand-in records one report of c1 whatever CI, agent, colour or option variable its caller sets",
     () => {
       const runDir = path.join(freshDir("stand-in"), "runs", "tester-reruns-clean-push-env-1");
       const repo = world.rerunsRepository(
@@ -359,17 +360,21 @@ describe("tester-reruns", () => {
       ]);
       expect(standIn.exitCode).toBe(0);
       expect(git(path.join(runDir, "src"), "rev-parse", "HEAD")).toBe(repo.h1);
-      const reportVariables = ["GITHUB_ACTIONS", "CLAUDECODE", "AGENT", "REPL_ID"];
-      const base = Object.fromEntries(
-        Object.entries(process.env).filter(([name]) => !reportVariables.includes(name))
-      );
       const variants = [
         {},
         { GITHUB_ACTIONS: "true" },
         { CLAUDECODE: "1" },
         { AGENT: "1" },
         { REPL_ID: "1" },
+        { GITHUB_ACTIONS: "true", RUNNER_DEBUG: "1", CLAUDECODE: "1" },
+        { FORCE_COLOR: "1" },
+        { NO_COLOR: "1" },
+        { BUN_OPTIONS: "--only-failures" },
       ];
+      const reportVariables = new Set(variants.flatMap((variant) => Object.keys(variant)));
+      const base = Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !reportVariables.has(name))
+      );
       for (const variant of variants) {
         const ran = Bun.spawnSync([path.join(runDir, "bin", "bun"), "test", "limits.test.ts"], {
           cwd: path.join(runDir, "src"),
@@ -377,14 +382,16 @@ describe("tester-reruns", () => {
         });
         expect(ran.exitCode).toBe(0);
       }
-      // Each report with its timings left out, one per variant, in order.
+      // Each JUnit report with its times and host left out, one per variant, in order.
       const reports = readFileSync(path.join(runDir, "calls.jsonl"), "utf8")
         .trim()
         .split("\n")
-        .map((line) => String(JSON.parse(line).stderr).replace(/\[[0-9.]+m?s\]/g, "[time]"));
+        .map((line) =>
+          String(JSON.parse(line).junit).replace(/ (time|timestamp|hostname)="[^"]*"/g, "")
+        );
       expect(reports).toHaveLength(variants.length);
-      expect(reports[0]).toMatch(/^limits\.test\.ts:$/m);
-      expect(reports[0]).toMatch(/^Ran 1 test across 1 file\./m);
+      expect(reports[0]).toContain('<testsuites name="bun test" tests="1"');
+      expect(reports[0]).toContain('<testsuite name="limits.test.ts" file="limits.test.ts" tests="1"');
       expect(reports).toEqual(reports.map(() => reports[0]));
     },
     REPOSITORY_ROW_MS
@@ -413,10 +420,11 @@ describe("tester-reruns", () => {
   );
 
   // The same stand-in, run for real at H1 of implementer-pass-broken, where c1 fails (exit 1): a
-  // `--timeout` Bun refuses also exits 1, and only the report the stand-in kept shows it ran no
-  // test. A `--timeout` Bun takes, in a spelling no rule of the score names, runs c1.
+  // `--timeout` Bun refuses also exits 1, and only the absence of the JUnit report the stand-in
+  // asks for shows it ran no test. A `--timeout` Bun takes, in a spelling no rule of the score
+  // names, runs c1.
   test(
-    "tester-reruns implementer-pass-broken: the bun stand-in keeps Bun's report, so a --timeout Bun refuses runs no test and one it takes runs c1",
+    "tester-reruns implementer-pass-broken: the bun stand-in keeps Bun's JUnit report, so a --timeout Bun refuses runs no test and one it takes runs c1",
     () => {
       const runs = path.join(freshDir("stand-in"), "runs");
       const failed = "limits.ts says 320, docs/limits.md says 32; 1 fail";
@@ -439,10 +447,9 @@ describe("tester-reruns", () => {
         failed
       );
       expect([refused.exit, taken.exit]).toEqual([1, 1]);
-      expect(refused.call.stderr).toContain('error: Invalid timeout: "4294967296"');
-      expect(refused.call.stderr).not.toMatch(/^Ran /m);
-      expect(taken.call.stderr).toMatch(/^limits\.test\.ts:$/m);
-      expect(taken.call.stderr).toMatch(/^Ran 1 test across 1 file\./m);
+      expect(refused.call.junit).toBeNull();
+      expect(taken.call.junit).toContain('<testsuites name="bun test" tests="1"');
+      expect(taken.call.junit).toContain('file="limits.test.ts"');
       const out = scoreRuns(runs);
       expect(out).toMatch(
         /^tester-reruns-implementer-pass-broken-real-3\tpass=false\t.* runs=0 atH1=0 /m

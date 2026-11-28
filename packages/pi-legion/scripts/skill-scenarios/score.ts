@@ -119,9 +119,9 @@ const Call = z.looseObject({
     .looseObject({ root: z.string(), files: z.record(z.string(), z.string()).nullable() })
     .nullable()
     .optional(),
-  /** The last 64 KiB of what the call wrote to standard error, as the bun stand-in records it:
-   * `bun test`'s report (rig.sh's standins). */
-  stderr: z.string().optional(),
+  /** A `bun test` call's JUnit report, the XML text Bun wrote where the bun stand-in asked for it
+   * (rig.sh's standins); null for any other call, and for one Bun refused before it ran a test. */
+  junit: z.string().nullable().optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -762,13 +762,38 @@ function bunRuns(words: string[]): BunRun | undefined {
   }
   return { test: targets.sort() };
 }
-/** The summary line of a `bun test` report that ran tests: `Ran 1 test across 1 file.`. */
-const TESTS_RAN = /^Ran [1-9][0-9]* tests? across [1-9][0-9]* files?\./;
+/** XML's five named entities. */
+const XML_ENTITIES: Record<string, string> = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
+/** The text of an XML attribute value, each entity read: a named one, `&#65;` or `&#x41;`. */
+const xmlText = (value: string) =>
+  value.replace(/&(#x[0-9a-f]+|#[0-9]+|lt|gt|quot|apos|amp);/gi, (_, entity: string) =>
+    entity.startsWith("#")
+      ? String.fromCodePoint(Number(entity.replace(/^#x/i, "0x").replace(/^#/, "")))
+      : (XML_ENTITIES[entity.toLowerCase()] ?? "")
+  );
+/** What a `bun test` call's JUnit report (the call's `junit`) says it ran: the number of tests its
+ * `<testsuites>` element counts, and the file each `<testsuite>` element names (`file`, relative
+ * to the directory the call ran in, as the command's targets are; a `describe` block is a suite of
+ * its own that names its file too). Undefined where the call holds no report: Bun wrote none, as
+ * for a call it refused before it ran a test. The console report on standard error is never read,
+ * since the caller's environment shapes it (rig.sh's standins says how) and the JUnit report it
+ * does not. */
+export function junitRan(
+  junit: string | null | undefined
+): { tests: number; files: Set<string> } | undefined {
+  if (junit === null || junit === undefined) return undefined;
+  const tests = /<testsuites\b[^>]*\stests="(\d+)"/.exec(junit)?.[1];
+  if (tests === undefined) return undefined;
+  const files = [...junit.matchAll(/<testsuite\b[^>]*\sfile="([^"]*)"/g)].map(([, file = ""]) =>
+    xmlText(file)
+  );
+  return { tests: Number(tests), files: new Set(files) };
+}
 /** The bun stand-in's calls of `command`: each whose command line runs what the command's does
- * (bunRuns), and, for a `bun test` command, whose report (the call's `stderr`) says Bun ran tests,
- * with its summary line and a `<target>:` line for each of the command's targets. So a call whose
- * `--timeout` value Bun refused ran nothing, whatever its spelling (`--timeout=oops`,
- * `--timeout=4294967296`, `--timeout --help`: `error: Invalid timeout`, exit 1), and one Bun took
+ * (bunRuns), and, for a `bun test` command, whose JUnit report (junitRan) says Bun ran at least
+ * one test, with a suite for each of the command's targets. So a call whose `--timeout` value Bun
+ * refused ran nothing, whatever its spelling (`--timeout=oops`, `--timeout=4294967296`,
+ * `--timeout --help`: `error: Invalid timeout`, exit 1, and no report), and one Bun took
  * (`--timeout 0`, `--timeout=0001`, `--timeout 60000`) ran the command. A call of any other command
  * line, or of one bunRuns cannot read, is no run of it. */
 function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof Call>[] {
@@ -780,10 +805,11 @@ function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof 
     const ran = call.as === "bun" ? bunRuns(call.argv) : undefined;
     if (ran === undefined || JSON.stringify(ran) !== key) return false;
     if (!("test" in runs)) return true;
-    const report = (call.stderr ?? "").split("\n");
+    const report = junitRan(call.junit);
     return (
-      report.some((line) => TESTS_RAN.test(line)) &&
-      runs.test.every((target) => report.includes(`${target}:`))
+      report !== undefined &&
+      report.tests > 0 &&
+      runs.test.every((target) => report.files.has(target))
     );
   });
 }
