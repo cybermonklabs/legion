@@ -13,36 +13,43 @@
 #               person answered; a remark of the person's that nobody answered; a criterion the
 #               person wrote into the issue's tree under the thread's first block; a requirement
 #               under that criterion; a decision an agent recorded with its shaped tuple to the
-#               requirement; a check and a plan task that serve it; an agent's comment on the
-#               requirement's text that no person answered; the spec's memo callout as its first
-#               child, its Summary paragraph, and a second callout; two documents of several
-#               versions each (verification.md and notes.md); a message the Legion daemon's session
+#               requirement, holding the agent's reading of it; a check and a plan task that serve
+#               it, and a result recorded on the check; an agent's comment on the requirement's text
+#               that no person answered; the spec's memo callout as its first child, its Summary
+#               paragraph, and a second callout; two documents of several versions each
+#               (verification.md and notes.md); a message the Legion daemon's session
 #               legion-daemon:<PROJECT> posts; a message thread that session began, with a reply the
-#               person wrote and one an agent wrote; the person's approval of the spec; and a child
-#               issue.
+#               person wrote and one an agent wrote; the person's own message with an agent's reply
+#               in its thread; the person's approval of the spec; and a child issue. It reads back
+#               from the store that the issue carries a node of each of those kinds.
 #   kinds       the read with no view answers, as nodes, the comments, the replies, the agent's reply
-#               in the person's thread, the ask with its answer held on its node, the remark, the
-#               criterion, the requirement, the decision, the check and the plan task; it answers no
-#               artifact, no document version and no prose block of a role document, the Summary
-#               among them, which the spec's version still renders; no message of the daemon's own
-#               session and no message of its thread, with no view and with kind=message, while the
-#               issue's messages hold all four; not the agent's status comment, while the issue's
-#               comments hold it and the reply; the agent's comment on the requirement's text under
-#               the requirement as context, with no node under it; and the memo callout first.
+#               in the person's thread, the ask with its answer held on its node, the result and the
+#               reading, the remark, the criterion, the requirement, the decision, the check and the
+#               plan task; it answers no artifact, no document version and no prose block of a role
+#               document, the Summary among them, which the spec's version still renders; no message
+#               of the daemon's own session and no message of its thread, with no view and with
+#               kind=message, while both reads answer the person's own message and its reply and the
+#               issue's messages hold all four of the daemon's; not the agent's status comment, while
+#               the issue's comments hold it and the reply; the agent's comment on the requirement's
+#               text under the requirement as context, with no node under it; and the memo callout
+#               first.
 #   memo        ?view=spec answers the memo first as a node of the query and not the second callout;
 #               a change to one of the memo's three sentences moves the digest the spec approval
 #               recorded, and an edit of the second callout moves no digest; a third issue whose
 #               first child is a paragraph and which holds a callout after it answers no callout on
 #               ?view=spec.
-#   large       a second issue of the size of the largest of the ten issues R8 measures, which
-#               seed-corpus.sh's corpus_large_issue writes with its corpus_measured_* constants, the
-#               counts the pull request body records: its read with no view is followed by its node
-#               cursor to the end, each page at most 2,000,000 uncompressed bytes, answering the
-#               skeleton with the newest 200 comments; its older comments are read through
-#               comments_before until null, and the pages hold each comment the walk takes once; and
-#               each document document_nodes lists is read through GET /api/v1/artifacts/{id}/blocks,
-#               which lists as many blocks as its block_count. It prints the page size, the node
-#               count, the number of comment pages and the number of blocks it read.
+#   large       a second issue of at least the size of the largest of the ten issues R8 measures,
+#               which seed-corpus.sh's corpus_large_issue writes with its corpus_measured_*
+#               constants, the counts the pull request body records, its comments raised past two
+#               comment pages: its read with no view is followed by its node cursor to the end, each
+#               page at most 2,000,000 uncompressed bytes, answering the skeleton - each typed block
+#               of its role documents, no block of another document - with its conversation's
+#               messages and its newest 200 comments; its older comments are read through
+#               comments_before until null, each page the next older 200, and the pages hold each
+#               comment the walk takes once; and each document document_nodes lists, each other
+#               document of the issue, is read through GET /api/v1/artifacts/{id}/blocks, which
+#               lists as many blocks as its block_count. It prints the page size, the node count,
+#               the number of comment pages and the number of blocks it read.
 #   child       the child issue's ask is a conversation node of the child's tree.
 #
 # A node the tree must leave out, if it is in the answer, is printed with its kind and its id, and
@@ -83,7 +90,7 @@ USAGE
 
 readonly driver=conversation-view.sh
 require_env DATABASE_URL DISPATCH_URL PROJECT DEV_SIGNIN_LOGIN
-require_commands cmp comm curl jq psql sort tr uniq wc
+require_commands cmp comm curl cut grep jq psql sed sort tr uniq wc
 read_bearer
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 project="$PROJECT"
@@ -185,6 +192,22 @@ conversation_view_newest() {
   tree_field "$1" "the newest version of $2" '[.versions[].number] | max'
 }
 
+# conversation_view_comment_page SECTION PAGE FILE: the comments FILE lists, which comment page PAGE
+# of the large issue answered, are its comments the walk takes from (PAGE - 1) * comment_page_size
+# + 1 to PAGE * comment_page_size in $work/large-ordered.txt, the order the pages read them in,
+# newest first: the newest 200 for the first page, the next older 200 for each page after it.
+conversation_view_comment_page() {
+  local section="$1" page="$2" file="$3" from to
+  from=$(((page - 1) * comment_page_size + 1))
+  to=$((page * comment_page_size))
+  sed -n "${from},${to}p" "$work/large-ordered.txt" | LC_ALL=C sort >"$work/large-want-$page.txt"
+  LC_ALL=C sort "$file" >"$work/large-got-$page.txt"
+  cmp -s "$work/large-want-$page.txt" "$work/large-got-$page.txt" ||
+    fail "$section" "comment page $page answers the comments the walk takes from the ${from}th to the ${to}th newest" \
+      "only among those: $(LC_ALL=C comm -23 "$work/large-want-$page.txt" "$work/large-got-$page.txt" | tr '\n' ' '); only on the page: $(LC_ALL=C comm -13 "$work/large-want-$page.txt" "$work/large-got-$page.txt" | tr '\n' ' ')"
+  pass "$section" "comment page $page answers the $(wc -l <"$work/large-got-$page.txt" | tr -d ' ') comments the walk takes from the ${from}th newest on"
+}
+
 # --- setup -------------------------------------------------------------------------------------
 
 tree_section setup
@@ -248,8 +271,9 @@ tree_person_edit seed "$person_login writes a criterion into the tree of $key" "
 readonly criterion_ref="dispatch://$key/artifact/$tree_slug#b-k-discussion"
 tree_person_edit seed "$person_login writes a requirement under the criterion" "$spec" "$(jq -cn --arg p "$criterion_ref" --arg w "$requirement_words" \
   '[{op: "insert", after: "end", markdown: (":::requirement{#r-discussion parent=\"" + $p + "\"}\n" + $w + "\n:::")}]')"
-corpus_edit seed "an agent records a decision that shaped the requirement" "$spec" "$(jq -cn --arg s "dispatch://$key/spec#b-r-discussion" \
-  '[{op: "insert", after: "end", markdown: (":::decision{#d-discussion shaped=\"" + $s + "\"}\nThe conversation reads the comments, asks and messages a person wrote in.\n:::")}]')"
+# The decision holds the agent's reading of it, a node of kind reading.
+corpus_edit seed "an agent records a decision that shaped the requirement, with its reading" "$spec" "$(jq -cn --arg s "dispatch://$key/spec#b-r-discussion" \
+  '[{op: "insert", after: "end", markdown: ("::::decision{#d-discussion shaped=\"" + $s + "\"}\nThe conversation reads the comments, asks and messages a person wrote in.\n\n:::reading{#g-discussion}\nThe agent reads the decision as the person'"'"'s exchange asked it.\n:::\n::::")}]')"
 cat >"$work/verification.md" <<VERIFICATION
 How the conversation is proved.
 
@@ -296,8 +320,19 @@ readonly daemon_person_reply="$corpus_item"
 corpus_message agent seed "$key" "An agent answers inside the daemon's thread." "$daemon_root"
 readonly daemon_agent_reply="$corpus_item"
 pass seed "posted the daemon's message $daemon_message and its thread $daemon_root with the replies $daemon_person_reply and $daemon_agent_reply"
+# A message the conversation holds, which the kind=message read must answer beside the daemon's it
+# leaves out: the person's own message on the issue, and an agent's reply in the person's thread.
+# Not `person_message`: seed-corpus.sh's corpus_large_issue takes a local of that name.
+corpus_message person seed "$key" "The person writes a message of their own on the issue."
+readonly own_message="$corpus_item"
+corpus_message agent seed "$key" "An agent answers the person's message." "$own_message"
+readonly own_message_reply="$corpus_item"
+pass seed "posted the person's message $own_message and an agent's reply $own_message_reply in its thread"
 
 corpus_wait_settled seed
+# A result recorded on the check, a node of kind result.
+corpus_result seed "$key" c-discussion pass "$corpus_commit_one" tester
+readonly check_result="$tree_value"
 corpus_review seed "$spec" approved
 readonly approved_version="${corpus_approved[$spec]}"
 cat >"$work/child.md" <<'CHILD'
@@ -306,6 +341,30 @@ CHILD
 conversation_view_create seed "A child of the conversation's issue" "$work/child.md" "$key"
 readonly child="$corpus_key"
 pass seed "the person approved version $approved_version of the spec $spec; the child $child stands under $key"
+# The seed carries every node kind this model holds, each read back from the store: the issue's
+# documents and their versions, its blocks of each typed kind the seed writes and its prose, the
+# comments and a comment's blocks, the ask, the messages, the result recorded on the check, and
+# the child issue. Each kind is printed as `<kind>`, a block's as `block:<supertag>`. A comment's
+# block (comment_block, `comment/<comment uuid>#<block id>`) has no graph_nodes row: the store
+# holds it as its comment_blocks row (graphstore.KindCommentBlock).
+readonly seeded_kinds='artifact ask block:block block:callout block:check block:criterion block:decision block:plan_task block:reading block:requirement comment comment_block issue message result version'
+with_vars seed "read the node kinds the seed holds" "select coalesce(string_agg(distinct held, ' ' order by held), '') from (
+    select case when n.kind = 'block' then 'block:' || n.supertag else n.kind end as held
+    from graph_nodes n
+    where (n.kind in ('block', 'artifact', 'version') and starts_with(n.id, :'key' || '/'))
+       or (n.kind = 'issue' and n.id = :'child')
+       or (n.kind in ('comment', 'ask', 'message', 'result') and n.id = any(string_to_array(:'items', ' ')))
+    union all
+    select 'comment_block' from comment_blocks b where starts_with(b.node_id, 'comment/' || :'head' || '#')
+  ) kinds" key="$key" child="$child" head="$head" \
+  items="$head $person_reply $agent_reply $status_comment $remark $on_text $ask $daemon_message $daemon_root $daemon_person_reply $daemon_agent_reply $own_message $own_message_reply $check_result"
+kinds_missing=""
+for wanted in $seeded_kinds; do
+  [[ " $answer " == *" $wanted "* ]] || kinds_missing+=" $wanted"
+done
+[[ -z "$kinds_missing" ]] ||
+  fail seed "the issue $key carries every node kind this model holds" "the store holds no node of${kinds_missing} among the seed's; it holds: $answer"
+pass seed "the issue $key carries every node kind this model holds: $answer"
 
 # --- what the conversation graph answers --------------------------------------------------------------
 
@@ -317,6 +376,12 @@ for node in "comment:$head:the head of the person's thread" "comment:$person_rep
   IFS=: read -r kind id what <<<"$node"
   conversation_view_present kinds "$work/tree.json" "the read with no view answers $what as a node of the tree" "$kind" "$id" tree
 done
+# The result recorded on the check and the agent's reading of the decision, the two kinds the seed
+# holds beside those the discussion names, are nodes of the tree too.
+conversation_view_present kinds "$work/tree.json" "the read with no view answers the result recorded on the check as a node of the tree" \
+  result "$check_result" tree
+tree_kept_expect "$work/tree.json" kinds "the read with no view answers the agent's reading of the decision once, as a node of the tree" \
+  '[["reading","tree"]]' '[.nodes[] | select(.block_id == "g-discussion") | [.supertag, .role]]'
 # The remark nobody answered is plain prose, a node of its own.
 held="$(jq -c --arg i "$remark" '[.nodes[] | select(.kind == "comment" and .id == $i) | .role]' "$work/tree.json")"
 [[ "$held" == '["tree"]' ]] ||
@@ -368,6 +433,11 @@ for message in "$daemon_root" "$daemon_person_reply" "$daemon_agent_reply"; do
   conversation_view_absent kinds "$work/tree.json" "the read answers no message of the thread $daemon_session began ($message)" \
     message "$message" "its root $daemon_root, posted by $daemon_session"
 done
+# The person's own message and the agent's reply in its thread are of it.
+conversation_view_present kinds "$work/tree.json" "the read with no view answers the person's own message as a node of the tree" \
+  message "$own_message" tree
+conversation_view_present kinds "$work/tree.json" "the read with no view answers the agent's reply in the person's thread of messages" \
+  message "$own_message_reply" tree
 tree_send GET "/api/v1/issues/$key/tree?kind=message"
 tree_want 200 kinds "read the messages of the tree of $key (kind=message)"
 cp "$work/body" "$work/tree-messages.json"
@@ -375,6 +445,12 @@ for message in "$daemon_message" "$daemon_root" "$daemon_person_reply" "$daemon_
   conversation_view_absent kinds "$work/tree-messages.json" "the read with kind=message answers no message of the daemon or its thread ($message)" \
     message "$message" "its root $daemon_root, posted by $daemon_session"
 done
+# The same read answers the messages of the conversation, so each absence above is the daemon's
+# rule's and not the filter's: a kind=message read that answered no message would fail here.
+conversation_view_present kinds "$work/tree-messages.json" "the read with kind=message answers the person's own message" \
+  message "$own_message" tree
+conversation_view_present kinds "$work/tree-messages.json" "the read with kind=message answers the agent's reply in the person's thread of messages" \
+  message "$own_message_reply" tree
 tree_keep kinds "/api/v1/issues/$key/messages" "$work/messages.json"
 tree_kept_expect "$work/messages.json" kinds "the issue's messages hold the daemon's message, its thread's root and both replies" \
   '[true,true,true,true]' --arg a "$daemon_message" --arg b "$daemon_root" --arg c "$daemon_person_reply" --arg d "$daemon_agent_reply" \
@@ -448,17 +524,39 @@ tree_kept_expect "$work/third-spec.json" memo "?view=spec of $third, whose first
 # --- the largest issue ---------------------------------------------------------------------------
 
 tree_section large
-printf 'the large issue holds the measured counts the pull request body records: %s blocks over %s documents, %s comments, %s messages and %s asks (measured %s)\n' \
-  "$corpus_measured_blocks" "$corpus_measured_documents" "$corpus_measured_comments" "$corpus_measured_messages" \
-  "$corpus_measured_asks" "$corpus_measured_at"
-corpus_large_issue large "$corpus_measured_blocks" "$corpus_measured_documents" "$corpus_measured_comments" \
+# The comments of the large issue. The largest issue R8 measures holds corpus_measured_comments,
+# fewer than one comment page of the tree read (comment_page_size), so a seed of exactly that many
+# leaves comments_before null on the first page and never reads an older page. corpus_large_issue
+# writes a person's thread head for each third comment and an agent's reply in that thread for the
+# next, both of which the conversation takes, and an agent's own comment for the third, which it
+# does not: large_comments of them give the conversation more than two pages of comments, so the
+# read follows comments_before more than once. Every other count is the measured one.
+readonly comment_page_size=200
+readonly large_comments=$((corpus_measured_comments > 630 ? corpus_measured_comments : 630))
+printf 'the large issue holds the measured counts the pull request body records: %s blocks over %s documents, %s messages and %s asks (measured %s), and %s comments, the measured %s raised past two comment pages of %s\n' \
+  "$corpus_measured_blocks" "$corpus_measured_documents" "$corpus_measured_messages" "$corpus_measured_asks" \
+  "$corpus_measured_at" "$large_comments" "$corpus_measured_comments" "$comment_page_size"
+corpus_large_issue large "$corpus_measured_blocks" "$corpus_measured_documents" "$large_comments" \
   "$corpus_measured_messages" "$corpus_measured_asks"
 readonly large="$corpus_key"
 keys+=("$large")
+# corpus_large_issue writes the spec, verification.md and plan.md, the three role documents, first,
+# and every other document of the issue after them. Where the measured issue holds no other
+# document, the seed still holds one other document of 1,000 blocks, so the blocks read below runs.
+readonly large_other_documents=$((corpus_measured_documents > 3 ? corpus_measured_documents - 3 : 0))
+if ((large_other_documents == 0)); then
+  corpus_filler other-1000.md 1000 >"$work/large-other.md"
+  corpus_upload large "$large" other-1000.md "$work/large-other.md"
+  corpus_wait_settled large
+fi
+readonly large_others_held=$((large_other_documents > 0 ? large_other_documents : 1))
 # The skeleton, page by page through its node cursor, its comment cursor never changed.
 cursor="" pages=0 nodes=0 largest_page=0 largest_bytes=0
 : >"$work/large-comments.txt"
 : >"$work/large-documents.tsv"
+: >"$work/large-page-1.txt"
+: >"$work/large-first-messages.txt"
+: >"$work/large-first-blocks.tsv"
 while true; do
   tree_read agent "$large" "" "" "$cursor"
   tree_want 200 large "read page $((pages + 1)) of the tree of $large"
@@ -471,56 +569,119 @@ while true; do
   nodes=$((nodes + count))
   ((count <= largest_page)) || largest_page="$count"
   ((bytes <= largest_bytes)) || largest_bytes="$bytes"
-  jq -r '.nodes[] | select(.kind == "comment") | .id' "$work/body" >>"$work/large-comments.txt"
-  jq -r '.document_nodes[]? | [.artifact_id, (.block_count | tostring)] | @tsv' "$work/body" >>"$work/large-documents.tsv"
+  jq -r '.nodes[] | select(.kind == "comment") | .id' "$work/body" >>"$work/large-page-1.txt"
+  jq -r '.nodes[] | select(.kind == "message") | .id' "$work/body" >>"$work/large-first-messages.txt"
+  jq -r '.nodes[] | select(.kind == "block") | [.id, (.block_id // "")] | @tsv' "$work/body" >>"$work/large-first-blocks.tsv"
+  jq -r '.document_nodes[]? | [.artifact_id, (.block_count | tostring), .slug] | @tsv' "$work/body" >>"$work/large-documents.tsv"
   if ((pages == 1)); then
     cp "$work/body" "$work/large-first.json"
   fi
   cursor="$(jq -r '.cursor // empty' "$work/body")"
   [[ -n "$cursor" ]] || break
 done
+cat "$work/large-page-1.txt" >>"$work/large-comments.txt"
 pass large "the read with no view of $large ends after $pages pages of $nodes nodes, each at most $page_bytes_bound bytes"
-tree_kept_expect "$work/large-first.json" large "the first page answers at most 200 comments, the newest" 'true' \
-  '[.nodes[] | select(.kind == "comment")] | length <= 200'
-# The older comments, one comments_before page at a time, until it is null.
-comment_pages=1
-before="$(jq -r '.comments_before // empty' "$work/large-first.json")"
-while [[ -n "$before" ]]; do
-  tree_send GET "/api/v1/issues/$large/tree?comments_before=$(q "$before")"
-  tree_want 200 large "read the comments of $large before $before"
-  comment_pages=$((comment_pages + 1))
-  jq -r '.nodes[] | select(.kind == "comment") | .id' "$work/body" >>"$work/large-comments.txt"
-  before="$(jq -r '.comments_before // empty' "$work/body")"
+# The skeleton holds the typed blocks of the three role documents and no block of another
+# document, which document_nodes lists instead (R8).
+: >"$work/large-role-typed.txt"
+for slug in spec verification-md plan-md; do
+  tree_keep large "/api/v1/issues/$large/artifacts/$slug/text?blocks=true" "$work/large-role.json"
+  jq -r --argjson typed "$typed_blocks" '.blocks[]? | select((.type as $t | $typed | index($t)) != null) | .id' \
+    "$work/large-role.json" >>"$work/large-role-typed.txt"
 done
+[[ -s "$work/large-role-typed.txt" ]] || fail large "read the typed blocks of the role documents of $large" "the spec, verification.md and plan.md list none"
+cut -f2 "$work/large-first-blocks.tsv" | LC_ALL=C sort -u >"$work/large-first-block-ids.txt"
+typed_missing="$(LC_ALL=C sort -u "$work/large-role-typed.txt" | LC_ALL=C comm -23 - "$work/large-first-block-ids.txt" | tr '\n' ' ')"
+[[ -z "$typed_missing" ]] ||
+  fail large "the read with no view answers the skeleton: each typed block of the spec, verification.md and plan.md" "it answers none of the blocks $typed_missing"
+pass large "the read with no view answers each of the $(LC_ALL=C sort -u "$work/large-role-typed.txt" | wc -l | tr -d ' ') typed blocks of the role documents of $large"
+others="$(cut -f1 "$work/large-first-blocks.tsv" | { grep -v "^$large/tree#" || true; } | tr '\n' ' ')"
+[[ -z "$others" ]] ||
+  fail large "the read with no view answers no block of another document of $large, which document_nodes lists" "it answers the blocks $others"
+pass large "the read with no view answers no block of another document of $large"
+# The skeleton holds its conversation: every message the conversation takes, each a person wrote
+# and each of a thread a person wrote in.
+tree_keep large "/api/v1/issues/$large/messages" "$work/large-message-list.json"
+jq -r '[.. | objects | select(has("body") and has("author") and has("in_reply_to"))] as $all
+  | ([$all[] | {key: .id, value: .}] | from_entries) as $by
+  | def root($m): if ($m.in_reply_to // null) == null or ($by[$m.in_reply_to] // null) == null then $m.id else root($by[$m.in_reply_to]) end;
+  ([$all[] | {root: root(.), person: (.author.kind == "user")}] | group_by(.root) | map(select(any(.[]; .person)) | .[0].root)) as $threads
+  | $all[] | select(root(.) as $r | $threads | index($r) != null) | .id' "$work/large-message-list.json" |
+  LC_ALL=C sort >"$work/large-messages-taken.txt"
+[[ -s "$work/large-messages-taken.txt" ]] || fail large "read the messages of $large the conversation takes" "the issue's messages hold none a person wrote in"
+LC_ALL=C sort "$work/large-first-messages.txt" >"$work/large-first-messages-sorted.txt"
+cmp -s "$work/large-messages-taken.txt" "$work/large-first-messages-sorted.txt" ||
+  fail large "the read with no view answers the skeleton's conversation: each message of $large a person wrote in, once" \
+    "only in the issue's messages: $(LC_ALL=C comm -23 "$work/large-messages-taken.txt" "$work/large-first-messages-sorted.txt" | tr '\n' ' '); in the read: $(tr '\n' ' ' <"$work/large-first-messages.txt")"
+pass large "the read with no view answers each of the $(wc -l <"$work/large-messages-taken.txt" | tr -d ' ') messages of $large a person wrote in, once"
+# The comments the walk takes: each a person wrote, and each of a thread a person wrote in, in the
+# order of the comment pages, newest first by when each was written and then by id (R8).
 tree_keep large "/api/v1/issues/$large/comments" "$work/large-comment-list.json"
-# The comments the walk takes: each a person wrote, and each of a thread a person wrote in.
 jq -r '[.. | objects | select(has("body") and has("author") and has("reply_to"))] as $all
   | ([$all[] | {key: .id, value: .}] | from_entries) as $by
   | def root($c): if ($c.reply_to // null) == null or ($by[$c.reply_to] // null) == null then $c.id else root($by[$c.reply_to]) end;
   ([$all[] | {root: root(.), person: (.author.kind == "user")}] | group_by(.root) | map(select(any(.[]; .person)) | .[0].root)) as $threads
   | $all[] | select(root(.) as $r | $threads | index($r) != null) | .id' "$work/large-comment-list.json" |
   LC_ALL=C sort >"$work/large-taken.txt"
+taken_count="$(wc -l <"$work/large-taken.txt")"
+taken_count="${taken_count//[[:space:]]/}"
+((taken_count > 2 * comment_page_size)) ||
+  fail large "the conversation of $large holds more than two pages of $comment_page_size comments, so the read follows comments_before more than once" \
+    "it holds $taken_count of the $large_comments comments"
+with_vars large "order the comments of $large the walk takes, newest first" \
+  "select string_agg(id::text, ' ' order by created_at desc, id desc) from comments
+   where id = any(array_remove(string_to_array(:'taken', ' '), '')::uuid[])" taken="$(tr '\n' ' ' <"$work/large-taken.txt")"
+tr ' ' '\n' <<<"$answer" >"$work/large-ordered.txt"
+[[ "$(wc -l <"$work/large-ordered.txt" | tr -d ' ')" == "$taken_count" ]] ||
+  fail large "order the comments of $large the walk takes, newest first" "the comments table orders $(wc -l <"$work/large-ordered.txt" | tr -d ' ') of $taken_count"
+readonly comment_pages_wanted=$(((taken_count + comment_page_size - 1) / comment_page_size))
+# The first read answers the newest 200 comments; each comments_before page the next older 200.
+comment_pages=1
+conversation_view_comment_page large 1 "$work/large-page-1.txt"
+before="$(jq -r '.comments_before // empty' "$work/large-first.json")"
+while [[ -n "$before" ]]; do
+  tree_send GET "/api/v1/issues/$large/tree?comments_before=$(q "$before")"
+  tree_want 200 large "read the comments of $large before $before"
+  comment_pages=$((comment_pages + 1))
+  bytes="$(wc -c <"$work/body")"
+  bytes="${bytes//[[:space:]]/}"
+  ((bytes <= page_bytes_bound)) ||
+    fail large "each comments_before page holds at most $page_bytes_bound uncompressed bytes" "comment page $comment_pages holds $bytes"
+  jq -r '.nodes[] | select(.kind == "comment") | .id' "$work/body" >"$work/large-page-$comment_pages.txt"
+  cat "$work/large-page-$comment_pages.txt" >>"$work/large-comments.txt"
+  conversation_view_comment_page large "$comment_pages" "$work/large-page-$comment_pages.txt"
+  before="$(jq -r '.comments_before // empty' "$work/body")"
+done
+((comment_pages == comment_pages_wanted)) ||
+  fail large "the read follows comments_before, one page at a time, until it is null" \
+    "it read $comment_pages comment pages of the $taken_count comments the walk takes, want $comment_pages_wanted pages of $comment_page_size"
+pass large "the read follows comments_before through $((comment_pages - 1)) older pages until it is null"
 LC_ALL=C sort "$work/large-comments.txt" >"$work/large-read.txt"
 [[ "$(uniq -d "$work/large-read.txt" | wc -l)" -eq 0 ]] ||
   fail large "the pages hold each comment once" "repeated: $(uniq -d "$work/large-read.txt" | tr '\n' ' ')"
 cmp -s "$work/large-taken.txt" "$work/large-read.txt" ||
   fail large "the pages hold each of the issue's comments the walk takes once" \
     "the issue holds $(wc -l <"$work/large-taken.txt") such comments and the pages $(wc -l <"$work/large-read.txt"): only in the list: $(LC_ALL=C comm -23 "$work/large-taken.txt" "$work/large-read.txt" | tr '\n' ' '); only in the pages: $(LC_ALL=C comm -13 "$work/large-taken.txt" "$work/large-read.txt" | tr '\n' ' ')"
-pass large "the $comment_pages comment pages hold each of the $(wc -l <"$work/large-taken.txt" | tr -d ' ') comments the walk takes once"
-# The blocks of each document document_nodes lists, through the blocks read.
-listed=0 blocks_read=0
-while IFS=$'\t' read -r document block_count; do
+pass large "the $comment_pages comment pages hold each of the $taken_count comments the walk takes once"
+# The blocks of each document document_nodes lists, through the blocks read. document_nodes lists
+# each document of the issue, the role documents among them; every other document, whose blocks
+# the skeleton leaves out, must be among them (R8).
+listed=0 others_listed=0 blocks_read=0
+while IFS=$'\t' read -r document block_count slug; do
   tree_send GET "/api/v1/artifacts/$document/blocks"
   tree_want 200 large "read the blocks of the document $document of $large"
   count="$(jq 'length' "$work/body")"
   [[ "$count" == "$block_count" ]] ||
     fail large "the blocks read of each document lists as many blocks as its block_count" \
-      "the document $document lists $count blocks, and document_nodes answers block_count $block_count"
+      "the document $document ($slug) lists $count blocks, and document_nodes answers block_count $block_count"
   listed=$((listed + 1))
+  [[ "$slug" == spec || "$slug" == verification-md || "$slug" == plan-md ]] || others_listed=$((others_listed + 1))
   blocks_read=$((blocks_read + count))
 done < <(LC_ALL=C sort -u "$work/large-documents.tsv")
-((listed > 0)) || fail large "the read with no view lists the documents of $large in document_nodes" "it lists none"
-pass large "the blocks read of each of the $listed documents document_nodes lists answers its block_count"
+((others_listed == large_others_held)) ||
+  fail large "the read with no view lists each other document of $large in document_nodes" \
+    "it lists $listed documents, $others_listed of them other than the spec, verification.md and plan.md, want $large_others_held"
+pass large "the blocks read of each of the $listed documents document_nodes lists, the $others_listed other documents among them, answers its block_count"
 printf 'large issue %s: page size %s nodes (largest page), %s bytes at most, %s node pages, %s nodes, %s comment pages, %s blocks read through the blocks read\n' \
   "$large" "$largest_page" "$largest_bytes" "$pages" "$nodes" "$comment_pages" "$blocks_read"
 

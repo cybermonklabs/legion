@@ -281,6 +281,31 @@ func TestEveryTypedBlockNodeCarriesItsTypesSupertag(t *testing.T) {
 	if len(untyped) < 4 {
 		t.Fatalf("the three documents hold blocks of the untyped types %v, want a paragraph, a heading, a list and a code block", untyped)
 	}
+	for _, name := range []string{"paragraph", "heading", "bullet_list", "code_block"} {
+		if !untyped[name] {
+			t.Fatalf("the three documents hold no block of type %s, want a paragraph, a heading, a list and a code block: %v", name, untyped)
+		}
+	}
+	// The reading in the ask nobody has answered stands: a document_blocks row of type reading
+	// with its node, inside the spec's ask a1, whose node blockTypeSupertagRequire holds to block.
+	unanswered := refKeys["spec"] + "#" + blockTypeSupertagUnanswered
+	if !slices.ContainsFunc(written, func(node blockTypeSupertagNode) bool {
+		return node.address == unanswered && node.typ == "reading" && node.present
+	}) {
+		t.Fatalf("the spec holds no reading %s with its node, the reading in its ask a1 that nobody has answered: %v", unanswered, written)
+	}
+	specMarkdown, specBlocks, err := service.TextWithBlocks(ctx, spec)
+	if err != nil {
+		t.Fatalf("read the spec's blocks: %v", err)
+	}
+	ask := slices.IndexFunc(specBlocks, func(block model.ArtifactBlock) bool { return block.ID == "a1" && block.Type == "ask" })
+	reading := slices.IndexFunc(specBlocks, func(block model.ArtifactBlock) bool {
+		return block.ID == blockTypeSupertagUnanswered && block.Type == "reading"
+	})
+	if ask < 0 || reading < 0 || specBlocks[reading].From < specBlocks[ask].From || specBlocks[reading].To > specBlocks[ask].To {
+		t.Fatalf("the reading %s does not stand inside the spec's ask a1, which nobody has answered: %q", blockTypeSupertagUnanswered, specMarkdown)
+	}
+	t.Logf("the reading %s stands inside the ask a1, which nobody has answered: %q", unanswered, specMarkdown[specBlocks[ask].From:specBlocks[ask].To])
 	blockTypeSupertagRequire(t, written)
 
 	// A Verification document of more blocks than deferBlockIndexBlocks reads its check nodes with

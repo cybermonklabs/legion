@@ -21,8 +21,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -332,6 +337,169 @@ func blockTypeSupertagPlan(t *testing.T, database *store.Store, name, types, arg
 	return strings.Join(lines, "\n")
 }
 
+// blockTypeSupertagRequireRestated reads the text of block_pointer_targets and of
+// block_node_listed from pg_proc once a boot step has ended, logs what the search for
+// document_blocks finds in each, and fails t, printing the function's text and the server log,
+// for each that names the table. The same search over the text of block_ref_listed, which keeps
+// the row, must find it, and its reading goes into the log too, so the empty answer is the code's
+// and not the search's.
+func blockTypeSupertagRequireRestated(t *testing.T, database *store.Store, boot string) {
+	t.Helper()
+	for _, name := range []string{"block_pointer_targets", "block_node_listed"} {
+		text := blockTypeSupertagFunction(t, database, name)
+		found := strings.Count(text, "document_blocks")
+		t.Logf("the search for document_blocks in the text of %s that pg_proc holds after the boot step finds it %d time(s) in:\n%s", name, found, text)
+		if found > 0 {
+			t.Errorf("%s reads document_blocks after the boot step:\n%s\nserver log:\n%s", name, text, boot)
+		}
+	}
+	kept := blockTypeSupertagFunction(t, database, "block_ref_listed")
+	found := strings.Count(kept, "document_blocks")
+	t.Logf("the same search over the text of block_ref_listed, which keeps the row, finds document_blocks %d time(s) in:\n%s", found, kept)
+	if found == 0 {
+		t.Errorf("block_ref_listed does not name document_blocks, which it keeps the row for:\n%s", kept)
+	}
+}
+
+// blockTypeSupertagCensusOf is the kind block_type of the store census of database.
+func blockTypeSupertagCensusOf(t *testing.T, database *store.Store) graphcensus.KindReport {
+	t.Helper()
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
+	if err != nil {
+		t.Fatalf("take the store census: %v", err)
+	}
+	for _, kind := range report.Kinds {
+		if kind.Kind == "block_type" {
+			return kind
+		}
+	}
+	t.Fatalf("the store census reports no kind block_type")
+	return graphcensus.KindReport{}
+}
+
+// blockTypeSupertagOwed is how many documents owe their block index, as the step's proof counts
+// them (graphcensus.RunTypedBlockSupertagsStep): a version not indexed yet, or one marked owed.
+func blockTypeSupertagOwed(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var owed int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*)::int from document_block_versions b where b.version is null or b.store_owed_at is not null`).Scan(&owed); err != nil {
+		t.Fatalf("count the documents that owe their block index: %v", err)
+	}
+	return owed
+}
+
+// blockTypeSupertagStepLock is graphcensus' viewEndStepLock, the transaction advisory lock the
+// boot's two steps over graph_edges' reads take one after the other on the backfill's goroutine
+// (graphcensus.RunViewArmsStep, then graphcensus.RunTypedBlockSupertagsStep), each before it tests
+// its condition.
+const blockTypeSupertagStepLock int64 = 0x4456494557454E44
+
+// blockTypeSupertagLockWaiters is how many requests of the step lock in database wait ungranted.
+// pg_locks shows a bigint advisory key with its high half in classid, its low half in objid and
+// objsubid 1, in the database it was taken in.
+func blockTypeSupertagLockWaiters(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var waiting int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*)::int from pg_locks
+		where locktype = 'advisory' and not granted and objsubid = 1
+		  and database = (select oid from pg_database where datname = current_database())
+		  and ((classid::bigint << 32) | objid::bigint) = $1
+	`, blockTypeSupertagStepLock).Scan(&waiting); err != nil {
+		t.Fatalf("read the requests that wait on the step lock: %v", err)
+	}
+	return waiting
+}
+
+// blockTypeSupertagLockHold is a request of the test's for the step lock at the session level, on
+// a connection of its own, made on a goroutine of its own since it waits while another holds the
+// lock.
+type blockTypeSupertagLockHold struct {
+	conn     *pgxpool.Conn
+	acquired chan error
+	released bool
+}
+
+// blockTypeSupertagHoldLock asks for the step lock and answers at once; acquired answers once the
+// lock is held, or the error the request ended with. Its cleanup ends a request still waiting,
+// releases the lock and gives the connection back, where unlock has not.
+func blockTypeSupertagHoldLock(t *testing.T, database *store.Store, what string) *blockTypeSupertagLockHold {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	conn, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		cancel()
+		t.Fatalf("take a connection to hold the step lock %s: %v", what, err)
+	}
+	hold := &blockTypeSupertagLockHold{conn: conn, acquired: make(chan error, 1)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, blockTypeSupertagStepLock)
+		hold.acquired <- err
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		if !hold.released {
+			_, _ = conn.Exec(context.Background(), `select pg_advisory_unlock_all()`)
+			conn.Release()
+		}
+	})
+	return hold
+}
+
+// wait waits until the request holds the step lock, and fails t where it ended with an error.
+func (h *blockTypeSupertagLockHold) wait(t *testing.T, what string) {
+	t.Helper()
+	if err := testwait.Receive(t, what, h.acquired); err != nil {
+		t.Fatalf("%s: %v", what, err)
+	}
+}
+
+// unlock releases the step lock the request holds and gives its connection back.
+func (h *blockTypeSupertagLockHold) unlock(t *testing.T) {
+	t.Helper()
+	var unlocked bool
+	err := h.conn.QueryRow(context.Background(), `select pg_advisory_unlock($1)`, blockTypeSupertagStepLock).Scan(&unlocked)
+	h.conn.Release()
+	h.released = true
+	if err != nil || !unlocked {
+		t.Fatalf("release the step lock the test holds: %v (released: %v)", err, unlocked)
+	}
+}
+
+// blockTypeSupertagBootPastTheStep boots envoy-dispatch over database, stops it once its typed
+// block supertags step has ended, and answers what the process wrote. That step logs nothing where
+// it finds both functions done, so the test holds the step lock before the boot: the boot's step
+// over graph_edges' four arms, which takes the lock first, waits on it; a second request of the
+// test's queues behind that step, so it holds the lock once that step ends, and the typed block
+// supertags step, which asks for the lock next, waits behind it; a third request queues behind
+// that step, and holds the lock only once that step's transaction has ended.
+func blockTypeSupertagBootPastTheStep(t *testing.T, database *store.Store) string {
+	t.Helper()
+	waiting := func(what string, requests int) {
+		t.Helper()
+		testwait.Eventually(t, what, func() bool { return blockTypeSupertagLockWaiters(t, database) >= requests })
+	}
+	first := blockTypeSupertagHoldLock(t, database, "before the boot")
+	first.wait(t, "the test to hold the step lock before the boot")
+	process := blockTypeSupertagBoot(t, database.Pool.Config().ConnString())
+	waiting("the boot's step over graph_edges' four arms to wait on the step lock", 1)
+	second := blockTypeSupertagHoldLock(t, database, "behind the step over the four arms")
+	waiting("a second request of the test's to wait on the step lock behind that step", 2)
+	first.unlock(t)
+	second.wait(t, "the step over the four arms to end, so that the test's second request holds the step lock")
+	waiting("the typed block supertags step to wait on the step lock", 1)
+	third := blockTypeSupertagHoldLock(t, database, "behind the typed block supertags step")
+	waiting("a third request of the test's to wait on the step lock behind that step", 2)
+	second.unlock(t)
+	third.wait(t, "the typed block supertags step to end, so that the test's third request holds the step lock")
+	third.unlock(t)
+	return blockTypeSupertagStop(t, process)
+}
+
 // The tuple arm of graph_edges reads a block's type from the block's node, where it read it from
 // document_blocks.type (R26 of the issue-tree spec): block_pointer_targets reads the type of a
 // pointer's source and block_node_listed the type of its target, and a step of every boot moves
@@ -339,6 +507,16 @@ func blockTypeSupertagPlan(t *testing.T, database *store.Store, name, types, arg
 func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+
+	// A check's serves allows a requirement alone (pmdoc/schema/blocks.json), which every pointer
+	// below rests on: a requirement whose row or node says check serves a criterion its type does
+	// not allow, and the check's serves names a block of that type.
+	checkAttributes, declared := pmdoc.BlockTypeAttributes("check")
+	checkServes := checkAttributes.Get("serves").Targets
+	t.Logf("the installed schema's check allows its serves to name %v", checkServes)
+	if !declared || !slices.Equal(checkServes, []string{"requirement"}) {
+		t.Fatalf("a check's serves allows %v (declared: %v), want a requirement alone, which the pointers of the four databases rest on", checkServes, declared)
+	}
 
 	// The first database is migrated and seeded, and its newest announcement that names another
 	// commit lists no typed_block_supertags: a fleet whose build before moves nothing. The step
@@ -361,6 +539,12 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 				t.Errorf("the boot step restated %s over a fleet that lists no %s:\n%s\nserver log:\n%s", name, blockTypeSupertagCapability, after, boot)
 			}
 		}
+		for name := range before {
+			if !blockTypeSupertagReadsRow(t, database, name) {
+				t.Errorf("%s reads no document_blocks after a boot over a fleet that lists no %s, where the release before reads the row:\n%s",
+					name, blockTypeSupertagCapability, blockTypeSupertagFunction(t, database, name))
+			}
+		}
 		blockTypeSupertagSetRow(t, database, issue.requirement, "check")
 		blockTypeSupertagRequireListed(t, handler, database, issue, false,
 			"the pointer from %s to %s: %s answers it %s, want %[5]s: the functions read the row, which says check")
@@ -377,18 +561,11 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 			t.Fatalf("open the database the boot created: %v", err)
 		}
 		t.Cleanup(database.Pool.Close)
-		testwait.Eventually(t, "the boot step to restate block_pointer_targets and block_node_listed", func() bool {
-			return !blockTypeSupertagReadsRow(t, database, "block_pointer_targets") && !blockTypeSupertagReadsRow(t, database, "block_node_listed")
-		})
+		// The step logs how it ended once it has restated both functions, so the test reads their
+		// text after that line and never waits on the text it then searches.
+		blockTypeSupertagWaitStep(t, process)
 		boot := blockTypeSupertagStop(t, process)
-		for _, name := range []string{"block_pointer_targets", "block_node_listed"} {
-			if blockTypeSupertagReadsRow(t, database, name) {
-				t.Errorf("%s reads document_blocks after the boot step:\n%s\nserver log:\n%s", name, blockTypeSupertagFunction(t, database, name), boot)
-			}
-		}
-		if !blockTypeSupertagReadsRow(t, database, "block_ref_listed") {
-			t.Errorf("block_ref_listed does not name document_blocks, which it keeps the row for:\n%s", blockTypeSupertagFunction(t, database, "block_ref_listed"))
-		}
+		blockTypeSupertagRequireRestated(t, database, boot)
 
 		handler, _, deps := newTestServer(t, testServerOptions{store: database})
 		issue := blockTypeSupertagSeed(t, handler, database, deps, "TYPEB")
@@ -427,6 +604,13 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 			if !strings.Contains(plan, "graph_nodes_pkey") {
 				t.Errorf("%s reads a block's type by no scan of graph_nodes_pkey:\n%s", function.name, plan)
 			}
+			// The type is read from the node alone: a plan node that reads the projection reads it
+			// from the row, beside whatever probe of graph_nodes_pkey the plan also holds.
+			for _, line := range strings.Split(plan, "\n") {
+				if strings.Contains(line, "document_blocks") {
+					t.Errorf("%s reads a block's type by %s:\n%s", function.name, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "->")), plan)
+				}
+			}
 		}
 	})
 
@@ -437,24 +621,52 @@ func TestTheTupleArmReadsABlocksTypeFromItsNode(t *testing.T) {
 	t.Run("a fleet that lists the capability", func(t *testing.T) {
 		database := storetest.Open(t)
 		handler, _, deps := newTestServer(t, testServerOptions{store: database})
-		blockTypeSupertagSeed(t, handler, database, deps, "TYPEC")
+		issue := blockTypeSupertagSeed(t, handler, database, deps, "TYPEC")
+		census, owed := blockTypeSupertagCensusOf(t, database), blockTypeSupertagOwed(t, database)
+		t.Logf("before the boot the census of kind block_type reads %d rows, %d nodes, %d row and %d node difference(s), and %d documents owe their block index",
+			census.Rows, census.Nodes, census.RowDifferences, census.NodeDifferences, owed)
+		if census.Rows == 0 || census.Nodes == 0 || census.RowDifferences != 0 || census.NodeDifferences != 0 || owed != 0 {
+			t.Fatalf("the third database is not the one a deployment meets: its census of kind block_type reads %d rows, %d nodes, %d row and %d node difference(s), and %d documents owe their block index, want rows and nodes, no difference and nothing owed",
+				census.Rows, census.Nodes, census.RowDifferences, census.NodeDifferences, owed)
+		}
 		blockTypeSupertagAnnounce(t, database, []string{blockTypeSupertagCapability})
 		process := blockTypeSupertagBoot(t, database.Pool.Config().ConnString())
-		testwait.Eventually(t, "the boot step to restate block_pointer_targets and block_node_listed", func() bool {
-			return !blockTypeSupertagReadsRow(t, database, "block_pointer_targets") && !blockTypeSupertagReadsRow(t, database, "block_node_listed")
-		})
+		blockTypeSupertagWaitStep(t, process)
 		first := blockTypeSupertagStop(t, process)
 		t.Logf("the first boot's log:\n%s", first)
-		second := blockTypeSupertagStop(t, blockTypeSupertagBoot(t, database.Pool.Config().ConnString()))
+		if !strings.Contains(first, blockTypeSupertagStepEnded[0]) {
+			t.Errorf("the first boot's typed block supertags step restated nothing over a fleet that lists %s:\n%s", blockTypeSupertagCapability, first)
+		}
+		blockTypeSupertagRequireRestated(t, database, first)
+		restated := map[string]string{
+			"block_pointer_targets": blockTypeSupertagFunction(t, database, "block_pointer_targets"),
+			"block_node_listed":     blockTypeSupertagFunction(t, database, "block_node_listed"),
+		}
+		// A census of kind block_type would name this check, whose node now carries block, as the
+		// fourth database's step names its check: a second boot that ran one logs it.
+		blockTypeSupertagSetNode(t, database, issue.check, refs.BlockSupertag)
+		second := blockTypeSupertagBootPastTheStep(t, database)
 		t.Logf("the second boot's log:\n%s", second)
-		for _, name := range []string{"block_pointer_targets", "block_node_listed"} {
+		for name, text := range restated {
 			if blockTypeSupertagReadsRow(t, database, name) {
 				t.Errorf("%s reads document_blocks after a second boot", name)
 			}
+			if after := blockTypeSupertagFunction(t, database, name); after != text {
+				t.Errorf("the second boot, which finds both functions done, restated %s again:\n%s", name, after)
+			}
+		}
+		for _, line := range append(slices.Clone(blockTypeSupertagStepEnded), `msg="dispatch: the typed block supertags step found a block`) {
+			if strings.Contains(second, line) {
+				t.Errorf("the second boot, which finds both functions done, logs %s, which its step writes only past that finding:\n%s", line, second)
+			}
+		}
+		if strings.Contains(second, issue.check) {
+			t.Errorf("the second boot, which finds both functions done, ran a census: its log names the block %s, whose node carries block:\n%s", issue.check, second)
 		}
 		if strings.Contains(second, "block_type") {
 			t.Errorf("the second boot, which finds both functions done, names the census of kind block_type in its log:\n%s", second)
 		}
+		blockTypeSupertagSetNode(t, database, issue.check, "check")
 	})
 
 	// The fourth database is like the third, but one check's node carries block. Once the step has
