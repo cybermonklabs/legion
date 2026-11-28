@@ -111,6 +111,21 @@ describe("readingProblems", () => {
     ]);
   });
 
+  test("reads a form-limit item's subject as a rule and its node prose as no text, and fails another node that Dispatch did not read", () => {
+    const one = {
+      ...fixture("1-principle"),
+      planted: [
+        { kind: "form-limit", node: "prose", subject: "pull-request" },
+        { kind: "form-limit", node: "inbox-simple", subject: "person" },
+        { kind: "form-limit", node: "inbox-gone", subject: "incident" },
+      ] as const,
+      mustNotName: [],
+    };
+    expect(readingProblems(one, read(["inbox-simple", "inbox-page-limit"]))).toEqual([
+      "1-principle: form-limit inbox-gone incident is no text that Dispatch read",
+    ]);
+  });
+
   test("fails an approved version under the root that Dispatch cannot read", () => {
     const line =
       "Dispatch cannot read terms.md version 1 of ACME-1, an approved document under the root.";
