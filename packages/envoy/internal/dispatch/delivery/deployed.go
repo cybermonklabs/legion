@@ -119,10 +119,11 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 // transaction's last statement, after the append, because its change trigger takes the change
 // log's lock (lockChangesStatement): after every row lock the transaction takes, the issue's
 // included, and held for that statement and the commit alone. Intake takes a pull request's row
-// before the change log in one statement. The repository rename pass locks all the pull requests
-// its line writes before any trigger takes the change log's lock. If intake and reconcile cross,
-// the second finds deployed_event_at set or another issue on the row. Its update marks nothing,
-// and it rolls back the event it appended.
+// before the change log in one statement. The repository rename pass locks the pull requests its
+// line finds naming an old name, and inserts their copies under the new name, before any trigger
+// takes the change log's lock. If intake and reconcile cross, the second finds deployed_event_at
+// set or another issue on the row. Its update marks nothing, and it rolls back the event it
+// appended.
 func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

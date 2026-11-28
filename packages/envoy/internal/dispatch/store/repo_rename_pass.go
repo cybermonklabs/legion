@@ -356,8 +356,10 @@ func countRepoRenamesLeft(ctx context.Context, pool *Pool, renames []repoRename)
 }
 
 // repoRename is one pair, as the statements of the pass are built from it. The names go into the
-// statements as literals (QuoteLiteral), as RewriteSQL puts the URL rule there, so a statement
-// takes no parameters.
+// statements as literals (QuoteLiteral), as RewriteSQL puts the URL rule there, so no statement
+// takes them as parameters. In a line that holds its rows (hold), each statement after hold takes
+// one parameter, $1, the keys of the rows the line holds (heldRow); every other statement takes
+// none.
 type repoRename struct {
 	RepoRename
 	url RepoURLRule
@@ -408,8 +410,9 @@ type repoRenameLine struct {
 	hold func([]repoRename) string
 	// lockRows names the rows a delivery line writes, in the order intake takes them, after hold.
 	lockRows func([]repoRename) []string
-	// copies is the statement of a line whose rows cannot take the new name in place, over
-	// every pair at once, that runs after lockRows and before the steps.
+	// copies, where a line has it, is the statement that writes the line's rows under their new
+	// key, over every pair at once (repoRenameCopies). It runs after lockRows and before the
+	// steps, so it is the line's first statement that fires a change trigger.
 	copies func([]repoRename) repoRenameCopies
 }
 
@@ -433,11 +436,20 @@ type repoRenameStep struct {
 }
 
 // repoRenameCopies is a statement that inserts a copy of rows of table under their pair's new
-// name and deletes, as collisions, the rows under an old name it does not copy. It returns three
-// columns for each row it inserted or deleted: a row it inserted has its key (runKey), which its
-// line then holds, and a null pair and deletion; a row it deleted has a null key, the index of its
-// pair among the pass's pairs and its key as the deletion logs it, as text, and each is counted
-// and logged at WARN as a collisions step's are.
+// name and deletes, as collisions, the rows under an old name it does not copy (storedCopies). A
+// row that another writer stores under the new name while the statement runs collides too: the
+// insert waits for that writer's row, finds the key taken and copies nothing, and the row under the
+// old name is deleted. Postgres fires the statement's change triggers at its end, so that wait
+// comes before the line takes the change log's lock. A copy, and not an update of the row's key,
+// is what lets the statement take such a row as a collision: an update would wait for that writer
+// and then fail on the duplicate key (23505). A row another writer stores under an old name after
+// the line's locks is not one the line holds, and the statement neither copies nor deletes it.
+//
+// It returns three columns for each row it inserted or deleted: a row it inserted has its key
+// (runKey, pullRequestKey), which its line then holds, and a null pair and deletion; a row it
+// deleted has a null key, the index of its pair among the pass's pairs and its key as the deletion
+// logs it, as text, and each is counted and logged at WARN as a collisions step's are. The row
+// under the old name of each copy stays, for the line's steps to delete.
 type repoRenameCopies struct {
 	table, sql string
 }
@@ -491,24 +503,20 @@ func urlWrite(r repoRename, table, column string) repoRenameStep {
 // repository, is the key of another row: a row under the new name in any case, or a row under the
 // old name whose repository sorts first. The key is the table's repo column and keys. The
 // subquery reads the table as the statement began, so of two rows under the old name the one that
-// sorts first stays for the write after this. also, where it is not empty, is one more condition
-// the deleted row meets, on its own columns with no alias, as heldRow is.
-func collisions(r repoRename, table, also string, keys ...string) repoRenameStep {
+// sorts first stays for the write after this.
+func collisions(r repoRename, table string, keys ...string) repoRenameStep {
 	same := ""
 	key := `'repo', d.repo`
 	for _, column := range keys {
 		same += ` and t.` + column + ` = d.` + column
 		key += `, '` + column + `', d.` + column
 	}
-	if also != "" {
-		also = ` and ` + also
-	}
 	return repoRenameStep{
 		table:   table,
 		where:   r.named("repo"),
 		deletes: true,
 		sql: `delete from ` + table + ` d
-			where ` + r.named("d.repo") + also + `
+			where ` + r.named("d.repo") + `
 			  and exists (
 				select 1 from ` + table + ` t
 				where (lower(t.repo) = ` + r.to() + ` or (` + r.named("t.repo") + ` and t.repo < d.repo))` + same + `)
@@ -516,33 +524,44 @@ func collisions(r repoRename, table, also string, keys ...string) repoRenameStep
 	}
 }
 
-// copyRuns copies each run its line holds under an old name to its pair's new name, for every
-// pair in one statement, and deletes each such run that it does not copy, as a collision: a run
-// under the new name, in any case, holds its key, or another run under an old name comes first
-// for the same new name and id, in the order of the pairs and then of the repositories, as the
-// lines that take a pair at a time meet them. A run that another writer stores under the new name
-// while the statement runs collides too: the insert waits for that writer's row, finds the key
-// taken and copies nothing, and the run under the old name is deleted. A run another writer
-// stores under an old name after the line's locks is not one the line holds, and the statement
-// neither copies nor deletes it. The delete reads which runs the insert copied from its returned
-// keys, since the statement's parts all read the table as it began. Postgres fires the
-// statement's change triggers at its end, so the insert waits for another writer's row before
-// the line takes the change log's lock. The copy goes through the row's jsonb, so it carries
-// every column of the table, a column a later migration adds included.
-func copyRuns(renames []repoRename) repoRenameCopies {
+// storedCopies is the first part of a copies statement (repoRenameCopies) over table, whose key
+// is (repo, id), in a line that holds its rows by key (hold): stored, each held row under an old
+// name, with its repository, its id, its pair, the pair's new name, its copy under that name as
+// jsonb, and copies, whether the statement copies it. A row is not copied, and collides, where a
+// row under the new name, in any case, holds its key, or where another row under an old name
+// comes first for the same new name and id, in the order of the pairs and then of the
+// repositories, as the lines that take a pair at a time meet them. The statement's parts all read
+// the table as it began, so its delete reads which rows its insert copied from the insert's
+// returned keys. The copy goes through the row's jsonb, so it carries every column of the table,
+// a column a later migration adds included.
+func storedCopies(renames []repoRename, table, id, key string) string {
 	pairs := make([]string, 0, len(renames))
 	for i, r := range renames {
 		pairs = append(pairs, fmt.Sprintf(`(%d, %s, %s)`, i, r.from(), r.to()))
 	}
-	return repoRenameCopies{table: "delivery_runs", sql: `
-		with stored as materialized (
-			select s.repo, s.run_id, p.pair, p.new, to_jsonb(s) || jsonb_build_object('repo', p.new) as copy,
-				row_number() over (partition by p.new, s.run_id order by p.pair, s.repo) = 1
-				and not exists (select 1 from delivery_runs t where lower(t.repo) = p.new and t.run_id = s.run_id) as copies
-			from delivery_runs s
+	return `stored as materialized (
+			select s.repo, s.` + id + `, p.pair, p.new, to_jsonb(s) || jsonb_build_object('repo', p.new) as copy,
+				row_number() over (partition by p.new, s.` + id + ` order by p.pair, s.repo) = 1
+				and not exists (select 1 from ` + table + ` t where lower(t.repo) = p.new and t.` + id + ` = s.` + id + `) as copies
+			from ` + table + ` s
 			join (values ` + strings.Join(pairs, `, `) + `) p (pair, old, new) on lower(s.repo) = p.old
-			where ` + heldRow(runKey) + `
-		), copied as (
+			where ` + heldRow(key) + `
+		)`
+}
+
+// copiesAnswer is what a copies statement (repoRenameCopies) returns, from its CTEs copied, the
+// rows its insert wrote, and deleted, the rows its delete took as collisions.
+const copiesAnswer = `
+		select key, null::integer, null::text from copied
+		union all
+		select null::text, pair, logged from deleted`
+
+// copyRuns is the copies statement (repoRenameCopies) of the runs its line holds under an old
+// name. The run under the old name of each copy keeps its jobs until the line's steps point them
+// at the copy.
+func copyRuns(renames []repoRename) repoRenameCopies {
+	return repoRenameCopies{table: "delivery_runs", sql: `
+		with ` + storedCopies(renames, "delivery_runs", "run_id", runKey) + `, copied as (
 			insert into delivery_runs
 			select moved.* from stored
 			cross join lateral jsonb_populate_record(null::delivery_runs, stored.copy) moved
@@ -554,10 +573,26 @@ func copyRuns(renames []repoRename) repoRenameCopies {
 			where d.repo = s.repo and d.run_id = s.run_id
 			  and not (s.copies and exists (select 1 from copied c where c.repo = s.new and c.run_id = s.run_id))
 			returning s.pair, jsonb_build_object('repo', d.repo, 'run_id', d.run_id)::text as logged
-		)
-		select key, null::integer, null::text from copied
-		union all
-		select null::text, pair, logged from deleted`}
+		)` + copiesAnswer}
+}
+
+// copyPullRequests is the copies statement (repoRenameCopies) of the pull requests its line holds
+// under an old name.
+func copyPullRequests(renames []repoRename) repoRenameCopies {
+	return repoRenameCopies{table: "delivery_pull_requests", sql: `
+		with ` + storedCopies(renames, "delivery_pull_requests", "number", pullRequestKey) + `, copied as (
+			insert into delivery_pull_requests
+			select moved.* from stored
+			cross join lateral jsonb_populate_record(null::delivery_pull_requests, stored.copy) moved
+			where stored.copies
+			on conflict (repo, number) do nothing
+			returning repo, number, ` + pullRequestKey + ` as key
+		), deleted as (
+			delete from delivery_pull_requests d using stored s
+			where d.repo = s.repo and d.number = s.number
+			  and not (s.copies and exists (select 1 from copied c where c.repo = s.new and c.number = s.number))
+			returning s.pair, jsonb_build_object('repo', d.repo, 'number', d.number)::text as logged
+		)` + copiesAnswer}
 }
 
 // nameLine is the line of one name column of a table with no key that holds it.
@@ -627,7 +662,7 @@ var repoRenameLines = []repoRenameLine{
 		fields: "pull_request_heads.repo, .url",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
-				collisions(r, "pull_request_heads", "", "number"),
+				collisions(r, "pull_request_heads", "number"),
 				nameWrite(r, "pull_request_heads", "repo"),
 				urlWrite(r, "pull_request_heads", "url"),
 			}
@@ -637,7 +672,7 @@ var repoRenameLines = []repoRenameLine{
 		fields: "branch_commits.repo",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
-				collisions(r, "branch_commits", "", "branch", "sha"),
+				collisions(r, "branch_commits", "branch", "sha"),
 				nameWrite(r, "branch_commits", "repo"),
 			}
 		},
@@ -646,7 +681,7 @@ var repoRenameLines = []repoRenameLine{
 		fields: "commit_holds.repo",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
-				collisions(r, "commit_holds", "", "commit_sha", "merge_sha"),
+				collisions(r, "commit_holds", "commit_sha", "merge_sha"),
 				nameWrite(r, "commit_holds", "repo"),
 			}
 		},
@@ -657,10 +692,14 @@ var repoRenameLines = []repoRenameLine{
 	// table holds the repository, so nothing collides.
 	nameLine("deploys", "repo"),
 	{
-		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
-		// at its first place, as delivery's citedIssues keeps each URL once. The line writes only
-		// the pull requests it holds (hold): a pull request another writer stores naming an old
-		// name after the line's locks stays as it is for the next pass.
+		// Each pull request is copied under the new name (copyPullRequests), or deleted where it
+		// collides, and the old row of each copy is then deleted: a copy, as a run's is, so that a
+		// pull request a webhook write stores under the new name while the line runs is a
+		// collision and not a duplicate key. Each cited URL is rewritten in its place. A URL the
+		// array then holds twice is kept once, at its first place, as delivery's citedIssues keeps
+		// each URL once. The line writes only the pull requests it holds (hold), the ones it locked
+		// first and its copies of them: a pull request another writer stores naming an old name
+		// after the line's locks stays as it is for the next pass.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
 		hold: func(renames []repoRename) string {
 			where := anyRepoRename(renames, func(r repoRename) string {
@@ -668,20 +707,23 @@ var repoRenameLines = []repoRenameLine{
 			})
 			return `select ` + pullRequestKey + ` from delivery_pull_requests where ` + where + ` order by repo, number for update`
 		},
+		copies: copyPullRequests,
 		steps: func(r repoRename) []repoRenameStep {
-			where := citedNamed(r)
+			named, cited := r.named("repo"), citedNamed(r)
 			return []repoRenameStep{
-				collisions(r, "delivery_pull_requests", heldRow(pullRequestKey), "number"),
-				heldOnly(pullRequestKey, nameWrite(r, "delivery_pull_requests", "repo")),
+				// The held pull requests left under the old name are the ones copyPullRequests
+				// copied, so this delete ends each move, and its rows are the pull requests the
+				// line moved.
+				heldOnly(pullRequestKey, repoRenameStep{table: "delivery_pull_requests", where: named, write: "repo", sql: `delete from delivery_pull_requests where ` + named}),
 				heldOnly(pullRequestKey, urlWrite(r, "delivery_pull_requests", "url")),
-				heldOnly(pullRequestKey, repoRenameStep{table: "delivery_pull_requests", where: where, write: "attribution_cited_issues", sql: `
+				heldOnly(pullRequestKey, repoRenameStep{table: "delivery_pull_requests", where: cited, write: "attribution_cited_issues", sql: `
 					update delivery_pull_requests set attribution_cited_issues = array(
 						select cited.url from (
 							select ` + r.url.RewriteSQL("e.url") + ` as url, min(e.n) as n
 							from unnest(attribution_cited_issues) with ordinality e(url, n)
 							group by 1
 						) cited order by cited.n)
-					where ` + where}),
+					where ` + cited}),
 			}
 		},
 	},
@@ -694,7 +736,10 @@ var repoRenameLines = []repoRenameLine{
 		// writes only the runs it holds (hold), the runs it locked first and its copies of them. A
 		// run another writer stores under an old name after those locks stays there with its
 		// jobs, counted among the rows left, for the next pass, and the line, which holds the
-		// change log's lock after its copies, never waits on such a row.
+		// change log's lock after its copies, never waits on such a row. Nor does it wait on a job
+		// under a new name when it points a job at its copy: a job row names its run (the foreign
+		// key), so no other writer can store a job of a run that is this line's own uncommitted
+		// copy, and the old run's jobs are locked with it.
 		fields: "delivery_runs.repo, .url with delivery_run_jobs.repo",
 		// Copying a run logs a change before its jobs move. Lock runs before jobs as intake
 		// does, with the stronger lock needed to delete runs and move job keys.
@@ -727,7 +772,7 @@ var repoRenameLines = []repoRenameLine{
 		fields: "delivery_run_warnings.repo",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
-				collisions(r, "delivery_run_warnings", "", "run_id", "job_names", "apply_step"),
+				collisions(r, "delivery_run_warnings", "run_id", "job_names", "apply_step"),
 				nameWrite(r, "delivery_run_warnings", "repo"),
 			}
 		},
@@ -738,7 +783,8 @@ var repoRenameLines = []repoRenameLine{
 		// searchProgressScope writes from the settings stays the scope the line after this one
 		// writes into the stored progress. The line writes the settings only where it holds them
 		// (hold): settings another writer first stores after the line's lock stay for the next
-		// pass.
+		// pass. Their key is their one row, which no write changes, so the line writes no row
+		// under a new key and no statement of it waits on another writer's row.
 		fields: "delivery_settings.deploy_repo, .excluded_repos",
 		hold: func(renames []repoRename) string {
 			where := anyRepoRename(renames, func(r repoRename) string {
@@ -778,7 +824,7 @@ var repoRenameLines = []repoRenameLine{
 		fields: "architecture_sources.repo",
 		steps: func(r repoRename) []repoRenameStep {
 			return []repoRenameStep{
-				collisions(r, "architecture_sources", "", "project_key"),
+				collisions(r, "architecture_sources", "project_key"),
 				nameWrite(r, "architecture_sources", "repo"),
 			}
 		},

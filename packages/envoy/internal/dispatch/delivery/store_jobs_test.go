@@ -620,6 +620,116 @@ func TestTheRenamePassAndARunWriteUnderTheNewNameNeverDeadlock(t *testing.T) {
 	}
 }
 
+// TestTheRenamePassAndAPullRequestWriteUnderTheNewNameNeverDeadlock: the rename pass moves a pull
+// request to the repository's new name while a webhook write (UpsertPullRequest) stores that pull
+// request under the new name, in each order. A trigger holds whichever of the two writes the new
+// name's row first, once it holds that row and before that row's change trigger runs, and the
+// other then starts and waits on that row, so the two overlap. Before it meets the pull request,
+// the pass moves a pull request of an earlier pair and deletes one whose twin the new name holds,
+// writes whose triggers take the change log's lock. The pass must still write the new name's row
+// before it takes that lock: else the write, let on, waits for the lock while the pass waits for
+// the write's row, and Postgres refuses one of them as a deadlock (40P01), or the write commits
+// first and the pass's move of the pull request to that key is refused as a duplicate (23505).
+// Both end with no error, and the pull request is stored once, under the new name, as the write
+// wrote it: one the write stored first is a collision, whose row under the old name the pass
+// deletes.
+func TestTheRenamePassAndAPullRequestWriteUnderTheNewNameNeverDeadlock(t *testing.T) {
+	t.Parallel()
+	for _, order := range []struct {
+		name      string
+		passFirst bool
+	}{
+		{name: "the pass first", passFirst: true},
+		{name: "the pull request write first", passFirst: false},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			t.Parallel()
+			shared, ctx := deliveryTestPool(t)
+			pool := wideTestPool(t, shared)
+			const earlier, earlierRenamed = "acme/gizmos", "acme/gadgets"
+			const repo, renamed = "acme/widgets", "acme/renamed"
+			const number, twinnedNumber, earlierNumber = 825, 826, 827
+			merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+			pullRequest := func(name string, n int, title string) DeliveryPullRequest {
+				pr := changeTestPR(n, merged, title)
+				pr.Repo, pr.URL = name, fmt.Sprintf("https://github.com/%s/pull/%d", name, n)
+				return pr
+			}
+			for _, stored := range []DeliveryPullRequest{
+				pullRequest(repo, number, "old"),
+				pullRequest(repo, twinnedNumber, "old"),
+				pullRequest(renamed, twinnedNumber, "twin"),
+				pullRequest(earlier, earlierNumber, "earlier"),
+			} {
+				if err := UpsertPullRequest(ctx, pool, stored); err != nil {
+					t.Fatalf("UpsertPullRequest: %v", err)
+				}
+			}
+			// Postgres fires the triggers of one event in the order of their names, and this name
+			// sorts before delivery_pull_requests_changed, so the writer it holds has the new name's
+			// row and has not yet logged it, whether it inserts that row or moves a row to its key.
+			for _, sql := range []string{
+				`create function hold_new_name_pull_request() returns trigger language plpgsql as $$
+				begin perform pg_advisory_xact_lock(825); return null; end $$`,
+				`create trigger delivery_pull_requests_a_hold_new_name after insert or update on delivery_pull_requests for each row
+				when (new.repo = 'acme/renamed' and new.number = 825)
+				execute function hold_new_name_pull_request()`,
+			} {
+				if _, err := pool.Exec(ctx, sql); err != nil {
+					t.Fatal(err)
+				}
+			}
+			gate, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer gate.Rollback(ctx)
+			if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock(825)`); err != nil {
+				t.Fatal(err)
+			}
+			startPass := func() <-chan timedCall {
+				return goTimed(func() error {
+					return store.RewriteRenamedRepositories(ctx, pool, []store.RepoRename{
+						{From: earlier, To: earlierRenamed}, {From: repo, To: renamed},
+					}).Err()
+				})
+			}
+			startWrite := func() <-chan timedCall {
+				return goTimed(func() error { return UpsertPullRequest(ctx, pool, pullRequest(renamed, number, "written")) })
+			}
+			var pass, write <-chan timedCall
+			if order.passFirst {
+				pass = startPass()
+				storetest.WaitForLockWaiters(t, gate, 1)
+				write = startWrite()
+			} else {
+				write = startWrite()
+				storetest.WaitForLockWaiters(t, gate, 1)
+				pass = startPass()
+			}
+			// The second of the two now waits on the new name's row, which the held first one holds.
+			storetest.WaitForLockWaiters(t, gate, 2)
+			if err := gate.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			requireNotDeadlocked(t, "the pull request write under the new name", testwait.Receive(t, "the pull request write to finish", write).err)
+			requireNotDeadlocked(t, "the rename pass", testwait.Receive(t, "the rename pass to finish", pass).err)
+			if t.Failed() {
+				return
+			}
+			var pullRequests string
+			if err := pool.QueryRow(ctx, `select string_agg(repo || '#' || number || ' ' || title || ' ' || url, ' | ' order by number) from delivery_pull_requests`).Scan(&pullRequests); err != nil {
+				t.Fatal(err)
+			}
+			if want := "acme/renamed#825 written https://github.com/acme/renamed/pull/825 | " +
+				"acme/renamed#826 twin https://github.com/acme/renamed/pull/826 | " +
+				"acme/gadgets#827 earlier https://github.com/acme/gadgets/pull/827"; pullRequests != want {
+				t.Errorf("the pull requests after both = %s; want %s", pullRequests, want)
+			}
+		})
+	}
+}
+
 // TestARunStoredUnderTheOldNameAfterTheRunsLineLocksStaysForTheNextPass: the rename pass holds at
 // its copy of a run under the new name, once its runs line has locked the runs it found under the
 // old name and before that line takes the change log's lock, and another writer then stores a run
@@ -728,12 +838,12 @@ func TestARunStoredUnderTheOldNameAfterTheRunsLineLocksStaysForTheNextPass(t *te
 }
 
 // TestAPullRequestStoredUnderTheOldNameAfterThePullRequestsLineLocksStaysForTheNextPass: the
-// rename pass holds at its rewrite of a pull request's repository, once its pull requests line has
-// locked the rows it found naming the old name and before that line takes the change log's lock,
-// and another writer then stores a pull request under the old name and commits. The line writes
-// only the rows it locked, under the keys its writes give them, so the pass fails no line, moves
-// the pull request it locked and leaves the late one as it was written, counted among the rows
-// left; the next pass moves the late one.
+// rename pass holds at its copy of a pull request under the new name, once its pull requests line
+// has locked the rows it found naming the old name and before that line takes the change log's
+// lock, and another writer then stores a pull request under the old name and commits. The line
+// writes only the rows it locked and its copies of them, so the pass fails no line, moves the pull
+// request it locked and leaves the late one as it was written, counted among the rows left; the
+// next pass moves the late one.
 func TestAPullRequestStoredUnderTheOldNameAfterThePullRequestsLineLocksStaysForTheNextPass(t *testing.T) {
 	t.Parallel()
 	shared, ctx := deliveryTestPool(t)
@@ -746,8 +856,8 @@ func TestAPullRequestStoredUnderTheOldNameAfterThePullRequestsLineLocksStaysForT
 	for _, sql := range []string{
 		`create function hold_rename_test_pull_request() returns trigger language plpgsql as $$
 		begin perform pg_advisory_xact_lock(823); return new; end $$`,
-		`create trigger hold_rename_test_pull_request before update on delivery_pull_requests for each row
-		when (old.repo = 'acme/widgets' and new.repo = 'acme/renamed' and old.number = 823)
+		`create trigger hold_rename_test_pull_request before insert on delivery_pull_requests for each row
+		when (new.repo = 'acme/renamed' and new.number = 823)
 		execute function hold_rename_test_pull_request()`,
 	} {
 		if _, err := pool.Exec(ctx, sql); err != nil {
@@ -765,8 +875,9 @@ func TestAPullRequestStoredUnderTheOldNameAfterThePullRequestsLineLocksStaysForT
 	pairs := []store.RepoRename{{From: repo, To: renamed}}
 	first := make(chan store.RepoRenamePass, 1)
 	go func() { first <- store.RewriteRenamedRepositories(ctx, pool, pairs) }()
-	// The pass now holds inside the update of the pull request it locked, whose triggers take
-	// the change log's lock at its end, so the late write can take that lock and commit.
+	// The pass now holds at its copy of the pull request it locked, inside the statement whose
+	// triggers take the change log's lock at its end, so the late write can take that lock and
+	// commit.
 	storetest.WaitForLockWaiters(t, gate, 1)
 	written := goTimed(func() error { return UpsertPullRequest(ctx, pool, changeTestPR(lateNumber, merged, "Late")) })
 	if err := testwait.Receive(t, "the late pull request's write to finish", written).err; err != nil {
