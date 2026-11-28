@@ -23,9 +23,6 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 
-- Text on a control is a few words: a label, a button name or a short placeholder.
-  A sentence that explains how the system works (who is told, where a message goes) goes in the docs, never under a box, in a placeholder or in a tooltip.
-
 - Show an agent only through `features/refs/AgentName.tsx`, or `useAgentText()` for a string; lint misses a namespace import (`import * as`), so review for it.
 
 - Editor: never write a class into editor DOM (ProseMirror reads it as an edit); use `ProofEditorHandle` decorations.
