@@ -1089,16 +1089,24 @@ func settlementBarrier(t *testing.T, service *Service, n int) func(string) {
 }
 
 // roomGeneration is document's room generation once its live updates are durable, the generation a
-// settlement of it runs at (settleCurrentGeneration).
+// settlement of it runs at (settleCurrentGeneration). Its two waits are on the room's idle signal
+// (waitForPendingUpdates, waitForDurableAppends) and go through the shared wait, whose one bound is
+// the test binary's deadline (testwait.Returns, testwait.Context).
 func roomGeneration(t *testing.T, service *Service, document string) uint64 {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, document); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, document); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
+	ctx := testwait.Context(t)
+	for _, wait := range []struct {
+		what  string
+		until func(context.Context, string) error
+	}{
+		{"live updates to reach persistence", service.waitForPendingUpdates},
+		{"live updates to become durable", service.waitForDurableAppends},
+	} {
+		var err error
+		testwait.Returns(t, wait.what, func() { err = wait.until(ctx, document) })
+		if err != nil {
+			t.Fatalf("wait for %s: %v", wait.what, err)
+		}
 	}
 	state := service.room(document)
 	state.mu.Lock()

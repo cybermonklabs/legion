@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests are of the rig's judgment of gaps, which the race build does not make, so they are
@@ -71,9 +72,14 @@ func TestXidGapJudgmentNeedsReadableThreadClocks(t *testing.T) {
 			}
 
 			if test.measure || test.required != "" {
-				database := Open(t)
 				tracer := NewXidTracer()
-				traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
+				// The required row's Measure stops at xidUnjudgedGapsProblem, before it reads its
+				// pool, so that row opens no database: its Measure is given a nil pool, and its
+				// operation, which would begin on that pool, never runs.
+				traced := &store.Store{}
+				if test.measure {
+					traced.Pool = Traced(t, openEmpty(t).Pool, tracer, nil)
+				}
 				stopping := &stoppingTB{TB: t}
 				measured := make(chan *XidReport, 1)
 				go func() {
@@ -93,7 +99,9 @@ func TestXidGapJudgmentNeedsReadableThreadClocks(t *testing.T) {
 						}
 					})
 				}()
-				report, finished := <-measured
+				// The channel closes with no report when the operation stopped Measure.
+				report := testwait.Receive(t, "Measure to return or stop", measured)
+				finished := report != nil
 				stopped := stopping.stop()
 				switch {
 				case test.required != "" && (finished || !strings.Contains(stopped, XidRequireGapsEnv) || !strings.Contains(stopped, test.required)):
@@ -161,4 +169,18 @@ func TestARigProblemHidesNoViolation(t *testing.T) {
 		strings.Contains(err.Error(), "XID WINDOW VIOLATION") {
 		t.Errorf("a rig problem beside a window that keeps D6: verdict %v, want the problem alone, as no finding", err)
 	}
+}
+
+// openEmpty returns a store on a database of its own that carries no migration (Empty), its pool
+// closed after t ends: for a rig row whose statements read no table of the migrated schema - select
+// pg_current_xact_id(), select 1, tables of the row's own - so the row pays for no migration of a
+// schema it never reads.
+func openEmpty(t testing.TB) *store.Store {
+	t.Helper()
+	database, err := store.Open(context.Background(), Empty(t))
+	if err != nil {
+		t.Fatalf("open a store on the empty database: %v", err)
+	}
+	testcleanup.Add(t, database.Pool.Close)
+	return database
 }

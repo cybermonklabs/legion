@@ -93,8 +93,12 @@ type roomState struct {
 	parked []parkedBytes
 	// shadow is what the latest committed live write left the room to measure again the classes
 	// of the browser updates stored after its own (roomShadow), nil while none is left.
-	shadow     *roomShadow
-	settle     clock.Timer
+	shadow *roomShadow
+	settle clock.Timer
+	// settleDue is when settle was armed to fire, on the service's clock (Deps.Clock): the moment
+	// scheduleSettleAfterLocked armed it plus its delay. Only IdleForTest reads it
+	// (settlesBeforeForTest).
+	settleDue  time.Time
 	unrecorded map[pmdoc.MarkRef]time.Time
 	// departed is when each user whose browsers have all left this room lost the last of them,
 	// under both spellings a mark's `by` can carry (recordMarkAuthorDeparture). An unrecorded

@@ -5,7 +5,6 @@ package storetest
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A CPU quota's throttling is a wait for a CPU to the rig, not a sleep of the code's: the kernel
@@ -27,6 +28,8 @@ import (
 // the stretch: throttled time that the kernel counted anywhere but run_delay would read as time
 // asleep. cpu.stat is read only to show that the quota throttled, never to judge a window.
 func TestAQuotasThrottlingReadsAsAWaitForACPU(t *testing.T) {
+	// Parallel: it measures nothing with the rig (no Measure), and its child has a scope of its own.
+	t.Parallel()
 	RequireXidGapJudgment(t)
 	stretch := measureUnderQuota(t, "spin")
 	t.Logf("a spinning thread under a quota: %s", stretch)
@@ -44,6 +47,8 @@ func TestAQuotasThrottlingReadsAsAWaitForACPU(t *testing.T) {
 // that runs 1 ms of CPU and then sleeps 10 ms, again and again, reads most of its time neither
 // running nor waiting for a CPU.
 func TestAQuotasReadingSeesASleepAsASleep(t *testing.T) {
+	// Parallel: it measures nothing with the rig (no Measure), and its child has a scope of its own.
+	t.Parallel()
 	RequireXidGapJudgment(t)
 	stretch := measureUnderQuota(t, "sleep")
 	t.Logf("a thread that sleeps under a quota: %s", stretch)
@@ -63,9 +68,12 @@ const xidQuotaCPUMax = "1000 10000"
 // and run_delay may fall short of, or past, its time on the clock. The child reads its clocks
 // exactly at their stamp, and over a stretch of 2 s such a spinning thread read 1.519 ms neither
 // running nor waiting with no quota, and -0.312 and 0.593 ms under quotas of 20% and 50%; under
-// this quota, 0.169 to 0.345 ms over half a second (2026-11-21).
+// this quota, 0.169 to 0.345 ms over half a second (2026-11-21), the stretch then. The stretch is
+// 200 ms since INFRA-6340, twenty of the quota's periods. Its reading is to be read from the
+// test-event artifact of CI's alone run (INFRA-6313: go test -json carries each row's t.Logf of its
+// stretch), since no machine but CI's runner, which has systemd-run and sudo, can run these rows.
 const (
-	xidQuotaStretch = 500 * time.Millisecond
+	xidQuotaStretch = 200 * time.Millisecond
 	xidQuotaSlack   = 5 * time.Millisecond
 )
 
@@ -149,7 +157,11 @@ func (s xidQuotaStretchReading) String() string {
 // has no python3, cannot show a quota's throttling at all (requireXidQuota).
 func measureUnderQuota(t *testing.T, mode string) xidQuotaStretchReading {
 	t.Helper()
-	child := []string{"python3", "-c", xidQuotaChild, mode, strconv.FormatInt(int64(xidQuotaStretch), 10)}
+	// The child starts under the quota, where each millisecond of its CPU takes ten on the clock, so
+	// it starts isolated (-I: it reads no PYTHON variable, and its path holds neither the user's
+	// site directory nor the script's) and without the site module (-S): it imports sys and time
+	// alone, which the interpreter finds without site.
+	child := []string{"python3", "-I", "-S", "-c", xidQuotaChild, mode, strconv.FormatInt(int64(xidQuotaStretch), 10)}
 	ways := []struct {
 		how  string
 		args []string
@@ -160,12 +172,13 @@ func measureUnderQuota(t *testing.T, mode string) xidQuotaStretchReading {
 	}
 	var refusals []string
 	for _, way := range ways {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// The child's exit is waited for through the shared wait, whose one bound is the test
+		// binary's deadline; its context ends there too, which ends a child still running then.
 		var stdout, stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, way.args[0], way.args[1:]...)
+		cmd := exec.CommandContext(testwait.Context(t), way.args[0], way.args[1:]...)
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
-		err := cmd.Run()
-		cancel()
+		var err error
+		testwait.Returns(t, "the child under the quota ("+way.how+") to exit", func() { err = cmd.Run() })
 		line, found := xidQuotaLine(stdout.String())
 		if !found {
 			refusals = append(refusals, fmt.Sprintf("%s: %v: %s", way.how, err, strings.TrimSpace(stderr.String())))

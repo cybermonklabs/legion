@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // These tests are of the rig's execution trace, which the race build does not take, so they are
@@ -30,7 +31,7 @@ func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 	// A run of this test against a rig that leaks the trace leaves it on; stop it, so the tests
 	// after this one still start their own.
 	testcleanup.Add(t, trace.Stop)
-	database := Open(t)
+	database := openEmpty(t)
 	tracer := NewXidTracer()
 	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
 	const stopWord = "the operation stops its test inside its window"
@@ -58,7 +59,7 @@ func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 		defer close(measured)
 		tracer.Measure(stopping, traced.Pool, func() { transaction(stopping, true) })
 	}()
-	<-measured
+	testwait.Receive(t, "Measure to stop with its operation", measured)
 	if got := stopping.stop(); got != stopWord {
 		t.Fatalf("the measured operation stopped with %q, want %q", got, stopWord)
 	}
@@ -81,9 +82,7 @@ func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 // ("execution tracer already enabled").
 func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	RequireXidGapJudgment(t)
-	database := Open(t)
 	tracer := NewXidTracer()
-	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
 	if err := trace.Start(io.Discard); err != nil {
 		t.Fatalf("start a trace as go test -trace does: %v", err)
 	}
@@ -93,9 +92,11 @@ func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
 	measured := make(chan struct{})
 	go func() {
 		defer close(measured)
-		tracer.Measure(stopping, traced.Pool, func() { ran = true })
+		// Measure stops at trace.IsEnabled, before it reads its pool, so this test opens no
+		// database: its Measure is given a nil pool.
+		tracer.Measure(stopping, nil, func() { ran = true })
 	}()
-	<-measured
+	testwait.Receive(t, "Measure to stop before its operation", measured)
 	if got := stopping.stop(); !strings.Contains(got, "go test -trace") {
 		t.Fatalf("Measure under a running trace stopped with %q, want a stop that names go test -trace", got)
 	}
