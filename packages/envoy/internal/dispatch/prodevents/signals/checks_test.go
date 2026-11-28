@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // TestAFailedAfterMergeCheckMakesOneCheckFailRow: a fail of an after_merge check, at a commit a
@@ -180,7 +181,7 @@ func (r *rig) awaitLockWait(what, like string, done <-chan error) {
 	for deadline := time.Now().Add(30 * time.Second); ; {
 		var waiting bool
 		if err := r.pool.QueryRow(r.ctx, `select exists (select from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like $1)`, like).Scan(&waiting); err != nil {
+			where datname = current_database() and `+lockwaittest.Waiting+` and query like $1)`, like).Scan(&waiting); err != nil {
 			r.t.Fatalf("%s: read the lock waits: %v", what, err)
 		}
 		if waiting {

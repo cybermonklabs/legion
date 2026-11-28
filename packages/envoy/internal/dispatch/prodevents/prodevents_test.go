@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -168,7 +169,7 @@ func TestAFailureAndTheDropOfItsDeployWaitForEachOther(t *testing.T) {
 			}
 			var waiting bool
 			if err := pool.QueryRow(ctx, `select exists (select from pg_stat_activity
-				where datname = current_database() and wait_event_type = 'Lock' and query like '%production_events%')`).Scan(&waiting); err != nil {
+				where datname = current_database() and `+lockwaittest.Waiting+` and query like '%production_events%')`).Scan(&waiting); err != nil {
 				t.Fatalf("%s: read the lock waits: %v", what, err)
 			}
 			return waiting, waiting
