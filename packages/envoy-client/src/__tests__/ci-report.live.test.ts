@@ -20,6 +20,7 @@ import {
   type StoredResult,
   startCIResultsStack,
   useCIResultsStackDirectory,
+  WORKFLOW,
 } from "../../test/ci-results-stack";
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
 import { buildGoBinaries } from "../../test/envoy-stack";
@@ -86,12 +87,10 @@ const JOB = "go-checks";
 const PROBE = "probe-passes";
 const SECOND = "second-probe-passes";
 
-/** The workflow file of the result entry, which Dispatch reads at a run's commit to know which
- *  job makes a check run (ci-results-stack.ts's WORKFLOW, which the stack does not export). */
-const WORKFLOW_PATH = ".github/workflows/ci-results.yaml";
-/** That workflow file at a commit whose job go-checks has a matrix of two legs, a and b: GitHub
- *  names each leg's check run `go-checks (<leg>)`, and Dispatch takes that name as a leg of
- *  go-checks only where the file at the commit makes go-checks a matrix job. */
+/** The result entry's workflow file ({@link WORKFLOW}) at a commit whose job go-checks has a
+ *  matrix of two legs, a and b: GitHub names each leg's check run `go-checks (<leg>)`, and
+ *  Dispatch takes that name as a leg of go-checks only where the file at the commit makes
+ *  go-checks a matrix job. */
 const MATRIX_WORKFLOW = `name: ci-results
 on: push
 jobs:
@@ -139,7 +138,7 @@ describe.skipIf(!dispatchStackEnabled)(
       const sha = commitSpec(work, dir, spec, name);
       running().setFiles(sha, join(dir, ".dispatch", "spec"));
       if (workflow !== undefined) {
-        running().github.setFile(running().repository, sha, WORKFLOW_PATH, workflow);
+        running().github.setFile(running().repository, sha, WORKFLOW, workflow);
       }
       return { dir, sha };
     }
