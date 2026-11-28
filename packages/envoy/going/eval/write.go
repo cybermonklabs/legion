@@ -469,8 +469,8 @@ func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown stri
 	`, id, rendered, at); err != nil {
 		return fmt.Errorf("its version: %w", err)
 	}
-	located := text.ExtractAt(rendered, "")
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, w.tx, id, 1, at, rendered, blocks, located, nil, "")
+	located := text.ExtractAt(rendered, text.Origins{})
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, w.tx, id, 1, at, rendered, blocks, located, nil, text.Origins{})
 	if err != nil {
 		return fmt.Errorf("index its blocks: %w", err)
 	}
@@ -489,7 +489,7 @@ func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown stri
 	}
 	if err := store.RunWrite(ctx, w.tx, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
-		refs.QueueRecordExcerpts(b, id, 1, refs.MentionExcerpts(rendered, blocks, located, ""))
+		refs.QueueRecordExcerpts(b, id, 1, refs.MentionExcerpts(rendered, blocks, located, text.Origins{}))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index its references: %w", err)
@@ -555,7 +555,7 @@ func (w *seedWriter) writeEvalAsks(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 		}
-		parts, err := refs.PlanAskParts(partIndex, refs.NewReader(ctx, w.tx, stored.Author, "ask", id, ""), stored, at)
+		parts, err := refs.PlanAskParts(partIndex, refs.NewReader(ctx, w.tx, stored.Author, "ask", id, text.Origins{}), stored, at)
 		if err != nil {
 			return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 		}
@@ -855,8 +855,8 @@ func (w *seedWriter) orderEvents(ctx context.Context) error {
 // indexItem indexes a comment's or a message's blocks with the server's indexer, writes their
 // windows, and writes the item's mentions, as cmd/dispatch-seed's writers do.
 func (w *seedWriter) indexItem(ctx context.Context, kind refs.ItemKind, id, body string, at time.Time) error {
-	located := text.ExtractAt(body, "")
-	if _, err := refs.IndexItem(ctx, w.tx, kind, id, body, "", at, located, nil); err != nil {
+	located := text.ExtractAt(body, text.Origins{})
+	if _, err := refs.IndexItem(ctx, w.tx, kind, id, body, text.Origins{}, at, located, nil); err != nil {
 		return fmt.Errorf("index its blocks: %w", err)
 	}
 	if _, err := refs.WriteItemWindows(ctx, w.tx, kind, id); err != nil {

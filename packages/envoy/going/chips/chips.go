@@ -35,8 +35,11 @@ type Items interface {
 }
 
 // pageOrigin stands for the dashboard's origin, which a dashboard path in an answer is read
-// against, as the browser reads it against its own.
+// against, as the browser reads it against its own, and pageOrigins is it as the one origin text
+// reads a dashboard URL of.
 const pageOrigin = "http://dispatch.invalid"
+
+var pageOrigins = text.ServerOrigins(pageOrigin, nil, nil)
 
 // issueTab is a link to a tab of an issue's page, which the bar draws as the issue's title: by
 // its reference (dispatch://DEMO-3/plan; the conversation is also dispatch://DEMO-3/log) or by its
@@ -57,11 +60,11 @@ type Target struct {
 // address names none, since the bar draws one as a chip only on its own origin, which an answer
 // gives as a path.
 func ParseTarget(href string) (Target, bool) {
-	value, serverURL := href, ""
+	value, origins := href, text.Origins{}
 	switch {
 	case strings.HasPrefix(href, "dispatch://"):
 	case strings.HasPrefix(href, "/") && !strings.HasPrefix(href, "//"):
-		value, serverURL = pageOrigin+href, pageOrigin
+		value, origins = pageOrigin+href, pageOrigins
 	default:
 		return Target{}, false
 	}
@@ -80,7 +83,7 @@ func ParseTarget(href string) (Target, bool) {
 		}
 		return Target{ref: text.Ref{Kind: "issue", IssueKey: match[1], ID: match[1]}, tab: tab}, true
 	}
-	ref, ok := text.ParseRef(value, serverURL)
+	ref, ok := text.ParseRef(value, origins)
 	if !ok || (ref.Kind != "issue" && ref.Kind != "artifact" && ref.Kind != "ask" && ref.Kind != "comment" &&
 		ref.Kind != "message" && ref.Kind != "block") {
 		return Target{}, false

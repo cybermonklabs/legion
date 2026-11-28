@@ -268,7 +268,7 @@ func goingRefPlace(action string, arguments map[string]any) (map[string]any, str
 	if !takes || value == "" {
 		return arguments, ""
 	}
-	ref, parsed := text.ParseRef(value, "")
+	ref, parsed := text.ParseRef(value, text.Origins{})
 	elsewhere := func(what string) string {
 		return fmt.Sprintf("the bar cannot send %s whose place is given by the link of %s, since it goes on an issue or a document. Ask again naming the issue or the document it is for.", write, what)
 	}
@@ -618,7 +618,7 @@ func goingText(arguments map[string]any, name string) string {
 // comment, an ask or a message splits into the item's id and the block's, a reference to the
 // item names it, and any other value is the item's id as written, which the route checks.
 func goingReplyTarget(value string) (id, block string) {
-	if ref, parsed := text.ParseRef(value, ""); parsed {
+	if ref, parsed := text.ParseRef(value, text.Origins{}); parsed {
 		switch {
 		case ref.Kind == "block" && (ref.Item == "comment" || ref.Item == "ask" || ref.Item == "message"):
 			return ref.ID, ref.Block
@@ -639,7 +639,7 @@ func goingPostID(ctx context.Context, read goingReader, kind, value string) (str
 	if !text.IsIDPrefix(id) {
 		return id, nil
 	}
-	if ref, ok := text.ParseRef(value, ""); ok && (ref.Kind == kind || ref.Kind == "block" && ref.Item == kind) {
+	if ref, ok := text.ParseRef(value, text.Origins{}); ok && (ref.Kind == kind || ref.Kind == "block" && ref.Item == kind) {
 		// Resolve the post itself, even when the supplied reference names one of its blocks.
 		post, _, _ := strings.Cut(value, "#")
 		var answer struct {
@@ -877,7 +877,7 @@ func goingTranslateHandoffVersion(ctx context.Context, read goingReader, call go
 
 // goingReadRef is what a read's `ref` names, as the `dispatch` command reads one
 // (parseDispatchRef, packages/envoy-client/src/dispatch-owner.ts): the reference text.ParseRef
-// reads, a dashboard URL under the server's own address included; and, after an issue's key, one
+// reads, a dashboard URL at any of the server's origins included; and, after an issue's key, one
 // of the three reads of the issue only a read names (of): its log, `log` or the Activity tab's
 // `activity`, its children, and its comments. version is the version an `@v<N>` after a
 // document's slug names, "" for none.
@@ -905,11 +905,11 @@ const goingIssueReadEvents = 10
 // a read reads. An issue's log, its children and its comments are read first (goingParseReadOf):
 // text.ParseRef reads `dispatch://KEY/log`, `/activity` and `/children` as the issue itself, as
 // the dashboard draws a link to a tab of its page, where a read of them reads that part.
-func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
+func goingParseReadRef(value string, origins text.Origins) (goingReadRef, bool) {
 	if read, named := goingParseReadOf(value); named {
 		return read, true
 	}
-	if ref, parsed := text.ParseRef(value, serverURL); parsed {
+	if ref, parsed := text.ParseRef(value, origins); parsed {
 		read := goingReadRef{Ref: ref}
 		if ref.Kind == "artifact" {
 			if version := goingRefVersion.FindStringSubmatch(value); version != nil {
@@ -939,7 +939,7 @@ func goingParseReadOf(value string) (goingReadRef, bool) {
 	default:
 		return goingReadRef{}, false
 	}
-	ref, parsed := text.ParseRef("dispatch://"+key, "")
+	ref, parsed := text.ParseRef("dispatch://"+key, text.Origins{})
 	if !parsed || ref.Kind != "issue" {
 		return goingReadRef{}, false
 	}
@@ -954,12 +954,12 @@ const goingReadHistoryRule = "history reads the bodies the edits and the delete 
 // call, as `dispatch read` picks what it reads (packages/envoy-client/src/dispatch-commands/read.ts),
 // each item through the route a person reads it with (goingPickReadItem), with the call's as_of
 // beside the row's own query (goingWithAsOf).
-func goingPickRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
+func goingPickRead(arguments map[string]any, origins text.Origins) (string, goingCall, error) {
 	asOf, err := goingAsOfQuery(arguments)
 	if err != nil {
 		return "", goingCall{}, err
 	}
-	row, call, err := goingPickReadItem(arguments, serverURL)
+	row, call, err := goingPickReadItem(arguments, origins)
 	if err != nil {
 		return "", goingCall{}, err
 	}
@@ -971,9 +971,9 @@ func goingPickRead(arguments map[string]any, serverURL string) (string, goingCal
 // the call: the item a reference names (goingPickReadRef); else a message, on its issue where the
 // call names one; an issue's or a project's document; an issue (goingIssueRead); and a project's
 // documents on no issue.
-func goingPickReadItem(arguments map[string]any, serverURL string) (string, goingCall, error) {
+func goingPickReadItem(arguments map[string]any, origins text.Origins) (string, goingCall, error) {
 	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
-		return goingPickReadRef(value, arguments, serverURL)
+		return goingPickReadRef(value, arguments, origins)
 	}
 	if arguments["history"] == true {
 		return "", goingCall{}, goingUntranslatable(goingReadHistoryRule)
@@ -1003,8 +1003,8 @@ func goingPickReadItem(arguments map[string]any, serverURL string) (string, goin
 // node in the reference graph with what references it; an ask; a comment with its thread; and a
 // message. With history it is the history of the comment or the issue message the reference
 // names, each body its edits and its delete replaced, and of nothing else.
-func goingPickReadRef(value string, arguments map[string]any, serverURL string) (string, goingCall, error) {
-	ref, parsed := goingParseReadRef(value, serverURL)
+func goingPickReadRef(value string, arguments map[string]any, origins text.Origins) (string, goingCall, error) {
+	ref, parsed := goingParseReadRef(value, origins)
 	history := arguments["history"] == true
 	switch {
 	case !parsed:
@@ -1092,7 +1092,7 @@ type goingDocRead struct {
 
 // goingDocReadOf is the item arguments name (goingDocRead), refused where they name none, or name
 // blocks at a version, or name an as_of that is no text.
-func goingDocReadOf(arguments map[string]any, serverURL string) (goingDocRead, error) {
+func goingDocReadOf(arguments map[string]any, origins text.Origins) (goingDocRead, error) {
 	asOf, err := goingAsOfQuery(arguments)
 	if err != nil {
 		return goingDocRead{}, err
@@ -1100,7 +1100,7 @@ func goingDocReadOf(arguments map[string]any, serverURL string) (goingDocRead, e
 	issue, project, artifact, session := goingText(arguments, "issue"), goingText(arguments, "project"), goingText(arguments, "artifact"), ""
 	version, versioned := goingArgumentText(arguments["version"])
 	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
-		ref, parsed := goingParseReadRef(value, serverURL)
+		ref, parsed := goingParseReadRef(value, origins)
 		if !parsed || ref.Kind != "artifact" {
 			return goingDocRead{}, goingUntranslatable(fmt.Sprintf("ref %q is no reference to a document", value))
 		}
@@ -1134,8 +1134,8 @@ func goingDocReadOf(arguments map[string]any, serverURL string) (goingDocRead, e
 // goingPickDocRead is the row of dispatch_doc_read a call reads where its item is a document, and
 // what that row's route takes of the call, with no read made (goingDocRead.pick). A call is sent
 // to the row goingChooseDocRead chooses, which reads the item's record first.
-func goingPickDocRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
-	item, err := goingDocReadOf(arguments, serverURL)
+func goingPickDocRead(arguments map[string]any, origins text.Origins) (string, goingCall, error) {
+	item, err := goingDocReadOf(arguments, origins)
 	if err != nil {
 		return "", goingCall{}, err
 	}
@@ -1174,8 +1174,8 @@ func (d goingDocRead) pick() (string, goingCall) {
 // whose answer the model is told in the command's words (goingUploadedFile.told); a call for its
 // blocks is refused in the command's words. Where the read of the record is refused, the call
 // keeps the row pick picks, whose route answers its own refusal, as before any record was read.
-func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error) {
-	item, err := goingDocReadOf(arguments, serverURL)
+func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[string]any, origins text.Origins) (string, goingCall, error) {
+	item, err := goingDocReadOf(arguments, origins)
 	if err != nil {
 		return "", goingCall{}, err
 	}
@@ -1242,11 +1242,11 @@ const goingSpecFormRootRule = "root walks every issue under it and reads each of
 // (goingSpecFormRootRule), or a file of an agent's conversation, which holds no text of The Spec.
 // A call naming an issue and no artifact names the issue's spec: the command reads the spec and
 // then the Verification document, and the bar reads the second by naming it as artifact.
-func goingSpecFormOf(arguments map[string]any, serverURL string) (goingDocRead, error) {
+func goingSpecFormOf(arguments map[string]any, origins text.Origins) (goingDocRead, error) {
 	if arguments["root"] != nil {
 		return goingDocRead{}, goingUntranslatable(goingSpecFormRootRule)
 	}
-	item, err := goingDocReadOf(arguments, serverURL)
+	item, err := goingDocReadOf(arguments, origins)
 	if err != nil {
 		return goingDocRead{}, err
 	}
@@ -1271,8 +1271,8 @@ func (d goingDocRead) specForm(id string) (string, goingCall) {
 // row's route takes of the call: the form of the document the call names by its id, and otherwise
 // the record of the document its issue or project names, which goingChooseSpecForm reads first
 // for the document's id.
-func goingPickSpecForm(arguments map[string]any, serverURL string) (string, goingCall, error) {
-	item, err := goingSpecFormOf(arguments, serverURL)
+func goingPickSpecForm(arguments map[string]any, origins text.Origins) (string, goingCall, error) {
+	item, err := goingSpecFormOf(arguments, origins)
 	if err != nil {
 		return "", goingCall{}, err
 	}
@@ -1295,8 +1295,8 @@ func (d goingDocRead) pickSpecForm() (string, goingCall) {
 // has its record read through read first, as the command's resolveDocument does, and is read by
 // the id the record gives. Where the read of the record is refused, the call keeps the record's
 // row, whose route answers its own refusal.
-func goingChooseSpecForm(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error) {
-	item, err := goingSpecFormOf(arguments, serverURL)
+func goingChooseSpecForm(ctx context.Context, read goingReader, arguments map[string]any, origins text.Origins) (string, goingCall, error) {
+	item, err := goingSpecFormOf(arguments, origins)
 	if err != nil {
 		return "", goingCall{}, err
 	}

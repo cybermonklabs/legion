@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const (
@@ -179,7 +180,9 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	case err != nil:
 		return goingCallResult{refusal: goingAgentFailed(agentwire.CallCall, err)}
 	}
-	doer := a.s.goingDoer(caller, a.s.deps.ServerURL).(goingInProcess)
+	// The agent's calls come from no address a person is at, so they are served at the canonical
+	// origin, the first of the server's (Deps.Origins).
+	doer := a.s.goingDoer(caller, a.s.deps.Origins.Canonical()).(goingInProcess)
 	doer.limit = agentwire.CallBodyLimit
 	if hook := a.s.deps.AgentCallHook; len(hook.Rules) > 0 {
 		doer.handler = hook.wrap(doer.handler)
@@ -677,7 +680,7 @@ func (a *AgentListener) routeSends(ctx context.Context, request agentwire.CallRe
 		if err != nil {
 			return nil, false, goingAgentFailed(agentwire.CallCall, err)
 		}
-		specs, err := goingReadSends(ctx, request.Tool, named, goingReader{doer: doer}, a.s.deps.ServerURL)
+		specs, err := goingReadSends(ctx, request.Tool, named, goingReader{doer: doer}, a.s.deps.Origins)
 		if err != nil {
 			return nil, false, goingCallRefusal(request.Tool, err)
 		}
@@ -732,14 +735,14 @@ func goingIssueOfPath(path string) string {
 	return key
 }
 
-// goingReadSends is the one request a read tool sends for arguments (goingReadCall). serverURL is
-// the server's own address, under which a dashboard URL names an item.
-func goingReadSends(ctx context.Context, tool string, arguments map[string]any, read goingReader, serverURL string) ([]goingSend, error) {
+// goingReadSends is the one request a read tool sends for arguments (goingReadCall). origins is
+// the server's origins (Deps.Origins), at any of which a dashboard URL names an item.
+func goingReadSends(ctx context.Context, tool string, arguments map[string]any, read goingReader, origins text.Origins) ([]goingSend, error) {
 	routes, err := goingReadToolRoutes(tool)
 	if err != nil {
 		return nil, err
 	}
-	route, call, err := goingReadCall(ctx, tool, routes, arguments, read, serverURL)
+	route, call, err := goingReadCall(ctx, tool, routes, arguments, read, origins)
 	if err != nil {
 		var untranslatable goingUntranslatable
 		if errors.As(err, &untranslatable) {
@@ -756,16 +759,16 @@ func goingReadSends(ctx context.Context, tool string, arguments map[string]any, 
 // by the row's own translation where it has one, and otherwise with each argument the path does
 // not take sent in the query of a GET, a list as one parameter per item, or in the JSON body of
 // any other method (goingTranslateRead).
-func goingReadCall(ctx context.Context, tool string, routes []GoingRoute, arguments map[string]any, read goingReader, serverURL string) (GoingRoute, goingCall, error) {
+func goingReadCall(ctx context.Context, tool string, routes []GoingRoute, arguments map[string]any, read goingReader, origins text.Origins) (GoingRoute, goingCall, error) {
 	if choose := goingReadTools[tool].Choose; choose != nil {
-		row, call, err := choose(ctx, read, arguments, serverURL)
+		row, call, err := choose(ctx, read, arguments, origins)
 		if err != nil {
 			return GoingRoute{}, goingCall{}, err
 		}
 		route, err := goingPickedRoute(tool, routes, row)
 		return route, call, err
 	}
-	route, call, picked, err := goingReadRow(tool, routes, arguments, serverURL)
+	route, call, picked, err := goingReadRow(tool, routes, arguments, origins)
 	if err != nil || picked {
 		return route, call, err
 	}
@@ -782,9 +785,9 @@ func goingReadCall(ctx context.Context, tool string, routes []GoingRoute, argume
 // row's route takes of the call (picked); and otherwise its first row whose guard the arguments
 // satisfy and every one of whose placeholders they fill (chooseGoingRoute), with the value of each
 // placeholder as the call's path, for the row's translation to take.
-func goingReadRow(tool string, routes []GoingRoute, arguments map[string]any, serverURL string) (GoingRoute, goingCall, bool, error) {
+func goingReadRow(tool string, routes []GoingRoute, arguments map[string]any, origins text.Origins) (GoingRoute, goingCall, bool, error) {
 	if pick := goingReadTools[tool].Pick; pick != nil {
-		row, call, err := pick(arguments, serverURL)
+		row, call, err := pick(arguments, origins)
 		if err != nil {
 			return GoingRoute{}, goingCall{}, true, err
 		}
@@ -812,12 +815,12 @@ func goingPickedRoute(tool string, routes []GoingRoute, row string) (GoingRoute,
 // named tool with arguments reads: the row the server picks for it (goingReadRow), with no read
 // made and nothing sent. A tool whose row hangs on what its item is names the row its Pick picks:
 // dispatch_doc_read names the row of a document, where the server sends a read of an uploaded
-// file to one of its versions once it has read the file's record (goingChooseDocRead). serverURL
-// is the server's own address, under which a dashboard URL names an item. The arguments are read
+// file to one of its versions once it has read the file's record (goingChooseDocRead). origins
+// is the server's origins, at any of which a dashboard URL names an item. The arguments are read
 // as they are written, with no run's page to name an item they leave out (goingPageArguments). It
 // is false for a tool that is no read tool of the server, and for a call the server refuses before
 // it picks a row.
-func GoingReadRoute(tool string, arguments map[string]any, serverURL string) (string, bool) {
+func GoingReadRoute(tool string, arguments map[string]any, origins text.Origins) (string, bool) {
 	if _, reads := goingReadTools[tool]; !reads {
 		return "", false
 	}
@@ -825,7 +828,7 @@ func GoingReadRoute(tool string, arguments map[string]any, serverURL string) (st
 	if err != nil {
 		return "", false
 	}
-	route, _, _, err := goingReadRow(tool, routes, arguments, serverURL)
+	route, _, _, err := goingReadRow(tool, routes, arguments, origins)
 	if err != nil {
 		return "", false
 	}

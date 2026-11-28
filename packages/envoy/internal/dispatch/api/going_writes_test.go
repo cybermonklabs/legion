@@ -42,7 +42,8 @@ func (i goingCookieOrHeader) Login(r *http.Request) (string, error) {
 // fixtures write with, and whose stand-in listener holds one live session, s1, titled planner,
 // and records every send to it in sent (newGoingWritesRigOn reaches another listener instead).
 // mux is the route table as register mounts it; network is the same behind the cross-site origin
-// check routes.New puts in front of the whole server, which is what a browser reaches.
+// check routes.New puts in front of the whole server, which is what a browser reaches, at the
+// server's one address (Deps.RequestOrigin, as NewDeps reads it for a server no router built).
 type goingWritesRig struct {
 	mux      http.Handler
 	network  http.Handler
@@ -99,7 +100,7 @@ func newGoingWritesRigSettling(t *testing.T, envoyURL string, serving func(*stor
 	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: serving(database), identity: people, envoyURL: envoyURL, app: app,
 		githubAPIBase: githubAPIBase, settle: settle})
 	return goingWritesRig{
-		mux: mux, network: EnforceCookieOrigin(testServerURL, mux), served: served,
+		mux: mux, network: EnforceCookieOrigin(served.deps.RequestOrigin, mux), served: served,
 		database: database, sessions: sessions,
 	}
 }

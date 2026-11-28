@@ -454,7 +454,7 @@ func TestAReadWithHistoryReadsThePostsHistory(t *testing.T) {
 		{"a comment", map[string]any{"ref": "dispatch://DEMO-1/comment/" + comment}, "GET /api/v1/comments/{id}", comment},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			route, call, _, err := goingReadRow("dispatch_read", routes, c.arguments, testServerURL)
+			route, call, _, err := goingReadRow("dispatch_read", routes, c.arguments, testOrigins)
 			if err != nil || goingRouteKey(route) != c.row || call.path["id"] != c.id {
 				t.Fatalf("dispatch_read %v reads %s of %v (%v), want %s of %s", c.arguments, goingRouteKey(route), call.path, err, c.row, c.id)
 			}
@@ -467,7 +467,7 @@ func TestAReadWithHistoryReadsThePostsHistory(t *testing.T) {
 		"a document":          {"ref": "dispatch://DEMO-1/spec", "history": true},
 	} {
 		t.Run("history of "+name, func(t *testing.T) {
-			route, _, _, err := goingReadRow("dispatch_read", routes, arguments, testServerURL)
+			route, _, _, err := goingReadRow("dispatch_read", routes, arguments, testOrigins)
 			if err == nil || !strings.Contains(err.Error(), goingReadHistoryRule) {
 				t.Fatalf("dispatch_read %v reads %s (%v), want it refused: %s", arguments, goingRouteKey(route), err, goingReadHistoryRule)
 			}

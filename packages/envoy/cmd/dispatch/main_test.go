@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -784,18 +785,22 @@ func TestResolveBootConfigRequiresTheAccountTokenFileWhenAgentSecretsURLSet(t *t
 }
 
 // TestDispatchReadsItsProofOrigins: DISPATCH_PROOF_ORIGINS adds origins a broker token's proof may
-// name to DISPATCH_SERVER_URL's, and they reach the verifier main builds: brokerTokenVerifier, from
-// resolveBootConfig and the server URL loadEnvoyConfig reads. A value of production's shape, which
-// lists DISPATCH_SERVER_URL's origin again beside the in-cluster one, starts Dispatch with the two:
-// a proof signed for either is accepted, and one for an origin neither setting names is refused.
-// Unset, DISPATCH_SERVER_URL's origin is the only one. An entry with a path, and one with another
-// scheme, each refuse the start naming it.
+// name to DISPATCH_SERVER_URL's, and so does DISPATCH_SERVED_ORIGINS, after them, and they reach
+// the verifier main builds: brokerTokenVerifier, from resolveBootConfig and the server URL
+// loadEnvoyConfig reads. A value of production's shape, which lists DISPATCH_SERVER_URL's origin
+// again beside the in-cluster one, starts Dispatch with the two: a proof signed for either is
+// accepted, and one for an origin neither setting names is refused. A served address is accepted
+// too, under any Host, and a former address (DISPATCH_FORMER_ORIGINS) is refused as an origin no
+// setting names is (c-l-served 4). Unset, DISPATCH_SERVER_URL's origin is the only one. An entry
+// with a path, and one with another scheme, each refuse the start naming it.
 func TestDispatchReadsItsProofOrigins(t *testing.T) {
 	t.Parallel()
 	const (
 		public    = "https://dispatch.example"
 		inCluster = "http://dispatch.internal.example:8766"
 		elsewhere = "https://dispatch.elsewhere.example"
+		served    = "https://b.example.test"
+		former    = "https://old.example.test"
 		route     = "/api/v1/whoami"
 		token     = "a-session-token-the-broker-issued"
 	)
@@ -833,7 +838,7 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		if err != nil {
 			t.Fatalf("build the broker token verifier: %v", err)
 		}
-		return proofOrigins(serverURL, boot.ProofOrigins), verifier
+		return proofOrigins(serverURL, boot.ProofOrigins, boot.ServedOrigins), verifier
 	}
 	verify := func(t *testing.T, verifier *ciphertoken.Verifier, origin string) error {
 		t.Helper()
@@ -853,6 +858,42 @@ func TestDispatchReadsItsProofOrigins(t *testing.T) {
 		}
 		if err := verify(t, verifier, elsewhere); !errors.Is(err, ciphertoken.ErrProofInvalid) {
 			t.Errorf("a proof for %s, which no setting names, answered %v, want ErrProofInvalid", elsewhere, err)
+		}
+	})
+
+	t.Run("a served address and a former one", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{
+			"DISPATCH_PROOF_ORIGINS":  inCluster + "," + served,
+			"DISPATCH_SERVED_ORIGINS": served,
+			"DISPATCH_FORMER_ORIGINS": former,
+		})
+		if !slices.Equal(origins, []string{public, inCluster, served}) {
+			t.Fatalf("the verifier's origins are %q, want %q, %q and the served %q, each once", origins, public, inCluster, served)
+		}
+		for _, origin := range []string{public, inCluster, served} {
+			if err := verify(t, verifier, origin); err != nil {
+				t.Errorf("a proof for %s was refused: %v", origin, err)
+			}
+		}
+		atAnotherHost := caller.Signed(t, http.MethodGet, served+route, token)
+		atAnotherHost.Host = "dispatch.internal.example:8766"
+		if _, err := verifier.Verify(t.Context(), atAnotherHost); err != nil {
+			t.Errorf("a proof for the served %s, sent under the in-cluster Host, was refused: %v", served, err)
+		}
+		for _, origin := range []string{former, elsewhere} {
+			if err := verify(t, verifier, origin); !errors.Is(err, ciphertoken.ErrProofInvalid) {
+				t.Errorf("a proof for %s, a former address or one no setting names, answered %v, want ErrProofInvalid", origin, err)
+			}
+		}
+	})
+
+	t.Run("a served address alone", func(t *testing.T) {
+		origins, verifier := start(t, map[string]string{"DISPATCH_SERVED_ORIGINS": served})
+		if !slices.Equal(origins, []string{public, served}) {
+			t.Fatalf("the verifier's origins are %q, want %q and the served %q", origins, public, served)
+		}
+		if err := verify(t, verifier, served); err != nil {
+			t.Errorf("a proof for the served %s, with no DISPATCH_PROOF_ORIGINS, was refused: %v", served, err)
 		}
 	})
 
@@ -1815,14 +1856,14 @@ func TestWriteAnchorBlockBackfillReport(t *testing.T) {
 func TestRebuildRefsRefusesWithoutServerURL(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
-	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", &output); code != 1 {
+	if code := rebuildRefs(context.Background(), "postgres://unused", "  ", text.Origins{}, &output); code != 1 {
 		t.Fatalf("rebuild-refs without server URL exited %d, want 1", code)
 	}
 	if !strings.Contains(output.String(), "dispatch.server_url is required") {
 		t.Fatalf("rebuild-refs refusal = %q", output.String())
 	}
 	output.Reset()
-	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
+	if code := rebuildRefs(context.Background(), "", "https://dispatch.example", text.NewOrigins("https://dispatch.example"), &output); code != 1 || !strings.Contains(output.String(), "DATABASE_URL is required") {
 		t.Fatalf("rebuild-refs without DATABASE_URL: code=%d output=%q", code, output.String())
 	}
 }

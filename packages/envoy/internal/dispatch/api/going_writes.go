@@ -28,10 +28,9 @@ const goingInProcessAddr = "unix:agent"
 // goingInProcess is the server's own route table called as one caller: every request it is given
 // names that caller on its context (resolvedCallerKey), which optionalActor reads before any
 // credential, carries no credential header, and is served by the whole chain a request off the
-// network is (server.inProcess), at the server's public origin (PublicOrigin) - its scheme and
-// its host, so a route that writes a link names the public address - with no TLS state and
-// goingInProcessAddr for its peer. limit is the most of an answer's body it keeps, the rest cut
-// (recordedAnswer); 0 keeps it whole.
+// network is (server.inProcess), at the origin it is given - its scheme and its host, so a route
+// that writes a link names that address - with no TLS state and goingInProcessAddr for its peer.
+// limit is the most of an answer's body it keeps, the rest cut (recordedAnswer); 0 keeps it whole.
 type goingInProcess struct {
 	handler      http.Handler
 	caller       resolvedCaller
@@ -39,8 +38,9 @@ type goingInProcess struct {
 	limit        int
 }
 
-// goingDoer is the route table called in-process as caller, at origin, the server's public origin
-// as PublicOrigin answers it.
+// goingDoer is the route table called in-process as caller, at origin: the address the person's
+// own request came to (goingBarDoer), or, for the agent's calls, which come from no such address,
+// the canonical origin (Deps.Origins).
 func (s *server) goingDoer(caller resolvedCaller, origin string) GoingDoer {
 	scheme, host, _ := strings.Cut(origin, "://")
 	return goingInProcess{handler: s.inProcess, caller: caller, scheme: scheme, host: host}
@@ -48,13 +48,15 @@ func (s *server) goingDoer(caller resolvedCaller, origin string) GoingDoer {
 
 // goingBarDoer is the route table called in-process as the caller of r, the request that read or
 // answered a plan of run or pressed its undo, with the command bar's act beside them
-// (goingBarCaller).
+// (goingBarCaller), at the address r came to as the router reads it (Deps.RequestOrigin): each
+// write it makes is judged by the origin check (server.inProcess) as the same write from the
+// page at that address would be.
 func (s *server) goingBarDoer(r *http.Request, run string) (GoingDoer, error) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		return nil, err
 	}
-	return s.goingDoer(goingBarCaller(actor, human, run), PublicOrigin(s.deps.ServerURL, r)), nil
+	return s.goingDoer(goingBarCaller(actor, human, run), s.deps.RequestOrigin.Public(r)), nil
 }
 
 // Do serves request in-process. The request is built fresh by the caller and carries the
@@ -75,11 +77,11 @@ func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 }
 
 // serve serves request in-process as Do does, and answers what its route answered, kept whole or
-// cut at the doer's limit.
+// cut at the doer's limit. The route is handed request as if it had reached the doer's origin
+// (served), as the broker token check hands its library a request at its origin (ciphertoken's
+// atOrigin): the origin goingDoer was given, which the router's table picked for the person's own
+// request (goingBarDoer) or the canonical one for the agent's calls. It reads no request's Host.
 func (d goingInProcess) serve(request *http.Request) *recordedAnswer {
-	request.URL.Scheme, request.URL.Host, request.Host = d.scheme, d.host, d.host
-	request.TLS = nil
-	request.RemoteAddr = goingInProcessAddr
 	ctx := context.WithValue(request.Context(), resolvedCallerKey{}, d.caller)
 	ctx = context.WithValue(ctx, requestKeyClaimKey{}, nil)
 	ctx = context.WithValue(ctx, goingInProcessKey{}, true)
@@ -92,8 +94,12 @@ func (d goingInProcess) serve(request *http.Request) *recordedAnswer {
 		ctx = context.WithValue(context.WithValue(ctx, goingLandingKey{}, nil), goingAnswerKey{}, sink)
 		ctx = store.WithBeforeCommit(ctx, landing.step(running, sink))
 	}
+	served := request.WithContext(ctx)
+	served.URL.Scheme, served.URL.Host, served.Host = d.scheme, d.host, d.host
+	served.TLS = nil
+	served.RemoteAddr = goingInProcessAddr
 	answer := &recordedAnswer{header: http.Header{}, limit: d.limit}
-	d.handler.ServeHTTP(answer, request.WithContext(ctx))
+	d.handler.ServeHTTP(answer, served)
 	return answer
 }
 

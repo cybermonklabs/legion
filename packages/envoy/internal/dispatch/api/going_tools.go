@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // goingToolRoute is one row of the server's table a tool calls: how a call fills the row's path,
@@ -211,17 +212,17 @@ type goingReadTool struct {
 	Routes []goingToolRoute
 	// Pick is the row of Routes a call reads, by "<METHOD> <pattern>", and what that row's route
 	// takes of the call, for a tool whose command reads the item its arguments name rather than
-	// the first of its rows they fill: an item named by a reference, above all. serverURL is the
-	// server's own address, under which a dashboard URL names an item. Nil for a tool whose call
-	// reads its first row whose guard the arguments satisfy and whose placeholders they fill
-	// (goingReadCall).
-	Pick func(arguments map[string]any, serverURL string) (string, goingCall, error)
+	// the first of its rows they fill: an item named by a reference, above all. origins is the
+	// server's origins (Deps.Origins), at any of which a dashboard URL names an item. Nil for a
+	// tool whose call reads its first row whose guard the arguments satisfy and whose placeholders
+	// they fill (goingReadCall).
+	Pick func(arguments map[string]any, origins text.Origins) (string, goingCall, error)
 	// Choose is the row of Routes a call is sent to, and what that row's route takes of it, for a
 	// tool whose row hangs on what the item its arguments name is, which Choose reads through
 	// read first: dispatch_doc_read reads an uploaded file at one of its versions where it reads
 	// a document's text (goingChooseDocRead). Pick names the row such a call reads with no read
 	// made (GoingReadRoute). Nil for a tool whose row its arguments pick alone.
-	Choose func(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error)
+	Choose func(ctx context.Context, read goingReader, arguments map[string]any, origins text.Origins) (string, goingCall, error)
 }
 
 // goingToolRows is the rows of the tool spec names: the rows its entry names, or, for a spec that

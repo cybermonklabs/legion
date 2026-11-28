@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // subcommand is an argument envoy-dispatch takes in place of serving. run gets the arguments
@@ -42,16 +43,32 @@ type subcommand struct {
 // dispatches on this table and names it, in this order, when it refuses an argument.
 var subcommands = []subcommand{
 	{"backfill-block-ids", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillBlockIDs(ctx, env.get("DATABASE_URL"), specRootsSetting(env), loadServerURL(env), stdout)
+		origins, err := rebuildRefsOrigins(env, loadServerURL(env))
+		if err != nil {
+			fmt.Fprintf(stdout, "backfill-block-ids: %v\n", err)
+			return 1
+		}
+		return backfillBlockIDs(ctx, env.get("DATABASE_URL"), specRootsSetting(env), origins, stdout)
 	}},
 	{"backfill-anchor-blocks", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), specRootsSetting(env), loadServerURL(env), stdout)
+		origins, err := rebuildRefsOrigins(env, loadServerURL(env))
+		if err != nil {
+			fmt.Fprintf(stdout, "backfill-anchor-blocks: %v\n", err)
+			return 1
+		}
+		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), specRootsSetting(env), origins, stdout)
 	}},
 	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
 	}},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
+		serverURL := loadServerURL(env)
+		origins, err := rebuildRefsOrigins(env, serverURL)
+		if err != nil {
+			fmt.Fprintf(stdout, "rebuild-refs: %v\n", err)
+			return 1
+		}
+		return rebuildRefs(ctx, env.get("DATABASE_URL"), serverURL, origins, stdout)
 	}},
 	{"redeliver-webhooks", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return redeliverWebhooks(ctx, args, env, stdout)
@@ -342,14 +359,14 @@ func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL stri
 }
 
 // gatedDocumentService is the document service a backfill command writes through: a store and a
-// broker, the server's address, and the form gate of The Spec that specRoots names
-// (api.NewSpecForm), the same gate the server sets on its own. A settlement the command runs, of a
-// document a server left owing one, so carries a person's approval as the server's settlement
-// would, and carries none over a text that breaks the form. A value of specRoots that is no list
-// of issue keys is reported on out under label, and the service is shut down.
-func gatedDocumentService(database *store.Store, specRoots, serverURL, label string, out io.Writer) (*docs.Service, bool) {
-	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: serverURL})
-	if _, err := api.NewSpecForm(specRoots, serverURL, service); err != nil {
+// broker, the server's origins (rebuildRefsOrigins), and the form gate of The Spec that specRoots
+// names (api.NewSpecForm), the same gate the server sets on its own. A settlement the command
+// runs, of a document a server left owing one, so carries a person's approval as the server's
+// settlement would, and carries none over a text that breaks the form. A value of specRoots that
+// is no list of issue keys is reported on out under label, and the service is shut down.
+func gatedDocumentService(database *store.Store, specRoots string, origins text.Origins, label string, out io.Writer) (*docs.Service, bool) {
+	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), Origins: origins})
+	if _, err := api.NewSpecForm(specRoots, origins, service); err != nil {
 		fmt.Fprintf(out, "%s: %v\n", label, err)
 		_ = service.Shutdown(context.Background())
 		return nil, false
@@ -357,13 +374,13 @@ func gatedDocumentService(database *store.Store, specRoots, serverURL, label str
 	return service, true
 }
 
-func backfillBlockIDs(ctx context.Context, databaseURL, specRoots, serverURL string, out io.Writer) int {
+func backfillBlockIDs(ctx context.Context, databaseURL, specRoots string, origins text.Origins, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-block-ids", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	service, ok := gatedDocumentService(database, specRoots, serverURL, "backfill-block-ids", out)
+	service, ok := gatedDocumentService(database, specRoots, origins, "backfill-block-ids", out)
 	if !ok {
 		return 1
 	}
@@ -414,13 +431,13 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 	return 0
 }
 
-func backfillAnchorBlocks(ctx context.Context, databaseURL, specRoots, serverURL string, out io.Writer) int {
+func backfillAnchorBlocks(ctx context.Context, databaseURL, specRoots string, origins text.Origins, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-anchor-blocks", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	service, ok := gatedDocumentService(database, specRoots, serverURL, "backfill-anchor-blocks", out)
+	service, ok := gatedDocumentService(database, specRoots, origins, "backfill-anchor-blocks", out)
 	if !ok {
 		return 1
 	}
@@ -556,10 +573,34 @@ func loadServerURL(env settingValues) string {
 	return envoyConfig.Dispatch.ServerURL
 }
 
-// rebuildRefs reparses every reference source and reconciles the refs index with it. It
-// refuses an empty server URL: text.Extract recognises same-origin dashboard URLs only against
-// it, so an empty value would delete every URL-form mention.
-func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writer) int {
+// rebuildRefsOrigins is the server's origins as rebuild-refs reads dashboard links of
+// (text.ServerOrigins): serverURL, the canonical origin, then DISPATCH_SERVED_ORIGINS and
+// DISPATCH_FORMER_ORIGINS as the server takes them beside it. A link at any of them is a
+// reference, so a rebuild that read fewer would drop every link written at the others. A value
+// the server would refuse is refused here too (parseAddressLists, proofOriginEntries,
+// checkServedOrigins), so rebuild-refs stops before it opens the database. backfill-block-ids
+// and backfill-anchor-blocks read their document service's origins here too
+// (gatedDocumentService).
+func rebuildRefsOrigins(env settingValues, serverURL string) (text.Origins, error) {
+	boot := bootConfig{DevSignIn: env.get("DISPATCH_DEV_SIGNIN") == "1"}
+	var err error
+	if boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS")); err != nil {
+		return text.Origins{}, err
+	}
+	if boot.ServedOrigins, boot.FormerOrigins, err = parseAddressLists(env); err != nil {
+		return text.Origins{}, err
+	}
+	if err := checkServedOrigins(boot, serverURL); err != nil {
+		return text.Origins{}, err
+	}
+	return text.ServerOrigins(serverURL, boot.ServedOrigins, boot.FormerOrigins), nil
+}
+
+// rebuildRefs reparses every reference source and reconciles the refs index with it, reading a
+// dashboard URL of one of origins (rebuildRefsOrigins) as a reference. It refuses an empty server
+// URL: text.Extract recognises same-origin dashboard URLs only against the origins it is given, so
+// an empty value would delete every URL-form mention.
+func rebuildRefs(ctx context.Context, databaseURL, serverURL string, origins text.Origins, out io.Writer) int {
 	if strings.TrimSpace(databaseURL) == "" {
 		fmt.Fprintln(out, "rebuild-refs: DATABASE_URL is required")
 		return 1
@@ -575,7 +616,7 @@ func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writ
 	defer database.Pool.Close()
 	// rebuild-refs opens a transaction per source, so it marks its context like the other
 	// commands: a read taken inside one is refused rather than left to deadlock the pool.
-	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, serverURL)
+	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, origins)
 	if err != nil {
 		fmt.Fprintf(out, "rebuild-refs: %v\n", err)
 		return 1

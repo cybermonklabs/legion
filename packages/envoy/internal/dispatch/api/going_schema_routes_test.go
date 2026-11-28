@@ -266,7 +266,7 @@ func newGoingSchemaRig(t *testing.T) goingWritesRig {
 	mux, _, _, served := newRegisteredTestServer(t, testServerOptions{store: database, identity: people, envoyURL: listener.URL,
 		app: app, githubAPIBase: github, files: filestest.NewMemory()})
 	return goingWritesRig{
-		mux: mux, network: EnforceCookieOrigin(testServerURL, mux), served: served,
+		mux: mux, network: EnforceCookieOrigin(served.deps.RequestOrigin, mux), served: served,
 		database: database, sessions: sessions, sent: &sent,
 	}
 }

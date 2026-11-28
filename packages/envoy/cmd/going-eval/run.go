@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/going/chips"
 	"github.com/sjawhar/envoy/going/eval"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // evalPerson is the person every try acts as, who is none of the seed's people.
@@ -716,8 +717,10 @@ type toolCall struct {
 // a row of referenceRoutes. The row is the one the server picks for the call (api.GoingReadRoute)
 // under the Dispatch tool the agent's tool calls (going/agent tools.go): read calls dispatch_read
 // with its arguments as written, search calls dispatch_search, and call_tool calls the tool it
-// names. serverURL is the try's server's address, under which a dashboard URL names an item.
+// names. serverURL is the try's server's address, its one origin (text.ServerOrigins), under which
+// a dashboard URL names an item.
 func countCalls(steps [][]byte, serverURL string) (map[string]int, int) {
+	origins := text.ServerOrigins(serverURL, nil, nil)
 	tools, reads := map[string]int{}, 0
 	for _, body := range steps {
 		var step struct {
@@ -743,7 +746,7 @@ func countCalls(steps [][]byte, serverURL string) (map[string]int, int) {
 		if json.Unmarshal(call.Arguments, &arguments) != nil {
 			continue
 		}
-		if route, picked := api.GoingReadRoute(dispatchTool, arguments, serverURL); picked && referenceRoutes[route] {
+		if route, picked := api.GoingReadRoute(dispatchTool, arguments, origins); picked && referenceRoutes[route] {
 			reads++
 		}
 	}

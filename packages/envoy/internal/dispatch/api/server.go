@@ -108,9 +108,24 @@ type Deps struct {
 	// DISPATCH_SPEC_ROOTS names, under which the form gate judges the spec and the Verification
 	// document of each issue, and each root's terms.md. The zero SpecForm names no root and covers
 	// no document.
-	SpecForm  SpecForm
-	ServerURL string
-	Docs      docs.API
+	SpecForm SpecForm
+	// Origins is the server's web origins, canonical first (text.ServerOrigins of DepsInput's
+	// ServerURL, ServedOrigins and FormerOrigins): a dashboard URL of any of them that a text or a
+	// request writes is read as the reference its page names.
+	Origins text.Origins
+	Docs    docs.API
+	// WhoamiOrigins is the server's origins as GET /api/v1/whoami names them: the router's one
+	// origin table's list (routes: hostOrigins.origins), the list GET /auth/whoami names, so the
+	// dispatch command reads the list the page reads and the API keeps no copy of the settings it
+	// is built from. nil, where neither list is set or no router built the API, names none.
+	WhoamiOrigins []string
+	// RequestOrigin is the address a request came to, as the router's one origin table reads its
+	// Host (routes: hostOrigins), which routes.BuildAppContext hands over: the cookie-origin check
+	// the command bar's in-process route table is behind reads it (EnforceCookieOrigin,
+	// server.inProcess), and so does the address that table is called at for a person
+	// (goingBarDoer). NewDeps gives a server no router built the reading of one address: ServerURL's
+	// origin at every Host, and no former address (canonicalOrigin).
+	RequestOrigin RequestOrigin
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -316,7 +331,20 @@ type DepsInput struct {
 	// Nil builds one that names no root, through NewSpecForm, on Docs.
 	SpecForm  *SpecForm
 	ServerURL string
-	EnvoyURL  string
+	// ServedOrigins are the other addresses the server serves beside ServerURL
+	// (DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before
+	// (DISPATCH_FORMER_ORIGINS): Deps.Origins reads dashboard URLs of both, so a link written at a
+	// former address keeps its target. Which address a request is answered at is the router's.
+	ServedOrigins []string
+	FormerOrigins []string
+	// WhoamiOrigins is the router's list of the origins GET /api/v1/whoami names; see
+	// Deps.WhoamiOrigins.
+	WhoamiOrigins []string
+	// RequestOrigin is the router's reading of the address a request came to; see
+	// Deps.RequestOrigin. Left unset (no Public or no AtFormer), NewDeps reads every request as come
+	// to ServerURL's origin (canonicalOrigin).
+	RequestOrigin RequestOrigin
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -441,9 +469,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
+	// The API reads links against this one list of origins, and so does the form of The Spec that
+	// NewDeps builds where input.SpecForm is nil. A form the caller passes (DepsInput.SpecForm)
+	// reads the list it was built with. The main of cmd/dispatch passes one, which it builds from
+	// the document service's own list.
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
 	specForm := input.SpecForm
 	if specForm == nil {
-		built, err := NewSpecForm("", input.ServerURL, input.Docs)
+		built, err := NewSpecForm("", origins, input.Docs)
 		if err != nil {
 			return Deps{}, err
 		}
@@ -488,6 +521,11 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if heartbeat == 0 {
 		heartbeat = defaultStreamHeartbeat
 	}
+	// A server no router built serves one address, ServerURL's (canonicalOrigin).
+	requestOrigin := input.RequestOrigin
+	if requestOrigin.Public == nil || requestOrigin.AtFormer == nil {
+		requestOrigin = canonicalOrigin(input.ServerURL)
+	}
 	deps := Deps{
 		Store:                  input.Store,
 		Identity:               input.Identity,
@@ -495,7 +533,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		SpecForm:               *specForm,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                origins,
+		WhoamiOrigins:          input.WhoamiOrigins,
+		RequestOrigin:          requestOrigin,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
@@ -566,10 +606,11 @@ type server struct {
 	// table this server mounts (going_reads.go).
 	goingReads map[string][]GoingRoute
 	// inProcess is the route table this server mounts, behind the cross-site origin check
-	// routes.New puts in front of the whole server (EnforceCookieOrigin): what a command-bar write
-	// is performed through, as its caller, so every check a route makes runs on it exactly as on
-	// a request off the network (going_writes.go). Its requests name their caller on their
-	// context and carry no cookie, so the origin check passes them. register sets it.
+	// routes.New puts in front of the whole server (EnforceCookieOrigin), at the router's reading
+	// of the address a request came to (Deps.RequestOrigin): what a command-bar write is performed
+	// through, as its caller, so every check a route makes runs on it exactly as on a request off
+	// the network (going_writes.go). Its requests name their caller on their context and carry no
+	// cookie, so the origin check passes them. register sets it.
 	inProcess http.Handler
 	// goingRuns wakes the agent's waiting claims and renews (going_agent.go): Deps.GoingRuns, or a
 	// signal of the server's own where it is nil.
@@ -1080,7 +1121,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
 	}
 	s.going = going
-	s.inProcess = EnforceCookieOrigin(deps.ServerURL, mux)
+	s.inProcess = EnforceCookieOrigin(deps.RequestOrigin, mux)
 	s.goingRuns = deps.GoingRuns
 	if s.goingRuns == nil {
 		s.goingRuns = NewGoingRunSignal()

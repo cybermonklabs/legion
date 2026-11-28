@@ -1,8 +1,10 @@
+import type { WhoamiResponse } from "@legion/contracts";
 import { readAtCut, withLeftOut } from "./dispatch-commands/as-of";
 import { checkDispatchCall, dispatchServerUrls } from "./dispatch-commands/check";
 import { commandContext } from "./dispatch-commands/command-context";
 import {
   type DispatchToolResult,
+  dispatchClientFor,
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
@@ -50,10 +52,25 @@ export async function executeDispatchTool(
   // One validation pass: owner resolution, the strict schema, the cross-field hand checks and the
   // picture files; the call is refused once with every problem listed, or proceeds with arguments
   // the schema has fully validated (unknown keys and wrong types are impossible in a handler, so
-  // structured arguments only need the contract's shape named).
+  // structured arguments only need the contract's shape named). A `ref` at an address of the
+  // server the command is not configured with is read against the origins the server names. The
+  // command reads `GET /api/v1/whoami` once: the check's read of the origins, where it makes one,
+  // is the read a read command makes first (`readAtCut`). A failed read is not kept, so the later
+  // read tries again.
+  let identity: Promise<WhoamiResponse> | undefined;
+  const whoami = (): Promise<WhoamiResponse> => {
+    identity ??= dispatchClientFor(input)
+      .whoami()
+      .catch((error: unknown) => {
+        identity = undefined;
+        throw error;
+      });
+    return identity;
+  };
   const checked = await checkDispatchCall({
     ...input,
     serverUrls: dispatchServerUrls(input.config),
+    whoami,
   });
   if (checked.problems.length > 0) throw new ToolInputError(input.tool, checked.problems);
   // A dry run reaches a command only where the command answers it (`dryRunAsksDispatch`: a
@@ -76,7 +93,7 @@ export async function executeDispatchTool(
   }
   // A read command reads whoami before any other request: a token's cut replaces `--as-of`
   // (dispatch://INFRA-4620). The owner a call names resolves at the cut too.
-  const reading = await readAtCut(session);
+  const reading = await readAtCut(session, whoami);
   const result =
     command.origin === "none"
       ? await command.run({ ...session, reading })

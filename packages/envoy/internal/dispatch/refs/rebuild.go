@@ -81,7 +81,7 @@ type Rebuild struct {
 // what refs_forms_owed holds for every source that is gone: the sweep's delete owes that queue
 // each source whose edges it deletes (migration 20261117025906's trigger), and a gone source owes
 // no text.
-func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, error) {
+func RebuildAll(ctx context.Context, pool Pool, origins text.Origins) (Rebuild, error) {
 	var report Rebuild
 	var started time.Time
 	if err := pool.QueryRow(ctx, `select now()`).Scan(&started); err != nil {
@@ -106,7 +106,7 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 			return report, fmt.Errorf("load %s sources: %w", source.kind, err)
 		}
 		for _, id := range ids {
-			rebuilt, err := replaceInTx(ctx, pool, source.kind, id, serverURL)
+			rebuilt, err := replaceInTx(ctx, pool, source.kind, id, origins)
 			if err != nil {
 				return report, fmt.Errorf("rebuild %s %s: %w", source.kind, id, err)
 			}
@@ -240,7 +240,7 @@ func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
 // It reads the source's own references alone, and its blocks wait for the block index RebuildAll
 // marks owed, so it settles the whole grammar's queue and leaves the forms queue owed
 // (replaceRefs).
-func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
+func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID string, origins text.Origins) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
 	if err != nil {
 		return false, err
@@ -260,7 +260,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 	if err != nil {
 		return false, fmt.Errorf("read the author of %s %s: %w", fromKind, fromID, err)
 	}
-	located := NewReader(ctx, tx, writer, fromKind, fromID, serverURL).Mentions(body)
+	located := NewReader(ctx, tx, writer, fromKind, fromID, origins).Mentions(body)
 	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil, false); err != nil {
 		return false, err
 	}
@@ -592,7 +592,7 @@ func QueueSettleOwed(b *store.WriteBatch, source Owed) {
 // source stamps it with that write's event (Stamp), and then it is listed as that write's. A
 // source that is gone has its edges deleted with its owed row, and its blocks and an ask's
 // parts are indexed with its text (planReindex).
-func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) (bool, error) {
+func ReindexOwed(ctx context.Context, pool Pool, source Owed, origins text.Origins) (bool, error) {
 	if !source.reindexable() {
 		return false, fmt.Errorf("re-index %s %s: a %s row of %s names no text of its own",
 			source.Kind, source.ID, source.Kind, source.Queue.table)
@@ -617,7 +617,7 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 	if err != nil || !owes {
 		return false, err
 	}
-	plan, err := planReindex(ctx, tx, source.Kind, source.ID, body, serverURL, author, writtenAt, found)
+	plan, err := planReindex(ctx, tx, source.Kind, source.ID, body, origins, author, writtenAt, found)
 	if err != nil {
 		return false, err
 	}
@@ -657,7 +657,7 @@ type reindexPlan struct {
 // The reconciliation of its own references is queued after the blocks, so where the plan holds
 // the source's blocks it settles the forms queue too (Replacement.SettlingForms), after both
 // deletes, and the source's row is settled only for its whole text.
-func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL string, author []byte, writtenAt time.Time, found bool) (reindexPlan, error) {
+func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body string, origins text.Origins, author []byte, writtenAt time.Time, found bool) (reindexPlan, error) {
 	plan := reindexPlan{kind: kind, id: id, found: found}
 	if !found {
 		return plan, nil
@@ -666,7 +666,7 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 	if err != nil {
 		return reindexPlan{}, fmt.Errorf("read the author of %s %s: %w", kind, id, err)
 	}
-	resolve := NewReader(ctx, tx, writer, kind, id, serverURL)
+	resolve := NewReader(ctx, tx, writer, kind, id, origins)
 	located := resolve.Mentions(body)
 	switch itemKind := ItemKind(kind); itemKind {
 	case ItemComment, ItemMessage:
@@ -674,7 +674,7 @@ func planReindex(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL strin
 		if err != nil {
 			return reindexPlan{}, fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
-		if plan.indexing, err = PlanItemIndex(index, itemKind, id, body, serverURL, writtenAt, located, nil); err != nil {
+		if plan.indexing, err = PlanItemIndex(index, itemKind, id, body, origins, writtenAt, located, nil); err != nil {
 			return reindexPlan{}, fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
 		}
 		plan.indexed = true
@@ -751,9 +751,9 @@ func (p reindexPlan) queue(b *store.WriteBatch) {
 // of an older build owes the source its own row (20261103205038-20261103205040), which the drain
 // takes in a later tick. One that loses its `#id` between them is left alone by the locked read,
 // which is what the write that removed it already indexed.
-func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL string) (bool, error) {
+func ReindexScopeSource(ctx context.Context, pool Pool, kind, id string, origins text.Origins) (bool, error) {
 	unlocked, _, found, err := SourceText(ctx, pool, kind, id)
-	if err != nil || !found || !HoldsQuestionCandidate(unlocked, serverURL) {
+	if err != nil || !found || !HoldsQuestionCandidate(unlocked, origins) {
 		return false, err
 	}
 	read, err := sourceRead(kind, id)
@@ -772,10 +772,10 @@ func ReindexScopeSource(ctx context.Context, pool Pool, kind, id, serverURL stri
 	if err != nil || !found {
 		return false, err
 	}
-	if !HoldsQuestionCandidate(body, serverURL) {
+	if !HoldsQuestionCandidate(body, origins) {
 		return false, nil
 	}
-	plan, err := planReindex(ctx, tx, kind, id, body, serverURL, author, writtenAt, true)
+	plan, err := planReindex(ctx, tx, kind, id, body, origins, author, writtenAt, true)
 	if err != nil {
 		return false, err
 	}
@@ -800,11 +800,11 @@ func SourceText(ctx context.Context, q Queryer, kind, id string) (body string, w
 // text.Mentions asks a resolver for that map only when the body holds such a candidate, so a
 // resolver that answers nothing and records the question tells which bodies are worth a re-index
 // when a document's question blocks move, and no second reading of the grammar can drift from it.
-func HoldsQuestionCandidate(body, serverURL string) bool {
+func HoldsQuestionCandidate(body string, origins text.Origins) bool {
 	probe := &questionProbe{}
 	// A probe that resolves nothing fails nothing: text.Mentions returns an error only from the
 	// resolver, and this one answers every call.
-	_, _ = text.Mentions(body, serverURL, probe)
+	_, _ = text.Mentions(body, origins, probe)
 	return probe.asked
 }
 

@@ -204,7 +204,7 @@ func (s *server) walkGoingUndo(w http.ResponseWriter, r *http.Request, caller mo
 		s.writeHandlerError(w, err)
 		return
 	}
-	doer := s.goingDoer(goingBarCaller(actor, human, run), PublicOrigin(s.deps.ServerURL, r))
+	doer := s.goingDoer(goingBarCaller(actor, human, run), s.deps.RequestOrigin.Public(r))
 	undoer := goingUndoer{s: s, doer: doer, observer: goingObserver{read: goingReader{doer: doer}, s: s}, catalogue: s.going,
 		login: caller.ID, session: goingCredentialOf(r, actor, false).session()}
 	lines := make([]goingUndoLine, 0, len(writes))

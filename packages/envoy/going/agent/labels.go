@@ -426,17 +426,17 @@ func refWords(value string) string {
 func parseRef(value string) (text.Ref, string, bool) {
 	if rest, scheme := strings.CutPrefix(value, "dispatch://"); scheme {
 		if key, part, below := strings.Cut(rest, "/"); below && issueParts[part] != "" {
-			ref, parsed := text.ParseRef("dispatch://"+key, "")
+			ref, parsed := text.ParseRef("dispatch://"+key, text.Origins{})
 			return ref, part, parsed && ref.Kind == "issue"
 		}
-		ref, parsed := text.ParseRef(value, "")
+		ref, parsed := text.ParseRef(value, text.Origins{})
 		return ref, "", parsed
 	}
 	address, err := url.Parse(value)
 	if err != nil || (address.Scheme != "http" && address.Scheme != "https") || address.Host == "" {
 		return text.Ref{}, "", false
 	}
-	ref, parsed := text.ParseRef(value, address.Scheme+"://"+address.Host)
+	ref, parsed := text.ParseRef(value, text.ServerOrigins(address.Scheme+"://"+address.Host, nil, nil))
 	return ref, "", parsed
 }
 

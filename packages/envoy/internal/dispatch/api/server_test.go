@@ -46,6 +46,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -102,15 +103,17 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocumentService is input with a document service of the test's own, for a test that needs
-// none of its own making: one over the input's store, event broker, identity and server URL,
-// shut down once the test ends, after every cleanup registered later (a server's wait among
-// them). An input with no broker gets one, which the API and the service then share.
+// none of its own making: one over the input's store, event broker and identity, reading links at
+// the origins NewDeps reads them at (text.ServerOrigins of the input's ServerURL, ServedOrigins and
+// FormerOrigins), shut down once the test ends, after every cleanup registered later (a server's
+// wait among them). An input with no broker gets one, which the API and the service then share.
 func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	t.Helper()
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)
@@ -141,6 +144,11 @@ type testServerOptions struct {
 	// empty is the deployment that names none, whose form gate covers no document.
 	specRoots string
 	testHooks bool
+	// servedOrigins and formerOrigins are DepsInput.ServedOrigins and DepsInput.FormerOrigins: the
+	// other addresses the server serves beside testServerURL, and those it served before. Nil and
+	// nil is the deployment at one address.
+	servedOrigins []string
+	formerOrigins []string
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -312,6 +320,11 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
+// testOrigins is testServerURL as the one origin dashboard links are read at: what a server built
+// with that ServerURL and neither list reads them with (Deps.Origins), for a test that builds a
+// reader of links without a server.
+var testOrigins = text.NewOrigins(testServerURL)
+
 // testSigningKey is the one-key set the package's session cookies are signed with.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
@@ -400,11 +413,15 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
+	origins := text.ServerOrigins(testServerURL, options.servedOrigins, options.formerOrigins)
 	var socketIdentity identity.Identity
 	if options.documentSocket {
 		socketIdentity = headerIdentity(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, Identity: socketIdentity})
+	documentService := docs.New(docs.Deps{
+		Store: database, Persistence: documentPersistence, Events: broker, Settle: settle, Identity: socketIdentity,
+		Origins: origins,
+	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -432,8 +449,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
-		SpecForm:         specFormOn(t, options.specRoots, testServerURL, documentService),
+		SpecForm:         specFormOn(t, options.specRoots, origins, documentService),
 		ServerURL:        testServerURL,
+		ServedOrigins:    options.servedOrigins,
+		FormerOrigins:    options.formerOrigins,
 		Docs:             documentService,
 		Events:           broker,
 		Renames:          options.renames,

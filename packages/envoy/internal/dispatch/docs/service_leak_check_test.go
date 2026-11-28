@@ -150,11 +150,11 @@ func TestLeakCheckChild(t *testing.T) {
 	}
 	testcleanup.Add(t, database.Pool.Close)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
 	})
 	switch child {
 	case "shut-down-held":

@@ -461,9 +461,10 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * a tree the schema refuses or a parse the engine refuses, `markdown` is written into the
  * element as literal text with `isFallback` set. A dispatch:// reference stays literal text to
  * Markdown (it isn't a scheme GFM autolinks), so bare refs then get wrapped into real links; a
- * same-origin dashboard URL is already a real link by then (GFM autolinked it, or the author
- * wrote it as Markdown link syntax). Either way, every reference anchor gets its href rewritten
- * to the SPA route and its text handed to a portal-mounted `RefLink` for the resolved title.
+ * Dispatch dashboard URL, at any of its origins, is already a real link by then (GFM autolinked
+ * it, or the author wrote it as Markdown link syntax). Either way, every reference anchor gets its
+ * href rewritten to the SPA route and its text handed to a portal-mounted `RefLink` for the
+ * resolved title.
  * `decorate` runs last, on the fallback text as on a painted element, so a plain lead it
  * prepends is never read as a reference; it leaves every anchor where the link pass put it. Each
  * Dispatch picture's placeholder is found after it, wherever the paint left one, and gets a

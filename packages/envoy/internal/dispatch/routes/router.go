@@ -19,6 +19,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -66,7 +67,6 @@ type AppContext struct {
 	People     auth.PeopleStore
 	Identity   identity.Identity
 	Store      *store.Store
-	ServerURL  string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
 	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
@@ -84,6 +84,11 @@ type AppContext struct {
 	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
 	// can turn the route on without the origin check.
 	devSignInHost, devSignInOrigin string
+	// hosts is the one table of the origins the router picks among by a request's Host:
+	// AppContextOptions' ServerURL, ServedOrigins and FormerOrigins. Only BuildAppContext builds it.
+	hosts hostOrigins
+	// trustedProxies is AppContextOptions.TrustedProxyRanges.
+	trustedProxies []netip.Prefix
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -119,8 +124,16 @@ type AppContextOptions struct {
 	NewIssueSession string
 	// SpecForm is the form of The Spec main built from DISPATCH_SPEC_ROOTS (api.NewSpecForm),
 	// which set the gate of Docs; nil names no root. See api.DepsInput.
-	SpecForm       *api.SpecForm
-	ServerURL      string
+	SpecForm  *api.SpecForm
+	ServerURL string
+	// ServedOrigins are the other addresses the server serves beside ServerURL (cmd/dispatch:
+	// DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before (cmd/dispatch:
+	// DISPATCH_FORMER_ORIGINS), each written as weborigin.Parse returns it: the router answers a
+	// request to a served address as that address, and serves no sign-in and no browser write at a
+	// former address's host (hostOrigins); the API reads a dashboard link at either as a reference
+	// (api.DepsInput).
+	ServedOrigins  []string
+	FormerOrigins  []string
 	InsecureCookie bool
 	EnvoyURL       string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
@@ -221,6 +234,11 @@ type AppContextOptions struct {
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
 	// See api.Deps.ParentStatusRule.
 	ParentStatusRule api.ParentStatusRule
+	// TrustedProxyRanges are the proxies whose X-Forwarded-For Dispatch trusts (cmd/dispatch:
+	// DISPATCH_TRUSTED_PROXY_RANGES): the caller address every request is keyed and logged by is
+	// read under them (resolveClientAddress, auth.ResolveForwardedAddress). nil trusts none, and
+	// every caller keeps the address it always had.
+	TrustedProxyRanges []netip.Prefix
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -250,6 +268,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		parsed, _ := url.Parse(opts.ServerURL)
 		devSignInHost, devSignInOrigin = host, parsed.Scheme+"://"+host
 	}
+	// The canonical origin is the first of the server's origins: whoami names it first, and a
+	// request whose Host the table names no other origin of is answered as it. The API reads the
+	// address a request came to from this table too (api.Deps.RequestOrigin): its cookie-origin
+	// check the router and the command bar's in-process writes are both held to.
+	hosts, err := newHostOrigins(opts.ServerURL, opts.ServedOrigins, opts.FormerOrigins)
+	if err != nil {
+		return nil, fmt.Errorf("BuildAppContext: %w", err)
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -258,6 +284,10 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		NewIssueSession:        opts.NewIssueSession,
 		SpecForm:               opts.SpecForm,
 		ServerURL:              opts.ServerURL,
+		ServedOrigins:          opts.ServedOrigins,
+		FormerOrigins:          opts.FormerOrigins,
+		WhoamiOrigins:          hosts.origins,
+		RequestOrigin:          api.RequestOrigin{Public: hosts.publicOrigin, AtFormer: hosts.atFormer},
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		EnvoyAccountTokenFile:  opts.EnvoyAccountTokenFile,
@@ -314,12 +344,13 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		People:          opts.People,
 		Identity:        opts.Identity,
 		Store:           opts.Store,
-		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
 		SignIn:          opts.SignIn,
 		SignInRule:      opts.SignInRule,
 		InsecureCookie:  opts.InsecureCookie,
 		devSignInHost:   devSignInHost,
 		devSignInOrigin: devSignInOrigin,
+		hosts:           hosts,
+		trustedProxies:  opts.TrustedProxyRanges,
 		apiDeps:         apiDeps,
 		eventHead:       eventHead,
 		lifetime:        opts.Lifetime,
@@ -373,14 +404,16 @@ type router struct {
 // request left running past its answer has settled, and the delivery hub, every live socket and
 // their subscriptions, and the event stream relay have ended after the process lifetime is
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
-// (api.RunMaintenanceSweep).
+// (api.RunMaintenanceSweep). The caller's address is resolved outside everything else
+// (resolveClientAddress), so no check reads a request before it.
 func New(ctx *AppContext) (http.Handler, api.Background) {
 	mux := http.NewServeMux()
 	r, background := mount(ctx, mux)
-	if ctx.devSignInHost == "" {
-		return api.EnforceCookieOrigin(r.ctx.ServerURL, mux), background
+	handler := r.enforceCookieOrigin(mux)
+	if ctx.devSignInHost != "" {
+		handler = requireHost(ctx.devSignInHost, handler)
 	}
-	return requireHost(ctx.devSignInHost, api.EnforceCookieOrigin(r.ctx.ServerURL, mux)), background
+	return r.resolveClientAddress(handler), background
 }
 
 // mount builds New's router and mounts every route the server serves on mux, the API's table
@@ -394,8 +427,8 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.googleSignInHere(r.authStart)))
+	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.googleSignInHere(r.authCallback)))
 	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
 	// The proxy's calls to GitHub are the API's, as every row's of the table are.
@@ -414,11 +447,13 @@ func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 
 // ───── auth ─────────────────────────────────────────────────────────────────
 
-// authStart sends the browser to the issuer to sign in. The sign-in in flight (its state, nonce,
-// the page it returns to and when it lapses) travels in the browser's dispatch_oauth_state cookie,
-// signed under a key derived from the current signing key (signOAuthState), and no process keeps
-// it: whichever process holding that key the issuer's redirect reaches completes the sign-in. An
-// issuer not yet discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
+// it started at among the canonical origin and the served addresses (hostOrigins.callbackURL). The
+// sign-in in flight (its state, nonce, the page it returns to and when it lapses) travels in the
+// browser's dispatch_oauth_state cookie, signed under a key derived from the current signing key
+// (signOAuthState), and no process keeps it: whichever process holding that key the issuer's
+// redirect reaches completes the sign-in. An issuer not yet discovered is answered 503
+// SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -434,7 +469,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, req), state, nonce)
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), r.ctx.hosts.callbackURL(req), state, nonce)
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -460,7 +495,9 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // issuer's refresh token to confirm that hourly. Under a group the person is named by the email
 // their pool username carries; under a domain, by the email of a Google account of the domain,
 // and the account's subject is recorded with the sign-in, which ends the address's sessions when
-// another account held it (auth.PeopleStore.SignInSubject).
+// another account held it (auth.PeopleStore.SignInSubject). The callback URL the exchange names is
+// the one of the origin the issuer sent the browser back to (hostOrigins.callbackURL), the one
+// authStart sent the issuer from that origin.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -493,7 +530,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
 		return
 	}
-	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
+	session, err := r.ctx.SignIn.Exchange(req.Context(), r.ctx.hosts.callbackURL(req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is undiscovered or could not answer", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
@@ -582,11 +619,16 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 
 // whoamiAnswer is what GET /auth/whoami answers a signed-in person, the Go mirror of
 // packages/contracts' AuthenticatedUser. Its fields are in their keys' order, which is the order the
-// answer's JSON has always carried them in.
+// answer's JSON has always carried them in. Origins names the server's origins, the canonical one
+// first, then the served addresses (DISPATCH_SERVED_ORIGINS) and the former addresses
+// (DISPATCH_FORMER_ORIGINS), only where the server is configured with either list
+// (hostOrigins.origins): so the answer of a server at one address is byte for byte what it was
+// before either list existed.
 type whoamiAnswer struct {
-	EventHead string `json:"event_head"`
-	Kind      string `json:"kind"`
-	Login     string `json:"login"`
+	EventHead string   `json:"event_head"`
+	Kind      string   `json:"kind"`
+	Login     string   `json:"login"`
+	Origins   []string `json:"origins,omitempty"`
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
@@ -619,7 +661,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
 		return
 	}
-	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email})
+	api.WriteJSON(w, http.StatusOK, whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.hosts.origins})
 }
 
 // apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
@@ -677,13 +719,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	if isReservedPath(normalized, serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
-		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
-			api.WriteJSON(w, http.StatusNotFound, map[string]string{
-				"code":  "NOT_FOUND",
-				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
-			})
-		})(w, req)
+		accesslog.HandlerFunc(unmatchedRoute, writeNoRoute)(w, req)
 		return
 	}
 	if r.ctx.WebDistDir == "" {
@@ -987,9 +1023,40 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL is the sign-in callback on Dispatch's public origin (api.PublicOrigin).
-func callbackURL(serverURL string, req *http.Request) string {
-	return api.PublicOrigin(serverURL, req) + "/auth/callback"
+// writeNoRoute answers the 404 a path under serverRoots that no route serves answers. A route's
+// gate that answers as a path no route serves (googleSignInHere) writes it directly, so the
+// request's one access-log line is its route's own, as every request's is.
+func writeNoRoute(w http.ResponseWriter, req *http.Request) {
+	api.WriteJSON(w, http.StatusNotFound, map[string]string{
+		"code":  "NOT_FOUND",
+		"error": "no route for " + req.Method + " " + req.URL.Path,
+		"hint":  "GET /api/v1 lists every route",
+	})
+}
+
+// googleSignInHere serves next, the sign-in's start or callback, everywhere but on a former
+// address's host, at any port (hostOrigins.atFormer), where it answers the 404 a path no route
+// serves answers (writeNoRoute): a sign-in started there would end at another host, and the server
+// no longer serves that address.
+func (r *router) googleSignInHere(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if r.ctx.hosts.atFormer(req) {
+			writeNoRoute(w, req)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// enforceCookieOrigin is the cross-site check every write a browser's credential carries is held
+// to (api.EnforceCookieOrigin), at the address the router answers a request at by its Host, from
+// its one table (hostOrigins.publicOrigin, hostOrigins.atFormer): its Origin must be the origin
+// of the request's own Host, the canonical origin or a served address, and at a former address's
+// host, at any port, such a write and a document socket are refused. It reads the table as
+// BuildAppContext handed it to the API (api.Deps.RequestOrigin), which holds the command bar's
+// in-process writes to the same rule at the same table.
+func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
+	return api.EnforceCookieOrigin(r.ctx.apiDeps.RequestOrigin, next)
 }
 
 // sanitizeNext restricts post-login redirect targets to local paths. An

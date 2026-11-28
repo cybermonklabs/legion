@@ -1032,7 +1032,7 @@ func TestEveryReadThatCarriesAPostRecordsIt(t *testing.T) {
 		// A tool that reads its item's record before it picks its row (Choose) names the record's
 		// row; any other names the row its call reads.
 		if goingReadTools[tool].Choose == nil {
-			if picked, ok := GoingReadRoute(tool, arguments, fixture.rig.served.deps.ServerURL); ok && picked != row {
+			if picked, ok := GoingReadRoute(tool, arguments, fixture.rig.served.deps.Origins); ok && picked != row {
 				t.Fatalf("%s %v reads %s, not %s", tool, arguments, picked, row)
 			}
 		}

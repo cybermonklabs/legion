@@ -321,14 +321,13 @@ func TestABoundToolCallsTheRouteItsSpecBinds(t *testing.T) {
 // server refuses before it picks a row, a write tool, and a tool the server has not.
 func TestGoingToolReadRouteIsTheRowTheServerPicks(t *testing.T) {
 	t.Parallel()
-	const serverURL = "https://dispatch.test"
 	for _, test := range []struct {
 		name, tool string
 		arguments  map[string]any
 		route      string
 	}{
 		{"a block's reference", "dispatch_read", map[string]any{"ref": "dispatch://DSP-1/spec#b-x"}, "GET /api/v1/references"},
-		{"a block's dashboard URL", "dispatch_read", map[string]any{"ref": serverURL + "/issues/DSP-1/spec#b-x"}, "GET /api/v1/references"},
+		{"a block's dashboard URL", "dispatch_read", map[string]any{"ref": testServerURL + "/issues/DSP-1/spec#b-x"}, "GET /api/v1/references"},
 		{"an issue's reference", "dispatch_read", map[string]any{"ref": "dispatch://DSP-1"}, "GET /api/v1/issues/{key}"},
 		{"an issue", "dispatch_read", map[string]any{"issue": "DSP-1"}, "GET /api/v1/issues/{key}"},
 		{"an issue's references", "dispatch_read_issue_references", map[string]any{"issue": "DSP-1"}, "GET /api/v1/issues/{key}/references"},
@@ -340,7 +339,7 @@ func TestGoingToolReadRouteIsTheRowTheServerPicks(t *testing.T) {
 		{"a write", "dispatch_comment", map[string]any{"issue": "DSP-1", "body": "hi"}, ""},
 		{"no tool of the server", "summon_dragon", map[string]any{}, ""},
 	} {
-		route, ok := GoingReadRoute(test.tool, test.arguments, serverURL)
+		route, ok := GoingReadRoute(test.tool, test.arguments, testOrigins)
 		if route != test.route || ok != (test.route != "") {
 			t.Errorf("%s: %s %v reads %q (%v), want %q", test.name, test.tool, test.arguments, route, ok, test.route)
 		}
