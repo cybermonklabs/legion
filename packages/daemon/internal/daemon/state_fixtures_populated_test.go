@@ -611,7 +611,7 @@ func populatedDeployment(s *seeding) composition {
 	cfg.DispatchTokenBroker, cfg.DispatchTokenFile = true, ""
 	// Four boots of this project, the first four days before this read (store.Store.RecordBoot).
 	for _, booted := range []time.Time{at(18, 14, 3, 27), at(19, 6, 12, 0), at(21, 2, 44, 9), at(22, 9, 15, 2)} {
-		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted, nil)
+		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
 		s.must("a boot", err)
 	}
 	// The daemon minted the controller's capability and its session registered with it

@@ -11,9 +11,10 @@ import (
 
 // GateReset is what ResetGatesAfterEarlierRelease did, for the boot's log line.
 type GateReset struct {
-	// EarlierBoot is the newest boot of the project before this one, which no boot of this
-	// release recorded (design_gate_verdict_boots): 0 where the project has no boot or its newest
-	// boot is one of this release, and the reset did nothing.
+	// EarlierBoot is the newest boot of the project before this one, which ran no reset and so has
+	// no row of design_gate_verdict_boots: an earlier release's, or this release's without the
+	// workflow. It is 0 where the project has no boot or its newest boot ran the reset, and the
+	// reset did nothing.
 	EarlierBoot int64
 	// Rows is how many design_gates rows held a value of a column the hash gate added, which the
 	// reset cleared, and Seeds how many gate seeds it queued.
@@ -27,14 +28,17 @@ const projectIssues = `issue in (select key from issues where project = $1)`
 // (dispatch://INFRA-6065, R2), in tx. A release before the hash gate can boot on this schema: it
 // names none of the columns the hash gate added, so it reads every gate by the version rule and
 // leaves those columns as this release last wrote them; and it records no row of
-// design_gate_verdict_boots, which every boot of this release writes with its daemon_boot row (the
-// store's RecordBoot). So where the newest daemon_boot row of project has no such row, an earlier
-// release booted since this release last did. The daemon runs this in the transaction that
-// records its boot, before that transaction writes the boot's rows, so the newest boot it reads is
-// the one before this, and before the boot applies any fact (the daemon's openWorkflow); a boot
-// that fails later has its marker already, so the next boot does not reset again over rows this
-// release wrote since. Where an earlier release booted since, it does this to the rows of the
-// project's issues:
+// design_gate_verdict_boots, which every boot of this release with the workflow writes with its
+// daemon_boot row, in the transaction that runs this (the store's RecordWorkflowBoot). A boot of
+// this release without the workflow runs no reset and writes none either (the store's
+// RecordBoot). So where the newest daemon_boot row of project has no such row, an earlier release,
+// or this release without the workflow, booted since this release last booted with it, and this
+// resets, which changes nothing on a row already in version mode but queues its seed. The daemon
+// runs this in the transaction that records its boot, before that transaction writes the boot's
+// rows, so the newest boot it reads is the one before this, and before the boot applies any fact
+// (the daemon's openWorkflow); a boot that fails later has its marker already, so the next boot
+// does not reset again over rows this release wrote since. Where it resets, it does this to the
+// rows of the project's issues:
 //
 //   - It clears carried on each row and marks the copies again as the migration does
 //     (carriedCopies), so a copy an earlier release carried is marked and a row it wrote over a
@@ -52,11 +56,11 @@ const projectIssues = `issue in (select key from issues where project = $1)`
 //     (EnqueueGateSeeds, the rule the boot's seed of each closed step follows, which queues none
 //     beside a seed still pending).
 //
-// A project with no boot, and one whose newest boot is one of this release, gets none of it. The
-// first boot after the migration finds the boot of the release before it and resets: the rows are
-// in version mode already, so it clears none of them, and it queues the seeds. store is the
-// record store the reset queues the seeds with, steps the deployment's gated steps, and now the
-// time each seed is due.
+// A project with no boot, and one whose newest boot is this release's with the workflow, gets none
+// of it. The first boot after the migration finds the boot of the release before it and resets:
+// the rows are in version mode already, so it clears none of them, and it queues the seeds. store
+// is the record store the reset queues the seeds with, steps the deployment's gated steps, and now
+// the time each seed is due.
 func ResetGatesAfterEarlierRelease(ctx context.Context, tx pgx.Tx, store Store, project string, steps []DesignStep,
 	now time.Time) (GateReset, error) {
 	var reset GateReset

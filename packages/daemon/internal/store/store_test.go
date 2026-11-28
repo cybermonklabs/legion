@@ -659,14 +659,14 @@ func TestBootsCountsTheProjectsBootsFromItsFirst(t *testing.T) {
 	store := migratedStore(t)
 	first := time.Now().UTC().Truncate(time.Microsecond)
 
-	if _, err := store.RecordBoot(ctx, "WIDGETS", first.Add(-time.Hour), nil); err != nil {
+	if _, err := store.RecordBoot(ctx, "WIDGETS", first.Add(-time.Hour)); err != nil {
 		t.Fatalf("record another project's boot: %v", err)
 	}
-	firstID, err := store.RecordBoot(ctx, "LEGION", first, nil)
+	firstID, err := store.RecordBoot(ctx, "LEGION", first)
 	if err != nil {
 		t.Fatalf("record first boot: %v", err)
 	}
-	secondID, err := store.RecordBoot(ctx, "LEGION", first.Add(time.Minute), nil)
+	secondID, err := store.RecordBoot(ctx, "LEGION", first.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("record second boot: %v", err)
 	}
@@ -706,11 +706,11 @@ func TestStopBootStampsTheBootItNames(t *testing.T) {
 	store := migratedStore(t)
 	started := time.Now().UTC().Truncate(time.Microsecond)
 
-	id, err := store.RecordBoot(ctx, "LEGION", started, nil)
+	id, err := store.RecordBoot(ctx, "LEGION", started)
 	if err != nil {
 		t.Fatalf("record boot: %v", err)
 	}
-	running, err := store.RecordBoot(ctx, "LEGION", started, nil)
+	running, err := store.RecordBoot(ctx, "LEGION", started)
 	if err != nil {
 		t.Fatalf("record second boot: %v", err)
 	}

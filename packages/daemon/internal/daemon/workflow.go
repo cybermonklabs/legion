@@ -76,11 +76,15 @@ type workflowRuntime struct {
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
 	// (config.Gates.Steps).
 	gatedSteps []record.DesignStep
-	// bootRecord and bootStartedAt are this boot's daemon_boot row, which openWorkflow writes
-	// before any fact, in the transaction of the reset after an earlier release's boot
-	// (recordBoot). run holds this id for the boot, and records no second row.
-	bootRecord    int64
-	bootStartedAt time.Time
+	// bootRecord is this boot's daemon_boot row, which openWorkflow writes in bootStore before any
+	// fact, in the transaction of the reset after an earlier release's boot (recordBoot). While it
+	// is set the runtime answers for the row's stamp: a boot that returns before run takes the row
+	// over (takeBoot) stamps it at openWorkflow's own failure or at the runtime's stop, which each
+	// of run's returns before then calls (stampRecordedBoot), so a daemon_boot row with no end is a
+	// boot that never shut down. run records no second row, and stamps the one it took at its own
+	// stop.
+	bootRecord int64
+	bootStore  *store.Store
 	// tokens mints every lease the workflow's own reads and writes use. apps is that same token
 	// source whole, the leases and the owners each App is installed on (appauth.Source), which
 	// the daemon hands on to the runtime it builds and to the API's routes (run, serve): both
@@ -890,10 +894,17 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	// The boot records itself, with the reset after an earlier release's boot, before its first
-	// write of a record and before any fact (recordBoot).
+	// write of a record and before any fact (recordBoot). A step after it that fails stamps the row
+	// it recorded, as the runtime's stop does on a failure after openWorkflow returns
+	// (stampRecordedBoot).
 	if err := w.recordBoot(ctx, st); err != nil {
 		return nil, err
 	}
+	defer func() {
+		if opened == nil {
+			w.stampRecordedBoot()
+		}
+	}()
 	// The boot writes through the bare records, so it asks for no follow of a record it fills:
 	// backfillRepositories says why.
 	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, w.reads(), log)
@@ -913,23 +924,25 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	return w, nil
 }
 
-// recordBoot writes this boot's daemon_boot row and its marker (store.Store.RecordBoot), and in
-// the same transaction, before those rows, the boot's reset after an earlier release's boot
+// recordBoot writes this boot's daemon_boot row and its marker (store.Store.RecordWorkflowBoot),
+// and in the same transaction, before those rows, the boot's reset after an earlier release's boot
 // (record.ResetGatesAfterEarlierRelease, dispatch://INFRA-6065 R2): where the project's newest
-// earlier boot has no marker, an earlier release booted since this release's last boot, and the
-// reset puts the design gates of the project's issues in version mode, ending no basis and telling
-// nothing, and queues the gate seed of each registered step of each tree in the workflow, whose
-// verdict then tells each change from the standing version mode reads. openWorkflow runs it before
-// the boot's first write of a record and before any fact: the repository backfill, the
-// publications and seeds queued after it, the open of the uncounted runs, the reconcile, the
-// catch-up and the consumers all come after it. The boot and the reset commit together, so a boot
-// that fails after this leaves its marked row, and the next boot resets nothing over rows this
-// release wrote since; and run holds the id written here (bootRecord) rather than recording a second
-// row. A boot that cannot write it fails, as the publications after it do.
+// earlier boot has no marker, an earlier release, or this release without the workflow, booted
+// since this release's last boot with it, and the reset puts the design gates of the project's
+// issues in version mode, ending no basis and telling nothing, and queues the gate seed of each
+// registered step of each tree in the workflow, whose verdict then tells each change from the
+// standing version mode reads. openWorkflow runs it before the boot's first write of a record and
+// before any fact: the repository backfill, the publications and seeds queued after it, the open
+// of the uncounted runs, the reconcile, the catch-up and the consumers all come after it, and so
+// do the daemon's port, its supervision and the image probe. The boot and the reset commit
+// together, so a boot that fails after this leaves its marked row, which it stamps as it returns
+// (stampRecordedBoot), and the next boot resets nothing over rows this release wrote since; and
+// run takes over the id written here (takeBoot) rather than recording a second row. A boot that
+// cannot write it fails, as the publications after it do.
 func (w *workflowRuntime) recordBoot(ctx context.Context, st *store.Store) error {
 	var reset record.GateReset
 	startedAt := time.Now().UTC()
-	id, err := st.RecordBoot(ctx, w.dispatchProject, startedAt, func(ctx context.Context, tx pgx.Tx) error {
+	id, err := st.RecordWorkflowBoot(ctx, w.dispatchProject, startedAt, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, w.records, w.dispatchProject, w.gatedSteps, startedAt)
 		return err
@@ -937,12 +950,36 @@ func (w *workflowRuntime) recordBoot(ctx context.Context, st *store.Store) error
 	if err != nil {
 		return err
 	}
-	w.bootRecord, w.bootStartedAt = id, startedAt
+	w.bootRecord, w.bootStore = id, st
 	if reset.EarlierBoot != 0 {
-		w.log.Info("legion workflow boot found that an earlier release booted since this release's last boot, and put the project's design gates in version mode",
+		w.log.Info("legion workflow boot found that an earlier release, or this release without the workflow, booted since this release's last boot with it, and put the project's design gates in version mode",
 			"earlierBoot", reset.EarlierBoot, "boot", id, "rowsReset", reset.Rows, "gateSeeds", reset.Seeds)
 	}
 	return nil
+}
+
+// takeBoot hands run this boot's daemon_boot row (recordBoot) once nothing between the record and
+// the daemon's own stop returns: run stamps the row at that stop, so the runtime no longer does.
+func (w *workflowRuntime) takeBoot() int64 {
+	id := w.bootRecord
+	w.bootRecord = 0
+	return id
+}
+
+// stampRecordedBoot stamps the end of this boot's daemon_boot row (stampBoot) while the runtime
+// still answers for it: a boot that returns after recordBoot and before run took the row over
+// (takeBoot), whether a step of openWorkflow after the record, its port, its supervision, the
+// image probe or its readiness probes refused it or a stop ended it there. It stamps the row once,
+// and logs a stamp the store refuses, since the boot is returning already.
+func (w *workflowRuntime) stampRecordedBoot() {
+	id := w.bootRecord
+	if id == 0 {
+		return
+	}
+	w.bootRecord = 0
+	if err := stampBoot(context.Background(), w.bootStore, id); err != nil {
+		w.log.Error("legion daemon could not stamp the end of the boot it recorded", "project", w.dispatchProject, "boot", id, "error", err)
+	}
 }
 
 // queueGatedStepsPublish queues the deployment's design-gate steps for the project's Dispatch
@@ -3225,13 +3262,16 @@ func (w *workflowRuntime) closeNATS() {
 	}
 }
 
-// stop closes the workflow's connections (closeNATS) and ends every token_command its token
-// manager still runs (appauth.Manager.Close), waiting for each to exit, so a command waiting on a
-// person's approval does not outlive the daemon.
+// stop stamps the boot the runtime still answers for (stampRecordedBoot), a boot that returns
+// before it is ready, while the store is still open, then closes the workflow's connections
+// (closeNATS) and ends every token_command its token manager still runs (appauth.Manager.Close),
+// waiting for each to exit, so a command waiting on a person's approval does not outlive the
+// daemon. Each of run's returns calls it before it closes the store.
 func (w *workflowRuntime) stop() {
 	if w == nil {
 		return
 	}
+	w.stampRecordedBoot()
 	w.closeNATS()
 	if closer, ok := w.tokens.(interface{ Close() }); ok {
 		closer.Close()

@@ -3732,8 +3732,8 @@ A rollback moves each project's worker image back with its daemon image.
 
 This release records on each `design_gates` row Dispatch's verdict on whether the approval of the row's document stands (dispatch://INFRA-6065).
 Its migration `20261127204213_design_gate_verdict` adds ten columns to `design_gates` and the check `design_gates_verdict_check`: the verdict (`latest_digest_version`, `approval_current`, `latest_digest`, `latest_digest_seq` and `latest_digest_at`), `approved_digest`, the generated column `digest_owed`, `told_open`, `basis_root_version` and `carried`.
-It also adds the table `design_gate_verdict_boots`, which holds one row for each boot of this release, keyed by the boot's `daemon_boot` id and written in the same transaction as that boot's `daemon_boot` row.
-No earlier release writes it.
+It also adds the table `design_gate_verdict_boots`, which holds one row for each boot of this release with the workflow, keyed by the boot's `daemon_boot` id and written in the same transaction as that boot's `daemon_boot` row and its reset below.
+A boot of this release without the workflow (no `dispatch_url`) runs no reset and writes no row of it, and no earlier release writes it.
 A row is in hash mode while `latest_digest_version` is set, and its gate opens while Dispatch reports the approval current for the latest version, whatever version the person approved.
 A row is in version mode while `latest_digest_version` is null, and its gate opens on an approval of its latest version, as before.
 The migration leaves every row it finds in version mode, and sets `carried` on each copy of a gate that a hand-over carried at its root's current generation.
@@ -3765,8 +3765,8 @@ The way back tells nobody, because it runs in SQL with the daemon stopped.
 So after it, read each gated tree's steps (`legion state`), and tell the merger of a tree whose step the way back closed that its merge waits until that step stands open again.
 
 **A boot of this release after an earlier release's boot returns the project's rows to version mode.**
-Before it applies any fact, the reconcile and the catch-up of the events since the last boot included, each boot of this release writes its `daemon_boot` row and its row in `design_gate_verdict_boots` in one transaction.
-Where the project's newest earlier `daemon_boot` row has no row in `design_gate_verdict_boots`, an earlier release booted since.
+Before it applies any fact, the reconcile and the catch-up of the events since the last boot included, each boot of this release with the workflow writes its `daemon_boot` row and its row in `design_gate_verdict_boots` in one transaction.
+Where the project's newest earlier `daemon_boot` row has no row in `design_gate_verdict_boots`, an earlier release, or this release without the workflow, booted since.
 That same transaction then puts each of the project's rows in version mode, clears every column that the migration adds, and marks the carried copies again as the migration does.
 It ends no basis and tells nothing, because the columns cannot show what the earlier release did, and the standing that version mode reads is the one that the earlier release left.
 A basis end that a skipped way back left unsettled stays as the earlier release left it: in version mode, a step open on such a basis reads closed, because its root version is below the latest version, and a pending step waits as the earlier release made it wait.
@@ -3774,9 +3774,10 @@ Then the boot queues the gate seed of each registered step of each tree in the w
 It logs the earlier boot's id, how many rows it put in version mode and how many seeds it queued.
 The boot's rows and the reset commit together, so a boot that fails after them leaves its marked row, and the next boot does not reset again over the rows that this release wrote since.
 The first boot after the migration finds the boot of the release before it and does the same: every row is in version mode already, so it changes no row, and it queues the seeds.
+A boot with the workflow after a boot of this release without it resets as above too, since that boot ran no reset, and the seeds it queues read each row's verdict again.
 
 The roll forward applies nothing, because the migration's version row stands, and its first boot finds the earlier release's boot and resets as above.
-`TestHashGateMigrationAndWayBack` in `internal/store` runs the way back for one project on a migrated database, writes gates with the earlier release's `PutGate` statement before and after it, runs the boot after an earlier release's boot, and rolls forward.
+`TestHashGateMigrationAndWayBack` in `internal/store` runs the way back for one project on a migrated database, writes gates with the earlier release's `PutGate` statement before and after it, runs the boot after an earlier release's boot and after a boot of this release without the workflow, and rolls forward.
 
 #### Rolling back below the release that trims an issue pod's volume
 

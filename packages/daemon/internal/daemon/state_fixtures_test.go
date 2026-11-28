@@ -195,8 +195,9 @@ type composition struct {
 	// now is the daemon's one clock at the read (plan.clock), which the source, the workflow
 	// engine and the admission read (source.now, workflow.Config.Clock, admit's UseClock).
 	now time.Time
-	// startedAt is when this daemon process started (source.startedAt), which its boot row also
-	// records.
+	// startedAt is when this daemon became ready (source.startedAt). Each seed records its newest
+	// boot's row at that moment too, as a daemon without the workflow records it; a daemon with the
+	// workflow records its row earlier, before its readiness probes (workflowRuntime.recordBoot).
 	startedAt time.Time
 	// wakes are the launches the pacing holds in the machines (supervision.waitingWakes). A
 	// machine holds one only inside a wave, and none restored from the store does, so this is one

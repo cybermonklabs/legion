@@ -310,42 +310,63 @@ func schemaVersion(ctx context.Context, tx pgx.Tx) (int, error) {
 	return version, nil
 }
 
-// RecordBoot writes the row that says this daemon started and returns its id.
-// The daemon holds the id for the life of the process and stamps it on the way
-// out; a row with no stopped_at is a boot that never shut down. The same
-// transaction writes the boot's row of design_gate_verdict_boots, which says the
-// boot ran a release that knows the hash gate's columns, so a boot of this
-// release never leaves a daemon_boot row without it: a daemon_boot row with none
-// is a boot of an earlier release (record.ResetGatesAfterEarlierRelease).
-//
-// settle, where it is not nil, runs first in that transaction, before the boot's
-// two rows, so the newest daemon_boot row of the project it reads is the boot
-// before this one, and what it writes commits with the boot or not at all. A
-// daemon with the workflow records its boot so, with the reset after an earlier
-// release's boot as settle, before it applies any fact (the daemon's
-// openWorkflow), and holds the id from then on; one without the workflow records
-// its boot once it is ready, with no settle.
-func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time, settle func(context.Context, pgx.Tx) error) (int64, error) {
+// RecordBoot writes the row that says this daemon started and returns its id: the
+// boot of a daemon without the workflow, which records it once it is ready. The
+// daemon holds the id for the life of the process and stamps it on the way out
+// (StopBoot), as it stamps a boot RecordWorkflowBoot recorded on each return
+// after that record; a row with no stopped_at is a boot that never shut down.
+// It writes no row of design_gate_verdict_boots: a daemon without the workflow
+// runs no reset of its project's design gates, so the next boot with the
+// workflow reads this one as it reads an earlier release's boot, and resets.
+func (s *Store) RecordBoot(ctx context.Context, project string, at time.Time) (int64, error) {
 	var id int64
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		if settle != nil {
-			if err := settle(ctx, tx); err != nil {
-				return err
-			}
-		}
-		if err := tx.QueryRow(ctx,
-			"insert into daemon_boot (project, started_at) values ($1, $2) returning id",
-			project, at,
-		).Scan(&id); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, "insert into design_gate_verdict_boots (boot) values ($1)", id)
+		var err error
+		id, err = insertBoot(ctx, tx, project, at)
 		return err
 	})
 	if err != nil {
 		return 0, fmt.Errorf("record the boot of %s: %w", project, err)
 	}
 	return id, nil
+}
+
+// RecordWorkflowBoot writes the boot of a daemon with the workflow, which
+// records it before it applies any fact (the daemon's openWorkflow), and returns
+// its id, as RecordBoot does. reset runs first in the transaction: the boot's
+// reset after an earlier release's boot (record.ResetGatesAfterEarlierRelease),
+// which reads the newest daemon_boot row of the project before this boot's, and
+// whose writes commit with the boot or not at all. Then the transaction writes
+// the boot's daemon_boot row and its row of design_gate_verdict_boots, the
+// marker, which says the boot ran that reset. So a daemon_boot row with no
+// marker is a boot that ran none: an earlier release's, which knows nothing of
+// the hash gate's columns, or a boot of this release without the workflow
+// (RecordBoot).
+func (s *Store) RecordWorkflowBoot(ctx context.Context, project string, at time.Time, reset func(context.Context, pgx.Tx) error) (int64, error) {
+	var id int64
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := reset(ctx, tx); err != nil {
+			return err
+		}
+		var err error
+		if id, err = insertBoot(ctx, tx, project, at); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, "insert into design_gate_verdict_boots (boot) values ($1)", id)
+		return err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("record the boot of %s: %w", project, err)
+	}
+	return id, nil
+}
+
+// insertBoot writes the daemon_boot row of a boot of project that started at at,
+// in tx, and returns its id.
+func insertBoot(ctx context.Context, tx pgx.Tx, project string, at time.Time) (int64, error) {
+	var id int64
+	err := tx.QueryRow(ctx, "insert into daemon_boot (project, started_at) values ($1, $2) returning id", project, at).Scan(&id)
+	return id, err
 }
 
 // StopBoot stamps the end of one boot. An id no row carries is refused rather

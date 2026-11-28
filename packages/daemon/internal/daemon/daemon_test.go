@@ -694,7 +694,8 @@ func TestRunStopsAtOnceWhileItWaitsToOpenItsStore(t *testing.T) {
 // that served. A daemon whose port is already taken never ran, and a row for it would inflate
 // `daemon.boots` — the value `legion state` answers with and the stage gate asserts on. (A daemon
 // with the workflow records its boot before its first fact, with the reset after an earlier
-// release's boot, so a boot of it that fails later keeps its row: workflowRuntime.recordBoot.)
+// release's boot, so a boot of it that fails later keeps its row, stamped as it returns, and
+// `daemon.boots` counts it: TestAWorkflowBootStampsTheBootItRecordedWhereverItReturns.)
 func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
@@ -714,6 +715,131 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 	if count, _ := boots(t, cfg); count != 0 {
 		t.Fatalf("boots after a start that never served = %d, want 0", count)
 	}
+}
+
+// A daemon with the workflow records its boot before its first fact (workflowRuntime.recordBoot),
+// before its port, its supervision and its readiness probes, so a boot of it that returns before it
+// is ready keeps that row, which `daemon.boots` counts, and stamps it as it returns, as a boot that
+// serves stamps its own at its stop: a row with no end is a boot that never shut down. The boots
+// that return early here find their port another listener's, or a Dispatch that answers the
+// reconcile's listing of issues with a body that is not JSON, which the reconcile refuses, or the
+// stop while the reconcile lists, which ends the boot cleanly. The state of a boot that serves gives
+// the moment it became ready as `daemon.startedAt`, after that listing, while its daemon_boot row
+// keeps the moment the boot recorded itself, before it.
+func TestAWorkflowBootStampsTheBootItRecordedWhereverItReturns(t *testing.T) {
+	t.Parallel()
+	// board is a Dispatch that answers the calls every boot makes (servedBootCall), and the boot's
+	// listing of issues with list once it has noted when the first listing came (listed).
+	board := func(list http.HandlerFunc, listed *atomic.Pointer[time.Time]) func(t *testing.T, project string) string {
+		return func(t *testing.T, project string) string {
+			return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case servedBootCall(t, w, r, project):
+				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
+					now := time.Now()
+					listed.CompareAndSwap(nil, &now)
+					list(w, r)
+				default:
+					t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+				}
+			})
+		}
+	}
+	noIssues := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, "[]")
+	}
+	daemonOverrides := func(t *testing.T) overrides {
+		o := fakeRuntime(fake.NewRuntime(), &built{})
+		o.workflowTokens = &workflowTokenRecorder{}
+		o.githubAPI = repositoriesGitHub(t)
+		return o
+	}
+
+	for _, tc := range []struct {
+		name string
+		// list answers the boot's listing of issues; stop is the daemon's signal.
+		list func(stop context.CancelFunc) http.HandlerFunc
+		// takenPort leaves the daemon to bind its port itself, which another listener holds.
+		takenPort bool
+		// refusal is what run's error says, and "" a clean stop.
+		refusal string
+	}{
+		{name: "its port is another listener's", takenPort: true, refusal: "listen on ",
+			list: func(context.CancelFunc) http.HandlerFunc { return noIssues }},
+		{name: "its reconcile refuses Dispatch's listing", refusal: "list Dispatch issues for admission",
+			list: func(context.CancelFunc) http.HandlerFunc {
+				return func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, "not json")
+				}
+			}},
+		{name: "the stop comes while its reconcile lists Dispatch's issues",
+			list: func(stop context.CancelFunc) http.HandlerFunc {
+				return func(_ http.ResponseWriter, r *http.Request) {
+					stop()
+					select {
+					case <-r.Context().Done():
+					case <-time.After(time.Minute):
+					}
+				}
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			var listed atomic.Pointer[time.Time]
+			cfg := workflowConfigOn(t, workflowNATS(t), board(tc.list(stop), &listed))
+			o := daemonOverrides(t)
+			if tc.takenPort {
+				o.listen = nil
+			}
+
+			err := run(ctx, cfg, quietLogger(), o)
+			if tc.refusal == "" && err != nil {
+				t.Fatalf("run = %v, want a clean stop", err)
+			}
+			if tc.refusal != "" && (err == nil || !strings.Contains(err.Error(), tc.refusal)) {
+				t.Fatalf("run = %v, want the refusal %q", err, tc.refusal)
+			}
+			if reached := listed.Load() != nil; reached == tc.takenPort {
+				t.Fatalf("the boot listed Dispatch's issues: %t, want %t", reached, !tc.takenPort)
+			}
+			if count, _ := boots(t, cfg); count != 1 {
+				t.Fatalf("boots after a workflow boot that returned before it was ready = %d, want 1: it recorded its boot before its first fact", count)
+			}
+			if stopped := lastBootStopped(t, cfg); stopped == nil {
+				t.Fatal("the workflow boot that returned before it was ready left its daemon_boot row with no end, want it stamped as it returned")
+			}
+		})
+	}
+
+	t.Run("a boot that serves", func(t *testing.T) {
+		t.Parallel()
+		var listed atomic.Pointer[time.Time]
+		cfg := workflowConfigOn(t, workflowNATS(t), board(noIssues, &listed))
+		d := startDaemon(t, cfg, daemonOverrides(t))
+		state := d.state()
+		first := listed.Load()
+		if first == nil {
+			t.Fatal("the boot served before it listed Dispatch's issues")
+		}
+		count, recorded := boots(t, cfg)
+		if count != 1 || state.Daemon.Boots != 1 || !state.Daemon.FirstBootAt.Equal(recorded) {
+			t.Fatalf("the store records %d boots and the state serves %d, first at %s; want the one boot, first at its row's %s",
+				count, state.Daemon.Boots, state.Daemon.FirstBootAt, recorded)
+		}
+		if !recorded.Before(*first) || !state.Daemon.StartedAt.After(*first) {
+			t.Fatalf("the boot's row started at %s and the state serves startedAt %s, with the reconcile's listing of Dispatch's issues at %s; "+
+				"want the row before the listing, when the boot recorded itself, and startedAt after it, when the daemon became ready",
+				recorded, state.Daemon.StartedAt, *first)
+		}
+		d.stop()
+		if stopped := lastBootStopped(t, cfg); stopped == nil {
+			t.Fatal("the workflow boot that served left its daemon_boot row with no end after its stop, want it stamped")
+		}
+	})
 }
 
 // The boot itself says once which shared leak check the deployment runs: run logs it

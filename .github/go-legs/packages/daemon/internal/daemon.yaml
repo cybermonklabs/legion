@@ -1290,6 +1290,7 @@
   - TestATurnStartedAfterTheMarkCancelsTheRelease  # 0.2 s
   - TestAWakeAloneEndsNoFollowWhileAPullRequestIsOwed  # 0.1 s
   - TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume  # 0.3 s
+  - TestAWorkflowBootStampsTheBootItRecordedWhereverItReturns
   - TestAWorkflowStartStartsAStoppedWorkerAgain  # 7.9 s
   - TestAWorkspaceCheckThatCannotShowACleanWorkspaceDeclinesTheRelease  # 0.6 s
   - TestAnAdmissionsReadOfANameGitHubNeverAnswersIsBounded  # 0.3 s

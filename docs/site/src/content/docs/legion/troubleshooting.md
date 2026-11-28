@@ -253,7 +253,7 @@ The daemon logs each refusal once, so a launch with no new line carries the same
 
 On SIGTERM (`legion stop`, a rollout, a node drain) the daemon logs `legion daemon stopping`, with
 `deciding` naming each claim whose decision is in flight and its event. It cuts short every
-relaunch and suspension it started itself and, once it has recorded its boot, the boot steps still
+relaunch and suspension it started itself and, once it is ready, the boot steps still
 running. A request in flight from the operator or an agent gets up to 8 seconds to finish, so a
 suspension or stop whose agent is already exiting is recorded. An operator request that would
 change a claim and that the daemon accepted before the stop began, but had not started deciding,
@@ -264,13 +264,16 @@ once it has recorded the boot's end. It waits at most 10 seconds for its own wor
 that, so it stops well inside a pod's termination grace. It ends no agent: the next boot re-adopts
 every pod or pane still running and relaunches each launch the stop cut short.
 
-A signal that comes before the boot is recorded ends the boot step under way only when that step
+A signal that comes before the daemon is ready ends the boot step under way only when that step
 is the plugin gate, which runs first, the GitHub Apps' logins read and key proof, the image probe,
-or the NATS and Dispatch readiness checks; the daemon then stops without recording a boot. The
+or the NATS and Dispatch readiness checks, and the daemon then stops. A daemon with the workflow
+(`dispatch_url` set) records its boot once its key proof has passed, before its image probe and
+its readiness checks, so a signal during those leaves a boot it stamps as it stops, which
+`daemon.boots` counts; a daemon without the workflow records no boot before it is ready. The
 cluster check, opening and migrating the store, building the runtime and recording the boot are
 not cut short: each runs to its end, with at most 30 seconds between one of the steps that end at
-the signal and the next, and the daemon stops at the next such step, or once its boot is
-recorded, which it then stamps.
+the signal and the next, and the daemon stops at the next such step, or once it is ready, and
+stamps any boot it recorded.
 
 - **`legion daemon stopped draining the API`.** A request was still in flight after those 8
   seconds. The daemon cut it short, the caller got an error, and the next boot takes its claim up;

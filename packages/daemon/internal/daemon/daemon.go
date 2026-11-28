@@ -83,7 +83,7 @@ const (
 	catchUpAttemptBound = time.Hour
 	// stopBudget bounds how long the daemon's stop waits for its own work, from the moment the stop
 	// begins (supervision.halt: at the signal, at serve's end, or when supervision fails to start,
-	// once the boot is recorded) until the daemon stamps its boot. The halt cancels every decision
+	// once the daemon is ready) until the daemon stamps its boot. The halt cancels every decision
 	// the daemon makes itself — the machines' own events, the workflow's outbox, the controller
 	// keeper — and the boot's own steps, so work that answers to its context ends at once. The API's
 	// drain, which starts with the stop, gets the budget's first four fifths (8 s): a decision a
@@ -99,8 +99,9 @@ const (
 	// workflow's NATS connection, stampTimeout the stamp, and storeCloseTimeout the store's close
 	// after it, so the daemon returns at most
 	// stopBudget+natsCloseTimeout+stampTimeout+storeCloseTimeout (24 s) after its stop begins,
-	// inside the 30 seconds a pod is given between SIGTERM and SIGKILL. Before the boot is
-	// recorded, a signal ends the daemon through each boot step's own bounds, as Run says.
+	// inside the 30 seconds a pod is given between SIGTERM and SIGKILL. Before the daemon is ready,
+	// a signal ends the daemon through each boot step's own bounds, as Run says, and a boot with the
+	// workflow it ends after its record is stamped within stampTimeout (stampBoot).
 	stopBudget = 10 * time.Second
 	// natsCloseTimeout bounds the close of the workflow's Envoy NATS connection on the stop path
 	// (closeWorkflowNATS). nats.Conn.Close flushes the outbound buffer while it holds the
@@ -332,22 +333,34 @@ type overrides struct {
 // (dispatchCredential) — then opens the store (trying again a connection error the next attempt
 // can clear, and refusing by the host it could not reach), migrates, takes its API listener and
 // its worker stream, builds the runtime (under kubernetes, once Agent Sandbox's install check
-// passes), proves the worker image under kubernetes, records the boot, supervises every claim the
-// store holds, serves the API, and blocks until ctx is done. Then it stops: it says so, cancels
-// the decisions it makes itself, drains the API and the decisions its routes asked for, ends the
-// workflow and supervision, stamps the boot's end and closes the pool, in that order, because the
-// stamp needs the pool. The waits before the stamp share one budget, which a boot that has not
-// finished supervising its claims shares too (stopBudget).
+// passes), proves the worker image under kubernetes, records the boot (a daemon with the
+// workflow records it earlier, below), supervises every claim the store holds, serves the API,
+// and blocks until ctx is done. Then it stops: it says so, cancels the decisions it makes itself,
+// drains the API and the decisions its routes asked for, ends the workflow and supervision,
+// stamps the boot's end and closes the pool, in that order, because the stamp needs the pool. The
+// waits before the stamp share one budget, which a boot that has not finished supervising its
+// claims shares too (stopBudget).
 //
-// Everything that can refuse comes before the boot record: a recorded boot is a boot that
-// served, and a daemon whose port, socket, tmux, cluster, or image refused it never ran.
+// A daemon without the workflow records its boot once it is ready, after everything that can
+// refuse: a boot it recorded is a boot that served, and a daemon whose port, socket, tmux,
+// cluster, or image refused it never ran. A daemon with the workflow records its boot before it
+// applies any fact, in one transaction with the reset after an earlier release's boot
+// (workflowRuntime.recordBoot): after its GitHub Apps' key proof, and before its port, its
+// supervision, the image probe and its readiness probes. A boot of it that one of those refuses,
+// or that a signal ends there, keeps its row, stamped as it returns, and `daemon.boots` counts it.
 //
-// ctx decides one thing: how long the daemon serves. The boot record and its stamp are the
-// daemon's own bookkeeping and run on a context the shutdown did not cancel, so a signal that
-// arrives once the store is open still leaves a recorded, stamped boot rather than a row with no
-// end. A signal that arrives while the plugin gate, the Dispatch credential's trade or read, the
-// store's attempts to open, the GitHub Apps' logins and key proof, or the image probe waits ends
-// the daemon there, cleanly: it has served nothing and records nothing.
+// ctx decides one thing: how long the daemon serves. The boot's record and its stamp are the
+// daemon's own bookkeeping. A daemon without the workflow records its boot on a context the
+// shutdown did not cancel, so a signal that arrives once its store is open still leaves it a
+// recorded, stamped boot, unless a step that waits on ctx (below) is still to come; a daemon with
+// the workflow records its boot on ctx, so a signal before that record leaves it none. The stamp
+// runs on a context the shutdown did not cancel on every return after the record (stampBoot): at
+// the daemon's own stop, and, for a daemon with the workflow, at a return before it is ready
+// (workflowRuntime.stampRecordedBoot), so a row with no end is a boot that never shut down. A
+// signal that arrives while the plugin gate, the Dispatch credential's trade or read, the store's
+// attempts to open, the GitHub Apps' logins and key proof, the image probe or the workflow's
+// readiness probes wait ends the daemon there, cleanly: it has served nothing, and it records
+// nothing beyond the boot a daemon with the workflow recorded after its key proof, which it stamps.
 //
 // listener, when not nil, is the API listener the daemon serves on in place of binding cfg's bind
 // and port: the socket `legion start` inherited (LEGION_LISTEN_FD), which it checked names both.
@@ -367,9 +380,10 @@ func handed(listener net.Listener) func(network, address string) (net.Listener, 
 }
 
 // bootBudget is a budget of bootTimeout for the boot's next steps, on ctx's values but not its
-// cancellation: a signal that arrives once the store is open still leaves a recorded, stamped boot
-// (Run), so the steps between the open and the boot record end on this bound rather than on the
-// signal, and the steps after it end on the signal through starting, which run derives from it.
+// cancellation: the steps between the store's open and the daemon's readiness that wait on no
+// other service end on this bound rather than on the signal, so a signal that arrives once the
+// store is open still leaves a daemon without the workflow a recorded, stamped boot (Run), and the
+// steps after readiness end on the signal through starting, which run derives from it.
 // The store's open itself runs on ctx and outside any budget (storeOpenRetry). It carries the
 // boot's hold mark (store.WithTransactionTracking), since the boot's steps run one after another
 // on it: a step that asks the pool for a connection while one of its own transactions holds one
@@ -822,28 +836,26 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		defer cancelAfterReady()
 	}
 
-	// A daemon with the workflow recorded its boot before its first fact, in the transaction of the
-	// reset after an earlier release's boot (workflowRuntime.recordBoot), and holds that row's id
-	// and start; one without the workflow records its boot here, once it is ready.
+	// The daemon is ready: startedAt is that moment, which the state serves as `daemon.startedAt`
+	// and which `legion state` measures a consumer's stall before its first message from (serve).
+	// A daemon with the workflow recorded its boot before its first fact (workflowRuntime.recordBoot),
+	// whose row keeps the moment it was written, and run takes that row over here for the stamp at
+	// its own stop (takeBoot); one without the workflow records its boot here, at startedAt.
+	startedAt := time.Now().UTC()
 	var bootID int64
-	var startedAt time.Time
 	if workflow != nil {
-		bootID, startedAt = workflow.bootRecord, workflow.bootStartedAt
-	} else {
-		startedAt = time.Now().UTC()
-		if bootID, err = st.RecordBoot(boot, cfg.Project, startedAt, nil); err != nil {
-			s.stop()
-			listener.Close()
-			workflow.stop()
-			st.Close()
-			return err
-		}
+		bootID = workflow.takeBoot()
+	} else if bootID, err = st.RecordBoot(boot, cfg.Project, startedAt); err != nil {
+		s.stop()
+		listener.Close()
+		st.Close()
+		return err
 	}
 	// From here every way the daemon ends halts supervision before anything waits: the signal, at
 	// once, serve's end, or a start that failed. The signal also ends the boot's own steps, which run
-	// on starting. Everything after the boot record runs on a goroutine of its own, so run waits for
-	// it only until the stop's budget runs out (awaitStop), and then stamps the boot whatever is
-	// still running.
+	// on starting. Supervision's start, the settle and serve run on a goroutine of their own, so run
+	// waits for them only until the stop's budget runs out (awaitStop), and then stamps the boot
+	// whatever is still running.
 	starting, endStarting := context.WithCancel(boot)
 	defer endStarting()
 	halting := context.AfterFunc(ctx, func() {
@@ -915,18 +927,25 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// idempotent.
 	closeWorkflowNATS(workflow, log)
 
-	// The stop cancelled store queries in flight, and a pooled connection one of them ran on can
-	// still carry the read deadline that cancellation set, which failed the stamp with `stop boot N:
-	// timeout: read tcp …: i/o timeout` (a socket deadline, not the stamp's context). The stamp runs
-	// on a connection opened after the reset.
-	st.Pool().Reset()
-	stamp, cancelStamp := context.WithTimeout(context.WithoutCancel(ctx), stampTimeout)
-	defer cancelStamp()
-	stopErr := st.StopBoot(stamp, bootID, time.Now().UTC())
+	stopErr := stampBoot(ctx, st, bootID)
 	closeStore(st, log)
 	log.Info("legion daemon stopped", "project", cfg.Project, "boot", bootID)
 
 	return errors.Join(liveErr, stopErr)
+}
+
+// stampBoot stamps the end of the boot id (store.Store.StopBoot) on a context the shutdown did not
+// cancel, within stampTimeout: run stamps its boot so at its own stop, and a boot with the
+// workflow that returns between its record and its readiness stamps the one it recorded so
+// (workflowRuntime.stampRecordedBoot). The stop cancelled store queries in flight, and a pooled
+// connection one of them ran on can still carry the read deadline that cancellation set, which
+// failed the stamp with `stop boot N: timeout: read tcp …: i/o timeout` (a socket deadline, not
+// the stamp's context). The stamp runs on a connection opened after the reset.
+func stampBoot(ctx context.Context, st *store.Store, id int64) error {
+	st.Pool().Reset()
+	stamp, cancel := context.WithTimeout(context.WithoutCancel(ctx), stampTimeout)
+	defer cancel()
+	return st.StopBoot(stamp, id, time.Now().UTC())
 }
 
 // queueStateBoot queues the boot event of run (record.StateBoot) in a transaction of its own
@@ -1374,8 +1393,9 @@ type plan struct {
 	// gate is the plugin gate run before anything is opened (pluginGate); nil under a runtime with
 	// no host Oh My Pi, and for a replaced runtime without one.
 	gate func(ctx context.Context) error
-	// probe proves the runtime's worker image once the runtime is built and before the boot is
-	// recorded, answering what its OK line reported of the image; nil under tmux, and for a
+	// probe proves the runtime's worker image once the runtime is built and before the daemon is
+	// ready, so before a daemon without the workflow records its boot and after one with it did
+	// (Run), answering what its OK line reported of the image; nil under tmux, and for a
 	// replaced runtime without one.
 	probe func(ctx context.Context, rt runtime.Runtime) (bootprobe.ImageReport, error)
 	// clusterCheck is the Kubernetes runtime's refusals before the store opens: Agent Sandbox's
@@ -2191,7 +2211,8 @@ func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project
 // openSupervision reads the claims the store holds and their sessions' capability reports, takes
 // the worker stream, and builds the runtime over it, for supervision's lifetime and with the
 // workflow's App tokens (nil without a workflow): every step of supervision that can refuse, so a
-// daemon that cannot supervise refuses before its boot is recorded.
+// daemon that cannot supervise refuses before it is ready: before a daemon without the workflow
+// records its boot, and after one with it did, which then stamps that boot (Run).
 //
 // pacer is the daemon's one wake pacer (run builds it, then shares it with the workflow):
 // the two queues every paced launch and catch-up takes a place in, and nil while the operator

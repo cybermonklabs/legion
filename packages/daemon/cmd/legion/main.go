@@ -43,10 +43,10 @@ import (
 const (
 	defaultConfigPath = "./legion.yaml"
 	// stopTimeout bounds the wait for a stopping daemon, which returns at most 24 s after its stop
-	// begins once its boot is recorded: its stop budget, the close of the workflow's NATS
-	// connection, the boot's stamp and the store's close (the daemon package's stopBudget). A
-	// signal before then waits out the boot step under way first, each bounded by the boot's own
-	// 30 s (the daemon package's Run).
+	// begins once it is ready: its stop budget, the close of the workflow's NATS connection, the
+	// boot's stamp and the store's close (the daemon package's stopBudget). A signal before then
+	// waits out the boot step under way first, each bounded by the boot's own 30 s, and then the
+	// stamp of a boot it recorded already (the daemon package's Run).
 	stopTimeout = 30 * time.Second
 	// aliveInterval is how often a wait re-asks whether a process is gone.
 	aliveInterval = 20 * time.Millisecond

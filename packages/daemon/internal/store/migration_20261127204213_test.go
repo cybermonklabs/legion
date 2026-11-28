@@ -197,8 +197,8 @@ func releaseBeforeGate(t *testing.T, st *Store, issue string) record.DesignGate 
 }
 
 // bootOf is a boot of this release for project as the daemon's workflow records it
-// (workflowRuntime.recordBoot): RecordBoot writes the boot's daemon_boot row and its marker, and
-// before them, in the same transaction, the reset after an earlier release's boot
+// (workflowRuntime.recordBoot): RecordWorkflowBoot writes the boot's daemon_boot row and its
+// marker, and before them, in the same transaction, the reset after an earlier release's boot
 // (record.ResetGatesAfterEarlierRelease), which queues the gate seeds of a deployment that gates
 // the spec step, due at at. It answers the boot's id, what the reset did, and the error of a boot
 // whose transaction fails.
@@ -206,7 +206,7 @@ func bootOf(t *testing.T, st *Store, project string, at time.Time) (int64, recor
 	t.Helper()
 	var reset record.GateReset
 	records := record.NewStore()
-	id, err := st.RecordBoot(t.Context(), project, at, func(ctx context.Context, tx pgx.Tx) error {
+	id, err := st.RecordWorkflowBoot(t.Context(), project, at, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		reset, err = record.ResetGatesAfterEarlierRelease(ctx, tx, records, project, []record.DesignStep{record.DesignStepSpec}, at)
 		return err
@@ -330,16 +330,17 @@ func gateSeeds(t *testing.T, st *Store) int {
 // and the migration's version row stay, and another project's rows stay as they were. The release
 // before's write still runs after it, and the roll forward applies nothing.
 //
-// Each boot of this release records its daemon_boot row and its row of design_gate_verdict_boots,
-// both or neither (RecordBoot). A boot after an earlier release's boot of the same project (a
+// Each boot of this release with the workflow records its daemon_boot row and its row of
+// design_gate_verdict_boots, both or neither (RecordWorkflowBoot), and a boot without it its
+// daemon_boot row alone (RecordBoot). A boot after an earlier release's boot of the same project (a
 // daemon_boot row with no such row), in the transaction that records it, puts that project's rows
 // in version mode and clears every column the hash gate adds, so a changes request the earlier
 // release wrote over a verdict closes the gate; it ends no basis and tells nothing; it keeps a
 // carried copy marked and marks one the earlier release carried; it touches no row of another
-// project; and it queues a gate seed for each registered step. A boot after its own release's boot,
-// a boot after another project's earlier release's boot, and a boot after one that failed after
-// its record reset nothing; and a boot whose transaction fails leaves no daemon_boot row, no marker
-// and no reset.
+// project; and it queues a gate seed for each registered step. A boot after a boot of this release
+// without the workflow does the same. A boot after its own release's boot, a boot after another
+// project's earlier release's boot, and a boot after one that failed after its record reset
+// nothing; and a boot whose transaction fails leaves no daemon_boot row, no marker and no reset.
 func TestHashGateMigrationAndWayBack(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -740,7 +741,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		assertToldNothing(t, st, outbox, "the boots")
 	})
 
-	t.Run("RecordBoot writes a boot and its marker both or neither, and a boot whose transaction fails resets nothing", func(t *testing.T) {
+	t.Run("RecordWorkflowBoot writes a boot and its marker both or neither, and a boot whose transaction fails resets nothing", func(t *testing.T) {
 		count := func(table string) int {
 			t.Helper()
 			var count int
@@ -749,10 +750,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 			}
 			return count
 		}
-		id, err := st.RecordBoot(ctx, "LEGION", at.Add(6*time.Hour), nil)
-		if err != nil {
-			t.Fatalf("record a boot: %v", err)
-		}
+		id, _ := bootAt(t, st, "LEGION", at.Add(6*time.Hour))
 		var marked bool
 		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from design_gate_verdict_boots where boot = $1)`, id).Scan(&marked); err != nil || !marked {
 			t.Fatalf("the boot %d has its row of design_gate_verdict_boots: %t (%v), want it written with the boot", id, marked, err)
@@ -780,6 +778,43 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 		}
 		must(t, `drop trigger refuse_verdict_boot on design_gate_verdict_boots`)
 		must(t, `drop function refuse_verdict_boot()`)
+	})
+
+	// A boot of this release without the workflow runs no reset, so it writes its daemon_boot row
+	// and no marker (RecordBoot), and the next boot with the workflow reads it as it reads an
+	// earlier release's boot. Here an earlier release boots on LEGION, then this release without
+	// the workflow, while LEGION-708 stands open in hash mode, then this release with it.
+	t.Run("a boot after a boot of this release without the workflow resets, as after an earlier release's boot", func(t *testing.T) {
+		issue(t, "LEGION-708", 1)
+		putGate(t, st, hashOpen("LEGION-708"))
+		earlierReleaseBoot(t, st, "LEGION", at.Add(8*time.Hour+20*time.Minute))
+		unmarked, err := st.RecordBoot(ctx, "LEGION", at.Add(8*time.Hour+40*time.Minute))
+		if err != nil {
+			t.Fatalf("record a boot without the workflow: %v", err)
+		}
+		seeds, outbox := gateSeeds(t, st), outboxKinds(t, st)
+		_, reset := bootAt(t, st, "LEGION", at.Add(8*time.Hour+50*time.Minute))
+		if reset.EarlierBoot != unmarked || reset.Rows == 0 || reset.Seeds == 0 {
+			t.Fatalf("the boot after a boot without the workflow reset %+v, want the boot %d found, LEGION-708's row put in version mode and its seed queued",
+				reset, unmarked)
+		}
+		if gate := gatesOf(t, st, "LEGION-708")[record.DesignStepSpec]; gate.Verdict != nil || gate.ToldOpen != nil {
+			t.Fatalf("the gate of LEGION-708 after the boot reads %#v (verdict %+v), want it in version mode: the boot resets", gate, gate.Verdict)
+		}
+		if set := addedColumnsSet(t, st, "LEGION"); set != 0 {
+			t.Fatalf("%d rows of LEGION hold a column the hash gate added after the reset, want none: every row is in version mode", set)
+		}
+		if unseeded := rowsUnseeded(t, st, "LEGION"); len(unseeded) != 0 {
+			t.Fatalf("the rows of LEGION with no gate seed after the reset = %q, want a seed of each registered step", unseeded)
+		}
+		if added := gateSeeds(t, st) - seeds; added != reset.Seeds {
+			t.Fatalf("the reset queued %d gate seeds and answered %d, want the two the same", added, reset.Seeds)
+		}
+		var marked bool
+		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from design_gate_verdict_boots where boot = $1)`, unmarked).Scan(&marked); err != nil || marked {
+			t.Fatalf("the boot %d without the workflow has a row of design_gate_verdict_boots: %t (%v), want none: it ran no reset", unmarked, marked, err)
+		}
+		assertToldNothing(t, st, outbox, "the boot's reset after a boot without the workflow")
 	})
 
 	t.Run("the way back", func(t *testing.T) {

@@ -1,8 +1,8 @@
 -- 20261127204213_design_gate_verdict.up.sql -- a design-gate step records Dispatch's verdict on
 -- whether the approval of its document stands, beside the two version numbers, and the gate opens
 -- on that verdict where Dispatch gives one (dispatch://INFRA-6065 R2, Departures D1 to D3); and
--- each boot of this release records itself in design_gate_verdict_boots, so a boot can tell that
--- an earlier release booted since.
+-- each boot of this release with the workflow records itself in design_gate_verdict_boots, so a
+-- boot can tell that an earlier release, or this release without the workflow, booted since.
 --
 -- The verdict (record.GateVerdict), all null on a row in version mode:
 --
@@ -54,10 +54,11 @@
 -- document a row of another issue names. A row of the issue's own document is no copy and stays
 -- false.
 --
--- design_gate_verdict_boots holds one row for each boot of this release, keyed by the boot's
--- daemon_boot id: the store's RecordBoot writes it in the transaction that writes the daemon_boot
--- row, so a boot of this release never leaves a daemon_boot row without one. No release before
--- this one writes it.
+-- design_gate_verdict_boots holds one row for each boot of this release with the workflow, keyed
+-- by the boot's daemon_boot id: the store's RecordWorkflowBoot writes it in the transaction that
+-- writes the daemon_boot row and runs the boot's reset, so the row says the boot ran that reset. A
+-- boot of this release without the workflow runs no reset and writes none (the store's
+-- RecordBoot). No release before this one writes it.
 --
 -- Every row this migration finds is in version mode, with no told standing and no root version,
 -- so each gate open before it is open after it. A daemon of the release before names none of
@@ -67,17 +68,17 @@
 -- version held back: the end of a basis that the version rule ends at once (R3, "A version").
 -- Its writes leave the verdict, the told standing and the root version as this release last wrote
 -- them. So a rollback runs the way back below first, for the project that rolls back, with that
--- project's daemon stopped. And each boot of this release, before it applies any fact, records
--- itself in daemon_boot and in design_gate_verdict_boots in one transaction (the store's
--- RecordBoot); where the project's newest earlier daemon_boot row has no row of
--- design_gate_verdict_boots, a boot of an earlier release, that same transaction puts each of the
--- project's rows in version mode and clears every column this migration adds, ending no basis and
--- telling nothing, since the columns cannot show what the earlier release did, and the boot
--- queues the gate seed of each registered step of each tree in the workflow, whose read of
--- Dispatch gives each row its verdict again and tells each change from the standing version mode
--- reads (record.ResetGatesAfterEarlierRelease). The first boot after this migration finds the
--- release before's boot there, changes no row, which is in version mode already, and queues the
--- seeds.
+-- project's daemon stopped. And each boot of this release with the workflow, before it applies
+-- any fact, records itself in daemon_boot and in design_gate_verdict_boots in one transaction (the
+-- store's RecordWorkflowBoot); where the project's newest earlier daemon_boot row has no row of
+-- design_gate_verdict_boots, a boot of an earlier release or of this release without the
+-- workflow, that same transaction puts each of the project's rows in version mode and clears
+-- every column this migration adds, ending no basis and telling nothing, since the columns cannot
+-- show what the earlier release did, and the boot queues the gate seed of each registered step of
+-- each tree in the workflow, whose read of Dispatch gives each row its verdict again and tells
+-- each change from the standing version mode reads (record.ResetGatesAfterEarlierRelease). The
+-- first boot after this migration finds the release before's boot there, changes no row, which is
+-- in version mode already, and queues the seeds.
 --
 -- The way back acts on the rows of one project's issues alone, the project whose daemon rolls
 -- back: replace <PROJECT> with its key, project in its legion.yaml, the part of each of its issue
