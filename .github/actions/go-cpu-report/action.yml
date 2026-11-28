@@ -1,0 +1,80 @@
+name: Report the Go CPU record
+description: >-
+  The step of an envoy-go job that closes what the go-cpu-start action opened: it runs
+  .github/scripts/go-cpu-runner.py report, which stops the /proc/stat sampler, keeps /proc/stat
+  as the job's end, and prints the `go-cpu job:` line, the rows of the job's test binaries summed
+  by class (the CPU and wall seconds its Go tests took), and the `go-cpu usage:` line, the CPU
+  the whole machine used between the two steps, with the Go build cache entries the job added and
+  the CPU of its Postgres containers; the script's header says what each figure is.
+  The calling step sets `if: always()`, so a failed or cancelled job is measured too,
+  `continue-on-error: true` and `timeout-minutes: 2`, because the report only measures and must
+  neither fail nor hold the job. It runs before the job's upload of
+  `$RUNNER_TEMP/go-test-events/`, so the upload carries the files the report writes there.
+  Given a check-run-id, a second step uploads that directory itself, as the artifact
+  `go-test-events-<check-run-id>`. That upload stands until dispatch://INFRA-6313's own upload of
+  the same directory under the same name lands in the jobs, and is then removed: two artifacts of
+  one name in one run fail.
+
+inputs:
+  rows:
+    description: >-
+      "true" reads the rows and the Postgres containers and prints the job line; "false"
+      (`report --no-rows`) prints the usage line alone, for the envoy-go-checks job, which runs no
+      go test.
+    required: false
+    default: "true"
+  postgres:
+    description: >-
+      `job.services.postgres.id` of the calling job, its Postgres service container, read as
+      `--postgres service=<id>`; empty for a job with no service.
+    required: false
+    default: ""
+  containers:
+    description: >-
+      The names of the other Postgres containers the job started, separated by spaces, each read
+      as `--postgres <name>=<name>`.
+    required: false
+    default: ""
+  check-run-id:
+    description: >-
+      `job.check_run_id` of the calling job. When it is given, a second step uploads
+      `$RUNNER_TEMP/go-test-events/` as the artifact `go-test-events-<check-run-id>`.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Report the Go CPU record
+      shell: bash
+      env:
+        ROWS: ${{ inputs.rows }}
+        POSTGRES: ${{ inputs.postgres }}
+        CONTAINERS: ${{ inputs.containers }}
+      run: |
+        set -euo pipefail
+        arguments=()
+        case "$ROWS" in
+          true) ;;
+          false) arguments+=(--no-rows) ;;
+          *)
+            echo "::error::go-cpu-report: the rows input is \"$ROWS\", and it takes \"true\" or \"false\"" >&2
+            exit 1
+            ;;
+        esac
+        if [ -n "$POSTGRES" ]; then
+          arguments+=(--postgres "service=$POSTGRES")
+        fi
+        read -r -a names <<< "$CONTAINERS"
+        for name in "${names[@]}"; do
+          arguments+=(--postgres "$name=$name")
+        done
+        "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" report "${arguments[@]}"
+    - name: Upload the Go test events
+      if: always() && inputs.check-run-id != ''
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: go-test-events-${{ inputs.check-run-id }}
+        path: ${{ runner.temp }}/go-test-events/
+        if-no-files-found: warn

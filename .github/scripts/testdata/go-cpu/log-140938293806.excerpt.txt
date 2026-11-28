@@ -1,0 +1,11 @@
+2026-11-28T09:43:37.8653297Z Version: 20261111.635
+2026-11-28T09:43:37.8655896Z Worker ID: {432b80a5-bc89-4683-9388-906a56d412dc}
+2026-11-28T09:43:37.8656754Z Region: northcentralus
+2026-11-28T09:43:37.8663966Z Image: ubuntu-24.04-arm
+2026-11-28T09:43:37.8664621Z Version: 20261122.193.1
+2026-11-28T09:44:13.0800016Z Cache hit for restore-key: go-envoy-test-Linux-ARM64-go1.27.3-467dfdcae9cbb5d9d1c9b2eb34c48a5daac0c527
+2026-11-28T09:44:17.3227079Z Cache Size: ~925 MB (969968396 B)
+2026-11-28T09:44:33.2118732Z Cache restored from key: go-envoy-test-Linux-ARM64-go1.27.3-467dfdcae9cbb5d9d1c9b2eb34c48a5daac0c527
+2026-11-28T09:44:33.6752911Z go-cpu runner: part=0xd49:4 cpus=4 mem_kib=16324080 kernel=7.0.0-1020-azure probe_one=2163.1 probe_all=8340.6 cache_entries=19348 goflags="-exec=/home/runner/work/legion/legion/.github/scripts/go-cpu-exec.py" model="Neoverse-N2"
+2026-11-28T09:53:55.3714354Z go-cpu job: envoy-go-alone binaries=4 nested=0 runs=1 user=19.23 sys=4.71 cpu=23.94 wall=84.20
+2026-11-28T09:53:55.3715122Z go-cpu usage: busy=255.06 user=191.59 sys=63.47 iowait=4.02 steal=0.00 idle=1975.60 new_cache_entries=556 postgres_cpu=123.82

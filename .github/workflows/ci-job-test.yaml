@@ -159,8 +159,8 @@ jobs:
       # prints each one's log. A
       # harness that needs an earlier step is queued after it: release-push.test.sh after
       # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh,
-      # go-cache-working-set.test.sh, testcontainers_links.test.sh, go-legs.test.sh and
-      # check-go-work-sum.test.sh after setup-go.
+      # go-cache-working-set.test.sh, testcontainers_links.test.sh, go-legs.test.sh,
+      # check-go-work-sum.test.sh and go-cpu.test.sh after setup-go.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"release_push_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/release-push.test.sh .github/scripts/release-push.test.sh
@@ -175,6 +175,13 @@ jobs:
       - name: Test the harness case time reader
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"harness_case_times_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/harness_case_times.test.sh .github/scripts/harness_case_times.test.sh
+
+      # Beside the reader above, and like it needing no Go: the reader of the envoy-go jobs'
+      # spread and its factors runs on bash, Python and jq, over fixtures captured from real runs
+      # and served by a stand-in gh, and reads no network.
+      - name: Test the Go CPU record's reader
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cpu_record_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go_cpu_record.test.sh .github/scripts/go_cpu_record.test.sh
 
       - name: Test third-party notices
         run: bun test scripts/third-party-notices.test.ts
@@ -494,6 +501,12 @@ jobs:
       - name: Test the go.work.sum check over fixture workspaces and a file proxy
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-go-work-sum.test.sh .github/scripts/check-go-work-sum.test.sh
+
+      # After setup-go: its W12 case runs the real go test, go run, go vet and go list through the
+      # wrapper over a scratch module, with a build cache, module cache and GOFLAGS of its own.
+      - name: Test the Go CPU record's wrapper and runner
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cpu_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-cpu.test.sh .github/scripts/go-cpu.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.

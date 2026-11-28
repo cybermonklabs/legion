@@ -1,0 +1,6 @@
+{"ImportPath":"github.com/sjawhar/envoy/internal/webhook [github.com/sjawhar/envoy/internal/webhook.test]","Action":"build-output","Output":"# github.com/sjawhar/envoy/internal/webhook [github.com/sjawhar/envoy/internal/webhook.test]\n"}
+{"ImportPath":"github.com/sjawhar/envoy/internal/webhook [github.com/sjawhar/envoy/internal/webhook.test]","Action":"build-output","Output":"internal/webhook/handmade.go:3:23: cannot use \"x\" (untyped string constant) as int value in return statement\n"}
+{"ImportPath":"github.com/sjawhar/envoy/internal/webhook [github.com/sjawhar/envoy/internal/webhook.test]","Action":"build-fail"}
+{"Time":"2026-11-28T10:12:39.556976953Z","Action":"start","Package":"github.com/sjawhar/envoy/internal/webhook"}
+{"Time":"2026-11-28T10:12:39.557098753Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/webhook","Output":"FAIL\tgithub.com/sjawhar/envoy/internal/webhook [build failed]\n","OutputType":"frame"}
+{"Time":"2026-11-28T10:12:39.557124833Z","Action":"fail","Package":"github.com/sjawhar/envoy/internal/webhook","Elapsed":0,"FailedBuild":"github.com/sjawhar/envoy/internal/webhook [github.com/sjawhar/envoy/internal/webhook.test]"}
