@@ -132,6 +132,17 @@ fi
 mkdir "$out/interleaved-bin"
 cat >"$out/interleaved-bin/go" <<'EOF'
 #!/usr/bin/env bash
+# List the fixture's tests without compiling them for the interleaved run.
+if [ "$1" = test ]; then
+  for arg in "${@:2}"; do
+    [ "$arg" = -list ] || continue
+    printf '%s\n' TestForcedOrderPasses
+    printf 'ok  \texample.com/summary/pass\t0.001s\n'
+    printf '%s\n' TestForcedOrderPasses TestForcedOrderFails TestForcedOrderSkips
+    printf 'ok  \texample.com/summary/mixed\t0.001s\n'
+    exit 0
+  done
+fi
 if [ "$1 ${2:-}" != "test -json" ]; then
   exec "$REAL_GO" "$@"
 fi

@@ -58,9 +58,11 @@ jobs:
     # 5 minutes, and runs under forced-order.sh's -timeout of 10 minutes, 15 each, so 66. The first
     # of them also compiles cmd/listener, the heaviest package of the race step, against that
     # hooked server, which took 58 s of the step's 70 s on a dev box: 5 minutes more for the
-    # runner, so 71. The script's own test compiles one more hooked build, of a fixture with one
-    # test that skips, up to 5 minutes, and runs it at once, so 76; the connections report's own
-    # minute makes 77 in all.
+    # runner, so 71. The script's own test compiles two more hooked builds, up to 5 minutes each.
+    # One fixture has one test that skips. The other has one passing, one failing and one skipping
+    # test. The tests in each fixture finish at once, so 81. The connections report's own minute makes
+    # 82 in all, under 85. "Test forced-order.sh's refusals" took 6 s at head d3598391 in run
+    # 46117989670 (job 140896159680), against 3 s at main c1ab2b6f in run 46117567959.
     timeout-minutes: 85
     services:
       postgres:
