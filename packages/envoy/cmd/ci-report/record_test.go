@@ -66,42 +66,56 @@ func commandBound(t *testing.T) time.Duration {
 
 // A call that does not end within its bound is ended there: its line says that the step ended
 // it, that the write may have gone out and what the command printed, with exit -1, and it is no
-// stored result. The stub in mode hang prints a line and then sleeps for 30 s; the bound here is
-// half a second, so the call must end long before the stub would. sh runs the stub, which this
-// process wrote: a file this process writes and executes itself can be busy while a parallel test
-// starts a process.
+// stored result. The stub in mode hang prints a line, starts a child that holds its output open
+// and never ends, and never ends itself: the bound ends the stub, and the wait delay the wait for
+// the output its child holds. Without either, record never returns, and go test's -timeout ends
+// the run.
 func TestACallThatDoesNotEndWithinItsBoundIsEnded(t *testing.T) {
 	t.Parallel()
 	s := newStub(t)
 	c := caller{
-		cli: []string{"sh", s.path}, project: "ACME", commit: otherSHA,
+		cli: []string{s.path}, project: "ACME", commit: otherSHA,
 		env: append(os.Environ(), s.env("hang")...), bound: 500 * time.Millisecond, waitDelay: 500 * time.Millisecond,
 	}
-	start := time.Now()
 	code, id, why, stored := c.record(Planned{Check: "a-check", Outcome: "pass", Observed: "the test passed\n"})
-	elapsed := time.Since(start)
 	want := "the dispatch command did not end within 500ms, so the step ended it: the write may have gone out, and no answer said whether Dispatch stored it; a second run of the step is safe, since Dispatch keeps each result. The dispatch command printed: the write went out"
 	if code != -1 || id != "" || why != want || stored {
 		t.Errorf("record answers exit %d, id %q, why %q, stored %t; want exit -1, no id, why %q and not stored", code, id, why, stored, want)
-	}
-	if elapsed > 10*time.Second {
-		t.Errorf("record took %s, want the bound of 500ms and the wait for its output", elapsed)
 	}
 	if calls := s.calls(t); len(calls) != 1 {
 		t.Errorf("the stub got %d calls, want 1", len(calls))
 	}
 }
 
+// A command that exits while a child of its own holds its output open is read once the wait
+// delay ends that wait: the stub in mode store-held prints its stored row and exits 0, and its
+// child never ends. The bound is a minute, so only the wait delay can end the wait; without it,
+// record never returns, and go test's -timeout ends the run.
+func TestACommandWhoseChildHoldsItsOutputIsReadAfterTheWaitDelay(t *testing.T) {
+	t.Parallel()
+	s := newStub(t)
+	c := caller{
+		cli: []string{s.path}, project: "ACME", commit: otherSHA,
+		env: append(os.Environ(), s.env("store-held")...), bound: time.Minute, waitDelay: 500 * time.Millisecond,
+	}
+	code, id, why, stored := c.record(Planned{Check: "a-check", Outcome: "pass", Observed: "the test passed\n"})
+	if code != 0 || id != "row-a-check" || why != "" || !stored {
+		t.Errorf("record answers exit %d, id %q, why %q, stored %t; want exit 0, id row-a-check, no why and stored", code, id, why, stored)
+	}
+}
+
 // The command gets the reporter's environment less GitHub's OIDC token request, and every other
-// variable as it is, the result grant's placeholder among them.
+// variable as it is, the result grant's placeholder among them; the environment it read is as it
+// was, element by element, since callEnv shares its backing array with the caller.
 func TestTheCommandGetsNoOIDCRequest(t *testing.T) {
 	t.Parallel()
 	environ := slices.Concat([]string{"PATH=/usr/bin", "DISPATCH_RESULTS_TOKEN=placeholder", "ACTIONS_ID_TOKEN_REQUEST=other"}, oidcEnv)
+	before := slices.Clone(environ)
 	if got, want := callEnv(environ), []string{"PATH=/usr/bin", "DISPATCH_RESULTS_TOKEN=placeholder", "ACTIONS_ID_TOKEN_REQUEST=other"}; !slices.Equal(got, want) {
 		t.Errorf("callEnv gives %q, want %q", got, want)
 	}
-	if len(environ) != 5 {
-		t.Errorf("callEnv changed the environment it read: %q", environ)
+	if !slices.Equal(environ, before) {
+		t.Errorf("callEnv changed the environment it read: %q, was %q", environ, before)
 	}
 }
 

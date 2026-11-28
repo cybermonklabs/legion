@@ -214,8 +214,9 @@ Failing example: A read that waits for a lock that nobody holds.
 }
 
 // TestEachAnswerOfTheDispatchCommand runs ci-report over the probe with the stub in each of its
-// modes but store: each row holds the lines, the exit status, the summary and every call, so a
-// reporter that calls a check twice, or skips one, fails every row.
+// modes but store, hang and store-held (record_test.go's rows run the last two): each row holds
+// the lines, the exit status, the summary and every call, so a reporter that calls a check twice,
+// or skips one, fails every row.
 func TestEachAnswerOfTheDispatchCommand(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "ci-report")

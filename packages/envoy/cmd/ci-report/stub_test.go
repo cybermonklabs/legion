@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -50,7 +51,8 @@ answer-lost) echo '{"landed_without_answer":"` + answerLost + `"}'; exit 0 ;;
 no-id) echo '{"landed_without_answer":""}'; exit 0 ;;
 unknown) echo '{"write_outcome_unknown":"ECONNRESET"}'; exit 1 ;;
 unknown-exit-0) echo '{"write_outcome_unknown":"ECONNRESET"}'; exit 0 ;;
-hang) echo "the write went out" >&2; exec sleep 30 ;;
+hang) echo "the write went out" >&2; sh -c 'echo $$ > "$1"; exec sleep 3600' sh "$calls/$n.held" & exec sleep 3600 ;;
+store-held) sh -c 'echo $$ > "$1"; exec sleep 3600' sh "$calls/$n.held" & ;;
 esac
 cat <<EOF
 {
@@ -95,8 +97,14 @@ EOF
 //   - no-id: {"landed_without_answer":""}; exit 0;
 //   - unknown: {"write_outcome_unknown":"ECONNRESET"}, a write that went out and got no answer;
 //     exit 1; unknown-exit-0 the same line with exit 0;
-//   - hang: a line on standard error, then 30 s with no end, as a command that hangs.
-const stubModes = "store refuse grant-ended ends-after-first grant-refused grant-ended-unknown tunnel-unknown tunnel-503 tunnel-407-other landed answer-lost no-id unknown unknown-exit-0 hang"
+//   - hang: a line on standard error, then a child that holds the output open and does not end,
+//     and the stub itself does not end either, as a command that hangs;
+//   - store-held: a stored row, as store, and a child that holds the output open and does not end
+//     after the stub exits 0, as a command whose own child outlives it.
+//
+// Each child that holds the output writes its own pid to <n>.held, so a stub ended at any point
+// leaves none that is not named there, and newStub's cleanup kills each one named.
+const stubModes = "store refuse grant-ended ends-after-first grant-refused grant-ended-unknown tunnel-unknown tunnel-503 tunnel-407-other landed answer-lost no-id unknown unknown-exit-0 hang store-held"
 
 // airlockLine is the line the real command prints for a refusal of the airlock proxy before the
 // write left it: {"airlock_refused":{"status","code","said"}}, with the answer's status, the
@@ -168,7 +176,8 @@ type stub struct {
 	path, dir string
 }
 
-// newStub writes stubDispatch into a new directory, beside an empty directory for its calls.
+// newStub writes stubDispatch into a new directory, beside an empty directory for its calls, and
+// kills each child of a call that holds the output (<n>.held) when the test ends.
 func newStub(t *testing.T) stub {
 	t.Helper()
 	root := t.TempDir()
@@ -179,6 +188,20 @@ func newStub(t *testing.T) stub {
 	if err := testexec.WriteFile(s.path, []byte(stubDispatch), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		held, _ := filepath.Glob(filepath.Join(s.dir, "*.held"))
+		for _, file := range held {
+			text, err := os.ReadFile(file)
+			if err != nil {
+				continue
+			}
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(text))); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					_ = p.Kill()
+				}
+			}
+		}
+	})
 	return s
 }
 
