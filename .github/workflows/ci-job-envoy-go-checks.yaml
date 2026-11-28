@@ -109,9 +109,12 @@ jobs:
         working-directory: packages/envoy
       # The vm harness runs as fourteen parts, `vm.test.sh <part>`, each a pool entry of its own with
       # a temporary directory of its own, so they run beside the other harnesses and beside each
-      # other. Part series is queued first: its one case had the widest spread at main, 18.3 to
-      # 72.2 s over 11 green merge-group runs of 2026-11-27 and 2026-11-28. The rest follow, longest
-      # first by the forecast of dispatch://INFRA-6358's plan.
+      # other. As one serial entry it took 337.2 s and 129.6 CPU-seconds in merge-group job
+      # 140927396087 (268.0 to 586.7 s over 11 green merge-group runs of 2026-11-27 and 2026-11-28);
+      # as parts, in pull-request job 140965312130 (2026-11-28), each took 14.3 to 59.0 s, and all
+      # fourteen 128.4 CPU-seconds. Part series is queued first: its one case had the widest spread
+      # at main, 18.3 to 72.2 s over those 11 runs, and it took 42.4 s. The rest follow, longest first
+      # by the forecast of dispatch://INFRA-6358's plan.
       - name: Test loadtest/vm/vm.sh, part series (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
         run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh series' bash loadtest/vm/vm.test.sh series
         working-directory: packages/envoy
