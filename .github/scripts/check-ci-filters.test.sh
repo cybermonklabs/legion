@@ -6231,6 +6231,41 @@ for row in '$(go list ./mod/...)|$(' "${tick}go list ./mod/...${tick}|${tick}go"
     "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, whose go test holds \"$named\", which this check cannot read past")"
   replace "$root/.github/workflows/results.yaml" "$word -v |" "./mod/... |"
 done
+# A word that bash fills in inside double quotes is one word, which bash neither splits nor
+# matches to file names, and go test gives a flag that takes a value the word after it whatever it
+# holds. So such a word passes as that value, before -args, as a sharded job's -run of the pattern
+# it computes; joined by an = too. A $ that bash keeps, as the $ of an anchored pattern in double
+# quotes or bare, fills in nothing. The value of a flag that takes one is no flag, a -v among them.
+run_flag="-run '^(TestA|TestB)\$'"
+for honest in '-run "$pattern"' '-run="$pattern"' '--run "$pattern"' '-test.run "$pattern"' '-skip "${skipped}"' \
+  '"-ldflags=-X=main.version=$version"' '-run "^(TestA|TestB)$"' '-run ^TestA$' '-run -v'; do
+  replace "$root/.github/workflows/results.yaml" "$run_flag" "$honest"
+  run_check "$root"
+  check "passes with go test -json $honest" "$(is "$status" 0)"
+  replace "$root/.github/workflows/results.yaml" "$honest" "$run_flag"
+done
+# Anywhere else such a word is refused, naming it: after a flag that takes no value, after a flag
+# that is itself the value of the one before it, after -args, where the test binary reads flags
+# this check does not know, and as the value of a -v. So is a word that can become more words than
+# one, or words this reader cannot see: bare, "$@", a ${ } that holds an @, a command
+# substitution and a GitHub expression, inside the quotes too.
+tick='`'
+for row in '-race "$pattern"|$pattern' '-tags -run "$pattern"|$pattern' "./mod/... -args -test.run \"\$pattern\"|\$pattern" \
+  '-v="$verbose"|-v=$verbose' '-run $pattern|$pattern' '-run "$@"|$@' '-run "${patterns[@]}"|${patterns\[@\]}' \
+  '-run "$(cat pattern)"|$(cat pattern)' "-run \"${tick}cat pattern${tick}\"|${tick}cat pattern${tick}" \
+  '-run "${{ inputs.pattern }}"|${{ inputs.pattern }}'; do
+  word=${row%|*} named=${row##*|}
+  replace "$root/.github/workflows/results.yaml" "$run_flag" "$word"
+  run_check "$root"
+  check "fails with go test -json $word, naming $named" \
+    "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, whose go test holds \"$named\", which this check cannot read past")"
+  replace "$root/.github/workflows/results.yaml" "$word" "$run_flag"
+done
+# go test gives -run the word after it, -args too, so a -v after it is a flag of go test.
+replace "$root/.github/workflows/results.yaml" "$run_flag" "-run -args -v"
+run_check "$root"
+check "fails with go test -json -run -args -v, whose -args is -run's value" "$(contains "$out" "which passes \`-v\`")"
+replace "$root/.github/workflows/results.yaml" "-run -args -v" "$run_flag"
 # A quote that does not close leaves a line no reader can split into words: the rule cannot read
 # its flags, so it refuses the line.
 replace "$root/.github/workflows/results.yaml" "-run '^(TestA|TestB)\$' ./mod/..." "-run '^(TestA|TestB)\$ ./mod/..."
