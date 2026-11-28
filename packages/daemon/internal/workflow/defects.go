@@ -81,12 +81,6 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 		}
 		return issue.Generation + 1
 	}
-	text := foldedDefectText(fact.Text)
-	for _, defect := range open {
-		if defect.Kind == record.DefectKindDefect && foldedDefectText(defect.Text) == text {
-			return intake.Result{Defect: &intake.DefectAnswer{Defect: defect.ID, State: intake.DefectSame, NextChange: carrier(defect)}}, nil
-		}
-	}
 	if fact.Check != "" {
 		for _, defect := range open {
 			if defect.Kind == record.DefectKindCheck && defect.Check == fact.Check {
