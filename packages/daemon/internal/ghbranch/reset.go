@@ -85,6 +85,12 @@ func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.R
 		}
 	}
 	if !found {
+		// GitHub answers 404 for a branch it lacks and for a repository the token cannot see, so
+		// the repository is read before the base is named missing: a hidden repository is GitHub's
+		// not-found, as a create names it, and never no-base, which names a cause that is not one.
+		if _, err := Read(ctx, github, repo); err != nil {
+			return Result{}, err
+		}
 		return Result{}, fmt.Errorf("read refs/heads/%s of %s: %w", result.Base, repo, errNoBase)
 	}
 	result.Head = head
@@ -94,11 +100,24 @@ func Reset(ctx context.Context, github, graphql githubrest.Client, repo ghrepo.R
 		return Result{}, err
 	}
 	if !found {
-		if err := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil); err != nil {
-			return Result{}, fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, err)
+		made := github.Post(ctx, "/git/refs", map[string]string{"ref": ref, "sha": head}, nil)
+		if made == nil {
+			result.Outcome = Made
+			return result, nil
 		}
-		result.Outcome = Made
-		return result, nil
+		// A branch another party made after the read is no refusal: GitHub refuses the create of
+		// a ref that exists, as Create reads it (alreadyExists), and the branch is read again and
+		// judged below as any other.
+		var answer *githubrest.Answer
+		if !errors.As(made, &answer) || answer.Status != http.StatusUnprocessableEntity || !alreadyExists(answer.Body) {
+			return Result{}, fmt.Errorf("create %s on %s at %s: %w", ref, repo, head, made)
+		}
+		if tip, found, err = refCommit(ctx, github, repo, branch); err != nil {
+			return Result{}, err
+		}
+		if !found {
+			return Result{}, fmt.Errorf("create %s on %s at %s: GitHub answered that it exists, and the branch is gone", ref, repo, head)
+		}
 	}
 	if tip == mergedHead && tip != head {
 		moved, now, err := moveFrom(ctx, github, graphql, repo, branch, mergedHead, head)

@@ -29,7 +29,8 @@ const (
 	// RefusedUnprocessable is a create GitHub answered 422 with anything but "Reference already
 	// exists", which Create reads as the branch it was asked for.
 	RefusedUnprocessable RefusalKind = "unprocessable"
-	// RefusedNoBase is a move whose base and fallback are both branches GitHub does not have.
+	// RefusedNoBase is a move whose base and fallback are both branches GitHub does not have, in a
+	// repository it shows (a repository the token cannot see is RefusedNotFound).
 	RefusedNoBase RefusalKind = "no-base"
 	// RefusedNoCommit is a read of a branch's ref that GitHub answered with no commit.
 	RefusedNoCommit RefusalKind = "no-commit"
