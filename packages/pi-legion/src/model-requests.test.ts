@@ -445,6 +445,21 @@ test("a report that falls due while another is on its way goes at once", async (
   }
 });
 
+// S1 bounds the send, not the timer: a host sends a request's report within 15 s of the request's
+// end. A timer never fires early, and the call that carries the report starts only once it has
+// fired, so a timer armed for the end plus the bound sends every report after the bound. On the
+// pinned Oh My Pi, against a stand-in daemon, the timer's reports reached the daemon 15.003 s and
+// 15.005 s after their requests' ends. The Claude Code bridge leaves room for this
+// (`requestSendMargin`, 250 ms, in packages/daemon/internal/claudebridge/modelrequests.go); this
+// reporter's timer must leave the same room before the bound.
+test("the timer sends a request's report with room before the bound, for the send itself", async () => {
+  const { reporter, batches, advance, now } = rig();
+  const ended = now();
+  reporter.messageEnded(role, answered(ended));
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS - 250);
+  expect(batches()).toHaveLength(1);
+});
+
 // The failure is the daemon's own 500, in its refusal shape: the shared restart retry
 // (`retryWhileDaemonRestarts`) asks again only an outage whose body is not the daemon's, such as a
 // proxy's page (`daemonUnreachable`), so this one comes back to the reporter, whose own wait is
