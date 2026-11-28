@@ -1,4 +1,11 @@
-import { createProject, createProjectDocument, getIssue, listIssues, patchIssue } from "./api";
+import {
+  createIssue,
+  createProject,
+  createProjectDocument,
+  getIssue,
+  listIssues,
+  patchIssue,
+} from "./api";
 import type { ChatTurn } from "./fake-chat-model";
 import { modelsLane, proposePlan, prose, say, scriptChat } from "./fake-models-helpers";
 import {
@@ -393,5 +400,57 @@ test("a plan waiting in the Inbox draws on no page until its conversation is ope
     await page.getByTestId("going-chip-open").click();
     await expect(planOnPage(page)).toBeVisible({ timeout: RUN_STEPS_MS });
     await expect(bar(page)).toBeVisible();
+  });
+});
+
+// SLOW(>=2s): a parent with a priority, a sub-issue with none, and a run that plans the sub-issue's.
+test("a priority change of an issue that works at its parent's priority shows that priority as the value now, as the issue page does", async ({
+  browser,
+}) => {
+  modelsLane();
+  test.setTimeout(120_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const parent = await createIssue({
+    priority: 1,
+    project: "CORE",
+    title: "Build the observatory",
+  });
+  const child = await createIssue({ parent: parent.key, project: "CORE", title: "Raise the dome" });
+  // The sub-issue has no priority of its own and works at its parent's P1, which the issue page
+  // draws as "P1 · from <parent>" (main's #5854, issue-priority.ts).
+  const read = await getIssue(child.key);
+  expect(read.priority).toBeNull();
+  expect(read.resolved_priority).toBe(1);
+  expect(read.priority_from).toBe(parent.key);
+  const words = `set the priority of ${child.key} to P2`;
+  await scriptChat({
+    default: prose("A short answer while the person pauses."),
+    runs: [
+      {
+        afterwards: say("Done."),
+        turns: [
+          proposePlan(`Set ${child.key}'s priority to P2.`, [
+            { arguments: { issue: child.key, priority: 2 }, tool: "dispatch_issue_update" },
+          ]),
+        ],
+        words,
+      },
+    ],
+  });
+  await withAlice(browser, async (page) => {
+    await openBarOver(page, "/");
+    await askTheAgent(page, words);
+    await planWaits(page);
+    const priority = planRows(planCard(page)).locator(
+      '[data-testid="going-plan-field"][data-field="priority"]'
+    );
+    await expect(priority).toBeVisible({ timeout: RUN_STEPS_MS });
+    // The value now is the priority the issue works at, with where it comes from, as the issue
+    // page shows it, and not the own value it does not work at.
+    const now = priority.getByTestId("going-plan-now");
+    await expect(now).toContainText("P1");
+    await expect(now).toContainText(parent.key);
+    await expect(now).not.toContainText("No priority");
+    await expect(priority.getByTestId("going-plan-next")).toContainText("P2");
   });
 });
