@@ -4,7 +4,8 @@
 # The --clients reader of the images, which daemon-release-gate.sh sources; it is not run on its
 # own. It reads the gate's deployment, work, compared, unknown, printable, first_line, last_line,
 # fetch, stack_pin (which sets pin and refuses one that is no image reference), its
-# compare_revision, and judge_release, which lib/daemon-release-gate-read-developer-box.sh defines.
+# compare_revision and its python3 reader (gate_python), and judge_release, which
+# lib/daemon-release-gate-read-developer-box.sh defines.
 # shellcheck disable=SC2154 # deployment, work, pin and fetch_error are the gate's
 
 # in_image <ref> <entrypoint> [<arg>...]: the output of <entrypoint> run in a container of <ref> with

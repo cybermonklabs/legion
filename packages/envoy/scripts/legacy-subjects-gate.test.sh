@@ -56,27 +56,37 @@ set -euo pipefail
 # publishers 23.2, readings 21.5, rules 18.1, facts 15.8.
 # Source: dispatch://INFRA-6359/artifact/case-cpu-at-main-tsv.
 readonly groups=(publishers readings rules facts)
-usage() {
+
+is_group() {
+  local name
+  for name in "${groups[@]}"; do
+    [ "$name" != "$1" ] || return 0
+  done
+  return 1
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = --groups ]; then
+  printf '%s\n' "${groups[@]}"
+  exit 0
+fi
+if [ "$#" -ne 1 ] || ! is_group "$1"; then
   {
     printf 'usage: bash scripts/legacy-subjects-gate.test.sh <group|--groups>; groups: %s\n' "${groups[*]}"
     echo 'Run all: failed=0; for g in $(bash scripts/legacy-subjects-gate.test.sh --groups); do bash scripts/legacy-subjects-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]'
   } >&2
   exit 2
-}
-[ "$#" -eq 1 ] || usage
-if [ "$1" = --groups ]; then
-  printf '%s\n' "${groups[@]}"
-  exit 0
 fi
-for group in "${groups[@]}"; do
-  [ "$group" != "$1" ] || break
-done
-[ "$group" = "$1" ] || usage
-readonly group
+readonly group=$1
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
+# fake <path>: writes the fake command at <path> from the body on stdin, started by the bash that
+# runs this test ($BASH) by its path: an `env bash` line would start env on every call.
+fake() {
+  { printf '#!%s\n' "$BASH" && cat; } >"$1"
+  chmod +x "$1"
+}
 # The gate runs from a copy of this directory's gate and lib/, beside a fake daemon-release-gate.sh
 # (the census of pinned builds (a1) and of listener pins (a3) read), which adds its arguments as a
 # line to $FAKE/release-gate.args and, with --listeners, prints $FAKE/release-gate-listeners.out
@@ -85,8 +95,7 @@ trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/gate/lib"
 cp "$here/legacy-subjects-gate.sh" "$root/gate/"
 cp "$here"/lib/legacy-subjects-gate-*.* "$root/gate/lib/"
-printf '#!%s\n' "$BASH" >"$root/gate/daemon-release-gate.sh"
-cat >>"$root/gate/daemon-release-gate.sh" <<'EOF'
+fake "$root/gate/daemon-release-gate.sh" <<'EOF'
 printf '%s\n' "$*" >>"$FAKE/release-gate.args"
 case " $* " in
   *" --listeners "*)
@@ -96,7 +105,6 @@ esac
 cat "$FAKE/release-gate.out"
 exit "$(cat "$FAKE/release-gate.rc" 2>/dev/null || echo 0)"
 EOF
-chmod +x "$root/gate/daemon-release-gate.sh"
 gate="$root/gate/legacy-subjects-gate.sh"
 passed=0
 failed=0
@@ -108,8 +116,7 @@ fail() {
 
 # --- the fakes ------------------------------------------------------------------------------------
 mkdir -p "$root/bin"
-printf '#!%s\n' "$BASH" >"$root/bin/kubectl"
-cat >>"$root/bin/kubectl" <<'EOF'
+fake "$root/bin/kubectl" <<'EOF'
 # A fake kubectl that answers from the case directory $FAKE and records each call in $FAKE/calls.
 # A listener pod's log is its metrics file ($FAKE/metrics/<ns>.<pod>) written as the listener logs
 # it, on a "listener legacy subjects" line logged at $FAKE/log_at (now when that file is absent),
@@ -197,8 +204,7 @@ case "$*" in
   *) echo "fake kubectl: no answer for: $*" >&2; exit 99 ;;
 esac
 EOF
-printf '#!%s\n' "$BASH" >"$root/bin/gh"
-cat >>"$root/bin/gh" <<'EOF'
+fake "$root/bin/gh" <<'EOF'
 # A fake gh for `gh api repos/cybermonklabs/legion/compare/<base>...<head> --jq <filter>`, answering
 # from $FAKE/compare/<head> and recording the call in $FAKE/calls.
 set -u
@@ -209,8 +215,7 @@ if [ -f "$FAKE/compare/$head" ]; then jq -c "$4" "$FAKE/compare/$head"
 else echo "gh: Not Found (HTTP 404)" >&2; exit 1
 fi
 EOF
-printf '#!%s\n' "$BASH" >"$root/bin/curl"
-cat >>"$root/bin/curl" <<'EOF'
+fake "$root/bin/curl" <<'EOF'
 # A fake curl for `curl -sS --max-time N -o FILE -w '%{http_code}' URL`, answering URL from
 # $FAKE/outside/<host> and recording the call in $FAKE/calls.
 set -u
@@ -231,7 +236,6 @@ if [ -f "$FAKE/outside/$host" ]; then cp "$FAKE/outside/$host" "$out"; printf 20
 else echo "curl: (7) Failed to connect to $host port 9020" >&2; exit 7
 fi
 EOF
-chmod +x "$root/bin/kubectl" "$root/bin/curl" "$root/bin/gh"
 
 # --- the clean fixture ----------------------------------------------------------------------------
 readonly envoy_image="ghcr.io/cybermonklabs/legion/envoy@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -634,19 +638,12 @@ first_reading_inputs() {
 # ran in, the hash of its inputs, its exit status and its output.
 declare -A first_dirs=() first_inputs=() first_statuses=() first_outputs=()
 
-# keep_first_reading DIR READER [ARG...] runs READER ARG... on the case directory DIR.
-keep_first_reading() {
-  local -x FAKE=$1
-  shift
-  "$@"
-}
-
 # first_reading_secs SECONDS_AGO READER [ARG...] is first_reading_with, moved SECONDS_AGO seconds.
 # The group takes one first reading for each reader with its arguments, in a copy of the first
 # case directory that asks for it, and a later case whose first-reading inputs hash the same uses
 # it: its status and output, the Job manifest it made, and its record moved so that it finished
 # SECONDS_AGO seconds before this call, as a reading taken now and moved that far would read. A
-# case whose inputs differ takes its own first reading, as every case did before the sharing.
+# case whose inputs differ takes its own first reading.
 first_reading_secs() {
   local seconds=$1 reader inputs record_dir=$FAKE now=null
   shift
@@ -659,7 +656,8 @@ first_reading_secs() {
     if [ -z "${first_dirs[$reader]:-}" ]; then
       record_dir="$root/first-reading-${#first_dirs[@]}"
       cp -a "$FAKE" "$record_dir"
-      keep_first_reading "$record_dir" "$@"
+      # The reading runs on the copy: FAKE names it for the reader and the fakes it starts.
+      FAKE=$record_dir "$@"
       first_dirs[$reader]=$record_dir
       first_inputs[$reader]=$inputs
       first_statuses[$reader]=$status
@@ -696,8 +694,7 @@ first_reading_secs() {
 # agent family lists one old-form subject, whose last message it answers whole, content and
 # headers with it, as the server does.
 mkdir -p "$root/natsbin"
-printf '#!%s\n' "$BASH" >"$root/natsbin/nats"
-cat >>"$root/natsbin/nats" <<'EOF'
+fake "$root/natsbin/nats" <<'EOF'
 printf '%s\n' "$*" >>"$CALLS"
 # The credential each call carries, as the nats CLI reads it from its environment: the user, and
 # whether a password or a token is set, never their values.
@@ -735,11 +732,9 @@ case "$1 $2" in
   *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
 esac
 EOF
-chmod +x "$root/natsbin/nats"
 # A fake nsc that fails as nsc can, after echoing what it read: the seed in the key directory the
 # Job's script gave it.
-printf '#!%s\n' "$BASH" >"$root/natsbin/nsc"
-cat >>"$root/natsbin/nsc" <<'EOF'
+fake "$root/natsbin/nsc" <<'EOF'
 dir=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -751,7 +746,6 @@ cat "$dir"/* 2>/dev/null
 echo "nsc: could not import the keys above"
 exit 1
 EOF
-chmod +x "$root/natsbin/nsc"
 
 # run_reads [ENV...] runs lib/legacy-subjects-gate-nats.sh as the gate's Job runs it (sh -c with the
 # script's text), with the fake nats first on PATH, for at most 20 seconds, keeping its output in
@@ -814,15 +808,13 @@ pages_of() {
 # A uid with no passwd entry (a container run as an arbitrary uid) has no name for `id -un`: the
 # reading goes on with the Job's owner `unknown`, and ends in a verdict and a record.
 mkdir -p "$root/idbin"
-printf '#!%s\n' "$BASH" >"$root/idbin/id"
-cat >>"$root/idbin/id" <<'EOF'
+fake "$root/idbin/id" <<'EOF'
 if [ "${1:-}" = -un ]; then
   echo "id: cannot find name for user ID 4242" >&2
   exit 1
 fi
 exec /usr/bin/id "$@"
 EOF
-chmod +x "$root/idbin/id"
 
 # A hub moved into the cluster is one bus by two names: Service envoy-hub, which the listener
 # Deployment dials, selects the hub's own pods, and the hub's session listener, which serves as
@@ -854,7 +846,8 @@ hub_pod_set() {
 
 readonly loadtest_url="nats://loadtest-nats.loadtest.svc.cluster.local:4222"
 
-# Keep the case bodies at their original indentation, including the fixture text.
+# Each group is one function, called by name below. Its case bodies stay at the file's left margin,
+# so the text of each here-document in them is written byte for byte.
 group_readings() {
 # --- the old-form rule, row by row ----------------------------------------------------------------
 case_name="the old-form rule"
@@ -1311,8 +1304,7 @@ done_case
 # from the offset asked. Each page after the first is asked from the last connection of the page
 # before, so the judge can read a list that moved between two pages.
 mkdir -p "$root/censusbin"
-printf '#!%s\n' "$BASH" >"$root/censusbin/nats"
-cat >>"$root/censusbin/nats" <<'EOF'
+fake "$root/censusbin/nats" <<'EOF'
 subject=${*: -2:1}
 body=${*: -1}
 [ "$subject" = '$SYS.REQ.SERVER.PING.CONNZ' ] || { echo "fake nats: no answer for $*" >&2; exit 99; }
@@ -1320,7 +1312,6 @@ jq -cn --argjson q "$body" '($q.offset) as $o | ($q.limit) as $l
   | {server: {name: "envoy-nats-0", id: "N0"}, data: {total: 2000, offset: $o, limit: $l,
       connections: [range($o; [$o + $l, 2000] | min) | {cid: (. + 1), name: "c\(. + 1) legion@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}'
 EOF
-chmod +x "$root/censusbin/nats"
 new_case "the census asks each next page from the last connection of the page before, and reads the list whole"
 set +e
 env CENSUS_NKEY=/dev/null CENSUS_NAME=legacy-subjects-gate-census-test CENSUS_INBOX_PREFIX=_INBOX_legacy_cutover WORK_DIR="$FAKE" \
@@ -2731,6 +2722,13 @@ expect_line "UNKNOWN: listener pod envoy/envoy-listener-7f9c container envoy-lis
 done_case
 }
 
+# A group function the list does not name would never run in CI, which queues the list alone.
+for name in $(compgen -A function group_); do
+  if ! is_group "${name#group_}"; then
+    printf 'legacy-subjects-gate.test.sh: the group function %s is not in the list of groups\n' "$name" >&2
+    exit 2
+  fi
+done
 "group_$group"
 echo "legacy-subjects-gate.test.sh $group: $passed cases passed, $failed failed"
 [ "$failed" -eq 0 ] && [ "$passed" -gt 0 ]

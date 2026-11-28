@@ -16,6 +16,12 @@ temporary_dir="$(mktemp -d)"
 readonly temporary_dir
 trap 'rm -rf "$temporary_dir"' EXIT
 mkdir -p "${temporary_dir}/bin"
+# fake <path>: writes the fake command at <path> from the body on stdin, started by the bash that
+# runs this harness ($BASH) by its path: an `env bash` line would start env on every call.
+fake() {
+  { printf '#!%s\n' "$BASH" && cat; } >"$1"
+  chmod +x "$1"
+}
 
 readonly commit="52b3cf5c1b6c7f42f6b8d2a1e3c4d5e6f7a8b9c0"
 readonly deployment="example-org/deployment"
@@ -70,8 +76,7 @@ readonly dispatch_listener_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e004"
 #     FAKE_ROOT/marketplaces/<owner>/<repo>/<path>.
 # An endpoint with a file at FAKE_ROOT/refuse/<endpoint with / as _> fails with that file's text.
 # Any other call is refused as unexpected.
-printf '#!%s\n' "$BASH" >"${temporary_dir}/bin/gh"
-cat >>"${temporary_dir}/bin/gh" <<'EOF'
+fake "${temporary_dir}/bin/gh" <<'EOF'
 printf 'gh %s\n' "$*" >>"${FAKE_CALLS:?}"
 [ "$1" = api ] || { echo "fake gh: unexpected command: $*" >&2; exit 2; }
 shift
@@ -199,8 +204,7 @@ EOF
 # A ref with no fs/ is one the registry does not hold, and docker answers `run` as it does then.
 # `run` takes the options the gate runs an image under (--rm, --quiet, --network, --read-only,
 # --cap-drop, --security-opt) and refuses any other.
-printf '#!%s\n' "$BASH" >"${temporary_dir}/bin/docker"
-cat >>"${temporary_dir}/bin/docker" <<'EOF'
+fake "${temporary_dir}/bin/docker" <<'EOF'
 printf 'docker %s\n' "$*" >>"${FAKE_CALLS:?}"
 if [ "$1" = run ]; then
   shift
@@ -289,18 +293,10 @@ EOF
 # the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
 # once when it starts: an npm that no longer takes them fails the suite there. A call of any other
 # shape is refused rather than emulated.
-printf '#!%s\n' "$BASH" >"${temporary_dir}/bin/npm"
-cat >>"${temporary_dir}/bin/npm" <<'EOF'
+fake "${temporary_dir}/bin/npm" <<'EOF'
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
 printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
-# Sort complete lines under the caller's locale, just as the old env log did.
-while IFS= read -r name; do
-  while IFS= read -r line; do
-    [[ $line != npm_config_* ]] || printf '%s\n' "$line"
-  done <<<"$name=${!name}"
-done < <(compgen -e npm_config_) | sort | while IFS= read -r line; do
-  printf 'npm-config %s\n' "$line"
-done >>"$FAKE_CALLS"
+env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
 if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
   mapfile -t real_npm <"${0%/*}/../real-npm"
   if [ "$1" != exec ]; then
@@ -337,7 +333,6 @@ jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   entryCount: 0, bundled: []
 }]'
 EOF
-chmod +x "${temporary_dir}/bin/gh" "${temporary_dir}/bin/docker" "${temporary_dir}/bin/npm"
 # The real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the node npm runs
 # on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath, npm_execpath),
 # found once with the caller's own HOME and written beside the fakes. The suite needs npm and node.
@@ -508,6 +503,13 @@ daemonImage: ${worker_b}"
 daemon: false
 image: ${worker_smoke}"
 }
+# text_file <file>: writes its standard input, a here-document, to <file>: a here-document's text
+# ends in one newline, which $(<…) takes off and the printf puts back. It starts no program.
+text_file() {
+  local text
+  text=$(</dev/stdin)
+  printf '%s\n' "$text" >"$1"
+}
 # envoy_program <declares|none>: the deployment's envoy/ program and the local module its go.mod
 # replaces, ../shared. Either way the name NewNatsHub stands in every place that is not a use: a
 # func's own name and a method's, a comment, a string and a raw string, a _test.go, and a comment
@@ -515,10 +517,11 @@ image: ${worker_smoke}"
 # generated SDK registers it, inside the body of its own NewNatsHub, and in the SDK's switch of the
 # types it rebuilds, neither of which declares a hub; with declares, main.go calls it.
 envoy_program() {
-  local dir="${case_root}/files/envoy" transform
+  local dir="${case_root}/files/envoy"
   mkdir -p "$dir/sdks/gcp" "$dir/testdata" "${case_root}/files/shared" "${case_root}/files/envoy-cluster"
   printf 'module example.org/deployment/envoy\n\nreplace example.org/sdk => ./sdks/gcp // the generated SDK\n\nreplace (\n\texample.org/shared => ../shared\n\texample.org/nats v1.0.0 => example.org/nats v1.0.1\n)\n' >"$dir/go.mod"
-  printf '%s' 'package gcp
+  text_file "$dir/sdks/gcp/natsHub.go" <<'GO'
+package gcp
 
 // NewNatsHub registers a hub.
 func NewNatsHub(ctx *pulumi.Context,
@@ -532,8 +535,9 @@ func NewNatsHub(ctx *pulumi.Context,
 }
 
 func (m *module) NewNatsHub(name string) {}
-' >"$dir/sdks/gcp/natsHub.go"
-  printf '%s' 'package gcp
+GO
+  text_file "$dir/sdks/gcp/init.go" <<'GO'
+package gcp
 
 func (m *module) Construct(ctx *pulumi.Context, name, typ, urn string) (r pulumi.Resource, err error) {
 	switch typ {
@@ -542,18 +546,17 @@ func (m *module) Construct(ctx *pulumi.Context, name, typ, urn string) (r pulumi
 	}
 	return
 }
-' >"$dir/sdks/gcp/init.go"
+GO
   printf 'package main\n\nfunc TestHub() { _ = envoygcp.NewNatsHub(ctx, "hub") }\n' >"$dir/main_test.go"
   printf 'package fixture\n\n// envoygcp.NewNatsHub(ctx, "hub") once ran here\n' >"$dir/testdata/fixture.go"
   printf 'package main\n\n// envoy/main.go gives envoygcp.NewNatsHub as Zone.\n' >"${case_root}/files/envoy-cluster/alerts.go"
-  IFS= read -r -d '' transform <<'GO' || :
+  text_file "$dir/hub_transform.go" <<'GO'
 package main
 
 /* envoygcp.NewNatsHub(ctx, "hub") made the VM hub */
 const note = "NewNatsHub(\"" + `NewNatsHub(`
 const quote = '"'
 GO
-  printf '%s' "$transform" >"$dir/hub_transform.go"
   printf 'package shared\n\nfunc Names() []string { return nil }\n' >"${case_root}/files/shared/names.go"
   if [ "$1" = declares ]; then
     printf 'package main\n\n\thub, err := envoygcp.NewNatsHub(ctx, "hub", &envoygcp.NatsHubArgs{})\n' >"$dir/main.go"

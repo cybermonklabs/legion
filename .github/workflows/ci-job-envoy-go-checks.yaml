@@ -119,13 +119,9 @@ jobs:
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
         working-directory: packages/envoy
-      # Each group is its own pool entry. Each harness queues its groups longest first by CPU
-      # at main 8e248d6c (run 46127046034, job 140924069070), in CPU seconds:
-      # daemon: developer-box 32.4, short-reads 31.3, image-clients 27.5, vm-hub 26.4, versions 19.4,
-      # listeners 17.1, developer-box-surfaces 16.4, daemons 6.5, project-fields 2.1.
-      # legacy: publishers 23.2, readings 21.5, rules 18.1, facts 15.8.
-      # These entries follow dev-stack because each is estimated to take at most 30 s of wall time.
-      # Record each group's measured wall time here after the pull request's first run.
+      # The two gate harnesses queue one pool entry per group, named `<harness> <group>`, in the
+      # order each harness's --groups prints: longest first by CPU at main, with the numbers over
+      # each harness's list of groups. A group added to a list is queued with no change here.
       - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
         run: |
           groups=$(bash scripts/daemon-release-gate.test.sh --groups)
