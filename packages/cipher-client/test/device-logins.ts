@@ -92,8 +92,14 @@ export interface DeviceLoginBrokerOptions {
   /** Answer every refresh `400 invalid_grant`, as the broker answers one whose login ended, or
    *  `401 invalid_client`, a refusal of the refresh that is no end of the login. */
   readonly refuseRefresh?: true | "invalid_client";
+  /** Answer this many refreshes, then every later one `400 invalid_grant`, as the broker answers
+   *  one whose login ended: a row where a login the first refresh kept must then end. */
+  readonly refuseRefreshAfter?: number;
   /** Refuse the device authorization `400` with this OAuth error code. */
   readonly refuseAuthorization?: string;
+  /** The `error_description` of that refusal, in place of the stand-in's own: a sentence of the
+   *  broker's own, as `WriteRefusal` writes it (`<CODE>: <message>`). */
+  readonly refuseAuthorizationDescription?: string;
   /** The device authorization's `interval`, in seconds; 1 by default, and none where null. */
   readonly interval?: number | null;
   /** The device authorization's `expires_in`, in seconds; 600 by default. */
@@ -103,6 +109,10 @@ export interface DeviceLoginBrokerOptions {
   readonly userCode?: string;
   readonly verificationUri?: string;
   readonly verificationUriComplete?: string;
+  /** The OAuth scope each device-code and refresh answer carries; `machine` unless named. */
+  readonly scope?: string;
+  /** The approved Dispatch scopes a sign-in answer carries; absent for a machine login or an old broker. */
+  readonly dispatchScopes?: readonly string[];
   /** The credential id a grant answers, in place of {@link STAND_IN_CREDENTIAL}. */
   readonly credentialId?: string;
   /** The status of every OAuth error the token endpoint answers a poll or a refresh with, in place
@@ -159,7 +169,7 @@ function part(compact: string, at: number): Record<string, unknown> | null {
 async function recorded(request: Request): Promise<DeviceLoginRequest> {
   const proof = request.headers.get("DPoP") ?? "";
   const proofHeader = proof === "" ? null : part(proof, 0);
-  const jwk = proofHeader?.["jwk"] as JWK | undefined;
+  const jwk = (proofHeader as { readonly jwk?: JWK } | null)?.jwk;
   return {
     form: new URLSearchParams(await request.text()),
     proofHeader,
@@ -168,9 +178,13 @@ async function recorded(request: Request): Promise<DeviceLoginRequest> {
   };
 }
 
-/** An OAuth error answer, as the broker writes one. */
-function oauthError(error: string, status = 400): Response {
-  return Response.json({ error, error_description: `the stand-in answered ${error}` }, { status });
+/** An OAuth error answer, as the broker writes one, with `description` in place of the stand-in's
+ *  own where one is given. */
+function oauthError(error: string, status = 400, description?: string): Response {
+  return Response.json(
+    { error, error_description: description ?? `the stand-in answered ${error}` },
+    { status }
+  );
 }
 
 /**
@@ -178,7 +192,8 @@ function oauthError(error: string, status = 400): Response {
  * code, {@link STAND_IN_USER_CODE} and a verification URI on its own origin, with no
  * `verification_uri_complete`, as the broker omits it; `POST /v1/oauth/token` answers a device
  * code as `polls` says, a refresh by minting a new refresh token and a new access token (or
- * `invalid_grant` under `refuseRefresh`), each OAuth error at `oauthErrorStatus` where it is set,
+ * `invalid_grant` under `refuseRefresh`, and under `refuseRefreshAfter` for every refresh past
+ * the count it names), each OAuth error at `oauthErrorStatus` where it is set,
  * and an RFC 8693 exchange with a DPoP-bound access token. The device code grant and a refresh
  * carry the credential's id and expiry, as the broker's token hooks add them
  * (`machine.Service.TokenHooks`). A refresh revokes every access token of the login but the one
@@ -251,7 +266,8 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       token_type: "DPoP",
       expires_in: accessSeconds,
       refresh_token: fixtureSecret("refresh"),
-      scope: "machine",
+      scope: options.scope ?? "machine",
+      ...(options.dispatchScopes === undefined ? {} : { dispatch_scopes: options.dispatchScopes }),
       credential_id: options.credentialId ?? STAND_IN_CREDENTIAL,
       credential_expires_at: new Date(Date.now() + 30 * 86_400_000)
         .toISOString()
@@ -267,7 +283,11 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
       if (request.method === "POST" && pathname === "/v1/oauth/device_authorization") {
         authorizations.push(seen);
         if (options.refuseAuthorization !== undefined) {
-          return oauthError(options.refuseAuthorization);
+          return oauthError(
+            options.refuseAuthorization,
+            400,
+            options.refuseAuthorizationDescription
+          );
         }
         return Response.json({
           device_code: deviceCode,
@@ -337,7 +357,13 @@ export function stubDeviceLoginBroker(options: DeviceLoginBrokerOptions = {}): D
           for (const release of holding.splice(0)) release();
           releaseReached(awaitingRefreshes);
           if (options.refreshOverlapMs !== undefined) await hold(holding, options.refreshOverlapMs);
-          if (options.refuseRefresh === true) return tokenError("invalid_grant");
+          if (
+            options.refuseRefresh === true ||
+            (options.refuseRefreshAfter !== undefined &&
+              refreshes.length > options.refuseRefreshAfter)
+          ) {
+            return tokenError("invalid_grant");
+          }
           if (options.refuseRefresh === "invalid_client") return tokenError("invalid_client", 401);
           const answer = loginAnswer();
           live = loginTokens.at(-1);

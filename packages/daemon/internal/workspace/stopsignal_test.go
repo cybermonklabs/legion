@@ -76,6 +76,7 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // whether it burns them in a thread of its own or in a child it starts. A kernel that keeps no
 // run-queue wait, as gVisor's, has nothing taken off, and the row is main's.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
+	// Not parallel: each row counts the CPU this whole process and its children used over its call back against the runner (processCPU), so a test running beside it would add its CPU to that term.
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
 	t.Run("a command that handles SIGTERM removes its lock", func(t *testing.T) {

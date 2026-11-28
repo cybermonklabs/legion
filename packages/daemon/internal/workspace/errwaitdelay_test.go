@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testkernel"
@@ -39,6 +40,7 @@ import (
 // counted it either. A runner that spends main's 5 s before it starts the git, or after the git
 // has exited, fails here.
 func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputOpen(t *testing.T) {
+	t.Parallel()
 	const runBound = 5 * time.Second
 	dir := t.TempDir()
 	fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
@@ -101,6 +103,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 // (testkernel.Leader), since only the machine leaves such a run. A Run that never started the git,
 // held it, or reported anything else, fails as main's form failed it (judgeable).
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsOutputPastTheDeadline(t *testing.T) {
+	t.Parallel()
 	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
@@ -169,6 +172,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsO
 // did the git's own run carry the reap past it: that run is not judged, and the row runs the git
 // again until a run is judged, within a minute.
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline(t *testing.T) {
+	t.Parallel()
 	const timeout = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
@@ -222,11 +226,12 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 // command has no exit of its own. A Run that read a timeout from the kill alone would call a clone
 // its caller stopped a timeout, which transientCloneFailure never retries.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
 	fakeGit := filepath.Join(dir, "git")
 	script := "#!/bin/sh\n: >" + started + "\nexec sleep 30\n"
-	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
 	run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
@@ -258,6 +263,7 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 // start and from that exit to the return, less the procgroup.WaitDelay os/exec holds the child's
 // pipes after the command's reap, which main's budget, ending at that reap, never counted.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t *testing.T) {
+	t.Parallel()
 	const commandBound = time.Minute
 	for name, testCase := range map[string]struct {
 		exit    int
@@ -316,6 +322,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 // reap, is held to main's budget, and only where it stays inside it did the command's own run
 // carry the reap past the budget, so that run alone is not judged.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *testing.T) {
+	t.Parallel()
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
@@ -373,6 +380,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 // command was not held by RunCommand before its last write (judgeable); the row makes the budget's
 // deadline itself, before RunCommand starts the command.
 func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipesPastIt(t *testing.T) {
+	t.Parallel()
 	const budget = procgroup.WaitDelay - 100*time.Millisecond
 	within := testwait.Bounded(t, time.Minute, cutRunMargin)
 	until := time.Now().Add(within)
@@ -416,6 +424,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipesPas
 // find it already spent before it starts: that is the budget running out, reported as a timeout,
 // never a failure to run.
 func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
@@ -431,6 +440,7 @@ func TestRunCommandReportsABudgetSpentBeforeItStartedAsATimeout(t *testing.T) {
 // signal its stop sent the command (procgroup.Err), never a timeout naming a budget that had not
 // run out. The cancel lands once the command runs, never on one not yet started.
 func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "started")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -451,6 +461,7 @@ func TestRunCommandDoesNotReportACommandItsCallerStoppedAsATimeout(t *testing.T)
 // before checkedResult reads it (TestFetchScrubsTheTokenFromATransferASignalEnded). Without the
 // report, the save's and the restore's notices would say only `signal: killed`.
 func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lock := filepath.Join(dir, "index.lock")
 	if err := os.WriteFile(lock, []byte("held"), 0o600); err != nil {
@@ -466,7 +477,7 @@ func TestACommandASignalEndedKeepsItsReport(t *testing.T) {
 	})
 	t.Run("RunChecked", func(t *testing.T) {
 		fakeGit := filepath.Join(t.TempDir(), "git")
-		if err := os.WriteFile(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
+		if err := execfile.Write(fakeGit, []byte("#!/bin/sh\n"+strings.ReplaceAll(script, "$1", lock)+"\n"), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		run := NewRunner(time.Minute, map[string]string{"git": fakeGit})
@@ -500,6 +511,7 @@ func (r timesOut) Run(_ context.Context, command Command) (Result, error) {
 // read as a stale key, which rewrote the clone's helpers, and the repository cache's read of its
 // HEAD as a HEAD that names nothing, which rewrote HEAD. Each is now refused as the timeout it is.
 func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
+	t.Parallel()
 	t.Run("the shared clone's credential read", func(t *testing.T) {
 		dir := t.TempDir()
 		rewrote, err := ConfigureRepositoryCredential(context.Background(), timesOut{argv: []string{"git", "--git-dir=" + dir + "/.git", "config", "--get-all"}}, dir)
@@ -548,6 +560,7 @@ func (r killsOne) Run(_ context.Context, command Command) (Result, error) {
 // credential read, and the repository cache's read of its HEAD before it follows GitHub's
 // (followHead), which was `signal: killed` alone.
 func TestAReadASignalEndedNamesItsCommandAndWhatItPrinted(t *testing.T) {
+	t.Parallel()
 	killed := exec.Command("sh", "-c", "kill -KILL $$").Run()
 	const said = "fatal: could not read .git/packed-refs: Input/output error"
 	t.Run("the shared clone's credential read", func(t *testing.T) {

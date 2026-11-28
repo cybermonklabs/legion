@@ -37,8 +37,11 @@ import (
 // .no-queued-job exists: it writes .job, then the mark .queued once .job is whole. It then changes
 // no process and holds until the rig's release file exists or this test process is gone: never
 // for a span of its own, so no restart ends by itself before install stops waiting for it
-// (releaseRestartAtGiveUp). Its environment names a socket and a runtime directory of its own, and
-// runAs refuses to run install against any socket outside the rig's directory (foreignSocket).
+// (releaseRestartAtGiveUp). Each restart leaves the .restarted marker; with
+// .fail-read-before-restart or .fail-read-after-restart, the read of the unit's main process
+// before or after a restart fails at once, exiting 1. Its environment names a socket and a
+// runtime directory of its own, and runAs refuses to run install against any socket outside the
+// rig's directory (foreignSocket).
 type installRig struct {
 	t       testing.TB
 	dir     string
@@ -83,8 +86,11 @@ func newInstallRig(t *testing.T) *installRig {
 	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
 		"if [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
+		"if [ \"$2\" = show ] && [ ! -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-before-restart ]; then exit 1; fi\n" +
+		"if [ \"$2\" = show ] && [ -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-after-restart ]; then exit 1; fi\n" +
 		"if [ \"$2\" = show ]; then read -r pid < " + r.pid + "; echo \"$pid\"; exit 0; fi\n" +
 		"echo \"$*\" >> " + r.calls + "\n" +
+		"if [ \"$2\" = restart ]; then : > " + r.calls + ".restarted; fi\n" +
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || { echo 7 > " + r.calls + ".job; : > " + r.calls + ".queued; }\n" +
 		"  while [ ! -e " + r.release + " ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do /bin/sleep 0.05; done; exit 0; fi\n" +
@@ -489,6 +495,79 @@ func TestInstallDrainsAndRestartsAHelperWithNoSessions(t *testing.T) {
 	}
 	if strings.Join(*ops, ",") != "sessions,drain" {
 		t.Fatalf("ops asked: %q, want the running check then drain", *ops)
+	}
+}
+
+// TestInstallCannotTellWhetherTheRestartReplacedTheHelperWhenAReadFails: systemctl's restart
+// answers success, and a read of the unit's main process, before or after it, fails. The restart
+// may well have replaced the helper install drained, so install's error names the read that
+// failed and says install could not tell whether the restart replaced the helper, never that the
+// helper was not restarted. Install sends undrain, which changes nothing on a new helper and lets
+// an old one take sessions again, except while a job for the unit is still queued, which the error
+// then names. An undrain the helper refused is an attempt, and the error says so rather than that
+// install sent it.
+func TestInstallCannotTellWhetherTheRestartReplacedTheHelperWhenAReadFails(t *testing.T) {
+	const cannotTell = "systemctl --user restart agent-secrets-helper.service answered success, but install could not tell whether the restart replaced the helper it drained, since its main process could not be read "
+	// The read's own failure, as unitProperty wraps it: the command and how it ended.
+	const read = "systemctl --user show --property=MainPID agent-secrets-helper.service: exit status 1"
+	for _, tc := range []struct {
+		name, marker, want, ops string
+		queued, refuseUndrain   bool
+	}{
+		{name: "after the restart", marker: ".fail-read-after-restart", want: cannotTell + "after the restart: " + read + "; install sent it undrain", ops: "sessions,drain,undrain"},
+		{name: "before the restart", marker: ".fail-read-before-restart", want: cannotTell + "before the restart: " + read + "; install sent it undrain", ops: "sessions,drain,undrain"},
+		{name: "after the restart with job 7 queued", marker: ".fail-read-after-restart", queued: true, want: cannotTell + "after the restart: " + read, ops: "sessions,drain"},
+		{name: "after the restart with the undrain refused", marker: ".fail-read-after-restart", refuseUndrain: true, want: cannotTell + "after the restart: " + read + "; install attempted undrain, which failed", ops: "sessions,drain,undrain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newInstallRig(t)
+			if err := os.WriteFile(r.calls+tc.marker, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if tc.queued {
+				if err := os.WriteFile(r.calls+".job", []byte("7\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ops := r.scriptedHelper(t, func(op string) helper.Response {
+				if op == "undrain" && tc.refuseUndrain {
+					return helper.Response{Code: helper.CodeBadRequest, Error: "refused"}
+				}
+				return helper.Response{OK: true}
+			})
+			err := r.run("--url", "https://secrets.example")
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "not restarted") {
+				t.Fatalf("install whose read of the main process %s failed: %v; want an error holding %q, never that the helper was not restarted", tc.name, err, tc.want)
+			}
+			if tc.queued && !strings.Contains(err.Error(), "job 7 for the unit is still queued, so install did not undrain the helper") {
+				t.Fatalf("install whose read failed while job 7 is queued: %v; want an error naming the queued job 7 and that install did not undrain the helper", err)
+			}
+			if got := strings.Join(*ops, ","); got != tc.ops {
+				t.Fatalf("ops asked: %q; want %q", got, tc.ops)
+			}
+			if calls := r.systemctlCalls(t); len(calls) != 3 || calls[2] != "--user restart agent-secrets-helper.service" {
+				t.Fatalf("systemctl calls: %q", calls)
+			}
+		})
+	}
+}
+
+// TestUnitPropertyNamesTheBoundOfAReadThatDoesNotAnswer: a read of the unit still running at
+// systemctlReadTimeout is killed, and its error names that bound rather than the kill. The fake
+// systemctl never answers, so the bound ends the read however slow the machine is.
+func TestUnitPropertyNamesTheBoundOfAReadThatDoesNotAnswer(t *testing.T) {
+	bin := t.TempDir()
+	// exec, so the kill at the bound reaches the process that holds the read's stdout.
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte("#!/bin/sh\nexec /bin/sleep 3600\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	previous := systemctlReadTimeout
+	systemctlReadTimeout = 10 * time.Millisecond
+	t.Cleanup(func() { systemctlReadTimeout = previous })
+	const want = "systemctl --user show --property=MainPID agent-secrets-helper.service did not answer within 10ms"
+	if _, err := unitProperty("MainPID"); err == nil || err.Error() != want {
+		t.Fatalf("a read that never answers: %v; want %q", err, want)
 	}
 }
 

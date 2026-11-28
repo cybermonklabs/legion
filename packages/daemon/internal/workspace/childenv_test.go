@@ -23,6 +23,7 @@ import (
 // the two is the git's own run. What is left of the call is the runner's: from the call to that
 // start, and from that exit to the return.
 func TestWorkspaceCommandsGetNoNATSSeed(t *testing.T) {
+	// Not parallel: plants NATS seeds in the process environment with t.Setenv.
 	const runBound = 10 * time.Second
 	// Unique values, so that only a variable a seed reached can hold one (envlisting).
 	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")

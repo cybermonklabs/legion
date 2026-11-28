@@ -106,20 +106,21 @@ which versions of their dependencies it links. The build runs in the workspace t
 binds (`go env GOWORK` in packages/daemon names it, and release.yaml sets no GOWORK), so its go,
 godebug, use and replace lines set what the binary builds with: one `godebug` line added to it
 changed the binary's default GODEBUG and its bytes. go.work and go.work.sum are in the list for
-that. The list is written here by hand; this is the command that prints it, to be run from
-packages/daemon, once for each target .github/go-release-targets.json lists (a file a build
-constraint keeps to one target links its imports into that target's binary alone), whenever what
-the binary links moves:
+that. The list is written here by hand; this is the command that prints its envoy packages, to be
+run from packages/daemon, once for each target .github/go-release-targets.json lists (a file a
+build constraint keeps to one target links its imports into that target's binary alone), whenever
+what the binary links moves:
   CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 Two checks hold the list. packages/daemon/cmd/legion/release_list_test.go
-(TestTheReleaseListNamesEveryEnvoyPackageLegionLinks, in daemon-go) runs that command for each
-target and fails naming each package the list misses, with the targets that link it, or that no
-target links any longer. ci.yaml's lint job holds the list to what the release builds legion from
-(.github/scripts/check-legion-release-paths.sh) on every change the go_notices filter selects,
-which names release.yaml, the target list, the check and the two scripts it runs, and every Go file
-but a `_test.go`, and every go.mod and go.sum, and runs it after the module cache that filter
-restores: it reads the step that
+(TestTheReleaseListNamesWhatLegionIsBuiltFrom, in daemon-go) runs that command for each target
+and fails naming each package the list misses, with the targets that link it, or that no target
+links any longer. It fails too naming each module file the build reads that no listed path
+covers: the go.mod of each first-party module it links, and go.work. ci.yaml's lint job holds the
+list to what the release builds legion from (.github/scripts/check-legion-release-paths.sh) on
+every change the go_notices filter selects, which names release.yaml, the target list, the check
+and the two scripts it runs, and every Go file but a `_test.go`, and every go.mod and go.sum, and
+runs it after the module cache that filter restores: it reads the step that
 expands LEGION_VERSION_ARGS as GitHub Actions runs it, the paths release-push.sh parses out of it,
 and the files git reads them as, so it also holds go.work, the release scripts and the target list,
 which no `go list` names. The check's header says which program it asks each question of, and

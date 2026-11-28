@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/testexec"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -63,7 +64,7 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	wrapper := filepath.Join(t.TempDir(), "jj")
 	mark := "[ -z \"${" + standInMark + "-}\" ] || { " + testexec.MarkStart(`"$`+standInMark+`"`) + "; }\n"
 	script := "#!/bin/sh\n" + mark + "case \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	tools["jj"] = wrapper
@@ -76,7 +77,7 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 	t.Helper()
 	run := newLocalRunner(t)
 	run.timeout = budget
-	run.runner = NewRunner(budget, slowCheckoutTools(t, delay))
+	run.tools = slowCheckoutTools(t, delay)
 	return run
 }
 
@@ -196,6 +197,7 @@ func (s *budgetSpans) notJudged(t *testing.T, runs int, within time.Duration, un
 // passes over them (isSharedCloneStep). A fresh workspace and one provisioned a second time are read
 // together, so both paths through Provision are covered.
 func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	checkouts, stale := 0, 0
@@ -247,14 +249,14 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 // took the budget for any other reason fails the run, as it failed main's one run, and so does a
 // run whose checkout took less than the budget, which proves nothing.
 func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
+	t.Parallel()
 	within := testwait.Bounded(t, time.Minute, checkoutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
-		spans := newBudgetSpans(t, run.runner, checkoutBudget)
-		run.runner = spans
+		spans := newBudgetSpans(t, run, checkoutBudget)
 		pushRemoteBranch(t, run.remote, "main", "history.txt")
-		working, err := Provision(context.Background(), run, provisionRequest(t))
+		working, err := Provision(context.Background(), spans, provisionRequest(t))
 
 		if spans.notJudged(t, runs, within, until, err) {
 			continue
@@ -289,19 +291,19 @@ func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
 // command took the five seconds only because the machine started its jj late is not judged, as in
 // TestProvisionChecksOutPastTheRunnersBudget, and the case provisions again, within a minute.
 func TestProvisionFailsWhenTheCheckoutOutlivesItsBound(t *testing.T) {
+	t.Parallel()
 	within := testwait.Bounded(t, time.Minute, checkoutRunMargin)
 	until := time.Now().Add(within)
 	for runs := 1; ; runs++ {
 		run := slowCheckoutRunner(t, checkoutDelay, testwait.Remaining(t))
-		spans := newBudgetSpans(t, run.runner, checkoutBudget)
-		run.runner = spans
+		spans := newBudgetSpans(t, run, checkoutBudget)
 		req := provisionRequest(t)
 		req.CheckoutBound = time.Second
 		working, err := Location(req.StateDir, req.Repo, req.Issue)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = Provision(context.Background(), run, req)
+		_, err = Provision(context.Background(), spans, req)
 
 		if spans.notJudged(t, runs, within, until, err) {
 			continue

@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  Three texts that an operator reads now say what the daemon does. The description of
+  `review_round_cap` in the configuration reference and the warning for `max_fix_attempts` say
+  that the cap counts review rounds (`recordRound`), tells the architect with a `pr-blocked`
+  notice once for each value the cap holds, and moves nothing. The refusal of a `session_store`
+  that keeps sessions as files says that the next launch finds no session to resume, so the claim
+  starts a fresh agent. `docs/kubernetes.md` says the same about a lost session, and says that a
+  `pod.volumes` or `pod.volume_mounts` entry for an overlay file replaces the controller's pod at
+  its next launch that installs nothing.
+time: 2026-11-27T16:49:07Z
+custom:
+    Issue: INFRA-4068

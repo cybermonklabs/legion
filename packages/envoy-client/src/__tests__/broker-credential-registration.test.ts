@@ -6,6 +6,7 @@
 
 import { expect, spyOn, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 import { brokerCredential } from "../broker-credential";
 import { brokerStandIns } from "./broker-stand-ins";
 
@@ -53,11 +54,6 @@ function registeringBroker(registered: () => boolean): {
   return { url: `http://127.0.0.1:${server.port}`, trades, minted };
 }
 
-/** Turns of the event loop until `ready()` holds: no timer, so the test runs at the client's pace. */
-async function until(ready: () => boolean): Promise<void> {
-  while (!ready()) await new Promise((resolve) => setImmediate(resolve));
-}
-
 /** What `call` settled with by the next turn of the event loop, or "pending": the test's bound. A
  *  credential answers headers or a promise of them, so either is taken. */
 async function outcome(call: unknown): Promise<unknown> {
@@ -85,7 +81,7 @@ test("an unregistered pod session's call fails at its deadline naming the sessio
     // The call's deadline is a signal the test ends, standing in for the call's own timer.
     const deadline = new AbortController();
     const call = credential.headers("GET", url, undefined, deadline.signal);
-    await until(() => warned.mock.calls.length === 1);
+    await until("the pending registration's warning", () => warned.mock.calls.length === 1);
     expect(String(warned.mock.calls[0]?.[0])).toContain(POD_SESSION);
     deadline.abort();
     const refused = await outcome(call);

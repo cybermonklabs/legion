@@ -204,6 +204,44 @@ func TestRenewalCorpus(t *testing.T) {
 	}
 }
 
+// TestALaunchersCredentialThatLapsesFirstDecidesTheRenewal: a token that names its launcher
+// credential's expiry is traded again by that too, where it comes first, by the corpus's rule with
+// CredentialRenewBefore as its window. Rows: an hour's token and an hour's credential, which the
+// access token alone traded again 55 minutes on, with 5 minutes of the credential left; a
+// credential of 20 minutes, inside two windows, at its half life; a credential that outlives the
+// token, which the token decides; one already past as the token lands, which the token decides
+// too, so a clock far off the broker's cannot make the client trade without pause; and a token
+// that names none, the corpus's own rule.
+func TestALaunchersCredentialThatLapsesFirstDecidesTheRenewal(t *testing.T) {
+	now := time.Now()
+	client, err := New(Config{BrokerURL: cipheraddr.New("https://secrets.example"), Key: testKey(t), Subject: projectedStub(),
+		Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, row := range []struct {
+		name              string
+		token, credential time.Duration // 0: the answer names no credential expiry
+		want              time.Duration
+	}{
+		{name: "an hour's token and an hour's credential", token: time.Hour, credential: time.Hour, want: 45 * time.Minute},
+		{name: "a credential inside two windows", token: time.Hour, credential: 20 * time.Minute, want: 10 * time.Minute},
+		{name: "a credential that outlives the token", token: 15 * time.Minute, credential: time.Hour, want: 10 * time.Minute},
+		{name: "a credential already past", token: 15 * time.Minute, credential: -time.Minute, want: 10 * time.Minute},
+		{name: "no credential named", token: time.Hour, want: 55 * time.Minute},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			token := &Token{Expiry: now.Add(row.token)}
+			if row.credential != 0 {
+				token.CredentialExpiresAt = now.Add(row.credential)
+			}
+			if got := client.renewalAt(token, now).Sub(now); got != row.want {
+				t.Errorf("a token of %s naming a credential of %s renews %s after it lands, want %s", row.token, row.credential, got, row.want)
+			}
+		})
+	}
+}
+
 // TestTokenTradesAgainAtTheCorpusMoment drives Token with a stepped clock across each row of
 // testdata/renewal.json a token can land by, under the row's own window: Token trades as the
 // token lands, answers that token at every call a step apart before the corpus's renewal moment,

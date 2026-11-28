@@ -16,6 +16,7 @@ import (
 // daemon starts git, gh and tmux from many goroutines. Each run makes the credential, runs its
 // helper as git does, checks that it answered the token, and removes the credential.
 func TestTheProvisioningHelperRunsWhileTheProcessForks(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	testexec.RunsBeside(t, 400, func(int) error {
 		credential, err := newProvisioningCredential(parent, testInstallationToken)

@@ -8,7 +8,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { RecordResponse } from "../../api/types";
+import type { DecisionResponse, RecordResponse } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { MachineLoginPage } from "./MachineLoginPage";
@@ -20,9 +20,11 @@ beforeAll(async () => {
 });
 
 function machineRecord(overrides: Partial<RecordResponse> = {}): RecordResponse {
+  const { dispatch_scopes = null, ...rest } = overrides;
   return {
     approver: "sami",
     decided: null,
+    dispatch_scopes,
     enrollment: null,
     expires_at: "2026-09-27T01:00:00Z",
     identifiers: ["worker-7.example.com"],
@@ -35,7 +37,7 @@ function machineRecord(overrides: Partial<RecordResponse> = {}): RecordResponse 
     service: null,
     session: { enrollment: null, request: null },
     state: "pending",
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -86,6 +88,360 @@ test("code -> lookup -> Approve posts the looked-up code", async () => {
     lookupMachineCredential.mockRestore();
     getMachineLogins.mockRestore();
     approveCredentialRecord.mockRestore();
+  }
+});
+
+test("a Dispatch sign-in shows its asked scopes and sends the ticked subset", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["person"] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+
+    const person = (await screen.findByRole("checkbox", {
+      name: "Act as you",
+    })) as HTMLInputElement;
+    expect(person.checked).toBe(true);
+    expect(
+      screen.getByText(
+        "Whatever is ticked, approving lets this session or tool write in Dispatch and work on Envoy as its own session within your projects, and it reads no secret; Act as you adds acting as you."
+      )
+    ).toBeDefined();
+
+    await user.click(person);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(approveCredentialRecord).toHaveBeenCalledWith(
+        "req-2",
+        { code: "ABCD-1234", scopes: [] },
+        keyedAttempt
+      )
+    );
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+test("an approved Dispatch sign-in names the scopes Approve sent, not the ones it asked", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["person"] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Act as you" }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com is signed in to Dispatch with no scope."
+      )
+    ).toBeDefined();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+// A sign-in's reason tells it from another sign-in of the same host, so its decided view names it.
+test("an approved Dispatch sign-in with a reason names it beside its host", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["person"], reason: "the release tool" });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+    await user.click(await screen.findByRole("button", { name: "Approve" }));
+
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com (the release tool) is signed in to Dispatch with Act as you."
+      )
+    ).toBeDefined();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+// The success view names the scopes the press carried: a box unticked while the approval is still
+// out changes neither the request nor what the view says once it is answered.
+test("an approval still out keeps the scopes its press sent, whatever the boxes hold after", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["person"] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
+  const decided = Promise.withResolvers<DecisionResponse>();
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockReturnValue(
+    decided.promise
+  );
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+    const person = await screen.findByRole("checkbox", { name: "Act as you" });
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(approveCredentialRecord).toHaveBeenCalledWith(
+        "req-2",
+        { code: "ABCD-1234", scopes: ["person"] },
+        keyedAttempt
+      )
+    );
+
+    await user.click(person);
+    await act(async () => {
+      decided.resolve({ credential_id: "cred-9", state: "approved" });
+    });
+
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com is signed in to Dispatch with Act as you."
+      )
+    ).toBeDefined();
+    expect(approveCredentialRecord).toHaveBeenCalledTimes(1);
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+// A broker newer than this page may take a scope the page has no words for. The page draws the
+// word as itself, unticked, so the person never approves a scope the page did not show them; the
+// ticks start from the scopes it draws in its own words, and Approve sends only ticked boxes.
+test("a Dispatch sign-in's unknown scope shows as its word, unticked, and is sent only once ticked", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["person", "triage"] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+
+    const person = (await screen.findByRole("checkbox", {
+      name: "Act as you",
+    })) as HTMLInputElement;
+    const triage = screen.getByRole("checkbox", { name: "triage" }) as HTMLInputElement;
+    expect(person.checked).toBe(true);
+    expect(triage.checked).toBe(false);
+    expect(
+      screen.getByText("This page does not know what this scope allows: tick it only if you do.")
+    ).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(approveCredentialRecord).toHaveBeenCalledWith(
+        "req-2",
+        { code: "ABCD-1234", scopes: ["person"] },
+        keyedAttempt
+      )
+    );
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com is signed in to Dispatch with Act as you."
+      )
+    ).toBeDefined();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+// p0 lets the session make an issue's own priority 0, which the person gives one sign-in only by
+// ticking it (dispatch://INFRA-5943/ask/3dfbf22b-74af-4e6d-af17-3bf368aac9fa): the page draws it
+// in its Settings words and unticked, though the sign-in asked for it, beside person ticked, so
+// an Approve press that ticks nothing more sends no p0.
+test("a Dispatch sign-in asking for p0 draws it unticked, and Approve without ticking it sends no p0", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["p0", "person"] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+
+    const p0 = (await screen.findByRole("checkbox", { name: "Set P0" })) as HTMLInputElement;
+    const person = screen.getByRole("checkbox", { name: "Act as you" }) as HTMLInputElement;
+    expect(p0.checked).toBe(false);
+    expect(person.checked).toBe(true);
+    expect(screen.getByText("Set an issue's priority to P0.")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(approveCredentialRecord).toHaveBeenCalledWith(
+        "req-2",
+        { code: "ABCD-1234", scopes: ["person"] },
+        keyedAttempt
+      )
+    );
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com is signed in to Dispatch with Act as you."
+      )
+    ).toBeDefined();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+// The control of the row above: the same sign-in, with the person ticking p0, sends it.
+test("a Dispatch sign-in's p0, once its person ticks it, is sent with the approval", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: ["p0", "person"] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
+    credential_id: "cred-9",
+    state: "approved",
+  });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+
+    const p0 = (await screen.findByRole("checkbox", { name: "Set P0" })) as HTMLInputElement;
+    await user.click(p0);
+    expect(p0.checked).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(approveCredentialRecord).toHaveBeenCalledWith(
+        "req-2",
+        { code: "ABCD-1234", scopes: ["person", "p0"] },
+        keyedAttempt
+      )
+    );
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com is signed in to Dispatch with Act as you, Set P0."
+      )
+    ).toBeDefined();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+    approveCredentialRecord.mockRestore();
+  }
+});
+
+// A sign-in that asked for no scope says so, in place of an empty set of boxes, and says only what
+// an approval lets it do: it writes and works on Envoy as its own session. With no box to tick, it
+// says nothing of what is ticked and nothing of Act as you; the sign-in that asks for person
+// ("a Dispatch sign-in shows its asked scopes and sends the ticked subset") keeps those words.
+test("a Dispatch sign-in that asks for no scope says so, and only what approving it allows", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({ dispatch_scopes: [] });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+
+    expect(await screen.findByText("It asks for no scope.")).toBeDefined();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(
+      screen.getByText(
+        "Approving lets this session or tool write in Dispatch and work on Envoy as its own session within your projects, and it reads no secret."
+      )
+    ).toBeDefined();
+    expect(screen.queryByText(/Whatever is ticked/)).toBeNull();
+    expect(screen.queryByText(/Act as you/)).toBeNull();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
+  }
+});
+
+// A sign-in looked up once decided carries the scopes it asked for, not the ones approved, so its
+// line names the asked scopes as asked and sends the person to the list that names the approved.
+test("a Dispatch sign-in looked up once approved names what it asked for, not what was approved", async () => {
+  const user = userEvent.setup();
+  const record = machineRecord({
+    decided: { at: "2026-09-27T00:05:00Z", credential_id: "cred-9", event: "approved" },
+    dispatch_scopes: ["person"],
+    state: "approved",
+  });
+  const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+
+  try {
+    renderPage();
+    await user.click(screen.getByLabelText("Code shown on the machine"));
+    await user.paste("abcd1234");
+    await user.click(screen.getByRole("button", { name: "Look up" }));
+
+    expect(
+      await screen.findByText(
+        "Approved. worker-7.example.com is signed in to Dispatch. It asked for Act as you; Machine logins below names the scopes approved."
+      )
+    ).toBeDefined();
+  } finally {
+    cleanup();
+    lookupMachineCredential.mockRestore();
+    getMachineLogins.mockRestore();
   }
 });
 

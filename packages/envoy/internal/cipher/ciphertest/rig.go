@@ -4,7 +4,10 @@
 // enroll/machine-login/request services — on an httptest.Server, for any package that needs to
 // drive a genuine broker end to end rather than a hand-rolled fake. It is the extraction
 // api_test.go's own newTestServer names as its reference pattern. Every consumer of a full
-// real-broker rig imports this package instead of duplicating the wiring.
+// real-broker rig imports this package instead of duplicating the wiring. dispatch_signin.go
+// holds the wiring of BROKER_DISPATCH_SIGNIN: a Rig serves a Dispatch sign-in unless
+// WithoutDispatchSignIn, and ReplicaWithoutDispatchSignIn starts a second broker that serves
+// none on the same database.
 //
 // The client that drives a running broker binary as a service and its pods do is not here: it is
 // internal/cipher/ciphertest/podclient, so that the requestseed command built from it links no
@@ -189,6 +192,10 @@ type Rig struct {
 	// and the requests.Machine share, and which the machine.Service reads through that
 	// enroll.Service. So a change SetPodOperator makes reaches all three.
 	podOperators map[string]string
+	// deps and providerOptions are what NewRig wired its broker with, which
+	// ReplicaWithoutDispatchSignIn wires a second broker on the same database with.
+	deps            api.Deps
+	providerOptions []ProviderOption
 }
 
 // Option changes how NewRig wires its broker.
@@ -217,6 +224,9 @@ type rigConfig struct {
 	// edgeDeviceLogin wraps the edge's device login (api.Edge.DeviceLogin); nil is the login as
 	// it is.
 	edgeDeviceLogin func(api.DeviceLoginFunc) api.DeviceLoginFunc
+	// dispatchSignInOff is a broker started with BROKER_DISPATCH_SIGNIN unset; a Rig serves the
+	// Dispatch sign-in by default (WithoutDispatchSignIn).
+	dispatchSignInOff bool
 }
 
 // EdgeMachineLoginURL is the page a device authorization made at a Rig's edge sends its person
@@ -261,6 +271,10 @@ type providerConfig struct {
 	// exchange is the token exchange's entries NewRig built and gives the request machine too; nil
 	// has NewOAuthProvider build its own (newExchangeSet).
 	exchange *exchange.Set
+	// dispatchSignIn is BROKER_DISPATCH_SIGNIN=on (oauth.Config.DispatchSignIn): NewRig sets it
+	// unless WithoutDispatchSignIn (dispatch_signin.go), and every other caller of
+	// NewOAuthProvider leaves it off, as a broker started with the setting unset does.
+	dispatchSignIn bool
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -504,7 +518,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		// hold gate.
 		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
 	}
-	providerOptions = append(providerOptions, func(c *providerConfig) { c.accessLifetime = config.accessLifetime })
+	providerOptions = append(providerOptions, func(c *providerConfig) {
+		c.accessLifetime, c.dispatchSignIn = config.accessLifetime, !config.dispatchSignInOff
+	})
 	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -548,6 +564,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Policy:    cur,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins, podOperators: podOperators,
+		deps: deps, providerOptions: providerOptions,
 	}
 	rig.UIToken = rig.MintAccountToken(t, APIAccount, time.Hour)
 	rig.ListenerToken = rig.MintAccountToken(t, ListenerAccount, time.Hour)
@@ -583,6 +600,7 @@ func newExchangeSet(t *testing.T) *exchange.Set {
 		},
 		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
+		nil,
 		nil,
 		// The rig lists no machine, so there is no box a person could have signed in on and no
 		// domain to hold one to.
@@ -639,7 +657,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
-		Exchange: exchangeConfig,
+		Exchange: exchangeConfig, DispatchSignIn: config.dispatchSignIn,
 	}, oauthStore)
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)

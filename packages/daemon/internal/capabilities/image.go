@@ -278,10 +278,12 @@ func lsp(_ context.Context, img Image) (string, bool) {
 
 // claudeCode: what a phase worker on the `claude` backend needs of the image, which carries no
 // Claude Code — its licence grants no redistribution and the image is public — so the row
-// measures the two facts that stand in for it, the same two the Claude lane of the launch probes
-// proved before this check (internal/daemon's verifyClaude): the image carries the claude-envoy
-// plugin that worker loads (CheckClaudePlugin), and it carries a pin a pod can install Claude Code
-// from and verify what it installed against (ReadClaudeCodePin). Beside them, npm and node on
+// measures the two facts that stand in for it: the image carries the claude-envoy plugin that
+// worker loads (CheckClaudePlugin), and it carries a pin a pod can install Claude Code from and
+// verify what it installed against (ReadClaudeCodePin). The image build's Claude lane
+// (internal/daemon's verifyClaude) proves the same two before this check, and holds the root's
+// manifest to the daemon API contract as well. The daemon's boot run makes no Claude lane, so in
+// that run this row is the one check of the two. Beside them, npm and node on
 // PATH, as the lsp and toolchain rows find theirs: the start script's install runs npm and its
 // version check runs node (claudeCodeBlock, internal/runtime/sandbox/plugins.go). Every image
 // carries all of it whatever a deployment's worker_backends names — one image serves both

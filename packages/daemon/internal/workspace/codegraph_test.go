@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -56,7 +57,7 @@ init)
 esac
 `
 	path := filepath.Join(dir, "codegraph")
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -89,6 +90,7 @@ func codegraphEnvironments(t *testing.T, callLog string) []map[string]string {
 }
 
 func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
+	// Not parallel: stubCodegraph changes the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	stubCodegraph(t, callLog)
 	dir := t.TempDir()
@@ -123,6 +125,7 @@ func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
 // the call returns while `codegraph init` is still running, and a second call for the same
 // workspace during that build starts no second one.
 func TestWarmCodegraphIndexInBackgroundNeverWaitsAndBuildsOncePerWorkspace(t *testing.T) {
+	// Not parallel: gives the process a held codegraph stub through PATH with t.Setenv.
 	scratch := t.TempDir()
 	callLog := filepath.Join(scratch, "calls.log")
 	release := filepath.Join(scratch, "release")
@@ -137,7 +140,7 @@ status) echo '{"initialized":false}' ;;
 init) while [ ! -f '` + release + `' ] && [ -d '` + scratch + `' ]; do sleep 0.05; done ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The stub's held `codegraph init` exits once its scratch directory is removed, so no stub
@@ -184,6 +187,7 @@ func waitFor(t *testing.T, done func() bool, what string) {
 // warming logs its skip to stderr, so this only has to show nothing panics or leaves an index
 // when codegraph is absent from PATH entirely — including on this devbox, which has a real one.
 func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
+	// Not parallel: removes codegraph from the process PATH with t.Setenv.
 	dir := t.TempDir()
 	// Narrowed to a fresh, empty directory so this test proves the missing-CLI path even on a
 	// machine (like this one) that has a real `codegraph` on its ordinary PATH.
@@ -203,6 +207,7 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 // sets them), and on its command line only its subcommand's arguments: any local user can read a
 // process's argv in /proc/<pid>/cmdline.
 func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
+	// Not parallel: changes the process PATH and plants secret environment variables.
 	// The call log sits under a directory whose name holds a glob character, as a machine's
 	// temporary directory can, so the recorded environments must be read without a pattern.
 	logDir := filepath.Join(t.TempDir(), "tmp-glob[x")
@@ -257,6 +262,7 @@ func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
 // through `codegraph init` (which would exit 0 printing "Already initialized" without touching
 // the partial state).
 func TestWarmCodegraphIndexRepairsAPartialIndex(t *testing.T) {
+	// Not parallel: puts a codegraph stub on the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
@@ -269,7 +275,7 @@ case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -292,6 +298,7 @@ esac
 // That must still run `init`, not `index` (which refuses: "CodeGraph not initialized"), and must
 // not consume the once-per-workspace repair budget.
 func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectory(t *testing.T) {
+	// Not parallel: puts a codegraph stub on the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
@@ -308,7 +315,7 @@ status) echo '{"initialized":false}' ;;
 index) echo 'CodeGraph not initialized' >&2; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -328,6 +335,7 @@ esac
 // same case against the real codegraph CLI (not a stub): `.codegraph/` holding only its own
 // generated `.gitignore`, with no database.
 func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRealCli(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("codegraph"); err != nil {
 		t.Skip("no codegraph CLI on PATH")
 	}
@@ -363,6 +371,7 @@ func TestWarmCodegraphIndexInitializesAnUntrackedCodegraphDirectoryAgainstTheRea
 // `/proc/<pid>/cmdline` names codegraph must skip the repair entirely rather than run `codegraph
 // index` alongside it.
 func TestWarmCodegraphIndexSkipsRepairWhileABuildIsLive(t *testing.T) {
+	// Not parallel: puts a codegraph stub on the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
@@ -375,7 +384,7 @@ case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -386,7 +395,7 @@ esac
 	// span of its own: the lock names a live builder for as long as the warm-up takes to read it.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
 	hold := "while kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done"
-	if err := os.WriteFile(builderScript, []byte("#!/bin/bash\nexec -a codegraph sh -c '"+hold+"'\n"), 0o700); err != nil {
+	if err := execfile.Write(builderScript, []byte("#!/bin/bash\nexec -a codegraph sh -c '"+hold+"'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)
@@ -429,6 +438,7 @@ esac
 // behind: stale, so the repair runs. So is one dated further than the grace into the future,
 // which no starting build wrote.
 func TestWarmCodegraphIndexJudgesAnEmptyLockByItsAge(t *testing.T) {
+	// Not parallel: each row puts a codegraph stub on the process PATH with t.Setenv.
 	for _, tc := range []struct {
 		name string
 		// age is how old the lock's mtime is when warming reads it; negative is in the future.
@@ -467,7 +477,7 @@ case "$1" in
 status)` + takeLock + ` echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-			if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+			if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -487,6 +497,7 @@ esac
 // TestWarmCodegraphIndexRepairsOncePerWorkspace: a workspace whose index never reaches
 // `"complete"` gets re-indexed at most once per process, not on every call.
 func TestWarmCodegraphIndexRepairsOncePerWorkspace(t *testing.T) {
+	// Not parallel: puts a codegraph stub on the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o700); err != nil {
@@ -499,7 +510,7 @@ case "$1" in
 status) echo '{"initialized":true,"index":{"state":"indexing"}}' ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -541,6 +552,7 @@ func stubCalls(t *testing.T, callLog string) []string {
 // holder's, taken over and built behind, with nothing of the takeover left in the directory; and a
 // warm-up that ran leaves no lease behind for the next to find.
 func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
+	// Not parallel: stubCodegraph changes the process PATH with t.Setenv.
 	leaseOf := func(t *testing.T, dir string, age time.Duration) string {
 		t.Helper()
 		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
@@ -625,6 +637,7 @@ func TestWarmCodegraphIndexHoldsACrossProcessLease(t *testing.T) {
 // removed and the takeover proceeds; a lease released between the stat and the takeover gives the
 // contender its retry rather than a skip.
 func TestTwoContendersThatJudgedOneLeaseStaleCannotBothHoldIt(t *testing.T) {
+	// Not parallel: replaces the package's warmLeaseStep hook.
 	staleLease := func(t *testing.T) (dir, lease string) {
 		t.Helper()
 		dir = t.TempDir()
@@ -749,6 +762,7 @@ func TestTwoContendersThatJudgedOneLeaseStaleCannotBothHoldIt(t *testing.T) {
 // skips. The inode is pinned here with a hard link, so the case runs the same on every filesystem
 // rather than only where the allocator happens to hand the number back.
 func TestATakeoverLeavesAFreshLeaseThatReusedTheStaleOnesInode(t *testing.T) {
+	// Not parallel: replaces the package's warmLeaseStep hook.
 	dir := t.TempDir()
 	lease := filepath.Join(dir, ".codegraph", warmLeaseName)
 	if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
@@ -810,6 +824,7 @@ func TestATakeoverLeavesAFreshLeaseThatReusedTheStaleOnesInode(t *testing.T) {
 // it. The successor's lease is built here from the stalled holder's by a hard link, so it has the
 // same inode on every filesystem rather than only where the allocator hands the number back.
 func TestAStalledHoldersReleaseLeavesItsSuccessorsLeaseAtTheSameInode(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lease := filepath.Join(dir, ".codegraph", warmLeaseName)
 	if err := os.Mkdir(filepath.Dir(lease), 0o700); err != nil {
@@ -865,6 +880,7 @@ func TestAStalledHoldersReleaseLeavesItsSuccessorsLeaseAtTheSameInode(t *testing
 // not with the runtime's panic for a bubble whose blocked goroutines outlive its main one, which
 // would end the package's test binary and every row after this one.
 func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
 		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
@@ -941,6 +957,7 @@ func TestAStalledHoldersHeartbeatLeavesItsSuccessorsLeaseAtTheSameInode(t *testi
 // moved away. The row runs in a synctest bubble, and releases its heartbeat in a cleanup of the
 // bubble, as the one above does.
 func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		dir := t.TempDir()
 		lease := filepath.Join(dir, ".codegraph", warmLeaseName)
@@ -995,6 +1012,7 @@ func TestALiveHoldersHeartbeatOutlivesAnUnreadableLease(t *testing.T) {
 // nothing to refresh, and nothing is created, but the heartbeat goes on to read it again at the
 // next tick (true).
 func TestRefreshWarmLease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -1049,6 +1067,7 @@ func TestRefreshWarmLease(t *testing.T) {
 // workspace that had no `.codegraph/` before the warm-up must still be judged directory-less
 // there: `init`, never `index`, which refuses on an uninitialized workspace.
 func TestWarmCodegraphIndexStillInitializesAFreshWorkspaceWhenStatusFails(t *testing.T) {
+	// Not parallel: puts a codegraph stub on the process PATH with t.Setenv.
 	callLog := filepath.Join(t.TempDir(), "calls.log")
 	dir := t.TempDir()
 	binDir := t.TempDir()
@@ -1059,7 +1078,7 @@ status) echo 'database disk image is malformed' >&2; exit 1 ;;
 index) echo 'CodeGraph not initialized' >&2; exit 1 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1077,8 +1096,9 @@ esac
 
 // captureStderr swaps os.Stderr — which has no seam — for the write end of a pipe, drained into a
 // buffer, until the returned function is called or the test ends; that function restores
-// os.Stderr, closes the pipe and returns everything written meanwhile. No test in this package
-// runs in parallel, so the swap races no other test's lines.
+// os.Stderr, closes the pipe and returns everything written meanwhile. No test that calls it runs
+// in parallel, and go test starts the package's parallel tests only once every test that is not
+// parallel has ended, so the swap races no other test's lines.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -1114,6 +1134,7 @@ func captureStderr(t *testing.T) func() string {
 // in the decision table says it: an index already complete logs no build, and a build that failed
 // keeps its failure line and gets no success line beside it.
 func TestWarmCodegraphIndexLogsOneSuccessLine(t *testing.T) {
+	// Not parallel: captures os.Stderr and puts a codegraph stub on the process PATH.
 	success := regexp.MustCompile(`(?m)^\[legion\] codegraph warm-up for (.*) built the index: codegraph init took .*, done .* after launch$`)
 	t.Run("a fresh workspace built: one line", func(t *testing.T) {
 		callLog := filepath.Join(t.TempDir(), "calls.log")
@@ -1161,7 +1182,7 @@ status) echo '{"initialized":false}' ;;
 init) echo 'no database could be created' >&2; exit 1 ;;
 esac
 `
-		if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1187,11 +1208,12 @@ esac
 // signal and what it printed; one the warm-up's own bound ended logs that it timed out, since the
 // same build would time out again. Read as a status, each was `exit -1`.
 func TestWarmCodegraphIndexReadsACodegraphASignalEndedAsOneThatAnsweredNothing(t *testing.T) {
+	// Not parallel: changes the process PATH and captures os.Stderr.
 	fake := func(t *testing.T, callLog, cases string) {
 		t.Helper()
 		binDir := t.TempDir()
 		script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + callLog + "'\ncase \"$1\" in\n" + cases + "esac\n"
-		if err := os.WriteFile(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(binDir, "codegraph"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -1362,6 +1384,7 @@ func (r *boundRow) answered(end string) {
 // the image's CodeGraph and the cap, in this workspace) wins over every build, an init as much as
 // an index repair.
 func TestNextCodegraphStep(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                      string
 		dirExists, lockLive, held bool
@@ -1405,6 +1428,7 @@ func TestNextCodegraphStep(t *testing.T) {
 // wrong thing. The `2>/dev/null` keeps a missing lease silent, since both finds print the path in
 // their error.
 func TestTheRolePromptsCheckTheLeaseTheWarmUpHolds(t *testing.T) {
+	t.Parallel()
 	check := ".codegraph/" + warmLeaseName + " -mmin -1 2>/dev/null"
 	for _, part := range []string{
 		filepath.Join("..", "prompts", "roles", "core", "common.md"),

@@ -171,6 +171,7 @@ func gitWaitedToLock(waited, seen, forked time.Duration) time.Duration {
 // again, so a git its SIGTERM ended ends signaled SIGTERM, and one the SIGKILL ended ends signaled
 // SIGKILL.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
+	// Not parallel: it sets exitedHook, a package variable every runner's command calls.
 	git := realTool(t, "git")
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -335,6 +336,8 @@ const jjSnapshotAttempts = 3
 // and the sweep that removes such a lock when the pod's workspace is provisioned is what the tree
 // relies on (`workspace-init provision`, cmd/legion/workspace_init.go).
 func TestARealJJStoppedAtItsBudgetIsRecorded(t *testing.T) {
+	// Not parallel: its poll must see a lock jj holds for about 6 ms (jjSnapshotAttempts), and the
+	// commands of tests run beside it in this process would keep the poll off a core more often.
 	jj := realTool(t, "jj")
 	root := t.TempDir()
 	work := filepath.Join(root, "work")

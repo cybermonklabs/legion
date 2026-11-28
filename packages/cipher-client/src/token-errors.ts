@@ -260,21 +260,51 @@ export class SignInEndedError extends Error {
  *  device login cures names (`device-login.ts`). */
 export const DEVICE_LOGIN_COMMAND = "dispatch login --device";
 
+/** The command that makes again the kind of device login `dispatchScopes` names: a Dispatch
+ *  sign-in of those scopes, `--scope none` where it holds none, or, where it is null, a machine
+ *  login ({@link DEVICE_LOGIN_COMMAND}). A machine login's command would give a Dispatch sign-in's
+ *  holder a login that starts sessions and reads secrets. */
+export function deviceLoginCommand(dispatchScopes: readonly string[] | null): string {
+  if (dispatchScopes === null) return DEVICE_LOGIN_COMMAND;
+  return `${DEVICE_LOGIN_COMMAND} --scope ${dispatchScopes.join(",") || "none"}`;
+}
+
 /**
  * A device login the broker no longer honours: its refresh was answered 400 or 401
  * `invalid_grant` (`endsGrant`, `oauth-refusal.ts`), because its credential was revoked or ran
  * out, or its refresh token was presented again after its rotation's grace, which revokes the
  * login (`oauthstore.Store.RevokeRefreshToken`). Like a sign-in the issuer ended it is final
- * ({@link isFinalRefusal}): only a new {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the
- * login as its source describes it, and it keeps no cause: the library's error holds the broker's
- * answer.
+ * ({@link isFinalRefusal}): only a new device login cures it. `login` names the login as its
+ * source describes it, and `command` is the command that makes the same kind of login again
+ * ({@link deviceLoginCommand}); it keeps no cause: the library's error holds the broker's answer.
  */
 export class DeviceLoginEndedError extends Error {
-  constructor(login: string) {
+  constructor(login: string, command: string) {
     super(
-      `the secrets broker no longer honours ${login}: it was revoked or ran out; run: ${DEVICE_LOGIN_COMMAND}`
+      `the secrets broker no longer honours ${login}: it was revoked or ran out; run: ${command}`
     );
     this.name = "DeviceLoginEndedError";
+  }
+}
+
+/**
+ * A device login file that holds another login than the one this process started with: a
+ * `dispatch login --device` ran again since, so the file holds another key, which this process's
+ * client does not prove (`DeviceLoginIdentity.spend`, `device-login.ts`). It is final
+ * ({@link isFinalRefusal}): no later read finds this process's key again, so no retry cures it.
+ * Its one cure is a new session: the broker keeps a session's name for the principal that wrote
+ * under it, each Dispatch sign-in and each person's machine login is a principal of its own, and
+ * the file names no person, so this process cannot tell the one case where this session started
+ * again would trade the new login, a machine login that replaced its own person's.
+ * `file` names the login file as a text names it and `command` the login's command; the message
+ * names nothing the file holds.
+ */
+export class DeviceLoginReplacedError extends Error {
+  constructor(file: string, command: string) {
+    super(
+      `${file} holds another login than the one this process started with, since ${command} ran again; start a new session to trade the new one: the secrets broker keeps a session's name for the principal that wrote under it, and each Dispatch sign-in is a principal of its own, as is each person's machine login, so this session started again is refused, except where a machine login replaced the same person's machine login, which this process cannot tell, since the login file names no person`
+    );
+    this.name = "DeviceLoginReplacedError";
   }
 }
 
@@ -298,16 +328,18 @@ export class LockHeldError extends Error {
 /**
  * Whether `error` ends the identity a client trades for good: a broker's refusal no retry can
  * cure (`BrokerRefusedError.permanent`), a sign-in the issuer has ended
- * ({@link SignInEndedError}), or a device login the broker has ended
- * ({@link DeviceLoginEndedError}). A client drops the token in hand on one rather than answer it
- * until it lapses, and a caller that remembers refusals remembers these alone: remembering an
- * outage (the broker's 429, or a 408) or a clock-skewed proof would stop a client a later trade
- * would have answered.
+ * ({@link SignInEndedError}), a device login the broker has ended
+ * ({@link DeviceLoginEndedError}), or a device login another `dispatch login --device` replaced
+ * in its file ({@link DeviceLoginReplacedError}). A client drops the token in hand on one rather
+ * than answer it until it lapses, and a caller that remembers refusals remembers these alone:
+ * remembering an outage (the broker's 429, or a 408) or a clock-skewed proof would stop a client
+ * a later trade would have answered.
  */
 export function isFinalRefusal(error: unknown): boolean {
   return (
     (error instanceof BrokerRefusedError && error.permanent) ||
     error instanceof SignInEndedError ||
-    error instanceof DeviceLoginEndedError
+    error instanceof DeviceLoginEndedError ||
+    error instanceof DeviceLoginReplacedError
   );
 }

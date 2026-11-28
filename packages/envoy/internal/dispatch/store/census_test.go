@@ -1637,20 +1637,13 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		done <- result{report, err}
 	}()
 	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
-	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
-	for {
-		var waiting bool
-		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted and database = (select oid from pg_database where datname = current_database()))").Scan(&waiting); err != nil {
-			t.Fatal(err)
-		}
-		if waiting {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the census never queued on blocker")
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// The census's lock_timeout starts once it queues, so how long it takes to get there (its
+	// connection, its catalog reads, a process still busy with what it started first) bounds
+	// nothing under test. A wait of the lock timeout less a second, counted from the census's start
+	// rather than from its queueing, failed this row when it ran first in its test binary, as the
+	// first serial test of a group of the package's tests does: "the census never queued on
+	// blocker" after 4.32 s.
+	waitForQueuedLock(t, store, "blocker", "AccessShareLock")
 	held, err := holder.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
