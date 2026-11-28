@@ -24,8 +24,9 @@ import (
 type contextCutRig struct {
 	runner, observer *pgx.Conn
 	holder           pgx.Tx
-	// done carries Exec's result. The test sets it as it starts Exec, before its first wait.
-	done <-chan error
+	// done carries Exec's result. newContextCutRig makes it, buffered for that one result, so it
+	// is never nil.
+	done chan error
 }
 
 func newContextCutRig(t *testing.T) *contextCutRig {
@@ -34,7 +35,7 @@ func newContextCutRig(t *testing.T) *contextCutRig {
 	url := testpg.URL(t)
 	runner := connect(t, ctx, url)
 	holderConn := connect(t, ctx, url)
-	rig := &contextCutRig{runner: runner, observer: connect(t, ctx, url)}
+	rig := &contextCutRig{runner: runner, observer: connect(t, ctx, url), done: make(chan error, 1)}
 	if _, err := rig.runner.Exec(ctx, "create table things (kind text)"); err != nil {
 		t.Fatal(err)
 	}
@@ -73,9 +74,10 @@ func (r *contextCutRig) until(t *testing.T, what, query string, args ...any) tim
 }
 
 // failIfExecReturned fails the test at once, naming what it waits for and Exec's result, when
-// Exec has returned. The test waits only before it cancels Exec's context, so a result on done
-// means Exec returned before the fact came (Postgres cancelled the runner's ALTER at the Locking's
-// lock_timeout, say), and no later reading would show the fact.
+// Exec has returned. Call it only before the test cancels Exec's context: after the cancel, a
+// result on done is the one the test waits for, and this check would fail a passing test. Before
+// the cancel, a result on done means Exec returned before the fact came (Postgres cancelled the
+// runner's ALTER at the Locking's lock_timeout, say), and no later reading would show the fact.
 func (r *contextCutRig) failIfExecReturned(t *testing.T, what string) {
 	t.Helper()
 	select {
@@ -145,10 +147,8 @@ func TestACancelAfterTheLockWaitEndedIsNoLockTimeout(t *testing.T) {
 	locking := Locking{Clock: fake}
 	cut, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan error, 1)
-	rig.done = done
 	go func() {
-		done <- pgx.BeginFunc(cut, rig.runner, func(tx pgx.Tx) error {
+		rig.done <- pgx.BeginFunc(cut, rig.runner, func(tx pgx.Tx) error {
 			return locking.Exec(cut, tx, Migration{
 				Name: "0001_added.up.sql",
 				SQL:  "alter table things add column added int; select pg_sleep(60)",
@@ -164,7 +164,7 @@ func TestACancelAfterTheLockWaitEndedIsNoLockTimeout(t *testing.T) {
 		rig.runner.PgConn().PID())
 	rig.watchReads(t, fake, locking.watchInterval(), sleeping)
 	cancel()
-	err := testwait.Receive(t, "Exec to return once its context is cancelled", done)
+	err := testwait.Receive(t, "Exec to return once its context is cancelled", rig.done)
 	var named *LockTimeoutError
 	if errors.As(err, &named) {
 		t.Errorf("err = %v\nwant no *LockTimeoutError: the migration held its lock and waited on none when the context ended, yet the error names the wait on %+v", err, named.Wait)
