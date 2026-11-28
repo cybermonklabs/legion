@@ -187,6 +187,15 @@ check "takes 5s as -timeout's value and no package" "$(contains "$out" '--packag
 check "prints the timeout's panic" "$(contains "$out" 'panic: test timed out after 5s')"
 check "says the panic aborted the rerun" "$(contains "$out" 'rerun aborted because previous run had a suspected panic')"
 
+echo "case: a test that exits the test binary on its first run is not run again"
+# os.Exit in a test (a log.Fatal, or an os.Exit in a helper) stops the test binary as a panic
+# does, before the tests after it run, and prints no panic: gotestsum marks the test it stopped
+# in as failed and reruns that test alone, so a test after it never runs in any attempt, and the
+# step passes on a package whose real defect no attempt reached.
+run_case exit merge_group "$go_test" go test -count=1 ./exitonce/
+check "fails its step" "$([ "$status" -ne 0 ] && echo true || echo false)"
+check "ran the test that exits the binary once" "$(is "$(attempts exit exitonce)" 1)"
+
 echo "case: a package with 11 tests that fail once is not run again"
 run_case eleven merge_group "$go_test" go test -count=1 ./eleven/
 check "fails its step" "$([ "$status" -ne 0 ] && echo true || echo false)"
