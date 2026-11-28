@@ -44,8 +44,9 @@ metadata:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
     # A run takes about 43 minutes on 8 CPUs and 32 GiB of an on-demand E2 machine, the first
     # choice of the class default, which tries E2, then C4D, then other families: two builds, two
-    # loads at ten times the run volume, two catch-ups and two 10-minute drives. The cost is an
-    # estimate of that time at C4D's rate, about twice E2's.
+    # loads at ten times the run volume, two catch-ups and two 10-minute drives. The cost is that
+    # time on a whole e2-standard-16, the node the class gives this pod, at E2's on-demand rate of
+    # about $0.54 an hour, rounded up to the next cent.
     ${LABEL_DOMAIN}/cost-usd: "0.39"
     ${LABEL_DOMAIN}/expected-cpu-hours: "6"
     ${LABEL_DOMAIN}/expected-memory-gib-hours: "23"

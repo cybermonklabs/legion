@@ -40,7 +40,8 @@ metadata:
     # A run takes about 24 minutes on 8 CPUs and 32 GiB of an on-demand E2 machine, the first
     # choice of the class default, which tries E2, then C4D, then other families: three builds, one
     # load at ten times the run volume, and three arms of a whole read and 5 minutes after it. The
-    # cost is an estimate of that time at C4D's rate, about twice E2's.
+    # cost is that time on a whole e2-standard-16, the node the class gives this pod, at E2's
+    # on-demand rate of about $0.54 an hour, rounded up to the next cent.
     ${LABEL_DOMAIN}/cost-usd: "0.22"
     ${LABEL_DOMAIN}/expected-cpu-hours: "4"
     ${LABEL_DOMAIN}/expected-memory-gib-hours: "13"
