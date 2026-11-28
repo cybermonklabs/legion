@@ -259,11 +259,12 @@ func (m *Machine) giveBackHeld() {
 //
 //   - registeredPods: the row's joined with memory's, since the pods an agent registered in are
 //     none of the row's (build).
-//   - previous, stopUnconfirmed, stopOwed: a process this daemon let go still runs in this runtime,
-//     which a restart has none of, and so does a stop of it the runtime refused once its record
-//     was written, which is made again at the probe interval (build, TimerStopAgain, D7); but a
-//     previous the row records is the claim's process again, and is cleared with the mark of its
-//     stop and the stop owed of it.
+//   - previous, stopUnconfirmed: a process this daemon let go still runs in this runtime, which a
+//     restart has none of; but a previous the row records is the claim's process again, and is
+//     cleared with the mark of its stop. That is the process a suspension of a live process or a
+//     stop or a close stopped or released before its record, where the store then refused that
+//     record (suspendNow, end): the rebuilt claim records it as the row does, and the next
+//     observation finds it gone and recovers it as a daemon start over the same row would.
 //   - registration, registrationRefused, identity, enrollmentSent, helloKey: kept where the row
 //     records the process each is for, since that process's shim sends this daemon no second
 //     hello; otherwise the registration is stopped and each is zeroed (keepRowsProcess).
@@ -279,13 +280,14 @@ func (m *Machine) giveBackHeld() {
 // Two things differ from a daemon start's machine on purpose (D4). A process memory records and
 // the row does not — a start whose locator write was refused — is stopped, and it becomes the
 // process the claim last ran (previous): no row names it, and in this daemon's run no orphan sweep
-// stops it. A stop the runtime refuses is logged at Error, leaves stopUnconfirmed set, and is owed,
-// made again at the probe interval where the claim is gone and waited out by its next launch
-// otherwise (Machine.stopOwed, TimerStopAgain, D7). And a row that names a launch no process
-// carries — a live state with no process, or a released launch (Claim.ReleasedLaunch), the two
-// shapes a daemon start repairs as unfinished — is left to be launched again at the probe interval
-// (relaunchLater), uncharged and paced, since nothing else would relaunch it; the launch's first
-// step is its own claim write (writeTry), so a store that refuses every write starts no process.
+// stops it. A stop the runtime refuses is logged at Error and leaves stopUnconfirmed set. A
+// process a refused decision let go after the runtime stopped it, which the row still records
+// (suspendNow, end), is no such process: memory's claim records none any more, so it is not
+// stopped again. And a row that names a launch no process carries — a live state with no process,
+// or a released launch (Claim.ReleasedLaunch), the two shapes a daemon start repairs as
+// unfinished — is left to be launched again at the probe interval (relaunchLater), uncharged and
+// paced, since nothing else would relaunch it; the launch's first step is its own claim write
+// (writeTry), so a store that refuses every write starts no process.
 func (m *Machine) rebuild(ctx context.Context, row Claim) {
 	process, enrollment := m.claim.Locator, m.claim.Enrollment
 	m.keepRowsProcess(row)
@@ -294,16 +296,13 @@ func (m *Machine) rebuild(ctx context.Context, row Claim) {
 	}
 	if p := m.previous; p != nil && row.Locator != nil && p.Incarnation == row.Locator.Incarnation {
 		m.previous, m.stopUnconfirmed = nil, false
-		m.clearStopOwed(p)
 	}
 	m.build(row)
 	if process != nil && (row.Locator == nil || row.Locator.Incarnation != process.Incarnation) {
 		m.previous = process
 		if err := m.stopPrevious(ctx); err != nil {
-			m.stopOwed = &owedStop{loc: cloneLocator(process)}
-			m.arm(TimerStopAgain, m.deps.Timeouts.Probe, "")
-			m.log.Error("supervise: after a refused claim write, the runtime did not stop the process the claim's row does not record; the stop is made again at the probe interval",
-				"incarnation", process.Incarnation, "error", err, "retry", m.deps.Timeouts.Probe)
+			m.log.Error("supervise: after a refused claim write, the runtime did not stop the process the claim's row does not record",
+				"incarnation", process.Incarnation, "error", err)
 		}
 	}
 	if (row.Locator == nil && slices.Contains(live, row.State)) || row.ReleasedLaunch() {

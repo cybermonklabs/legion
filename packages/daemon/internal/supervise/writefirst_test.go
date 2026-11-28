@@ -1,18 +1,20 @@
 package supervise
 
-// A decision of the daemon that ends a claim's process writes the claim's new state first, and
-// stops or releases the process, revokes the agent's capability and stops its pod-session
-// registration only once that write landed or failed owed (R3 of dispatch://INFRA-4099's spec, D6
-// and D7 of its plan). A refused write acts on nothing; a write the window after a refusal holds
-// back acts once a later write lands (D5).
+// A decision of the daemon that ends a claim's process revokes the agent's capability, stops its
+// pod-session registration and sends the clean stop of its Envoy session only once its claim write
+// landed or failed owed (R3 of dispatch://INFRA-4099's spec, D6 of its plan). A decision whose stop
+// is best effort writes before it stops; a suspension of a live process and a stop or a close
+// (suspendNow, end) ask the runtime first, and a refusal of the runtime writes nothing. A refused
+// write acts on nothing more; a write the window after a refusal holds back acts once a later write
+// lands (D5).
 
 import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -45,6 +47,25 @@ func (r *stopCounter) counts() (started, stopped int) {
 	return r.started, r.stopped
 }
 
+// cleanStopCounter counts the clean stops of an Envoy session the machine tells the daemon of
+// (Deps.SessionGone).
+type cleanStopCounter struct {
+	mu    sync.Mutex
+	count int
+}
+
+func (c *cleanStopCounter) gone(string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.count++
+}
+
+func (c *cleanStopCounter) told() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.count
+}
+
 // failWith makes err the answer of every claim write the store refuses from now on (refuseWhere):
 // a refusal of the row, or a failure the rule owes.
 func (s *refusingStore) failWith(err error) {
@@ -54,23 +75,25 @@ func (s *refusingStore) failWith(err error) {
 }
 
 // recordFirst is a machine over a claim in a refusingStore, with a broker that records the
-// revocations of the agent's capability and a registrar that counts the stops of the pod-session
-// registration, its process in an issue pod so that its session is registered for the pod to
-// trade.
+// revocations of the agent's capability, a registrar that counts the stops of the pod-session
+// registration and a count of the clean stops of the agent's Envoy session, its process in an
+// issue pod so that its session is registered for the pod to trade.
 type recordFirst struct {
 	*harness
-	s         *refusingStore
-	broker    *fakeEnroller
-	registrar *stopCounter
-	pause     *pauseFlag
+	s          *refusingStore
+	broker     *fakeEnroller
+	registrar  *stopCounter
+	cleanStops *cleanStopCounter
+	pause      *pauseFlag
 }
 
 func recordFirstHarness(t *testing.T, c Claim) *recordFirst {
 	t.Helper()
-	r := &recordFirst{registrar: &stopCounter{}, pause: &pauseFlag{}}
+	r := &recordFirst{registrar: &stopCounter{}, cleanStops: &cleanStopCounter{}, pause: &pauseFlag{}}
 	r.harness, r.s = refusingHarness(t, c, func(h *harness) {
 		r.broker = &fakeEnroller{now: h.clock.Now}
 		h.deps.Secrets, h.deps.Registrar, h.deps.Paused = r.broker, r.registrar, r.pause.Paused
+		h.deps.SessionGone = r.cleanStops.gone
 	})
 	return r
 }
@@ -123,8 +146,9 @@ func (r *recordFirst) reachEnrolled(state ClaimState) {
 }
 
 // acted is what the decisions so far asked of the world outside the machine: the runtime's stops
-// and releases, the broker's revocations and the registrar's stops.
-type acted struct{ suspends, releases, revocations, registrationStops int }
+// and releases, the broker's revocations, the registrar's stops and the clean stops of the Envoy
+// session.
+type acted struct{ suspends, releases, revocations, registrationStops, cleanStops int }
 
 // wantMemoryIsTheRow is the harness's for a process in an issue pod: the pods an agent registered
 // in are memory's alone, which the rebuild keeps (D3 of dispatch://INFRA-4099's plan), so they are
@@ -146,13 +170,14 @@ func (r *recordFirst) wantMemoryIsTheRow() {
 func (r *recordFirst) acted() acted {
 	_, stopped := r.registrar.counts()
 	return acted{suspends: len(r.rt.CallsOf("Suspend")), releases: len(r.rt.CallsOf("Release")),
-		revocations: len(r.broker.revocations()), registrationStops: stopped}
+		revocations: len(r.broker.revocations()), registrationStops: stopped, cleanStops: r.cleanStops.told()}
 }
 
 // since is what the decisions asked of the world after before was read.
 func (a acted) since(before acted) acted {
 	return acted{a.suspends - before.suspends, a.releases - before.releases,
-		a.revocations - before.revocations, a.registrationStops - before.registrationStops}
+		a.revocations - before.revocations, a.registrationStops - before.registrationStops,
+		a.cleanStops - before.cleanStops}
 }
 
 // staleTimer is an event every state decides by its fence, after the head of the decision has
@@ -163,16 +188,26 @@ func (h *harness) staleTimer() error {
 
 // daemonDecision is one row of D6 of dispatch://INFRA-4099's plan: a decision of the daemon that
 // ends the claim's process, brought to the moment before it (before), the claim writes that are
-// its record (record), the decision itself (decide), the state its record writes (to), and what
-// it asks of the world once its record is written or owed (acts).
+// its record (record), the decision itself (decide), the state its record writes (to), what it
+// asks of the world before its record whatever the store answers (first), and all it asks of the
+// world once its record is written or owed (acts, first included).
+//
+// first is the runtime's stop or release of a suspension of a live process and of a stop or a
+// close (suspendNow, end), which keep that call before their record; refuse makes the runtime
+// refuse it, and runtimeRefused is the state memory and the row read after that refusal, "" for
+// the state they read before the decision. A decision whose stop is best effort stops nothing
+// before its record and has no refuse; a death's first is the clean stop its judgement sends
+// (died).
 type daemonDecision struct {
-	name   string
-	claim  func() Claim
-	before func(r *recordFirst)
-	record func(method string, c Claim) bool
-	decide func(r *recordFirst) error
-	to     ClaimState
-	acts   acted
+	name           string
+	claim          func() Claim
+	before         func(r *recordFirst)
+	record         func(method string, c Claim) bool
+	decide         func(r *recordFirst) error
+	to             ClaimState
+	first, acts    acted
+	refuse         func(h *harness, err error)
+	runtimeRefused ClaimState
 }
 
 // writesState picks the claim writes of a claim in state.
@@ -181,7 +216,8 @@ func writesState(state ClaimState) func(string, Claim) bool {
 }
 
 // daemonDecisions is the decisions of D6, one row each, with the failing branches of a prompt
-// retirement and of a registration deadline.
+// retirement and of a registration deadline: first those whose stop is best effort, then the
+// suspensions of a live process (suspendNow), then the stops and the closes (end).
 func daemonDecisions() []daemonDecision {
 	withBudgets := func(b Budgets) func() Claim {
 		return func() Claim {
@@ -195,43 +231,76 @@ func daemonDecisions() []daemonDecision {
 		c.Session, c.SessionFile, c.Generation = session, sessionFile, 1
 		return c
 	}
-	live := acted{suspends: 1, revocations: 1, registrationStops: 1}
-	released := acted{releases: 1, revocations: 1, registrationStops: 1}
+	died := acted{cleanStops: 1}
+	stoppedAfter := acted{suspends: 1, revocations: 1, registrationStops: 1}
+	stoppedAndToldAfter := acted{suspends: 1, revocations: 1, registrationStops: 1, cleanStops: 1}
+	releasedAfter := acted{releases: 1, revocations: 1, registrationStops: 1}
+	suspendedFirst, releasedFirst := acted{suspends: 1}, acted{releases: 1}
+	refuseSuspend := func(h *harness, err error) { h.rt.FailSuspend(err) }
+	refuseRelease := func(h *harness, err error) { h.rt.FailRelease(err) }
+	heldOverATurn := func(r *recordFirst) {
+		r.reachEnrolled(StateWorking)
+		if err := r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+			r.t.Fatalf("control: the suspension of a working claim answered %v, want it held", err)
+		}
+	}
 	return []daemonDecision{
 		{
-			name: "the suspension of a live process: an operator's suspension of an idle claim", claim: queuedClaim,
-			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
-			record: writesState(StateSuspended),
+			name: "a failure: the death that spends the deaths", claim: withBudgets(Budgets{Deaths: 2}),
+			before: func(r *recordFirst) { r.reachEnrolled(StateWorking) },
+			record: writesState(StateFailed),
 			decide: func(r *recordFirst) error {
-				return r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator})
+				return r.handle(RuntimeObservation{Observation: runtime.Observation{Locator: r.locator(), Kind: runtime.Gone, At: r.clock.Now()}})
 			},
-			to: StateSuspended, acts: live,
+			to: StateFailed, first: died, acts: stoppedAndToldAfter,
 		},
 		{
-			name: "the suspension of a live process: a held suspension at its turn's end", claim: queuedClaim,
+			name: "a failure at the last prompt retirement", claim: withBudgets(Budgets{PromptFailures: 2, PromptRetires: 1}),
 			before: func(r *recordFirst) {
-				r.reachEnrolled(StateWorking)
-				if err := r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-					r.t.Fatalf("control: the suspension of a working claim answered %v, want it held", err)
-				}
+				r.reachEnrolled(StateReady)
+				r.must(RequestDeliver{Claim: r.token, Task: "implement the plan"})
 			},
+			record: writesState(StateFailed),
+			decide: func(r *recordFirst) error { return r.fireNow(TimerTurn) },
+			to:     StateFailed, acts: stoppedAfter,
+		},
+		{
+			name: "a failure at the registration deadline with the launch budget spent", claim: func() Claim {
+				c := recordsSession()
+				c.Budgets.LaunchFailures = 2
+				return c
+			},
+			before: func(r *recordFirst) { r.reachEnrolled(StateShimConnected) },
+			record: writesState(StateFailed),
+			decide: func(r *recordFirst) error { return r.fireNow(TimerRegistration) },
+			to:     StateFailed, acts: stoppedAfter,
+		},
+		{
+			name: "a tree root's exit", claim: rootClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateReady) },
 			record: writesState(StateSuspended),
-			decide: func(r *recordFirst) error { return r.handleQuiet(StreamTurnEnd{Claim: r.token}) },
-			to:     StateSuspended, acts: live,
+			decide: func(r *recordFirst) error {
+				return r.handle(RequestExit{Claim: r.token, Generation: r.generation(), Session: session, Reason: "done"})
+			},
+			to: StateSuspended, acts: stoppedAndToldAfter,
+		},
+		{
+			name: "a worker's exit", claim: queuedClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
+			record: writesState(StateRetired),
+			decide: func(r *recordFirst) error {
+				return r.handle(RequestExit{Claim: r.token, Generation: r.generation(), Session: session, Reason: "done"})
+			},
+			to: StateRetired, acts: releasedAfter,
 		},
 		{
 			name: "the suspension over a process found gone: a death under a held suspension", claim: queuedClaim,
-			before: func(r *recordFirst) {
-				r.reachEnrolled(StateWorking)
-				if err := r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
-					r.t.Fatalf("control: the suspension of a working claim answered %v, want it held", err)
-				}
-			},
+			before: heldOverATurn,
 			record: writesState(StateSuspended),
 			decide: func(r *recordFirst) error {
 				return r.handle(RuntimeObservation{Observation: runtime.Observation{Locator: r.locator(), Kind: runtime.Gone, At: r.clock.Now()}})
 			},
-			to: StateSuspended, acts: live,
+			to: StateSuspended, first: died, acts: stoppedAndToldAfter,
 		},
 		{
 			name: "the suspension with no process: a waiting relaunch that a held suspension ends", claim: queuedClaim,
@@ -253,76 +322,60 @@ func daemonDecisions() []daemonDecision {
 			to:     StateSuspended,
 		},
 		{
-			name: "a tree root's exit", claim: rootClaim,
-			before: func(r *recordFirst) { r.reachEnrolled(StateReady) },
+			name: "the suspension of a live process: an operator's suspension of an idle claim", claim: queuedClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
 			record: writesState(StateSuspended),
 			decide: func(r *recordFirst) error {
-				return r.handle(RequestExit{Claim: r.token, Generation: r.generation(), Session: session, Reason: "done"})
+				return r.handle(RequestSuspend{Claim: r.token, By: SuspendedByOperator})
 			},
-			to: StateSuspended, acts: live,
+			to: StateSuspended, first: suspendedFirst, acts: stoppedAndToldAfter, refuse: refuseSuspend,
 		},
 		{
-			name: "a stop: the operator's stop of an idle claim", claim: queuedClaim,
-			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
-			record: writesState(StateRetired),
-			decide: func(r *recordFirst) error { return r.handle(RequestStop{Claim: r.token, By: SuspendedByOperator}) },
-			to:     StateRetired, acts: released,
+			name: "the suspension of a live process: a held suspension at its turn's end", claim: queuedClaim,
+			before: heldOverATurn,
+			record: writesState(StateSuspended),
+			decide: func(r *recordFirst) error { return r.handleQuiet(StreamTurnEnd{Claim: r.token}) },
+			to:     StateSuspended, first: suspendedFirst, acts: stoppedAndToldAfter, refuse: refuseSuspend,
+			// The turn's end is recorded all the same, and the hold stays for its retry.
+			runtimeRefused: StateIdle,
 		},
 		{
-			name: "a close: the workflow's close of an issue as done", claim: queuedClaim,
-			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
-			record: writesState(StateRetired),
-			decide: func(r *recordFirst) error { return r.handle(RequestIssueClose{Claim: r.token}) },
-			to:     StateRetired, acts: released,
-		},
-		{
-			name: "a worker's exit", claim: queuedClaim,
-			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
-			record: writesState(StateRetired),
-			decide: func(r *recordFirst) error {
-				return r.handle(RequestExit{Claim: r.token, Generation: r.generation(), Session: session, Reason: "done"})
-			},
-			to: StateRetired, acts: released,
-		},
-		{
-			name: "a failure: the death that spends the deaths", claim: withBudgets(Budgets{Deaths: 2}),
-			before: func(r *recordFirst) { r.reachEnrolled(StateWorking) },
-			record: writesState(StateFailed),
-			decide: func(r *recordFirst) error {
-				return r.handle(RuntimeObservation{Observation: runtime.Observation{Locator: r.locator(), Kind: runtime.Gone, At: r.clock.Now()}})
-			},
-			to: StateFailed, acts: live,
-		},
-		{
-			name: "a failure at the last prompt retirement", claim: withBudgets(Budgets{PromptFailures: 2, PromptRetires: 1}),
-			before: func(r *recordFirst) {
-				r.reachEnrolled(StateReady)
-				r.must(RequestDeliver{Claim: r.token, Task: "implement the plan"})
-			},
-			record: writesState(StateFailed),
-			decide: func(r *recordFirst) error { return r.fireNow(TimerTurn) },
-			to:     StateFailed, acts: live,
-		},
-		{
-			name: "a failure at the registration deadline with the launch budget spent", claim: func() Claim {
-				c := recordsSession()
-				c.Budgets.LaunchFailures = 2
-				return c
-			},
-			before: func(r *recordFirst) { r.reachEnrolled(StateShimConnected) },
-			record: writesState(StateFailed),
-			decide: func(r *recordFirst) error { return r.fireNow(TimerRegistration) },
-			to:     StateFailed, acts: live,
-		},
-		{
-			name: "a project pause's stop of an idle claim", claim: queuedClaim,
+			name: "the suspension of a live process: a project pause's stop of an idle claim", claim: queuedClaim,
 			before: func(r *recordFirst) {
 				r.reachEnrolled(StateIdle)
 				r.pause.set(7)
 			},
 			record: func(method string, c Claim) bool { return method == "PauseStopped" },
 			decide: func(r *recordFirst) error { return r.handle(pauseStop(r.token, 7)) },
-			to:     StateSuspended, acts: live,
+			to:     StateSuspended, first: suspendedFirst, acts: stoppedAndToldAfter, refuse: refuseSuspend,
+		},
+		{
+			name: "a stop: the operator's stop of an idle claim", claim: queuedClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
+			record: writesState(StateRetired),
+			decide: func(r *recordFirst) error { return r.handle(RequestStop{Claim: r.token, By: SuspendedByOperator}) },
+			to:     StateRetired, first: releasedFirst, acts: releasedAfter, refuse: refuseRelease,
+		},
+		{
+			name: "a close: the workflow's close of the tree", claim: queuedClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
+			record: writesState(StateRetired),
+			decide: func(r *recordFirst) error { return r.handle(RequestTreeClose{Claim: r.token}) },
+			to:     StateRetired, first: releasedFirst, acts: releasedAfter, refuse: refuseRelease,
+		},
+		{
+			name: "a close: the workflow's close of an issue as done", claim: queuedClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
+			record: writesState(StateRetired),
+			decide: func(r *recordFirst) error { return r.handle(RequestIssueClose{Claim: r.token}) },
+			to:     StateRetired, first: releasedFirst, acts: releasedAfter, refuse: refuseRelease,
+		},
+		{
+			name: "a close: the operator's close of a tree no workflow issue backs", claim: rootClaim,
+			before: func(r *recordFirst) { r.reachEnrolled(StateIdle) },
+			record: writesState(StateRetired),
+			decide: func(r *recordFirst) error { return r.handle(RequestOperatorClose{Claim: r.token}) },
+			to:     StateRetired, first: releasedFirst, acts: releasedAfter, refuse: refuseRelease,
 		},
 	}
 }
@@ -342,10 +395,13 @@ func (h *harness) fireNow(kind TimerKind) error {
 	return h.handle(Timer{Claim: h.token, Kind: kind, Generation: generation, Seq: a.seq, DeliveryID: a.deliveryID})
 }
 
-// A decision of the daemon whose record the store refuses acts on nothing (c-daemon-decisions of
-// dispatch://INFRA-4099's verification): no stop and no release of the process, no revocation of
-// the agent's capability and no stop of its session's registration, memory and the row as they
-// were before the decision, and the decision answers the store's refusal.
+// A decision of the daemon whose record the store refuses revokes nothing, stops no registration
+// and sends no clean stop (c-daemon-decisions of dispatch://INFRA-4099's verification): one whose
+// stop is best effort stops nothing either, and a suspension of a live process or a stop or a close
+// has made only the runtime's stop or release it makes before its record. Memory and the row read
+// as they did before the decision, and the decision answers the store's refusal. A suspension of a
+// live process or a stop or a close whose stop or release the runtime refuses writes no record at
+// all: it answers the runtime's refusal, and memory and the row stand as they were.
 func TestADaemonDecisionWhoseRecordIsRefusedActsOnNothing(t *testing.T) {
 	for _, tc := range daemonDecisions() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -360,13 +416,49 @@ func TestADaemonDecisionWhoseRecordIsRefusedActsOnNothing(t *testing.T) {
 			if !errors.Is(err, r.s.err) {
 				t.Fatalf("the decision answered %v, want the store's refusal", err)
 			}
-			if got := r.acted().since(before); got != (acted{}) {
-				t.Errorf("the refused decision asked the world for %+v, want nothing", got)
+			if got := r.acted().since(before); got != tc.first {
+				t.Errorf("the refused decision asked the world for %+v, want only the %+v it asks before its record", got, tc.first)
 			}
 			if got, stored := r.state(), r.store.load(r.token).State; got != memory || stored != row {
 				t.Errorf("after the refused decision memory reads %s and the row %s, want %s and %s as before it", got, stored, memory, row)
 			}
 			r.wantMemoryIsTheRow()
+		})
+		if tc.refuse == nil {
+			continue
+		}
+		t.Run(tc.name+", the runtime refusing its stop", func(t *testing.T) {
+			r := recordFirstHarness(t, tc.claim())
+			tc.before(r)
+			r.s.failWith(checkRefusal())
+			before, memory, row, mark := r.acted(), r.state(), r.store.load(r.token).State, r.s.mark()
+			// A record the decision tried to write would be refused, and counted as such.
+			r.s.refuseWhere(tc.record)
+			tc.refuse(r.harness, errBoom)
+
+			err := tc.decide(r)
+
+			if !errors.Is(err, errBoom) {
+				t.Fatalf("the decision answered %v, want the runtime's refusal", err)
+			}
+			if got := r.acted().since(before); got != tc.first {
+				t.Errorf("the decision the runtime refused asked the world for %+v, want only the %+v the runtime refused", got, tc.first)
+			}
+			writes := r.s.since(mark)
+			for _, call := range writes {
+				if strings.HasSuffix(call, refusedCall) {
+					t.Fatalf("the decision the runtime refused asked for its record (%q), want no record written", writes)
+				}
+			}
+			if tc.runtimeRefused == "" && len(writes) != 0 {
+				t.Fatalf("the decision the runtime refused made the claim writes %q, want none", writes)
+			}
+			if tc.runtimeRefused != "" {
+				memory, row = tc.runtimeRefused, tc.runtimeRefused
+			}
+			if got, stored := r.state(), r.store.load(r.token).State; got != memory || stored != row {
+				t.Errorf("after the runtime's refusal memory reads %s and the row %s, want %s and %s", got, stored, memory, row)
+			}
 		})
 	}
 }
@@ -414,10 +506,11 @@ func TestADaemonDecisionWhoseRecordIsOwedActsAndTheRepairWritesIt(t *testing.T) 
 }
 
 // An operator's suspension of an idle claim whose claim write the server refuses leaves the claim
-// as the store holds it, in memory too, and its process running, its capability and its
-// registration standing (c-suspend-refused of dispatch://INFRA-4099's verification, the shape of
-// INFRA-3577's N1). A machine a daemon start builds over the row reads the same. Once the store
-// takes writes and the window after the refusal has ended, a second suspension is written.
+// as the store holds it, in memory too, and the agent's capability standing (c-suspend-refused of
+// dispatch://INFRA-4099's verification, the shape of INFRA-3577's N1). The runtime's stop comes
+// before the record, as it always has (R3), so the process is stopped; the claim records it as the
+// row does. A machine a daemon start builds over the row reads the same. Once the store takes
+// writes and the window after the refusal has ended, a second suspension is written.
 func TestASuspendWhoseWriteIsRefusedLeavesTheClaimAsStored(t *testing.T) {
 	h := newHarness(t)
 	broker := h.withSecrets()
@@ -444,14 +537,11 @@ func TestASuspendWhoseWriteIsRefusedLeavesTheClaimAsStored(t *testing.T) {
 	if got, stored := h.state(), h.store.load(h.token).State; got != StateIdle || stored != StateIdle {
 		t.Fatalf("after the refused suspension memory reads %s and the row %s, want both idle", got, stored)
 	}
-	if suspends := h.rt.CallsOf("Suspend"); len(suspends) != 0 {
-		t.Fatalf("the runtime was asked to stop %+v, want the process left running", suspends)
-	}
 	if revoked := broker.revocations(); len(revoked) != 0 {
 		t.Fatalf("the broker revoked %v, want the agent's capability standing", revoked)
 	}
 	if loc := h.claim().Locator; loc == nil || *loc != process {
-		t.Fatalf("the claim records the process %+v, want %+v", loc, process)
+		t.Fatalf("the claim records the process %+v, want %+v as the row does", loc, process)
 	}
 	fresh, quiet := h.rowMachine()
 	if got := fresh.Claim().State; got != StateIdle {
@@ -469,31 +559,35 @@ func TestASuspendWhoseWriteIsRefusedLeavesTheClaimAsStored(t *testing.T) {
 	if got, stored := h.state(), h.store.load(h.token).State; got != StateSuspended || stored != StateSuspended {
 		t.Fatalf("after the second suspension memory reads %s and the row %s, want both suspended", got, stored)
 	}
-	if suspends := h.rt.CallsOf("Suspend"); len(suspends) != 1 || suspends[0].Locator != process {
-		t.Fatalf("the runtime was asked to stop %+v, want the process stopped once", suspends)
-	}
 }
 
 // An operator's stop of a claim that holds its update round's unanswered task writes the retired
 // claim with the delete of that task in one transaction (c-retire-failed of dispatch://INFRA-4099's
-// verification, the shape of INFRA-3577's F2). A failure the rule owes leaves the retirement
-// owed, with the process released, and the claim's next decision writes the row retired with no
-// delivery. A refusal leaves the claim as the store holds it, in memory too, the task held and the
-// process not released, as a machine built from the store reads it.
+// verification, the shape of INFRA-3577's F2). The runtime's release comes before that write, as
+// it always has (R3). A failure the rule owes leaves the retirement owed, the process released,
+// and the claim's next decision writes the row retired with no delivery. A refusal leaves the claim
+// as the store holds it, in memory too, the task held and the agent's capability standing, as a
+// machine built from the store reads it.
 func TestAStopWhoseRetireWriteFailsLeavesTheClaimAsStored(t *testing.T) {
-	stopped := func(t *testing.T, fail error) (*harness, Delivery, error) {
+	stopped := func(t *testing.T, fail error) (*harness, *fakeEnroller, Delivery, error) {
 		t.Helper()
 		h := updateHarness(t, PodUpdateContract)
+		broker := h.withSecrets()
+		h.launch()
+		h.helloWithIdentity()
 		h.reach(StateIdle)
+		if h.claim().Enrollment == nil {
+			t.Fatal("control: the idle claim holds no enrollment")
+		}
 		h.openUpdate(testRound, testReasons)
 		ask := h.unsentAsk(testRound)
 		h.store.fail("RetireDelivery", fail)
 		err := h.handle(RequestStop{Claim: h.token, By: SuspendedByOperator})
-		return h, ask, err
+		return h, broker, ask, err
 	}
 	t.Run("owed", func(t *testing.T) {
 		owed := brokenConnection()
-		h, _, err := stopped(t, owed)
+		h, _, _, err := stopped(t, owed)
 		if !errors.Is(err, owed) {
 			t.Fatalf("the stop answered %v, want the store's failure", err)
 		}
@@ -525,7 +619,7 @@ func TestAStopWhoseRetireWriteFailsLeavesTheClaimAsStored(t *testing.T) {
 	})
 	t.Run("refused", func(t *testing.T) {
 		refused := checkRefusal()
-		h, ask, err := stopped(t, refused)
+		h, broker, ask, err := stopped(t, refused)
 		if !errors.Is(err, refused) {
 			t.Fatalf("the stop answered %v, want the server's refusal", err)
 		}
@@ -537,8 +631,8 @@ func TestAStopWhoseRetireWriteFailsLeavesTheClaimAsStored(t *testing.T) {
 				t.Fatalf("%s reads %s holding %+v, want idle holding the round's task %s", c.what, c.claim.State, c.claim.Pending, ask.ID)
 			}
 		}
-		if releases := h.rt.CallsOf("Release"); len(releases) != 0 {
-			t.Fatalf("the runtime released %+v, want the process kept", releases)
+		if revoked := broker.revocations(); len(revoked) != 0 {
+			t.Fatalf("the broker revoked %v, want the agent's capability standing", revoked)
 		}
 		fresh, quiet := h.rowMachine()
 		defer quiet()
@@ -549,63 +643,12 @@ func TestAStopWhoseRetireWriteFailsLeavesTheClaimAsStored(t *testing.T) {
 	})
 }
 
-// A stop or a release the runtime refuses once its record is written leaves the record standing:
-// the decision answers no error, and the stop is made again at the probe interval until the
-// runtime takes it (D7 of dispatch://INFRA-4099's plan).
-func TestAStopTheRuntimeRefusesAfterItsRecordIsMadeAgainAtTheProbeInterval(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		method string
-		refuse func(h *harness, err error)
-		decide Event
-		to     ClaimState
-	}{
-		{"suspend", "Suspend", func(h *harness, err error) { h.rt.FailSuspend(err) },
-			RequestSuspend{Claim: testToken, By: SuspendedByOperator}, StateSuspended},
-		{"release", "Release", func(h *harness, err error) { h.rt.FailRelease(err) },
-			RequestStop{Claim: testToken, By: SuspendedByOperator}, StateRetired},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t)
-			h.reach(StateIdle)
-			process := h.locator()
-			tc.refuse(h, errBoom)
-
-			if err := h.handle(tc.decide); err != nil {
-				t.Fatalf("the decision whose stop the runtime refused answered %v, want none: its record stands", err)
-			}
-			if got, stored := h.state(), h.store.load(h.token).State; got != tc.to || stored != tc.to {
-				t.Fatalf("memory reads %s and the row %s, want both %s", got, stored, tc.to)
-			}
-			h.wantCalls(tc.method, 1)
-			tc.refuse(h, nil)
-
-			h.advance(testProbe - time.Nanosecond)
-			h.wantCalls(tc.method, 1)
-			h.advance(time.Nanosecond)
-			calls := h.wantCalls(tc.method, 2)
-			again := calls[1].Locator
-			if tc.method == "Release" {
-				if calls[1].Released.Locator == nil {
-					t.Fatalf("the release was made again with no process: %+v", calls[1].Released)
-				}
-				again = *calls[1].Released.Locator
-			}
-			if again != process {
-				t.Fatalf("the stop was made again of %+v, want the process the record ended, %+v", again, process)
-			}
-			h.advance(testProbe)
-			h.wantCalls(tc.method, 2)
-			h.wantState(tc.to)
-		})
-	}
-}
-
 // A suspension decided in the window after a refused claim write, while the claim's writes wait
-// (D5 of dispatch://INFRA-4099's plan), stops nothing, revokes nothing and stops no registration
-// until the first decision after the window makes its write; where that write is refused, the
-// process is never stopped.
+// (D5 of dispatch://INFRA-4099's plan), stops the process first, as every suspension of a live
+// process does, and revokes nothing, stops no registration and sends no clean stop until the first
+// decision after the window makes its write; where that write is refused, nothing is ever revoked.
 func TestADecisionInTheWindowAfterARefusalActsOnlyOnceItsRecordIsWritten(t *testing.T) {
+	stoppedFirst := acted{suspends: 1}
 	inTheWindow := func(t *testing.T) (*recordFirst, acted) {
 		t.Helper()
 		r := recordFirstHarness(t, queuedClaim())
@@ -623,8 +666,8 @@ func TestADecisionInTheWindowAfterARefusalActsOnlyOnceItsRecordIsWritten(t *test
 			t.Fatalf("the suspension in the window answered %v, want its write held", err)
 		}
 		r.wantState(StateSuspended)
-		if got := r.acted().since(before); got != (acted{}) {
-			t.Fatalf("the suspension in the window asked the world for %+v, want nothing until its record is written", got)
+		if got := r.acted().since(before); got != stoppedFirst {
+			t.Fatalf("the suspension in the window asked the world for %+v, want only the stop %+v until its record is written", got, stoppedFirst)
 		}
 		if stored := r.store.load(r.token).State; stored != StateIdle {
 			t.Fatalf("the row reads %s in the window, want idle", stored)
@@ -634,26 +677,26 @@ func TestADecisionInTheWindowAfterARefusalActsOnlyOnceItsRecordIsWritten(t *test
 	t.Run("the first decision after the window writes the record, and the suspension acts", func(t *testing.T) {
 		r, before := inTheWindow(t)
 		r.advance(testProbe)
-		if got := r.acted().since(before); got != (acted{}) {
-			t.Fatalf("the window's end asked the world for %+v before any decision wrote the record", got)
+		if got := r.acted().since(before); got != stoppedFirst {
+			t.Fatalf("the window's end asked the world for %+v before any decision wrote the record, want only the stop %+v", got, stoppedFirst)
 		}
 		_ = r.staleTimer()
 		if stored := r.store.load(r.token).State; stored != StateSuspended {
 			t.Fatalf("after the first decision past the window the row reads %s, want suspended", stored)
 		}
-		if got, want := r.acted().since(before), (acted{suspends: 1, revocations: 1, registrationStops: 1}); got != want {
+		if got, want := r.acted().since(before), (acted{suspends: 1, revocations: 1, registrationStops: 1, cleanStops: 1}); got != want {
 			t.Fatalf("once its record was written the suspension asked the world for %+v, want %+v", got, want)
 		}
 	})
-	t.Run("the write after the window is refused, and nothing is ever stopped", func(t *testing.T) {
+	t.Run("the write after the window is refused, and nothing is ever revoked", func(t *testing.T) {
 		r, before := inTheWindow(t)
 		r.s.refuseWhere(writesState(StateSuspended))
 		for range 3 {
 			r.advance(testProbe)
 			_ = r.staleTimer()
 		}
-		if got := r.acted().since(before); got != (acted{}) {
-			t.Fatalf("a suspension whose record was refused asked the world for %+v, want nothing", got)
+		if got := r.acted().since(before); got != stoppedFirst {
+			t.Fatalf("a suspension whose record was refused asked the world for %+v, want only the stop %+v it made first", got, stoppedFirst)
 		}
 		if got, stored := r.state(), r.store.load(r.token).State; got != StateIdle || stored != StateIdle {
 			t.Fatalf("memory reads %s and the row %s, want both idle", got, stored)

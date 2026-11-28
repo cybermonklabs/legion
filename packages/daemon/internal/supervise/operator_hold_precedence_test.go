@@ -26,17 +26,15 @@ func TestAnOperatorLaunchHoldOutranksADaemonSuspendBeforeReady(t *testing.T) {
 	}
 }
 
-// The same precedence applies after registration, and after ready while the runtime refused the
-// operator's stop: the suspension's record is written first, so the claim is suspended by the
-// operator with its stop owed (D7 of dispatch://INFRA-4099's plan), and no later daemon suspend may
-// replace that source.
+// The same precedence applies after registration, and after ready while the operator's first stop
+// failed and the timer will retry it: no later daemon suspend may replace the held source.
 func TestAnOperatorLaunchHoldOutranksADaemonSuspendAfterRegistration(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		ready bool
 	}{
 		{name: "registered"},
-		{name: "ready whose stop the runtime refused", ready: true},
+		{name: "ready retrying its stop", ready: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -49,7 +47,9 @@ func TestAnOperatorLaunchHoldOutranksADaemonSuspendAfterRegistration(t *testing.
 			h.register()
 			if tc.ready {
 				h.rt.FailSuspend(errors.New("the first stop failed"))
-				h.must(RequestReady{Claim: testToken, Generation: h.generation(), Session: session})
+				if err := h.handle(RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err == nil {
+					t.Fatal("ready succeeded, want the first stop to fail")
+				}
 				h.rt.FailSuspend(nil)
 			}
 			if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the tree lingers", By: SuspendedByDaemon}); err != nil && !errors.Is(err, ErrSuspendHeld) {

@@ -988,10 +988,12 @@ func (c Claim) RuleHoldError() error {
 // in flight knows.
 type ClaimView struct {
 	Claim
-	// Stopping is whether the decision in flight is stopping the claim's process for good — a
-	// suspension, a failure, a release, a root's exit (makeStop) — once the claim's record of that
-	// end is written, so the claim shows the state it moved to while the runtime stops the process
-	// (D6 of dispatch://INFRA-4099's plan). A process retired and relaunched in one decision
+	// Stopping is whether the decision in flight is stopping the claim's process for good. A
+	// suspension of a live process and a stop or a close stop it before their record (suspendNow,
+	// release), while the claim still shows the state it is leaving; a failure, an exit and a
+	// suspension over a process found gone or replaced stop it once their record is written
+	// (makeStop), so the claim shows the state it moved to while the runtime stops the process (D6
+	// of dispatch://INFRA-4099's plan). A process retired and relaunched in one decision
 	// (chargePrompt, the registration deadline) is not stopping: its claim keeps its role.
 	Stopping bool
 	// SendInFlight is whether a prompt of the claim's pending task is on its way to the agent:
@@ -2036,17 +2038,9 @@ type Machine struct {
 	// replaceProcess clears it before the replacement it reports on, so it names that replacement
 	// and no earlier one; a later stop of that same process that the runtime does make clears it
 	// too, since the question is whether this one process was seen to stop and the latest answer
-	// about it is the answer (stopPrevious, stopAgain); and a start that succeeds clears it as
-	// well: the launch that started was handed the process it replaces (start).
+	// about it is the answer (stopPrevious); and a start that succeeds clears it as well: the
+	// launch that started was handed the process it replaces (start).
 	stopUnconfirmed bool
-	// stopOwed is the runtime's stop of a process that the runtime refused once the record of the
-	// decision that ended the process had been written (stopRecorded; D7 of
-	// dispatch://INFRA-4099's plan), nil for none: the claim reads suspended, failed or retired as
-	// its record says, and the stop is made again at the probe interval until the runtime takes it
-	// (TimerStopAgain, stopAgain). A stop of that process a launch makes clears it, and so does a
-	// start, which was handed the process to wait out (stopPrevious, launchTries). It is memory
-	// only, as previous is: a restart loses it.
-	stopOwed *owedStop
 	// relaunch is the relaunch relaunchLater left waiting, tried again when TimerRelaunch fires; it
 	// lives as long as that timer, which letGo disarms with it. It is memory only, as the timer is: a
 	// restart launches that claim again as an unfinished launch.
@@ -2313,10 +2307,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // delivery that may already have been sent is sent again only after asking the agent — except the
 // one the claim's open update round holds, which no daemon has sent. The pods an agent of the claim
 // registered in are the row's joined with those memory holds, none for a new machine; a load of
-// the claim's pod is adopted only where the machine holds none (adoptPodLoad). A stop the runtime
-// refused once its record was written, which the rebuild keeps (Machine.stopOwed), is made again
-// at the probe interval, since the timer that was to make it went with every other (D7 of
-// dispatch://INFRA-4099's plan); a new machine owes none.
+// the claim's pod is adopted only where the machine holds none (adoptPodLoad).
 func (m *Machine) build(c Claim) {
 	m.claim, m.rowState, m.sessionFrom = copyClaim(c), c.State, c.Generation
 	m.registeredPods = m.registeredPods.join(bootRegisteredPods(c))
@@ -2354,9 +2345,6 @@ func (m *Machine) build(c Claim) {
 		m.askFirst = c.Pending != nil && c.Pending.ConfirmedAt.IsZero() && !c.openRoundHoldsTask()
 	case StateWorking:
 		m.askFirst = true
-	}
-	if m.stopOwed != nil {
-		m.arm(TimerStopAgain, m.deps.Timeouts.Probe, "")
 	}
 	m.publish()
 }
@@ -3913,9 +3901,8 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			m.previous = nil
 			// The process this launch let go is the one the start was handed and waits out
 			// (start, Resume), so a stop an earlier try of this same launch could not make is no
-			// longer what anyone must be told of, and no stop of it is owed any more.
+			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
-			m.clearStopOwed(nil)
 			// The mark of a start that had Oh My Pi resume the session by its id, which start set
 			// (Claim.AgentResumeGeneration), and the repository the process works reach the store in
 			// this one write with the process they name, so a claim that records that process always
@@ -4673,9 +4660,7 @@ func (m *Machine) spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 // stopped. The tries of one launch stop one process, the one letGo moved into previous (launchTries
 // holds it until a start succeeds), so what the record answers is whether that process was seen
 // to stop, and the latest answer about it is the answer: a stop refused and then made is a process
-// somebody saw stop, and an owner told otherwise is sent after a pod that is not there. A stop of
-// that process the runtime refused after its record was written is no longer owed either
-// (Machine.stopOwed, clearStopOwed).
+// somebody saw stop, and an owner told otherwise is sent after a pod that is not there.
 func (m *Machine) stopPrevious(ctx context.Context) error {
 	if m.previous == nil {
 		return nil
@@ -4685,7 +4670,6 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 		return fmt.Errorf("stop the process %s let go before its relaunch: %w", m.previous.Incarnation, err)
 	}
 	m.stopUnconfirmed = false
-	m.clearStopOwed(m.previous)
 	return nil
 }
 
@@ -4952,10 +4936,12 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // stands behind it. Three decisions tell it, each only once the process has ended: a death a probe
 // judged (died), before the take-back; a suspension over a process a report found gone
 // (suspendOverADeadProcess), once its take-back has landed; and a suspension whose stop ended a
-// live process (suspendNow, letProcessGoFor and a root's exit, through suspended's stop), once
-// the runtime's stop has returned, since both runtimes answer only when the process has ended,
-// and so once the suspension's record is written, which that stop waits for (makeStop, D6 of
-// dispatch://INFRA-4099's plan). A decision that has already sent it tells letProcessGoFor so
+// live process (suspendNow, letProcessGoFor and a root's exit, through suspended), once the
+// runtime's stop has returned, since both runtimes answer only when the process has ended, and
+// once the suspension's record has landed or failed owed (D6 of dispatch://INFRA-4099's plan):
+// suspendNow stops the process before its record and tells it after that record, and
+// letProcessGoFor and a root's exit stop the process after the record and tell it after that stop
+// (stopRecorded, makeStop). A decision that has already sent it tells letProcessGoFor so
 // (stopSent), so the death or the found-gone process it ends is one stop. Nothing else tells it:
 // a failure (fail), a worker's exit (retire) and the registration deadline's retirement end a
 // process and send no stop. A death whose relaunch the wake pacing parked keeps the dead process's
@@ -4973,10 +4959,12 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // heartbeat, so the listener deletes the registration rather than reading the session live for
 // the rest of its window, and a message to a released role finds the session gone and raises the
 // wake that brings it back. A death's stop and a found-gone process's are sent whether or not the
-// suspension's write that follows lands, because the process has ended either way. A stop the
-// runtime refused, of a process no report found gone, sends nothing: that process may still run,
-// and deleting its registration would leave a live agent unreachable until its next heartbeat
-// wrote it again; the stop made again sends it (stopAgain).
+// suspension's write that follows lands, because the process has ended either way. suspendNow's
+// waits for its record: a record the store refuses builds the claim again over a row that still
+// records the process, whose end the next observation finds and tells (died). A stop the runtime
+// refused, of a process no report found gone, sends nothing: that process may still run, and
+// deleting its registration would leave a live agent unreachable until its next heartbeat wrote
+// it again.
 //
 // It reads the session id from the claim before anything clears it (forgetSession), and a claim
 // that recorded none — never registered, or already forgotten — has nothing to stop. A relaunch
@@ -5005,8 +4993,8 @@ func (m *Machine) sessionGone(ctx context.Context) {
 }
 
 // sessionGoneOf is sessionGone for the session and its file a decision read off the claim before
-// the record it acts after was written (owedStop): the claim may have moved on from them by the
-// time the stop the clean stop follows is made, as a stop made again at the probe interval is.
+// its let-go (processStop): the claim may have moved on from them by the time the record that
+// let-go waits for is written.
 func (m *Machine) sessionGoneOf(ctx context.Context, session, file string) {
 	if m.deps.SessionGone == nil || session == "" {
 		return
@@ -5116,8 +5104,8 @@ func (m *Machine) forgetSession(why string) {
 // session's registration stopped only once that write has landed or failed owed (afterRecord, D6
 // of dispatch://INFRA-4099's plan): a failure the store refuses stops nothing, and the claim is
 // built again over its row, which records the process still running. A stop the runtime refuses
-// once the failure is written is logged and made again at the probe interval, and the claim fails
-// all the same (stopRecorded, TimerStopAgain).
+// once the failure is written is logged and recorded as a process the runtime may have left
+// running (stopUnconfirmed), and the claim fails all the same (stopRecorded).
 //
 // cause is the word for what failed it, from the site that decided: it is written with the
 // sentence and the moment, and the pending cause this call has just consumed is cleared, since
@@ -5135,7 +5123,7 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 	loc := cloneLocator(m.claim.Locator)
 	after := m.letGo(ctx, endFailed(why))
 	if loc != nil {
-		after.stops = append([]owedStop{{loc: loc}}, after.stops...)
+		after.stops = append([]processStop{{loc: loc}}, after.stops...)
 	}
 	m.claim.State, m.claim.Failure = StateFailed, why
 	m.claim.FailureCause, m.claim.FailedAt = cause, m.deps.Clock.Now()
@@ -5170,6 +5158,21 @@ func (m *Machine) logFarSideError(ctx context.Context, level slog.Level, msg str
 	return kept
 }
 
+// release asks the runtime to let go of everything it holds for the claim — the process, when one
+// runs — before the claim's record of its end, while View says the process is being stopped and
+// the claim still shows the state it is leaving (ClaimView.Stopping). It is the release of the
+// operator's stop, the tree's, the issue's and the operator's close (end), whose refusal is the
+// decision's: it changes nothing, so the stop or the close can be asked again (R3 of
+// dispatch://INFRA-4099's spec). A worker's exit releases its claim once the retirement is written
+// (retire).
+func (m *Machine) release(ctx context.Context) error {
+	defer m.stoppingProcess()()
+	if err := m.deps.Runtime.Release(ctx, runtime.Known{Claim: m.claim.Token, Locator: m.claim.Locator}); err != nil {
+		return fmt.Errorf("release %s: %w", m.claim.Token, err)
+	}
+	return nil
+}
+
 // suspendProcess asks the runtime to stop the claim's process and keep its session, and lets the
 // stopped process go, for the next launch of the same session to wait out, recording what it
 // ended under cause (letGo). A suspension that fails leaves the claim holding its process, and
@@ -5177,7 +5180,10 @@ func (m *Machine) logFarSideError(ctx context.Context, level slog.Level, msg str
 // the registration deadline's and a prompt retirement's whose budget is not spent — whose record
 // is the relaunch's own launching write (writeTry), so it stops first and lets go at once, as
 // those decisions always have (D6 of dispatch://INFRA-4099's plan, the decisions it leaves out).
-// A decision that ends the process instead writes its record first (suspended, fail, retire).
+// A decision that ends the process acts outside the machine only once its record is written: one
+// whose stop is best effort writes before it stops (suspended, fail, retire), and a suspension of
+// a live process and a stop or a close stop first, a refusal of that stop being the decision's,
+// and write after (suspendNow, end).
 func (m *Machine) suspendProcess(ctx context.Context, cause string) error {
 	if err := m.deps.Runtime.Suspend(ctx, *m.claim.Locator); err != nil {
 		return err
@@ -5204,15 +5210,16 @@ func (m *Machine) suspendProcess(ctx context.Context, cause string) error {
 // two is the claim the paragraph above forbids: retired, and still recording its round. A
 // crash or a failed write between them would leave exactly that behind.
 //
-// The release is made once that write has landed or failed owed (afterRecord, D6 of
-// dispatch://INFRA-4099's plan): the runtime is asked to let go of everything it holds for the
-// claim — the process the claim recorded, saved before letGo cleared it, when one ran — and the
-// process's capability is revoked and its session's registration stopped. It is the one place the
-// machine hands the runtime a claim to end, for the operator's stop, the tree's and the issue's
-// close, and a worker's exit. A retirement the store refuses releases nothing, and the claim is
-// built again over its row; a release the runtime refuses once the retirement is written is
-// logged and made again at the probe interval, and the claim stays retired (stopRecorded,
-// TimerStopAgain).
+// What the retirement ends outside the machine follows that write, once it has landed or failed
+// owed (afterRecord, D6 of dispatch://INFRA-4099's plan): the process's capability is revoked and
+// its session's registration stopped. released says where the runtime's release of the claim
+// comes. The operator's stop, the tree's, the issue's and the operator's close released it before
+// the retirement (releaseMade, end), and a release the runtime refused ended those decisions with
+// nothing changed. A worker's exit releases it after the retirement (releaseOwed), best effort:
+// the runtime is asked to let go of everything it holds for the claim — the process the claim
+// recorded, saved before letGo cleared it, when one ran — and a release it refuses then is logged
+// and the claim stays retired (stopRecorded). A retirement the store refuses acts on none of it,
+// and the claim is built again over its row.
 //
 // A retirement records what the process it lets go ended under cause (letGo), and its one write
 // above carries the record (persist, or retirePending's transaction), as every let-go's own write
@@ -5226,10 +5233,12 @@ func (m *Machine) suspendProcess(ctx context.Context, cause string) error {
 // A launch the claim's issue pod's gate holds leaves it as this retirement's at the end of the
 // decision, so the start the gate grants next names a retirement as what ended its wait
 // (endPodPark, podRetirement).
-func (m *Machine) retire(ctx context.Context, cause string) error {
+func (m *Machine) retire(ctx context.Context, cause string, released bool) error {
 	loc := cloneLocator(m.claim.Locator)
 	after := m.letGo(ctx, cause)
-	after.stops = append([]owedStop{{loc: loc, release: true}}, after.stops...)
+	if !released {
+		after.stops = append([]processStop{{loc: loc, release: true}}, after.stops...)
+	}
 	m.awaitRecord(after)
 	m.claim.State = StateRetired
 	drops := m.dropsUpdateTask()
@@ -5252,6 +5261,13 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 	// answered nothing there (answerAskFirstAfterDrop).
 	return m.answerAskFirstAfterDrop(ctx)
 }
+
+// releaseMade and releaseOwed are retire's released: the decision released the claim through the
+// runtime before its record (end), or the release follows the record (a worker's exit).
+const (
+	releaseMade = true
+	releaseOwed = false
+)
 
 // letGo ends what the machine had with the claim's process: no timer watches it — the ladder's
 // wait after a provider error among them (providererror.go) — no relaunch waits on one
@@ -5328,11 +5344,6 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 func (m *Machine) letGo(ctx context.Context, cause string) afterRecord {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
-	// A stop the runtime refused once its record was written is owed whatever this let-go ends,
-	// so its timer comes back with the rest gone (Machine.stopOwed, TimerStopAgain).
-	if m.stopOwed != nil {
-		m.arm(TimerStopAgain, m.deps.Timeouts.Probe, "")
-	}
 	m.relaunch, m.podRoundWaiting, m.awaitsPod = nil, false, nil
 	m.wake = nil
 	if m.sendUnproven() {

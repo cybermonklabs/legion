@@ -297,8 +297,8 @@ func resumePause(m *Machine, ctx context.Context, ev Event) error {
 // settles the mark to make (putStops). Where a write is already owed, the stop joins it and the
 // write is made as an owed one, the reports and any earlier stop with it. A daemon that hands no
 // stop transaction writes the claim through the plain write. It is the record of the pause's stop,
-// so the stop of the process and what else the suspension does outside the machine follow its
-// answer (recorded, D6 of dispatch://INFRA-4099's plan).
+// so what the suspension does outside the machine once its record is written follows its answer
+// (recorded, D6 of dispatch://INFRA-4099's plan).
 func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 	if m.deps.PauseStopped == nil {
 		return m.persist(ctx)

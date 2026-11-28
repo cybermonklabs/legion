@@ -920,29 +920,29 @@ func TestACompactionThatEndsInATurnUnderAHeldSuspensionSaysTheClaimWasNotGivenBa
 // the hold's end stops the process more often than not, so the ten minutes of a model reading
 // the transcript would be spent on a session that is about to go, and the compaction's own end
 // would hand the claim to that hold rather than back to its agent. The claim is left exactly
-// where the request found it, which here is idle with a project pause's hold waiting for its
-// turn's result (stopWaitsForResult). A stop the runtime refused at a ready no longer leaves such
-// a hold over a ready claim: the suspension is written before its stop (D6 of
-// dispatch://INFRA-4099's plan).
+// where the request found it, which here is ready with the operator's hold intact — a
+// ready-time stop the runtime refused, waiting on its retry at the probe interval.
 //
 // It is refused in that state, as every other action refuses a held claim, so the api door
 // answers the hold once for both recoveries rather than writing a second sentence of its own
 // (RefusedError, api's refuseState and refuseHeldSuspension).
 func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
-	h, flag, _ := pauseHarness(t, queuedClaim())
-	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
-	h.must(StreamTurnStart{Claim: testToken})
-	task := h.pending().ID
-	flag.set(7)
-	if err := h.handle(pauseStop(testToken, 7)); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the pause's stop of a claim in a turn = %v, want ErrSuspendHeld", err)
+	h := newHarness(t)
+	suspendedBy(h, SuspendedByDaemon)
+	h.must(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's phase"})
+	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("operator suspend during launch = %v, want ErrSuspendHeld", err)
 	}
-	h.mustQuiet(StreamTurnEnd{Claim: testToken})
-	if pause, held := h.heldPause(); h.state() != StateIdle || !held || pause != 7 {
-		t.Fatalf("after the turn's end the claim is %s holding pause %d (held %v), want idle with pause 7's hold waiting for the result",
-			h.state(), pause, held)
+	h.connect()
+	h.register()
+	h.rt.FailSuspend(errors.New("the runtime refused the stop"))
+	if err := h.handle(RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err == nil {
+		t.Fatal("ready with a failed operator suspend succeeded, want the runtime failure")
 	}
+	if got := h.claim(); got.State != StateReady || !got.SuspensionHeld {
+		t.Fatalf("after the failed ready-time stop %+v, want ready with the operator hold intact", got)
+	}
+	h.rt.FailSuspend(nil)
 
 	err := h.m.Compact(h.ctx, testCompactInstructions)
 
@@ -950,9 +950,9 @@ func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
 	if !errors.As(err, &refused) {
 		t.Fatalf("a compaction of a claim a suspension is held over answered %v, want a *RefusedError", err)
 	}
-	if refused.State != StateIdle {
+	if refused.State != StateReady {
 		t.Fatalf("the refusal names state %s, want %s: the state the hold found the claim in",
-			refused.State, StateIdle)
+			refused.State, StateReady)
 	}
 	if errors.Is(err, ErrCompactNotTaken) {
 		t.Fatalf("the refusal answers %v, want no ErrCompactNotTaken: a held claim is refused in its state", err)
@@ -961,14 +961,14 @@ func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
 	if asked := h.conn.Compactions(); len(asked) != 0 {
 		t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
 	}
-	h.wantState(StateIdle)
-	if got := h.claim(); !got.SuspensionHeld || got.SuspensionHeldBy != SuspendedByReleased || got.Compacting {
-		t.Fatalf("the refused claim holds %v by %q and reports Compacting %v, want the pause's hold and no compaction",
+	h.wantState(StateReady)
+	if got := h.claim(); !got.SuspensionHeld || got.SuspensionHeldBy != SuspendedByOperator || got.Compacting {
+		t.Fatalf("the refused claim holds %v by %q and reports Compacting %v, want the operator's hold and no compaction",
 			got.SuspensionHeld, got.SuspensionHeldBy, got.Compacting)
 	}
 
-	// The hold's end is what the claim was left waiting for: the turn's result runs it.
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: task, AgentInvoked: true})
+	// The hold's own retry is what the claim was left waiting for, and it lands.
+	h.advance(testProbe)
 
 	h.wantState(StateSuspended)
 }

@@ -1203,11 +1203,11 @@ func TestTheOperatorsCloseStopsEveryClaimOfTheTree(t *testing.T) {
 	}
 }
 
-// A worker whose release the runtime refuses is retired by the close all the same: the retirement
-// is written before the release (D6 of dispatch://INFRA-4099's plan), so the stop stands and the
-// release is made again at the probe interval (D7), and the close answers 200 over every claim of
-// the tree. A close that cannot stop a claim still names it (the next test).
-func TestTheOperatorsCloseRetiresTheWorkersWhoseReleaseTheRuntimeRefuses(t *testing.T) {
+// A worker whose stop fails is named with its reason, the root stays closed, and the other workers
+// are still stopped: the close does not end at the first failure. Asking again once the fault clears
+// is the recovery. The retired root takes its "already retired" row, and the workers' stops go
+// through.
+func TestTheOperatorsCloseNamesTheWorkersItCouldNotStop(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	workers := []claim.Token{"legion-legion-legion-209-implementer", "legion-legion-legion-210-tester"}
@@ -1225,19 +1225,31 @@ func TestTheOperatorsCloseRetiresTheWorkersWhoseReleaseTheRuntimeRefuses(t *test
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil)
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("close = %d, want 200; body %s", recorder.Code, recorder.Body)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("close = %d, want 500; body %s", recorder.Code, recorder.Body)
 	}
-	for _, token := range append([]claim.Token{architectToken}, workers...) {
-		if state := h.stored(token).State; state != supervise.StateRetired {
-			t.Errorf("%s is %s after the close, want retired", token, state)
+	for _, want := range []string{"closed LEGION-208's root claim " + string(architectToken), string(workers[0]), string(workers[1]), "the API server timed out", "legion claims stop"} {
+		if !strings.Contains(recorder.Body.String(), want) {
+			t.Errorf("the refusal %s does not say %q", recorder.Body, want)
 		}
+	}
+	if state := h.stored(architectToken).State; state != supervise.StateRetired {
+		t.Errorf("the root is %s, want it closed", state)
 	}
 	for _, worker := range workers {
-		if releases := len(h.runtime.CallsOf("Release")); releases == 0 {
-			t.Fatalf("the close asked the runtime to release nothing, want %s's release asked and refused", worker)
+		if state := h.stored(worker).State; state == supervise.StateRetired {
+			t.Errorf("%s retired although its stop failed", worker)
 		}
 		h.runtime.FailReleaseOf(worker, nil)
+	}
+
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil); recorder.Code != http.StatusOK {
+		t.Fatalf("the second close = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	for _, worker := range workers {
+		if state := h.stored(worker).State; state != supervise.StateRetired {
+			t.Errorf("%s is %s after the second close, want retired", worker, state)
+		}
 	}
 }
 

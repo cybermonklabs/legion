@@ -378,30 +378,31 @@ func TestACompactionRefusedForAClaimInATurnNamesTheCompaction(t *testing.T) {
 	}
 }
 
-// A compaction of a claim whose held suspension's stop the runtime refused is not taken: the
-// suspension is written before its stop (D6 of dispatch://INFRA-4099's plan), so the claim the
-// request finds is suspended by the operator, its stop owed, and a suspended claim's session is
-// compacted by no door — there is no agent to ask, and the stop owed may still end the process
-// the runtime refused to stop (D7). No hold is left over a ready claim for the request to answer.
-func TestACompactionOfAClaimWhoseHeldStopTheRuntimeRefusedIsNotTaken(t *testing.T) {
+// A compaction of a ready claim a suspension is held over is taken for nothing: taken, it
+// would spend ten minutes of a model on a session the hold is about to stop, and its own end
+// would hand the claim to that hold rather than back to its agent — answered 200 all the
+// while, which tells an operator the worker is back and its owed task has gone. The machine
+// refuses it in the state the hold found, as it refuses every other held claim (supervise's
+// compactStart), so the answer is the one sentence both recoveries give such a claim rather
+// than a second copy written for this door alone (api's refuseHeldSuspension). The hold is the
+// operator's, so the controller's door names the operator's resume in it (wantHeldRefusal).
+func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {
 			h := compactHarness(t, nil)
-			token := suspendedWithItsStopOwed(t, h)
+			token := suspensionHeldOverAReadyAgent(t, h)
 			conn := connected(h, token)
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			if recorder.Code != http.StatusConflict {
-				t.Fatalf("the compaction of the suspended claim = %d, want 409; body %s", recorder.Code, recorder.Body)
-			}
+			door.wantHeldRefusal(t, recorder, token, supervise.SuspendedByOperator, claimUnsettled)
 			if asked := conn.Compactions(); len(asked) != 0 {
 				t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
 			}
 			m, _ := h.supervisor.Machine(token)
-			if view := m.View(); view.State != supervise.StateSuspended || view.SuspendedBy != supervise.SuspendedByOperator {
-				t.Errorf("the refused claim is %s by %q, want it suspended by the operator, as the request found it",
-					view.State, view.SuspendedBy)
+			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
+				t.Errorf("the refused claim is %s holding %v, want the ready claim with its hold, as the request found it",
+					view.State, view.SuspensionHeld)
 			}
 			if after := h.stored(token); after.Session != "ses_implementer" {
 				t.Errorf("the refused claim records session %q, want the session it had", after.Session)

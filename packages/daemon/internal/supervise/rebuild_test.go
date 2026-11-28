@@ -321,7 +321,6 @@ var rebuildFields = map[string]string{
 	"queueTold":             "kept: settled by unlock against the rebuilt claim",
 	"previous":              "kept: a process this daemon let go still runs in this runtime, but for the row's own",
 	"stopUnconfirmed":       "kept: goes with previous",
-	"stopOwed":              "kept: a stop of a process this daemon let go that the runtime refused (D7), but for the row's own, cleared with previous",
 	"registration":          "kept: where the row records its process, whose shim sends no second hello",
 	"registrationRefused":   "kept: where the row records its process",
 	"identity":              "kept: where the row records its process",

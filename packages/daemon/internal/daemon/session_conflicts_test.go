@@ -292,12 +292,10 @@ func TestABootSuspendsAClaimRecordingANameNoRowCanHold(t *testing.T) {
 	}
 }
 
-// A suspension at boot whose stop the runtime refuses — here a stop the runtime refuses for every
-// claim — is written first, so the claim is suspended and its stop is made again at the probe
-// interval (supervise's stopRecorded, D6 and D7 of dispatch://INFRA-4099's plan); the refusal is
-// logged at Error naming the claim, and the boot goes on: the daemon serves, so the operator's
-// steps, which need a serving daemon, can run (review round 11 of #4220). Nothing is launched for
-// it, since its hold refuses every relaunch of it.
+// A suspension that fails at boot for a reason no state explains — here a stop the runtime refuses
+// for every claim — is logged at Error naming the claim, and the boot goes on: the claim is left as
+// it was, its hold refuses every relaunch of it, and the daemon serves, so the operator's steps,
+// which need a serving daemon, can run (review round 11 of #4220). Nothing is launched for it.
 //
 // The control (the pull request records the run): the boot failing on that error, as before; the
 // daemon never answers, and the test fails at its start.
@@ -322,7 +320,7 @@ func TestABootThatCannotStopAClaimStillServes(t *testing.T) {
 	d := startDaemonLogging(t, cfg, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)))
 
 	failed := map[string]bool{}
-	for _, line := range loggedLines(t, logs.String(), "the runtime refused the suspend or the release of a process whose claim's record is written") {
+	for _, line := range loggedLines(t, logs.String(), "does not hold failed; it is left as it is") {
 		if line["level"] == "ERROR" {
 			failed[line["claim"].(string)] = true
 		}
@@ -331,8 +329,8 @@ func TestABootThatCannotStopAClaimStillServes(t *testing.T) {
 		if !failed[string(tok)] {
 			t.Errorf("the boot logged no Error naming %s, whose stop the runtime refused", tok)
 		}
-		if got := d.claim(tok); got.State != string(supervise.StateSuspended) {
-			t.Errorf("%s, whose stop the runtime refused, is %s after the boot, want it suspended: the suspension is written before its stop", tok, got.State)
+		if got := d.claim(tok); got.State != string(supervise.StateIdle) {
+			t.Errorf("%s, whose stop the runtime refused, is %s after the boot, want it left idle as it was", tok, got.State)
 		}
 	}
 	for _, call := range rt.Calls() {
