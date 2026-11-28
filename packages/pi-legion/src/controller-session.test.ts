@@ -628,14 +628,17 @@ test("watched workflows: a later claim in this process whose list differs tells 
 
 // What the session refuses to take is no failure of the claim: a list-change notice that
 // `pi.sendMessage` throws on is logged, and the claim, its ready and the new list's topics go on.
-test("watched workflows: a session that refuses the list-change notice still holds its claim, and its topics are still asked for", async () => {
+// A refused notice told the session nothing, so it still knows the list it knew: the next claim
+// with the same list, once the session takes notices again, tells it that list.
+test("watched workflows: a session that refuses the list-change notice still holds its claim, its topics are still asked for, and the next claim with that list tells it the list", async () => {
   const refused = "the session takes no message now";
-  const lists = [[NIGHTLY], [NIGHTLY, RELEASE]];
+  const lists = [[NIGHTLY], [NIGHTLY, RELEASE], [NIGHTLY, RELEASE]];
   let registrations = 0;
+  let refusing = true;
   const run = watchingController({
     register: () => registeredWith(lists[registrations++] ?? [])(),
     tell: () => {
-      throw new Error(refused);
+      if (refusing) throw new Error(refused);
     },
   });
   try {
@@ -667,6 +670,27 @@ test("watched workflows: a session that refuses the list-change notice still hol
     expect(run.lines[0]?.message).toContain(
       "acme/gadgets/release.yml@push, acme/widgets/nightly.yaml@schedule,workflow_dispatch"
     );
+
+    refusing = false;
+    await run.controller.claim(run.context);
+    await until(
+      "the third claim's watched subscriptions, or an exit",
+      () => asked(run, RELEASE_PUSH) > 1 || run.exits.length > 0
+    );
+    await settled();
+
+    expect(run.exits).toEqual([]);
+    expect(run.told).toEqual([
+      {
+        message: expect.objectContaining({
+          customType: WATCHED_NOTICE,
+          content: expect.stringContaining(
+            "watched workflows as acme/gadgets/release.yml@push, acme/widgets/nightly.yaml@schedule,workflow_dispatch, where this session knew them as acme/widgets/nightly.yaml@schedule,workflow_dispatch"
+          ),
+        }),
+        options: NO_TURN,
+      },
+    ]);
   } finally {
     run.stopSink();
   }

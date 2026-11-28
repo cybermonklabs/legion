@@ -17,7 +17,8 @@ body: |-
   session refuses is logged and fails nothing. A later claim of the same process whose
   registration names another list tells the session the new list, since its prompt names the
   first, and that a run of an entry or an event the new list leaves out still arrives until the
-  controller role ends, and is to be dropped. Every controller process sets the plugin interface's
+  controller role ends, and is to be dropped; a list-change notice the session refuses is told
+  again at the next claim. Every controller process sets the plugin interface's
   `watchedWorkflowsRoleOwned`, so a resumed controller drops the watched topics its stored
   interest row holds before it claims. Plugin interface version 7: install this release with the
   `@sjawhar/pi-envoy` released beside it.
