@@ -181,6 +181,11 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 // TestABindTheServerNeverConfirmsIsUnsubscribedAndFails held of its confirmation step, asked of
 // the step that replaced it: there is no confirmation read any more, because the create's own
 // answer is the confirmation.
+//
+// The take-over's bound and its waits between tries run on the intake's hold clock
+// (heldDurable.holdClock, finishTakeOver, retryHeld), a fake the row moves: to the take-over's finish
+// deadline, takeOverFinishWithin past its start, where it gives the create up, and, once the creates
+// land, a takeOverFirstRetry at a time to the retry of a take-over that began again meanwhile.
 func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -193,7 +198,9 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
 	attempts := failCreatesWhile(t, failing.Load)
-	process := startIntakeProcess(t, pool, natsURL, nil)
+	holdClock := fakeIntakeClock()
+	start := holdClock.Now()
+	process := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { p.intake.holdClock = holdClock })
 
 	// The take-over subscribes before its create, so a subscription stands while the creates
 	// fail. That subscription is read here, and the row then holds that this very one is given
@@ -208,6 +215,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the take-over never subscribed before its create: creates=%d; %s", attempts.Load(), consumerState(publisher))
 	})
+	holdClock.Set(start.Add(takeOverFinishWithin))
 	waitFor(t, func() bool {
 		subscribed.keys.mu.Lock()
 		defer subscribed.keys.mu.Unlock()
@@ -232,8 +240,14 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 
 	// The create lands on a later attempt, and the intake binds the durable afresh and delivers. No
 	// durable existed before that create, so it is the durable's first bind, which starts at the
-	// stream's next message: the pull request goes out once the durable is bound.
+	// stream's next message: the pull request goes out once the durable is bound. The loop's next
+	// try may have begun a take-over already, whose create failed while the row read the first, and
+	// which waits takeOverFirstRetry on the hold clock before it tries the create again.
 	failing.Store(false)
+	moveTicks(t, holdClock, takeOverFirstRetry, func() bool { return deliveryDurableBound(publisher) }, func() string {
+		return fmt.Sprintf("the intake never bound the durable afresh after the take-over it gave up; its hold clock stands %s past its start, with %v armed: %s",
+			holdClock.Now().Sub(start), holdClock.Armed(), consumerState(publisher))
+	})
 	awaitPushBound(t, publisher, "", "the intake never bound the durable afresh after the take-over it gave up")
 	publishMergedPullRequest(t, publisher, 12)
 	waitFor(t, func() bool { return process.fetches(12) == 1 }, func() string {

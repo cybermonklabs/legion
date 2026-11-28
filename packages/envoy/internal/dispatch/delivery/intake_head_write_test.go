@@ -34,7 +34,9 @@ import (
 //
 // The test asks NATS, not the handler: the durable must deliver the message again. Measured by
 // the consumer's delivery count rather than by its pending count, because a message is pending
-// while its handler runs, and what is under test is what happens after the handler returns.
+// while its handler runs, and what is under test is what happens after the handler returns. The
+// hand-back's delay is the server's own, which no clock of this module reaches, so the row shortens
+// it (redeliverHeadWritesSoon) and waits for the second delivery: no verdict reads its length.
 func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -46,6 +48,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	// The hand-back is what must deliver the envelope again, so the server's own redelivery at the
 	// ack wait never comes inside the run (ackWaitPastTheRun).
 	ackWaitPastTheRun(t)
+	redeliverHeadWritesSoon(t)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool),
 		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)

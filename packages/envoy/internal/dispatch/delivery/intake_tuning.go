@@ -39,6 +39,12 @@ type intakeTuning struct {
 	// headWriteMaxDeliveries is how many deliveries an envelope whose head row could not be stored
 	// gets before deliver acknowledges it (headWriteDeliveriesSpent): headWriteMaxDeliveries.
 	headWriteMaxDeliveries uint64
+	// headWriteRedeliverAfter is how long the server waits before it delivers again an envelope
+	// whose head row could not be stored, which deliver hands back with that delay
+	// (intakeDelivery.handBackOwn): headWriteRedeliverAfter. It is the server's own span (a delayed
+	// negative acknowledgement), which no clock of this module reaches, so a row that waits for the
+	// hand-back's redelivery sets it short, where no verdict of the row reads its length.
+	headWriteRedeliverAfter time.Duration
 	// createDurable creates the durable a take-over configured on the notification stream
 	// (heldDurable.finishTakeOver): addDurable, unless a test fails the create after its delete.
 	createDurable func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error)
@@ -90,13 +96,14 @@ type intakeTuning struct {
 // as it is when newIntakeTuning is called.
 func newIntakeTuning() *intakeTuning {
 	tuning := &intakeTuning{
-		messageTimeout:         intakeMessageTimeout,
-		maxAckPending:          intakeMaxAckPending,
-		ackLanding:             intakeAckLanding,
-		stopBudget:             intakeStopBudget,
-		headWriteMaxDeliveries: headWriteMaxDeliveries,
-		createDurable:          addDurable,
-		log:                    slog.Default(),
+		messageTimeout:          intakeMessageTimeout,
+		maxAckPending:           intakeMaxAckPending,
+		ackLanding:              intakeAckLanding,
+		stopBudget:              intakeStopBudget,
+		headWriteMaxDeliveries:  headWriteMaxDeliveries,
+		headWriteRedeliverAfter: headWriteRedeliverAfter,
+		createDurable:           addDurable,
+		log:                     slog.Default(),
 	}
 	tuning.callWait.Store(int64(bus.ConnLockWait))
 	tuning.drainWait.Store(int64(natsgo.DefaultDrainTimeout))

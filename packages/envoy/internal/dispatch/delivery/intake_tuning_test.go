@@ -33,6 +33,7 @@ func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
 		{"ackLanding", tuning.ackLanding, time.Minute},
 		{"stopBudget", tuning.stopBudget, 15 * time.Second},
 		{"headWriteMaxDeliveries", tuning.headWriteMaxDeliveries, uint64(30)},
+		{"headWriteRedeliverAfter", tuning.headWriteRedeliverAfter, 10 * time.Second},
 		{"callWait", time.Duration(tuning.callWait.Load()), bus.ConnLockWait},
 		{"drainWait", time.Duration(tuning.drainWait.Load()), natsgo.DefaultDrainTimeout},
 		{"ackWait", tuning.ackWait(), 5 * time.Minute},
@@ -85,6 +86,7 @@ func TestACopiedTuningHoldsEveryFieldOfItsParent(t *testing.T) {
 	parent.ackLanding = 23 * time.Second
 	parent.stopBudget = 11 * time.Second
 	parent.headWriteMaxDeliveries = 13
+	parent.headWriteRedeliverAfter = 29 * time.Second
 	parent.createDurable = createDurable
 	parent.log = logger
 	parent.callWait.Store(int64(17 * time.Millisecond))
@@ -107,6 +109,7 @@ func TestACopiedTuningHoldsEveryFieldOfItsParent(t *testing.T) {
 			{"ackLanding", got.ackLanding, 23 * time.Second},
 			{"stopBudget", got.stopBudget, 11 * time.Second},
 			{"headWriteMaxDeliveries", got.headWriteMaxDeliveries, uint64(13)},
+			{"headWriteRedeliverAfter", got.headWriteRedeliverAfter, 29 * time.Second},
 			{"createDurable", reflect.ValueOf(got.createDurable).Pointer(), reflect.ValueOf(createDurable).Pointer()},
 			{"log", got.log, logger},
 			{"callWait", time.Duration(got.callWait.Load()), 17 * time.Millisecond},

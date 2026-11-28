@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"net/http"
 	"slices"
 	"strings"
@@ -21,11 +25,17 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestBothIntakesKeepTheirSubscriptions starts the two intakes as cmd/dispatch does (StartIntakes,
+// TestBothIntakesKeepTheirSubscriptions starts the two intakes as StartIntakes does (startIntakes,
 // beside a client of its own that owns the stream and publishes) and holds that each connects under
 // its own name, keeps its durable push-bound and handles what is published to it. A bus.Client
 // keeps one JetStream subscription, so two intakes binding through one client leave whichever bound
 // first with its durable unbound: its messages stay pending and its handler never runs.
+//
+// The intakes run by the row's tuning, which holds production's values (tuningFor, newIntakeTuning),
+// and on a fake clock the row moves (startIntakes): the job intake reads a run's jobs once its burst
+// goes quiet, jobQuiet on that clock after the event, and the row moves the clock there once the
+// read is armed. That StartIntakes runs them by production's tuning on the real clock is
+// TestStartIntakesRunsBothIntakesByProductionsTuningOnTheRealClock's.
 func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -35,17 +45,18 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	publisher := intakeTestClient(t)
 	fake := newJobsFake(t)
 
+	intakesClock := fakeIntakeClock()
 	runCtx, cancel := context.WithCancel(ctx)
 	var names []string
 	var clients []*bus.Client
-	stop, err := StartIntakes(runCtx, func(name string) (*bus.Client, error) {
+	stop, err := startIntakes(runCtx, tuningFor(t), func(name string) (*bus.Client, error) {
 		names = append(names, name)
 		client, err := bus.Connect([]string{natsURL}, bus.WithName(name))
 		if err == nil {
 			clients = append(clients, client)
 		}
 		return client, err
-	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), fake.newTestClient(), events.NewBroker(), nil, nil, unrenamed(), intakesClock)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -54,10 +65,10 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	// test's own cleanups (startIntake's reason).
 	t.Cleanup(func() {
 		cancel()
-		stop()
+		testwait.Returns(t, "the intakes' stop to return once ctx ended", stop)
 	})
 	if want := []string{"dispatch-intake", "dispatch-job-intake"}; !slices.Equal(names, want) {
-		t.Fatalf("StartIntakes connected as %q, want %q", names, want)
+		t.Fatalf("startIntakes connected as %q, want %q", names, want)
 	}
 
 	durables := []string{bus.DispatchDeliveryDurable, bus.DispatchJobDurable}
@@ -83,22 +94,28 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}, func() string {
 		return "the intakes' durables are not both push-bound: " + consumers()
 	})
-	// StartIntakes times both intakes by production's tuning (newIntakeTuning), which the delivery
-	// durable it created carries: an ack wait of maxAckPending message timeouts plus a minute, and
-	// that maxAckPending. A tuning of a test's, or none, gives the durable other values.
+	// The row's tuning holds production's values, which the delivery durable the intake created
+	// carries: an ack wait of maxAckPending message timeouts plus a minute, and that maxAckPending.
 	delivery, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read the delivery durable: %v", err)
 	}
 	if got, want := delivery.Config.AckWait, time.Duration(intakeMaxAckPending)*intakeMessageTimeout+time.Minute; got != want {
-		t.Errorf("the delivery durable StartIntakes created waits %s for an acknowledgement, want %s: production's tuning", got, want)
+		t.Errorf("the delivery durable the intakes created waits %s for an acknowledgement, want %s: production's tuning", got, want)
 	}
 	if got := delivery.Config.MaxAckPending; got != intakeMaxAckPending {
-		t.Errorf("the delivery durable StartIntakes created has max_ack_pending %d, want %d: production's tuning", got, intakeMaxAckPending)
+		t.Errorf("the delivery durable the intakes created has max_ack_pending %d, want %d: production's tuning", got, intakeMaxAckPending)
 	}
 	// The server can read the two durables while one registration's unsubscribe is still on its way
-	// to it, so both are read again a moment later: nothing binds an unbound durable again.
-	time.Sleep(time.Second)
+	// to it, so both are read again once a round trip of each intake's client has answered: the
+	// server handles one connection's protocol in order, so whatever either client sent before its
+	// flush, an unsubscribe included, has reached it by then, and nothing binds an unbound durable
+	// again.
+	for i, client := range clients {
+		if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
+			t.Fatalf("flush the %s client: %v", names[i], err)
+		}
+	}
 	for _, durable := range durables {
 		if !pushBound(durable) {
 			t.Fatalf("%s lost its subscription once both intakes had bound: %s", durable, consumers())
@@ -106,7 +123,8 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}
 
 	// A pull request the intake handles records the event's time (deliver), and a job of a tracked
-	// deploy run has the job intake read the run's jobs from GitHub once the burst goes quiet.
+	// deploy run has the job intake read the run's jobs from GitHub once the burst goes quiet: the
+	// read is armed jobQuiet past the event on the intakes' clock, which the row moves there.
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
@@ -117,6 +135,12 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}, func() string {
 		return "the intake never handled the pull request published to it: " + consumers()
 	})
+	quiet := intakesClock.Now().Add(jobQuiet)
+	intakesClock.AwaitArmedAt(t, "the job intake's read of run 500, armed once its burst goes quiet", quiet)
+	if calls := fake.calls.Load(); calls != 0 {
+		t.Fatalf("the job intake read the run's jobs %d times before its burst went quiet", calls)
+	}
+	intakesClock.Set(quiet)
 	waitFor(t, func() bool { return fake.calls.Load() == 1 }, func() string {
 		return fmt.Sprintf("the job intake read the run's jobs %d times, want 1: %s", fake.calls.Load(), consumers())
 	})
@@ -132,11 +156,67 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 
 	// stop waits for both intakes, which stop once ctx is cancelled, and closes both clients.
 	cancel()
-	stop()
+	testwait.Returns(t, "the intakes' stop to return once ctx ended", stop)
 	for i, client := range clients {
 		if !client.Conn.IsClosed() {
 			t.Errorf("the %s client is open after stop", names[i])
 		}
+	}
+}
+
+// StartIntakes runs both intakes by production's tuning (newIntakeTuning), whose values and hooks
+// TestProductionsIntakeTuningIsTheShippedTimersAndNoHook pins, and on the real clock (clock.Real),
+// so their stops, handlers, job reads and page retries end on the wall clock in every deployment:
+// the rows that run startIntakes on a tuning and a fake clock of their own
+// (TestBothIntakesKeepTheirSubscriptions, TestAHandlerTheStopGivesUpIsRedeliveredAtOnce) rest on it.
+// The row reads StartIntakes as it is written (intakes.go), since nothing it starts reports the
+// tuning or the clock it was handed: its body is the one call of startIntakes, which it hands a
+// tuning newIntakeTuning makes for the call and clock.Real, and every parameter of its own, in their
+// order. A StartIntakes that handed either intake anything else fails it, naming what it handed.
+func TestStartIntakesRunsBothIntakesByProductionsTuningOnTheRealClock(t *testing.T) {
+	t.Parallel()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "intakes.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse intakes.go, which declares StartIntakes: %v", err)
+	}
+	var start *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "StartIntakes" {
+			start = fn
+		}
+	}
+	if start == nil {
+		t.Fatal("intakes.go declares no StartIntakes: whoever moved it points this row at the file it is in now")
+	}
+	var params []string
+	for _, field := range start.Type.Params.List {
+		for _, name := range field.Names {
+			params = append(params, name.Name)
+		}
+	}
+	if len(params) == 0 || start.Body == nil {
+		t.Fatal("StartIntakes takes no parameter or has no body, so this row cannot read what it hands the intakes")
+	}
+	body := start.Body.List
+	var call *ast.CallExpr
+	if len(body) == 1 {
+		if ret, ok := body[0].(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
+			call, _ = ret.Results[0].(*ast.CallExpr)
+		}
+	}
+	if call == nil || types.ExprString(call.Fun) != "startIntakes" {
+		t.Fatalf("StartIntakes' body is not the one return of a call of startIntakes, so this row cannot read what it hands the intakes: %d statements", len(body))
+	}
+	var args []string
+	for _, arg := range call.Args {
+		args = append(args, types.ExprString(arg))
+	}
+	// startIntakes(ctx, tuning, connect, pool, leases, github, broker, settingsWake, pushes, attributor, c)
+	want := append(append([]string{params[0], "newIntakeTuning()"}, params[1:]...), "clock.Real()")
+	if !slices.Equal(args, want) {
+		t.Fatalf("StartIntakes calls startIntakes(%s), want startIntakes(%s): production's tuning, made for the call, and the real clock, beside its own parameters in their order",
+			strings.Join(args, ", "), strings.Join(want, ", "))
 	}
 }
 
@@ -354,6 +434,14 @@ func TestIntakesWhoseSecondConnectFailsStartNeither(t *testing.T) {
 // them before StartIntakes, no longer lose a durable silently. The job intake binds first; the
 // delivery intake's bind on the same client is refused with bus.ErrSubscriptionHeld and logged at
 // ERROR, and the job intake's durable keeps its subscriber.
+//
+// The delivery intake's take-over tries the bind again until its bound, takeOverFinishWithin, and
+// logs the refusal at ERROR as it gives up (retryHeld, failedStep). That bound and its waits between
+// tries run on the intake's hold clock (heldDurable.holdClock), a fake the row moves to the bound
+// once the take-over has armed it. Its stop's deadline is on its own clock (heldDurable.clock), a
+// fake the row never moves, so the row reads its Run's context ended once that deadline is armed,
+// and then moves the hold clock past the bound of the take-over the loop began again meanwhile,
+// which the stop waits for.
 func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -375,14 +463,32 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		stopJobs()
-		<-jobsDone
+		testwait.Receive(t, "the job intake's Run to return once its context ended", jobsDone)
 	})
 	waitFor(t, func() bool { return pushBound(bus.DispatchJobDurable) }, func() string {
 		return "the job intake never bound its durable"
 	})
 
 	seedDeliverySettings(t, ctx, pool)
-	startIntake(t, newIntake(tuningFor(t), shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	holdClock, stopClock := fakeIntakeClock(), fakeIntakeClock()
+	start := holdClock.Now()
+	intake := newIntake(tuningFor(t), shared, pool, leases, github, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake.clock, intake.holdClock = stopClock, holdClock
+	stop := runIntake(t, intake)
+	// Registered after runIntake's, so it runs first: the take-over the loop began again after the
+	// one the row gave up holds Run until it gives up too.
+	t.Cleanup(func() {
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			stop()
+		}()
+		stopClock.AwaitArmedAt(t, "the delivery intake's stop deadline, armed as its Run's context ended", stopClock.Now().Add(tuningFor(t).stopBudget))
+		holdClock.Advance(takeOverFinishWithin)
+		testwait.Receive(t, "the delivery intake's Run to return once its take-over gave up", stopped)
+	})
+	holdClock.AwaitArmedAt(t, "the delivery intake's take-over bound, takeOverFinishWithin past its start", start.Add(takeOverFinishWithin))
+	holdClock.Set(start.Add(takeOverFinishWithin))
 	var refusal map[string]any
 	waitFor(t, func() bool {
 		for _, record := range logs() {

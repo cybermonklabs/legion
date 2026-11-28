@@ -453,7 +453,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 			return
 		}
 		if headNotStored {
-			d.handBackOwn(msg, headWriteRedeliverAfter)
+			d.handBackOwn(msg, in.tuning.headWriteRedeliverAfter)
 			return
 		}
 		d.acknowledge(msg)
@@ -484,7 +484,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		in.tuning.log.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
 			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", in.tuning.headWriteMaxDeliveries,
-			"redeliver_after", headWriteRedeliverAfter, "error", err)
+			"redeliver_after", in.tuning.headWriteRedeliverAfter, "error", err)
 		headNotStored = true
 		return
 	case err != nil:
@@ -512,6 +512,10 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 // seconds only sets the rate, which is short beside the five minutes of the reconcile this
 // message cannot wait for, and long enough that the cap's whole run of redeliveries is
 // measured in minutes rather than in round trips.
+//
+// It is the default of the intake's own headWriteRedeliverAfter (intakeTuning), which a row that
+// waits for the hand-back's redelivery shortens on the intakes it builds: the delay is the
+// server's, which no clock of this module reaches.
 const headWriteRedeliverAfter = 10 * time.Second
 
 // headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be

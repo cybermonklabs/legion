@@ -3,7 +3,6 @@ package delivery
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -227,22 +226,24 @@ func TestATakeOverOfADurableThatDeliveredNothingStartsAfterTheStreamsLastMessage
 // nats-server v2.15.1's reconcile, leaves the durable at its floor of 20, past the stream's end. Two
 // pull requests are opened after the cut, at 1 and 2. A second intake takes the durable over at 1,
 // so both get their head rows; created at its floor plus one, 21, it would deliver nothing until the
-// stream passed 20.
+// stream passed 20. The publisher, the client the row reads the stream through once the server is
+// back, redials at once after the cut (bus.WithPromptReconnect), where a bus client otherwise waits
+// a second (ReconnectWait).
 func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessage(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 63)
 	srv, uri := testnats.Start(t)
-	connect := func() *bus.Client {
-		client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	connect := func(options ...bus.ConnectOption) *bus.Client {
+		client, err := bus.ConnectOwningStream([]string{uri}, append([]bus.ConnectOption{bus.WithReplicas(1)}, options...)...)
 		if err != nil {
 			t.Fatalf("connect NATS: %v", err)
 		}
 		t.Cleanup(client.Close)
 		return client
 	}
-	publisher := connect()
+	publisher := connect(bus.WithPromptReconnect())
 
 	const before = 20
 	for i := range before {
@@ -258,7 +259,7 @@ func TestATakeOverOfADurableWhoseFloorLiesPastTheStreamsEndStartsAtItsFirstMessa
 	srv.CutStream(t, bus.Stream, func(int64) int64 { return 0 })
 	testwait.Eventually(t, "the publisher to reconnect", publisher.Connected)
 	var stored uint64
-	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the cut and the restart", func() (string, bool) {
+	testwait.Until(t, "the stream to answer a state read after the cut and the restart", func() (string, bool) {
 		stream, err := publisher.JS().StreamInfo(bus.Stream)
 		if err == nil {
 			stored = stream.State.LastSeq

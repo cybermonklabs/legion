@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -382,7 +381,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create the plural-filter durable: %v", err)
 	}
-	js, err := jetstream.New(natsClient.Conn)
+	js, err := jetstream.New(natsClient.Conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open the jetstream API: %v", err)
 	}
@@ -390,7 +389,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("look up the plural-filter durable: %v", err)
 	}
-	batch, err := legacy.Fetch(acknowledged, jetstream.FetchMaxWait(10*time.Second))
+	batch, err := legacy.Fetch(acknowledged, jetstream.FetchContext(testwait.Context(t)))
 	if err != nil {
 		t.Fatalf("fetch from the plural-filter durable: %v", err)
 	}
@@ -429,8 +428,10 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	startIntake(t, intake)
 
 	awaitRuns(t, ctx, pool, natsClient, unacknowledged)
-	// Time for an acknowledged message the replacement wrongly replayed to arrive too.
-	time.Sleep(2 * time.Second)
+	// deliver handles a message before it acknowledges it, so once the replacement has
+	// acknowledged every message the stream holds, an acknowledged message it wrongly replayed has
+	// been fetched too: nothing is left for it to deliver.
+	awaitAcknowledged(t, natsClient)
 	t.Log(intakeStateReport(t, natsClient))
 
 	after, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -577,7 +578,9 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 // runs under (intakeHoldName, consumerLease) -- and not NATS. The second is a standby, not a
 // failure: it logs nothing at ERROR, says which process holds the durable, never binds it while
 // the first holds it, and takes it over once the first stops -- which is how a stopped or dead
-// process's delivery work is picked up.
+// process's delivery work is picked up. The standby tries for the hold on a fake hold clock the
+// row moves one durableBindInterval at a time (holdTries), so it takes the durable over at a try the
+// row brings once the holder has stopped, rather than at a poll of the machine's clock.
 func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	t.Parallel()
 	// No component may log at ERROR: both intakes, the duty leases and holds they take, and every
@@ -591,7 +594,11 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 
 	holder := startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
 	held := awaitPushBound(t, publisher, "", "the first process did not bind the durable")
-	startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
+	tries := newHoldTries()
+	startIntakeProcessWith(t, pool, natsURL, nil, tries.before, bus.WithLogger(logger))
+	if tries.first(t, "the standby's try for the hold as it starts") {
+		t.Fatal("control: the standby took the durable over at its start, while the first process held it")
+	}
 	standingBy := "dispatch delivery: NATS consumer held by another process; standing by"
 	waitFor(t, func() bool {
 		for _, record := range logs() {
@@ -615,6 +622,7 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 
 	// The holder stops, and the standby takes the durable over on a deliver subject of its own.
 	holder.stop()
+	tries.untilDelivering(t, "the standby to take over the durable the first process let go")
 	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != held.Config.DeliverSubject
@@ -665,10 +673,14 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// is the one a bound durable takes.
 	awaitPushBound(t, holder, "", "the durable is not bound to the other process")
 
-	var tries atomic.Int64
-	countTry := func() { tries.Add(1) }
-	tuningFor(t).attempted.Store(&countTry)
-	startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
+	// The intake tries for the hold on a fake hold clock the row moves one durableBindInterval at a
+	// time (holdTries): its try at its start writes the standing-by line, and two more after it each
+	// read the bound durable and leave it, counted rather than slept, so the durable is read after
+	// those tries rather than before them. A try that takes the durable over ends the tries (the
+	// intake then delivers and tries no more), and the checks below say what changed.
+	tries := newHoldTries()
+	startIntakeProcessWith(t, pool, natsURL, nil, tries.before, bus.WithLogger(logger))
+	delivers := tries.first(t, "the intake's try for the hold as it starts")
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
 	waitFor(t, func() bool {
 		for _, record := range logs() {
@@ -680,21 +692,9 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the intake never said it was standing by for the bound durable: %v", logs())
 	})
-	// Two more of the intake's tries after the one that stood by, each of which reads the bound
-	// durable and leaves it: waited for, not slept, so a slow machine reads the durable after
-	// those tries rather than before them. The try that wrote the line may not be counted yet,
-	// hence three. A try that takes the durable over ends the tries (the intake then delivers), so
-	// a durable deleted or recreated ends the wait too, and the checks below say what changed.
-	stoodBy := tries.Load()
-	waitFor(t, func() bool {
-		if tries.Load() >= stoodBy+3 {
-			return true
-		}
-		info, err := holder.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return errors.Is(err, natsgo.ErrConsumerNotFound) || err == nil && !info.Created.Equal(before.Created)
-	}, func() string {
-		return fmt.Sprintf("the intake made %d tries after it stood by, want 3", tries.Load()-stoodBy)
-	})
+	for try := 1; try <= 2 && !delivers; try++ {
+		delivers = tries.next(t, fmt.Sprintf("the intake's try %d after the one that stood by", try))
+	}
 	after := awaitPushBound(t, holder, "", "the other process lost its binding to the durable")
 	if !slices.Equal(after.Config.FilterSubjects, legacy.FilterSubjects) || after.Config.FilterSubject != "" {
 		t.Fatalf("the durable's filter is %q / %v, want the set it carried: %v",
@@ -720,7 +720,9 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 // create, however far the durable is from what this release wants -- and delivers nothing; once
 // the lease is free, it takes the durable over. The lease taken here is the one the take-over
 // takes, bus.DispatchDeliveryDurable's: a test holding any other durable's lease would leave the
-// take-over free and prove nothing.
+// take-over free and prove nothing. The intake tries for the hold and the durable on a fake hold
+// clock the row moves one durableBindInterval at a time (holdTries), so each try the row counts is
+// one it brought, and the one after the lease is free is one too.
 func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	t.Parallel()
 	// The row waits for duty's skip line, which the intake's take-over writes to the intake's
@@ -755,13 +757,12 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	}()
 	releaseLease := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseLease)
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the other caller never took the %s lease", consumerLease(bus.DispatchDeliveryDurable))
-	}
+	testwait.Receive(t, fmt.Sprintf("the other caller to take the %s lease", consumerLease(bus.DispatchDeliveryDurable)), taken)
 
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	intake := newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	tries := newHoldTries()
+	tries.on(intake)
+	startIntake(t, intake)
 	skips := func() int {
 		n := 0
 		for _, record := range logs() {
@@ -771,19 +772,14 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 		}
 		return n
 	}
-	// Three of the take-over's tries, each skipped (duty writes the line as it skips, once a
-	// try): counted, not slept, so a slow machine reads the durable after those tries rather than
-	// before them. A try that changes the durable writes no skip line, so a durable deleted,
-	// recreated or bound ends the wait too, and the checks below say what changed.
-	waitFor(t, func() bool {
-		if skips() >= 3 {
-			return true
-		}
-		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return errors.Is(err, natsgo.ErrConsumerNotFound) || err == nil && (!info.Created.Equal(before.Created) || info.PushBound)
-	}, func() string {
-		return fmt.Sprintf("the intake skipped the %s lease %d times, want 3: %v", consumerLease(bus.DispatchDeliveryDurable), skips(), logs())
-	})
+	// Three of the take-over's tries, each skipped (duty writes the line as it skips, once a try):
+	// the intake's try at its start and two after it, counted, not slept, so the durable is read
+	// after those tries rather than before them. A try that takes the durable over ends the tries
+	// (the intake then delivers and tries no more), and the checks below say what changed.
+	delivers := tries.first(t, "the intake's try for the hold as it starts")
+	for try := 1; try <= 2 && !delivers; try++ {
+		delivers = tries.next(t, fmt.Sprintf("the intake's try %d after its start", try))
+	}
 	after, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read the durable: %v", err)
@@ -792,11 +788,15 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 		t.Fatalf("the intake changed or bound a durable whose lease it did not hold: created %s deliver subject %s push-bound %t, was %s %s",
 			after.Created, after.Config.DeliverSubject, after.PushBound, before.Created, before.Config.DeliverSubject)
 	}
+	if got := skips(); got < 3 {
+		t.Fatalf("the intake skipped the %s lease %d times in its three tries, want 3: %v", consumerLease(bus.DispatchDeliveryDurable), got, logs())
+	}
 
 	releaseLease()
-	if held := <-ran; !held {
+	if held := testwait.Receive(t, "the other caller's duty.Exclusive to return once the lease was released", ran); !held {
 		t.Fatalf("the other caller never held the %s lease, so the take-over was free", consumerLease(bus.DispatchDeliveryDurable))
 	}
+	tries.untilDelivering(t, "the intake to take the durable over once the lease was free")
 	takenOver := awaitPushBound(t, natsClient, "", "the intake did not take the durable over once the lease was free")
 	if takenOver.Config.DeliverSubject == before.Config.DeliverSubject || takenOver.Config.MaxAckPending != intakeMaxAckPending || takenOver.Config.AckWait != tuningFor(t).ackWait() {
 		t.Fatalf("the take-over left deliver subject %s ack_wait %s max_ack_pending %d, want a fresh subject and %s/%d",

@@ -1633,10 +1633,12 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 // measured here is that there is a cap at all and not the number it is shipped at
 // (headWriteMaxDeliveries).
 //
-// The measure is the consumer's delivery count, read twice: once when the cap has been spent,
-// and again after two whole redelivery delays, which is when the third delivery would have
-// arrived had the envelope been handed back again. An acknowledged message is delivered no
-// more, and the count is the one number no other test's leftovers move for this envelope.
+// The measure is the consumer's delivery count, read once the envelope is acknowledged: nothing
+// outstanding and the ack floor at the envelope's sequence. An acknowledged message is delivered no
+// more, so the count read then is final, and it is the one number no other test's leftovers move
+// for this envelope; an envelope handed back for ever is never acknowledged. The hand-back's delay
+// is the server's own, which no clock of this module reaches, so the row shortens it
+// (redeliverHeadWritesSoon): no verdict reads its length.
 func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -1644,6 +1646,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	seedDeliveryProject(t, ctx, pool)
 	withoutBranchCommits(t, ctx, pool)
 	capHeadWriteDeliveriesAt(t, 2)
+	redeliverHeadWritesSoon(t)
 	// The second delivery must be the hand-back's, so the server's own redelivery at the ack wait
 	// never comes inside the run (ackWaitPastTheRun).
 	ackWaitPastTheRun(t)
@@ -1655,7 +1658,7 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
 	// A merge, so the seed is written beside the head row and the write is the one that fails.
-	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9102, map[string]string{
+	sequence := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9102, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 		"number": "9102", "author": "octocat", "base_ref": "integration/x",
 		"head_sha":         "3333333333333333333333333333333333333333",
@@ -1671,10 +1674,15 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 			info.Delivered.Consumer-before, info)
 	})
 
-	time.Sleep(2 * headWriteRedeliverAfter)
-	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
-		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
-			2*headWriteRedeliverAfter, delivered)
+	waitFor(t, func() bool {
+		info = deliveryConsumerInfo(t, natsClient)
+		return info.AckFloor.Stream >= sequence && info.NumAckPending == 0 && info.NumPending == 0
+	}, func() string {
+		return fmt.Sprintf("the envelope at stream sequence %d was not acknowledged after %d deliveries under a cap of 2: it is being handed back for ever: %+v",
+			sequence, info.Delivered.Consumer-before, info)
+	})
+	if delivered := info.Delivered.Consumer - before; delivered != 2 {
+		t.Fatalf("deliveries of an envelope whose head row never stores, once it was acknowledged = %d, want the 2 the cap allows", delivered)
 	}
 
 	var stored int

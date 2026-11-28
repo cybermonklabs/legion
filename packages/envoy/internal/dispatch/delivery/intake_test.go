@@ -88,13 +88,14 @@ func tuningFor(t testing.TB) *intakeTuning {
 // atomics cannot be copied with it.
 func copyTuning(from *intakeTuning) *intakeTuning {
 	to := &intakeTuning{
-		messageTimeout:         from.messageTimeout,
-		maxAckPending:          from.maxAckPending,
-		ackLanding:             from.ackLanding,
-		stopBudget:             from.stopBudget,
-		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
-		createDurable:          from.createDurable,
-		log:                    from.log,
+		messageTimeout:          from.messageTimeout,
+		maxAckPending:           from.maxAckPending,
+		ackLanding:              from.ackLanding,
+		stopBudget:              from.stopBudget,
+		headWriteMaxDeliveries:  from.headWriteMaxDeliveries,
+		headWriteRedeliverAfter: from.headWriteRedeliverAfter,
+		createDurable:           from.createDurable,
+		log:                     from.log,
 	}
 	to.callWait.Store(from.callWait.Load())
 	to.drainWait.Store(from.drainWait.Load())
@@ -363,6 +364,22 @@ func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 	tuningFor(t).headWriteMaxDeliveries = deliveries
 }
 
+// headWriteRedeliverAfterInTests is the delay the server waits before it delivers again an
+// envelope a test's intake handed back because its head row could not be stored
+// (redeliverHeadWritesSoon): a millisecond, a delayed hand-back still, as production's is.
+const headWriteRedeliverAfterInTests = time.Millisecond
+
+// redeliverHeadWritesSoon sets the headWriteRedeliverAfter of the intakes this test builds after it
+// (tuningFor) to headWriteRedeliverAfterInTests, the way capHeadWriteDeliveriesAt lowers their cap.
+// The delay is the server's own, which no clock of this module reaches, so a row that waits for the
+// hand-back's redelivery passes a short one rather than waiting out the shipped ten seconds
+// (INFRA-3149 allows it where no verdict reads the delay's length and the row waits for its fact,
+// dispatch://INFRA-3149/comment/cc01d314-cbbc-4990-b232-cb40ac523f86, item 7).
+func redeliverHeadWritesSoon(t *testing.T) {
+	t.Helper()
+	tuningFor(t).headWriteRedeliverAfter = headWriteRedeliverAfterInTests
+}
+
 // messageTimeoutPastTheRun is the message timeout (intakeTuning.messageTimeout) ackWaitPastTheRun
 // gives the intakes of a test: six hours.
 const messageTimeoutPastTheRun = 6 * time.Hour
@@ -433,7 +450,8 @@ func publishWorkflowEnvelope(t *testing.T, natsClient *bus.Client, owner, repo, 
 }
 
 // startIntake runs intake until the test ends, and waits for Run to return before the test's own
-// cleanups go on, so no Run outlives the test that started it.
+// cleanups go on, so no Run outlives the test that started it. The wait is the shared one
+// (testwait.Receive), whose give-up names it, as runIntake's is.
 func startIntake(t *testing.T, intake *Intake) {
 	t.Helper()
 	runCtx, cancel := context.WithCancel(t.Context())
@@ -444,7 +462,7 @@ func startIntake(t *testing.T, intake *Intake) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the intake's Run to return once its context ended", done)
 	})
 }
 

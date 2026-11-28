@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A durable lost outside a take-over -- deleted while this intake delivers from it -- is created
@@ -22,6 +23,13 @@ import (
 // creates the durable again there, so the two published after the loss get their head rows.
 // Created at the stream's next message instead, as a durable with no start recorded is, it would
 // skip both.
+//
+// The intake's checks and its tries for the durable tick on its hold clock (heldDurable.holdClock),
+// a fake the row moves: one intakeHoldRenew to the check that reads the floor, once the two pull
+// requests are acknowledged, and one more to the check that finds the durable gone, each waited for
+// through the tuning's checked hook; then a durableBindInterval at a time to the try that creates the
+// durable again. The moves stay short of the hold's loss deadline (intakeHoldTTL - intakeHoldMargin
+// past the take), so the hold covers every step whether or not a renewal the moves fire lands.
 func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -29,16 +37,35 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	key := seedHeadIssue(t, ctx, pool, 61)
 	natsClient := intakeTestClient(t)
 	leases := deliveryTestLeases(t, pool)
-	startIntake(t, newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	checks := make(chan struct{}, 1)
+	checked := func() {
+		select {
+		case checks <- struct{}{}:
+		default:
+		}
+	}
+	tuningFor(t).checked.Store(&checked)
+	holdClock := fakeIntakeClock()
+	start := holdClock.Now()
+	intake := newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake.holdClock = holdClock
+	startIntake(t, intake)
 	bound := awaitPushBound(t, natsClient, "", "the intake never bound its durable")
+	// check moves the hold clock to the intake's next check of its durable, once the run loop has
+	// armed it (clock.Ticker arms a tick once the work for the one before has returned), and waits
+	// for that check to end (the tuning's checked hook).
+	check := func(n int, what string) {
+		t.Helper()
+		holdClock.AwaitArmedAt(t, fmt.Sprintf("the intake's check %d of its durable", n), start.Add(time.Duration(n)*intakeHoldRenew))
+		holdClock.Set(start.Add(time.Duration(n) * intakeHoldRenew))
+		testwait.Receive(t, what, checks)
+	}
 
 	const firstBefore, secondBefore, firstAfter, secondAfter = 6101, 6102, 6103, 6104
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", firstBefore, openedForKey(firstBefore, key, "6101610161016101610161016101610161016101"))
 	lastAcked := publishPullRequestEnvelope(t, natsClient, "acme", "widgets", secondBefore, openedForKey(secondBefore, key, "6102610261026102610261026102610261026102"))
 	awaitAcknowledged(t, natsClient)
-	// Two of the intake's checks (intakeHoldRenew) and a second: at least one reads the ack floor
-	// at the second pull request.
-	time.Sleep(2*intakeHoldRenew + time.Second)
+	check(1, "the intake's check that reads the ack floor at the second pull request")
 
 	taken, release := make(chan struct{}), make(chan struct{})
 	ran := make(chan bool, 1)
@@ -50,11 +77,7 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	}()
 	releaseLease := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseLease)
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the test never took the %s lease", consumerLease(bus.DispatchDeliveryDurable))
-	}
+	testwait.Receive(t, fmt.Sprintf("the test to take the %s lease", consumerLease(bus.DispatchDeliveryDurable)), taken)
 
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, bus.DispatchDeliveryDurable); err != nil {
 		t.Fatalf("delete the delivery durable: %v", err)
@@ -70,9 +93,10 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 		}
 		return false
 	}
-	waitFor(t, lost, func() string {
-		return fmt.Sprintf("the intake never said at ERROR that its durable was lost: %v", logs())
-	})
+	check(2, "the intake's check that finds its durable gone")
+	if !lost() {
+		t.Fatalf("the intake's check of its deleted durable did not say at ERROR that it was lost: %v", logs())
+	}
 	holdName := intakeHoldName(bus.DispatchDeliveryDurable)
 	var token string
 	waitFor(t, func() bool {
@@ -84,9 +108,19 @@ func TestADurableLostOutsideATakeOverIsCreatedAgainAfterTheLastAckFloorRead(t *t
 	})
 
 	releaseLease()
-	if held := <-ran; !held {
+	if held := testwait.Receive(t, "the test's duty.Exclusive to return once the lease was released", ran); !held {
 		t.Fatalf("the test never held the %s lease, so the durable could be created again before the publishes", consumerLease(bus.DispatchDeliveryDurable))
 	}
+	// The intake's next try for the durable after the loss is the one that creates it again: the
+	// tries tick a durableBindInterval apart on the hold clock, and one that comes while the test
+	// holds the lease is skipped.
+	moveTicks(t, holdClock, durableBindInterval, func() bool {
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return err == nil && info.PushBound && info.Config.DeliverSubject != bound.Config.DeliverSubject
+	}, func() string {
+		return fmt.Sprintf("the intake never created its lost durable again; its hold clock stands %s past its start: %s",
+			holdClock.Now().Sub(start), consumerState(natsClient))
+	})
 	created := awaitPushBound(t, natsClient, bound.Config.DeliverSubject, "the intake never created its lost durable again")
 	for _, number := range []int{firstAfter, secondAfter} {
 		waitFor(t, func() bool { return headRows(t, ctx, pool, number) == 1 }, func() string {

@@ -344,11 +344,16 @@ type holdTries struct {
 func newHoldTries() *holdTries { return &holdTries{clock: fakeIntakeClock()} }
 
 // before is startIntakeProcessWith's before for the intake whose tries the row reads: the intake's
-// hold clock is the fake, and its tuning's attempted hook adds each of its tries.
-func (h *holdTries) before(p *intakeProcess) {
-	p.intake.holdClock = h.clock
-	tried := func() { h.ended.Add(intakeDelivers(p.intake)) }
-	p.intake.tuning.attempted.Store(&tried)
+// hold clock is the fake, and its tuning's attempted hook adds each of its tries (on).
+func (h *holdTries) before(p *intakeProcess) { h.on(p.intake) }
+
+// on gives intake, before its Run, the fake as its hold clock, and has its tuning's attempted hook
+// add each of its tries: before, for an intake a row builds itself (newIntake) rather than as a
+// process.
+func (h *holdTries) on(intake *Intake) {
+	intake.holdClock = h.clock
+	tried := func() { h.ended.Add(intakeDelivers(intake)) }
+	intake.tuning.attempted.Store(&tried)
 }
 
 // first waits for the try the intake makes as its run starts, before the row has moved its clock,
@@ -378,6 +383,22 @@ func (h *holdTries) untilDelivering(t *testing.T, what string) {
 		delivers := h.next(t, fmt.Sprintf("%s: try %d", what, tries))
 		return fmt.Sprintf("%d tries left the intake standing by", tries), delivers
 	})
+}
+
+// standBy waits for the intake's try as its run starts and moves it through the n tries after it,
+// as next does, and fails the test, naming what, at the first of them that left the intake
+// delivering: each try a standby makes reads the hold and the durable afresh, so the n+1 tries are
+// the polls a row counts in place of a span of them.
+func (h *holdTries) standBy(t *testing.T, what string, n int) {
+	t.Helper()
+	if h.first(t, what+": the try at its start") {
+		t.Fatalf("%s: the intake took the durable over at its try as it started", what)
+	}
+	for try := 1; try <= n; try++ {
+		if h.next(t, fmt.Sprintf("%s: try %d after its start", what, try)) {
+			t.Fatalf("%s: the intake took the durable over at its try %d after its start", what, try)
+		}
+	}
 }
 
 // intakeDelivers reports whether intake delivers from its durable: its latest subscription, read
@@ -1045,9 +1066,11 @@ const intakeHold = "delivery-intake-" + bus.DispatchDeliveryDurable
 const intakeConsumerLease = "delivery-consumer-" + bus.DispatchDeliveryDurable
 
 // A consumer a newer build stamped with a higher generation keeps that build's settings: a standby
-// of this build changes nothing about it across two settings polls while the newer build holds it,
-// and once that build lets go, the standby's take-over recreates the durable with the newer build's
-// settings, not its own.
+// of this build changes nothing about it across its tries for the hold while the newer build holds
+// it, and once that build lets go, the standby's take-over recreates the durable with the newer
+// build's settings, not its own. The standby tries on a fake hold clock the row moves one
+// durableBindInterval at a time (holdTries): the durable is read once its try at its start and four
+// after it have each ended standing by, where the row slept five bind intervals.
 func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -1092,10 +1115,9 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	}
 	awaitPushBound(t, publisher, "", "the newer build's process is not bound")
 
-	standby := startIntakeProcess(t, pool, natsURL, nil)
-	// Several of the standby's attempts (durableBindInterval): long enough that one that was
-	// going to change the durable would have.
-	time.Sleep(5 * durableBindInterval)
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
+	tries.standBy(t, "the standby while the newer build holds the durable", 4)
 	after, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read the durable: %v", err)
@@ -1115,6 +1137,7 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	if err := hold.Release(ctx); err != nil {
 		t.Fatalf("release the newer build's hold: %v", err)
 	}
+	tries.untilDelivering(t, "the standby to take the released durable over")
 	var taken *natsgo.ConsumerInfo
 	waitFor(t, func() bool {
 		taken, err = publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -1172,8 +1195,12 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	}
 	awaitPushBound(t, publisher, "", "the previous build's process is not bound")
 
-	standby := startIntakeProcess(t, pool, natsURL, nil)
-	time.Sleep(3 * durableBindInterval)
+	// The standby tries on a fake hold clock the row moves one durableBindInterval at a time
+	// (holdTries): its try at its start, which takes the hold, and two after it have each ended
+	// standing by before the message is published, where the row slept three bind intervals.
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
+	tries.standBy(t, "the standby while the previous build is bound", 2)
 	publishMergedPullRequest(t, publisher, 1)
 	waitFor(t, func() bool { return received.Load() == 1 }, func() string {
 		return "the previous build's process stopped receiving while the standby stood by: " + consumerState(publisher)
@@ -1193,6 +1220,7 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err := held.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the previous build's process: %v", err)
 	}
+	tries.untilDelivering(t, "the standby to take the durable over once the previous build let go")
 	waitFor(t, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous.DeliverSubject
@@ -1280,8 +1308,9 @@ func durablePartWayThrough(t *testing.T, ctx context.Context, publisher *bus.Cli
 }
 
 // requireDeliveredFromTheFloor waits for process to handle each of the unacknowledged messages
-// once, then gives an acknowledged message the take-over wrongly replayed time to arrive too, and
-// fails the test for any of them.
+// once, then for the durable to have nothing left to hand anybody (awaitEverythingAcknowledged), by
+// which time an acknowledged message the take-over wrongly replayed has been handled too: deliver
+// handles a message before it acknowledges it. It fails the test for any of them.
 func requireDeliveredFromTheFloor(t *testing.T, publisher *bus.Client, process *intakeProcess, acknowledged, unacknowledged int) {
 	t.Helper()
 	var acked, unacked []int
@@ -1302,7 +1331,7 @@ func requireDeliveredFromTheFloor(t *testing.T, publisher *bus.Client, process *
 	}, func() string {
 		return fmt.Sprintf("the intake did not handle the unacknowledged messages %v: %v; %s", unacked, fetchesOf(process, unacked), consumerState(publisher))
 	})
-	time.Sleep(2 * time.Second)
+	awaitEverythingAcknowledged(t, publisher)
 	for _, number := range acked {
 		if got := process.fetches(number); got != 0 {
 			t.Errorf("message %d was acknowledged before the take-over and was handled %d times after it", number, got)
@@ -1315,12 +1344,78 @@ func requireDeliveredFromTheFloor(t *testing.T, publisher *bus.Client, process *
 	}
 }
 
+// bringCreateRetries moves holdClock, the hold's clock of an intake whose run loop started on it at
+// start, through the take-over that loop began there, every try of whose create fails (failed
+// counts the failed tries, and gaveUp reports the give-up's ERROR line). The take-over waits
+// takeOverFirstRetry on that clock after its first failed try and twice as long after each one
+// after it, up to takeOverLastRetry (heldDurable.retryHeld); the row moves the clock to each
+// retry's moment once the try before it has failed and that retry is armed there, and returns the
+// tries it saw fail by the time the next retry falls at or past the take-over's finish deadline,
+// takeOverFinishWithin past start. A try before its retry's moment, or a give-up before that
+// deadline, fails the row at once.
+//
+// The moves pass the loop's tries for the hold and its checks, and the hold's renewals, on the
+// same clock: their timers fire as the clock passes them, and the loop reads its own only once
+// the take-over returns. No moment of theirs is a retry's: those fall a quarter second off the
+// loop's 2 s and 5 s grids, and a renewal's bound and the hold's loss deadline are no sooner than
+// 10 s past start. Nor is a try's own call deadline, takeOverCallTimeout past it, ever pending
+// beside its retry: the try's call has ended before its retry is armed.
+func bringCreateRetries(t *testing.T, holdClock *clocktest.Fake, start time.Time, failed *atomic.Int32, gaveUp func() bool) int32 {
+	t.Helper()
+	finish := start.Add(takeOverFinishWithin)
+	at, wait := start, takeOverFirstRetry
+	for try := int32(1); ; try++ {
+		retry := at.Add(wait)
+		testwait.Until(t, fmt.Sprintf("try %d of the take-over's create to fail, %s past the intake's start, and its retry armed %s past it",
+			try, at.Sub(start), retry.Sub(start)), func() (string, bool) {
+			got := failed.Load()
+			switch {
+			case gaveUp():
+				t.Fatalf("the take-over gave its create up after %d tries with its hold's clock %s past the intake's start, short of its finish deadline %s",
+					got, holdClock.Now().Sub(start), takeOverFinishWithin)
+			case got > try:
+				t.Fatalf("the take-over tried the create %d times with its hold's clock %s past the intake's start, where try %d is not due before %s",
+					got, holdClock.Now().Sub(start), try+1, retry.Sub(start))
+			}
+			armed := holdClock.Armed()
+			pending := make([]time.Duration, len(armed))
+			for i, deadline := range armed {
+				pending[i] = deadline.Sub(start)
+			}
+			return fmt.Sprintf("%d failed tries, armed %v past the intake's start", got, pending), got == try && slices.ContainsFunc(armed, retry.Equal)
+		})
+		if !retry.Before(finish) {
+			return try
+		}
+		holdClock.Set(retry)
+		at, wait = retry, min(2*wait, takeOverLastRetry)
+	}
+}
+
+// createGivenUp reports whether logs holds the ERROR line of a take-over that gave its create of
+// the delivery durable up (heldDurable.retryHeld, failedStep).
+func createGivenUp(logs func() []map[string]any) bool {
+	for _, record := range logs() {
+		if record["level"] == "ERROR" && record["msg"] == "dispatch delivery: create NATS consumer" && record["name"] == bus.DispatchDeliveryDurable {
+			return true
+		}
+	}
+	return false
+}
+
 // A take-over deletes the durable and creates it again at its ack floor. When every try of the
 // create fails after the delete, the take-over gives the consumer lease up with the durable absent,
 // and the next take-over of the same intake finds no durable and creates it at that same floor:
 // none of the acknowledged messages come back, and none of the others are skipped.
+//
+// The intake's hold runs on a fake (heldDurable.holdClock), and so do the take-over's bound and its
+// waits between tries (finishTakeOver, retryHeld): the row brings each try of the create at its
+// retry's moment, and the give-up at the bound and not before it, so the count of tries is the
+// product's schedule and no machine's speed. The next take-over follows at once: the loop's try
+// for the hold fell due on the clock during the first one, and waits for it to return.
 func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t *testing.T) {
 	t.Parallel()
+	logs := captureIntakeLogs(t)
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -1329,24 +1424,35 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t 
 	const acknowledged, unacknowledged = 5, 4
 	durablePartWayThrough(t, ctx, publisher, acknowledged, unacknowledged)
 
-	// Every try of the first take-over's create starts within takeOverFinishWithin of its first
-	// try, so failing each create until then fails every try of that take-over, and the create
+	// Every try of the first take-over's create fails: the creates fail until that take-over has
+	// given its create up, which it logs at ERROR before it returns (createGivenUp), so the create
 	// that succeeds is a later take-over's.
-	var first atomic.Int64
+	gaveUp := func() bool { return createGivenUp(logs) }
 	var failed atomic.Int32
 	attempts := failCreatesWhile(t, func() bool {
-		first.CompareAndSwap(0, time.Now().UnixNano())
-		if time.Since(time.Unix(0, first.Load())) < takeOverFinishWithin {
-			failed.Add(1)
-			return true
+		if gaveUp() {
+			return false
 		}
-		return false
+		failed.Add(1)
+		return true
 	})
-	process := startIntakeProcess(t, pool, natsURL, nil)
-	requireDeliveredFromTheFloor(t, publisher, process, acknowledged, unacknowledged)
-	if got := failed.Load(); got < 2 {
-		t.Fatalf("the take-over tried the create %d times before it gave up, want it tried again", got)
+	holdClock := fakeIntakeClock()
+	start := holdClock.Now()
+	process := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { p.intake.holdClock = holdClock })
+	tries := bringCreateRetries(t, holdClock, start, &failed, gaveUp)
+	if tries < 2 {
+		t.Fatalf("the take-over tried the create %d times before its finish deadline %s, want it tried again", tries, takeOverFinishWithin)
 	}
+	if gaveUp() {
+		t.Fatalf("the take-over gave its create up after %d tries with its hold's clock %s past the intake's start, short of its finish deadline %s",
+			failed.Load(), holdClock.Now().Sub(start), takeOverFinishWithin)
+	}
+	holdClock.Set(start.Add(takeOverFinishWithin))
+	testwait.Until(t, "the take-over to give its create up at its finish deadline", func() (int32, bool) { return failed.Load(), gaveUp() })
+	if got := failed.Load(); got != tries {
+		t.Fatalf("the take-over tried the create %d times before it gave up, want the %d tries due within its finish deadline %s", got, tries, takeOverFinishWithin)
+	}
+	requireDeliveredFromTheFloor(t, publisher, process, acknowledged, unacknowledged)
 	if got, failedTries := attempts.Load(), failed.Load(); got <= failedTries {
 		t.Fatalf("the intake tried the create %d times, want the %d failed ones and one after them", got, failedTries)
 	}
@@ -1356,6 +1462,14 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableAtItsFloorOnTheNextAttempt(t 
 // stopped gracefully before any create succeeded hands the hold on, and a fresh intake, as a
 // restarted process runs one, creates the durable at the old floor: none of the acknowledged
 // messages come back, and none of the others are skipped.
+//
+// The first process's take-over runs on its hold clock (heldDurable.holdClock), a fake the row
+// moves, and its stop's deadline on its own clock (heldDurable.clock), a fake the row never moves.
+// The row stops it while its take-over is still trying the create, and once Run's context has ended
+// (the stop's deadline armed on its clock) moves its hold clock to the take-over's finish deadline,
+// takeOverFinishWithin past its start, where the take-over gives the create up; the stop, which
+// waits for the take-over, then returns. A loop that tried again past that point would do it under
+// Run's ended context, which takes no lease.
 func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -1369,28 +1483,65 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 	var failing atomic.Bool
 	failing.Store(true)
 	attempts := failCreatesWhile(t, failing.Load)
-	first := startIntakeProcess(t, pool, natsURL, nil)
+	holdClock, stopClock := fakeIntakeClock(), fakeIntakeClock()
+	start := holdClock.Now()
+	first := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) {
+		p.intake.clock, p.intake.holdClock = stopClock, holdClock
+	})
 	waitFor(t, func() bool {
 		_, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return attempts.Load() > 0 && errors.Is(err, natsgo.ErrConsumerNotFound)
 	}, func() string {
 		return fmt.Sprintf("the first intake did not delete the durable and fail its create (%d creates): %s", attempts.Load(), consumerState(publisher))
 	})
-	first.stop()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		first.stop()
+	}()
+	stopClock.AwaitArmedAt(t, "the first intake's stop deadline, armed as its Run's context ended", stopClock.Now().Add(tuningFor(t).stopBudget))
+	holdClock.Set(start.Add(takeOverFinishWithin))
+	testwait.Receive(t, "the first intake's stop to return once its take-over gave its create up at its finish deadline", stopped)
 	failing.Store(false)
 
 	next := startIntakeProcess(t, pool, natsURL, nil)
 	requireDeliveredFromTheFloor(t, publisher, next, acknowledged, unacknowledged)
 }
 
-// previousBuildReconciler runs the configuration reconciliation of the build before holds
-// (legion-envoy-v19.0.0's reconcileDurableConsumer, cut to its first case) against the delivery
-// durable every interval until the test ends, as a process of that build does on its own pool:
-// under the durable's consumer lease, it looks the durable up, and when there is none it creates
-// the durable with that build's config, which names no start and so delivers from the stream's
-// first message. It reads no hold. created counts the durables it created, and present the passes
-// that found the durable there.
-func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string, interval time.Duration) (created, present *atomic.Int32) {
+// previousBuild is a process of the build before holds, as far as the delivery durable goes: the
+// configuration reconciliation of that build (legion-envoy-v19.0.0's reconcileDurableConsumer,
+// cut to its first case) on a pool of its own. A pass, under the durable's consumer lease, looks
+// the durable up, and when there is none it creates the durable with that build's config, which
+// names no start and so delivers from the stream's first message. It reads no hold. created counts
+// the durables its passes created, present the passes that found the durable there, and passes
+// every pass it made, one skipped because another process held the lease included.
+//
+// That build paces its passes by a ticker of its own (durableBindInterval). Here they run only
+// when the test asks: one at a time (pass), or back to back from reconcile to stop, over a window
+// the test opens and closes itself, so a pass reaches every moment of that window it can and none
+// is left to a pace.
+type previousBuild struct {
+	// t is the test a give-up of the join of the passes (stop) is reported to, through t.Error.
+	t      *testing.T
+	leases duty.Leases
+	client *bus.Client
+	// ackWait is the ack wait of the durable a pass creates: the test's tuning's (ackWait), read
+	// once on the test's goroutine.
+	ackWait time.Duration
+
+	created, present, passes atomic.Int32
+	// passed is closed by the first pass, once it has run (passedOnce).
+	passed     chan struct{}
+	passedOnce sync.Once
+
+	mu sync.Mutex
+	// end stops the passes reconcile started and waits for the one in flight; nil while none run.
+	end func()
+}
+
+// previousBuildReconciler is a process of the build before holds (previousBuild) on pool's database
+// (a pool of its own, storetest.SecondProcess) and natsURL's server, whose passes end with the test.
+func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string) *previousBuild {
 	t.Helper()
 	leases := storetest.Leases(t, storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool)
 	client, err := bus.Connect([]string{natsURL})
@@ -1398,52 +1549,89 @@ func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string, int
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
 	t.Cleanup(client.Close)
-	created, present = &atomic.Int32{}, &atomic.Int32{}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	p := &previousBuild{t: t, leases: leases, client: client, ackWait: tuningFor(t).ackWait(), passed: make(chan struct{})}
+	t.Cleanup(p.stop)
+	return p
+}
+
+// pass makes one pass, as that build's process does at each tick of its reconciliation.
+func (p *previousBuild) pass() {
+	p.passes.Add(1)
+	defer p.passedOnce.Do(func() { close(p.passed) })
+	duty.Exclusive(context.Background(), nil, p.leases, intakeConsumerLease, time.Time{}, 0, func(context.Context) {
+		_, err := p.client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		switch {
+		case errors.Is(err, natsgo.ErrConsumerNotFound):
+			previous := natsgo.ConsumerConfig{
+				Durable:        bus.DispatchDeliveryDurable,
+				DeliverSubject: natsgo.NewInbox(),
+				FilterSubject:  githubIntakeSubject,
+				AckPolicy:      natsgo.AckExplicitPolicy,
+				AckWait:        p.ackWait,
+				MaxAckPending:  intakeMaxAckPending,
+			}
+			if _, err := p.client.JS().AddConsumer(bus.Stream, &previous); err == nil {
+				p.created.Add(1)
+			}
+		case err == nil:
+			p.present.Add(1)
+		}
+	})
+}
+
+// reconcile makes passes back to back, on a goroutine of their own, until stop.
+func (p *previousBuild) reconcile() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.end != nil {
+		return
+	}
+	quit, ended := make(chan struct{}), make(chan struct{})
 	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		defer close(ended)
 		for {
-			duty.Exclusive(ctx, nil, leases, intakeConsumerLease, time.Time{}, 0, func(context.Context) {
-				_, err := client.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-				switch {
-				case errors.Is(err, natsgo.ErrConsumerNotFound):
-					previous := natsgo.ConsumerConfig{
-						Durable:        bus.DispatchDeliveryDurable,
-						DeliverSubject: natsgo.NewInbox(),
-						FilterSubject:  githubIntakeSubject,
-						AckPolicy:      natsgo.AckExplicitPolicy,
-						AckWait:        tuningFor(t).ackWait(),
-						MaxAckPending:  intakeMaxAckPending,
-					}
-					if _, err := client.JS().AddConsumer(bus.Stream, &previous); err == nil {
-						created.Add(1)
-					}
-				case err == nil:
-					present.Add(1)
-				}
-			})
 			select {
-			case <-ctx.Done():
+			case <-quit:
 				return
-			case <-ticker.C:
+			default:
+				p.pass()
 			}
 		}
 	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
-	return created, present
+	p.end = func() {
+		close(quit)
+		// stop runs on the intake's goroutine (the second create, failCreatesWhile) as well as the
+		// test's, so the wait is the form for a goroutine that is not the test's: a give-up fails the
+		// test through t.Error, which ends no goroutine, and the wait returns.
+		if _, err := testwait.ReceiveInHelper("previousBuild.stop", "the previous build's passes to end once quit closed", ended); err != nil {
+			p.t.Error(err)
+		}
+	}
+}
+
+// stop ends the passes reconcile started, once the pass in flight has returned. Its wait returns
+// whether the passes ended or it gave up (reconcile's end), so whichever of the intake's stop and
+// the cleanup's comes second finds nothing to end.
+func (p *previousBuild) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.end != nil {
+		p.end()
+		p.end = nil
+	}
 }
 
 // A take-over whose create fails once after the delete creates the durable itself, at its ack
 // floor, while a process of the build before holds reconciles the same durable under the same
 // consumer lease: that process never finds the durable missing, so it never creates its own,
-// which would replay every message the durable had acknowledged. None of the acknowledged
-// messages come back, none of the others are skipped, and that process finds the durable there.
+// which would replay every message the durable had acknowledged. The window is the take-over's,
+// from the create that fails, made after the delete, to the create tried after it, and that
+// process reconciles through the whole of it. None of the acknowledged messages come back, none of
+// the others are skipped, and that process finds the durable there afterwards.
+//
+// The take-over's wait before it tries the create again is on the intake's hold clock
+// (heldDurable.holdClock, retryHeld), a fake the row moves to that retry once the failed create has
+// armed it: the window closes when the row moves the clock, and not on a span of the machine's.
 func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -1459,15 +1647,39 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 	}
 	start := floor.AckFloor.Stream + 1
 
-	created, present := previousBuildReconciler(t, pool, natsURL, 100*time.Millisecond)
-	var failed atomic.Bool
-	attempts := failCreatesWhile(t, func() bool { return !failed.Swap(true) })
-	process := startIntakeProcess(t, pool, natsURL, nil)
+	previous := previousBuildReconciler(t, pool, natsURL)
+	var creates atomic.Int32
+	attempts := failCreatesWhile(t, func() bool {
+		switch creates.Add(1) {
+		case 1:
+			// The failing create returns only once the previous build has made a pass, so a pass
+			// falls inside the window whatever the take-over's retry wait is. The hook runs on the
+			// intake's goroutine, so it waits in the form for a goroutine that is not the test's: a
+			// pass that never comes fails the row through t.Error at the shared wait's give-up,
+			// naming it, and the create fails and goes on.
+			previous.reconcile()
+			if _, err := testwait.ReceiveInHelper("failCreatesWhile", "the previous build's first pass", previous.passed); err != nil {
+				t.Error(err)
+			}
+			return true
+		case 2:
+			previous.stop()
+		}
+		return false
+	})
+	holdClock := fakeIntakeClock()
+	process := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { p.intake.holdClock = holdClock })
+	retry := holdClock.Now().Add(takeOverFirstRetry)
+	holdClock.AwaitArmedAt(t, "the take-over's wait to try the create again after the one that failed", retry)
+	holdClock.Set(retry)
 	requireDeliveredFromTheFloor(t, publisher, process, acknowledged, unacknowledged)
 	if got := attempts.Load(); got < 2 {
 		t.Fatalf("the intake tried the create %d times, want the failed one and one after it", got)
 	}
-	if got := created.Load(); got != 0 {
+	if previous.passes.Load() == 0 {
+		t.Fatal("the previous build's process made no pass between the take-over's failed create and the create after it, so this row proves nothing")
+	}
+	if got := previous.created.Load(); got != 0 {
 		t.Fatalf("the previous build's process found the durable missing and created it %d times", got)
 	}
 	taken, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
@@ -1480,8 +1692,15 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 			taken.Config.DeliverPolicy, taken.Config.OptStartSeq, taken.Config.Metadata[generationKey],
 			natsgo.DeliverByStartSequencePolicy, start, consumerConfigGeneration)
 	}
-	before := present.Load()
-	waitFor(t, func() bool { return present.Load() > before }, func() string {
+	// A pass the lease skips finds nothing, so the process passes until one takes the lease.
+	before := previous.present.Load()
+	waitFor(t, func() bool {
+		previous.pass()
+		return previous.present.Load() > before
+	}, func() string {
 		return "the previous build's process did not find the durable present after the take-over: " + consumerState(publisher)
 	})
+	if got := previous.created.Load(); got != 0 {
+		t.Fatalf("the previous build's process found the durable missing after the take-over and created it %d times", got)
+	}
 }
