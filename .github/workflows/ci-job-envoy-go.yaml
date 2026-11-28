@@ -1,12 +1,10 @@
 name: CI job envoy-go
 
-# The steps of `.github/workflows/ci.yaml#envoy-go` job, in a file of its own, and the PostgreSQL 16
-# job `envoy-go-postgres16`, which every call of the file runs beside them: ci.yaml already calls as
-# many reusable workflows as .github/scripts/check-workflow-files.sh allows it, so that job takes no
-# file and no caller of its own. ci.yaml's job of the same id calls this file, and that caller keeps
-# `needs: changes` and the whole `if:` that decides whether these jobs run, so no `if:` here selects
-# the suite: the one this file carries lets the job envoy-go report a failed leg (`!cancelled()`).
-# The caller's result is a failure when any job of the file fails, which ci-ok reads.
+# The steps of `.github/workflows/ci.yaml#envoy-go` job, in a file of its own, and the job
+# envoy-go-postgres16, which has no file of its own (its `why:` says why). ci.yaml's job of the
+# same id calls this file, and that caller keeps `needs: changes` and the whole `if:` that decides
+# whether these jobs run, so no `if:` here selects the suite: the one this file carries lets the
+# job envoy-go report a failed leg (`!cancelled()`).
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
@@ -756,16 +754,11 @@ jobs:
   # why: .github/ci-notes/ci.md#the-postgresql-16-job-three-delivery-tests-on-the-version-an-envoy-infra-stack-can-run
   envoy-go-postgres16:
     runs-on: ubuntu-24.04-arm
-    # The step's go test keeps its default -timeout of 10 minutes, which must fire before the
-    # runner cancels the job, so a hung test prints the dump that names it: the job's limit is
-    # that and ten minutes of checkout, setup, cache restore and the package's test build.
+    # go test's 10-minute -timeout fires first; ten more cover checkout, setup and the test build.
     timeout-minutes: 20
     services:
       postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector:pg16
-        # (.github/ci-images.yaml). The job does not wait for ci-images: the package already holds
-        # this row, which an earlier run's ci-images copied, so the pull needs no copy of its own
-        # run (.github/ci-notes/ci.md#the-postgresql-16-job-three-delivery-tests-on-the-version-an-envoy-infra-stack-can-run).
+        # pgvector/pgvector:pg16's row of .github/ci-images.yaml, not waited for (the why above).
         image: ghcr.io/cybermonklabs/legion/ci@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f
         env:
           POSTGRES_PASSWORD: ci
@@ -780,10 +773,7 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    # Load-bearing, not boilerplate: each of the three tests opens the store or a database of its
-    # own from DISPATCH_TEST_DATABASE_URL and skips without it
-    # (internal/dispatch/store/storetest/storetest.go, delivery's attribution_locale_test.go), and
-    # a skip is a pass, so without the service the step would be green and test nothing on 16.
+    # Each test skips without it, and a skip is a pass.
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -797,9 +787,7 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # go-envoy-test, restored only: this job builds the test binary of
-      # internal/dispatch/delivery, which the entry .github/workflows/ci-caches.yaml fills with the
-      # test binary of every package of the envoy module holds. It saves none.
+      # go-envoy-test, restored only; .github/workflows/ci-caches.yaml fills it.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -807,22 +795,10 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
-      # The settings the service's command: line asks for, read back from the server; why each one
-      # is .github/scripts/postgres-service-settings.sh's header. They are PostgreSQL 16's too.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
-      # The three tests whose subject differs between PostgreSQL 16 and 18, by name
-      # (POSTGRES16_TESTS in .github/scripts/ci_job_reads.py). The attribution's database guard
-      # (migration 20261117111040's attribution_database_refusal) reads pg_database's locale
-      # fields, and `datlocale` is a column of 17 and later: read as a column, it fails on 16
-      # with `record "db" has no field "datlocale"` before the guard can refuse, which
-      # TestPrepareAttributionRefusesADatabaseItCannotRead fails, and which 18 cannot show. The
-      # reading's identity digests the stored body of attribution_keys, where 16 keeps each
-      # node's place in the source text and 17 and later write -1, so a restore changes the
-      # stored body on 16 alone; the two identity tests hold the identity to that. Every other
-      # test of the package runs on 18 under the race detector, in envoy-go-race's leg 4
-      # (.github/go-legs.yaml), and in no leg of envoy-go. -v prints each test's verdict to the log.
+      # The tests are POSTGRES16_TESTS of .github/scripts/ci_job_reads.py; the why above says why.
       - name: Test the attribution's database guard and the reading's identity on PostgreSQL 16
         run: go test -count=1 -v -run '^(TestPrepareAttributionRefusesADatabaseItCannotRead|TestTheReadingIdentityIsTheStoredBodyAndTheMajorVersion|TestTheReadingIdentitySurvivesARestoreOfItsText)$' ./internal/dispatch/delivery
         working-directory: packages/envoy
