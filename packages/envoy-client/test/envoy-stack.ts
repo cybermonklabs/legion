@@ -129,7 +129,7 @@ export interface ServerStart {
   readonly env: Readonly<Record<string, string>>;
   /** The file the server's errors are appended to, and its output where `out` is unset. */
   readonly log: string;
-  /** The file the server's standard output is appended to, where it is not `log`. */
+  /** The file the server's standard output is appended to. */
   readonly out?: string;
   readonly cwd?: string;
 }
@@ -145,8 +145,7 @@ export function startServer(
   held?: { readonly fd: number; readonly fdEnv: string }
 ): Subprocess {
   const errors = openSync(start.log, "a");
-  const output =
-    start.out === undefined || start.out === start.log ? errors : openSync(start.out, "a");
+  const output = start.out === undefined ? errors : openSync(start.out, "a");
   try {
     return Bun.spawn([...start.command], {
       // Left out when unset: claude-envoy compiles this file with exactOptionalPropertyTypes.

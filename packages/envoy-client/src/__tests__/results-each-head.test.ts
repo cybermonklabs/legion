@@ -589,6 +589,49 @@ describe("dispatch results: the result a check CI proves derived from its read",
     expect(checkBlock(lines, "c1")[7]).toStartWith(`  - pass by ci at ${h}.`);
     expect(checkBlock(lines, "c1")[7]).toEndWith("Result ci-run:902.");
   });
+
+  // A read that names a commit (`--at`), answered with the read of another head than the named
+  // one's, as a server before R8's --at clause answers it: the check's `ci` is the read of #71 at
+  // H2, which holds no run of docs, and its results hold ci-run:701, which #70's run derived at H1,
+  // the named commit. The head line takes no verdict from a result the `ci` read did not derive
+  // (model.CheckCI: a reader picks the derived result by `ci.result`): it says the read derived no
+  // result, in its own words. Main's renderer took the newest result of any head and printed
+  // "pass at H1 by ci (CI run docs, absent)".
+  test("takes no verdict from a result the `ci` read did not derive, at a named commit", () => {
+    const [h1, h2] = [hex("1"), hex("2")];
+    const named = { kind: "named", commit: h1 };
+    const lines = printed(
+      answer(
+        check("c1", "before_merge", {
+          ci_check: "docs",
+          ci: {
+            run: "docs",
+            state: "no_result",
+            case: "absent",
+            detail: `No CI run named docs is on ${h2}, the head of acme/app#71.`,
+            line: "- Check c1 (before_merge): CI run docs has no result (absent)",
+            commit: h2,
+            repo: "acme/app",
+          },
+          compared_with: [named],
+          results: [
+            result(
+              "ci-run:701",
+              "ci",
+              "pass",
+              h1,
+              { answer: "at_basis", basis: named },
+              "2026-11-19T00:01:00Z"
+            ),
+          ],
+          pass_stands: { answer: "yes", roles: ["ci"] },
+        })
+      )
+    );
+    expect(checkBlock(lines, "c1")[0]).toBe(
+      `- c1 (before_merge): no result: No CI run named docs is on ${h2}, the head of acme/app#71. The words of c1.`
+    );
+  });
 });
 
 // An answer that names no state: the run's Dispatch server leaves out each check's `pass_stands`
