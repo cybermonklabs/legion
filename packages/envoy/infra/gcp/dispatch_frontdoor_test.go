@@ -450,14 +450,15 @@ func TestDispatchCertPublishSaysOnceThatItIsWaitingForACertificate(t *testing.T)
 }
 
 // certPublishRun is cert-publish's whole program running in the background: its exit, once
-// exited is closed, the files its output goes to, and the files the pauses of its publishing loop
-// and of its claim gate are recorded in.
+// exited is closed, the files its output goes to, the files the pauses of its publishing loop and
+// of its claim gate are recorded in, and the file every sleep it starts is recorded in.
 type certPublishRun struct {
 	cmd                    *exec.Cmd
 	exited                 chan struct{}
 	err                    error
 	stdout, stderr         string
 	loopPaused, gatePaused string
+	sleeps                 string
 }
 
 // output is what the program has written so far.
@@ -483,6 +484,28 @@ func (r *certPublishRun) gatePauses(t *testing.T) []int {
 	return recordedPIDs(t, r.gatePaused)
 }
 
+// ownSleeps is the arguments of each sleep cert-publish's own shell has started so far, in order:
+// the sleep on PATH appends its parent's pid and its arguments before anything else. The claim
+// gate runs in a subshell of its own, so its sleeps have another parent and are not counted. A
+// line with no newline yet is still being written, so it is not counted.
+func (r *certPublishRun) ownSleeps(t *testing.T) []string {
+	t.Helper()
+	b, err := os.ReadFile(r.sleeps)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	require.NoError(t, err)
+	shell := strconv.Itoa(r.cmd.Process.Pid)
+	lines := strings.Split(string(b), "\n")
+	var own []string
+	for _, line := range lines[:len(lines)-1] {
+		if parent, args, ok := strings.Cut(line, " "); ok && parent == shell {
+			own = append(own, args)
+		}
+	}
+	return own
+}
+
 // recordedPIDs reads the pids the sleep on PATH appended to path, each with a newline, before it
 // slept. A line with no newline yet is still being written, so it is not counted.
 func recordedPIDs(t *testing.T, path string) []int {
@@ -503,15 +526,15 @@ func recordedPIDs(t *testing.T, path string) []int {
 }
 
 // startCertPublish starts cert-publish's whole program for paths, the claim gate and the
-// publishing loop as the container runs them, with a sleep first on PATH that records the pid of
-// each of the loop's 60 s pauses (pauses) and of the gate's 30 s pauses (gatePauses). It cuts
-// each of the loop's pauses to a fifth of a second or, when realPublishPause is set, makes each
-// last until the test ends it; when killGate is set it kills the gate at its 30 s pause, as an
-// out-of-memory kill would end it. The output goes to files, so the test reads it while the
-// program runs, and the shell leads a process group of its own, which the test's cleanup kills
-// with every process the program started. The shell's one bound is the test binary's deadline
-// (shellCommandUntilTheTestDeadline): each test of it waits for an event of the program with no
-// span of its own.
+// publishing loop as the container runs them, with a sleep first on PATH. It records every sleep
+// the program starts with its parent (ownSleeps), and the pid of each of the loop's 60 s pauses
+// (pauses) and of the gate's 30 s pauses (gatePauses). It cuts each of the loop's pauses to a fifth
+// of a second or, when realPublishPause is set, makes each last until the test ends it; when
+// killGate is set it kills the gate at its 30 s pause, as an out-of-memory kill would end it. The
+// output goes to files, so the test reads it while the program runs, and the shell leads a process
+// group of its own, which the test's cleanup kills with every process the program started. The
+// shell ends only with the test (shellCommandUntilTheTestEnds): each test of it waits for an event
+// of the program with a testwait wait, which names that event when it gives up.
 func startCertPublish(t *testing.T, paths dispatchCertPaths, killGate, realPublishPause bool) *certPublishRun {
 	t.Helper()
 	requireFrontDoorTools(t)
@@ -528,13 +551,15 @@ func startCertPublish(t *testing.T, paths dispatchCertPaths, killGate, realPubli
 	}
 	shim := t.TempDir()
 	loopPaused, gatePaused := filepath.Join(shim, "loop-pauses"), filepath.Join(shim, "gate-pauses")
+	sleeps := filepath.Join(shim, "sleeps")
 	require.NoError(t, os.WriteFile(filepath.Join(shim, "sleep"), []byte(fmt.Sprintf(`#!/bin/sh
+echo "$PPID $*" >>%[6]q
 case "$1" in
 60) echo $$ >>%[4]q; %[3]s ;;
 30) echo $$ >>%[5]q; %[2]s ;;
 *) exec %[1]q "$@" ;;
 esac
-`, realSleep, gatePause, publishPause, loopPaused, gatePaused)), 0o755))
+`, realSleep, gatePause, publishPause, loopPaused, gatePaused, sleeps)), 0o755))
 
 	dir := t.TempDir()
 	run := &certPublishRun{
@@ -543,6 +568,7 @@ esac
 		stderr:     filepath.Join(dir, "stderr"),
 		loopPaused: loopPaused,
 		gatePaused: gatePaused,
+		sleeps:     sleeps,
 	}
 	stdout, err := os.Create(run.stdout)
 	require.NoError(t, err)
@@ -550,7 +576,7 @@ esac
 	stderr, err := os.Create(run.stderr)
 	require.NoError(t, err)
 	defer stderr.Close()
-	cmd := shellCommandUntilTheTestDeadline(t, "-c", dispatchCertPublishScript(paths, frontDoorTestFQDN))
+	cmd := shellCommandUntilTheTestEnds(t, "-c", dispatchCertPublishScript(paths, frontDoorTestFQDN))
 	cmd.Env = append(os.Environ(), "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"), "HOSTNAME="+frontDoorTestPod+"a")
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -636,23 +662,37 @@ func TestDispatchCertPublishExitsWhenTheClaimGateDies(t *testing.T) {
 // runs under wait, which a trapped signal ends. Without the trap the test's shell dies of the
 // signal ("signal: terminated"); with a foreground sleep it exits only when the sleep returns,
 // and here the loop's pause lasts until the test ends it, so such a cert-publish never exits and
-// the wait for its exit fails by name. The pause the loop is in is the mid-wait fact: nothing
-// reads it after the exit, since a correct trap may end and reap that sleep before it exits, and
-// a check that the sleep still runs would then fail a right program.
+// the wait for its exit fails by name.
+//
+// "At once" is read as a fact, not a span: between the SIGTERM and its exit, cert-publish's own
+// shell starts no wait of its own. Each wait it has is a sleep its PATH resolves, which the
+// stand-in records with its parent (ownSleeps), so a trap that sleeps before it exits fails the
+// row naming that sleep, however fast the machine. A machine that is merely slow to run the trap
+// starts no sleep, and passes. A trap that spends its time without a sleep (a busy loop, a slow
+// command) is not seen: no wall clock is read. The pause the loop is in is the mid-wait fact, and
+// nothing reads it after the exit, since a correct trap may end and reap that sleep before it
+// exits, and a check that the sleep still runs would then fail a right program.
 func TestDispatchCertPublishExitsOnSIGTERM(t *testing.T) {
 	store := newFrontDoorSecretStore(t)
 	run := startCertPublish(t, newFrontDoorCertPaths(t, store.url), false, true)
 	// The pause begins after the pass, so a SIGTERM sent once it is recorded comes while the loop
-	// sleeps, or while it starts the sleep it waits on.
+	// sleeps, or while it starts the sleep it waits on. The stand-in records each sleep before it
+	// records the pause, so the sleeps read below hold that pause.
 	testwait.Until(t, "the publishing loop's first pass, and the 60 s pause after it", func() ([]int, bool) {
 		stdout, _ := run.output(t)
 		pauses := run.pauses(t)
 		return pauses, len(pauses) > 0 && strings.Contains(stdout, "waiting for tailscaled to cache a certificate")
 	})
+	before := run.ownSleeps(t)
+	// The pause just waited for is one of them: none read means the record cannot see cert-publish's
+	// own sleeps, and the check below would pass whatever the trap did.
+	require.Contains(t, before, "60", "the stand-in recorded none of cert-publish's own sleeps, so no wait after the SIGTERM could be seen")
 	require.NoError(t, run.cmd.Process.Signal(syscall.SIGTERM))
 	testwait.Receive(t, "cert-publish to exit on the SIGTERM sent while its publishing loop slept", run.exited)
 	_, stderr := run.output(t)
 	require.NoError(t, run.err, "cert-publish was killed by SIGTERM rather than exiting on it:\n%s", stderr)
+	require.Equal(t, before, run.ownSleeps(t),
+		"cert-publish started a wait of its own between the SIGTERM and its exit, so it did not exit at once:\n%s", stderr)
 }
 
 // frontDoorLedger is Secret <hostname>-tailnet-tls's claim annotation, its node registry and its

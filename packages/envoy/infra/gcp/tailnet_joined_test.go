@@ -82,7 +82,9 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 }
 
 // run runs the script once, as one boot's tailnet-joined.service does, with docker answering the
-// states given, and returns what it printed and its error.
+// states given, and returns what it printed and its error. The script ends on its states, so its
+// shell's one bound is the test binary's deadline (gcp.ShellCommandUntilTheTestDeadline): one that
+// never reaches its end is killed there, and fails the test naming the shell's deadline.
 func (h *joinedHarness) run(t *testing.T, states ...string) (string, error) {
 	t.Helper()
 	return h.runOn(t, h.bin+string(os.PathListSeparator)+os.Getenv("PATH"), states...)
@@ -95,7 +97,7 @@ func (h *joinedHarness) runOn(t *testing.T, path string, states ...string) (stri
 	require.NoError(t, os.WriteFile(filepath.Join(h.logs, "docker"), nil, 0o600))
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "sleeps")))
 	require.NoError(t, os.RemoveAll(filepath.Join(h.logs, "effects")))
-	cmd := gcp.ShellCommand(t, h.script, h.marker, h.key)
+	cmd := gcp.ShellCommandUntilTheTestDeadline(t, h.script, h.marker, h.key)
 	cmd.Env = []string{
 		"PATH=" + path,
 		"DOCKER_LOG=" + filepath.Join(h.logs, "docker"),

@@ -66,17 +66,27 @@ func shellCommand(t testing.TB, args ...string) *exec.Cmd {
 
 // shellCommandUntilTheTestDeadline is shellCommand for a script that ends on an event of its own
 // and may rightly take minutes of wall time to reach it: the tailnet advertiser under its fake
-// clock (tailnetRig.run), which its fake sleep ends once the clock reaches the run's limit. Every
-// step of the clock forks the stand-ins, so the wall time a run takes is the machine's, and on a
-// loaded machine a run of a few hundred fake seconds passed scriptTimeout's 2 min (at a box load
-// of about 2,400, INFRA-3904). The same holds for a script a test waits on for an event with no
-// span of its own: cert-publish (startCertPublish) and the advertiser that SIGTERM ends
-// (TestTailnetServiceAdvertiserExitsOnSIGTERM). Its only bound is untilTheTestDeadline's, so a
-// script that never reaches its event still fails t by name, deadlineMargin before go test's
-// -timeout.
+// clock (tailnetRig.run), which its fake sleep ends once the clock reaches the run's limit, and
+// the hub VM's tailnet-joined script (gcp_test's joinedHarness). Every step of the clock forks the
+// stand-ins, so the wall time a run takes is the machine's, and on a loaded machine a run of a few
+// hundred fake seconds passed scriptTimeout's 2 min (at a box load of about 2,400, INFRA-3904). Its
+// only bound is untilTheTestDeadline's, so a script that never reaches its event still fails t by
+// name, deadlineMargin before go test's -timeout.
 func shellCommandUntilTheTestDeadline(t testing.TB, args ...string) *exec.Cmd {
 	t.Helper()
 	return shellCommandIn(t, untilTheTestDeadline(t), deadlineMargin.String()+" before go test's -timeout", args...)
+}
+
+// shellCommandUntilTheTestEnds is shellCommand for a program the test waits on with a testwait
+// wait of its own, which names what it waited for and gives up 30 s before go test's -timeout:
+// cert-publish (startCertPublish) and the advertiser that SIGTERM ends
+// (TestTailnetServiceAdvertiserExitsOnSIGTERM). The shell ends only with the test (t.Context()),
+// so the named wait always gives up first. A shell killed at that same moment would race the wait,
+// and when the kill won, the killed program would read as the program's own answer: "exited
+// (signal: killed) with its gate alive", "killed by SIGTERM rather than exiting on it".
+func shellCommandUntilTheTestEnds(t testing.TB, args ...string) *exec.Cmd {
+	t.Helper()
+	return shellCommandIn(t, t.Context(), "the test's end", args...)
 }
 
 // shellCommandIn is the shell of shellCommand run in ctx, whose deadline bound names in a failure.
