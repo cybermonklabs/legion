@@ -121,7 +121,9 @@ func (p *poolStatements) auditGap(t *testing.T, what string) {
 	}
 	statements := p.since(p.checked)
 	p.checked += len(statements)
-	// Between windows no route's read runs, so no rolled-back write is a route's (readMayRollBack).
+	// Only the writer comparison runs between windows (driveRead), and its statements are dropped
+	// as the oracle's (writingOracle, nonOracleStatements), so no rolled-back write left is a
+	// route's (readMayRollBack).
 	requireReadsWrites(t, "between windows "+what, "", nonOracleStatements(statements))
 }
 
