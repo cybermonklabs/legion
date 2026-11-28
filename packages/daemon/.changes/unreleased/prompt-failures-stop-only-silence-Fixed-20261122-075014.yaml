@@ -10,8 +10,8 @@ body: |-
     A worker whose adoption keeps timing out on a large working copy keeps its process and its
     background jobs, and its task is sent again at each sweep. Every answered failure is counted
     on the pending task (`sendFailures`, `lastSendError`), and at the prompt-failure limit of
-    them in a row on one task the issue's architect gets one `worker-stalled` notice naming the
-    claim, the task and the last answer.
+    them on one task, counted since the task was queued or a turn last took it, the issue's
+    architect gets one `worker-stalled` notice naming the claim, the task and the last answer.
 time: 2026-11-22T07:50:14Z
 custom:
     Issue: prompt-failures-stop-only-silence
