@@ -5468,6 +5468,12 @@ test("after Take out of epic with the rows marked last far above the view lands,
 // hands that to the bar's hand-off (IssuesTable.tsx:354, :473), against IssuesTable.tsx:343-345's
 // own words that "a landing never stands on a row the press is taking away however long the write
 // and its read take". The same at 53f87411, 18 of 18 (infra-3135-l-b2-nzlnk).
+// Round 31 (the tester's), by the architect's request of 2026-11-28 01:04Z: below sm the List's
+// selection bar stands where main's #5224 toolbar stands, fixed under the header and wrapped in
+// main's groups (y 56 to 266 at 390x664, the implementer's probe Job l-p13312-6pg6g), over the
+// rows this row unticks, so a pointer press at a mark lands on the bar. Each mark is unticked as it
+// is marked, by the keyboard: the focus on the mark, then Space, which leaves the focus on the
+// mark in every engine, as the measurement above reads it.
 // Its engines: the clause of the `webkit` and `firefox` projects that names the rows
 // INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
 // SLOW(>=2s): forty issues of an epic seeded, and two Take out of epic presses with their writes held.
@@ -5531,7 +5537,8 @@ test("with Take out of epic's writes held and both marks then unticked, the proj
       .poll(() => held.length, { message: `${where}: the writes were never sent` })
       .toBeGreaterThan(0);
     for (const mark of marks) {
-      await mark.click({ force: true });
+      await mark.focus();
+      await page.keyboard.press("Space");
       await nextFrames(page);
     }
     await expect(bar).toHaveCount(0);
