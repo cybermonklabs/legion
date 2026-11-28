@@ -542,8 +542,8 @@ async function blockAtCut(
     lines = blockLines({ block_id: blockID, text }, ref, block);
   } else if (item.kind === "ask") {
     const { ask } = await client.getAsk(item.id, cut).catch(orMissing);
-    // A part's id and the ask's revision are given only for an ask that has not changed since
-    // the cut, so a part of an ask that changed reads as a `Part`, with no text.
+    // At every cut an ask is read with no revision and no part ids (they are named absent, since
+    // no event records them), so a part of an ask reads as a `Part`, with no text.
     const noun = askPartNoun(ask, {}, blockID);
     const text = askPartText(ask, blockID, noun);
     lines = blockLines(
