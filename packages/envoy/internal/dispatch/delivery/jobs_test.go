@@ -506,19 +506,26 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	// Runs before the pool's and the fake's cleanups, so no read outlives the test into them.
 	t.Cleanup(func() {
 		releaseOnce()
-		fired.Wait()
+		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
 	})
-	waitFor(t, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
-		return fmt.Sprintf("%d jobs reads in flight, want %d", inFlight.Load(), reconcilePartialConcurrency)
+	// Every run's burst has ended and every run past the slots waits for one: the intake holds no
+	// pending burst, which fire drops before it takes a slot, every slot is taken, and each slot
+	// holder's read is at GitHub, where the row holds it. No read starts until a slot is let go, which
+	// only the row's release lets happen, so the most reads seen at once is final here.
+	testwait.Until(t, "every run's burst to have ended, every read slot to be taken and each slot holder's read to be at GitHub", func() (string, bool) {
+		jobs.mu.Lock()
+		pending := len(jobs.pending)
+		jobs.mu.Unlock()
+		slots, flying := len(jobs.reads), int(inFlight.Load())
+		return fmt.Sprintf("%d runs' bursts pending, %d of %d read slots taken, %d reads in flight", pending, slots, cap(jobs.reads), flying),
+			pending == 0 && slots == cap(jobs.reads) && flying == slots
 	})
-	// Every run's burst has ended; give the rest a moment to start reads they should not.
-	time.Sleep(500 * time.Millisecond)
 	if got := most.Load(); got != reconcilePartialConcurrency {
 		t.Fatalf("%d of %d runs' jobs read at once, want at most %d", got, runs, reconcilePartialConcurrency)
 	}
 
 	releaseOnce()
-	fired.Wait()
+	testwait.Returns(t, "every run's jobs read to return once the listings were released", fired.Wait)
 	if got := reads.Load(); got != runs {
 		t.Fatalf("jobs reads = %d, want one for each of the %d runs", got, runs)
 	}
@@ -536,6 +543,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 // holds a slot instead, a whole intakeMessageTimeout past the moment it took it, and its read stores
 // the run's jobs.
 func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
+	t.Parallel()
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	// Every read slot taken, and one run waiting for a slot.
@@ -696,13 +704,15 @@ func (c *holdingJobClock) AfterFunc(d time.Duration, f func()) clock.Timer {
 // early signal it carries would be spent on nothing.
 //
 // What the row decides is where that event goes, not which NATS call sent it there: the next
-// holder of the durable is handed it well inside jobAckWait (30 s). The bound is what makes the
-// row a proof rather than a restatement of what NATS does anyway. An event the stopped intake
-// acknowledged reaches nobody at all, and one it left unanswered reaches the next holder only
-// when that ack wait expires, so this bound fails for both; the hand-back reaches the next
-// holder rather than this stopped delivery because the stop drains the subscription before it
-// answers anything (intakeDelivery.stop).
+// holder of the durable is handed it. The durable here waits a day for an acknowledgement, not
+// jobAckWait's 30 s, and that is what makes the row a proof rather than a restatement of what NATS
+// does anyway: an event the stopped intake acknowledged reaches nobody at all, and one it left
+// unanswered would reach the next holder only when that day ran out, past any deadline the test
+// binary has, so the wait for it fails for both; the hand-back reaches the next holder rather than
+// this stopped delivery because the stop drains the subscription before it answers anything
+// (intakeDelivery.stop).
 func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(t *testing.T) {
+	t.Parallel()
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -720,10 +730,13 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	runCtx, endRun := context.WithCancel(ctx)
 	jobs.ctx = runCtx
 
-	// The durable as a take-over leaves it, created here because Run is not what binds it. It
-	// starts at new messages (jobConsumerConfig), so a durable an earlier row left on the
-	// package's shared stream is recreated and handed this row's events alone.
+	// The durable as a take-over leaves it, created here because Run is not what binds it, but for
+	// its ack wait, a day, so that only a hand-back reaches the next holder within the row: the
+	// server's own redelivery once an ack wait expires never comes inside the run. It starts at new
+	// messages (jobConsumerConfig), so a durable an earlier row left on the package's shared stream
+	// is recreated and handed this row's events alone.
 	wanted := jobConsumerConfig(tuningFor(t))
+	wanted.AckWait = 24 * time.Hour
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 		t.Fatalf("delete the job durable: %v", err)
 	}
@@ -760,11 +773,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	// The event in hand when the context ends: a tracked run's, which reaches the read it
 	// schedules, where the clock holds it.
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	select {
-	case <-clock.armedFirst:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the first job event never reached the read it schedules: %+v", consumer())
-	}
+	testwait.Receive(t, "the first job event to reach the read it schedules", clock.armedFirst)
 
 	// The event under test, waiting behind it on the one key.
 	event := jobPayload("acme/widgets", 501)
@@ -802,26 +811,14 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	})
 
 	// The stop, which hands back what the delivery held rather than what it acknowledged.
-	stopping, endStop := context.WithTimeout(context.Background(), 20*time.Second)
-	defer endStop()
-	handedAt := time.Now()
-	jobs.StopDelivering(stopping)
-
-	const handOver = 5 * time.Second
-	select {
-	case msg := <-handedOver:
-		var envelope contracts.Envelope
-		if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-			t.Fatalf("decode the envelope the next holder was handed: %v", err)
-		}
-		if envelope.Payload != event {
-			t.Fatalf("the next holder was handed payload %q, want the event the stopped intake handed back %q", envelope.Payload, event)
-		}
-		t.Logf("the next holder was handed the event %s after the stopped intake was, with jobAckWait %s",
-			time.Since(handedAt).Round(time.Millisecond), jobAckWait)
-	case <-time.After(handOver):
-		t.Fatalf("the next holder was not handed the job event within %s of the stopped intake handing it back, jobAckWait being %s: %+v",
-			handOver, jobAckWait, consumer())
+	jobs.StopDelivering(testwait.Context(t))
+	msg := testwait.Receive(t, "the next holder to be handed the job event the stopped intake hands back", handedOver)
+	var envelope contracts.Envelope
+	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
+		t.Fatalf("decode the envelope the next holder was handed: %v", err)
+	}
+	if envelope.Payload != event {
+		t.Fatalf("the next holder was handed payload %q, want the event the stopped intake handed back %q", envelope.Payload, event)
 	}
 
 	for _, record := range logs() {

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft holds what bind does to the
@@ -110,6 +111,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 // wide filter (githubIntakeSubject), which hands over every workflow run and every pull request
 // on either server.
 func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
+	t.Parallel()
 	natsClient := intakeTestClient(t)
 	const stored = 12
 	for i := range stored {
@@ -155,8 +157,9 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 
 	// NumPending is what the server reports; what it hands over is a separate question. Fetch
 	// from a fresh pull durable of each shape by name, through the jetstream package, which binds
-	// no subject, and count what actually arrives.
-	js, err := jetstream.New(natsClient.Conn)
+	// no subject, and count what actually arrives. Its requests wait as long as the test's other
+	// waits on the server do (testnats.RequestTimeout), not nats.go's own five seconds.
+	js, err := jetstream.New(natsClient.Conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open the jetstream API: %v", err)
 	}
@@ -166,8 +169,9 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 		t.Cleanup(func() { deleteProbeConsumer(t, natsClient, durable) })
 	}
 	// fetch creates a fresh pull durable carrying filters -- as the one FilterSubject when plural
-	// is false, as FilterSubjects when it is true -- fetches up to want messages from it by name,
-	// and counts by kind what arrives.
+	// is false, as FilterSubjects when it is true -- fetches want messages from it by name, the
+	// fetch ending once they have arrived or at the shared wait's end (testwait.Context), and counts
+	// by kind what arrives.
 	fetches := 0
 	fetch := func(t *testing.T, name string, plural bool, want int, filters ...string) (runs, prs int) {
 		t.Helper()
@@ -186,7 +190,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 			return 0, 0
 		}
 		deleteOnCleanup(config.Durable)
-		batch, err := consumer.Fetch(want, jetstream.FetchMaxWait(3*time.Second))
+		batch, err := consumer.Fetch(want, jetstream.FetchContext(testwait.Context(t)))
 		if err != nil {
 			t.Logf("fetch %s: %v", name, err)
 			return 0, 0
@@ -251,7 +255,7 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 	// the same way, separates the empty subject from the filter set.
 	pushed := func(name, consumer, subject string, want int) {
 		t.Helper()
-		got := drain(t, natsClient, consumer, subject)
+		got := drain(t, natsClient, consumer, subject, want)
 		t.Logf("%s: %d of %d arrived", name, got, stored)
 		if got != want {
 			t.Errorf("%s: %d of %d arrived, want %d", name, got, stored, want)
@@ -315,9 +319,9 @@ func TestWhichFilterShapeDeliversAWorkflowSubject(t *testing.T) {
 	}
 }
 
-// drain binds a push subscription to consumer on subject, the way this package's bind does, and
-// reports how many messages reach its handler within a short window.
-func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
+// drain binds a push subscription to consumer on subject, the way this package's bind does, waits
+// through the shared wait for want messages to reach its handler, and reports how many have.
+func drain(t *testing.T, natsClient *bus.Client, consumer, subject string, want int) int {
 	t.Helper()
 	var mu sync.Mutex
 	arrived := 0
@@ -330,7 +334,7 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
 		}
 	}, natsgo.Bind(bus.Stream, consumer), natsgo.ManualAck())
 	if err != nil {
-		t.Logf("subscribe to %s on subject %q: %v", consumer, subject, err)
+		t.Errorf("subscribe to %s on subject %q: %v", consumer, subject, err)
 		return 0
 	}
 	defer func() {
@@ -338,10 +342,11 @@ func drain(t *testing.T, natsClient *bus.Client, consumer, subject string) int {
 			t.Logf("unsubscribe from %s: %v", consumer, err)
 		}
 	}()
-	time.Sleep(3 * time.Second)
-	mu.Lock()
-	defer mu.Unlock()
-	return arrived
+	return testwait.Until(t, fmt.Sprintf("%d messages to reach the subscription bound to %s on subject %q", want, consumer, subject), func() (int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return arrived, arrived >= want
+	})
 }
 
 // TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor holds the cutover from the durable
@@ -448,6 +453,14 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 	}
 }
 
+// burstFetchLatency is what the fake GitHub takes to answer each run in the burst below: a
+// stand-in for the time a GitHub REST call takes in production, and the row's argument. With every
+// fetch answered at once, a burst would never leave more messages outstanding than the consumer's
+// bound allows, which is the case this row exists for. It is no wait the test reads -- the counts
+// below are read once every message is acknowledged -- so it is a stand-in's latency, held on the
+// clock the waits read (testwait.Pause).
+const burstFetchLatency = 20 * time.Millisecond
+
 // TestIntakeKeepsUpWithABurstOfDeliveryEvents publishes more events at once than the consumer may
 // have outstanding and holds the whole path end to end: every one is stored, each costs exactly
 // one GitHub fetch, nothing is redelivered and nothing is left outstanding. A burst larger than
@@ -455,6 +468,7 @@ func TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor(t *testing.T) {
 // consumer -- an acknowledgement that never reaches the server, a credit never given back --
 // fails here.
 func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
+	t.Parallel()
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -471,7 +485,7 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 		mu.Lock()
 		fetches[id]++
 		mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
+		testwait.Pause(burstFetchLatency)
 		mustEncode(t, w, smallRun(id, time.Now().UTC()))
 	})
 
@@ -492,15 +506,19 @@ func TestIntakeKeepsUpWithABurstOfDeliveryEvents(t *testing.T) {
 	awaitRuns(t, ctx, pool, natsClient, burst)
 	t.Log(intakeStateReport(t, natsClient))
 
-	// A redelivery, which flow control that did not fit the handler would cause, arrives within
-	// the ack wait; give one time to land before reading the consumer's state.
-	time.Sleep(2 * time.Second)
+	// A redelivery, which flow control that did not fit the handler would cause, comes only for a
+	// message still outstanding: once the durable's ack floor is at the stream's last message and
+	// nothing is outstanding, none can come, and the counts read then are final. The server forgets
+	// a message's redeliveries once it is acknowledged (NumRedelivered counts outstanding ones), so
+	// what says none came is the durable's delivered count: one delivery per message.
+	awaitAcknowledged(t, natsClient)
 	info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read consumer info: %v", err)
 	}
-	if info.NumRedelivered != 0 || info.NumAckPending != 0 {
-		t.Fatalf("consumer redelivered=%d ack_pending=%d, want 0/0 (every message acknowledged once, none redelivered)", info.NumRedelivered, info.NumAckPending)
+	if info.NumRedelivered != 0 || info.NumAckPending != 0 || info.Delivered.Consumer != burst {
+		t.Fatalf("consumer delivered=%d redelivered=%d ack_pending=%d, want %d/0/0 (every message delivered and acknowledged once, none redelivered)",
+			info.Delivered.Consumer, info.NumRedelivered, info.NumAckPending, burst)
 	}
 	mu.Lock()
 	defer mu.Unlock()

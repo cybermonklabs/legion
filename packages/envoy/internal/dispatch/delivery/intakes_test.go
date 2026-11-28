@@ -15,8 +15,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestBothIntakesKeepTheirSubscriptions starts the two intakes as cmd/dispatch does (StartIntakes,
@@ -195,11 +197,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
-	select {
-	case <-entered:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the intake never fetched the merged pull request: %s", consumer())
-	}
+	testwait.Receive(t, "the intake to fetch the merged pull request", entered)
 	cancel()
 	// The intake stops delivering as ctx ends: the durable loses its subscriber at once, while the
 	// message in its handler is still running.
@@ -236,9 +234,15 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // TestAHandlerTheStopGivesUpIsRedeliveredAtOnce: the intakes' stop budget, counted from ctx's end,
 // bounds how long the intakes' stop waits on a handler GitHub holds, and the message of the handler
 // it gives up is handed back rather than acknowledged, so the next process to bind the durable
-// redoes it within seconds instead of after the ack wait.
+// redoes it within seconds instead of after the ack wait. The intakes run on a fake clock the row
+// moves (startIntakes): each arms its stop deadline its tuning's stopBudget from ctx's end, and once
+// the fake reaches them the stop gives the held handler up (its WARN line says so) and returns.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	tuning := tuningFor(t)
+	// A budget other than production's intakeStopBudget, so the deadlines read below are the
+	// tuning's.
 	tuning.stopBudget = time.Second
 	// The message given back is what the next process must redo at once, so the server's own
 	// redelivery at the ack wait never comes inside the run (ackWaitPastTheRun).
@@ -250,30 +254,43 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
 	github := fake.newTestClient()
-	t.Cleanup(held.release)
 
+	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), clock.Real())
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), stopClock)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
 	}
 	t.Cleanup(func() {
 		cancel()
-		stop()
+		testwait.Returns(t, "the intakes' stop to return once ctx ended", stop)
 	})
+	// After the fake's server and the stop above, so it runs before both: a row that fails while
+	// the handler is held has its stop find the fetch let go, rather than wait for it on stopClock,
+	// which nothing moves once the row has ended.
+	t.Cleanup(held.release)
 	awaitBoundDurable(t, publisher)
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)
 
-	started := time.Now()
+	signalled := stopClock.Now()
 	cancel()
-	stop()
-	if waited, within := time.Since(started), intakeStopBudget/2; waited > within {
-		t.Fatalf("stop returned %s after ctx ended under a %s stop budget, want within %s: the budget did not bound the handler wait",
-			waited, tuning.stopBudget, within)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stop()
+	}()
+	// One stop deadline per intake, each armed as ctx ended, the tuning's budget from then. The same
+	// clock also holds the held handler's own deadline (Intake.deliver), six hours out
+	// (ackWaitPastTheRun).
+	stopClock.AwaitArmedCountAt(t, "the two intakes' stop deadlines, armed as ctx ended", signalled.Add(tuning.stopBudget), 2)
+	stopClock.Advance(tuning.stopBudget)
+	testwait.Receive(t, "the intakes' stop to return once the fake clock reached their stop deadlines", stopped)
+	if !loggedMessage(logs(), "dispatch delivery: the intake stopped before the event's handling finished; handing it back") {
+		t.Fatalf("the stop returned without saying it gave the held handler up; the messages logged were %q", loggedMessages(logs()))
 	}
 	// The fake records the end once it sees the request cancelled, a moment after the client did.
 	waitFor(t, func() bool { return slices.Equal(held.of("1"), []string{"start 1", "end 1"}) }, func() string {
@@ -298,16 +315,7 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
-	stopped := make(chan struct{})
-	go func() {
-		stop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("stopping intakes with no GitHub App did not return")
-	}
+	testwait.Returns(t, "the stop of intakes with no GitHub App to return", stop)
 }
 
 // TestIntakesWhoseSecondConnectFailsStartNeither: the job intake's connect failing returns its
