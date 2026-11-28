@@ -66,11 +66,7 @@ func TestSIGTERMSettlesTheMentionSendInFlightAndLeavesTheQueuedOnePending(t *tes
 	process.waitHealthy(t)
 	key, _ := process.createIssue(t)
 	inFlight := process.mention(t, key, "In flight at SIGTERM.", "session:s1")
-	select {
-	case <-arrived:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the mention's send never reached the listener:\n%s", process.Output.String())
-	}
+	testwait.Receive(t, "the mention's send to reach the listener", arrived)
 	queued := process.mention(t, key, "Queued behind it.", "session:s1")
 
 	process.Terminate(t)

@@ -50,6 +50,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -220,7 +221,9 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 		t.Fatalf("build the router: %v", err)
 	}
 	handler, background := routes.New(appCtx)
-	t.Cleanup(background.Wait)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the router's background work (api.Background.Wait: detached work, sockets, hub, relay, mention sender) to end once the test's lifetime ended", background.Wait)
+	})
 	return handler
 }
 
@@ -2185,6 +2188,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					fmt.Sprintf("DISPATCH_TEST_PROCESS_HEARTBEAT=%q (expected a positive Go duration)", invalid))
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.SearchFillReadTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT unset: SearchFillReadTimeout = %v, want 0 (searchFillBounds' client deadline, four seconds past the statement timeout)", boot.SearchFillReadTimeout)
+			}
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                    "1",
+				"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String(),
+			})
+			if boot.SearchFillReadTimeout != stagedPastTheRun {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT: SearchFillReadTimeout = %v, want %v", boot.SearchFillReadTimeout, stagedPastTheRun)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			// The floor: a deadline that is not past the statement timeout the lock timeout gives
+			// (searchFillBounds) would end a read before Postgres's own timeouts could.
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "6s"},
+				`DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT="6s" (expected longer than 6s`)
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1.5s"},
+				`DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT="1.5s" (expected longer than 1.5s`)
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "2s"}); boot.SearchFillReadTimeout != 2*time.Second {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=2s past a 1.5s statement timeout: SearchFillReadTimeout = %v, want 2s", boot.SearchFillReadTimeout)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CoverageFillTimeout != 0 {

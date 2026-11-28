@@ -1929,6 +1929,7 @@ Each read runs in a read-only transaction of its own, under three bounds:
 
 - A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
   At that deadline pgx closes the connection and asks the server to cancel the statement.
+  `DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT` replaces that deadline for an end-to-end test with one past the statement timeout, and a deployment never sets it.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
 `DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT` replaces the 5 s lock timeout for an end-to-end test with one of at least 1 ms (the reads send it to Postgres in whole milliseconds, and Postgres reads a `lock_timeout` of `0ms` as none), the statement timeout staying 1 s past it and the client deadline 4 s past that, and a deployment never sets it.
