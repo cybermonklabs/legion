@@ -18,7 +18,7 @@
             "key": "ACME-3",
             "title": "The queued root",
             "priority": 2,
-            "resolved_priority": null,
+            "resolved_priority": 2,
             "priority_from": null,
             "phase": "admitted",
             "phase_since": "2026-10-02T21:00:00Z",
@@ -49,7 +49,7 @@
             "key": "ACME-2",
             "title": "The implementer's child",
             "priority": 1,
-            "resolved_priority": null,
+            "resolved_priority": 1,
             "priority_from": null,
             "phase": "implementing",
             "phase_since": "2026-10-02T21:00:00Z",
@@ -100,7 +100,7 @@
             "key": "ACME-1",
             "title": "The parent waiting on its child",
             "priority": 1,
-            "resolved_priority": null,
+            "resolved_priority": 1,
             "priority_from": null,
             "phase": "awaiting_children",
             "phase_since": "2026-10-02T20:00:00Z",
@@ -188,7 +188,7 @@
       }
     },
     "fields": {
-      "columns": "0fceb9ff5028d87b",
+      "columns": "4b449d9fe37d0ffa",
       "header": "3465a82e58eabecb"
     }
   }
