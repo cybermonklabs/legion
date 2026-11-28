@@ -375,6 +375,9 @@ func clusteredSeedRows() []clusteredSeedRow {
 			listener(a).SeedSecretName = strings.ToLower(s)
 		}},
 		{"tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey", "tailnet.listener.seedSecretKey", func(a *A, s string) { listener(a).SeedSecretKey = s }},
+		{"tailnet.listener.natsAudience", "tailnet.listener.natsAudience", "tailnet.listener.natsAudience", func(a *A, s string) {
+			listener(a).NatsAudience = splitSeed(s, "-")
+		}},
 		{"tailnet.listener.allowedHosts", "tailnet.listener.allowedHosts[0]", "tailnet.listener.allowedHosts", func(a *A, s string) {
 			listener(a).AllowedHosts = []string{strings.ToLower(s) + ".example.com"}
 		}},
@@ -395,6 +398,7 @@ func clusteredSeedRows() []clusteredSeedRow {
 		{"listener.machineId", "listener.machineId", "listener.machineId", func(a *A, s string) { ownListener(a).MachineID = str(s) }},
 		{"listener.seedSecretName", "listener.seedSecretName", "listener.seedSecretName", func(a *A, s string) { ownListener(a).SeedSecretName = strings.ToLower(s) }},
 		{"listener.seedSecretKey", "listener.seedSecretKey", "listener.seedSecretKey", func(a *A, s string) { ownListener(a).SeedSecretKey = s }},
+		{"listener.natsAudience", "listener.natsAudience", "listener.natsAudience", func(a *A, s string) { ownListener(a).NatsAudience = splitSeed(s, "-") }},
 		{"listener.clientNamespaces", "listener.clientNamespaces[0]", "listener.clientNamespaces", func(a *A, s string) {
 			ownListener(a).ClientNamespaces = []string{splitSeed(strings.ToLower(s), "-")}
 		}},

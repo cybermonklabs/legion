@@ -19,21 +19,25 @@ const NATSServicesVariable = "BROKER_NATS_SERVICES"
 type NATSServiceKind string
 
 // The kinds of entry. Dispatch, a listener, the webhook listener, a Legion daemon, the measurement
-// job, an edge listener, the deployment's one operator identity (natsgrant.Operator, of the writer
-// hold's phase) and the writer hold's probe (natsgrant.HoldProbe) are services the NATS auth
-// service admits by their platform identity, each answered with its kind's grant of natsgrant, an
-// edge listener's built for the projects its entry lists (natsgrant.Edge). The webhook listener is
-// the listener that receives GitHub's webhook (its ENVOY_WEBHOOKS names github): its grant is a
-// listener's with GitHub's lane off its publish deny (natsgrant.WebhookListener), so it publishes
-// every GitHub event, which a listener's grant refuses. An edge listener's grant keeps a
-// listener's deny of Dispatch's lane and GitHub's lane. An edge listener's entry is also read for
-// its projects (NATSCallout.EdgeListeners), whether or not the broker runs the auth service.
+// job, the JetStream reader (natsgrant.JSRead), an edge listener, the deployment's one operator
+// identity (natsgrant.Operator, of the writer hold's phase) and the writer hold's probe
+// (natsgrant.HoldProbe) are services the NATS auth service admits by their platform identity, each
+// answered with its kind's grant of natsgrant, an edge listener's built for the projects its entry
+// lists (natsgrant.Edge). The webhook listener is the listener that receives GitHub's webhook (its
+// ENVOY_WEBHOOKS names github): its grant is a listener's with GitHub's lane off its publish deny
+// (natsgrant.WebhookListener), so it publishes every GitHub event, which a listener's grant
+// refuses. An edge listener's grant keeps a listener's deny of Dispatch's lane and GitHub's lane.
+// An edge listener's entry is also read for its projects (NATSCallout.EdgeListeners), whether or
+// not the broker runs the auth service. The JetStream reader reads every stream's and consumer's
+// names and infos and no message; a deployment lists one jsread entry for each account its Legion
+// pods run under.
 const (
 	NATSDispatch        NATSServiceKind = "dispatch"
 	NATSListener        NATSServiceKind = "listener"
 	NATSWebhookListener NATSServiceKind = "webhook-listener"
 	NATSDaemon          NATSServiceKind = "daemon"
 	NATSMeasure         NATSServiceKind = "measure"
+	NATSJSRead          NATSServiceKind = "jsread"
 	NATSOperator        NATSServiceKind = "operator"
 	NATSProbe           NATSServiceKind = "probe"
 	NATSEdgeListener    NATSServiceKind = "edge-listener"
@@ -91,20 +95,21 @@ const (
 // (ParseAccount). An edge listener's entry writes, in place of * or -, the projects it serves:
 // edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. It refuses, naming the entry: an entry of
 // none of these forms or of an unknown kind; a dispatch, listener, webhook-listener or
-// edge-listener entry with no machine id, and a daemon, measure, operator or probe entry with one;
-// an empty machine id, one holding a wildcard, a space or a control character
-// (natsgrant.MachineIDToken), and one the listener itself refuses (bus.CheckListenerMachineID: one
+// edge-listener entry with no machine id, and a daemon, measure, jsread, operator or probe entry
+// with one; an empty machine id, one holding a wildcard, a space or a control character
+// (natsgrant.ServiceMachineID), and one the listener refuses (bus.CheckListenerMachineID: one
 // holding the escape character '%', or whose durable name is too long), so the auth service takes
 // every machine id a listener starts with, a dotted one among them, whose names the grant escapes
 // as the listener does (bus.ListenerSpelling), an edge listener's inbox prefix among them; a
 // measure entry with -, since its grant holds a KV read no project scope can hold and it reads no
-// project's messages; an operator or probe entry with -, since the writer hold and the buckets
-// command reach no project's messages and no project scope can hold a stream create; a second
-// operator or probe entry, since a deployment has one operator identity and one probe; an edge
-// listener's entry with * or -, or whose projects are no list of at most oauthwire.MaxProjects
+// project's messages; a jsread entry with -, since its stream reads list every project's subjects
+// and cannot be held to projects; an operator or probe entry with -, since the writer hold and the
+// buckets command reach no project's messages and no project scope can hold a stream create; a
+// second operator or probe entry, since a deployment has one operator identity and one probe; an
+// edge listener's entry with * or -, or whose projects are no list of at most oauthwire.MaxProjects
 // project keys named once each; an account ParseAccount refuses (a namespace's default account, a
 // Google default or service-agent account); and an account given twice, since one account connects
-// as one service.
+// as one service. A deployment may list more than one jsread entry, each its own account.
 func ParseNATSServices(raw string) ([]NATSService, error) {
 	var services []NATSService
 	seen := map[string]string{}
@@ -129,7 +134,7 @@ func ParseNATSServices(raw string) ([]NATSService, error) {
 
 func parseNATSService(text string) (NATSService, error) {
 	form := func() error {
-		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, webhook-listener, edge-listener, daemon, measure, operator or probe and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", NATSServicesVariable, text)
+		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, an edge-listener entry's projects <KEY>[,<KEY>…] in place of * or -, the kind one of dispatch, listener, webhook-listener, edge-listener, daemon, measure, jsread, operator or probe and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", NATSServicesVariable, text)
 	}
 	head, account, ok := strings.Cut(text, "=")
 	if !ok {
@@ -146,14 +151,14 @@ func parseNATSService(text string) (NATSService, error) {
 		if machineID == noMachineID {
 			return NATSService{}, fmt.Errorf("%s entry %q names no machine id, which the %s grant is built for", NATSServicesVariable, text, entry.Kind)
 		}
-		if !natsgrant.MachineIDToken(machineID) {
+		if !natsgrant.ServiceMachineID(machineID) {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id that is empty or holds a wildcard, a space or a control character", NATSServicesVariable, text)
 		}
 		if err := bus.CheckListenerMachineID(machineID); err != nil {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id that %w", NATSServicesVariable, text, err)
 		}
 		entry.MachineID = machineID
-	case NATSDaemon, NATSMeasure, NATSOperator, NATSProbe:
+	case NATSDaemon, NATSMeasure, NATSJSRead, NATSOperator, NATSProbe:
 		if machineID != noMachineID {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id, which a %s's grant does not take; write -", NATSServicesVariable, text, entry.Kind)
 		}
@@ -173,6 +178,8 @@ func parseNATSService(text string) (NATSService, error) {
 		switch entry.Kind {
 		case NATSMeasure:
 			return NATSService{}, fmt.Errorf("%s entry %q holds the measurement job to its exchange projects, which its grant cannot be held to: it reads a KV bucket and no project's messages, so write *", NATSServicesVariable, text)
+		case NATSJSRead:
+			return NATSService{}, fmt.Errorf("%s entry %q holds the JetStream reader to its exchange projects, which its grant cannot be held to: its stream reads list every project's subjects, so write *", NATSServicesVariable, text)
 		case NATSOperator, NATSProbe:
 			return NATSService{}, fmt.Errorf("%s entry %q holds the %s to its exchange projects, which its grant cannot be held to: it reaches no project's messages and no project scope can hold a stream create, so write *", NATSServicesVariable, text, entry.Kind)
 		}

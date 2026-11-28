@@ -1,7 +1,7 @@
 package workflow
 
 // One rule says whether the merge of the head the pull request stands at is owed to a role
-// (owedAsk): the hold at each start, the completion fence, the landed message and the delivery of
+// (record.OwedMergeForward): the hold at each start, the completion fence, the landed message and the delivery of
 // each row read it, so a worker is held exactly while the merge is owed, and is told to wait only
 // if it was held. A merge owed at the head always has its one asked role: a move that ends the ask
 // asks the role of the phase it enters where the merge is owed there, and an asked role whose
@@ -355,7 +355,7 @@ func TestAPlannerBeforeTheImplementerIsToldAndFencedWhileTheMergeIsOwed(t *testi
 // On the default steps the implementer is asked in testing and its merge lands, and then the
 // branch moves back to the head the merge replaced, as a forced push moves it: the record's ask
 // has landed, and its confirmed conflict is of the head the pull request stands at again. A landed
-// ask is owed to nobody (openAsk), so the tester's completion and the reviewer's approval at that
+// ask is owed to nobody (record.OpenMergeForward), so the tester's completion and the reviewer's approval at that
 // head move the issue on with nobody held, and the move into merging asks the merger to merge the
 // base forward onto that head, once, and holds it for no ask. A later read that finds the head
 // still conflicting asks nothing more: the merger owes the merge.

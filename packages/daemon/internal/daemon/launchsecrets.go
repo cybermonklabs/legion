@@ -26,10 +26,10 @@ type launchSecret struct {
 // environment (lookup) names one (natsauth.Seed). The rule file is read here and nowhere else:
 // readBoot compiles these same bytes, so the rules a role runs are the rules boot accepted, and a
 // file named or changed later reaches no launch before the daemon restarts. The daemon's own NATS
-// connection authenticates with the pane seed only when the daemon has no seed of its own
-// (natsauth.DaemonSeed, chooseNATSConnection), which no launch carries. Which of them there are is
-// known from the configuration and the environment alone, so checkOperatorConfig names them
-// without reading a file.
+// connection authenticates with the pane seed only when the daemon has neither a service token nor
+// a seed of its own (natsauth.DaemonCredential, chooseNATSConnection), which no launch carries.
+// Which of them there are is known from the configuration and the environment alone, so
+// checkOperatorConfig names them without reading a file.
 func launchSecrets(cfg config.Config, lookup func(string) (string, bool)) []launchSecret {
 	var secrets []launchSecret
 	if cfg.EnvoyTokenFile != "" {

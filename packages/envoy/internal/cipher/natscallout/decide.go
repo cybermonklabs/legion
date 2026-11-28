@@ -169,8 +169,11 @@ func credentialKind(req Request) string {
 // read by config.ParseNATSServices, by the rules natsgrant.Edge holds them to
 // (natsgrant.MachineIDToken, bus.CheckListenerMachineID, oauthwire.ValidProjects), so Edge
 // refuses none of them; a list it did refuse answers its zero Permissions, no grant, which the
-// guard refuses as every empty grant is (guard, natsgrant.OpenDirection). The operator's is the
-// hold row's phase's, which decideOperator reads, and is none of this function's.
+// guard refuses as every empty grant is (guard, natsgrant.OpenDirection). The JetStream reader's
+// is natsgrant.JSRead, which reads every stream's and consumer's names and infos and no message,
+// and is held to no project: config.ParseNATSServices takes a jsread entry only with *, so
+// scopeGrant passes it whole. The operator's is the hold row's phase's, which decideOperator
+// reads, and is none of this function's.
 func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 	switch entry.Kind {
 	case config.NATSDispatch:
@@ -186,6 +189,8 @@ func serviceGrant(entry config.NATSService) natsgrant.Permissions {
 		return natsgrant.Daemon()
 	case config.NATSMeasure:
 		return natsgrant.Measure()
+	case config.NATSJSRead:
+		return natsgrant.JSRead()
 	case config.NATSProbe:
 		return natsgrant.HoldProbe()
 	}

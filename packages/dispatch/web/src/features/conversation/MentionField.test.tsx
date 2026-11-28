@@ -1,9 +1,5 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import {
-  DISPATCH_WRITING_BOXES,
-  type DispatchWritingBoxRow,
-  dispatchWritingBox,
-} from "@legion/contracts";
+import { type DispatchWritingBoxRow, dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the keys of an IME composition, which user-event has no form for
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -240,17 +236,5 @@ test("a door opens in a link's address, and a party picked there is its bare add
     await waitFor(() => expect(field.value).toBe("[the plan](dispatch://agent/planner-session"));
   } finally {
     restore();
-  }
-});
-
-// R9: the words under a box are its row's, so the list and the box cannot drift apart.
-test("the box shows the hint of the row it was mounted with", async () => {
-  for (const row of DISPATCH_WRITING_BOXES.filter((one) => one.covered)) {
-    const { restore } = renderField(row);
-    try {
-      expect(screen.getByText(row.hint)).toBeTruthy();
-    } finally {
-      restore();
-    }
   }
 });

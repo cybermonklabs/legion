@@ -82,6 +82,37 @@ line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
 check "the text keeps the quotes the line wrote" \
   "$(is "$(text_of "$line")" "go test -run '^(TestOne|TestTwo)\$' ./pkg")"
 
+echo "case: gotestsum's CI form reads as its go test"
+gotestsum_jsonfile='gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/natslive.sh_unit-2.jsonl"'
+gotestsum_quiet="$gotestsum_jsonfile --format standard-quiet --raw-command --"
+line="$gotestsum_quiet go test -json -count=1 ./pkg"
+check "the prefix and its -json are dropped" "$(is "$(command_of "$line")" "go test -count=1 ./pkg")"
+check "the prefix is dropped after a variable assignment" \
+  "$(is "$(text_of "GODEBUG=checkfinalizers=1 $line")" "go test -count=1 ./pkg")"
+line="$gotestsum_jsonfile --format standard-verbose --raw-command -- go test -json -v -run '^(TestOne|TestTwo)\$' ./pkg"
+check "the verbose format keeps -v and the quoting of -run" \
+  "$(is "$(text_of "$line")" "go test -v -run '^(TestOne|TestTwo)\$' ./pkg")"
+
+echo "case: legs pipe packages into gotestsum behind xargs -r"
+legs=$(py 'ex.shell = lambda script, cwd, what: "./pkg ./other"
+for env in ("", "env GODEBUG=checkfinalizers=1 "):
+    run = f"set -o pipefail\nprintf packages | xargs -r {env}{sys.argv[1]} go test -json -count=1"
+    step = {"run": run, "working-directory": "packages/envoy"}
+    steps = ex.steps_of({"fixture.yaml": {"jobs": {"legs": {"steps": [step]}}}})
+    for s in steps:
+        for test in ex.commands_of(s):
+            print(test.text, *test.packages)' "$gotestsum_quiet")
+check "the legs reader reads the same go test with and without env" \
+  "$(is "$legs" $'go test -count=1 ./pkg ./other\ngo test -count=1 ./pkg ./other')"
+
+echo "case: gotestsum near-misses are left for the caller to refuse"
+line="$gotestsum_jsonfile --format standard-quiet -- go test -json ./pkg"
+check "a missing --raw-command is not rewritten" "$(is "$(text_of "$line")" "$line")"
+line="${gotestsum_quiet/go-test-events/other-events} go test -json ./pkg"
+check "another jsonfile directory is not rewritten" "$(is "$(text_of "$line")" "$line")"
+line="$gotestsum_jsonfile --format standard-quiet --raw-command go test -json ./pkg"
+check "a missing -- is not rewritten" "$(is "$(text_of "$line")" "$line")"
+
 echo "case: what it leaves for the caller to refuse"
 check "a value needing the shell is left in place" \
   "$(is "$(command_of 'GOFLAGS=$EXTRA go test ./pkg')" 'GOFLAGS=$EXTRA go test ./pkg')"

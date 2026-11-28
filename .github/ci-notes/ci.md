@@ -1020,7 +1020,7 @@ ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
 source every tool install reads when the first source does not serve the bytes:
 the manifest that names both sources of each row, the fetch helper every install
 goes through, the filler and the gate beside it, the rig and the fault proxy it
-drives, the nine actions it installs through, and the two files a row's version is
+drives, the ten actions it installs through, and the two files a row's version is
 pinned in that the job itself reads (.bun-version for the bun rows and the
 worker image's Dockerfile for mise, jj and uv).
 packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
@@ -2499,8 +2499,8 @@ and checks: write are the ci-ok-report step's.
 ## The tool fallback proof: what it drives, what it only reasons about, and how to read it when it is red
 
 The live proof of the second source every tool install of this repository now has: it faults
-the host the first source is on, installs all nine tools through the source
-.github/ci-tools.yaml names for each, and then serves eighteen corrupted payloads and reads
+the host the first source is on, installs all ten tools through the source
+.github/ci-tools.yaml names for each, and then serves twenty corrupted payloads and reads
 the refusal of every one of them.
 It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
 nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
@@ -2518,7 +2518,7 @@ binary a third party installed seeds mise's install directory from that staged p
 rather than downloading one inside the fault.
 That is what keeps ci-ok green during the very outage this job proves survivable: this job
 is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
-Dockerfile, the manifest and the helper beside it, and the nine actions, so
+Dockerfile, the manifest and the helper beside it, and the ten actions, so
 a step of it that waited on a release host would turn every pull request touching one of
 those files red on exactly the day the fallback is doing its work.
 .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
@@ -2573,11 +2573,11 @@ and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the 
 it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
 assertion reads while the job's own result says nothing happened.
 So on a step with no `continue-on-error` a bound is loud: it fails the job. This job's steps
-are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-six installs
+are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-nine installs
 there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
 would satisfy that control and leave the job green, where the job's own ceiling would have
 cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
-the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the eighteen corrupted cases by
+the nine with nowhere to go by the control step "Check all nine installs with nowhere to go failed, and failed in their own time", the twenty corrupted cases by
 `report` itself - and why a new bound on a step some later assertion accepts the failure of
 needs the same treatment or none at all (dispatch://INFRA-2605).
 
@@ -2621,7 +2621,7 @@ action over the same manifest through the same helper, so one filter decides bot
 neither can drift from the other. CI_OK_SELECTED_BY maps this job to that filter, and
 .github/scripts/ci_job_reads.py holds a gate of its own on it for what this job reads.
 After the Bun halves it proves the other arm64 rows the same way: crane-aarch64,
-changie-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
+changie-aarch64, gotestsum-aarch64, mise-aarch64, jj-aarch64 and elan-aarch64, each installed once from its
 release asset and once under the fault, where each must read its ghcr copy and each install's
 own 504 is read after a probe of its own (the called file's comments say how). Those faulted
 installs read the copies the ci-images job fills, so this job needs that job for order and
@@ -2932,10 +2932,13 @@ Two inputs, each a literal of its caller's. `lane` decides the projects each job
 workflow runs, so nothing here chooses them a second time; it picks no browser to install any
 more: the shard and alone jobs run in the image this repository builds, which carries all three
 engines (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
-`job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, so a
-pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like, and a
-`ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
-without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
+`job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, and
+`<outer> / <caller> / <job>` where the caller is itself in a called workflow, as ci.yaml is under
+`.github/workflows/large-pr-lanes.yaml#approval`. So a pull request's browser checks are
+`dispatch-browser-pr / shard (1)` and the like, an approval-time run's are
+`approval / dispatch-browser / shard (1)`, and a `ci_check` naming `dispatch-browser / merge`
+finds no run of that name on a pull request without the label: the dispatch-browser job's own
+run concludes `skipped`, and no job of
 dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
 caller, every artifact name starts with the id so callers that share a run share none, and
 the merge job's ci-ok report names it.
@@ -3197,10 +3200,10 @@ are rebalanced from their own times. Two more are envoy's own:
 
 What it costs: each job repeats its setup, about 80 s for a unit leg and 65 s for a race leg, so
 the legs use more runner minutes than the two jobs did, and each summary job is one more wait for
-a runner after its kind's last leg. A job sets up only what its tests use: envoy-go-race-impossible
-and envoy-go-skips run no test that starts a container and run no Bun, so they pull no test image
-(their Postgres service's image aside, which envoy-go-race-impossible also runs as its second
-Postgres), install nothing and set no testcontainers variable.
+a runner after its kind's last leg. envoy-go-race-impossible installs gotestsum, and envoy-go-skips
+installs gotestsum and jj. Neither installs Bun or sets a testcontainers variable. Neither pulls a
+test image other than the Postgres service's image, which envoy-go-race-impossible also runs as
+its second Postgres.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 

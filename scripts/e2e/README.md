@@ -372,7 +372,7 @@ Each item below names a script, then what it proves.
   a head that starts conflicting with its base keeps the issue in its phase and takes no role's turn over (dispatch://INFRA-4374), driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with the push onto the base, the implementer's push and its synchronize as GitHub envelopes and each role's registration, turns and completions over the daemon's own HTTP routes and worker stream:
   the daemon's first conflicting read is logged and sends nothing to any role or its connection while the tester's turn runs;
   the second read, a minute on, finds a check the base requires not passed on the head, so the issue stays in `testing` while the implementer is asked on its own role topic to merge the base forward, the tester is told on its own to hold, the architect is told once in a `checks-red` notice naming `testing`, and nothing at all is sent to the tester's connection;
-  once the merge lands the tester is told so, its completion at the head the merge replaced is refused `409 HANDOFF_HEAD_MERGED_FORWARD` with nothing recorded, and its completion at the new head is taken;
+  once the merge lands the tester is told so, its completion at the head the merge replaced is refused `409 HANDOFF_HEAD_MERGED_FORWARD`, which moves nothing, and its completion at the new head is taken;
   and a second issue whose required check passed on its conflicting head gets nothing from its second read
 
 - `conflict-merger.sh`
@@ -1277,7 +1277,7 @@ The checks:
 - `stop-hook-reminds-the-open-phase`: told to answer in one line of prose and call nothing, the implementer ends a turn with `implementing` still open, so the pane's `legion` MCP server answers Claude Code's `Stop` hook with `{"decision":"block","reason":…}` (`legion_phase_hook`, the hook entries of `packages/claude-envoy/legion/hooks/hooks.json`, the endpoint `packages/claude-envoy/src/legion-phase-hook.ts`).
   The transcript holds that reason as one `Stop
   hook feedback` user turn carrying the reminder's own wording
-  — "This reminder repeats at the end of every turn", a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently
+  — "This reminder repeats at the end of every turn", a sentence of `owedReminder` in `packages/pi-shared/src/phase-stall.ts`, the only reminder text, so a later rewording of the rest of it does not break the proof silently
   — and an assistant turn follows that feedback, so the block carried the turn on in the same session rather than ending it.
   The run moves no `LEGION_STALL_*` number:
   this first reminder of a run is the hook's own answer as the turn settles, not a timer's, and the instruction before it resets the run of reminders, so no wait here rides on those four delays.
@@ -1419,7 +1419,7 @@ The checks, in order, which is the tmux proof's:
   The instruction is an Envoy delivery, which puts the run of reminders back at zero (the `inbound` case of `packages/pi-shared/src/phase-stall.ts`).
   Once the daemon has the phase's completion, it answers that the claim owes nothing and no reminder comes:
   that is why this check runs before `claude-implementer-handoff` completes the phase, never after.
-  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "This reminder repeats at the end of every turn" (a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry, so a later rewording of the rest of either text does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
+  The transcript holds the block's reason as one `Stop hook feedback` user turn carrying the reminder's own wording, "This reminder repeats at the end of every turn" (a sentence of `owedReminder` in `packages/pi-shared/src/phase-stall.ts`, the only reminder text, so a later rewording of the rest of it does not break the proof silently), and an assistant turn follows that feedback, so the block carried the turn on in the same session.
   The run moves no `LEGION_STALL_*` number.
 
 - `claude-implementer-handoff`: told through Dispatch to make the spec's one-file change, push it, write its handoff with `dispatch handoff-write` and call the `legion` tool's `handoff_complete`, it does:
@@ -8494,7 +8494,7 @@ all of it) and fails when it cannot read them:
 the tmux proof `tail`s its local file, the sandbox proof runs the same `tail` in the pod's `roles` container (`roles_exec`).
 Every predicate here reads the transcript through it alone.
 The caller also sets `issue` and `stall_offset` (the transcript's size when it told the implementer to stall), and defines `note`; `role_handoff` is `lib/workflow.sh`'s.
-The file sets `stall_reminder_needle`, a sentence that both `owedReminder` and `UNREAD_REMINDER` in `packages/pi-shared/src/phase-stall.ts` carry ("This reminder repeats at the end of every turn"), which the caller's notes name.
+The file sets `stall_reminder_needle`, a sentence of `owedReminder` in `packages/pi-shared/src/phase-stall.ts`, the only reminder text ("This reminder repeats at the end of every turn"), which the caller's notes name.
 
 | function | does |
 | :--- | :--- |

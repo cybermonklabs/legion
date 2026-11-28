@@ -1,5 +1,4 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
-import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -366,10 +365,10 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
 });
 
 // The Change's box is the field every box a person writes a comment in mounts, with the
-// reference picker in it (the writing list's `decisions-change`), and the line under it is that
-// row's own words. Inside `NoTooltips` it takes the page's shape - its box, its name and that
-// line in the page's own colours, no `title` anywhere, and no face of its own, so it is drawn in
-// the page's typeface - and outside it the field keeps its own box.
+// reference picker in it (the writing list's `decisions-change`). Inside `NoTooltips` it takes
+// the page's shape - its box and its name in the page's own colours, no `title` anywhere, and no
+// face of its own, so it is drawn in the page's typeface - and outside it the field keeps its own
+// box.
 test("the Change's box is the shared field, in the page's shape inside NoTooltips", async () => {
   for (const surface of ["page", "main"] as const) {
     const user = userEvent.setup();
@@ -377,10 +376,6 @@ test("the Change's box is the shared field, in the page's shape inside NoTooltip
     try {
       await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
       const box = screen.getByLabelText(CONTROL_LABELS.your_change);
-      const hint = document.getElementById(
-        box.getAttribute("aria-describedby")?.split(" ")[0] ?? ""
-      );
-      expect(hint?.textContent).toBe(dispatchWritingBox("decisions-change", "comment").hint);
       const name = box.closest("label");
       if (surface === "page") {
         expect(wears(box, pageHairBorder, pagePaperBg, pageInkText), "the box's colours").toBe(
@@ -388,7 +383,6 @@ test("the Change's box is the shared field, in the page's shape inside NoTooltip
         );
         expect(wears(box, inputClasses(true)), "the box draws main's colours").toBe(false);
         expect(name !== null && wears(name, pageMutedText), "the name's colour").toBe(true);
-        expect(hint !== null && wears(hint, pageMutedText), "the line's colour").toBe(true);
         const form = box.closest("form");
         expect(
           form?.querySelectorAll("[title]").length,

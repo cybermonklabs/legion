@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `agent-secrets result-grant` no longer passes GitHub's OIDC token request
+  (`ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`) to its command. It reads
+  them itself to prove the run, and the command writes with the result grant's placeholder alone;
+  with them, the command could ask GitHub for the run's token and trade it at the broker again.
+  The exec form (`agent-secrets NAME -- COMMAND`) still passes both, since a command run there may
+  ask GitHub for a token of its own.
+time: 2026-11-28T15:25:22Z
+custom:
+    Issue: result-grant-oidc-request
