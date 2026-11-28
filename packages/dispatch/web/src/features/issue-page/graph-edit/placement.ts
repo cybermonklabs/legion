@@ -460,11 +460,15 @@ export function memoIn(held: TreeAnswer, node: string): TreeAnswerNode | undefin
 /** A place among a parent's children that a held read holds, in the walk's order: right after the
  *  subtree of `child` (`after`), or right before `child` (`before`), which is undefined where the
  *  place stands past every child the read holds. `shown` says whether the read shows the place:
- *  it holds the child the place stands after or before, or the issue's memo at its rank rather
- *  than first, or the parent's children cannot go on past the loaded pages (`Walk.open`). `memo`
- *  is the issue's memo among the parent's children (`memoOf`), and whether it stands before the
- *  place by rank, so that the walk stands it `first` among the issue's children, or past it, so
- *  that the walk stands it right after the node's subtree. */
+ *  it holds the child the place stands after or before, or the parent's children cannot go on
+ *  past the loaded pages (`Walk.open`), or the place is the first child past the issue's
+ *  conversation - before the memo by rank, or right after it - and the read holds the memo at
+ *  its rank rather than first: the conversation is then all held, and nothing ranks between the
+ *  memo and either place. That memo shows no later place past it, since children of that place's
+ *  band may go on past the loaded pages. `memo` is the issue's memo among the parent's children
+ *  (`memoOf`), and whether it stands before the place by rank, so that the walk stands it
+ *  `first` among the issue's children, or past it, so that the walk stands it right after the
+ *  node's subtree. */
 export type SiblingPlace = (
   | { readonly kind: "after"; readonly child: TreeAnswerNode }
   | { readonly kind: "before"; readonly child: TreeAnswerNode | undefined }
@@ -515,20 +519,22 @@ function placeAmong(
   const children = childrenIn(walk, parent);
   const memo = memoOf(issue, parent, children, node.id);
   const memoAt = (first: boolean) => (memo === undefined ? undefined : { first, node: memo });
-  // The memo held at its rank, not first, shows each child of the conversation before it, so a
-  // place before the memo by rank, the first child past the conversation, is shown.
+  // The memo held at its rank, not first, shows each child of the conversation before it.
   const atRank = memo !== undefined && children[0] !== memo;
-  const beforeBand = (start: number, memoFirst: boolean): SiblingPlace => {
+  // `memoShows`: the place is the first child past the conversation, which such a memo shows.
+  const beforeBand = (start: number, memoFirst: boolean, memoShows: boolean): SiblingPlace => {
     const child = children.find(
       (each) => each.id !== node.id && each !== memo && atOrPastBand(each, start)
     );
-    const shown = child !== undefined || (atRank && !memoFirst) || !walk.open.has(parent);
+    const shown = child !== undefined || (atRank && memoShows) || !walk.open.has(parent);
     return { child, kind: "before", memo: memoAt(memoFirst), shown };
   };
-  const before = (start: number) =>
-    beforeBand(start, memo === undefined || !atOrPastBand(memo, start));
+  const before = (start: number) => {
+    const memoFirst = memo === undefined || !atOrPastBand(memo, start);
+    return beforeBand(start, memoFirst, !memoFirst);
+  };
   // Every child but the conversation stands past the memo, the first of the ranked children.
-  const pastMemo = () => beforeBand(BAND.spec, true);
+  const pastMemo = () => beforeBand(BAND.spec, true, true);
   const after = answer === null ? body.after : answer.after;
   if (after === null) {
     const afterMemo =

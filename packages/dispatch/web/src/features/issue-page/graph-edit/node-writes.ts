@@ -70,11 +70,13 @@ import {
  * planning the next act (`readToPlace`), and reads for no place a read cannot hold: an `after`
  * that names a gone sibling, which no read holds, where the loaded pages hold the parent's
  * children that stand before the place the body asked for - each child of the earlier bands where
- * the body's `after` was null, each child of the node's band otherwise (`placement.ts`'
- * `holdsPlace`). If no pages are needed, the next act goes out within the answer's own reaction,
- * before the write store's hold on the tree reads ends (`subscribeTreeFreshness`). The editor's
- * move keys check `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather
- * than being judged on the read that act's answer is about to change.
+ * the body's `after` was null, each child of the node's band otherwise. That is read on the read
+ * the answer is written into, before the issue's memo moves there (`movedIn`), and on each page
+ * read after it (`placement.ts`' `holdsPlace`). If no pages are needed, the next act goes out
+ * within the answer's own reaction, before the write store's hold on the tree reads ends
+ * (`subscribeTreeFreshness`). The editor's move keys check `NodeWrites.busy` so a key pressed
+ * while an act is out waits its turn, rather than being judged on the read that act's answer is
+ * about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -263,10 +265,10 @@ interface Chain {
   readonly issue: string;
   readonly node: string;
   readonly acts: Act[];
-  /** The place the last move or placing put the node at: its answer, and the body it answered
-   *  (`TakenPlace`). The chain reads for that place before planning its next act or refreshing
-   *  the outlines; `advance` clears it once the held read holds it (`lacksPlace`), or where no
-   *  read is held. */
+  /** The place the last move or placing put the node at, where the read its answer was written
+   *  into did not show it (`movedIn`): its answer, and the body it answered (`TakenPlace`). The
+   *  chain reads for that place before planning its next act or refreshing the outlines; `advance`
+   *  clears it once a page read since shows it (`lacksPlace`), or where no read is held. */
   place: TakenPlace | undefined;
   /** Whether an act of the chain was taken, or refused with an answer that says the tree is
    *  stale: what reads the outline reads again once the chain is empty. */
@@ -528,45 +530,53 @@ function placeIn(nodes: readonly TreeAnswerNode[], from: number, place: SiblingP
 }
 
 /** `held` with `taken`, the taken move of `node` (its answer, and the body it answered), written
- *  into it: the node's whole subtree, on every page it stands on (`cutSubtree`), under the
- *  answer's `parent`, among all of that parent's children the pages hold, after the answer's
+ *  into it (`read`), and whether `held` shows that place (`shown`, `placement.ts`'
+ *  `SiblingPlace`): the node's whole subtree, on every page it stands on (`cutSubtree`), under
+ *  the answer's `parent`, among all of that parent's children the pages hold, after the answer's
  *  `after`, or at the place the body asked for where the pages hold no child that `after` names
  *  (`placeIn`), in the walk's order, so each later body reads it there, and the node's
  *  `placement_seq` the answer's. The issue's memo, where that parent holds one (`SiblingPlace`'s
  *  `memo`), goes where the walk then stands it: right after the node's subtree where the place
- *  stands before it by rank and the read shows that place (`shown`), and first among the issue's
- *  children otherwise, until a page shows the place. Where the read holds no such parent, the node
- *  keeps its place and takes the sequence alone. */
+ *  stands before it by rank and `held` shows that place, and first among the issue's children
+ *  otherwise, until a page shows the place. Whether the place is shown is read on `held`, before
+ *  the memo moves: a memo moved first no longer shows the conversation held before it. Where
+ *  `held` holds no such node or no such parent, the node keeps its place and takes the sequence
+ *  alone, and no place is shown. */
 function movedIn(
   held: TreeAnswer,
   node: string,
   taken: TakenPlace & { readonly answer: NodeMoved }
-): TreeAnswer {
+): { readonly read: TreeAnswer; readonly shown: boolean } {
   const { answer } = taken;
   const nodes = held.nodes ?? [];
   const at = nodes.findIndex((each) => each.id === node);
   const own = nodes[at];
-  if (own === undefined) return held;
+  if (own === undefined) return { read: held, shown: false };
   const renewed = { ...own, placement_seq: answer.placement_seq };
   const { rest, subtree } = cutSubtree(nodes, at);
   const from = rest.findIndex((each) => names(each, answer.parent));
   const parent = rest[from];
   if (parent === undefined) {
-    return { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
+    const read = { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
+    return { read, shown: false };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
   const place = siblingPlace({ ...held, nodes: rest }, parent.id, own, taken);
+  const { memo, shown } = place;
   const to = placeIn(rest, from, place);
   const top = { ...renewed, parent: ref };
   const moved = [...rest.slice(0, to), top, ...subtree.slice(1), ...rest.slice(to)];
-  const { memo } = place;
-  if (memo === undefined) return { ...held, nodes: moved };
+  if (memo === undefined) return { read: { ...held, nodes: moved }, shown };
   const cut = cutSubtree(moved, moved.indexOf(memo.node));
   const end =
-    memo.first || !place.shown
+    memo.first || !shown
       ? cut.rest.indexOf(parent) + 1
       : subtreeEnd(cut.rest, cut.rest.indexOf(top));
-  return { ...held, nodes: [...cut.rest.slice(0, end), ...cut.subtree, ...cut.rest.slice(end)] };
+  const read = {
+    ...held,
+    nodes: [...cut.rest.slice(0, end), ...cut.subtree, ...cut.rest.slice(end)],
+  };
+  return { read, shown };
 }
 
 /** Writes `answer` as Graph's held read of `issue`, keeping the stale mark an event or a write
@@ -581,20 +591,25 @@ function writeHeld(client: QueryClient, issue: string, answer: TreeAnswer): void
 }
 
 /** Writes `taken`, the taken move of `node` (its answer, and the body it answered), into Graph's
- *  held read of `issue` (`movedIn`). */
+ *  held read of `issue` (`movedIn`), and answers whether that read shows the place; false where
+ *  no read is held. */
 function placeHeld(
   client: QueryClient,
   issue: string,
   node: string,
   taken: TakenPlace & { readonly answer: NodeMoved }
-): void {
+): boolean {
   const held = heldRead(client, issue);
-  if (held !== undefined) writeHeld(client, issue, movedIn(held, node, taken));
+  if (held === undefined) return false;
+  const { read, shown } = movedIn(held, node, taken);
+  writeHeld(client, issue, read);
+  return shown;
 }
 
 /** Whether `held` names a next page and lacks `place`, where a taken move put the node of read id
- *  `node` (its answer, and the body it answered): it lacks that node, or holds it and not the
- *  place (`placement.ts`' `holdsPlace`). */
+ *  `node` (its answer, and the body it answered), which the read the answer was written into did
+ *  not show (`movedIn`): it lacks that node, or holds it and not the place (`placement.ts`'
+ *  `holdsPlace`). */
 function lacksPlace(held: TreeAnswer, node: string, place: TakenPlace): boolean {
   if (nextTreeCursor(held) === undefined) return false;
   const moved = held.nodes?.find((each) => each.id === node);
@@ -885,10 +900,11 @@ function sendMove(
       else act.done(TAKEN);
       try {
         // A landing with no answer to give says nothing of the place: the next act goes from the
-        // read as it stands, and its refusal reads the tree again.
+        // read as it stands, and its refusal reads the tree again. The chain reads for a place the
+        // read the answer was written into does not show.
         const taken = answer === null ? undefined : { answer, body };
-        if (taken !== undefined) placeHeld(client, chain.issue, chain.node, taken);
-        chain.place = taken;
+        const shown = taken !== undefined && placeHeld(client, chain.issue, chain.node, taken);
+        chain.place = shown ? undefined : taken;
       } finally {
         advance(client, chain);
       }

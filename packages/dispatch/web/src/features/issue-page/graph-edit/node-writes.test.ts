@@ -2904,3 +2904,63 @@ test("a memo held at its rank shows the place before it, so no page past it is r
     "<memo>",
   ]);
 });
+
+/** `ownMemo` as a read after Move up on the paragraph, which put it before the memo by rank: the
+ *  memo at its rank right after the paragraph, and the read ending right after the memo's
+ *  subtree, with the read's context, naming a third page. */
+const memoAtRankEnds: TreeAnswer = {
+  ...ownMemo,
+  cursor: "<cursor:third>",
+  nodes: (ownMemo.nodes ?? []).flatMap((node, at, nodes) => {
+    if (node.id === PAGED) return [node, nodeOf(ownMemo, "<memo>")];
+    if (node.id === "<memo>") return [];
+    return at < nodes.findIndex((each) => each.id === PAGED) || node.role === "context"
+      ? [node]
+      : [];
+  }),
+};
+
+// Move down on the paragraph names the memo held at its rank right after it as `after`, on a read
+// that ends right after the memo's subtree and names a third page. The place right after the memo
+// by rank is the first child past the conversation, all of which that memo shows held, and the
+// memo goes first again, as the walk stands it. The read the answer is written into shows the
+// place before the memo moves, so no third page is read, and R7's re-read, which is held out, is
+// the one read.
+test("a Move down onto a memo held at its rank reads no page past it", async () => {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      if (cursor === null) return new Promise<never>(() => {});
+      return Response.json({ ...secondPage, nodes: [], tuples: [] });
+    })
+  );
+  const parent = `issue/${KEY}`;
+  const patches = answerPatches({
+    body: { after: "<memo>", parent, placement_seq: "<seq:tree/paragraph>@2" },
+    status: 200,
+  });
+  const { client, writes } = mount(memoAtRankEnds);
+  expect(heldChildIds(client, KEY), "the issue's children").toEqual([
+    "<question>",
+    "<message>",
+    PAGED,
+    "<memo>",
+  ]);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move(PAGED, "move_down");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(patches.calls.map((call) => call.body)).toEqual([{ after: "<memo>", parent }]);
+  expect(heldChildIds(client, KEY), "the issue's children once Move down is taken").toEqual([
+    "<memo>",
+    "<question>",
+    "<message>",
+    PAGED,
+  ]);
+  await waitFor(() => expect(cursors, "R7's re-read did not go").toContain(null));
+  await waitInAct(50);
+  expect(cursors, "the reads after Move down").toEqual([null]);
+});
