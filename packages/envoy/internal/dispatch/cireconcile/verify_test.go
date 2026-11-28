@@ -274,9 +274,9 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 }
 
 // VerifyRequests lists every request the bucket holds while the listener writes one of them
-// again, as it does when a request goes unanswered: the jetstream watcher it listed through before
-// could leave such a request out of a pass (INFRA-6356), whose head then waited for the next one.
-// Here the test writes the request again, with the bytes the bucket holds for it.
+// again, as it does when a request goes unanswered: the jetstream watcher can leave such a request
+// out of a pass (INFRA-6356), whose head then waits for the next one. Here the test writes the
+// request again, with the bytes the bucket holds for it.
 func TestVerifyRequestsListsARequestWrittenAgainDuringTheRead(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
@@ -289,21 +289,13 @@ func TestVerifyRequestsListsARequestWrittenAgainDuringTheRead(t *testing.T) {
 	for _, pull := range pulls {
 		asked = h.waitForRequestOf(pull.sha, 0)
 	}
-	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("open the CI bucket: %v", err)
-	}
 	requestKey := "verify." + cistore.Key(asked.Head.Owner, asked.Head.Repo, asked.Head.Number, asked.Head.SHA)
-	stored, err := kv.Get(requestKey)
-	if err != nil {
-		t.Fatalf("read the request %s: %v", requestKey, err)
-	}
 	writer, err := h.reconciler.Open()
 	if err != nil {
 		t.Fatalf("open a writer: %v", err)
 	}
 
-	h.whileWrittenAgain(requestKey, stored.Value(), func() {
+	h.whileWrittenAgain(requestKey, func() {
 		for call := range 100 {
 			requests, err := writer.VerifyRequests(h.ctx)
 			if err != nil {

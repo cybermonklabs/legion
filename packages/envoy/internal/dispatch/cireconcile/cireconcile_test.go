@@ -590,11 +590,12 @@ func atHead(repository, sha string, item object) object {
 	return item
 }
 
-// stagedAhead is how long a limit a row records in force lasts (ratelimit.Store.Record), on the
-// database's clock, where the row's verdict needs the pass to meet it still in force. It is staged
-// state for that clock, not a wait: a day, longer than any -timeout CI gives this package, so the
-// limit is still in force however long the machine takes to reach the pass, where ten minutes
-// could pass on a loaded one.
+// stagedAhead is how far ahead of the database's clock a row stages a moment its verdict needs
+// still to come when the pass or the read meets it: the end of a limit the row records in force
+// (ratelimit.Store.Record), or a process's heartbeat (registerProcess, at -stagedAhead), which
+// keeps the process live (processes.LiveWindow). It is staged state for that clock, not a wait: a
+// day, longer than any -timeout CI gives this package, so the moment is still to come however
+// long the machine takes to reach it, where ten minutes could pass on a loaded one.
 const stagedAhead = 24 * time.Hour
 
 // A limit already in force on the App ends a pass before it sends GitHub anything, and the pass

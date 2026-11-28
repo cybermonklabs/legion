@@ -186,11 +186,9 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
-	// The process's heartbeat is a day ahead of the database's clock: staged state for that clock,
-	// longer than any -timeout CI gives the package, so the pass reads as running (its process
-	// live, processes.LiveWindow) however long the machine takes before the read, which is not
-	// what this row is about.
-	instance := registerProcess(t, h.pool, -24*time.Hour)
+	// The process's heartbeat is staged ahead (stagedAhead), so the pass reads as running (its
+	// process live, processes.LiveWindow) at every read, which is not what this row is about.
+	instance := registerProcess(t, h.pool, -stagedAhead)
 	h.reconciler.Instance = func() string { return instance }
 	// The pass stays open until the test ends its bound on the harness's clock: the stand-in holds
 	// the second page's query until the request is given up, and the client's calls end only at
@@ -510,11 +508,9 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
-	// The killed process's heartbeat is a day ahead of the database's clock: staged state for that
-	// clock, longer than any -timeout CI gives the package, so its row is still live at the read
-	// however long the machine takes, and liveness cannot decide the open row in the newest rule's
-	// place.
-	killed := registerProcess(t, h.pool, -24*time.Hour)
+	// The killed process's heartbeat is staged ahead (stagedAhead), so its row is still live at the
+	// read and liveness cannot decide the open row in the newest rule's place.
+	killed := registerProcess(t, h.pool, -stagedAhead)
 	open := seedPass(t, h.pool, killed, time.Minute)
 
 	// The other process of the deployment, with a reconciler and a registry row of its own.

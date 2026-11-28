@@ -821,7 +821,8 @@ resolver tests that replace the default logger.
 `internal/dispatch/cireconcile` also runs 4 at once through `storetest.SetDefaultParallel`, and its
 `TestMain` makes Open's template before any test runs (`storetest.RunEager`), so no leaf test pays
 for it. Each harness has its own database, GitHub stand-in and NATS account on the package's shared
-server, and every test runs beside the others: none keeps a real timer.
+server, and every test runs beside the others, and no verdict waits on a real timer (only the
+reconcile writer's own pauses run on the real clock, `openWriter`).
 Every Reconciler of a harness runs on one `clocktest.Fake` through its exported `Clock` field
 (nil, the real clock, in every deployment): the pass's bound and its line, the REST gaps, each
 query's time and the wait it earns, the hold of an App-absent answer, the end of a rate-limit stop

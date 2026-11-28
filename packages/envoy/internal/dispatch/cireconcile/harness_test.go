@@ -72,6 +72,9 @@ const (
 // text of the number GitHub's own objects carry.
 var reviewerAppID = strconv.Itoa(reviewerApp)
 
+// harnessStart is the moment every clock of a harness starts at: the test's own, never the wall's.
+var harnessStart = time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC)
+
 // harness is one test's whole stack: the GitHub stand-in, a Postgres of this test's own with no
 // delivery_settings row, the package's shared NATS under a JetStream account of this test's own
 // (testnats.URL) carrying the listener's real CI store and its real summary loop, both on a clock
@@ -120,9 +123,18 @@ type harness struct {
 	ciClock *clocktest.Fake
 	summary *summaryWitness
 	// ci is the CI bucket the listener makes, opened once as startListener makes it: the test's
-	// own reads of it (record, recordAt, subjectRecords) go through this one handle, where opening
-	// the bucket again for each read cost one or two JetStream requests more than the read itself.
+	// own reads and writes of it (record, recordAt, subjectRecords, whileWrittenAgain) go through
+	// this one handle, where opening the bucket again for each would cost one or two JetStream
+	// requests more than the read or write itself.
 	ci bus.KeyValue
+	// giveUp is the shared wait's context (testwait.Context), made once for the harness: the
+	// listener's opens (startListener), the witness's listings (subjectRecords), the read of a
+	// settlement and the end of drivenUntil's moves run within it.
+	giveUp context.Context
+	// natsGiveUp is the context driveLoop's flush takes (testnats.Context), made once for the
+	// harness: nats.go refuses a flush whose context names no deadline, as giveUp's does not under
+	// -timeout 0.
+	natsGiveUp context.Context
 }
 
 // listenerDebounce and listenerTick are the summary loop's settings cmd/listener runs it with
@@ -186,11 +198,9 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 
 	logs := &syncBuffer{}
 	limits := ratelimit.New(database.Pool)
-	// Both clocks start at one fixed moment of the test's own, never the wall clock's.
-	start := time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC)
-	fake := clocktest.New(start)
+	fake := clocktest.New(harnessStart)
 	github := newFakeGitHub(t, fake)
-	ciClock := clocktest.New(start)
+	ciClock := clocktest.New(harnessStart)
 	return &harness{
 		t:        t,
 		ctx:      ctx,
@@ -216,6 +226,8 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 			// test moves it.
 			Clock: fake,
 		},
+		giveUp:     testwait.Context(t),
+		natsGiveUp: testnats.Context(t),
 	}
 }
 
@@ -258,8 +270,8 @@ func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, err
 }
 
 // boundByTheTest checks the bound each pass of the harness's Reconciler puts on itself on the
-// harness's clock: the test ends that bound at a held read or write (endBound), and
-// checkedPassClock checks that the pass bound itself at its PassTimeout.
+// harness's clock: the test ends that bound at a held write (endBound), and checkedPassClock
+// checks that the pass bound itself at its PassTimeout.
 func (h *harness) boundByTheTest() {
 	h.reconciler.Clock = checkedPassClock{Clock: h.clock, h: h}
 }
@@ -364,13 +376,13 @@ func (h *harness) startListener() {
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
-	// The bucket the listener has just made, which the test's own reads go through (ci).
-	ci, err := bus.OpenKeyValue(testwait.Context(h.t), h.bus.Conn, h.bus.JS(), bus.CIStateBucket)
+	// The bucket the listener has just made, which the test's own reads and writes go through (ci).
+	ci, err := bus.OpenKeyValue(h.giveUp, h.bus.Conn, h.bus.JS(), bus.CIStateBucket)
 	if err != nil {
 		h.t.Fatalf("open the CI bucket: %v", err)
 	}
 	h.ci = ci
-	if err := listener.WaitForCacheReady(testwait.Context(h.t)); err != nil {
+	if err := listener.WaitForCacheReady(h.giveUp); err != nil {
 		h.t.Fatalf("the listener's cache is not ready: %v", err)
 	}
 	loop, endLoop := context.WithCancel(h.ctx)
@@ -420,9 +432,7 @@ func (h *harness) driveLoop(until time.Time) bool {
 		return false
 	}
 	testwait.Receive(h.t, "the end of the summary loop's pass at the moment its clock was moved to", ended)
-	// testnats.Context, since nats.go refuses a flush whose context names no deadline, as
-	// testwait.Context's does not under -timeout 0.
-	if err := h.bus.Conn.FlushWithContext(testnats.Context(h.t)); err != nil {
+	if err := h.bus.Conn.FlushWithContext(h.natsGiveUp); err != nil {
 		h.t.Fatalf("flush the bus after a pass of the summary loop: %v", err)
 	}
 	return true
@@ -442,11 +452,10 @@ func (h *harness) loopStep() time.Time {
 // that moved it is made at once, since driveLoop has waited for the pass that move set going. Only
 // a read whose move found nothing armed in that span waits the shared wait's pace, for what the
 // loop has not armed yet: a change the bucket's watch has still to deliver. The moves of one try
-// stop where the shared wait gives up (testwait.Context), so a loop that arms for ever and never
-// brings the fact fails the wait there, as it did when each try made one move.
+// stop where the shared wait gives up (giveUp), so a loop that arms for ever and never brings the
+// fact fails the wait there.
 func drivenUntil[T any](h *harness, what string, read func() (T, bool)) T {
 	h.t.Helper()
-	giveUp := testwait.Context(h.t)
 	return testwait.Until(h.t, what, func() (drivenRead[T], bool) {
 		for {
 			value, holds := read()
@@ -454,7 +463,7 @@ func drivenUntil[T any](h *harness, what string, read func() (T, bool)) T {
 				return drivenRead[T]{Read: value}, true
 			}
 			moved := h.driveLoop(h.loopStep())
-			if !moved || giveUp.Err() != nil {
+			if !moved || h.giveUp.Err() != nil {
 				return drivenRead[T]{Read: value, Moved: moved, Armed: h.ciClock.Armed()}, false
 			}
 		}
@@ -658,7 +667,7 @@ func (h *harness) settlement(sub *nats.Subscription, why string) cistore.Summary
 			h.t.Fatalf("%s: read the settlements waiting: %v", why, err)
 		}
 		if waiting > 0 {
-			next, err := sub.NextMsgWithContext(testwait.Context(h.t))
+			next, err := sub.NextMsgWithContext(h.giveUp)
 			if err != nil {
 				h.t.Fatalf("%s: reading the settlement published failed: %v", why, err)
 			}

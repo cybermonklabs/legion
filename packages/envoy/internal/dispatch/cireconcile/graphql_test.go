@@ -602,21 +602,16 @@ func (f *fakeGitHub) rateLimitQuery(limit graphQLLimit) {
 // query on held as it is held. A page already held stays held as it was.
 func (f *fakeGitHub) holdQuery(repository string, page int) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, held := f.heldQueries[queryKey(repository, page)]; !held {
-		f.heldQueries[queryKey(repository, page)] = make(chan struct{})
-	}
+	holdIn(f.heldQueries, queryKey(repository, page))
+	f.mu.Unlock()
 }
 
 // releaseQuery answers that page as fast as every other page again, and lets each query held
 // there go on to its answer.
 func (f *fakeGitHub) releaseQuery(repository string, page int) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if released, held := f.heldQueries[queryKey(repository, page)]; held {
-		close(released)
-		delete(f.heldQueries, queryKey(repository, page))
-	}
+	releaseIn(f.heldQueries, queryKey(repository, page))
+	f.mu.Unlock()
 }
 
 // everyQueryTakes makes every query's answer take this long on the passes' clock, which the

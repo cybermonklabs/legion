@@ -46,8 +46,18 @@ type fakeGitHub struct {
 	// the time GitHub takes over it (everyQueryTakes).
 	clock *clocktest.Fake
 	// recordClock is the clock the stand-in's client bounds each write of a limit GitHub answered
-	// on (githubapp.LimitRecordTimeout; limitClock): a fake of its own, which no test here moves,
-	// so that write's bound never falls while a test holds it.
+	// on (githubapp.LimitRecordTimeout): a fake of its own, which no test here moves, so that
+	// write's bound never falls while a test holds it. On clock it would fall at every move a test
+	// makes past it while the write is in flight -- to a wait the pass armed, or to the pass's own
+	// bound -- and a limit GitHub answered as that bound fell would not reach the ledger
+	// (TestALimitAnsweredAsTheBoundFallsIsALimit). The client's rate-limit clock is recordClock
+	// with clock's moment (clocktest.WithNow, client): two fakes in one, sound only for the two
+	// uses githubapp makes of it, WithTimeout for that bound (limitRecordContext, client.go),
+	// reckoned from recordClock's own moment, and Now for a limit's wait (limitNow,
+	// deliveries.go), which clock answers. A use that mixed the two -- a deadline taken from Now
+	// and armed through WithDeadline, or a span reckoned from Now and armed as a timer -- would
+	// set one fake's moment against the other's, so a new use of that clock in githubapp needs
+	// this read again.
 	recordClock *clocktest.Fake
 	// held names each request the stand-in holds back (hold, holdQuery) as it is held: what a
 	// test waits on (testwait.Next) before it ends the pass's bound or cancels the pass's caller,
@@ -172,7 +182,7 @@ func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 		t:           t,
 		mux:         http.NewServeMux(),
 		clock:       clock,
-		recordClock: clocktest.New(clock.Now()),
+		recordClock: clocktest.New(harnessStart),
 		installID:   1,
 		repos:       map[string]fakeRepository{},
 		pulls:       map[string][]fakePull{},
@@ -356,11 +366,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.failOnce[r.URL.Path] = left - 1
 		failed = true
 	}
-	// A limit's reset is GitHub's own moment, to the second the header carries, stamped here on
-	// the passes' own clock, which the client reads the wait against (githubapp.WithRateLimitClock,
-	// client): the wait is the reset less that clock's moment, exactly.
-	reset := time.Unix(f.clock.Now().Add(90*time.Second).Unix(), 0)
+	var reset time.Time
 	if limited {
+		// A limit's reset is GitHub's own moment, to the second the header carries, stamped here
+		// on the passes' own clock, which the client reads the wait against
+		// (githubapp.WithRateLimitClock, client): the wait is the reset less that clock's moment,
+		// exactly.
+		reset = time.Unix(f.clock.Now().Add(90*time.Second).Unix(), 0)
 		f.reset = reset
 	}
 	released, held := f.holds[r.URL.Path]
@@ -464,10 +476,9 @@ func queryNumber(values url.Values, name string, fallback int) int {
 // appKeyPEM is the PEM of the one App key every client of this test binary signs with: each
 // stand-in's and each replica's (fakeGitHub's client) and graphql_test.go's own. The stand-ins
 // check no signature (the token mint answers any App JWT, and githubtest.Server compares only a
-// bearer token), so one key changes no test's meaning, while a fresh 2048-bit key, which
-// githubapptest's Key made for every harness and again for every replica, costs 80 to 400 ms.
-// TestMain makes it before any test runs, so no test's own time carries it either: the first test
-// to sign made it, 28 to 165 ms of that test's time.
+// bearer token), so one key changes no test's meaning, while a fresh 2048-bit key for every
+// harness and again for every replica costs 80 to 400 ms each. TestMain makes it before any test
+// runs, so no test's own time carries it.
 var appKeyPEM = sync.OnceValues(func() (string, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -479,10 +490,10 @@ var appKeyPEM = sync.OnceValues(func() (string, error) {
 // client is a githubapp.Client on the binary's App key (appKeyPEM), pointed at this stand-in,
 // obeying and recording the shared rate limits as every Dispatch process's client does. It reads
 // a limit's wait against the passes' clock and bounds the limit's write on recordClock
-// (limitClock), and its calls end at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp),
-// not at githubapp's own RequestTimeout: so a call the stand-in holds (hold, holdQuery) ends where
-// the test releases it, where the pass's bound or a caller's deadline falls, or where the caller
-// cancels it.
+// (clocktest.WithNow; recordClock says why), and its calls end at the test's give-up
+// (githubapptest.RequestDeadlineAtTheGiveUp), not at githubapp's own RequestTimeout: so a call
+// the stand-in holds (hold, holdQuery) ends where the test releases it, where the pass's bound or
+// a caller's deadline falls, or where the caller cancels it.
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	text, err := appKeyPEM()
@@ -491,7 +502,7 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	}
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits),
-		githubapp.WithRateLimitClock(limitClock{Fake: f.recordClock, passes: f.clock}),
+		githubapp.WithRateLimitClock(clocktest.WithNow(f.recordClock, f.clock.Now)),
 		githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(f.t)))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
@@ -501,30 +512,6 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	}
 	return client
 }
-
-// limitClock is the clock the stand-in's client reads a limit GitHub answered against and bounds
-// the write of that limit to the shared ledger on (githubapp.WithRateLimitClock). Its moment is
-// passes', the clock the stand-in stamps a limit's reset on, so the wait the client reads is the
-// reset less that moment, exactly. Its deadlines are the embedded Fake's, recordClock, so the
-// write's bound (githubapp.LimitRecordTimeout, five seconds) falls only where a test moves
-// recordClock. On passes it would fall at every move a test makes past it while the write is in
-// flight -- to a wait the pass armed, or to the pass's own bound -- and end a write the test never
-// held: a limit GitHub answered as the pass's bound fell would then not reach the ledger
-// (TestALimitAnsweredAsTheBoundFallsIsALimit).
-//
-// It is two fakes in one, and sound only for the two uses githubapp makes of its rate-limit
-// clock: limitRecordContext (client.go) arms a relative timeout, WithTimeout, which the embedded
-// Fake reckons from recordClock's own moment; and limitNow (deliveries.go) reads Now, which
-// passes answers. No other method of it is called. A use that mixed the two -- a deadline taken
-// from Now and armed through WithDeadline, or a span reckoned from Now and armed as a timer --
-// would set one fake's moment against the other's, so a new use of that clock in githubapp needs
-// this type read again.
-type limitClock struct {
-	*clocktest.Fake
-	passes *clocktest.Fake
-}
-
-func (c limitClock) Now() time.Time { return c.passes.Now() }
 
 // setRepository makes GET /repos/{name} answer with fullName and id. name is the owner/repo a
 // request names it by, which a renamed repository has two of.
@@ -627,20 +614,33 @@ func (f *fakeGitHub) failNext(path string) {
 // such request on held as it is held. A path already held stays held as it was.
 func (f *fakeGitHub) hold(path string) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, held := f.holds[path]; !held {
-		f.holds[path] = make(chan struct{})
-	}
+	holdIn(f.holds, path)
+	f.mu.Unlock()
 }
 
 // release answers path as fast as every other path again, and lets each request held there go
 // on to the answer its route gives.
 func (f *fakeGitHub) release(path string) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if released, held := f.holds[path]; held {
+	releaseIn(f.holds, path)
+	f.mu.Unlock()
+}
+
+// holdIn holds back the answers at key of m, the paths (holds) or the pages (heldQueries) whose
+// answers are held, until releaseIn lets them go. A key already held stays held as it was. The
+// caller holds mu.
+func holdIn(m map[string]chan struct{}, key string) {
+	if _, held := m[key]; !held {
+		m[key] = make(chan struct{})
+	}
+}
+
+// releaseIn lets each request held at key of m go on to its answer, and holds key no longer. The
+// caller holds mu.
+func releaseIn(m map[string]chan struct{}, key string) {
+	if released, held := m[key]; held {
 		close(released)
-		delete(f.holds, path)
+		delete(m, key)
 	}
 }
 

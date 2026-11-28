@@ -40,7 +40,7 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 	// Two ticks one Interval apart, the second process first in the second period, so neither
 	// test passes by being the one that always runs. The moment is the test's own: this test's
 	// database holds no period of the lease, so any moment keys a period no pass has served.
-	due := time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC)
+	due := harnessStart
 	for _, period := range []struct {
 		name   string
 		due    time.Time

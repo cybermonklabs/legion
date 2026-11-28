@@ -537,8 +537,8 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 // boundRecordLimits ends the pass's own bound when a REST limit is recorded, using the caller
 // context captured by Wait. With refuse set, Record checks that the client detached the ledger
 // write from the pass and bounded it at githubapp.LimitRecordTimeout on recordClock, the clock the
-// stand-in's client bounds that write on (limitClock), and returns refuse without touching the
-// ledger; otherwise it records the limit through the real shared ledger.
+// stand-in's client bounds that write on (fakeGitHub.recordClock), and returns refuse without
+// touching the ledger; otherwise it records the limit through the real shared ledger.
 type boundRecordLimits struct {
 	githubapp.Limits
 	t           *testing.T
@@ -594,7 +594,7 @@ func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.PassTimeout = 2 * time.Second
 	h.boundByTheTest()
-	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool), t: t, recordClock: h.github.recordClock, falls: h.endBound})
+	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool), t: t, falls: h.endBound})
 	h.github.rateLimitNext(suitesOf(head(8)))
 
 	h.pass()

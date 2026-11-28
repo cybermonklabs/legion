@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -84,7 +83,7 @@ func (h *harness) noSettlementAt(sub *nats.Subscription, why, owner, repo, numbe
 func (h *harness) subjectRecords(owner, repo, number string) ([]nats.KeyValueEntry, error) {
 	h.t.Helper()
 	keys := cistore.Key(owner, repo, number, "") + ">"
-	_, records, err := h.ci.HeldEntries(testwait.Context(h.t), keys)
+	_, records, err := h.ci.HeldEntries(h.giveUp, keys)
 	if err != nil {
 		return nil, fmt.Errorf("list the CI records %s: %w", keys, err)
 	}
@@ -238,17 +237,19 @@ func TestTheAbsenceWitnessRejectsAnotherSHAOnTheSamePullRequestSubject(t *testin
 	}
 }
 
-// whileWrittenAgain runs reads while another client writes key of the CI bucket again with value
-// in a loop, on a goroutine of its own: the writes that let nats.go's Keys and the jetstream
-// watcher's first delivery leave a key out of a listing (INFRA-6356). The writes stop once reads
-// returns or ends the test, and the goroutine's end is waited for. It fails the test where a write
-// failed, and where no write landed while reads ran, since those reads then raced nothing.
-func (h *harness) whileWrittenAgain(key string, value []byte, reads func()) {
+// whileWrittenAgain runs reads while another client writes key of the CI bucket again, with the
+// value the bucket holds for it, in a loop on a goroutine of its own: the writes that let nats.go's
+// Keys and the jetstream watcher's first delivery leave a key out of a listing (INFRA-6356). The
+// writes stop once reads returns or ends the test, and the goroutine's end is waited for. It fails
+// the test where a write failed, and where no write landed while reads ran, since those reads then
+// raced nothing.
+func (h *harness) whileWrittenAgain(key string, reads func()) {
 	h.t.Helper()
-	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
+	stored, err := h.ci.Get(key)
 	if err != nil {
-		h.t.Fatalf("open the CI bucket: %v", err)
+		h.t.Fatalf("read %s: %v", key, err)
 	}
+	value := stored.Value()
 	stop := make(chan struct{})
 	ended := make(chan error, 1)
 	var landed atomic.Uint64
@@ -260,7 +261,7 @@ func (h *harness) whileWrittenAgain(key string, value []byte, reads func()) {
 				return
 			default:
 			}
-			if _, err := kv.Put(key, value); err != nil {
+			if _, err := h.ci.Put(key, value); err != nil {
 				ended <- fmt.Errorf("write %s again after %d writes: %w", key, landed.Load(), err)
 				return
 			}
@@ -281,10 +282,10 @@ func (h *harness) whileWrittenAgain(key string, value []byte, reads func()) {
 }
 
 // The witness lists every record under the pull request's subject while another client writes
-// one of them again: nats.go's Keys, which it listed through before, can leave such a key out
-// (INFRA-6356), and the witness judges no key it does not list. The record is written again once
-// both have settled, with the bytes the bucket holds for it, so the summary loop finds nothing
-// changed and writes nothing of its own beside the test's writes.
+// one of them again: nats.go's Keys can leave such a key out (INFRA-6356), and the witness judges
+// no key it does not list. The record is written again once both have settled, with the bytes the
+// bucket holds for it, so the summary loop finds nothing changed and writes nothing of its own
+// beside the test's writes.
 func TestTheWitnessListsAKeyWrittenAgainWhileItLists(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, reviewerAppID)
@@ -301,18 +302,10 @@ func TestTheWitnessListsAKeyWrittenAgainWhileItLists(t *testing.T) {
 			return state, state != nil && state.SettledEmitted && state.Claim == nil
 		})
 	}
-	kv, err := h.bus.JS().KeyValue(bus.CIStateBucket)
-	if err != nil {
-		t.Fatalf("open the CI bucket: %v", err)
-	}
 	rewritten := cistore.Key(gitHubOwner, gitHubName, pullNumber, other.sha)
-	stored, err := kv.Get(rewritten)
-	if err != nil {
-		t.Fatalf("read the record %s: %v", rewritten, err)
-	}
 	want := []string{cistore.Key(gitHubOwner, gitHubName, pullNumber, headSHA), rewritten}
 
-	h.whileWrittenAgain(rewritten, stored.Value(), func() {
+	h.whileWrittenAgain(rewritten, func() {
 		for call := range 100 {
 			records, err := h.subjectRecords(gitHubOwner, gitHubName, pullNumber)
 			if err != nil {
