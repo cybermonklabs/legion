@@ -301,15 +301,15 @@ func (f CloseFacts) freshAnswer() (CheckReadAnswer, bool) {
 func (f CloseFacts) checkAtNewestMerge(check dispatch.CheckBlock, atMergeHead *dispatch.IssueResults) (CheckWait, bool) {
 	switch check.When {
 	case dispatch.CheckAfterMerge:
-		basis, named := f.mergeBranchBasis(check, true)
-		return CloseCheckOf(check), named && sameCommit(basis.MergeCommit, f.Merge.SHA)
+		_, named := f.mergeBranchBasis(check, true)
+		return CloseCheckOf(check), named
 	case dispatch.CheckDefaultBranch:
 		basis, named := f.mergeBranchBasis(check, false)
 		if !named {
 			return CheckWait{}, false
 		}
 		if basis.Branch == f.Merge.Base {
-			return CloseCheckOf(check), sameCommit(basis.MergeCommit, f.Merge.SHA)
+			return CloseCheckOf(check), true
 		}
 		return CloseCheckOf(check), true
 	case dispatch.CheckBeforeMerge:
