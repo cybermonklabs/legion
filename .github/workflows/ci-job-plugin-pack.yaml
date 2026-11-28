@@ -109,6 +109,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
 
       # go-daemon, shared with typecheck, daemon-go, step-models-chain and pi-legion: this step
       # compiles internal/daemon's test binary, with no race detector, on the dependencies that
@@ -131,8 +133,16 @@ jobs:
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
       # builds.
       - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
-        run: go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/plugin-pack.jsonl" --format standard-quiet --raw-command -- go test -json -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
         working-directory: packages/daemon
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
