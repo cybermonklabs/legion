@@ -455,7 +455,7 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 		Persistence: held,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     testOrigins,
 		Settle:      time.Hour,
 	})
 	release = func() {
@@ -880,7 +880,7 @@ func TestStoredOrderSoak(t *testing.T) {
 		Persistence: watched,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     testOrigins,
 		Settle:      30 * time.Millisecond,
 	})
 	watched.service.Store(service)

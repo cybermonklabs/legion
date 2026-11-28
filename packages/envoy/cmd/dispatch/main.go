@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -61,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
@@ -81,7 +84,13 @@ const (
 	// defaultEnvoyURL is the Envoy listener when ENVOY_URL is unset: this machine's.
 	defaultEnvoyURL   = "http://127.0.0.1:9020"
 	readHeaderTimeout = 10 * time.Second
-	idleTimeout       = 2 * time.Minute
+	// idleTimeout is how long the server keeps an idle client connection open. An internal
+	// Application Load Balancer keeps an idle connection to a backend for 600 seconds, a value
+	// Google fixes, and asks for a backend idle timeout above it ("Backend HTTP keepalive timeout"
+	// on Google's internal Application Load Balancer page): a server that closes first can close a
+	// connection the balancer has just sent a request on, and that request fails with a 502. So
+	// this is 650 seconds, above the balancer's 600 (conn_age_test.go holds it there).
+	idleTimeout = 650 * time.Second
 )
 
 // buildCommit is the legion commit this binary was built from. Only the image build stamps it
@@ -275,6 +284,22 @@ type bootConfig struct {
 	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
 	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
 	ProofOrigins []string
+	// ServedOrigins is DISPATCH_SERVED_ORIGINS, the other addresses the server serves beside the
+	// canonical origin, and FormerOrigins is DISPATCH_FORMER_ORIGINS, the addresses it served
+	// before, each entry as weborigin.Parse returns it; nil for none (parseAddressLists,
+	// checkServedOrigins). The router answers by both (routes.AppContextOptions), every reader of a
+	// dashboard link reads a link at either as a reference (text.ServerOrigins: the document
+	// service, the API, the form of The Spec, rebuild-refs and the backfill commands), and the
+	// broker token check takes each served address as an origin a proof may name
+	// (brokerTokenVerifier, proofOrigins).
+	ServedOrigins []string
+	FormerOrigins []string
+	// TrustedProxyRanges is DISPATCH_TRUSTED_PROXY_RANGES, the proxies whose X-Forwarded-For
+	// Dispatch trusts (parseTrustedProxyRanges): the caller address the router resolves for every
+	// request is read under them (routes.AppContextOptions, auth.ResolveForwardedAddress), which
+	// the access log, the previous-token line and the broker token check's bucket key on
+	// (auth.ForwardedAddress). nil when unset, which trusts none.
+	TrustedProxyRanges []netip.Prefix
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -375,6 +400,14 @@ func main() {
 	serverURL := ""
 	if envoyConfig.Dispatch != nil {
 		serverURL = envoyConfig.Dispatch.ServerURL
+	}
+	// The served and the former addresses are beside the canonical origin: their own spellings
+	// were judged with the rest of the settings (parseAddressLists), and their hosts against the
+	// canonical origin's, the proof origins' and each other's only now that the canonical origin
+	// is read.
+	if err := checkServedOrigins(boot, serverURL); err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
 	}
 	// The App credentials are read before anything connects, so the dev sign-in fence refuses a
 	// key it will not sign with before NATS or Postgres is dialled.
@@ -614,17 +647,17 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
+	documentService, documentOrigins := newDocumentService(boot, serverURL, docs.Deps{
 		Store:       database,
 		Events:      broker,
 		Identity:    requestIdentity,
-		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
 	// The restoration below schedules settlements, whose version writes carry approvals, before
 	// the API is built: the form of The Spec is built first, and sets its gate on the service, so
-	// no carry passes it (api.NewSpecForm). The API judges with this same form.
-	specForm, err := api.NewSpecForm(boot.SpecRoots, serverURL, documentService)
+	// no carry passes it (api.NewSpecForm). The form reads links against the service's own list of
+	// origins. The API judges with this same form.
+	specForm, err := api.NewSpecForm(boot.SpecRoots, documentOrigins, documentService)
 	if err != nil {
 		slog.Error("dispatch: read the roots of The Spec", "error", err)
 		os.Exit(1)
@@ -2012,6 +2045,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
+	// Their hosts beside the canonical origin's are checked once it is read (checkServedOrigins).
+	if boot.ServedOrigins, boot.FormerOrigins, err = parseAddressLists(env); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.TrustedProxyRanges, err = parseTrustedProxyRanges(env.get("DISPATCH_TRUSTED_PROXY_RANGES")); err != nil {
+		return bootConfig{}, err
+	}
 	boot.Embedder, err = resolveEmbedder(env)
 	if err != nil {
 		return bootConfig{}, err
@@ -2213,15 +2253,20 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot filled in and its origins beside serverURL (documentDeps). It answers
+// those origins too, so the form of The Spec reads links against the same list (api.NewSpecForm).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) (*docs.Service, text.Origins) {
+	deps := documentDeps(boot, serverURL, built)
+	return docs.New(deps), deps.Origins
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin, then boot's served addresses and former addresses,
+// built by the constructor api.NewDeps builds the API's with (text.ServerOrigins), so the document
+// service and the API read one list and a server URL ending in `//` alike. The settings tests read
+// its answer, as they build the router through appContextOptions, so dropping a hand-off here
+// fails a case (TestDocumentDepsCarryEveryBootSetting, TestDocumentDepsReadLinksAsTheAPIDoes).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -2229,6 +2274,7 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
+	built.Origins = text.ServerOrigins(serverURL, boot.ServedOrigins, boot.FormerOrigins)
 	return built
 }
 
@@ -2391,6 +2437,9 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.AgentTokens = boot.AgentTokens
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
+	built.ServedOrigins = boot.ServedOrigins
+	built.FormerOrigins = boot.FormerOrigins
+	built.TrustedProxyRanges = boot.TrustedProxyRanges
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
@@ -2748,10 +2797,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
 // the approval relays already call, Dispatch's own projected ServiceAccount token from
 // DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
-// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
-// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
-// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
-// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, each one DISPATCH_PROOF_ORIGINS
+// adds, which is the one setting of its own, since a pod or a daemon calls Dispatch at an
+// in-cluster address and signs the URL it calls, and each served address
+// (DISPATCH_SERVED_ORIGINS), so an agent whose Dispatch URL is a served address signs for it,
+// whatever Host its request arrives under. A former address (DISPATCH_FORMER_ORIGINS) is never
+// one, so a proof naming it is refused everywhere. Spent proofs are recorded in Dispatch's own
+// database (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
@@ -2777,11 +2829,12 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(dispatchcipher.TokenFileSetting, boot.AgentSecretsTokenFile),
-		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins, boot.ServedOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
-		// trusted here (auth.ForwardedAddress).
+		// trusted here: the address the router resolved under DISPATCH_TRUSTED_PROXY_RANGES
+		// (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
 		// The read class, the results list, the approve list and their gate are Dispatch's own
 		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
@@ -2820,14 +2873,48 @@ func proofOriginEntries(value string) ([]string, error) {
 	return origins, nil
 }
 
+// parseTrustedProxyRanges reads DISPATCH_TRUSTED_PROXY_RANGES: each comma-separated entry,
+// trimmed, a range netaddr.TrustedRange takes: a CIDR, IPv4 or IPv6 but no IPv4-mapped IPv6 prefix,
+// which no peer's address is ever inside, written as the network it names (10.129.0.0/23, not
+// 10.129.0.5/23, so the setting trusts what it says), with a prefix longer than /0, since
+// 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For and let any caller pick the address
+// it is logged and rate limited by. A value of nothing but whitespace is unset. It refuses an
+// empty entry and any other, naming the entry by its position; nil for none.
+func parseTrustedProxyRanges(value string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	ranges := make([]netip.Prefix, len(entries))
+	for index, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is empty", index+1, len(entries))
+		}
+		prefix, err := netaddr.TrustedRange(entry)
+		switch {
+		case errors.Is(err, netaddr.ErrRangeNotCIDR):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be a CIDR such as 192.0.2.0/24 or 2001:db8::/64", index+1, len(entries))
+		case errors.Is(err, netaddr.ErrRangeMapped):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is an IPv4-mapped IPv6 prefix, which no peer's address is ever inside, since the server reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix", index+1, len(entries))
+		case errors.Is(err, netaddr.ErrRangeNotNetwork):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be written as the network it names, %s", index+1, len(entries), prefix.Masked())
+		case errors.Is(err, netaddr.ErrRangeEveryPeer):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d trusts every peer's X-Forwarded-For, so any caller would pick the address it is logged and rate limited by: name the proxies' own ranges", index+1, len(entries))
+		}
+		ranges[index] = prefix
+	}
+	return ranges, nil
+}
+
 // proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
-// first, the one a proof naming none of them is checked against, then each origin added names. An
-// origin equal to one before it, compared without case as an origin's scheme and host are, is
-// taken once rather than refused: a deployment lists the public origin again beside the
-// in-cluster one.
-func proofOrigins(serverURL string, added []string) []string {
-	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
-	for _, origin := range added {
+// first, the one a proof naming none of them is checked against, then each origin of each list
+// added names, in order. An origin equal to one before it, compared without case as an origin's
+// scheme and host are, is taken once rather than refused: a deployment lists the public origin
+// again beside the in-cluster one, or a served address in DISPATCH_PROOF_ORIGINS too.
+func proofOrigins(serverURL string, added ...[]string) []string {
+	origins := []string{strings.TrimSuffix(serverURL, "/")}
+	for _, origin := range slices.Concat(added...) {
 		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
 			origins = append(origins, origin)
 		}

@@ -2,11 +2,13 @@ package shimwire
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -156,6 +158,114 @@ func TestEachFrameIsOneNewlineTerminatedLine(t *testing.T) {
 	want := "{\"type\":\"shutdown\"}\n{\"type\":\"agent_start\",\"deliveryId\":\"d1\"}\n{\"type\":\"agent_end\"}\n"
 	if sink.String() != want {
 		t.Fatalf("wrote %q, want %q", sink.String(), want)
+	}
+}
+
+// A frame that waits for the writer while another frame holds it answers to its own context. A
+// wait that no context can end holds a request past its bound. It waits as long as the peer
+// leaves the other frame unread.
+func TestAFrameWaitingForTheWriterEndsWithItsContext(t *testing.T) {
+	dst := &heldWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	writer := NewWriter(dst)
+	first := returnOf(func() error { return writer.WriteFrame(AgentStart{DeliveryID: "d1"}) })
+	select {
+	case <-dst.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first write did not reach its destination")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waiting := newDoneWatch(ctx)
+	second := returnOf(func() error { return writer.WriteFrameContext(waiting, AgentEnd{}) })
+	// The context is ended only once the second write waits on it. So no check made before the
+	// wait can end the write in its place.
+	select {
+	case <-waiting.asked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write did not wait on its context while another frame held the writer")
+	}
+	cancel()
+	err := awaitReturn(t, second, "the write did not return after its context ended")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WriteFrameContext after its context ended = %v, want context.Canceled", err)
+	}
+	if got := dst.lines(); len(got) != 1 {
+		t.Fatalf("the destination saw %d writes while the first held the writer, want only the first: %q", len(got), got)
+	}
+
+	close(dst.release)
+	if err := awaitReturn(t, first, "the first write did not return once its destination took it"); err != nil {
+		t.Fatalf("WriteFrame: %v", err)
+	}
+	if err := writer.WriteFrame(Shutdown{}); err != nil {
+		t.Fatalf("WriteFrame after the ended wait: %v", err)
+	}
+	want := []string{"{\"type\":\"agent_start\",\"deliveryId\":\"d1\"}\n", "{\"type\":\"shutdown\"}\n"}
+	if got := dst.lines(); !slices.Equal(got, want) {
+		t.Fatalf("the destination saw %q, want %q", got, want)
+	}
+}
+
+// heldWriter is a destination whose first write waits until the test closes release. It keeps
+// each write it took, whole.
+type heldWriter struct {
+	entered, release chan struct{}
+	mu               sync.Mutex
+	writes           []string
+}
+
+func (w *heldWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	w.writes = append(w.writes, string(p))
+	first := len(w.writes) == 1
+	w.mu.Unlock()
+	if first {
+		close(w.entered)
+		<-w.release
+	}
+	return len(p), nil
+}
+
+func (w *heldWriter) lines() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.writes)
+}
+
+// doneWatch is a context that says when its Done is first asked for. A frame asks for it as it
+// starts to wait for the writer.
+type doneWatch struct {
+	context.Context
+	asked chan struct{}
+	once  sync.Once
+}
+
+func newDoneWatch(ctx context.Context) *doneWatch {
+	return &doneWatch{Context: ctx, asked: make(chan struct{})}
+}
+
+func (c *doneWatch) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.asked) })
+	return c.Context.Done()
+}
+
+// returnOf runs call on a goroutine of its own and hands back what it returns.
+func returnOf(call func() error) <-chan error {
+	result := make(chan error, 1)
+	go func() { result <- call() }()
+	return result
+}
+
+// awaitReturn is what call returned. The wait only ends a test that hangs, and failing says what
+// did not happen.
+func awaitReturn(t *testing.T, result <-chan error, failure string) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal(failure)
+		return nil
 	}
 }
 

@@ -5,9 +5,10 @@
 // of the task a record names, which is the form of a `plan_task` block's id too (lowercase
 // letters, digits and hyphens, the first a letter or a digit, at most TaskIDMax bytes), and the
 // scale and the rule of the rating a retro gives the plan, which Dispatch stores on the retro's
-// record. Each is the one generated from packages/contracts (internal/contracts), which Dispatch's
-// store and routes use, so a word the Legion daemon writes or reads is the word Dispatch holds, and
-// the daemon never sends a record Dispatch would refuse whole for a word or a text.
+// record. It also holds the most models a record's answers names, and the rule its answers keep.
+// Each is the one generated from packages/contracts (internal/contracts), which Dispatch's store
+// and routes use, so a word the Legion daemon writes or reads is the word Dispatch holds, and the
+// daemon never sends a record Dispatch would refuse whole for a word or a text.
 //
 // It exists because the Legion daemon (packages/daemon, module github.com/sjawhar/legion/daemon)
 // is a Go module of its own, and Go's internal rule bars it from
@@ -56,12 +57,36 @@ const (
 	CodePlanOtherIssue = contracts.PlanOtherIssueCode
 )
 
-var agentText = regexp.MustCompile(contracts.StepAgentTextPattern)
-
 // AgentTextHolds reports whether text is in the form a step record's agent, session and model
-// take.
+// take (contracts.StepAgentTextHolds, the rule Dispatch's store refuses a write by).
 func AgentTextHolds(text string) bool {
-	return agentText.MatchString(text)
+	return contracts.StepAgentTextHolds(text)
+}
+
+// AnswersMax is the most models a step record's answers names, each with its count of calls
+// (contracts.StepAnswersMax, the limit Dispatch's step write refuses more by).
+const AnswersMax = contracts.StepAnswersMax
+
+// AnswersFault is the first rule of a step record's answers that the answers break, or
+// AnswersHold where they break none (contracts.StepAnswersFault).
+type AnswersFault = contracts.StepAnswersFault
+
+// The faults of a step record's answers: none, and more than AnswersMax entries. Then those of one
+// entry: a model outside the form of an agent's text, fewer than 1 call, a model named before.
+const (
+	AnswersHold      = contracts.StepAnswersHold
+	AnswersTooMany   = contracts.StepAnswersTooMany
+	AnswerModelForm  = contracts.StepAnswerModelForm
+	AnswerNoCall     = contracts.StepAnswerNoCall
+	AnswerModelTwice = contracts.StepAnswerModelTwice
+)
+
+// CheckAnswers is the first rule of a step record's answers that answers break, and the index of
+// the entry that breaks it (contracts.CheckStepAnswers). The index is -1 where the answers hold, or
+// hold too many entries. Dispatch's store refuses an answers write by the same rule. pair gives an
+// entry's model and its calls. Each caller refuses a fault with its own wording.
+func CheckAnswers[E any](answers []E, pair func(E) (model string, calls int64)) (AnswersFault, int) {
+	return contracts.CheckStepAnswers(answers, pair)
 }
 
 // TaskIDMax is the most bytes the id of a task a record names holds, and TaskIDRule the form's

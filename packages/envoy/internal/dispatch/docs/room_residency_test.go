@@ -722,11 +722,11 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
 	})
 	testcleanup.Add(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -19,7 +19,8 @@
 // to the whole server DatabaseURLEnv names, which can hold other databases (the one
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
 // outlives the run. It sets one setting of each database it makes, which goes with the database:
-// JIT is off (testdb.WithoutJIT), as on production's database.
+// JIT is off (testdb.WithoutJIT), as on production's database. Open's template also turns
+// autovacuum off for one table, embeddings, which each clone copies (embeddingsStatistics).
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops, up to a bound (Run). Dropping a database forces a checkpoint and waits for it, and every
@@ -85,8 +86,9 @@ func Open(t testing.TB) *store.Store {
 	return OpenFrom(t, openKey, migrateWithThisTree)
 }
 
-// migrateWithThisTree migrates the database databaseURL names with this tree's runner: Open's
-// template. It closes its pool before it returns, so the template is left with no connection.
+// migrateWithThisTree migrates the database databaseURL names with this tree's runner, and turns
+// autovacuum off for embeddings (embeddingsStatistics): Open's template. It closes its pool before
+// it returns, so the template is left with no connection.
 func migrateWithThisTree(databaseURL string) error {
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)
@@ -94,8 +96,32 @@ func migrateWithThisTree(databaseURL string) error {
 		return fmt.Errorf("open the database: %w", err)
 	}
 	defer database.Pool.Close()
-	return database.Migrate(ctx)
+	if err := database.Migrate(ctx); err != nil {
+		return err
+	}
+	if _, err := database.Pool.Exec(ctx, embeddingsStatistics); err != nil {
+		return fmt.Errorf("turn autovacuum off for embeddings: %w", err)
+	}
+	return nil
 }
+
+// embeddingsStatistics turns autovacuum off for embeddings in Open's template, and so in every
+// clone, which copies the table's options: the table's statistics are then only what the test
+// writes and any analyze it runs itself.
+//
+// Meaning search's plan follows those statistics, and the plan decides its answer. Autovacuum
+// analyzes a clone when its own schedule reaches it, which it did inside one unloaded run of a
+// test a few seconds long. An analyze that lands after a test has written its windows and before
+// their vectors reads every row as holding none, and the planner then takes every meaning arm
+// through embeddings_cosine, pgvector's approximate HNSW index, where at any other moment it takes
+// an exact scan and sort of a table this small. Measured on
+// TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows (INFRA-3149), whose long document
+// holds a hundred identical vectors: with that analyze planted, 6 of 12 searches lost the short
+// document and 1 lost the comment; analyzed once every vector was in, 12 of 12 found all three;
+// and the document arm alone, forced onto the HNSW index, missed the short document in 13 of 33
+// runs. A test whose subject is the planner's choice analyzes the table itself
+// (search_index_test.go, docs' block_index_test.go).
+const embeddingsStatistics = `alter table embeddings set (autovacuum_enabled = false, toast.autovacuum_enabled = false)`
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that

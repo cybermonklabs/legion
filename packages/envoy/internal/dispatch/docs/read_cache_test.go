@@ -370,7 +370,7 @@ func newReadCacheService(t *testing.T, database *store.Store, persistence Versio
 		Persistence: persistence,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     testOrigins,
 		Settle:      time.Hour,
 	})
 	testcleanup.Add(t, func() {

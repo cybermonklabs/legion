@@ -2,11 +2,11 @@ package shimwire
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 )
 
 // ErrEmbeddedNewline is a line carrying a newline of its own, which would split one frame into
@@ -20,18 +20,28 @@ var ErrEmbeddedNewline = errors.New("shimwire: a frame line may not contain a ne
 // every chunked agent_end reached the daemon truncated (socket-writer.ts:19-25). Its queue and
 // its drain handler are the netpoller's job here — an io.Writer either writes everything or
 // reports why it could not, and a net.Conn blocks the goroutine until the peer drains. What is
-// left for this type is the part Go does not give: one frame is one Write, under a lock, so two
-// goroutines sharing a stream can never interleave their lines or lose a newline between them.
+// left for this type is the part Go does not give: one frame is one Write, while the frame holds
+// the writer's one slot, so two goroutines sharing a stream can never interleave their lines or
+// lose a newline between them.
 type Writer struct {
-	mu   sync.Mutex
+	// slot is a one-slot semaphore rather than a mutex. So a frame that waits for the writer
+	// still answers to its own context (WriteFrameContext).
+	slot chan struct{}
 	dst  io.Writer
 	buf  bytes.Buffer
 	json *json.Encoder
 }
 
+// ContextWriter is a destination whose write a context can end. A peer that stops reading holds
+// a plain Write until the destination's own bound. A frame bounded by its caller's context cannot
+// wait that long.
+type ContextWriter interface {
+	WriteContext(ctx context.Context, p []byte) (int, error)
+}
+
 // NewWriter writes frames to dst.
 func NewWriter(dst io.Writer) *Writer {
-	w := &Writer{dst: dst}
+	w := &Writer{slot: make(chan struct{}, 1), dst: dst}
 	w.json = newFrameEncoder(&w.buf)
 	return w
 }
@@ -66,35 +76,66 @@ func (c *byteCount) Write(p []byte) (int, error) {
 
 // WriteFrame encodes f and writes it as one line.
 func (w *Writer) WriteFrame(f Frame) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	return w.WriteFrameContext(context.Background(), f)
+}
+
+// WriteFrameContext is WriteFrame bounded by ctx. It waits for the writer or for ctx, and a frame
+// whose context ends first writes nothing. Once it holds the writer, it writes through the
+// destination's WriteContext where the destination has one, so ctx bounds the write too.
+func (w *Writer) WriteFrameContext(ctx context.Context, f Frame) error {
+	if err := w.take(ctx); err != nil {
+		return fmt.Errorf("the %s frame waited for the writer: %w", f.FrameType(), err)
+	}
+	defer w.release()
 	w.buf.Reset()
 	// Encode terminates the value with the newline that frames it.
 	if err := w.json.Encode(f); err != nil {
 		return fmt.Errorf("encode the %s frame: %w", f.FrameType(), err)
 	}
-	return w.writeLocked()
+	return w.writeHeld(ctx)
 }
 
-// WriteLine writes an already-encoded frame as one line. The newline is this writer's.
+// WriteLine writes an already-encoded frame as one line. The newline is this writer's. It waits
+// for the writer with no bound, so the wait cannot fail (take).
 func (w *Writer) WriteLine(line []byte) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.slot <- struct{}{}
+	defer w.release()
 	w.buf.Reset()
 	w.buf.Write(line)
 	w.buf.WriteByte('\n')
-	return w.writeLocked()
+	return w.writeHeld(context.Background())
 }
 
-// writeLocked sends the buffered line — newline included — after refusing the two shapes that
-// would desynchronise the peer's framing rather than reach it as one frame.
-func (w *Writer) writeLocked() error {
+// take waits for the writer's slot, or for ctx to end, and then returns ctx's cause. A context
+// that has already ended takes no slot, even a free one, so its frame is never written.
+func (w *Writer) take(ctx context.Context) error {
+	if ctx.Err() == nil {
+		select {
+		case w.slot <- struct{}{}:
+			return nil
+		case <-ctx.Done():
+		}
+	}
+	return context.Cause(ctx)
+}
+
+// release gives the writer's slot back to the next frame.
+func (w *Writer) release() { <-w.slot }
+
+// writeHeld sends the buffered line — newline included — after refusing the two shapes that
+// would desynchronise the peer's framing rather than reach it as one frame. The caller holds the
+// writer's slot.
+func (w *Writer) writeHeld(ctx context.Context) error {
 	line := w.buf.Bytes()
 	if i := bytes.IndexByte(line[:len(line)-1], '\n'); i >= 0 {
 		return fmt.Errorf("%w (at byte %d of %d)", ErrEmbeddedNewline, i, len(line)-1)
 	}
 	if len(line) > MaxFrameBytes {
 		return fmt.Errorf("%w: %d bytes, limit %d", ErrLineTooLong, len(line), MaxFrameBytes)
+	}
+	if dst, ok := w.dst.(ContextWriter); ok {
+		_, err := dst.WriteContext(ctx, line)
+		return err
 	}
 	_, err := w.dst.Write(line)
 	return err

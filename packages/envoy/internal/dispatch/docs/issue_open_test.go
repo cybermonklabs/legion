@@ -448,7 +448,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
+		Origins:   testOrigins,
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
