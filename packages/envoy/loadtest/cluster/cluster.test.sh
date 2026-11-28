@@ -332,6 +332,7 @@ source "$here/../../../../scripts/e2e/lib/proof-wait.sh"
 proof_guard_from_env
 
 mkdir -p "$fake" "$bin" "$fake/stepdir"
+mkfifo "$fake/sample-hold"
 
 cat >"$bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
@@ -366,6 +367,14 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
+# JSON fixtures have no NUL bytes. read reaches EOF without dropping trailing newlines.
+print_json_file() {
+  local json
+  {
+    IFS= read -r -d '' json || :
+    printf '%s' "$json"
+  } <"$1"
+}
 # credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
 # (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
 # DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
@@ -423,7 +432,7 @@ case $verb in
           [ ! -f "$FAKE_DIR/lock-get-oks" ] || oks=$(cat "$FAKE_DIR/lock-get-oks")
           if [ -n "${FAKE_LOCK_GET_OK_TIMES:-}" ] && ((oks < FAKE_LOCK_GET_OK_TIMES)); then
             printf '%s\n' "$((oks + 1))" >"$FAKE_DIR/lock-get-oks"
-            cat "$FAKE_DIR/lock.json"
+            print_json_file "$FAKE_DIR/lock.json"
             exit 0
           fi
           fails=0
@@ -434,11 +443,16 @@ case $verb in
             exit 1
           fi
         fi
-        [ ! -f "$FAKE_DIR/lock.json" ] || cat "$FAKE_DIR/lock.json"
+        [ ! -f "$FAKE_DIR/lock.json" ] || print_json_file "$FAKE_DIR/lock.json"
         ;;
       *"-o json"*)
-        role=$(sed -n 's/.*dispatch-loadtest\/role=\([a-z-]*\).*/\1/p' <<<"$sel")
-        jq --arg role "$role" 'if $role == "" then . else .items |= map(select(.metadata.labels["dispatch-loadtest/role"] == $role)) end' "$FAKE_DIR/pods.json" ;;
+        file=$FAKE_DIR/pods.json
+        if [[ $sel =~ dispatch-loadtest/role=([a-z-]+) ]]; then
+          file=$FAKE_DIR/pods.role.${BASH_REMATCH[1]}.json
+          [ -f "$file" ] || file=$FAKE_DIR/pods-empty.json
+        fi
+        print_json_file "$file"
+        ;;
       *"-o name"*) ;;
       *jsonpath*) printf 'runner\trunner: requests {"cpu":"8"}, limits {"cpu":"8"}\n' ;;
       *"-o wide"*) printf 'NAME     READY   STATUS\nrunner   1/1     Running\n' ;;
@@ -494,6 +508,12 @@ case $verb in
           exit 1
         elif [ -n "${FAKE_SAMPLE:-}" ]; then
           printf 'usage_usec 123456\nthrottled_usec 0\ncpu_max 1600000 100000\nmemory_current 1048576\ninactive_file 4096\nend\n'
+        else
+          # Keep the idle exec stream open on a read/write FIFO without a child.
+          # sample_role_once sends TERM to this PID when parse_samples stops reading.
+          while [ -d "$FAKE_DIR" ]; do
+            read -r -t 1 || :
+          done <>"$FAKE_DIR/sample-hold"
         fi
         ;;
       # A runner job's start (runner_start). One started with the copy's credentials (-c) runs the
@@ -1260,8 +1280,10 @@ readonly seeded=$fake/replay-seeded.json
 write_manifest "$seeded"
 jq '.seed = null' "$seeded" >"$fake/replay-null.json"
 
-# write_pods [DISPATCH_RESTARTS [DISPATCH_REASON]]: the run's pods as the fake kubectl lists them.
+# write_pods [DISPATCH_RESTARTS [DISPATCH_REASON]]: the full list and its role-filtered replies.
 write_pods() {
+  local role roles
+  local filter='if $role == "" then . else .items |= map(select(.metadata.labels["dispatch-loadtest/role"] == $role)) end'
   jq -n --argjson r "${1:-0}" --arg reason "${2:-}" '
     def c($name): {name: $name, restartCount: 0, lastState: {}};
     def pod($name; $role; $containers): {metadata: {name: $name, labels: {"dispatch-loadtest/role": $role}},
@@ -1277,6 +1299,12 @@ write_pods() {
       pod("nats-box-7f6d"; "nats-box"; [c("nats-box")]),
       pod("listener-6b8f"; "listener"; [c("envoy-listener")]),
       pod("runner"; "runner"; [c("runner")])]}' >"$fake/pods.json"
+  roles=$(jq -r '[.items[].metadata.labels["dispatch-loadtest/role"]] | unique[]' "$fake/pods.json")
+  while IFS= read -r role; do
+    jq --arg role "$role" "$filter" "$fake/pods.json" >"$fake/pods.role.$role.json"
+  done <<<"$roles"
+  # Underscores are outside the fake kubectl's role-selector alphabet.
+  jq --arg role '__missing__' "$filter" "$fake/pods.json" >"$fake/pods-empty.json"
 }
 
 reset_fake() {
