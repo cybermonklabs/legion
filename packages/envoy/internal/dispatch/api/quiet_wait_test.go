@@ -165,8 +165,11 @@ func quietWaitMentionSend(t *testing.T) {
 		return false
 	})
 	// The server's clock is held, so no window of its own - the creation's lookup, the send's
-	// receipt - ends while the listener holds its answer.
-	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
+	// receipt - ends while the listener holds its answer, and its settlements are armed past any
+	// test's deadline (xidFixtureSettlesNothing), so the spec's settlement is no work the wait meets.
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
+		envoyURL: listener.URL, clock: clocktest.Held(), settle: xidFixtureSettlesNothing,
+	})
 	issue := createInteractionIssue(t, handler, "QWM", "A held mention", "A spec.\n")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Look at this while the listener holds the send.", "mentions": []map[string]any{{"target": "session:s1"}},
@@ -217,7 +220,11 @@ func quietWaitStatisticsRefresh(t *testing.T) {
 // service (IdleForTest), until the update is durable. A browser's socket is admitted only by a
 // document service that knows the caller (docs.Deps.Identity), which newRegisteredTestServer's
 // does not, so the row stands its server up as the browser rows do (newInteractionServer, with a
-// document service of its own) and registers it for the wait itself.
+// document service of its own) and registers it for the wait itself. Its settlements are armed
+// past any test's deadline (xidFixtureSettlesNothing), and the row runs the spec's own settlement
+// itself: a settlement that ran while the browser's edit waited in the room's queue would store
+// the edit with the room's queue (flushThrough), the held append would never begin, and the row
+// would wait for it until the test binary's deadline, as a race-built run under load did.
 func quietWaitRoomUpdate(t *testing.T) {
 	release := make(chan struct{})
 	appends := &heldAppends{release: release, started: make(chan struct{}), stored: make(chan struct{})}
@@ -225,7 +232,7 @@ func quietWaitRoomUpdate(t *testing.T) {
 	handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 		appends.PgVersioned = docs.NewPgVersioned(database)
 		documentService = docs.New(docs.Deps{
-			Store: database, Persistence: appends, Identity: headerIdentity(database), Settle: 20 * time.Millisecond,
+			Store: database, Persistence: appends, Identity: headerIdentity(database), Settle: xidFixtureSettlesNothing,
 		})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
@@ -237,6 +244,9 @@ func quietWaitRoomUpdate(t *testing.T) {
 	t.Cleanup(releaseOnce)
 	issue := createInteractionIssue(t, handler, "QWR", "A held room update", "A spec.\n")
 	// The spec's own settlement runs first, so nothing but the browser's append stores its edit.
+	if err := documentService.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the spec: %v", err)
+	}
 	awaitDocumentSettled(t, database, issue.PrimaryArtifactID)
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
 	peer.appendParagraph(t, "Typed while the room's append is held.")
@@ -257,9 +267,11 @@ func quietWaitRoomUpdate(t *testing.T) {
 
 // quietWaitSettlementOwed: the spec's settlement is held once it holds the issue's owner lock
 // (docs.Service.AfterSettleLockForTest); the document service reads it running, and the wait,
-// asked to wait for every settlement, waits until it commits.
+// asked to wait for every settlement, waits until it commits. The settlement is the row's own
+// (SettleIssueDocuments), and the server's settlements are armed past any test's deadline
+// (xidFixtureSettlesNothing), so no timer decides when it runs.
 func quietWaitSettlementOwed(t *testing.T) {
-	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: xidFixtureSettlesNothing})
 	release, releaseOnce := heldUntilReleased(t)
 	holding := make(chan string, 1)
 	var held atomic.Bool
@@ -269,7 +281,9 @@ func quietWaitSettlementOwed(t *testing.T) {
 			<-release
 		}
 	})
-	createInteractionIssue(t, handler, "QWT", "A held settlement", "A spec.\n")
+	issue := createInteractionIssue(t, handler, "QWT", "A held settlement", "A spec.\n")
+	settled := make(chan error, 1)
+	go func() { settled <- deps.Docs.(*docs.Service).SettleIssueDocuments(context.Background(), issue.Key) }()
 	room := testwait.Receive(t, "the spec's settlement to be held", holding)
 	run := startQuietWait(t, database, true, func() error {
 		owed, err := settlementOwed(database, room)
@@ -285,16 +299,23 @@ func quietWaitSettlementOwed(t *testing.T) {
 	run.stillWaiting(t, "the settlement")
 	releaseOnce()
 	run.returned(t)
+	if err := testwait.Receive(t, "the spec's settlement to return", settled); err != nil {
+		t.Fatalf("settle the spec: %v", err)
+	}
 }
 
 // quietWaitSettlementNotAsked: a document owes its settlement and nothing in this process runs or
 // arms it - the spec has settled, and its pending-settlement row is written again as another
 // process's append writes it, which arms no timer here, as a closed issue's document owes one
 // until a reopen - and a wait that is not asked to wait for settlements returns with it still
-// owed.
+// owed. The row settles the spec itself (SettleIssueDocuments), under settlements armed past any
+// test's deadline (xidFixtureSettlesNothing).
 func quietWaitSettlementNotAsked(t *testing.T) {
-	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{})
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: xidFixtureSettlesNothing})
 	issue := createInteractionIssue(t, handler, "QWN", "An owed settlement", "A spec.\n")
+	if err := deps.Docs.(*docs.Service).SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the spec: %v", err)
+	}
 	awaitDocumentSettled(t, database, issue.PrimaryArtifactID)
 	if _, err := database.Pool.Exec(context.Background(),
 		`insert into doc_settlements_pending (artifact_id) values ($1)`, issue.PrimaryArtifactID); err != nil {
