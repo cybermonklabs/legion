@@ -275,11 +275,13 @@ func (page activityCommentPage) first(id string) (map[string]json.RawMessage, bo
 // {node, quote: bound, occurrence: 1}, the zero-based second match, as a quote's beside block_id
 // is counted (R8). An agent replies to the comment on the lens. A comment on a second finding,
 // `the **upper** bound of [the pool](...)`, quotes `upper bound of the pool`, words that cross its
-// bold and its link, which its plain text holds. She writes a prose block in the room's own
-// fragment and a comment anchored in it by artifact, the issue's tree artifact (the row of kind
-// tree), and block_id, which answers 201 and not 400 NOT_DOCUMENT. The test then writes, as a
-// process of the release before would, a comments row anchored in r1 with no anchored_in and no
-// part_of, and runs the backfill's passes.
+// bold and its link, which its plain text holds. Before any pass of the backfill runs, each comment
+// on a node's text states, as its own write left it, its anchored_in and its part_of to that node,
+// and the tree read answers it under that node (requireWrittenNodeAnchor). She writes a prose block
+// in the room's own fragment and a comment anchored in it by artifact, the issue's tree artifact
+// (the row of kind tree), and block_id, which answers 201 and not 400 NOT_DOCUMENT. The test then
+// writes, as a process of the release before would, a comments row anchored in r1 with no
+// anchored_in and no part_of, and runs the backfill's passes.
 //
 // The read with no view answers each of the five under the node its anchor names, with its
 // part_of and anchored_in to that node in the store, and its anchor holding the node, bound,
@@ -427,6 +429,15 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 		t.Fatalf("quote across inline Markdown of %s answered %d %s, want 201: %s", crossed.Address, across.Code, refusal.Code, across.Body.String())
 	}
 	crossedComment := decodeBody[model.Comment](t, across).ID
+	// The comment write's own pair, read before the backfill below runs: a pass of it levels every
+	// node-anchored comment's anchored_in and part_of from comments.node_anchor, so only a read
+	// before it holds the write (R31). Each comment on a node's text states both to that node as
+	// written, and the tree read answers it there.
+	asWritten := nodeAnchorTree(t, handler, key)
+	for _, comment := range append(slices.Clone(onNodes),
+		nodeAnchored{name: "the comment across bold and a link", id: crossedComment, kind: refs.BlockNodeKind, node: crossed.ID}) {
+		requireWrittenNodeAnchor(t, database, asWritten, comment)
+	}
 
 	tree, err := issueTreeOf(ctx, database.Pool, key)
 	if err != nil || tree == "" {
@@ -712,9 +723,12 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 		switch {
 		case plainTag == "" || anchoredTag == "":
 			t.Errorf("order=activity pages without and with node_anchor answered the ETags %q and %q, want one each", plainTag, anchoredTag)
-		case plainTag == anchoredTag:
-			t.Errorf("order=activity pages with and without node_anchor answered one ETag %s", plainTag)
 		default:
+			if plainTag == anchoredTag {
+				t.Errorf("order=activity pages with and without node_anchor answered one ETag %s", plainTag)
+			}
+			// The read with node_anchor=true sends the other read's ETag, so a page whose ETag left
+			// node_anchor out answers 304 here, the plain read's page standing for its own.
 			conditional := activity(pageQuery+"&node_anchor=true", plainTag)
 			if conditional.Code != http.StatusOK {
 				t.Errorf("order=activity page with node_anchor=true, sent the ETag %s of the page without it, answered %d, want 200 with its page",
