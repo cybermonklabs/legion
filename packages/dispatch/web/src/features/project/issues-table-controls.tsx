@@ -199,6 +199,8 @@ export function Popover({
           className={`flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border p-1 text-sm font-normal shadow-lg ${card}`}
           label={title ?? (typeof label === "string" ? label : "Table actions")}
           onDismiss={() => setOpen(false)}
+          // Main's keys inside the panel, until a piece of INFRA-3135 converts this page.
+          pageKeys
           role="dialog"
         >
           {children(close)}

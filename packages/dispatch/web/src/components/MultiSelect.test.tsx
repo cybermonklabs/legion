@@ -1793,6 +1793,30 @@ test("a trigger that keeps the page's keys opens on no typed character or arrow,
   }
 });
 
+// The same host keeps the page's keys on the open list's controls too: the list's panel carries
+// the keymap's mark beside the one every panel carries, so a key on a row reaches the page's
+// bindings. The default list's panel carries the panel's mark alone.
+test("the open list of a trigger that keeps the page's keys carries the keymap's mark on its panel, and the default list's does not", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost options={["api", "docs"]} triggerKeys="page" />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    const marked = panelOf(trigger);
+    expect(marked).toHaveAttribute("data-anchored-panel", "");
+    expect(marked).toHaveAttribute("data-page-keys", "");
+    await user.keyboard("{Escape}");
+
+    view.rerender(<SingleHost options={["api", "docs"]} />);
+    await user.click(trigger);
+    const plain = panelOf(trigger);
+    expect(plain).toHaveAttribute("data-anchored-panel", "");
+    expect(plain).not.toHaveAttribute("data-page-keys");
+  } finally {
+    view.unmount();
+  }
+});
+
 // A host whose next move depends on how the reader left the list - the Agents composer's, whose
 // Escape goes one level out to the row - is told what closed it.
 test("every close tells the host what closed the list: a pick, Escape, Tab, a press outside, the trigger", async () => {

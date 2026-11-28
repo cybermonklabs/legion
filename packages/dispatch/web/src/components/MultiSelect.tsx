@@ -202,7 +202,9 @@ interface SharedProps {
    *  the trigger as a field, and ArrowDown, ArrowUp and a typed character open the closed list
    *  (`handleTriggerKeyDown`). `"page"` keeps the keys a host's trigger had before the shared
    *  list: the trigger is a plain button to the page's keys (`PAGE_KEYS_ATTRIBUTE`), and no key
-   *  but Enter and Space opens it. */
+   *  but Enter and Space opens it. It keeps the page's keys on the open list's controls too
+   *  (`AnchoredPanel`'s `pageKeys`): a key on a row or on Clear reaches the page's bindings, and
+   *  only the text box keeps the keys it types. */
   readonly triggerKeys?: "list" | "page";
   /** Classes for the element that holds the trigger's text, beside the chevron: where a trigger
    *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
@@ -822,6 +824,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           // A pointer tick in a multi-select scrolls nothing. Firefox otherwise follows the moved
           // option through native scroll anchoring. Arrow and Enter reveal use scrollTop directly.
           overflowAnchor={single ? undefined : "none"}
+          pageKeys={triggerKeys === "page"}
         >
           <div
             className={`sticky top-0 border-b p-2 ${tooltips ? card : ON_PAGE.panel}`}

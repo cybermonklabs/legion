@@ -459,6 +459,38 @@ test("a key pressed on an option list's trigger that keeps the page's keys fires
   }
 });
 
+// A host that keeps the page's keys marks its open panel too, and the panel's controls then
+// leave the page's keys to the page as they did before the shared list: `j` fires from a button
+// or a checkbox there, while a select there keeps its own keys, as a select on the page does. The
+// same button inside a panel with no such mark fires only the bindings that fire while the reader
+// types.
+test("a key pressed on a button or a checkbox inside an open panel that keeps the page's keys fires the page's bindings, and one on a select there does not", () => {
+  const { keymap, press } = harness();
+  const next = binding("next", "j");
+  keymap.register("global", [next.definition]);
+  const panel = document.createElement("div");
+  panel.setAttribute(PANEL_ATTRIBUTE, "");
+  panel.setAttribute(PAGE_KEYS_ATTRIBUTE, "");
+  const button = document.createElement("button");
+  button.type = "button";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  const select = document.createElement("select");
+  panel.append(button, checkbox, select);
+  document.body.appendChild(panel);
+  try {
+    expect(press("j", { target: button }), "j on the panel's button").toBe(true);
+    expect(press("j", { target: checkbox }), "j on the panel's checkbox").toBe(true);
+    expect(press("j", { target: select }), "j on the panel's select").toBe(false);
+    expect(next.fired()).toBe(2);
+    panel.removeAttribute(PAGE_KEYS_ATTRIBUTE);
+    expect(press("j", { target: button }), "j on the button, unmarked").toBe(false);
+    expect(next.fired()).toBe(2);
+  } finally {
+    panel.remove();
+  }
+});
+
 test("an already-handled key (defaultPrevented) or one mid-IME-composition is left alone", () => {
   const { keymap, press } = harness();
   const next = binding("next", "j");
