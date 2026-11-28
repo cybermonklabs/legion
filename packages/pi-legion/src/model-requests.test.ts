@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { LEGION_MAX_MODEL_REQUESTS } from "@legion/contracts/legion-api";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
 import {
@@ -461,7 +462,9 @@ test("a failed batch waits before retrying and the earliest deadline goes first"
 // A failed call holds only the requests it put back: a request no call carried keeps its own
 // deadline (`end + MODEL_REQUEST_DUE_AFTER_MS`), even while a put-back request is waiting out its
 // bound. Both a request that ended while a stalled call was open and one that ended right after a
-// failed call keep their own deadlines and their send margin.
+// failed call keep their own deadlines and their send margin; the put-back request goes with that
+// send, in its one report of put-back requests, after the report of the request whose deadline it
+// is.
 test("a request no call carried goes by its own deadline even while a failed call's request waits", async () => {
   const sentAt: { ids: string[]; at: number }[] = [];
   const { reporter, advance, now } = rig({
@@ -471,7 +474,7 @@ test("a request no call carried goes by its own deadline even while a failed cal
       if (attempt === 1) {
         await hold(Number.POSITIVE_INFINITY);
       }
-      if (attempt === 3) {
+      if (attempt === 4) {
         return Response.json({ error: "unavailable" }, { status: 503 });
       }
       return Response.json({ kept: ids });
@@ -492,36 +495,39 @@ test("a request no call carried goes by its own deadline even while a failed cal
   await advance(req2End + MODEL_REQUEST_DUE_AFTER_MS - now() - 1);
   expect(sentAt).toHaveLength(1);
   await advance(1);
-  expect(sentAt).toHaveLength(2);
-  expect(sentAt[1]?.at).toBe(req2End + MODEL_REQUEST_DUE_AFTER_MS);
-  expect(sentAt[1]?.ids.sort()).toEqual(["req-1", "req-2"]);
+  expect(sentAt.slice(1)).toEqual([
+    { ids: ["req-2"], at: req2End + MODEL_REQUEST_DUE_AFTER_MS },
+    { ids: ["req-1"], at: req2End + MODEL_REQUEST_DUE_AFTER_MS },
+  ]);
 
   // Req-3 fails immediately with 503 (put back due +15 s); req-4 ends 100 ms later (less than the
   // 250 ms margin) and still keeps its own deadline with full margin, not the put-back's +15 s.
   reporter.messageEnded(role, answered(now()));
   reporter.turnEnded();
   await reporter.settled();
-  expect(sentAt).toHaveLength(3);
+  expect(sentAt).toHaveLength(4);
   await advance(100);
   const req4End = now();
   reporter.messageEnded(role, answered(req4End));
   await advance(MODEL_REQUEST_DUE_AFTER_MS - 1);
-  expect(sentAt).toHaveLength(3);
-  await advance(1);
   expect(sentAt).toHaveLength(4);
-  expect(sentAt[3]?.at).toBe(req4End + MODEL_REQUEST_DUE_AFTER_MS);
-  expect(sentAt[3]?.ids.sort()).toEqual(["req-3", "req-4"]);
+  await advance(1);
+  expect(sentAt.slice(4)).toEqual([
+    { ids: ["req-4"], at: req4End + MODEL_REQUEST_DUE_AFTER_MS },
+    { ids: ["req-3"], at: req4End + MODEL_REQUEST_DUE_AFTER_MS },
+  ]);
 });
 
-// A run's end (`agent_end`, and `session_shutdown`) sends what is pending at once and drops the
-// timer, whatever failed before: both a fresh request and a put-back request leave immediately.
+// A run's end (`agent_end`, and `session_shutdown`) makes a send at once and drops the timer,
+// whatever failed before: both a fresh request and a put-back request leave immediately, each in a
+// report of its own, the earliest deadline's first.
 test("a run's end sends what is pending at once even while a failed call's request waits", async () => {
   const sentAt: { ids: string[]; at: number }[] = [];
   const { reporter, advance, now } = rig({
     answer: (body, attempt) => {
       const ids = (body.requests as { id: string }[]).map(({ id }) => id);
       sentAt.push({ ids, at: now() });
-      if (attempt === 1 || attempt === 3) {
+      if (attempt === 1 || attempt === 4) {
         return Response.json({ error: "unavailable" }, { status: 503 });
       }
       return Response.json({ kept: ids });
@@ -541,25 +547,26 @@ test("a run's end sends what is pending at once even while a failed call's reque
   const firstTurnEnd = now();
   reporter.turnEnded();
   await reporter.settled();
-  expect(sentAt).toHaveLength(2);
-  expect(sentAt[1]?.at).toBe(firstTurnEnd);
-  expect(sentAt[1]?.ids.sort()).toEqual(["req-1", "req-2"]);
+  expect(sentAt.slice(1)).toEqual([
+    { ids: ["req-1"], at: firstTurnEnd },
+    { ids: ["req-2"], at: firstTurnEnd },
+  ]);
 
   // Even with only a put-back request pending (as at `session_shutdown`), a run's end sends it at
   // once instead of leaving it on an unref'd timer.
   reporter.messageEnded(role, answered(now()));
   reporter.turnEnded();
   await reporter.settled();
-  expect(sentAt).toHaveLength(3);
+  expect(sentAt).toHaveLength(4);
   await advance(2_000);
   const shutdownAt = now();
   reporter.turnEnded();
   await reporter.settled();
-  expect(sentAt).toHaveLength(4);
-  expect(sentAt[3]).toEqual({ ids: ["req-3"], at: shutdownAt });
+  expect(sentAt).toHaveLength(5);
+  expect(sentAt[4]).toEqual({ ids: ["req-3"], at: shutdownAt });
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
-  expect(sentAt).toHaveLength(4);
+  expect(sentAt).toHaveLength(5);
 });
 
 // A call that fails before anything leaves (`deps.daemon()` throws) is a failed call whose batch
@@ -694,9 +701,10 @@ test("a proxy's 429 goes again after the hold, and the daemon's own 409 is dropp
 // two minutes, a request ending every 5 s. The first request after a deadline's send sets the next
 // deadline, a period after the one before: the bound less the margin rounded up to the 5 s between
 // requests, 15 s, so every third request. Each call aborts 5 s before the next deadline, and in
-// this row the requests it put back go with that deadline's send, which takes everything pending
-// ("When it is sent" in `./model-requests.ts`), so at most one call is open until a run's end fires
-// halfway through the last deadline's call, where two calls are open at once. Once no new requests
+// this row the requests it put back go with that deadline's send, in its one report of put-back
+// requests beside the report of the requests no call carried ("When it is sent" in
+// `./model-requests.ts`): so from the second deadline on two calls are open at once, until a run's
+// end fires halfway through the last deadline's calls, where three are. Once no new requests
 // arrive, the put-back requests wait a full bound after their abort before going again: a stalled
 // daemon is never called in a loop, and open calls do not grow with the stall.
 test("a report the daemon never answers is aborted at its timeout and goes again after the hold", async () => {
@@ -750,10 +758,17 @@ test("a report the daemon never answers is aborted at its timeout and goes again
   // Wait through the abort of the open calls, the put-back hold, and the retry's abort.
   await advance(retryAfterAbort + MODEL_REQUEST_REPORT_TIMEOUT_MS - now());
 
-  // Each call left as the schedule says, alone until the run end while a call was open, and again
-  // only once the put-back hold ended.
-  expect(calls.map(({ sent }) => sent)).toEqual([...deadlines, whileOpen, retryAfterAbort]);
-  expect(calls.map(({ open }) => open)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 2, 1]);
+  // Each call left as the schedule says, two at each deadline after the first, one at the run's end
+  // while the last deadline's calls were open, and one again only once the put-back hold ended.
+  expect(calls.map(({ sent }) => sent)).toEqual([
+    deadlines[0],
+    ...deadlines.slice(1).flatMap((deadline) => [deadline, deadline]),
+    whileOpen,
+    retryAfterAbort,
+  ]);
+  expect(calls.map(({ open }) => open)).toEqual([
+    1, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 3, 1,
+  ]);
   // Each call was aborted at its limit, a failed call whose requests go again.
   expect(calls.map(({ sent, aborted }) => (aborted ?? Number.NaN) - sent)).toEqual(
     calls.map(() => MODEL_REQUEST_REPORT_TIMEOUT_MS)
@@ -761,14 +776,107 @@ test("a report the daemon never answers is aborted at its timeout and goes again
   expect(warned).toEqual(
     calls.map(() => "legion: a report of model requests did not reach the daemon; it goes again")
   );
-  // Each deadline call carries every id the one before carried; the run-end call carries only the
-  // request that ended while the last deadline's call was open; the retry carries all 25.
-  for (const [index, call] of calls.slice(0, deadlines.length).entries()) {
-    const before = calls[index - 1];
-    if (before !== undefined) expect(call.ids).toEqual(expect.arrayContaining(before.ids));
+  // At each deadline, the first report carries the requests that ended since the deadline before,
+  // which no call carried, and from the second deadline on the other carries every id the deadline
+  // before carried; the run-end call carries only the request that ended while the last deadline's
+  // calls were open; the retry carries all 25.
+  const perPeriod = period / requestEvery;
+  const byDeadline = deadlines.map((deadline) => calls.filter(({ sent }) => sent === deadline));
+  for (const [index, [fresh, putBack]] of byDeadline.entries()) {
+    expect(fresh?.ids).toEqual(
+      Array.from({ length: perPeriod }, (_, next) => `req-${index * perPeriod + next + 1}`)
+    );
+    const before = byDeadline[index - 1]?.flatMap(({ ids }) => ids) ?? [];
+    expect(putBack?.ids.sort() ?? []).toEqual(before.sort());
   }
-  expect(calls[deadlines.length]?.ids).toEqual(["req-25"]);
+  expect(calls.at(-2)?.ids).toEqual(["req-25"]);
   expect(calls.at(-1)?.ids).toHaveLength(25);
+});
+
+// The deep review's long stall (review round 8 of cybermonklabs/legion#5603): a daemon that takes
+// each report's connection and never answers, a request every 2 s alternating the role's claim and
+// the controller's, and a run's end every 30 s, for 90 minutes on the clock. Each call is aborted
+// at its 10 s limit, so the requests calls put back pile up to hundreds of each owner, which only
+// the hour's keep window caps. A send takes, per owner, the reports of the requests no call carried
+// and at most one report of put-back requests, and the put-back requests it leaves wait
+// `MODEL_REQUEST_LEFT_DUE_AFTER_MS` ("When it is sent" in `./model-requests.ts`): so the most calls
+// open at once in the last 5 minutes is no more than in the first 5, while the calls of the last 5
+// minutes carry hundreds of requests that ended before them, and every request no call carried
+// still goes by its own deadline. On a reporter whose send takes every put-back request, the open
+// calls grow with the backlog.
+test("the open calls of a long stall do not grow with the requests calls put back", async () => {
+  const clock = fakeClock();
+  /** Each call: when it left, the ids it carries, and how many calls were open once it left. */
+  const calls: { readonly sent: number; readonly ids: readonly string[]; readonly open: number }[] =
+    [];
+  let open = 0;
+  let nextId = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, init): Promise<Response> => {
+      open += 1;
+      const ids = (JSON.parse(String(init?.body)).requests as { id: string }[]).map(({ id }) => id);
+      calls.push({ sent: clock.now(), ids, open });
+      // The daemon never answers: only the call's abort ends the hold, and rejects it.
+      await clock.hold(Number.POSITIVE_INFINITY, init?.signal, () => {
+        open -= 1;
+      });
+      throw new Error("a daemon that never answers answered");
+    }) as typeof fetch,
+  });
+  const reporter = createModelRequestsReporter({
+    daemon: () => client,
+    credential: credentialOf,
+    paneSession: () => ROLE_SESSION,
+    log: { debug: () => undefined, warn: () => undefined },
+    now: clock.now,
+    schedule: clock.schedule,
+    newId: () => `req-${++nextId}`,
+  });
+  /** Lets the calls a hook call or a firing made reach the daemon, and the aborted ones end. */
+  const turn = async (): Promise<void> => {
+    const turned = Promise.withResolvers<void>();
+    setImmediate(turned.resolve);
+    await turned.promise;
+  };
+  const advance = (ms: number): Promise<void> =>
+    clock.advance(ms, async (fire) => {
+      fire();
+      await turn();
+    });
+  const controllerPane = { session: CONTROLLER_SESSION, subagent: false } as const;
+  const stall = 90 * 60_000;
+  const window = 5 * 60_000;
+  /** Each request's end, by its id. */
+  const ended = new Map<string, number>();
+  for (let at = START; at < START + stall; at += 2_000) {
+    await advance(at - clock.now());
+    reporter.messageEnded((at - START) % 4_000 === 0 ? role : controllerPane, answered(at));
+    ended.set(`req-${nextId}`, at);
+    if ((at - START) % 30_000 === 0) reporter.turnEnded();
+    await turn();
+  }
+  // The last requests' deadlines.
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS);
+
+  const last = START + stall - window;
+  const retried = new Set(
+    calls
+      .filter(({ sent }) => sent >= last)
+      .flatMap(({ ids }) => ids.filter((id) => (ended.get(id) ?? Number.NaN) < last))
+  );
+  expect(retried.size).toBeGreaterThan(2 * LEGION_MAX_MODEL_REQUESTS);
+  const most = (from: number, until: number): number =>
+    Math.max(...calls.filter(({ sent }) => from <= sent && sent < until).map(({ open }) => open));
+  expect(most(last, START + stall)).toBeLessThanOrEqual(most(START, START + window));
+  const first = new Map<string, number>();
+  for (const { sent, ids } of calls) {
+    for (const id of ids) if (!first.has(id)) first.set(id, sent);
+  }
+  const late = [...ended].filter(
+    ([id, end]) => (first.get(id) ?? Number.POSITIVE_INFINITY) > end + MODEL_REQUEST_DUE_AFTER_MS
+  );
+  expect(late).toEqual([]);
 });
 
 test("an unanswered request expires without blocking fresh requests", async () => {

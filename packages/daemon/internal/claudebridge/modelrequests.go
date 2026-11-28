@@ -73,11 +73,10 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 // says, whose doc states how what is pending is sent. The first request arms it, and a request
 // whose own deadline comes before the window armed arms it again for that deadline. A window that
 // fires before it is due, since a block moved the oldest end on, is armed again for that end; one
-// that is due closes every open request and sends what is pending (flushLocked), as a result
-// does. A failed or incomplete report can retry at the next window or result; only IDs the daemon
-// did not keep go again. Requests past the keep window and reports the daemon refuses (a 4xx) are
-// dropped with a line. Every report names the launch's boot token. Nothing in the bridge's loop
-// waits on a report.
+// that is due closes every open request and sends (flushLocked), as a result does. A failed or
+// incomplete report can retry at the next window or result; only IDs the daemon did not keep go
+// again. Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a
+// line. Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
 type modelRequests struct {
 	*daemonPoster
 	// windowAfter is the timer the window runs on: the bridge's clock's, or a test's
@@ -262,12 +261,16 @@ func earlier(a, b time.Time) time.Time {
 // earliest of these. So the windows send at most once each requestDueAfter, about four times a
 // minute, and a report the daemon failed goes again no sooner, but for a request that ended
 // before the last flush, which the bridge read only after it: its deadline can come sooner, and
-// it adds a send. A window or result sends every request pending at once, whatever report is on
-// its way, in calls of at most claim.MaxModelRequests requests each: each is a call of its own,
-// carries only requests no report on its way carries, and keeps its own timeout
-// (requestReportTimeout). So each request the bridge read by its deadline leaves within
-// requestWindow of its end on the bridge's clock, and one it read later leaves at once. The
-// caller holds r.mu.
+// it adds a send. A window or result sends at once, whatever report is on its way, every request
+// pending that no report carried, in chunks of at most claim.MaxModelRequests, and at most one
+// chunk of the taken requests, the oldest end first: each chunk is a call of its own, carries only
+// requests no report on its way carries, and keeps its own timeout (requestReportTimeout). The
+// taken requests it leaves stay pending, and the window is due for them no sooner than
+// requestDueAfter after this flush, as it is for the requests of a chunk that fails: nothing arms
+// it sooner for them. So the calls open at once stay bounded whatever the backlog of taken
+// requests: each ends by its timeout, and a flush makes the chunks of its untaken requests and at
+// most one more. Each request the bridge read by its deadline leaves within requestWindow of its
+// end on the bridge's clock, and one it read later leaves at once. The caller holds r.mu.
 func (r *modelRequests) windowDueLocked() (time.Time, bool) {
 	if len(r.open) == 0 && len(r.pending) == 0 {
 		return time.Time{}, false
@@ -325,9 +328,9 @@ func (r *modelRequests) armAtLocked(due time.Time) {
 	}()
 }
 
-// flushLocked closes every open request and sends what is pending, at a window that is due or at
-// a turn's result, and cancels the window armed: the next request arms the next. The caller holds
-// r.mu.
+// flushLocked closes every open request and sends what windowDueLocked says, at a window that is
+// due or at a turn's result, and cancels the window armed: the next request arms the next. The
+// caller holds r.mu.
 func (r *modelRequests) flushLocked() {
 	r.closeOpenLocked()
 	r.window = 0
@@ -335,8 +338,9 @@ func (r *modelRequests) flushLocked() {
 	r.sendLocked()
 }
 
-// sendLocked sends every pending request as windowDueLocked says, in the order they are pending,
-// and drops with a line each one past the daemon's keep window. The caller holds r.mu.
+// sendLocked sends what windowDueLocked says a flush sends: every untaken request, in the order
+// they are pending, and one chunk of the taken requests, the oldest end first, leaving the rest
+// pending. It drops with a line each request past the daemon's keep window. The caller holds r.mu.
 func (r *modelRequests) sendLocked() {
 	if len(r.pending) == 0 {
 		return
@@ -349,15 +353,31 @@ func (r *modelRequests) sendLocked() {
 		r.log.Printf("dropped model request %q ended at %s: past the daemon's keep window", request.ID, request.EndedAt)
 		return true
 	})
-	for chunk := range slices.Chunk(r.pending, claim.MaxModelRequests) {
-		batch := make([]claim.ModelRequest, len(chunk))
-		for i, request := range chunk {
-			batch[i] = request.ModelRequest
+	var untaken []claim.ModelRequest
+	var taken []pendingRequest
+	for _, request := range r.pending {
+		if request.taken {
+			taken = append(taken, request)
+		} else {
+			untaken = append(untaken, request.ModelRequest)
 		}
-		r.posting++
-		go r.post(batch)
 	}
-	r.pending = nil
+	for chunk := range slices.Chunk(untaken, claim.MaxModelRequests) {
+		r.posting++
+		go r.post(chunk)
+	}
+	slices.SortStableFunc(taken, func(a, b pendingRequest) int { return a.EndedAt.Compare(b.EndedAt) })
+	again := taken[:min(len(taken), claim.MaxModelRequests)]
+	r.pending = taken[len(again):]
+	if len(again) == 0 {
+		return
+	}
+	batch := make([]claim.ModelRequest, len(again))
+	for i, request := range again {
+		batch[i] = request.ModelRequest
+	}
+	r.posting++
+	go r.post(batch)
 }
 
 // post makes one report and puts back every request of it the daemon did not say it holds, under

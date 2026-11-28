@@ -549,9 +549,10 @@ func TestModelRequestsReadsFullMaxBatchKeptAnswer(t *testing.T) {
 }
 
 // A daemon that fails a send of more requests than one report holds fails every chunk of it in
-// one window, and the requests, taken (pendingRequest), go again together at the next window,
-// never sooner: no answer sends, and their own deadlines, past already, do not make that window
-// due.
+// one window, and the requests, taken (pendingRequest), go again at the next window, never sooner:
+// no answer sends, and their own deadlines, past already, do not make that window due. That
+// window carries one chunk of them, the oldest ends first (windowDueLocked), and the rest wait the
+// window after it, again no sooner than requestDueAfter after it.
 func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -571,7 +572,13 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 				}
 				_ = json.NewEncoder(w).Encode(claim.ModelRequestsResponse{Kept: ids})
 			})
-			ids := r.enqueueBatch(claim.MaxModelRequests+5, "req")
+			// Each request ends a millisecond after the one before, so the oldest are the first.
+			start := r.clock.Now()
+			ids := make([]string, claim.MaxModelRequests+5)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("req-%03d", i)
+				r.assistant(ids[i], start.Add(time.Duration(i)*time.Millisecond))
+			}
 			if fired := r.clock.fire(); fired != 1 {
 				t.Fatalf("fired %d initial windows, want 1", fired)
 			}
@@ -582,19 +589,26 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 				t.Fatalf("sent %d IDs without waiting for a retry window", len(extra))
 			default:
 			}
-			// The retry window comes no sooner than requestDueAfter after the failed reports' flush.
+			// The retry window comes no sooner than requestDueAfter after the failed reports' flush,
+			// and carries the oldest chunk.
 			retry := r.clock.Now().Add(requestDueAfter)
 			r.moveTo(t, retry.Add(-time.Millisecond))
 			r.fireWindow(t, retry)
-			r.expectChunks(t, ids)
+			r.expectBatch(t, ids[:claim.MaxModelRequests])
+			r.awaitAnswer(t)
+			// The rest wait the next window, no sooner than requestDueAfter after the retry's flush.
+			next := r.clock.Now().Add(requestDueAfter)
+			r.moveTo(t, next.Add(-time.Millisecond))
+			r.fireWindow(t, next)
+			r.expectBatch(t, ids[claim.MaxModelRequests:])
 		})
 	}
 }
 
-// A send of more requests than one report holds puts every chunk on its way at once, none waiting
-// for another's answer (windowDueLocked). The stand-in holds the first call it takes until the
-// second has come, so a chunk that waited for an answer never comes and the row fails on the test
-// binary's deadline.
+// A send of more requests no report carried than one report holds puts every chunk of them on its
+// way at once, none waiting for another's answer (windowDueLocked). The stand-in holds the first
+// call it takes until the second has come, so a chunk that waited for an answer never comes and
+// the row fails on the test binary's deadline.
 func TestModelRequestsSendsEveryChunkAtOnce(t *testing.T) {
 	t.Parallel()
 	second := make(chan struct{})
@@ -614,6 +628,104 @@ func TestModelRequestsSendsEveryChunkAtOnce(t *testing.T) {
 	r.result()
 	r.expectChunks(t, ids)
 	r.awaitAnswer(t)
+}
+
+// timeoutClock is the rig's window clock whose After fires as its window does, once the row moves
+// the clock to its due: a report's call ends at its timeout (requestReportTimeout) on the rig's
+// clock.
+type timeoutClock struct{ *windowClock }
+
+func (c timeoutClock) After(d time.Duration) <-chan time.Time { return c.window(d) }
+
+// The deep review's long stall, on the bridge: a daemon that takes each report's connection and
+// never answers, so each call ends at its timeout (requestReportTimeout) on the rig's clock, while
+// the role's session ends a request every tick of 200 ms for 3 minutes, so the taken requests
+// (pendingRequest) pile up past several chunks. A window sends every untaken request and at most
+// one chunk of taken ones, and the taken requests it leaves wait the next window
+// (windowDueLocked): so the most calls open at once in the stall's last minute is no more than in
+// its first, and every untaken request goes at its window, within requestWindow of its end. On a
+// bridge whose window sends every taken request, the open calls grow with the backlog. A call's
+// timeout and a window never fall in one tick, so the calls a window makes are the reports on
+// their way it adds, and the calls open at once are the reports on their way just after it.
+func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
+	t.Parallel()
+	stalled := make(chan struct{})
+	r := newModelRequestRig(t, func(http.ResponseWriter, []string, int) { <-stalled })
+	t.Cleanup(func() { close(stalled) })
+	r.reporter.clock = timeoutClock{r.clock}
+	const tick, stall, span = 200 * time.Millisecond, 3 * time.Minute, time.Minute
+	start := r.clock.Now()
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+	posting := func() int {
+		r.reporter.mu.Lock()
+		defer r.reporter.mu.Unlock()
+		return r.reporter.posting
+	}
+	// Each window that sent: when, and how many calls it made.
+	type window struct {
+		at    time.Time
+		calls int
+	}
+	var windows []window
+	ended, sent := map[string]time.Time{}, map[string]time.Time{}
+	// backlog is how many requests had gone once by the stall's end: each is taken, pending or on
+	// its way again, since the daemon keeps none.
+	mostEarly, mostLate, backlog := 0, 0, -1
+	for n := 0; r.clock.Now().Before(at(stall + requestWindow)); n++ {
+		now := r.clock.Now()
+		if now.Before(at(stall)) {
+			id := fmt.Sprintf("req-%05d", n)
+			r.assistant(id, now)
+			ended[id] = now
+		} else if backlog < 0 {
+			backlog = len(sent)
+		}
+		before, ending := posting(), 0
+		for _, w := range windows {
+			if timeout := w.at.Add(requestReportTimeout); timeout.After(now) && !timeout.After(now.Add(tick)) {
+				ending += w.calls
+			}
+		}
+		acted := r.advance(t, tick)
+		if ending != 0 {
+			if acted {
+				t.Fatalf("test setup: a window at +%s fell in the tick of a call's timeout", r.clock.Now().Sub(start))
+			}
+			testwait.Eventually(t, "the calls whose timeout passed to end", func() bool { return posting() == before-ending })
+			continue
+		}
+		made := posting() - before
+		if !acted || made == 0 {
+			continue
+		}
+		now = r.clock.Now()
+		windows = append(windows, window{now, made})
+		for range made {
+			for _, request := range testwait.Receive(t, "a report of the window", r.posts) {
+				if _, ok := sent[request.ID]; !ok {
+					sent[request.ID] = now
+				}
+			}
+		}
+		switch open := before + made; {
+		case now.Before(at(span)):
+			mostEarly = max(mostEarly, open)
+		case !now.Before(at(stall-span)) && now.Before(at(stall)):
+			mostLate = max(mostLate, open)
+		}
+	}
+	t.Logf("most calls open at once: %d in the stall's first %s, %d in its last; %d requests taken by its end", mostEarly, span, mostLate, backlog)
+	if backlog <= 2*claim.MaxModelRequests {
+		t.Fatalf("by the stall's end %d requests had gone once, want more than %d: the taken backlog never passed several chunks", backlog, 2*claim.MaxModelRequests)
+	}
+	if mostLate > mostEarly {
+		t.Errorf("%d calls were open at once in the stall's last %s, more than the %d in its first: the open calls grow with the backlog", mostLate, span, mostEarly)
+	}
+	for id, end := range ended {
+		if went, ok := sent[id]; !ok || went.Sub(end) > requestWindow {
+			t.Errorf("%s, ended at +%s, first went at +%s (%t): not at its window, within requestWindow of its end", id, end.Sub(start), went.Sub(start), ok)
+		}
+	}
 }
 
 func TestModelRequestsDropsRequestsPastKeepWindow(t *testing.T) {

@@ -46,25 +46,31 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * armed for the bound itself would send the report after it. A request that joins the batch moves
  * no request's deadline: it moves the timer only where its own deadline comes before the one the
  * timer is armed for, as a request read late does, which then goes by its own deadline. The turn's
- * end (`agent_end`, and `session_shutdown`) sends what is pending at once and drops the timer,
- * whatever failed before. A send the timer or the turn's end makes goes at once, whatever report
- * is on its way, and waits for no answer: each report is a call of its own, aborted where the
- * daemon has not answered it within `MODEL_REQUEST_REPORT_TIMEOUT_MS`, 10 s, and carries only
- * requests that no report on its way carries, at most `LEGION_MAX_MODEL_REQUESTS` of them and all
- * of one owner. What a full report leaves, and another owner's requests, go at once too, each in a
- * call of its own, so every request pending when a send falls due goes then. Reports so cross, and
- * their answers arrive in either order: each answer puts back only its own report's requests, and
- * the daemon takes a request again by its id and keeps the later end, so a crossing changes
- * nothing it decides. A request the daemon's answer does not name as held goes again under the
- * same id. A failed call holds the requests it put back — whether the daemon was unreachable or
+ * end (`agent_end`, and `session_shutdown`) makes a send at once and drops the timer, whatever
+ * failed before. A send the timer or the turn's end makes goes at once, whatever report is on its
+ * way, and waits for no answer: each report is a call of its own, aborted where the daemon has not
+ * answered it within `MODEL_REQUEST_REPORT_TIMEOUT_MS`, 10 s, and carries only requests that no
+ * report on its way carries, at most `LEGION_MAX_MODEL_REQUESTS` of them, all of one owner, and
+ * either all put back by calls or none. A send takes, per owner, every request pending that no
+ * call carried, in as many reports as they need, so each goes by its own deadline; and at most one
+ * report of the requests calls put back, the oldest by end first. The put-back requests it leaves
+ * stay pending, due no sooner than `MODEL_REQUEST_LEFT_DUE_AFTER_MS` after it, when the report
+ * taken in their place would be due again had its call failed at its limit. So the open calls stay
+ * bounded whatever the backlog: each ends within the 10 s, and each send makes, per owner, the
+ * reports of the requests no call carried and at most one more. Reports so cross, and their
+ * answers arrive in either order: each answer puts back only its own report's requests, and the
+ * daemon takes a request again by its id and keeps the later end, so a crossing changes nothing it
+ * decides. A call puts back under the same id each request of its report the daemon's answer does
+ * not name as held, and every request of a failed call — whether the daemon was unreachable or
  * failing, gave no answer within the 10 s, or the call failed before it left: each is due a bound
- * after that call ends, and goes then or with an earlier send, which takes everything pending,
- * while every other request keeps its own deadline. Only a deadline or the turn's end makes a
- * send, and a call's end only arms the timer, so a failing daemon is never called in a loop. A
- * request the contract refuses — one with no model, or an id, session or model the daemon reads
- * as blank — is dropped at `messageEnded` with a warning naming its id and the contract's reason,
- * so it never shares a batch. A request older than an hour is dropped with a warning. A report
- * the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's is.
+ * after that call ends, and goes then or with an earlier send that takes it in its owner's one
+ * report of put-back requests, while every other request keeps its own deadline. Only a deadline
+ * or the turn's end makes a send, and a call's end only arms the timer, so a failing daemon is
+ * never called in a loop. A request the contract refuses — one with no model, or an id, session or
+ * model the daemon reads as blank — is dropped at `messageEnded` with a warning naming its id and
+ * the contract's reason, so it never shares a batch. A request older than an hour is dropped with
+ * a warning. A report the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's
+ * is.
  * Nothing of the session waits on any of it: the hooks return at once.
  *
  * The turn's outcome report (`./turn-outcome`) is a separate route and is unchanged by this one.
@@ -91,6 +97,14 @@ export const MODEL_REQUEST_DUE_AFTER_MS =
  * sent", above). The Claude Code bridge bounds its call alike, `requestReportTimeout` in
  * `packages/daemon/internal/claudebridge/modelrequests.go`. */
 export const MODEL_REQUEST_REPORT_TIMEOUT_MS = 10_000;
+
+/** How long after a send a put-back request it leaves is due at the soonest ("When it is sent",
+ * above): when the report of put-back requests the send took in its place would be due again had
+ * that call failed at its limit, `MODEL_REQUEST_REPORT_TIMEOUT_MS` and then a bound. So the
+ * requests a send leaves make no send of their own before the report sent in their place could go
+ * again. */
+export const MODEL_REQUEST_LEFT_DUE_AFTER_MS =
+  MODEL_REQUEST_REPORT_TIMEOUT_MS + MODEL_REQUEST_REPORT_BOUND_MS;
 
 /** Requests older than the daemon's hour of history are not useful on a retry. */
 const MODEL_REQUEST_KEEP_MS = 60 * 60_000;
@@ -127,17 +141,19 @@ export interface ModelRequestsReporter {
     where: { readonly session: string; readonly subagent: boolean },
     message: unknown
   ) => void;
-  /** A run ended (`agent_end`): what is pending is sent now. */
+  /** A run ended (`agent_end`): a send is made now ("When it is sent", above). */
   readonly turnEnded: () => void;
   /** Resolves once no report is on its way. */
   readonly settled: () => Promise<void>;
 }
 
-/** One request waiting for the daemon to hold it, and when it is due to be sent at the latest. */
+/** One request waiting for the daemon to hold it, when it is due to be sent at the latest, and
+ * whether a call put it back (`post`): a failed call, or an answer that did not keep it. */
 interface Pending {
   readonly owner: ModelRequestCredential;
   readonly request: LegionModelRequestBody;
   due: number;
+  putBack: boolean;
 }
 
 /** Whether `message` is an assistant message, the one kind that ends a request. */
@@ -167,7 +183,7 @@ export function createModelRequestsReporter(
 
   /** Arms the timer for the earliest deadline pending: again, where a timer is armed for later. */
   const arm = (): void => {
-    const first = earliestPending();
+    const first = earliest(pending);
     if (first === undefined) return;
     if (cancelTimer !== undefined && armedAt <= first.due) return;
     disarm();
@@ -192,18 +208,18 @@ export function createModelRequestsReporter(
     a.secret === b.secret &&
     a.generation === b.generation;
 
-  const earliestPending = (): Pending | undefined => {
+  const earliest = (entries: readonly Pending[]): Pending | undefined => {
     let first: Pending | undefined;
-    for (const entry of pending) {
+    for (const entry of entries) {
       if (first === undefined || entry.due < first.due) first = entry;
     }
     return first;
   };
 
-  /** Sends every pending request now, as "When it is sent" (above) says, the earliest deadline's
-   * report first, each in a call of its own (`report`). It takes every batch out of `pending`
-   * before it reports any: a call that fails before it leaves puts its batch back at once, and this
-   * send must not take that batch again. */
+  /** Sends now what "When it is sent" (above) says a send takes, the earliest deadline's report
+   * first, each in a call of its own (`report`), and leaves the other put-back requests pending as
+   * it says. It takes every batch out of `pending` before it reports any: a call that fails before
+   * it leaves puts its batch back at once, and this send must not take that batch again. */
   const send = (): void => {
     const now = deps.now();
     disarm();
@@ -217,19 +233,45 @@ export function createModelRequestsReporter(
       });
       return false;
     });
+    // Each owner's put-back requests this send takes, the oldest by end first, and those it leaves.
+    const retries: Pending[][] = [];
+    const left: Pending[] = [];
+    const leftDue = now + MODEL_REQUEST_LEFT_DUE_AFTER_MS;
+    const putBack = pending
+      .filter((entry) => entry.putBack)
+      .sort((a, b) => Date.parse(a.request.endedAt) - Date.parse(b.request.endedAt));
+    for (const entry of putBack) {
+      const retry = retries.find(
+        ([first]) => first !== undefined && sameOwner(first.owner, entry.owner)
+      );
+      if (retry === undefined) {
+        retries.push([entry]);
+      } else if (retry.length < LEGION_MAX_MODEL_REQUESTS) {
+        retry.push(entry);
+      } else {
+        entry.due = Math.max(entry.due, leftDue);
+        left.push(entry);
+      }
+    }
+    let going = [...pending.filter((entry) => !entry.putBack), ...retries.flat()];
+    pending = left;
     const batches: { readonly owner: ModelRequestCredential; readonly batch: Pending[] }[] = [];
-    for (let first = earliestPending(); first !== undefined; first = earliestPending()) {
+    for (let first = earliest(going); first !== undefined; first = earliest(going)) {
       const batch: Pending[] = [first];
       const rest: Pending[] = [];
-      for (const entry of pending) {
+      for (const entry of going) {
         if (entry === first) continue;
-        if (batch.length < LEGION_MAX_MODEL_REQUESTS && sameOwner(entry.owner, first.owner)) {
+        if (
+          batch.length < LEGION_MAX_MODEL_REQUESTS &&
+          entry.putBack === first.putBack &&
+          sameOwner(entry.owner, first.owner)
+        ) {
           batch.push(entry);
         } else {
           rest.push(entry);
         }
       }
-      pending = rest;
+      going = rest;
       batches.push({ owner: first.owner, batch });
     }
     for (const { owner, batch } of batches) report(owner, batch);
@@ -301,7 +343,10 @@ export function createModelRequestsReporter(
     }
     const again = deps.now() + MODEL_REQUEST_REPORT_BOUND_MS;
     const unheld = batch.filter((entry) => kept?.has(entry.request.id) !== true);
-    for (const entry of unheld) entry.due = again;
+    for (const entry of unheld) {
+      entry.due = again;
+      entry.putBack = true;
+    }
     pending = [...unheld, ...pending];
   };
 
@@ -340,7 +385,12 @@ export function createModelRequestsReporter(
         });
         return;
       }
-      pending.push({ owner, request: parsed.data, due: endedAt + MODEL_REQUEST_DUE_AFTER_MS });
+      pending.push({
+        owner,
+        request: parsed.data,
+        due: endedAt + MODEL_REQUEST_DUE_AFTER_MS,
+        putBack: false,
+      });
       arm();
     },
     turnEnded: () => {
