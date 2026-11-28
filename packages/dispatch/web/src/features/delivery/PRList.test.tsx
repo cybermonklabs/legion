@@ -4,6 +4,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { endWindowScroll } from "../../__tests__/scroll-box";
 import type { DeliveryPR } from "../../api/types";
+import { surfaceBg, surfaceMutedBg, surfaceMutedHoverBg } from "../../theme/classes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ROW_HEIGHT_PX } from "./lib/prList";
@@ -78,7 +79,8 @@ function measureBoxAt(height: number): () => void {
 function renderList(
   rows: DeliveryPR[],
   onSelect = (_id: string) => {},
-  onSelectRun = (_id: number) => {}
+  onSelectRun = (_id: number) => {},
+  selectedId?: string
 ) {
   return render(
     <KeymapProvider>
@@ -95,7 +97,7 @@ function renderList(
         onSelectRun={onSelectRun}
         onSortingChange={() => {}}
         prs={rows}
-        selectedId={undefined}
+        selectedId={selectedId}
         sessionGroups={[]}
         sorting={[{ id: "merged", desc: true }]}
       />
@@ -151,6 +153,14 @@ test("arrowing past the last rendered row renders and focuses the next, and Home
   const opened: string[] = [];
   try {
     renderList(prs(200), (id) => opened.push(id));
+    const box = screen.getByTestId("delivery-pr-list");
+    // What the box scrolls, which happy-dom does not lay out: its 200 rows. The table asks the
+    // box to go no further than that (the virtualizer bounds each scroll it asks for by the box's
+    // scroll height), so without it every scroll the table asks for is to 0.
+    Object.defineProperty(box, "scrollHeight", {
+      configurable: true,
+      get: () => 200 * ROW_HEIGHT_PX,
+    });
     const drawn = drawnRows().length;
     expect(drawn).toBeLessThan(200);
     const rows = () => [...document.querySelectorAll<HTMLElement>("[data-pr-row]")];
@@ -163,22 +173,30 @@ test("arrowing past the last rendered row renders and focuses the next, and Home
     await user.keyboard("{ArrowUp}");
     expect(document.activeElement).toBe(rows()[0] as HTMLElement);
 
+    // The arrows walk the rows of the first window, which are drawn, and the press past its last
+    // row asks the box to scroll to the row after it: as far as shows that row whole, its foot at
+    // the box's foot. happy-dom moves the box where the table asks and fires no event, so the box
+    // reads where the table asked before the test fires the scroll that follows.
     for (let i = 0; i < drawn; i += 1) {
       await user.keyboard("{ArrowDown}");
-      scrolledTo((i + 1) * ROW_HEIGHT_PX);
     }
+    const next = (drawn + 1 - 10) * ROW_HEIGHT_PX;
+    expect(box.scrollTop).toBe(next);
+    scrolledTo(next);
     // The row after the last one of the first window: the table scrolled to it, drew it, and
     // put focus there.
     expect(document.activeElement?.getAttribute("data-pr-row")).toBe(`acme/widgets#${drawn + 1}`);
     expect(document.activeElement?.textContent).toContain(`feat: widget ${drawn + 1}`);
 
     await user.keyboard("{End}");
-    // The foot of the list: a row the window never held, so only the scroll that follows the
-    // key draws it. The scroll goes past the list's end, which draws its last rows: 64 px a row,
-    // where every row is 36 px, measured or estimated (`ROW_HEIGHT_PX`).
-    scrolledTo(200 * 64);
+    // The foot of the list: a row the window never held, which the table asks the box to show at
+    // its foot, so only the scroll that follows the key draws it.
+    const foot = (200 - 10) * ROW_HEIGHT_PX;
+    expect(box.scrollTop).toBe(foot);
+    scrolledTo(foot);
     expect(document.activeElement?.getAttribute("data-pr-row")).toBe("acme/widgets#200");
     await user.keyboard("{Home}");
+    expect(box.scrollTop).toBe(0);
     scrolledTo(0);
     // The last scroll ends on the table's own timer: inside `act`, before the row reads on.
     await endWindowScroll();
@@ -213,6 +231,35 @@ test("a deployed row's 'deployed' opens its deploy run, and the row's own click 
     await user.click(screen.getByRole("button", { name: "Open deploy run #500" }));
     expect(runs).toEqual([500]);
     expect(opened).toEqual([]);
+  } finally {
+    cleanup();
+    restore();
+  }
+});
+
+// The rows' hover: the row carried it, but each cell of an unselected row painted the surface,
+// and a cell's background covers its row's, so the hover never showed. The row paints the surface
+// and its hover, and only a selected row's cells paint, in the selected colour.
+test("an unselected row's hover shows on every cell, and a selected row keeps its colour", () => {
+  const restore = measureBoxAt(10 * ROW_HEIGHT_PX);
+  try {
+    renderList(prs(2), undefined, undefined, "acme/widgets#2");
+    const plain = document.querySelector<HTMLElement>('[data-pr-row="acme/widgets#1"]');
+    const picked = document.querySelector<HTMLElement>('[data-pr-row="acme/widgets#2"]');
+    if (plain === null || picked === null) throw new Error("the two rows are not drawn");
+
+    expect(plain).toHaveClass(...surfaceBg.split(" "), ...surfaceMutedHoverBg.split(" "));
+    const plainCells = [...plain.querySelectorAll("td")];
+    expect(plainCells.length).toBeGreaterThan(0);
+    // No cell of the unselected row paints a background over the row's, in any state or theme.
+    expect(
+      plainCells.flatMap((cell) => [...cell.classList].filter((name) => /(^|:)bg-/.test(name)))
+    ).toEqual([]);
+
+    expect(picked).toHaveClass(...surfaceMutedBg.split(" "));
+    for (const cell of picked.querySelectorAll("td")) {
+      expect(cell).toHaveClass(...surfaceMutedBg.split(" "));
+    }
   } finally {
     cleanup();
     restore();

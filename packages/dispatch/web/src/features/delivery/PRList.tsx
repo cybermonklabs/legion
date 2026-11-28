@@ -173,14 +173,15 @@ const PR_LAYOUT_COLUMNS: LayoutColumns = {
   sizes: Object.fromEntries(COLUMNS.map((column) => [column.id, column.size])),
 };
 
-/** This list's own words, which the table core reads and never invents. The keys are the ones
- *  the list has always answered, and only while a row holds the focus (`moveFrom: "row"`):
- *  arrow up and down walk the rows, and Enter opens the focused one. Anywhere else on the page
- *  the arrows are the page's, which scrolls. They are registered in this list's own `delivery`
- *  scope, which the list pushes while it is drawn - the List view alone - so no key of this
- *  table is answered on a page that does not draw it. The list selects nothing, so it names no
- *  select key. Home and End are the row's own, below: the core's keymap names a next, a
- *  previous and an open, and has no slot for them. */
+/** This list's own words, which the table core reads and never invents. Its keys are answered
+ *  only while a row holds the focus (`moveFrom: "row"`): arrow up and down walk the rows, and
+ *  Enter and `o` open the focused one. The arrows and Enter, as Home and End below, are keys the
+ *  list answered before the shared table; `o` is new to it, as the shared table gives it to every
+ *  table that adopts it. Anywhere else on the page the arrows are the page's, which scrolls. They
+ *  are registered in this list's own `delivery` scope, which the list pushes while it is drawn -
+ *  the List view alone - so no key of this table is answered on a page that does not draw it. The
+ *  list selects nothing, so it names no select key. Home and End are the row's own, below: the
+ *  core's keymap names a next, a previous and an open, and has no slot for them. */
 const PR_TABLE_NAMES: DataTableNames = {
   groupAttribute: "data-pr-group",
   keymap: {
@@ -632,7 +633,8 @@ export function PRList({
 const CELL_BOX = { height: ROW_HEIGHT_PX - 1 } as const;
 
 /** One pull request's row: its cells, the press that opens its details, and the two keys the
- *  list answers itself. */
+ *  list answers itself. The row paints the list's surface and its hover, and an unselected row's
+ *  cells paint nothing over them, since a cell's background covers its row's. */
 function PRRow({
   index,
   measure,
@@ -651,7 +653,7 @@ function PRRow({
   return (
     <tr
       aria-selected={selected}
-      className={`cursor-pointer outline-none ${selected ? surfaceMutedBg : surfaceMutedHoverBg}`}
+      className={`cursor-pointer outline-none ${selected ? surfaceMutedBg : `${surfaceBg} ${surfaceMutedHoverBg}`}`}
       data-index={index}
       data-pr-row={row.original.pr.id}
       onClick={() => onSelect(row.original.pr.id)}
@@ -665,7 +667,7 @@ function PRRow({
     >
       {row.getVisibleCells().map((cell) => (
         <td
-          className={`overflow-hidden border-b px-1.5 py-0 text-xs whitespace-nowrap ${borderDefault} ${selected ? surfaceMutedBg : surfaceBg}`}
+          className={`overflow-hidden border-b px-1.5 py-0 text-xs whitespace-nowrap ${borderDefault} ${selected ? surfaceMutedBg : ""}`}
           key={cell.id}
           style={{ width: cell.column.getSize() }}
         >
