@@ -314,9 +314,7 @@ test("the description is a disclosure that closes, and the work fills the page b
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   // The work fills the page with the description closed.
-  expect(
-    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Description, closed" }));
   expect(await screen.findByRole("textbox", { name: "Description" })).toBeDefined();
 });
@@ -339,7 +337,7 @@ test("the description is the documents' editor, with no action on a selection, a
     expect(screen.queryByRole("button", { name })).toBeNull();
   }
   writeAtEnd(handle, " More.", "More");
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[0]).toBe("rocq-lean");
   expect(patch.mock.calls[0]?.[1]).toEqual({
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. **More**.\n",
@@ -472,13 +470,17 @@ test("an empty description is, for a writer, the prompt above the empty editor",
 });
 
 test("the owner is a chip beside the title, which opens into its field and writes the owner", async () => {
-  const user = userEvent.setup();
+  // The clock is held while the reader types, so the typing does not rest and write part of it
+  // before the reader leaves the field, however long the typing takes here.
+  const user = userEvent.setup({ delay: null });
   const { patch } = page();
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
   expect(document.activeElement).toBe(owner);
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await onFakeClock(async () => {
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+  });
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
@@ -490,20 +492,37 @@ test("the owner is a chip beside the title, which opens into its field and write
 // The changes to one priority go out in press order (`priority:<id>`): a change made while an
 // earlier one is out waits for it, so an older write never lands after a newer one.
 test("a change made while an earlier change to the priority is out waits for it", async () => {
-  const user = userEvent.setup();
-  const { patch } = page();
+  // The clock is held while the reader types, so the typing does not rest and write part of it
+  // before the reader leaves the field, however long the typing takes here: each change is one
+  // write, written as the reader leaves the field.
+  const user = userEvent.setup({ delay: null });
+  const { client, patch } = page();
   const first = Promise.withResolvers<Priority>();
   patch.mockImplementationOnce(() => first.promise);
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await onFakeClock(async () => {
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+  });
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   const title = await openTitle(user);
-  await user.type(title, " again");
+  await onFakeClock(async () => {
+    await user.type(title, " again");
+  });
   await user.tab();
-  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  // The title's change is pressed and waits its turn on the priority's line, never sent, while
+  // the owner's is still out: the fact the count below is read at.
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toContainEqual(
+      expect.objectContaining({
+        detail: expect.objectContaining({ text: "Rocq and Lean speed work restarted again" }),
+        sent: false,
+        status: "queued",
+      })
+    )
+  );
   expect(patch).toHaveBeenCalledTimes(1);
   await act(async () => first.resolve(saved("rocq-lean")));
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
@@ -535,9 +554,7 @@ test("one link out leaves the scope, naming the issues and why", async () => {
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
   const { listing } = page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("OPS-2")]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  expect(
-    await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
 });
@@ -549,7 +566,7 @@ test("the work table opens with the issue, its title, its status and its project
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 });
+  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await user.click(within(work).getByRole("button", { name: "Columns" }));
   const menu = screen.getByRole("dialog", { name: "Columns" });
   for (const name of ["Key", "Title", "Status", "Project"])
@@ -563,11 +580,7 @@ test("j, k, x and Enter act on the work rows, the one table the page draws", asy
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  const first = await within(work).findByRole(
-    "row",
-    { name: "CORE-1 Work CORE-1" },
-    { timeout: 3000 }
-  );
+  const first = await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await within(work).findByRole("row", { name: "CORE-4 Work CORE-4" });
   const focused = () => document.activeElement?.getAttribute("data-issue-row");
   first.focus();

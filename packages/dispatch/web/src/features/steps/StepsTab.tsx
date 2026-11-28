@@ -62,7 +62,7 @@ const dayOfAnotherYear = new Intl.DateTimeFormat(undefined, {
 });
 const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
-function Time({ at }: { at: string | null }): ReactNode {
+export function Time({ at }: { at: string | null }): ReactNode {
   if (at === null) return NONE;
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return <time>{at}</time>;
@@ -101,7 +101,7 @@ function HyphenGroups({ piece }: { piece: string }): ReactNode {
  *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break after each slash,
  *  so neither forces its column wider than its longest part. A number or a single letter keeps
  *  to the part before it, so no line holds it alone (`legion-core-core-2-…` never leaves `2-`). */
-function Identifier({ value }: { value: string }): ReactNode {
+export function Identifier({ value }: { value: string }): ReactNode {
   if (value === "") return NONE;
   const pieces = value.split("/");
   // Each piece is keyed by the text up to and including it, which no other piece of the id shares.
@@ -181,19 +181,42 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
   return <StateLabel shown={step} />;
 }
 
+/** What a task's line of needs says, above its planned steps here and in Details' steps
+ *  (`DetailsSteps.tsx`): `Needs <task>, <task>` for the tasks of the plan it needs, `Needs not
+ *  recorded` where its plan node recorded none (`needs` null while the plan gives it steps), and
+ *  null - no line - for a task that needs none (`needs` []) or that the plan does not hold
+ *  (`needs` null and no planned step). */
+export function taskNeedsLine({
+  needs,
+  planned,
+}: Pick<StepTaskRows, "needs" | "planned">): string | null {
+  return needs === null
+    ? planned.length === 0
+      ? null
+      : "Needs not recorded"
+    : needs.length === 0
+      ? null
+      : `Needs ${needs.join(", ")}`;
+}
+
+/** The name of the list of the steps the plan gives `task`, as a reader hears it, here and in
+ *  Details' steps. */
+export function plannedStepsName(task: string): string {
+  return `Planned steps of task ${task}`;
+}
+
+/** What a task none of whose steps has run says in place of its runs, here and in Details'
+ *  steps. */
+export function noRunLine(task: string): string {
+  return `No step of task ${task} has run yet.`;
+}
+
 /** One task: the tasks of the plan it needs - nothing for a task that needs none or that the plan
  *  does not hold, and `Needs not recorded` where its plan node recorded none - each step the plan
  *  gives it with where it stands, then its runs, one row each, in the order the server read them.
  *  A task none of whose steps has run says so in place of the table. */
 function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskRows }): ReactNode {
-  const needsLine =
-    needs === null
-      ? planned.length === 0
-        ? null
-        : "Needs not recorded"
-      : needs.length === 0
-        ? null
-        : `Needs ${needs.join(", ")}`;
+  const needsLine = taskNeedsLine({ needs, planned });
   return (
     <section aria-label={`Task ${task}`} className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
@@ -201,7 +224,7 @@ function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskR
         <p className={`text-xs ${textSecondaryOnCanvas}`}>{needsLine}</p>
       )}
       {planned.length === 0 ? null : (
-        <ol aria-label={`Planned steps of task ${task}`} className="flex flex-wrap gap-2 text-xs">
+        <ol aria-label={plannedStepsName(task)} className="flex flex-wrap gap-2 text-xs">
           {planned.map((step) => (
             <li className={`rounded-md border px-2 py-1 ${card}`} key={step.step}>
               <span className={`tabular-nums ${textMutedOnSurface}`}>{step.step}</span>{" "}
@@ -212,7 +235,7 @@ function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskR
         </ol>
       )}
       {rows.length === 0 ? (
-        <p className={`text-xs ${textMutedOnCanvas}`}>{`No step of task ${task} has run yet.`}</p>
+        <p className={`text-xs ${textMutedOnCanvas}`}>{noRunLine(task)}</p>
       ) : (
         <RunsTable rows={rows} task={task} />
       )}
@@ -302,7 +325,7 @@ const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as co
  * `api/query-refresh.ts`): a read never cancels one already out, and the tab reads at most once a
  * second, however its starts and the feed's batches fall.
  */
-function useCatchUp(issueKey: string, shown: boolean): void {
+export function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();
   // Whether the page is shown, as TanStack reads `visibilitychange` for its own refetch on focus.
   const visible = useSyncExternalStore(focusManager.subscribe, () => focusManager.isFocused());

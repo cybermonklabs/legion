@@ -23,6 +23,7 @@ import { KEY_HOURS } from "../writes/write-words";
 import { useCurrentPoint } from "./current-point";
 import { IssueComposer } from "./IssueComposer";
 import { IssueTree } from "./IssueTree";
+import { FOOT_BOX_TEST_ID } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import { NoTooltips } from "./NoTooltips";
 import {
@@ -360,7 +361,7 @@ export function drawBoxPage(
         <KeymapProvider>
           <MarginProvider>
             <NoTooltips>
-              <OutlineWriterProvider issueKey={KEY}>
+              <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
                 <IssueScope />
                 <Page held={held} place={at} root={drawn} />
               </OutlineWriterProvider>
@@ -418,7 +419,7 @@ export function answerBoxReads(reads: BoxReads) {
 
 /** The box's section. */
 export function composerBox(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-testid="issue-composer"]');
+  const found = document.querySelector<HTMLElement>(`[data-testid="${FOOT_BOX_TEST_ID}"]`);
   if (found === null) throw new Error("the page drew no box");
   return found;
 }

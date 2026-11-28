@@ -222,6 +222,10 @@ type awarenessHost interface {
 	coalesceAwareness(flush func())
 	// awarenessWindows are the windows a test opens in the relay's paths.
 	awarenessWindows() awarenessWindows
+	// countAwarenessChange is the test hooks' count of a change room's awareness made to client:
+	// a state or a removal another process's notification applied, or a removal the room made
+	// itself (RoomCounters.RelayedAwareness) - and nothing where they are off.
+	countAwarenessChange(room string, client uint64, change awarenessChange)
 }
 
 // awarenessWindows are the moments of the relay's own paths a test runs its work in, each one a
@@ -1019,7 +1023,11 @@ func (r *awarenessRelay) watchRoomAwareness(room string, aw *awareness.Awareness
 // entry each of the clients it added or updated, left for the flush to read their state as it
 // stands then (resolve), and the removal of each client it took away and the room does not hold
 // again, encoded here. A client another process's notification is being applied for is left to
-// the process it came from (inbound, received).
+// the process it came from (inbound, received). Each change is counted for the test hooks
+// (countAwarenessChange) - one a notification applied, and a removal the room made itself, which
+// they count as Expired for a client another process relayed: the room's expiry of that client,
+// or a local peer's frame that removes it - under mu: the hooks' lock is taken behind it and takes
+// nothing after.
 //
 // Each removal is decided from one snapshot of its client - the client's state and its clock
 // read together, under the awareness's own lock - and never from one read of which clients are
@@ -1065,12 +1073,17 @@ func (r *awarenessRelay) touched(room string, aw *awareness.Awareness, event awa
 		for _, client := range changed {
 			if inbound[client] == 0 {
 				entries = append(entries, awarenessEntry{client: client})
+			} else {
+				r.host.countAwarenessChange(room, client, relayedState)
 			}
 		}
 	}
 	for _, client := range event.Removed {
 		if inbound[client] == 0 {
 			left = append(left, awarenessEntry{client: client, clock: relayed[client], removed: true})
+			r.host.countAwarenessChange(room, client, ownRemoval)
+		} else {
+			r.host.countAwarenessChange(room, client, relayedRemoval)
 		}
 	}
 	r.mu.Unlock()
@@ -1211,6 +1224,13 @@ func (s *Service) notifyAwareness(ctx context.Context, payload string) error {
 // relaySender names this process in what its relay sends (Service.processID).
 func (s *Service) relaySender() string {
 	return s.processID
+}
+
+// countAwarenessChange counts, where the test hooks are on, a change of client in this process's
+// room of a document: one another process's notification applied, or a removal the room made
+// itself (RoomCounters.RelayedAwareness).
+func (s *Service) countAwarenessChange(room string, client uint64, change awarenessChange) {
+	s.hooks.countAwarenessChange(room, client, change)
 }
 
 // coalesceAwareness runs a room's flush once the coalescing window has passed, on a timer of the

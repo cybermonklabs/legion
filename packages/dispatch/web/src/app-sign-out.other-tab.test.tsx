@@ -292,8 +292,9 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
   // On the fake clock, so the lease and the settle after it are moved past in steps of
   // `STEP_MS` rather than waited out, and the time the writes resume is counted in those steps:
   // the steps are the only thing that moves the clock between the hold and the resume, with the
-  // real turns each step needs for what it set going (`onRealTurns`), so no poll of `waitFor`,
-  // whose count depends on how loaded the machine is, moves it (dispatch://INFRA-1505).
+  // real turns each step needs for what it set going (`onRealTurns`, one step every
+  // `TURNS_PER_STEP` turns), so no poll of `waitFor`, whose count depends on how loaded the
+  // machine is, moves it (dispatch://INFRA-1505).
   jest.useFakeTimers();
   const app = renderApp({
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
@@ -310,17 +311,31 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
 
     signer.say({ signingOut: "alice" });
     const waiting = "CORE-1 set to done — Waiting for a sign-out in another tab";
-    await onRealTurns(() => screen.queryByText(waiting) !== null);
+    await onRealTurns(
+      () => screen.queryByText(waiting) !== null,
+      "alice's write to say it waits for the other tab's sign-out"
+    );
     expect(screen.getByText(waiting)).toBeInTheDocument();
     const made = attempts.length;
 
     const STEP_MS = 100;
+    const TURNS_PER_STEP = 20;
     let held = 0;
-    while (attempts.length === made && held <= SIGN_OUT_SETTLE_MS + 7_500) {
-      act(() => jest.advanceTimersByTime(STEP_MS));
-      held += STEP_MS;
-      await onRealTurns(() => attempts.length > made, 20);
-    }
+    let turns = 0;
+    await onRealTurns(
+      () => attempts.length > made,
+      "alice's held writes to resume once the lease lapses",
+      {
+        each: () => {
+          if (turns % TURNS_PER_STEP === 0) {
+            act(() => jest.advanceTimersByTime(STEP_MS));
+            held += STEP_MS;
+          }
+          turns += 1;
+        },
+        state: () => `the clock moved ${held} ms past the hold, in steps of ${STEP_MS} ms`,
+      }
+    );
     expect(attempts.length).toBeGreaterThan(made);
     expect(held).toBeGreaterThanOrEqual(SIGN_OUT_SETTLE_MS + 5_500);
     expect(held).toBeLessThanOrEqual(SIGN_OUT_SETTLE_MS + 6_500);

@@ -4713,3 +4713,42 @@ test("a claim's registration and the controller's name the session they replace,
     expect(schema.safeParse({ ...golden, replaces: "" }).success).toBeFalse();
   }
 });
+
+// Contract entry 20261127193422: the controller's registration names the project's watched
+// workflows, each with its owner, repository, workflow file and events, from which the
+// controller's plugin builds one default-branch topic per event. The golden carries one workflow
+// watching two events. A daemon before the entry, and a project that watches none, write no key,
+// which reads as none; an entry without one of its four fields, or with no event, is refused,
+// since the plugin builds each topic from all four. The secret's answer carries the same list and
+// always writes it.
+test("LegionControllerRegisterResponse reads watchedWorkflows, and an answer without it as none", () => {
+  const golden = fixture("register-controller.json") as Record<string, unknown>;
+  const entry = {
+    owner: "acme",
+    repo: "widgets",
+    workflow: "nightly.yaml",
+    events: ["schedule", "workflow_dispatch"],
+  };
+  expect(LegionControllerRegisterResponse.parse(golden).watchedWorkflows).toEqual([entry]);
+
+  const { watchedWorkflows: _watched, ...before } = golden;
+  expect(LegionControllerRegisterResponse.parse(before).watchedWorkflows).toBeUndefined();
+
+  for (const field of ["owner", "repo", "workflow", "events"] as const) {
+    const { [field]: _dropped, ...partial } = entry;
+    expect(
+      LegionControllerRegisterResponse.safeParse({ ...golden, watchedWorkflows: [partial] }).success
+    ).toBeFalse();
+  }
+  expect(
+    LegionControllerRegisterResponse.safeParse({
+      ...golden,
+      watchedWorkflows: [{ ...entry, events: [] }],
+    }).success
+  ).toBeFalse();
+
+  const secret = fixture("controller-secret.json") as Record<string, unknown>;
+  expect(LegionControllerSecretResponse.parse(secret).watchedWorkflows).toEqual([entry]);
+  const { watchedWorkflows: _secretWatched, ...secretBefore } = secret;
+  expect(LegionControllerSecretResponse.safeParse(secretBefore).success).toBeFalse();
+});
