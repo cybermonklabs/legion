@@ -404,7 +404,8 @@ func TestAKeyAnEarlierListenerStoredStaysListableAndDeletable(t *testing.T) {
 	}
 }
 
-// listedKeys lists the keys a store's listing scan hands over (kvwatch.ScanExistingKeys, which
+// listedKeys lists the keys kv's bucket holds through one watch of every key on kv's jetstream
+// handle, delete markers skipped, as a store's listing scan does (kvwatch.ScanExistingKeys, which
 // this package cannot import).
 func listedKeys(t *testing.T, kv KeyValue) []string {
 	t.Helper()
