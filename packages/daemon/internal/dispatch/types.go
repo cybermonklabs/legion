@@ -33,7 +33,7 @@ type Client interface {
 	// and when anything was recorded on the issue since the caller read it (409 ISSUE_CHANGED).
 	// sign_off and close_root write their status with it, before the daemon records the
 	// acceptance or the close.
-	SetAcceptanceStatus(ctx context.Context, issue Issue, status string) (Issue, error)
+	SetAcceptanceStatus(ctx context.Context, write AcceptanceWrite) (Issue, error)
 	// ReleaseClaim clears the issue's Dispatch claim through DELETE
 	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
 	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
@@ -658,12 +658,16 @@ type Caller struct {
 // carry Dispatch's normal error body. Issues is the children a refusal of an acceptance write
 // names as holding it (ForeignChildrenOpen): each open child of another project of a
 // ForeignChildOpen refusal, and each child entry of a ParentStatusConflict refusal; empty for
-// every other refusal.
+// every other refusal. Echoed and Replayed are set on the answer to a keyed write alone
+// (HTTPClient.SetAcceptanceStatus): whether it named the request's key back, and whether Dispatch
+// replayed it from the key's first request (KeyedVerdict).
 type Error struct {
-	Status  int
-	Code    string
-	Message string
-	Issues  []ForeignChild
+	Status   int
+	Code     string
+	Message  string
+	Issues   []ForeignChild
+	Echoed   bool
+	Replayed bool
 }
 
 // ForeignChild is one child that Dispatch names as holding an acceptance write: its key, its

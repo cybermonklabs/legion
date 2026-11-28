@@ -54,6 +54,24 @@ func StatusChangeOf(raw json.RawMessage) (StatusChange, error) {
 	return change, nil
 }
 
+// DaemonStatusChanged says whether events, an issue's Dispatch event log after some sequence as
+// dispatch.Client.EventsAfter serves it, holds a status change the daemon made. An acceptance or a
+// close answered KEY_COMMITTED reads it to tell whether its own status write is among what its key
+// committed (a close settles its documents in a transaction of its own first): under the issue's
+// lock no other write of the daemon's changes that issue's status.
+func DaemonStatusChanged(events []json.RawMessage) (bool, error) {
+	for _, raw := range events {
+		change, err := StatusChangeOf(raw)
+		if err != nil {
+			return false, err
+		}
+		if change.Changed && change.DaemonActor {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // NeedsEventLog says whether the fact's preparation reads the issue's Dispatch event log: a
 // person's approval that may queue its parked root (MayQueueHandover) and that carries a sequence
 // to place it by in that log (Mark.Seq). A review from a read that carries no sequence cannot be

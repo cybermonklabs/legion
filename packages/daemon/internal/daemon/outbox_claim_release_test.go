@@ -98,8 +98,8 @@ func (d *claimReleaseDispatch) SetStatusAt(ctx context.Context, issue dispatch.I
 }
 
 // SetAcceptanceStatus is this stand-in's own SetStatus too, for the same reason SetStatusAt is.
-func (d *claimReleaseDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, issue.Key, status)
+func (d *claimReleaseDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 
 // releases is each key a DELETE was sent for, in order, and statusWrites each status written.

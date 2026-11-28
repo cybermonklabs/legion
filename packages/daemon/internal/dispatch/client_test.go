@@ -301,6 +301,8 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testing.T) {
 	var refuse, foreignShape bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Dispatch's keyed layer names the request's key back on every answer to a keyed write.
+		w.Header().Set(IdempotencyKeyHeader, r.Header.Get(IdempotencyKeyHeader))
 		var body map[string]json.RawMessage
 		decodeJSON(t, r, &body)
 		field, sent := body["refuse_open_foreign_children"]
@@ -332,19 +334,19 @@ func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testin
 	if _, err := client.SetStatus(context.Background(), "LEGION-4", "testing"); err != nil {
 		t.Fatalf("set status: %v", err)
 	}
-	read := Issue{Key: "LEGION-4", Status: "needs_review", LastSeq: 12}
-	written, err := client.SetAcceptanceStatus(context.Background(), read, "retro")
+	read := AcceptanceWrite{Key: "accept-1", Issue: "LEGION-4", Status: "retro", Sequence: 12}
+	written, err := client.SetAcceptanceStatus(context.Background(), read)
 	if err != nil || written.Status != "retro" || written.LastSeq != 13 {
 		t.Fatalf("acceptance write = %#v, %v; want retro at sequence 13", written, err)
 	}
 	refuse = true
-	_, err = client.SetAcceptanceStatus(context.Background(), read, "retro")
+	_, err = client.SetAcceptanceStatus(context.Background(), read)
 	children, open := ForeignChildrenOpen(err)
 	if !open || len(children) != 1 || children[0] != (ForeignChild{Key: "OTHR-5", Project: "OTHR", Status: "triage"}) {
 		t.Fatalf("the refused acceptance write = %v, children %#v, want FOREIGN_CHILD_OPEN naming OTHR-5 (OTHR, triage)", err, children)
 	}
 	refuse, foreignShape = false, true
-	_, err = client.SetAcceptanceStatus(context.Background(), read, "retro")
+	_, err = client.SetAcceptanceStatus(context.Background(), read)
 	var refusal *Error
 	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != "ISSUE_DUPLICATE" || refusal.Message != "a near duplicate" || len(refusal.Issues) != 0 {
 		t.Fatalf("another refusal carrying an issues list = %#v, want ISSUE_DUPLICATE with its message and no children", err)
@@ -361,19 +363,20 @@ func TestSetAcceptanceStatusAsksForTheOpenChildCheckAndReadsItsRefusal(t *testin
 func TestAnAcceptanceWriteRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt(t *testing.T) {
 	var body string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(IdempotencyKeyHeader, r.Header.Get(IdempotencyKeyHeader))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(body))
 	}))
 	defer server.Close()
 	client := New(server.URL, BearerTransport(dispatchToken, nil))
-	read := Issue{Key: "LEGION-4", Status: "todo", LastSeq: 12}
+	read := AcceptanceWrite{Key: "close-1", Issue: "LEGION-4", Status: "done", Sequence: 12}
 
 	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
 		`{"key":"OTHR-5","title":"Tidal gauge","status":"icebox","relation":"child"},` +
 		`{"key":"LEGION-6","title":"Ledger","status":"in_progress","relation":"child"},` +
 		`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`
-	_, err := client.SetAcceptanceStatus(context.Background(), read, "done")
+	_, err := client.SetAcceptanceStatus(context.Background(), read)
 	children, open := ForeignChildrenOpen(err)
 	if want := []ForeignChild{{Key: "OTHR-5", Project: "OTHR", Status: "icebox"}, {Key: "LEGION-6", Project: "LEGION", Status: "in_progress"}}; !open || !slices.Equal(children, want) {
 		t.Fatalf("the acceptance write the parent status rule refused = %v, children %#v (open %v), want %#v", err, children, open, want)
@@ -381,7 +384,8 @@ func TestAnAcceptanceWriteRefusedByTheParentStatusRuleNamesTheChildrenThatHoldIt
 
 	body = `{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's.","issues":[` +
 		`{"key":"OTHR-1","title":"Billing","status":"backlog","relation":"parent"}]}`
-	_, err = client.SetAcceptanceStatus(context.Background(), read, "retro")
+	read.Status = "retro"
+	_, err = client.SetAcceptanceStatus(context.Background(), read)
 	var refusal *Error
 	if _, open := ForeignChildrenOpen(err); open || !errors.As(err, &refusal) || refusal.Code != ParentStatusConflict || len(refusal.Issues) != 0 {
 		t.Fatalf("a parent status refusal naming its parent alone = %#v, want PARENT_STATUS_CONFLICT with no children", err)
@@ -1410,7 +1414,7 @@ func clientWrites() []clientWrite {
 		{
 			method: "SetAcceptanceStatus", route: "PATCH /api/v1/issues/OTHER-7",
 			call: func(ctx context.Context, client *HTTPClient) error {
-				_, err := client.SetAcceptanceStatus(ctx, Issue{Key: "OTHER-7", Status: "needs_review", LastSeq: 12}, "retro")
+				_, err := client.SetAcceptanceStatus(ctx, AcceptanceWrite{Key: "accept-7", Issue: "OTHER-7", Status: "retro", Sequence: 12})
 				return err
 			},
 			body: `{"status":"retro","expected_sequence":12,"refuse_open_foreign_children":true,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
@@ -1539,6 +1543,10 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 						answer := write.answer
 						if answer == "" {
 							answer = "{}"
+						}
+						// Dispatch's keyed layer names a keyed request's key back.
+						if key := r.Header.Get(IdempotencyKeyHeader); key != "" {
+							w.Header().Set(IdempotencyKeyHeader, key)
 						}
 						w.Header().Set("Content-Type", "application/json")
 						_, _ = io.WriteString(w, answer)

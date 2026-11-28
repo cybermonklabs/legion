@@ -3908,6 +3908,13 @@ func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue s
 	return s.Store.DropStatusWrites(ctx, tx, issue)
 }
 
+func (s projectRecords) DropAcceptanceWrites(ctx context.Context, tx pgx.Tx, issue string) error {
+	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
+		return nil
+	}
+	return s.Store.DropAcceptanceWrites(ctx, tx, issue)
+}
+
 // ClearGeneration deletes the facts of the issue's generation and answers the issues whose gates
 // it emptied, whose publication its caller queues (record.Postgres.clearGates), so a clear of
 // another project's issue is refused whole, emptying nothing and answering no issue: the facts it

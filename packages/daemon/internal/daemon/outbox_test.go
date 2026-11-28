@@ -147,6 +147,12 @@ type outboxDispatch struct {
 	gatedStepsErr error
 	// recordErr is what a step record's write and a plan's write answer.
 	recordErr error
+	// acceptance, when set, answers each keyed acceptance write (SetAcceptanceStatus), which
+	// acceptanceWrites records, and events is the issue's event log after any sequence
+	// (EventsAfter).
+	acceptance       func(dispatch.AcceptanceWrite) (dispatch.Issue, error)
+	acceptanceWrites []dispatch.AcceptanceWrite
+	events           []json.RawMessage
 }
 
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -172,8 +178,16 @@ func (d *outboxDispatch) SetStatus(_ context.Context, _ string, status string) (
 func (d *outboxDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
-func (d *outboxDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, issue.Key, status)
+
+// SetAcceptanceStatus records write and answers it with acceptance where a case scripts one, as
+// Dispatch's keyed layer answers the request under its key, and as this stand-in's own SetStatus
+// otherwise.
+func (d *outboxDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	d.acceptanceWrites = append(d.acceptanceWrites, write)
+	if d.acceptance != nil {
+		return d.acceptance(write)
+	}
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, status string) error {
 	d.handOvers = append(d.handOvers, fmt.Sprintf("%s %s %v", issue.Key, status, issue.Labels))
@@ -191,7 +205,7 @@ func (d *outboxDispatch) MessageBodiesSince(context.Context, string, time.Time) 
 	return d.bodies, d.messageReadErr
 }
 func (d *outboxDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
-	return nil, nil
+	return d.events, nil
 }
 func (d *outboxDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
 	return d.approval, d.approvalErr

@@ -4413,6 +4413,14 @@ func (s *Postgres) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string
 	return nil
 }
 
+func (s *Postgres) DropAcceptanceWrites(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, "delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3",
+		string(OutboxKindDispatchStatus), issue, string(AcceptanceStatusRow)); err != nil {
+		return fmt.Errorf("drop the unfinished acceptances of %s: %w", issue, err)
+	}
+	return nil
+}
+
 func (s *Postgres) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) error {
 	if _, err := tx.Exec(ctx, "delete from outbox where id = any($1)", rows); err != nil {
 		return fmt.Errorf("drop the queued changes requests %v: %w", rows, err)

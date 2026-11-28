@@ -45,8 +45,8 @@ import (
 // with every refusal below: one refused, a first phase started since the route's judgement among
 // them, has the route write back the status Dispatch showed before its write. A close that is
 // taken drops every status row queued for the root before its own (as dispatchIssue does before
-// every leave): the set-back the route queued before its write (the API's queueSetBack) among
-// them, which would otherwise run first and write the old status over the close.
+// every leave): the unfinished acceptance the route recorded before its write (the API's
+// queueAcceptance) among them, which the close settles.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {

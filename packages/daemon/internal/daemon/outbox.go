@@ -1177,14 +1177,6 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	if err != nil || !proceed {
 		return err
 	}
-	if fenced, ok, err := r.fenceUnlanded(ctx, row, payload, issue); err != nil {
-		return err
-	} else if ok {
-		if proceed, err := rule.firstAttempt(ctx, r, row, payload, fenced); err != nil || !proceed {
-			return err
-		}
-		issue = fenced
-	}
 	// Somebody moved the issue after the row read it, so the write this row carries is
 	// superseded and the row finishes having written nothing. A kind with something of its own
 	// to settle when that happens — a hand-over's fence — has just settled it above, which is
@@ -1365,6 +1357,8 @@ func ruleFor(kind record.StatusRowKind) (statusRowRule, error) {
 		return handOverRule{}, nil
 	case record.CloseStatusRow:
 		return closeRule{}, nil
+	case record.AcceptanceStatusRow:
+		return acceptanceRule{}, nil
 	default:
 		return nil, fmt.Errorf("status row kind %q has no rule", kind)
 	}
@@ -1378,59 +1372,30 @@ func statusMoved(payload record.StatusWrite, issue dispatch.Issue) bool {
 }
 
 // overAcceptance says whether row, an ordinary or a re-assert status row, would take Dispatch off
-// an acceptance or a close the daemon records: Dispatch shows the issue at retro, the status of its
-// accepted phases, and the record holds it accepted (record.Accepted: in retro or merging, or held
-// from one of them); or Dispatch shows it done and the record holds it done; and the row carries
-// another status. Such a row was queued before the act's fact committed — accepting's
-// needs_review, a status repair's, or the set-back an acceptance or a close queues before its
-// write (the API's queueSetBack) — and the act's own write and its row carry the status Dispatch
-// owes now, so this one finishes having written nothing. Written, it would leave Dispatch showing
-// the issue unaccepted while the daemon records it accepted, and another project's daemon would
-// take a registration on it; or reopen a closed tree, which the daemon would admit again. The
-// record is read under the issue's lock (status), which an acceptance or a close holds until its
-// fact commits, so it is the record that fact left.
+// an acceptance the daemon records: Dispatch shows the issue at retro, the status of its accepted
+// phases, the record holds it accepted (record.Accepted: in retro or merging, or held from one of
+// them), and the row carries another status. Such a row was queued before the acceptance's fact
+// committed — accepting's needs_review, or a status repair's — and the acceptance's own write and
+// its row carry the status Dispatch owes now, so this one finishes having written nothing.
+// Written, it would leave Dispatch showing the issue unaccepted while the daemon records it
+// accepted, and another project's daemon would take a registration on it. The record is read
+// under the issue's lock (status), which an acceptance holds until its fact commits, so it is
+// the record that fact left.
 func (r *outbox) overAcceptance(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, shown dispatch.Issue) (bool, error) {
-	accepted, closed := workflow.PhaseStatus(phase.Retro), record.DoneStatus
-	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || shown.Status != accepted && shown.Status != closed || payload.Status == shown.Status {
+	accepted := workflow.PhaseStatus(phase.Retro)
+	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || shown.Status != accepted || payload.Status == accepted {
 		return false, nil
 	}
 	recorded, err := r.recordedIssue(ctx, row.Issue)
 	if err != nil {
-		return false, fmt.Errorf("judge the status write of %s against its acceptance or close: %w", row.Issue, err)
+		return false, fmt.Errorf("judge the status write of %s against its acceptance: %w", row.Issue, err)
 	}
-	if recorded == nil || shown.Status == accepted && !record.Accepted(*recorded) || shown.Status == closed && recorded.Status != closed {
+	if recorded == nil || !record.Accepted(*recorded) {
 		return false, nil
 	}
-	r.log.Info("outbox status write finished without writing: the daemon records the acceptance or the close Dispatch shows",
-		"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", shown.Status, "phase", recorded.Phase, "recorded", recorded.Status)
+	r.log.Info("outbox status write finished without writing: the daemon records its issue accepted, which Dispatch shows",
+		"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", shown.Status, "phase", recorded.Phase)
 	return true, nil
-}
-
-// fenceUnlanded settles a set-back an acceptance or a close queued before its write (the API's
-// queueSetBack) where Dispatch still stands at the sequence the act read (ObservedSeq), at another
-// status than the act wrote (ObservedStatus): the act's write has not landed by this read, and
-// after an answer the act lost, or a daemon that stopped mid-write, it may still be in flight in
-// front of Dispatch, where a later commit would stand with nothing left to undo it. Dispatch
-// refuses a write made at a sequence after which any event came (expected_sequence), so the row
-// posts a fence, a message, as its own message (posted once whatever its retries), and answers the
-// read made after it, true: the act's status where its write landed first, which the row then
-// sets back; the old status otherwise, off which no write of the act can now move it. A session's
-// set-back observes the session's own write at its sequence, so it never matches, and every other
-// row and read is answered as it stands, false.
-func (r *outbox) fenceUnlanded(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (dispatch.Issue, bool, error) {
-	if payload.Kind != record.ReassertStatusRow || issue.LastSeq != payload.ObservedSeq || issue.Status == payload.ObservedStatus {
-		return issue, false, nil
-	}
-	fence := fmt.Sprintf("The daemon's %s write of %s may not have landed when it was made: this message ends any chance that it lands later. "+
-		"If it landed before this message, the daemon writes %s back.", payload.ObservedStatus, row.Issue, payload.Status)
-	if err := r.message(ctx, row, record.MessagePost{Body: fence}); err != nil {
-		return issue, false, fmt.Errorf("post the fence of %s's %s write: %w", row.Issue, payload.ObservedStatus, err)
-	}
-	read, err := r.dispatch.GetIssue(ctx, row.Issue)
-	if err != nil {
-		return issue, false, fmt.Errorf("read Dispatch issue %s after fencing its %s write: %w", row.Issue, payload.ObservedStatus, err)
-	}
-	return read, true, nil
 }
 
 // ordinaryRule judges the workflow moving an issue along inside the workflow
@@ -1598,6 +1563,111 @@ func (handOverRule) refused(r *outbox, row record.OutboxRow, payload record.Stat
 			"row", row.ID, "issue", row.Issue, "tree", payload.HandOverTree, "linger", payload.HandOverLinger)
 	}
 	return follow, told, true
+}
+
+// acceptanceRule settles an acceptance or a close the daemon sent and has not recorded
+// (record.AcceptanceStatusRow): a row the act's fact did not retire, because the daemon stopped
+// between the write and the fact, Dispatch did not settle the write within the act, or the write
+// back after a refused fact failed. It runs under the issue's lock, which the act holds to its
+// end, so it runs once the act has settled.
+type acceptanceRule struct{}
+
+// firstAttempt settles the row whole and finishes it on every path (settleAcceptance).
+func (acceptanceRule) firstAttempt(ctx context.Context, r *outbox, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (bool, error) {
+	return false, r.settleAcceptance(ctx, row, payload, issue)
+}
+
+// stillWanted is never asked: the row's first attempt finishes it on every path.
+func (acceptanceRule) stillWanted(_ context.Context, _ *outbox, row record.OutboxRow, _ record.StatusWrite, _ dispatch.Issue) (bool, error) {
+	return false, fmt.Errorf("outbox row %d: an unfinished acceptance's first attempt finishes its row, so it cannot reach the retry's rule", row.ID)
+}
+
+// refused leaves nothing behind: the row holds no fence of its own.
+func (acceptanceRule) refused(*outbox, record.OutboxRow, record.StatusWrite, error) (func(context.Context, pgx.Tx) error, func(), bool) {
+	return nil, nil, false
+}
+
+// settleAcceptance settles payload, the request an act sent under payload.Key: payload.Status at
+// payload.ObservedSeq. Dispatch's keyed layer answers the same request under the same key with
+// how it settled the first (dispatch.KeyedVerdict), and never commits a request whose key a repeat
+// took over, so the row sends it again:
+//
+//   - Where Dispatch still stands at payload.ObservedSeq, the request has not landed by that read,
+//     and a repeat would run it now if its first attempt never reached Dispatch, landing the very
+//     status this row exists to undo. So the row first posts a message, as its own message (posted
+//     once whatever its retries): an event after payload.ObservedSeq, after which a fresh run of
+//     the request is refused ISSUE_CHANGED, and a first attempt that committed before it is
+//     replayed.
+//   - Unsettled: the row is attempted again on its backoff, the answer reported without its
+//     *dispatch.Error, so no code of the keyed layer (KEY_IN_FLIGHT) reads as a permanent refusal.
+//   - Refused: the request never lands, and the row finishes.
+//   - Committed: the issue's event log after payload.ObservedSeq decides
+//     (intake.DaemonStatusChanged), as the route's does.
+//   - Landed: unless the record holds the acceptance or the close the request wrote (a retro the
+//     record holds accepted, a done it holds done), the status Dispatch showed before the act
+//     (payload.ObservedStatus) is written back, where Dispatch still shows payload.Status and no one
+//     but the daemon changed the status after payload.ObservedSeq (setBackOwed).
+func (r *outbox) settleAcceptance(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) error {
+	if issue.LastSeq == payload.ObservedSeq {
+		fence := fmt.Sprintf("The daemon's %s write of %s could not be settled when it was made. "+
+			"This message ensures that write can no longer land; if it landed before this message, the daemon writes %s back.",
+			payload.Status, row.Issue, payload.ObservedStatus)
+		if err := r.message(ctx, row, record.MessagePost{Body: fence}); err != nil {
+			return fmt.Errorf("post the fence of %s's unsettled %s write: %w", row.Issue, payload.Status, err)
+		}
+	}
+	write := dispatch.AcceptanceWrite{Key: payload.Key, Issue: row.Issue, Status: payload.Status, Sequence: payload.ObservedSeq}
+	_, err := r.dispatch.SetAcceptanceStatus(ctx, write)
+	switch dispatch.VerdictOf(err) {
+	case dispatch.Unsettled:
+		return fmt.Errorf("Dispatch did not settle %s's %s write under its key yet: %v", row.Issue, payload.Status, err)
+	case dispatch.Refused:
+		r.log.Info("outbox unfinished acceptance settled: Dispatch refused its write, which never lands",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status, "error", err)
+		return nil
+	case dispatch.Committed:
+		events, err := r.dispatch.EventsAfter(ctx, row.Issue, payload.ObservedSeq)
+		if err != nil {
+			return fmt.Errorf("read %s's events after its committed %s write: %w", row.Issue, payload.Status, err)
+		}
+		landed, err := intake.DaemonStatusChanged(events)
+		if err != nil {
+			return fmt.Errorf("read %s's events after its committed %s write: %w", row.Issue, payload.Status, err)
+		}
+		if !landed {
+			r.log.Info("outbox unfinished acceptance settled: its key committed, but not the status",
+				"row", row.ID, "issue", row.Issue, "status", payload.Status)
+			return nil
+		}
+	}
+	recorded, err := r.recordedIssue(ctx, row.Issue)
+	if err != nil {
+		return fmt.Errorf("judge %s's landed %s write against its record: %w", row.Issue, payload.Status, err)
+	}
+	if recorded != nil && (payload.Status == workflow.PhaseStatus(phase.Retro) && record.Accepted(*recorded) ||
+		payload.Status == record.DoneStatus && recorded.Status == record.DoneStatus) {
+		r.log.Info("outbox unfinished acceptance settled: the record holds what its write wrote",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status, "phase", recorded.Phase)
+		return nil
+	}
+	now, err := r.dispatch.GetIssue(ctx, row.Issue)
+	if err != nil {
+		return fmt.Errorf("read %s before writing back its unrecorded %s: %w", row.Issue, payload.Status, err)
+	}
+	if now.Status != payload.Status {
+		r.log.Info("outbox unfinished acceptance settled: Dispatch no longer shows its write's status",
+			"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", now.Status)
+		return nil
+	}
+	if owed, err := r.setBackOwed(ctx, row, payload); err != nil || !owed {
+		return err
+	}
+	if _, err := r.dispatch.SetStatusAt(ctx, now, payload.ObservedStatus); err != nil {
+		return fmt.Errorf("write %s back over %s's unrecorded %s: %v", payload.ObservedStatus, row.Issue, payload.Status, err)
+	}
+	r.log.Warn("outbox unfinished acceptance settled: its write landed and the record holds no acceptance or close, so the status before it is written back",
+		"row", row.ID, "issue", row.Issue, "wrote", payload.Status, "back", payload.ObservedStatus)
+	return nil
 }
 
 // closeRule judges the daemon's own close of an issue (record.CloseStatusRow): the done a merge

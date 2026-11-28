@@ -92,6 +92,15 @@ type statusRecorder struct {
 	lostAnswer   error
 	lostRead     error
 	writeBackErr error
+	// keys is each key the fake's keyed layer holds with its first run's answer, and keyedRuns
+	// how many keyed requests ran (SetAcceptanceStatus).
+	keys      map[string]keyedAnswer
+	keyedRuns int
+	// acceptanceCalls is every acceptance write sent, in order, and beforeAcceptance, when set,
+	// is asked of each before the fake's own keyed layer, with how many were sent so far: one it
+	// handles is answered as it says.
+	acceptanceCalls  []dispatch.AcceptanceWrite
+	beforeAcceptance func(write dispatch.AcceptanceWrite, attempt int) (dispatch.Issue, error, bool)
 	// beforeRead, when set, runs before each issue read: what someone does after the route read the
 	// record and before it reads Dispatch.
 	beforeRead func(ctx context.Context, issue string)
@@ -266,26 +275,89 @@ func (r *statusRecorder) changedSince(issue dispatch.Issue) error {
 	return nil
 }
 
-// SetAcceptanceStatus is SetStatusAt sent with refuse_open_foreign_children, judged in Dispatch's
-// order: refused 409 ISSUE_CHANGED where the issue stands at another sequence than issue's, then
-// with Dispatch's 409 FOREIGN_CHILD_OPEN where foreignOpen names children of the issue, and
-// otherwise taken and kept as SetStatus keeps a write, and in acceptances.
-func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
-	if err := r.changedSince(issue); err != nil {
-		return dispatch.Issue{}, err
-	}
-	if children := r.foreignOpen[issue.Key]; len(children) > 0 {
-		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen,
-			Message: issue.Key + " has an open child of another project", Issues: children}
-	}
-	written, err := r.SetStatus(ctx, issue.Key, status)
-	if err == nil {
-		r.acceptances = append(r.acceptances, issue.Key+"="+status)
-		if r.lostAnswer != nil {
-			return dispatch.Issue{}, r.lostAnswer
+// SetAcceptanceStatus is Dispatch's keyed PATCH as the acceptance makes it. A key the fake holds
+// answers its first run's answer again, replayed. Otherwise the request runs, judged in Dispatch's
+// order: r.err, Dispatch's trouble, answers it unstored, as the keyed layer stores no 5xx and no
+// transport failure; then 409 ISSUE_CHANGED where the issue stands at another sequence than the
+// request's; then Dispatch's 409 FOREIGN_CHILD_OPEN where foreignOpen names children of the issue;
+// and otherwise the write is taken and kept as SetStatus keeps a write, and in acceptances. Each
+// stored answer names the key back. lostAnswer, once a write is taken, is answered in its place,
+// unstored, as an answer lost on its way back; keyedRuns counts the requests that ran.
+func (r *statusRecorder) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	r.acceptanceCalls = append(r.acceptanceCalls, write)
+	if r.beforeAcceptance != nil {
+		if issue, err, handled := r.beforeAcceptance(write, len(r.acceptanceCalls)); handled {
+			return issue, err
 		}
 	}
-	return written, err
+	if held, ok := r.keys[write.Key]; ok {
+		var refusal *dispatch.Error
+		if errors.As(held.err, &refusal) {
+			replayed := *refusal
+			replayed.Replayed = true
+			return dispatch.Issue{}, &replayed
+		}
+		return held.issue, nil
+	}
+	if r.err != nil {
+		// A handler's coded 4xx is the key's stored answer, naming the key back; a 5xx and a
+		// transport failure are stored by no keyed layer, and name nothing back.
+		var refusal *dispatch.Error
+		if errors.As(r.err, &refusal) && refusal.Code != "" && refusal.Status/100 == 4 {
+			echoed := *refusal
+			echoed.Echoed = true
+			return dispatch.Issue{}, &echoed
+		}
+		return dispatch.Issue{}, r.err
+	}
+	r.keyedRuns++
+	issue := dispatch.Issue{Key: write.Issue, LastSeq: write.Sequence}
+	store := func(written dispatch.Issue, err error) (dispatch.Issue, error) {
+		if r.keys == nil {
+			r.keys = map[string]keyedAnswer{}
+		}
+		var refusal *dispatch.Error
+		if errors.As(err, &refusal) {
+			refusal.Echoed = true
+		}
+		r.keys[write.Key] = keyedAnswer{issue: written, err: err}
+		return written, err
+	}
+	if err := r.changedSince(issue); err != nil {
+		return store(dispatch.Issue{}, err)
+	}
+	if children := r.foreignOpen[issue.Key]; len(children) > 0 {
+		return store(dispatch.Issue{}, &dispatch.Error{Status: http.StatusConflict, Code: dispatch.ForeignChildOpen,
+			Message: issue.Key + " has an open child of another project", Issues: children})
+	}
+	written, err := r.SetStatus(ctx, issue.Key, write.Status)
+	if err != nil {
+		return dispatch.Issue{}, err
+	}
+	r.acceptances = append(r.acceptances, issue.Key+"="+write.Status)
+	store(written, nil)
+	if r.lostAnswer != nil {
+		return dispatch.Issue{}, r.lostAnswer
+	}
+	return written, nil
+}
+
+// sentKeys is each key an acceptance write was sent under, once, in the order first sent.
+func (r *statusRecorder) sentKeys() []string {
+	var keys []string
+	for _, call := range r.acceptanceCalls {
+		if !slices.Contains(keys, call.Key) {
+			keys = append(keys, call.Key)
+		}
+	}
+	return keys
+}
+
+// keyedAnswer is the first answer the fake's keyed layer stored for a key: the issue a write that
+// landed left, or the refusal its request met.
+type keyedAnswer struct {
+	issue dispatch.Issue
+	err   error
 }
 
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
@@ -468,17 +540,18 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 	// the approval; a test that reads other issues replaces the map.
 	facts, statuses := &factRecorder{refusal: refusal}, &statusRecorder{issues: map[string]dispatch.Issue{"LEGION-208": {Key: "LEGION-208", LastSeq: 7}}}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor:    h.supervisor,
-		BootTokens:    h.tokens,
-		Project:       testProject,
-		OperatorToken: testOperatorToken,
-		Controller:    h.store,
-		Steps:         steps,
-		Grants:        grants,
-		Pool:          h.store.Pool(),
-		Record:        record.NewStore(),
-		Handlers:      []intake.Handler{facts},
-		Dispatch:      statuses,
+		Supervisor:          h.supervisor,
+		BootTokens:          h.tokens,
+		Project:             testProject,
+		OperatorToken:       testOperatorToken,
+		Controller:          h.store,
+		Steps:               steps,
+		Grants:              grants,
+		Pool:                h.store.Pool(),
+		Record:              record.NewStore(),
+		Handlers:            []intake.Handler{facts},
+		Dispatch:            statuses,
+		AcceptanceRetryWait: time.Millisecond,
 	}).Handler
 	return h, facts, statuses
 }
@@ -1437,6 +1510,9 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	// is. Nothing is written or recorded: Dispatch takes no write, no fact reached the intake, and
 	// no outbox row carries the close.
 	overBlock := strings.Repeat("x", dispatchbody.BlockUnits)
+	// The first close's unfinished acceptance stands, since this harness's fact handler records
+	// the fact and retires nothing; the refused close adds no row to it.
+	before := outboxRowsOf(t, h, "LEGION-208")
 	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-208", "reason": overBlock,
 	}, nil), http.StatusBadRequest, "CLOSE_REASON_TOO_LONG")
@@ -1446,8 +1522,8 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	if got := facts.recorded(); len(got) != 1 || len(statuses.acceptances) != 1 {
 		t.Fatalf("the refused close applied %#v and wrote %q, want nothing beyond the first close", got[1:], statuses.acceptances[1:])
 	}
-	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 0 {
-		t.Fatalf("outbox rows after the refused close = %d, want none", rows)
+	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != before {
+		t.Fatalf("outbox rows after the refused close = %d, want the %d before it", rows, before)
 	}
 
 	// The bound is on a block, not on the reason: one written as blocks Dispatch takes is applied

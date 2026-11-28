@@ -99,7 +99,7 @@ func (d *gatePublishDispatch) SetStatus(context.Context, string, string) (dispat
 func (d *gatePublishDispatch) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
-func (d *gatePublishDispatch) SetAcceptanceStatus(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+func (d *gatePublishDispatch) SetAcceptanceStatus(context.Context, dispatch.AcceptanceWrite) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
 func (d *gatePublishDispatch) ReleaseClaim(context.Context, string) error { return nil }

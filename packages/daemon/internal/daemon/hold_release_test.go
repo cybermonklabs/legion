@@ -364,8 +364,8 @@ func (d *pilotDispatch) SetStatus(context.Context, string, string) (dispatch.Iss
 func (d *pilotDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
-func (d *pilotDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, issue.Key, status)
+func (d *pilotDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *pilotDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *pilotDispatch) HandOver(context.Context, dispatch.Issue, string) error {
@@ -446,8 +446,8 @@ func (d *filteringDispatch) SetStatus(context.Context, string, string) (dispatch
 func (d *filteringDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
-func (d *filteringDispatch) SetAcceptanceStatus(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
-	return d.SetStatus(ctx, issue.Key, status)
+func (d *filteringDispatch) SetAcceptanceStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, write.Issue, write.Status)
 }
 func (d *filteringDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *filteringDispatch) HandOver(context.Context, dispatch.Issue, string) error {

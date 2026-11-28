@@ -476,7 +476,7 @@ func (r *registerGateBasisLive) refusedOnAnAcceptedBasis() {
 	if err != nil {
 		t.Fatalf("read %s before its acceptance: %v", ancestor.Key, err)
 	}
-	accepted, err := client.SetAcceptanceStatus(t.Context(), read, "retro")
+	accepted, err := client.SetAcceptanceStatus(t.Context(), dispatch.AcceptanceWrite{Key: "legion:sign_off:" + ancestor.Key + ":live", Issue: ancestor.Key, Status: "retro", Sequence: read.LastSeq})
 	if err != nil || accepted.Status != "retro" {
 		t.Fatalf("the acceptance of %s, written as its daemon's sign_off writes it, = %+v, %v; want retro", ancestor.Key, accepted, err)
 	}

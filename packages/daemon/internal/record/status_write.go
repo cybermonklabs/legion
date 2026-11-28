@@ -52,12 +52,20 @@ const (
 	// lingers and frees its slot. Its own rule asks the question that matters instead: the close
 	// still stands in the record at the generation the row names.
 	CloseStatusRow StatusRowKind = "close"
+	// AcceptanceStatusRow is an acceptance or a close the daemon has sent to Dispatch and not
+	// recorded yet (AcceptanceStatusWrite): sign_off's retro or close_root's done, under the key
+	// it was sent with. The route queues it before its write, and the act's fact retires it in its
+	// own transaction (Store.DropAcceptanceWrites), or the route does once its write back landed.
+	// A row left standing is the outbox's to settle: it sends the same request under the same key
+	// until Dispatch's keyed layer settles it, and writes ObservedStatus back where the write landed
+	// and the record holds no acceptance or close.
+	AcceptanceStatusRow StatusRowKind = "acceptance"
 )
 
 // StatusRowKinds is every kind of status row, listed once. The daemon's rule switch, the
 // migration that gave the stored rows their kind and the tests of both packages read this list,
-// so a kind is added in one place and every reader of it is held to the same five.
-var StatusRowKinds = []StatusRowKind{OrdinaryStatusRow, PersonHandoverStatusRow, ReassertStatusRow, HandOverStatusRow, CloseStatusRow}
+// so a kind is added in one place and every reader of it is held to the same six.
+var StatusRowKinds = []StatusRowKind{OrdinaryStatusRow, PersonHandoverStatusRow, ReassertStatusRow, HandOverStatusRow, CloseStatusRow, AcceptanceStatusRow}
 
 // StatusWrite is a Dispatch status the daemon writes. ObservedStatus is the status Dispatch shows
 // until the write runs: the runner writes Status only while Dispatch still shows ObservedStatus, so a
@@ -96,6 +104,9 @@ type StatusWrite struct {
 	// payload strictly, so a rollback removes the key first (the way back of migration
 	// 20261120012547).
 	ObservedSeq int64 `json:"observedSeq,omitempty"`
+	// Key is the Idempotency-Key an acceptance was sent under (AcceptanceStatusRow), the one key of
+	// that one request: Status at ObservedSeq. Empty for every other kind.
+	Key string `json:"key,omitempty"`
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
@@ -124,6 +135,12 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 // came back (workflow's rejectStaleHandover).
 func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
 	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
+}
+
+// AcceptanceStatusWrite is an acceptance or a close the daemon sends under key: status written
+// over observed at observedSeq, the sequence the request is fenced on (AcceptanceStatusRow).
+func AcceptanceStatusWrite(status, observed string, observedSeq int64, key string) StatusWrite {
+	return StatusWrite{Kind: AcceptanceStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq, Key: key}
 }
 
 // HandOverStatusWrite hands a child of tree to Legion at status, fenced on that tree and on the

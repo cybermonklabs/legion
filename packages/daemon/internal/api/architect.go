@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/dispatchbody"
@@ -1668,25 +1669,27 @@ type acceptAct struct {
 //     would be reopened as the act's status, and the close's own event, once applied, would take
 //     the record out of the workflow while Dispatch kept that status, which the status repair,
 //     reading only issues in the workflow, would never put back.
-//  3. It queues, before its write, the daemon's set-back of the status of step 2's read over
-//     a.status (queueSetBack): the one undo that outlives this act. A fact that is taken drops it
-//     (workflow's closeRoot) or leaves it nothing to write (the outbox's overAcceptance), and every
-//     other end leaves it standing to run once this act releases the issue's lock: a refused fact
-//     whose write back failed, a write whose answer was lost, and a daemon that stopped between
-//     the write and the fact.
+//  3. It records each request it sends, before sending it, as the act's unfinished acceptance
+//     (queueAcceptance): the key, the exact request and the status step 2 read. The fact, taken,
+//     retires it in its own transaction; every end that leaves the write unsettled or unrecorded
+//     leaves it standing, for the outbox to settle under the same key once this act releases the
+//     issue's lock (the outbox's settleAcceptance): a daemon that stopped between the write and the
+//     fact, an answer Dispatch never settled, and a write back that failed.
 //  4. It writes a.status with refuse_open_foreign_children (dispatch.Client.SetAcceptanceStatus),
-//     at the sequence of the read of step 2 (writeAtRead). Dispatch refuses it while a child of
+//     at the sequence of the read of step 2, under an Idempotency-Key of the request's own
+//     (sendAcceptance), and reads Dispatch's answer as the agents' client reads a keyed answer
+//     (dispatch.KeyedVerdict). An answer that settles nothing is sent again under the same key and
+//     bytes; Dispatch's keyed layer answers a repeat with how the first attempt ended, and never
+//     commits an attempt whose key a repeat took over. Dispatch refuses the write while a child of
 //     another project is open under the issue, under the lock every parent write takes, so no
 //     child is filed between its check and its write (FOREIGN_CHILD_OPEN); where its parent status
 //     rule is on, it refuses a done over any child not done first (PARENT_STATUS_CONFLICT). Either
 //     refusal is answered 409 SIGNOFF_CHILD_OPEN, naming each child that holds the act
 //     (foreignChildOpenRefusal), and nothing is written or recorded. Where someone moved the
 //     issue since that read, nothing is written over the move, and the act is answered 409
-//     ISSUE_CHANGED naming the status Dispatch shows now. A write whose answer did not come back
-//     whole (answerLost) may have landed: Dispatch is read again (landedWrite), and a write that
-//     landed is carried on as one answered; one that did not is answered 502 as Dispatch's trouble,
-//     and one whose landing the read cannot tell is answered 502 too, with step 3's set-back left
-//     to undo it once Dispatch answers.
+//     ISSUE_CHANGED naming the status Dispatch shows now; an event that kept the status has the act
+//     send a new request, under a new key, at a fresh read's sequence. A write Dispatch did not
+//     settle within the act is answered 502, its unfinished acceptance left to the outbox.
 //  5. It tells the test seam, if any, and applies the act's fact. From the write on, the act runs
 //     on a context its caller's going away does not cancel: a write that may have landed in
 //     Dispatch is the daemon's to record, or to write back, whoever is still listening.
@@ -1699,8 +1702,8 @@ type acceptAct struct {
 //
 // So whenever the daemon records an acceptance or a close, Dispatch already shows it, and every
 // other project's daemon reads it so. The judgement of step 2 can pass and the fact's own refuse,
-// when the record moves between the two; the write back covers that window, and step 3's set-back
-// covers a write back that could not be made.
+// when the record moves between the two; the write back covers that window, and step 3's
+// unfinished acceptance covers a write back that could not be made.
 func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAct) {
 	if s.pool == nil || s.records == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
@@ -1749,61 +1752,32 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 			return
 		}
 	}
-	// The set-back is queued before the write, so the write cannot land with no undo standing.
-	// Dispatch already showing the act's status, or naming none, leaves nothing to set back.
-	setBack := shown.Status != a.status && shown.Status != ""
-	var setBackRow int64
-	if setBack {
-		if setBackRow, err = s.queueSetBack(r.Context(), a, shown); err != nil {
-			s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE",
-				fmt.Sprintf("could not queue the set-back of %s's %s before its %s write, so nothing was written or recorded: %v; retry %s", a.issue, shown.Status, a.status, err, a.act))
-			return
-		}
-	}
-	// unsettled is what the answer says of a write whose landing is not known, nor ever will be by
-	// this act: the set-back fences it and undoes it if it lands.
-	unsettled := fmt.Sprintf("the set-back of %s the daemon queued before the write fences it once Dispatch answers, and writes %s back if it landed and nobody else moved the issue", shown.Status, shown.Status)
-	if !setBack {
-		unsettled = fmt.Sprintf("Dispatch showed no status but %s before this write, so nothing was queued to set it back", a.status)
-	}
 	// The write may land in Dispatch however the call to it ends, so from here the act is finished
 	// whether or not its caller is still there: a caller that went away does not leave Dispatch
-	// showing a status the daemon neither records nor writes back. Each Dispatch call is bounded by
+	// showing a status the daemon neither records nor settles. Each Dispatch call is bounded by
 	// the client's own timeout, and the fact's wait for the requester's stream by its own bound
 	// (apply).
 	ctx := context.WithoutCancel(r.Context())
-	written, now, err := s.writeAtRead(ctx, shown, func(ctx context.Context, read dispatch.Issue) (dispatch.Issue, error) {
-		return s.dispatch.SetAcceptanceStatus(ctx, read, a.status)
-	})
-	if err != nil && answerLost(err) {
-		// The write may have landed though its answer did not come back whole: Dispatch is read
-		// again, and a write that landed goes on to the fact, or to the write back, as one answered.
-		landed, ok, readErr := s.landedWrite(ctx, shown, a.status)
-		switch {
-		case readErr != nil:
-			s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("the %s write of %s's %s may have landed in Dispatch, but its answer was lost (%v) and the read after it failed (%v), so nothing was recorded; %s. Retry %s",
-				a.status, a.issue, a.act, err, readErr, unsettled, a.act))
-			return
-		case ok:
-			written, err = landed, nil
-		}
-	}
-	if err != nil && setBack && !answerLost(err) {
-		// Dispatch refused the write, so it never lands, and the set-back has nothing to undo: it is
-		// dropped before it could fence a write that is not coming.
-		if dropErr := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-			return s.records.DropQueuedChanges(ctx, tx, []int64{setBackRow})
-		}); dropErr != nil {
-			s.log.Warn("could not drop the set-back of a write Dispatch refused; it posts its fence and finishes having written nothing",
-				"issue", a.issue, "act", a.act, "row", setBackRow, "error", dropErr)
-		}
-	}
+	written, pending, now, err := s.sendAcceptance(ctx, a, shown)
 	if children, open := dispatch.ForeignChildrenOpen(err); open {
 		s.writeFailure(w, r, http.StatusConflict, "SIGNOFF_CHILD_OPEN", foreignChildOpenRefusal(a, children, err))
 		return
 	}
 	var dispatchError *dispatch.Error
 	switch {
+	case errors.Is(err, errQueueAcceptance):
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE",
+			fmt.Sprintf("could not record the %s of %s before its %s write, so nothing was written or recorded: %v; retry %s", a.act, a.issue, a.status, err, a.act))
+		return
+	case errors.Is(err, errUnsettled):
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED",
+			fmt.Sprintf("Dispatch did not settle the %s write of %s's %s (%v), so nothing was recorded. The daemon settles it under the write's key once Dispatch answers, and writes %s back if it landed; retry %s",
+				a.status, a.issue, a.act, err, shown.Status, a.act))
+		return
+	case errors.Is(err, errCommittedWithoutStatus):
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED",
+			fmt.Sprintf("Dispatch committed part of the %s write of %s's %s but not the status, and will not run that request again, so nothing was recorded; retry %s", a.status, a.issue, a.act, a.act))
+		return
 	case errors.Is(err, errStatusMoved):
 		s.writeFailure(w, r, http.StatusConflict, "ISSUE_CHANGED", fmt.Sprintf("Dispatch shows %s %s, moved since this %s read it at %s, so the %s write was not made over that move and nothing was recorded; "+
 			"read the issue, and make the %s again only where it still stands for it", a.issue, now.Status, a.act, shown.Status, a.status, a.act))
@@ -1812,23 +1786,12 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 		s.writeFailure(w, r, http.StatusConflict, "ISSUE_CHANGED", fmt.Sprintf("%s changed in Dispatch under each of the %d %s writes of its %s, so none was made and nothing was recorded; retry %s",
 			a.issue, statusWriteAttempts, a.status, a.act, a.act))
 		return
-	case errors.As(err, &dispatchError) && dispatchError.Code != "":
-		s.writeFailure(w, r, http.StatusBadGateway, dispatchError.Code,
+	case errors.As(err, &dispatchError):
+		s.writeFailure(w, r, http.StatusBadGateway, cmp.Or(dispatchError.Code, "DISPATCH_FAILED"),
 			fmt.Sprintf("Dispatch refused the %s write of %s's %s, so nothing was recorded: %s", a.status, a.issue, a.act, dispatchError.Message))
 		return
-	case errors.As(err, &dispatchError):
-		// A refusal without Dispatch's own body, a proxy's 5xx in front of it, names no code, and the
-		// caller still gets one to branch on; the write behind it may still land.
-		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED",
-			fmt.Sprintf("the %s write of %s's %s was answered with no code (%s), and the read after it shows it has not landed, so nothing was recorded; %s. Retry %s",
-				a.status, a.issue, a.act, dispatchError.Message, unsettled, a.act))
-		return
-	case err != nil && answerLost(err):
-		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("the %s write of %s's %s to Dispatch failed (%v), and the read after it shows it has not landed, so nothing was recorded; %s. Retry %s",
-			a.status, a.issue, a.act, err, unsettled, a.act))
-		return
 	case err != nil:
-		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("the %s write of %s's %s to Dispatch failed, so nothing was recorded: %v; retry", a.status, a.issue, a.act, err))
+		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_FAILED", fmt.Sprintf("the %s write of %s's %s did not land, so nothing was recorded: %v; retry %s", a.status, a.issue, a.act, err, a.act))
 		return
 	}
 	if a.written != nil {
@@ -1840,11 +1803,134 @@ func (s *server) acceptStatus(w http.ResponseWriter, r *http.Request, a acceptAc
 		return
 	}
 	back := s.writeBack(ctx, a, shown, written)
+	if back == "" {
+		// The status the write back settled is what Dispatch shows now, so the unfinished
+		// acceptance has nothing left to settle. A write back that failed leaves it to the outbox.
+		s.retireAcceptance(ctx, a, pending)
+	}
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply fact"+back)
 		return
 	}
 	s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message+back)
+}
+
+// Errors of sendAcceptance: errQueueAcceptance, its unfinished acceptance could not be recorded
+// before the write, so nothing was sent; errUnsettled, Dispatch answered nothing that settles the
+// request under its key, which the unfinished acceptance left standing settles in the outbox; and
+// errCommittedWithoutStatus, the key's request committed something but not the status (a close's
+// settlement of its documents), so the status never lands under that key.
+var (
+	errQueueAcceptance        = errors.New("the unfinished acceptance could not be recorded")
+	errUnsettled              = errors.New("Dispatch did not settle the write under its key")
+	errCommittedWithoutStatus = errors.New("the key's request committed, but not the status")
+)
+
+// keyedSendAttempts bounds how often one request is sent under its key within the act while
+// Dispatch's answers settle nothing (dispatch.Unsettled): a key still in flight, an outage or a lost
+// answer. Past it the request is left to the outbox, which sends it under the same key until
+// Dispatch settles it (the unfinished acceptance).
+const keyedSendAttempts = 3
+
+// sendAcceptance sends a's status over shown in Dispatch, each request under a key of its own and
+// recorded first as the act's unfinished acceptance (queueAcceptance), and answers how Dispatch
+// settled it, read as the agents' client reads a keyed answer (dispatch.KeyedVerdict):
+//
+//   - landed: the issue as the write left it, and the unfinished acceptance's id, which the fact
+//     retires once taken, or the route once its write back landed;
+//   - refused because the issue changed (ISSUE_CHANGED): the request's record is retired, the issue
+//     read again, and a request at that read's sequence made under a new key while the read still
+//     shows shown's status (an event that kept the status, a message); errStatusMoved where the
+//     read shows another status, errChangedUnderEachRead after statusWriteAttempts refusals;
+//   - refused otherwise: Dispatch's refusal, the request's record retired, since no attempt under
+//     its key ever lands;
+//   - committed (KEY_COMMITTED): the issue's event log after the request's sequence decides, since
+//     a close commits its documents' settlement before its status; a status change of the daemon's
+//     there is the write landing, and none is errCommittedWithoutStatus, its record retired;
+//   - unsettled after keyedSendAttempts sends of the same request under its key: errUnsettled, its
+//     record left standing for the outbox to settle.
+func (s *server) sendAcceptance(ctx context.Context, a acceptAct, shown dispatch.Issue) (dispatch.Issue, int64, dispatch.Issue, error) {
+	read := shown
+	for range statusWriteAttempts {
+		write := dispatch.AcceptanceWrite{Key: acceptanceKey(a), Issue: a.issue, Status: a.status, Sequence: read.LastSeq}
+		pending, err := s.queueAcceptance(ctx, write, shown.Status)
+		if err != nil {
+			return dispatch.Issue{}, 0, read, fmt.Errorf("%w: %w", errQueueAcceptance, err)
+		}
+		written, err := s.sendKeyed(ctx, write)
+		switch dispatch.VerdictOf(err) {
+		case dispatch.Landed:
+			return written, pending, read, nil
+		case dispatch.Unsettled:
+			return dispatch.Issue{}, pending, read, fmt.Errorf("%w: %w", errUnsettled, err)
+		case dispatch.Committed:
+			landed, ok, err := s.committedStatus(ctx, write)
+			if err != nil {
+				return dispatch.Issue{}, pending, read, fmt.Errorf("%w: the log after its commit could not be read: %w", errUnsettled, err)
+			}
+			if ok {
+				return landed, pending, read, nil
+			}
+			s.retireAcceptance(ctx, a, pending)
+			return dispatch.Issue{}, 0, read, errCommittedWithoutStatus
+		}
+		s.retireAcceptance(ctx, a, pending)
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || refusal.Code != "ISSUE_CHANGED" {
+			return dispatch.Issue{}, 0, read, err
+		}
+		reread, err := s.dispatch.GetIssue(ctx, a.issue)
+		if err != nil {
+			return dispatch.Issue{}, 0, read, fmt.Errorf("read %s again after Dispatch refused the write because it changed: %w", a.issue, err)
+		}
+		if read = reread; read.Status != shown.Status {
+			return dispatch.Issue{}, 0, read, errStatusMoved
+		}
+	}
+	return dispatch.Issue{}, 0, read, errChangedUnderEachRead
+}
+
+// sendKeyed sends write, and again under the same key and bytes while Dispatch's answer settles
+// nothing (dispatch.Unsettled), keyedSendAttempts times at most, a beat apart (acceptanceRetryWait),
+// and answers the last answer.
+func (s *server) sendKeyed(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, error) {
+	var written dispatch.Issue
+	var err error
+	for attempt := range keyedSendAttempts {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return written, err
+			case <-time.After(s.acceptanceRetryWait):
+			}
+		}
+		if written, err = s.dispatch.SetAcceptanceStatus(ctx, write); dispatch.VerdictOf(err) != dispatch.Unsettled {
+			return written, err
+		}
+	}
+	return written, err
+}
+
+// committedStatus says whether write, answered KEY_COMMITTED, landed its status: whether the
+// issue's event log after write's sequence holds a status change the daemon made
+// (intake.DaemonStatusChanged), and the issue as Dispatch shows it where it does.
+func (s *server) committedStatus(ctx context.Context, write dispatch.AcceptanceWrite) (dispatch.Issue, bool, error) {
+	events, err := s.dispatch.EventsAfter(ctx, write.Issue, write.Sequence)
+	if err != nil {
+		return dispatch.Issue{}, false, err
+	}
+	landed, err := intake.DaemonStatusChanged(events)
+	if err != nil || !landed {
+		return dispatch.Issue{}, false, err
+	}
+	issue, err := s.dispatch.GetIssue(ctx, write.Issue)
+	return issue, err == nil, err
+}
+
+// acceptanceKey is a fresh Idempotency-Key for one request of a's act: the act, the issue and a
+// random part, well inside Dispatch's bound (dispatch.IdempotencyKeyMax).
+func acceptanceKey(a acceptAct) string {
+	return "legion:" + a.act + ":" + a.issue + ":" + uuid.NewString()
 }
 
 // readAndJudge reads the record of issue, nil for none, and asks judge of the act, in one
@@ -1870,27 +1956,19 @@ func (s *server) readAndJudge(ctx context.Context, issue string, judge func(cont
 	return recorded, refusal, writes, nil
 }
 
-// queueSetBack queues, before an act writes a.status in Dispatch, the daemon's own set-back of the
-// status Dispatch showed (shown) over a.status (record.ReassertStatusWrite, the row the daemon sets
-// its status back with over a session's write), observed at shown's sequence, and answers its id.
-// The outbox runs it under the issue's lock, which the act holds to its end, so it runs once the
-// act has settled, or once the daemon starts again after it stopped between the write and the
-// fact. Where Dispatch still stands at shown's sequence, the act's write has not landed by that
-// read, and after an answer the act lost it may still be in flight in front of Dispatch: the row
-// then posts a fence first, an event no write made at shown's sequence can land behind (the
-// outbox's fenceUnlanded), and judges the read made after it. It writes only where Dispatch shows
-// a.status and no one but the daemon changed the issue's status after shown (the set-back's
-// setBackOwed, asked again after every refusal), so a write written back already and a person's
-// move after the act are left as they are. Nor does it write over what the act's fact recorded: a
-// close that is taken drops it (workflow's closeRoot), and an acceptance the daemon records leaves
-// Dispatch's retro alone (the outbox's overAcceptance). A write Dispatch refused never lands, and
-// the act drops the row then. Nothing else would undo an act whose write back failed: the status
-// repair passes over an issue Dispatch shows done and over the two phases close_root takes, which
-// have no status of their own.
-func (s *server) queueSetBack(ctx context.Context, a acceptAct, shown dispatch.Issue) (int64, error) {
+// queueAcceptance records write, one keyed request of an acceptance or a close, as the act's
+// unfinished acceptance (record.AcceptanceStatusWrite) before it is sent, with observed, the
+// status Dispatch showed before the act, to write back where the write lands and the record holds
+// no acceptance or close, and answers its id. A daemon that stops between the write and the fact,
+// an answer Dispatch never settled within the act, and a write back that failed each leave it
+// standing, for the outbox to settle under the same key once the act releases the issue's lock
+// (the outbox's settleAcceptance). The act's fact, taken, retires it in its own transaction
+// (record.Store.DropAcceptanceWrites); a refusal of this exact request, and a write back that
+// landed, retire it in the route (retireAcceptance).
+func (s *server) queueAcceptance(ctx context.Context, write dispatch.AcceptanceWrite, observed string) (int64, error) {
 	var id int64
 	err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := record.NewOutboxRow(a.issue, record.ReassertStatusWrite(shown.Status, a.status, shown.LastSeq), time.Now().UTC())
+		row, err := record.NewOutboxRow(write.Issue, record.AcceptanceStatusWrite(write.Status, observed, write.Sequence, write.Key), time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -1898,6 +1976,21 @@ func (s *server) queueSetBack(ctx context.Context, a acceptAct, shown dispatch.I
 		return err
 	})
 	return id, err
+}
+
+// retireAcceptance deletes the unfinished acceptance row of a's request, once nothing is left to
+// settle. A row it could not delete is the outbox's, which finds the request settled under its
+// key and writes nothing back over what Dispatch already shows.
+func (s *server) retireAcceptance(ctx context.Context, a acceptAct, row int64) {
+	if row == 0 {
+		return
+	}
+	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return s.records.DropQueuedChanges(ctx, tx, []int64{row})
+	}); err != nil {
+		s.log.Warn("could not retire a settled acceptance; the outbox settles it under its key and writes nothing over what Dispatch shows",
+			"issue", a.issue, "act", a.act, "row", row, "error", err)
+	}
 }
 
 // moveNotTaken says whether Dispatch shows the issue (shown) at a status its record has not
@@ -1941,13 +2034,10 @@ func (s *server) statusMoverSince(ctx context.Context, issue string, seq int64) 
 const statusWriteAttempts = 3
 
 // errStatusMoved is writeAtRead's answer where the issue's status moved off the one its first read
-// showed, errChangedUnderEachRead where the issue changed under each of its writes, and
-// errRefusedThenUnread where Dispatch refused a write because the issue changed and the read after
-// that refusal failed: in each, no write landed.
+// showed, and errChangedUnderEachRead where the issue changed under each of its writes.
 var (
 	errStatusMoved          = errors.New("the issue's status moved since it was read")
 	errChangedUnderEachRead = errors.New("the issue changed under each write")
-	errRefusedThenUnread    = errors.New("Dispatch refused the write because the issue changed, and the read after it failed")
 )
 
 // writeAtRead makes write at the sequence of read, and again at the sequence of a fresh read each
@@ -1955,9 +2045,9 @@ var (
 // shows read's status: an event that kept the status, a message, leaves the write to make. It
 // answers the issue as Dispatch answered the write and the last read. It answers errStatusMoved,
 // with the read that shows another status, where someone moved the issue since, which no write
-// here lands over; errChangedUnderEachRead after statusWriteAttempts refusals; errRefusedThenUnread,
-// wrapping the read's error, where a read after a refusal fails; and any other error as write
-// answered it.
+// here lands over; errChangedUnderEachRead after statusWriteAttempts refusals; and any other error
+// as write or the read answered it. An acceptance's own write goes through sendAcceptance instead,
+// a key to each request.
 func (s *server) writeAtRead(ctx context.Context, read dispatch.Issue, write func(context.Context, dispatch.Issue) (dispatch.Issue, error)) (dispatch.Issue, dispatch.Issue, error) {
 	from := read.Status
 	for range statusWriteAttempts {
@@ -1968,45 +2058,13 @@ func (s *server) writeAtRead(ctx context.Context, read dispatch.Issue, write fun
 		}
 		reread, err := s.dispatch.GetIssue(ctx, read.Key)
 		if err != nil {
-			return dispatch.Issue{}, read, fmt.Errorf("%w: read %s again: %w", errRefusedThenUnread, read.Key, err)
+			return dispatch.Issue{}, read, fmt.Errorf("read %s again after it changed under the write: %w", read.Key, err)
 		}
 		if read = reread; read.Status != from {
 			return dispatch.Issue{}, read, errStatusMoved
 		}
 	}
 	return dispatch.Issue{}, read, errChangedUnderEachRead
-}
-
-// answerLost says whether err, a failure of an acceptance's status write, leaves open whether the
-// write landed: a refusal Dispatch made names a code (a coded *dispatch.Error), and writeAtRead's
-// own three answers follow refusals it read; every other failure, a transport error, an answer that
-// did not decode, or a refusal with no code (a proxy's 5xx in front of Dispatch), can come after a
-// write Dispatch took.
-func answerLost(err error) bool {
-	if errors.Is(err, errStatusMoved) || errors.Is(err, errChangedUnderEachRead) || errors.Is(err, errRefusedThenUnread) {
-		return false
-	}
-	var refusal *dispatch.Error
-	return !errors.As(err, &refusal) || refusal.Code == ""
-}
-
-// landedWrite reads the issue again after a write of status whose answer was lost (answerLost),
-// made at the sequence of shown. It answers the issue as Dispatch shows it now, and true where the
-// write landed: Dispatch shows status past shown's sequence, and no one but the daemon changed the
-// issue's status since shown (statusMoverSince). A read that fails answers its error.
-func (s *server) landedWrite(ctx context.Context, shown dispatch.Issue, status string) (dispatch.Issue, bool, error) {
-	now, err := s.dispatch.GetIssue(ctx, shown.Key)
-	if err != nil {
-		return dispatch.Issue{}, false, err
-	}
-	if now.Status != status || now.LastSeq <= shown.LastSeq {
-		return now, false, nil
-	}
-	mover, err := s.statusMoverSince(ctx, shown.Key, shown.LastSeq)
-	if err != nil {
-		return dispatch.Issue{}, false, err
-	}
-	return now, mover == nil, nil
 }
 
 // writeBack writes the status Dispatch showed before the act's own write (shown) back in Dispatch
