@@ -798,12 +798,12 @@ test("a report the daemon never answers is aborted at its timeout and goes again
 // the controller's, and a run's end every 30 s, for 90 minutes on the clock. Each call is aborted
 // at its 10 s limit, so the requests calls put back pile up to hundreds of each owner, which only
 // the hour's keep window caps. A send takes, per owner, the reports of the requests no call carried
-// and at most one report of put-back requests, and the put-back requests it leaves wait
-// `MODEL_REQUEST_LEFT_DUE_AFTER_MS` ("When it is sent" in `./model-requests.ts`): so the most calls
-// open at once in the last 5 minutes is no more than in the first 5, while the calls of the last 5
-// minutes carry hundreds of requests that ended before them, and every request no call carried
-// still goes by its own deadline. On a reporter whose send takes every put-back request, the open
-// calls grow with the backlog.
+// and at most one report of put-back requests, none while another is on its way, and the put-back
+// requests it leaves wait `MODEL_REQUEST_LEFT_DUE_AFTER_MS` ("When it is sent" in
+// `./model-requests.ts`): so the most calls open at once in the last 5 minutes is no more than in
+// the first 5, while the calls of the last 5 minutes carry hundreds of requests that ended before
+// them, and every request no call carried still goes by its own deadline. On a reporter whose send
+// takes every put-back request, the open calls grow with the backlog.
 test("the open calls of a long stall do not grow with the requests calls put back", async () => {
   const clock = fakeClock();
   /** Each call: when it left, the ids it carries, and how many calls were open once it left. */
@@ -877,6 +877,89 @@ test("the open calls of a long stall do not grow with the requests calls put bac
     ([id, end]) => (first.get(id) ?? Number.POSITIVE_INFINITY) > end + MODEL_REQUEST_DUE_AFTER_MS
   );
   expect(late).toEqual([]);
+});
+
+// A report of put-back requests does not leave while another report of its owner's put-back
+// requests is on its way, and the put-back requests that wait for it arm no timer meanwhile; once
+// that report's call ends, a put-back report that fell due meanwhile goes at once ("When it is
+// sent" in `./model-requests.ts`). A call ends within its 10 s limit as a rule, and a put-back
+// request is then not due yet, so here the daemon answers the first put-back report 19 s after it
+// left, past a limit whose abort this stand-in does not honor, as a transport slow to end the call
+// would not: the put-back request that fell due at 16 s waits for that answer, and no longer.
+test("a put-back report due while another of its owner's is on its way waits for that one's end and goes at once then", async () => {
+  const clock = fakeClock();
+  /** Each report the daemon took: the ids it carries, and when it left. */
+  const sent: { readonly ids: string[]; readonly at: number }[] = [];
+  const seen = new Set<string>();
+  const released = Promise.withResolvers<void>();
+  let fired = 0;
+  let nextId = 0;
+  const client = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: CONTRACT,
+    fetch: (async (_input, init): Promise<Response> => {
+      const ids = (JSON.parse(String(init?.body)).requests as { id: string }[]).map(({ id }) => id);
+      const again = ids.some((id) => seen.has(id));
+      for (const id of ids) seen.add(id);
+      sent.push({ ids, at: clock.now() });
+      // A request's first report fails; req-1's put-back report is answered once the row lets it.
+      if (!again) return Response.json({ error: "unavailable" }, { status: 503 });
+      if (ids.includes("req-1")) await released.promise;
+      return Response.json({ kept: ids });
+    }) as typeof fetch,
+  });
+  const reporter = createModelRequestsReporter({
+    daemon: () => client,
+    credential: credentialOf,
+    paneSession: () => ROLE_SESSION,
+    log: { debug: () => undefined, warn: () => undefined },
+    now: clock.now,
+    schedule: (callback, delayMs) =>
+      clock.schedule(() => {
+        fired += 1;
+        callback();
+      }, delayMs),
+    newId: () => `req-${++nextId}`,
+  });
+  /** Lets what a hook call, a firing or an answer set off run. */
+  const turn = async (): Promise<void> => {
+    const turned = Promise.withResolvers<void>();
+    setImmediate(turned.resolve);
+    await turned.promise;
+  };
+  const advance = (ms: number): Promise<void> =>
+    clock.advance(ms, async (fire) => {
+      fire();
+      await turn();
+    });
+
+  // req-1's report fails at 0 s, and req-1 is put back, due at 15 s. At 1 s a run's end sends
+  // req-1 again, in a report of put-back requests the daemon holds, and req-2 in a report of its
+  // own, which fails: req-2 is put back, due at 16 s, and waits for req-1's report.
+  reporter.messageEnded(role, answered(START));
+  reporter.turnEnded();
+  await turn();
+  await advance(1_000);
+  reporter.messageEnded(role, answered(clock.now()));
+  reporter.turnEnded();
+  await turn();
+  expect(sent).toEqual([
+    { ids: ["req-1"], at: START },
+    { ids: ["req-1"], at: START + 1_000 },
+    { ids: ["req-2"], at: START + 1_000 },
+  ]);
+
+  // Through 19 s nothing goes, and the one timer that fires is the put-back report's own abort at
+  // its limit: none fires for req-2, due at 16 s.
+  const firedBefore = fired;
+  await advance(19_000);
+  expect(sent).toHaveLength(3);
+  expect(fired - firedBefore).toBe(1);
+
+  // The daemon answers req-1's report at 20 s, and req-2's put-back report goes then.
+  released.resolve();
+  await turn();
+  await advance(0);
+  expect(sent.slice(3)).toEqual([{ ids: ["req-2"], at: START + 20_000 }]);
 });
 
 test("an unanswered request expires without blocking fresh requests", async () => {

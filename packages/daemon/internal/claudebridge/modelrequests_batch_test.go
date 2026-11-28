@@ -639,21 +639,23 @@ func (c timeoutClock) After(d time.Duration) <-chan time.Time { return c.window(
 
 // The deep review's long stall, on the bridge: a daemon that takes each report's connection and
 // never answers, so each call ends at its timeout (requestReportTimeout) on the rig's clock, while
-// the role's session ends a request every tick of 200 ms for 3 minutes, so the taken requests
-// (pendingRequest) pile up past several chunks. A window sends every untaken request and at most
-// one chunk of taken ones, and the taken requests it leaves wait the next window
-// (windowDueLocked): so the most calls open at once in the stall's last minute is no more than in
-// its first, and every untaken request goes at its window, within requestWindow of its end. On a
-// bridge whose window sends every taken request, the open calls grow with the backlog. A call's
-// timeout and a window never fall in one tick, so the calls a window makes are the reports on
-// their way it adds, and the calls open at once are the reports on their way just after it.
+// the role's session ends a request every tick of 200 ms and a turn's result comes every 30 s, for
+// 3 minutes, so the taken requests (pendingRequest) pile up past several chunks. A window or a
+// result flushes: it sends every untaken request, and at most one chunk of taken ones, none while
+// another is on its way, and the taken requests it leaves wait the next window (windowDueLocked).
+// So the most calls open at once in the stall's last minute is no more than in its first, and
+// every untaken request goes at its window or result, within requestWindow of its end. On a bridge
+// whose flush sends a chunk of taken requests while another is on its way, the open calls grow with
+// the backlog. A call's timeout and a window never fall in one tick, so the calls a flush makes are
+// the reports on their way it adds, and the calls open at once are the reports on their way just
+// after it.
 func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
 	t.Parallel()
 	stalled := make(chan struct{})
 	r := newModelRequestRig(t, func(http.ResponseWriter, []string, int) { <-stalled })
 	t.Cleanup(func() { close(stalled) })
 	r.reporter.clock = timeoutClock{r.clock}
-	const tick, stall, span = 200 * time.Millisecond, 3 * time.Minute, time.Minute
+	const tick, resultEvery, stall, span = 200 * time.Millisecond, 30 * time.Second, 3 * time.Minute, time.Minute
 	start := r.clock.Now()
 	at := func(d time.Duration) time.Time { return start.Add(d) }
 	posting := func() int {
@@ -661,47 +663,23 @@ func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
 		defer r.reporter.mu.Unlock()
 		return r.reporter.posting
 	}
-	// Each window that sent: when, and how many calls it made.
-	type window struct {
+	// Each flush that sent: when, and how many calls it made.
+	type flush struct {
 		at    time.Time
 		calls int
 	}
-	var windows []window
+	var flushes []flush
 	ended, sent := map[string]time.Time{}, map[string]time.Time{}
 	// backlog is how many requests had gone once by the stall's end: each is taken, pending or on
 	// its way again, since the daemon keeps none.
 	mostEarly, mostLate, backlog := 0, 0, -1
-	for n := 0; r.clock.Now().Before(at(stall + requestWindow)); n++ {
+	// flushed reads the made reports a flush put on its way while before others were on theirs, and
+	// counts the calls open at once after it.
+	flushed := func(before, made int) {
 		now := r.clock.Now()
-		if now.Before(at(stall)) {
-			id := fmt.Sprintf("req-%05d", n)
-			r.assistant(id, now)
-			ended[id] = now
-		} else if backlog < 0 {
-			backlog = len(sent)
-		}
-		before, ending := posting(), 0
-		for _, w := range windows {
-			if timeout := w.at.Add(requestReportTimeout); timeout.After(now) && !timeout.After(now.Add(tick)) {
-				ending += w.calls
-			}
-		}
-		acted := r.advance(t, tick)
-		if ending != 0 {
-			if acted {
-				t.Fatalf("test setup: a window at +%s fell in the tick of a call's timeout", r.clock.Now().Sub(start))
-			}
-			testwait.Eventually(t, "the calls whose timeout passed to end", func() bool { return posting() == before-ending })
-			continue
-		}
-		made := posting() - before
-		if !acted || made == 0 {
-			continue
-		}
-		now = r.clock.Now()
-		windows = append(windows, window{now, made})
+		flushes = append(flushes, flush{now, made})
 		for range made {
-			for _, request := range testwait.Receive(t, "a report of the window", r.posts) {
+			for _, request := range testwait.Receive(t, "a report of the flush", r.posts) {
 				if _, ok := sent[request.ID]; !ok {
 					sent[request.ID] = now
 				}
@@ -714,6 +692,40 @@ func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
 			mostLate = max(mostLate, open)
 		}
 	}
+	for n := 0; r.clock.Now().Before(at(stall + requestWindow)); n++ {
+		now := r.clock.Now()
+		if now.Before(at(stall)) {
+			id := fmt.Sprintf("req-%05d", n)
+			r.assistant(id, now)
+			ended[id] = now
+			if now.Sub(start)%resultEvery == 0 {
+				before := posting()
+				r.result()
+				if made := posting() - before; made != 0 {
+					flushed(before, made)
+				}
+			}
+		} else if backlog < 0 {
+			backlog = len(sent)
+		}
+		before, ending := posting(), 0
+		for _, f := range flushes {
+			if timeout := f.at.Add(requestReportTimeout); timeout.After(now) && !timeout.After(now.Add(tick)) {
+				ending += f.calls
+			}
+		}
+		acted := r.advance(t, tick)
+		if ending != 0 {
+			if acted {
+				t.Fatalf("test setup: a window at +%s fell in the tick of a call's timeout", r.clock.Now().Sub(start))
+			}
+			testwait.Eventually(t, "the calls whose timeout passed to end", func() bool { return posting() == before-ending })
+			continue
+		}
+		if made := posting() - before; acted && made != 0 {
+			flushed(before, made)
+		}
+	}
 	t.Logf("most calls open at once: %d in the stall's first %s, %d in its last; %d requests taken by its end", mostEarly, span, mostLate, backlog)
 	if backlog <= 2*claim.MaxModelRequests {
 		t.Fatalf("by the stall's end %d requests had gone once, want more than %d: the taken backlog never passed several chunks", backlog, 2*claim.MaxModelRequests)
@@ -723,8 +735,96 @@ func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
 	}
 	for id, end := range ended {
 		if went, ok := sent[id]; !ok || went.Sub(end) > requestWindow {
-			t.Errorf("%s, ended at +%s, first went at +%s (%t): not at its window, within requestWindow of its end", id, end.Sub(start), went.Sub(start), ok)
+			t.Errorf("%s, ended at +%s, first went at +%s (%t): not at its window or result, within requestWindow of its end", id, end.Sub(start), went.Sub(start), ok)
 		}
+	}
+}
+
+// A chunk of taken requests does not leave while another chunk of them is on its way, and the
+// taken requests that wait for it make the window due for nothing meanwhile; once that chunk's call
+// ends, a chunk of taken requests whose window fell due meanwhile goes at once, sooner than the
+// window armed for a later request (windowDueLocked). A chunk's call ends by its timeout as a rule,
+// before the window is due for the others: here the rig's clock fires no timeout, and the stand-in
+// holds the answer to the first chunk until the row lets it go, 29 s after it left, past the window
+// of the request whose report failed beside it.
+func TestModelRequestsTakenChunkWaitsForTheOneOnItsWay(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	// A request's first report fails; a report of a request that went before waits for release.
+	r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
+		mu.Lock()
+		again := seen[ids[0]]
+		for _, id := range ids {
+			seen[id] = true
+		}
+		mu.Unlock()
+		if !again {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		<-release
+		_ = json.NewEncoder(w).Encode(claim.ModelRequestsResponse{Kept: ids})
+	})
+	t.Cleanup(free)
+	start := r.clock.Now()
+	at := func(d time.Duration) time.Time { return start.Add(d) }
+	state := func() (posting int, windows uint64, flushed time.Time) {
+		r.reporter.mu.Lock()
+		defer r.reporter.mu.Unlock()
+		return r.reporter.posting, r.reporter.windows, r.reporter.flushed
+	}
+	reports := func(n int) [][]string {
+		var got [][]string
+		for range n {
+			var ids []string
+			for _, request := range testwait.Receive(t, "a report", r.posts) {
+				ids = append(ids, request.ID)
+			}
+			got = append(got, ids)
+		}
+		slices.SortFunc(got, func(a, b []string) int { return strings.Compare(a[0], b[0]) })
+		return got
+	}
+
+	// a's report fails at the result at 0 s, and a is put back, taken.
+	r.assistant("a", start)
+	r.result()
+	r.expectBatch(t, []string{"a"})
+	r.awaitAnswer(t)
+	// At 1 s a result sends b in a report of its own, which fails, and a again, in a chunk of taken
+	// requests the stand-in holds: b, taken, is due at +15.75 s, and waits for that chunk.
+	r.moveTo(t, at(time.Second))
+	r.assistant("b", at(time.Second))
+	r.result()
+	if got, want := reports(2), [][]string{{"a"}, {"b"}}; !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("the result at +1s sent %q, want %q", got, want)
+	}
+	testwait.Eventually(t, "b's report to fail while a's chunk is held", func() bool {
+		posting, _, _ := state()
+		return posting == 1
+	})
+	_, windowsBefore, flushedBefore := state()
+	// c, read at 25 s, arms the window for its own deadline, +39.75 s. Through 30 s no window comes
+	// and nothing goes: the window c armed is the only one armed in the wait.
+	r.moveTo(t, at(25*time.Second))
+	r.assistant("c", at(25*time.Second))
+	r.moveTo(t, at(30*time.Second))
+	r.noBatch(t)
+	if _, windows, flushed := state(); windows-windowsBefore != 1 || !flushed.Equal(flushedBefore) {
+		t.Fatalf("in the wait the bridge armed %d windows and last flushed at +%s, want the 1 c armed and no flush since +%s",
+			windows-windowsBefore, flushed.Sub(start), flushedBefore.Sub(start))
+	}
+	// The daemon answers a's chunk at 30 s: the window is armed again at once, for b, and b's chunk
+	// goes then, beside c's report.
+	free()
+	r.awaitAnswer(t)
+	r.fireWindow(t, at(30*time.Second))
+	if got, want := reports(2), [][]string{{"b"}, {"c"}}; !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("the window at +30s sent %q, want %q", got, want)
 	}
 }
 

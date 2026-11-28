@@ -93,13 +93,15 @@ interface RunRequest {
 
 /** A tick of a random run, one hook call or one timer firing: what made it, when, the requests
  * pending as it began (none done with, none an open call carries), those of them a call had put
- * back, and whether one of them was due then; what it threw, if it did; and, where it made a send,
- * each put-back request it left pending. */
+ * back, those of these that wait for a report of their owner's put-back requests open then, and
+ * whether one of the others was due then; what it threw, if it did; and, where it made a send,
+ * each put-back request it left pending behind its report. */
 interface RunTick {
   readonly by: TickCause;
   readonly at: number;
   readonly pending: readonly string[];
   readonly putBack: readonly string[];
+  readonly waiting: readonly string[];
   readonly due: boolean;
   threw?: string;
   left?: readonly string[];
@@ -108,8 +110,10 @@ interface RunTick {
 /** A call of a random run: the tick that made it and what made that tick, when it started, how it
  * ends and whether that was drawn at random (and not the answer that ends a loop or the run), its
  * place among its tick's calls (1 for the first) and the most calls the requests pending at the
- * tick's first call allow, the ids it carries, whether its body reached the daemon and what was
- * open then, when and in which tick it ended, and the ids its answer kept. */
+ * tick's first call allow, the ids it carries, its owner's claim token, whether it is a report of
+ * put-back requests and, if so, another report of its owner's put-back requests open when it was
+ * made, whether its body reached the daemon and what was open then, when and in which tick it
+ * ended, and the ids its answer kept. */
 interface RunCall {
   readonly tick: number;
   readonly by: TickCause;
@@ -119,6 +123,9 @@ interface RunCall {
   readonly place: number;
   readonly bound: number;
   ids?: readonly string[];
+  owner?: string;
+  retry?: boolean;
+  retryOpen?: RunCall;
   reached: boolean;
   reach?: RunReach;
   end?: number;
@@ -127,8 +134,9 @@ interface RunCall {
 }
 
 /** The moment a call's body reached the daemon: when, the calls open then, itself among them, the
- * sends of the last `MODEL_REQUEST_REPORT_TIMEOUT_MS` (`sends`), and the most calls they allow
- * together (`bound`). */
+ * sends of the last `MODEL_REQUEST_REPORT_TIMEOUT_MS` (`sends`), and the most calls open at once
+ * they and the rule allow (`bound`): the reports of the requests no call carried those sends made
+ * room for, and one report of put-back requests for each owner with one open. */
 interface RunReach {
   readonly at: number;
   readonly open: readonly RunCall[];
@@ -164,9 +172,12 @@ async function randomRun(seed: number): Promise<RunRecord> {
   const ticks = new Map<number, RunTick>();
   const expired: { readonly id: string; readonly at: number }[] = [];
   const warnings: string[] = [];
-  /** Each tick's send so far: when, its calls, and the most calls the requests pending at its first
-   * call allow. */
-  const sends = new Map<number, { readonly at: number; calls: number; readonly bound: number }>();
+  /** Each tick's send so far: when, its calls, the most calls the requests pending at its first
+   * call allow, and how many of them for the requests no call carried. */
+  const sends = new Map<
+    number,
+    { readonly at: number; calls: number; readonly bound: number; readonly fresh: number }
+  >();
   let callsEnded = 0;
   let callsHandled = 0;
   let invalid = 0;
@@ -202,23 +213,41 @@ async function randomRun(seed: number): Promise<RunRecord> {
       (request) => request.gone === undefined && !carried.has(request.id)
     );
   };
-  /** The most calls a send of `pending` makes: per owner, the reports of the requests no call
-   * carried, and one report of the requests calls put back, if any. */
-  const callBoundFor = (pending: readonly RunRequest[]): number => {
+  /** The owners with a report of their put-back requests open. */
+  const retrying = (): Set<string | undefined> =>
+    new Set(open().flatMap((call) => (call.retry === true ? [call.owner] : [])));
+  /** The most calls a send of `pending` makes (`bound`): per owner, the reports of the requests no
+   * call carried (`fresh`, together), and one report of the requests calls put back, if any and
+   * none of the owner's is open. */
+  const callBoundFor = (pending: readonly RunRequest[]): { bound: number; fresh: number } => {
     const fresh = new Map<string, number>();
     const retried = new Set<string>();
+    const waiting = retrying();
     for (const request of pending) {
       if (request.lastPutBack === undefined) {
         fresh.set(request.owner, (fresh.get(request.owner) ?? 0) + 1);
-      } else {
+      } else if (!waiting.has(request.owner)) {
         retried.add(request.owner);
       }
     }
-    let bound = retried.size;
+    let reports = 0;
     for (const count of fresh.values()) {
-      bound += Math.ceil(count / LEGION_MAX_MODEL_REQUESTS);
+      reports += Math.ceil(count / LEGION_MAX_MODEL_REQUESTS);
     }
-    return bound;
+    return { bound: reports + retried.size, fresh: reports };
+  };
+  /** Records the ids `call` carries, its owner, and whether it is a report of put-back requests,
+   * with another report of its owner's put-back requests open then, if any. */
+  const carries = (call: RunCall, ids: readonly string[]): void => {
+    const putBack = new Set(current?.putBack);
+    call.ids = ids;
+    call.owner = requests.get(ids[0] ?? "")?.owner;
+    call.retry = ids.length > 0 && ids.every((id) => putBack.has(id));
+    if (call.retry) {
+      call.retryOpen = open().find(
+        (other) => other !== call && other.retry === true && other.owner === call.owner
+      );
+    }
   };
   const pick = (choices: readonly number[]): number =>
     choices[Math.floor(random() * choices.length)] ?? Number.NaN;
@@ -251,19 +280,20 @@ async function randomRun(seed: number): Promise<RunRecord> {
   const fetchFor = (call: RunCall): typeof fetch =>
     (async (_input, init) => {
       const ids = (JSON.parse(String(init?.body)).requests as { id: string }[]).map(({ id }) => id);
-      call.ids = ids;
+      carries(call, ids);
       call.reached = true;
       const now = clock.now();
       const since = now - MODEL_REQUEST_REPORT_TIMEOUT_MS;
       // Every open call began in the last `MODEL_REQUEST_REPORT_TIMEOUT_MS`, at a send then, which
-      // made at most the calls its pending requests allow (`callBoundFor`): a bound that counts no
-      // backlog of put-back requests.
+      // made at most the reports of the requests no call carried that its pending requests allow
+      // (`callBoundFor`), and at most one report of put-back requests is open per owner: a bound
+      // that counts no backlog of put-back requests.
       const recent = [...sends.values()].filter((send) => send.at >= since);
       call.reach = {
         at: now,
         open: open(),
         sends: recent.length,
-        bound: recent.reduce((sum, send) => sum + send.bound, 0),
+        bound: recent.reduce((sum, send) => sum + send.fresh, 0) + retrying().size,
       };
       const { fate } = call;
       // The daemon holds its answer `ms`, or, giving none, until the call's abort ends the call, a
@@ -318,7 +348,7 @@ async function randomRun(seed: number): Promise<RunRecord> {
       }
       let send = sends.get(tick);
       if (send === undefined) {
-        send = { at: clock.now(), calls: 0, bound: callBoundFor(pendingNow()) };
+        send = { at: clock.now(), calls: 0, ...callBoundFor(pendingNow()) };
         sends.set(tick, send);
       }
       send.calls += 1;
@@ -349,7 +379,7 @@ async function randomRun(seed: number): Promise<RunRecord> {
           ...client,
           modelRequests: async (input) => {
             const kept = input.requests.map(({ id }) => id);
-            call.ids = kept;
+            carries(call, kept);
             call.kept = new Set(kept);
             done(kept, "kept");
             finish(call);
@@ -364,7 +394,7 @@ async function randomRun(seed: number): Promise<RunRecord> {
           // its first `await`, as it meets one from `deps.daemon()`.
           modelRequests: (input) => {
             const ids = input.requests.map(({ id }) => id);
-            call.ids = ids;
+            carries(call, ids);
             finish(call);
             putBack(ids);
             throw new Error("the daemon client threw");
@@ -377,7 +407,7 @@ async function randomRun(seed: number): Promise<RunRecord> {
           // A body the contract refuses: its requests name no session.
           modelRequests: (input, options) => {
             const ids = input.requests.map(({ id }) => id);
-            call.ids = ids;
+            carries(call, ids);
             finish(call);
             putBack(ids);
             const requests = input.requests.map((request) => ({ ...request, session: "" }));
@@ -435,18 +465,25 @@ async function randomRun(seed: number): Promise<RunRecord> {
     );
   };
   /** Runs one hook call or timer firing as a tick of its own, records it and what it threw, and
-   * waits for what it set off. Where it made a send, it records each put-back request the send
-   * left pending, which is due no sooner than `MODEL_REQUEST_LEFT_DUE_AFTER_MS` from then. */
+   * waits for what it set off. It records the put-back requests that wait as it begins for a report
+   * of their owner's put-back requests open then, and, where it made a send, each other put-back
+   * request the send left pending, which is due no sooner than `MODEL_REQUEST_LEFT_DUE_AFTER_MS`
+   * from then. */
   const hook = async (by: TickCause, run: () => void): Promise<void> => {
     tick += 1;
     const now = clock.now();
     const pending = pendingNow();
+    const owners = retrying();
+    const waiting = pending.filter(
+      ({ owner, lastPutBack }) => lastPutBack !== undefined && owners.has(owner)
+    );
     const record: RunTick = {
       by,
       at: now,
       pending: pending.map(({ id }) => id),
       putBack: pending.flatMap(({ id, lastPutBack }) => (lastPutBack === undefined ? [] : [id])),
-      due: pending.some((request) => request.due <= now),
+      waiting: waiting.map(({ id }) => id),
+      due: pending.some((request) => request.due <= now && !waiting.includes(request)),
     };
     ticks.set(tick, record);
     current = record;
@@ -460,8 +497,9 @@ async function randomRun(seed: number): Promise<RunRecord> {
     const made = calls.slice(before);
     if (made.length === 0) return;
     const carried = new Set(made.flatMap((call) => call.ids ?? []));
+    const waits = new Set(record.waiting);
     const left = record.putBack.filter(
-      (id) => !carried.has(id) && requests.get(id)?.gone === undefined
+      (id) => !carried.has(id) && !waits.has(id) && requests.get(id)?.gone === undefined
     );
     record.left = left;
     for (const id of left) {
@@ -584,9 +622,10 @@ const WHY_GONE = {
 
 /** Check 1. Each hook call and timer firing returns, makes per owner at most the reports of the
  * pending requests no call carried (`ceil(count / LEGION_MAX_MODEL_REQUESTS)`) and one report of
- * those calls put back, and only a run's end or a timer with a due request (a fresh deadline, a
- * put-back's due, or the due of a request a send left) makes a send: a failing daemon is never
- * called in a loop. */
+ * those calls put back, and that one only while no other report of the owner's put-back requests
+ * is open; and only a run's end or a timer with a due request (a fresh deadline, a put-back's due,
+ * or the due of a request a send left, but none that waits for its owner's report) makes a send: a
+ * failing daemon is never called in a loop. */
 function sendsReturnAndNeverLoop(run: RunRecord): string[] {
   const problems: string[] = [];
   for (const { by, at: time, threw } of run.ticks.values()) {
@@ -604,23 +643,40 @@ function sendsReturnAndNeverLoop(run: RunRecord): string[] {
         `${call.by} at ${at(call.start)} made more calls than the ${call.bound} its pending requests allow, per owner the reports of those no call carried and one of those calls put back: it took again a batch a call put back before it left`
       );
     }
+    if (call.retryOpen !== undefined) {
+      problems.push(
+        `${call.by} at ${at(call.start)} made a report of put-back requests of ${call.owner} while the one ${call.retryOpen.by} made at ${at(call.retryOpen.start)} was open`
+      );
+    }
   }
   return problems;
 }
 
-/** Check 2. Each open call ends by `MODEL_REQUEST_REPORT_TIMEOUT_MS`, and the calls open at once
- * never outnumber what the sends of the last `MODEL_REQUEST_REPORT_TIMEOUT_MS` allow: per owner per
- * send, the reports of the requests no call carried and at most one report of the requests calls
- * put back. The bound counts no backlog: however many requests calls put back, a send adds at most
- * one call per owner for them, so the open calls stay bounded whatever the backlog. */
+/** Check 2. Each open call ends by `MODEL_REQUEST_REPORT_TIMEOUT_MS`, at most one report of an
+ * owner's put-back requests is open at once, and the calls open at once never outnumber the
+ * reports of the requests no call carried that the sends of the last
+ * `MODEL_REQUEST_REPORT_TIMEOUT_MS` made room for, and that one report per owner. The bound counts
+ * no backlog: however many requests calls put back, at most one call per owner carries them, so the
+ * open calls stay bounded whatever the backlog. */
 function openCallsEndAndStayBounded(run: RunRecord): string[] {
   const problems: string[] = [];
   for (const { reach } of run.calls) {
     if (reach === undefined) continue;
+    const retries = new Map<string | undefined, number>();
     for (const active of reach.open) {
       if (reach.at - active.start > MODEL_REQUEST_REPORT_TIMEOUT_MS) {
         problems.push(
           `the call ${active.by} made at ${at(active.start)} was still open at ${at(reach.at)}, past the timeout`
+        );
+      }
+      if (active.retry === true) {
+        retries.set(active.owner, (retries.get(active.owner) ?? 0) + 1);
+      }
+    }
+    for (const [owner, count] of retries) {
+      if (count > 1) {
+        problems.push(
+          `${count} reports of put-back requests of ${owner} were open at ${at(reach.at)}, more than one`
         );
       }
     }
@@ -644,12 +700,15 @@ function openCallsEndAndStayBounded(run: RunRecord): string[] {
  * `MODEL_REQUEST_DUE_AFTER_MS`, within 15 s of its end, or at once where it was read later —
  * whatever calls failed; a request a call put back goes again no later than a bound after that
  * call ended, or `MODEL_REQUEST_LEFT_DUE_AFTER_MS` after the last send that left it pending, if
- * later; a send leaves a put-back request pending only where it carries a full report of its
- * owner's put-back requests, none of them ended after it; and a run's end sends at once every
- * request pending, but those it so leaves, whatever failed before. A request goes no more once the
- * daemon refused its report or once it was dropped past the keep window, which happens only past
- * it. Each failed call and each refusal warns once, and the run's end finds each request kept,
- * refused or dropped. */
+ * later; a send leaves a put-back request pending behind its report only where it carries a full
+ * report of its owner's put-back requests, none of them ended after it; and a run's end sends at
+ * once every request pending, but those it so leaves and those that wait for a report of their
+ * owner's put-back requests, whatever failed before. A put-back request that waits keeps its due,
+ * which in these runs comes after that report's end: it is a bound after a call that ended after
+ * that report left, or after the send that left it behind that report or one before it. A request
+ * goes no more once the daemon refused its report or once it was dropped past the keep window,
+ * which happens only past it. Each failed call and each refusal warns once, and the run's end
+ * finds each request kept, refused or dropped. */
 function requestsGoInTime(run: RunRecord): string[] {
   const problems: string[] = [];
   const byTick = callsByTick(run.calls);
@@ -657,7 +716,7 @@ function requestsGoInTime(run: RunRecord): string[] {
   const ownerOf = (id: string): string | undefined => run.requests.get(id)?.owner;
   /** Each send that left a request pending, by the request's id, in the order they were made. */
   const leftBy = new Map<string, { readonly tick: number; readonly at: number }[]>();
-  for (const [tick, { by, at: time, pending, putBack, left = [] }] of run.ticks) {
+  for (const [tick, { by, at: time, pending, putBack, waiting, left = [] }] of run.ticks) {
     const sent = new Set((byTick.get(tick) ?? []).flatMap((call) => call.ids ?? []));
     for (const id of left) {
       const sends = leftBy.get(id) ?? [];
@@ -681,12 +740,12 @@ function requestsGoInTime(run: RunRecord): string[] {
       }
     }
     if (by !== "a run's end") continue;
-    const leftNow = new Set(left);
+    const stays = new Set([...left, ...waiting]);
     for (const id of pending) {
       const request = run.requests.get(id);
       // A request that send dropped past the keep window leaves not at all.
       const expiredNow = request?.gone?.how === "expired" && request.gone.tick === tick;
-      if (!expiredNow && !sent.has(id) && !leftNow.has(id)) {
+      if (!expiredNow && !sent.has(id) && !stays.has(id)) {
         problems.push(`${id} was pending at a run's end at ${at(time)}, and did not leave at once`);
       }
     }
@@ -814,13 +873,15 @@ function problemsOf(run: RunRecord): string[] {
 /** What the seeds exercised, each of which the case asserts occurs: a request a timer sent first
  * during a failed call's hold, a run's end that sent during one, a send that split an owner's
  * requests no call carried past `LEGION_MAX_MODEL_REQUESTS`, a send that left put-back requests
- * pending past its one report of them, a request the contract refuses, and each way a call can
- * end, counted over the calls whose way was drawn. */
+ * pending past its one report of them, a send whose put-back requests waited for a report of their
+ * owner's on its way, a request the contract refuses, and each way a call can end, counted over the
+ * calls whose way was drawn. */
 interface RunCoverage {
   sentDuringHold: number;
   turnEndsDuringHold: number;
   splitBatches: number;
   leftBehind: number;
+  waited: number;
   invalidDropped: number;
   readonly fates: Record<Fate["kind"], number>;
 }
@@ -837,8 +898,11 @@ function cover(run: RunRecord, coverage: RunCoverage): void {
   const duringHold = (time: number, callTick: number): boolean =>
     holds.some((span) => span.tick < callTick && span.from < time && time < span.until);
   const byTick = callsByTick(run.calls);
-  for (const [tick, { by, at: time, pending, putBack, left = [] }] of run.ticks) {
+  for (const [tick, { by, at: time, pending, putBack, waiting, left = [] }] of run.ticks) {
     const tickCalls = byTick.get(tick);
+    if (waiting.length > 0 && (by === "a run's end" || tickCalls !== undefined)) {
+      coverage.waited += 1;
+    }
     if (tickCalls === undefined) continue;
     const retried = new Set(putBack);
     const owners = new Map<string, number>();
@@ -890,6 +954,7 @@ test("seeded random runs: each call returns, the open calls stay bounded, each r
     turnEndsDuringHold: 0,
     splitBatches: 0,
     leftBehind: 0,
+    waited: 0,
     invalidDropped: 0,
     fates: {
       "client throws": 0,
@@ -912,6 +977,7 @@ test("seeded random runs: each call returns, the open calls stay bounded, each r
   expect(coverage.turnEndsDuringHold).toBeGreaterThan(0);
   expect(coverage.splitBatches).toBeGreaterThan(0);
   expect(coverage.leftBehind).toBeGreaterThan(0);
+  expect(coverage.waited).toBeGreaterThan(0);
   expect(coverage.invalidDropped).toBeGreaterThan(0);
   for (const [kind, count] of Object.entries(coverage.fates)) {
     expect(count, `the calls drawn to end so: ${kind}`).toBeGreaterThan(0);
