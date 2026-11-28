@@ -407,7 +407,12 @@ async function keyboardFollowsFocus(page: Page, height: number, offsetTop = 0): 
         }
         viewport.dispatchEvent(new Event("resize"));
       };
-      document.addEventListener("focusin", follow);
+      // A focus that goes to a textarea raises the keyboard at once; any other focus change
+      // closes it a task later, after the tap that made it has landed.
+      document.addEventListener("focusin", (event) => {
+        if (event.target instanceof HTMLTextAreaElement) follow();
+        else setTimeout(follow);
+      });
       document.addEventListener("focusout", () => setTimeout(follow));
     },
     { height, offsetTop }
@@ -1614,8 +1619,20 @@ test("on a phone the live view keeps the newest turn whole above the composer an
     await page.setViewportSize({ height: KEYBOARD_LEAVES, width: screen.width });
     await expectReadableWithKeyboardUp(page, testInfo, "android-keyboard");
     // The phone turns sideways and back with the keyboard up: the view lies over the screen
-    // above the keyboard again.
+    // above the keyboard again. The turn back waits until the page has seen the sideways width.
+    await page.evaluate(() => {
+      const root = document.documentElement;
+      root.dataset.resizedTo = "";
+      window.addEventListener("resize", () => {
+        root.dataset.resizedTo = `${root.dataset.resizedTo ?? ""} ${window.innerWidth}`;
+      });
+    });
     await page.setViewportSize({ height: 200, width: screen.height });
+    await expect
+      .poll(() =>
+        page.evaluate(() => (document.documentElement.dataset.resizedTo ?? "").trim().split(" "))
+      )
+      .toContain(String(screen.height));
     await page.setViewportSize({ height: KEYBOARD_LEAVES, width: screen.width });
     await expect
       .poll(async () => {
@@ -1637,19 +1654,21 @@ test("on a phone the live view keeps the newest turn whole above the composer an
       await scrollThreadTo(page, "bottom");
       await box.tap();
       await expectReadableWithKeyboardUp(page, testInfo, name);
-      await box.blur();
-      await expectKeyboardDown(page);
+      await lowerKeyboard(page);
     }
   } finally {
     await context.close();
   }
 });
 
-/** What the person writes with the keyboard up. */
+/** What the person writes with the keyboard up, and the same after they bring the keyboard back
+ *  with the caret after "Deploy" and type " now". */
 const DRAFT = "Deploy once the tests pass";
+const DRAFT_GONE_ON = "Deploy now once the tests pass";
 
 // The keyboard covers half a phone's screen. The person puts it away to read the conversation
-// without losing what they are writing, brings it back to go on writing, and sends with one tap.
+// without losing what they are writing, brings it back to go on writing, uses the view's other
+// controls with one tap, and sends with one tap.
 test("on a phone the live view puts the keyboard away and brings it back with the draft and the caret, and one tap on Send sends @phone @phone-only", async ({
   browser,
 }, testInfo) => {
@@ -1693,7 +1712,7 @@ test("on a phone the live view puts the keyboard away and brings it back with th
       await box.evaluate((input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd])
     ).toEqual([6, 6]);
     await page.keyboard.type(" now");
-    await expect(box).toHaveValue("Deploy now once the tests pass");
+    await expect(box).toHaveValue(DRAFT_GONE_ON);
     try {
       await expectNewestTurnWholeOnScreen(page);
     } finally {
@@ -1703,18 +1722,31 @@ test("on a phone the live view puts the keyboard away and brings it back with th
     // A tap on the conversation puts it away too, and a tap on the box brings it back.
     await frontLiveView(page).getByText("Turn 39:").tap();
     await expect(box).not.toBeFocused();
-    await expect(box).toHaveValue("Deploy now once the tests pass");
+    await expect(box).toHaveValue(DRAFT_GONE_ON);
     await expectKeyboardDown(page);
     await box.tap();
     await expect(box).toBeFocused();
-    await expect(box).toHaveValue("Deploy now once the tests pass");
+    await expect(box).toHaveValue(DRAFT_GONE_ON);
     await expectNewestTurnWholeOnScreen(page);
 
+    // With the keyboard up and the reader scrolled back, one tap on Jump to latest takes the
+    // thread to its live end.
+    await scrollThreadTo(page, 0);
+    await frontLiveView(page).getByTestId("jump-to-latest").tap();
+    await expect
+      .poll(async () => {
+        const layout = await liveViewLayout(page);
+        return layout.threadScrollHeight - layout.threadScrollTop - layout.threadClientHeight;
+      })
+      .toBeLessThanOrEqual(1);
+
     // With the keyboard up, one tap on Send sends the message.
+    await box.tap();
+    await expect(box).toBeFocused();
     await frontLiveView(page).getByRole("button", { name: "Send" }).tap();
     await expect
       .poll(async () => (await getSentMessages()).map((sent) => sent.message))
-      .toContain("Deploy now once the tests pass");
+      .toContain(DRAFT_GONE_ON);
     await expect(box).toHaveValue("");
   } finally {
     await context.close();
