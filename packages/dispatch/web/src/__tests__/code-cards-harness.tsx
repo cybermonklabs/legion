@@ -363,7 +363,7 @@ const BLOCKED_SHA = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
 const BLOCKED_HREF = `https://github.com/acme/widgets/commit/${BLOCKED_SHA}`;
 
 /** The absent row of the blocking commit: GitHub listed `files` of its files with no patch, and,
- *  where `unlisted`, its listing left out files whose number no answer names (`reason`). */
+ *  where `unlisted`, its listing falls short of the commit by a number no answer names (`reason`). */
 function blockedRow(files: number, unlisted: boolean, reason: string): EvalItemRow {
   return absentRow(
     `blocked@acme/widgets@${BLOCKED_SHA}`,
@@ -908,7 +908,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
       }),
     ],
     [
-      '18 no data | the project has no default repository, its eval holds day rows, and the window no measured day | "No data: N days still waiting", and no settings line',
+      '18 no data | the project has no default repository, its eval holds day rows, and the window no measured day | "No data: N days still waiting" at once, no absent row read, and no settings line',
       row(async (context) => {
         const { socket } = await painted(
           context,
@@ -919,11 +919,11 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         // A project with no default repository takes its days from each repository holding a
         // change of its issues: its eval holds day rows, so the window's days wait, and only a
         // project with no such change reads "set this project's default repository" (R7, R11).
-        await waitFor(() => expect(noData(card)).toEqual(["No data"]));
-        expect(within(cardOf(card)).getByRole("status").textContent).toBe("Reading why…");
-        const absent = await absentView(socket, card.slug);
-        serve(socket, snapshotFrame(absent.sub, itemsPage([])));
-        await waitFor(() => expect(noData(card)).toEqual(["No data: 28 days still waiting"]));
+        // The server names a repository the App cannot read only of a stored default repository,
+        // so no absent row can take the days' place: the status states them in full, at once.
+        expect(noData(card)).toEqual(["No data: 28 days still waiting"]);
+        expect(within(cardOf(card)).queryByRole("status")).toBeNull();
+        expect(absentViews(socket, card.slug)).toEqual([]);
         expect(
           within(cardOf(card)).queryByRole("link", {
             name: "set this project's default repository",
@@ -931,11 +931,10 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         ).toBeNull();
         expect(waiting(card)).toBeNull();
         expectNoNumber(card);
-        expect(within(cardOf(card)).queryByRole("status")).toBeNull();
       }),
     ],
     [
-      '19 no data | the blocking commit\'s listing left out files and listed none with no patch | "No data" with the commit and "files GitHub did not list", and no count',
+      '19 no data | the blocking commit\'s listing left out files and listed none with no patch | "No data" with the commit and "GitHub\'s file list falls short of the commit", and no count',
       row(async (context) => {
         const { socket } = await painted(
           context,
@@ -955,7 +954,7 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         serve(socket, snapshotFrame(absent.sub, itemsPage([blocking])));
         await waitFor(() =>
           expect(noData(card)).toEqual([
-            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (files GitHub did not list)",
+            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (GitHub's file list falls short of the commit)",
           ])
         );
         // A listing cut at GitHub's 3,000 files can leave out thousands: no count is the run's.
@@ -994,6 +993,40 @@ export function codeCardRows(card: CodeCardCase): [string, () => Promise<void>][
         );
         // The 3 files are those GitHub listed with no patch, not all the commit withheld.
         expect(cardOf(card).textContent ?? "").not.toMatch(/\(\d+ files?\)/);
+        expectNoNumber(card);
+      }),
+    ],
+    [
+      '21 no data | the blocking commit\'s listing lists every file and its lines fall short of the commit\'s | "No data" with the commit and "GitHub\'s file list falls short of the commit", and no count',
+      row(async (context) => {
+        const { socket } = await painted(
+          context,
+          card,
+          codeEval(card, [blank("agents"), blank("people")], {
+            blocked: 3,
+            measured: 25,
+            waiting: 0,
+          })
+        );
+        const absent = await absentView(socket, card.slug);
+        const blocking = blockedRow(
+          0,
+          true,
+          "diff refused (422), files[] withheld 0 of 12 files and listed 22 of the commit's 24 changed lines"
+        );
+        serve(socket, snapshotFrame(absent.sub, itemsPage([blocking])));
+        await waitFor(() =>
+          expect(noData(card)).toEqual([
+            "No data: GitHub did not give the whole patch of commit 1a2b3c4 (GitHub's file list falls short of the commit)",
+          ])
+        );
+        // files[] lists every file, but a text file served with no patch and changes 0 leaves
+        // its lines short of the commit's: the card claims no cause, and no count is the run's.
+        expect(cardOf(card).textContent ?? "").not.toMatch(/\(\d+ files?\)/);
+        expect(within(cardOf(card)).getByRole("link", { name: "1a2b3c4" })).toHaveAttribute(
+          "href",
+          BLOCKED_HREF
+        );
         expectNoNumber(card);
       }),
     ],
