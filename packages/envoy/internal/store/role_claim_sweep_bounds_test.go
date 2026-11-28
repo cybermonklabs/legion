@@ -106,19 +106,25 @@ func (k watchMadeKV) Watch(ctx context.Context, keys string, opts ...jetstream.W
 
 // A deregistration whose role claim view cannot be served falls back to a scan of the whole role
 // bucket, and that scan has an idle bound of its own measured in seconds (kvwatch.ScanIdleTimeout,
-// 10 s). The request waiting for it has a budget measured in hundreds of milliseconds, and the
-// fallback must answer within the request's: an HTTP handler that waits out the scan's instead is
-// the 503 this issue was filed on, and the answer the caller is still owed is the one the route
-// reports.
+// 10 s, on the registry's timer clock). The request waiting for it has a budget measured in
+// hundreds of milliseconds, and the fallback must answer within the request's: an HTTP handler
+// that waits out the scan's instead is the 503 this issue was filed on, and the answer the caller
+// is still owed is the one the route reports.
 //
 // The watch here delivers no entry at all, which is what makes this case about bus.Bounded and
 // nothing else: the scan sits inside drainScan with an empty channel, so roleClaimsUntil's visit
-// function never runs and the scan's own stop cannot fire. The only thing in the tree that can
-// answer this deregistration before the scan's 10 s idle bound is the bound its caller holds. Run
-// the listing as r.roleClaimsUntil(ctx) with no bus.Bounded around it and Remove answers after
-// that 10 s, with the scan's timeout rather than the request's deadline, and only once the scan
-// has ended, which stops its watch. So the case moves its fake clock past the request's deadline
-// once the listing has made its watch, and the answer must come with that watch still running.
+// function never runs and the scan's own stop cannot fire. Nor does its idle bound end it during
+// the case: that bound runs on the registry's timer clock, which smallRoleBucketRegistry's
+// registry (coldRegistry) holds still. So the only thing that can answer this deregistration is
+// the bound its caller holds, on the request's deadline, which is on the case's own fake. Run the
+// listing as r.roleClaimsUntil(ctx) with no bus.Bounded around it and Remove does not answer at
+// all, so the case's wait for its answer gives up (testwait.Receive); in production it would
+// answer after the scan's 10 s, with the scan's timeout rather than the request's deadline, and
+// only once the scan had ended, which stops its watch. So the case moves its fake clock past the
+// request's deadline once the listing has made its watch, and the answer must come with that
+// watch still running. The stalled scan does not outlive the test: the registry's connection
+// closes at cleanup (smallRoleBucketRegistry), which closes the real watcher's updates, so the
+// stalled watcher closes its own (earlyEndKV) and the scan ends on that.
 func TestTheDeregistrationFallbackAnswersItsRequestWhileItsListingIsStillStalled(t *testing.T) {
 	t.Parallel()
 	const session = "ses_stalled_listing"
@@ -149,14 +155,15 @@ func TestTheDeregistrationFallbackAnswersItsRequestWhileItsListingIsStillStalled
 	// answer came is a listing the answer did not wait for.
 	select {
 	case <-stopped:
-		t.Fatalf("the deregistration answered %v only once its listing's scan had ended and stopped its watch, want it answered while the listing still waits: the scan delivers nothing until its own %s idle bound, so an answer that late is the fallback waiting for the listing rather than for its request",
-			err, kvwatch.ScanIdleTimeout)
+		t.Fatalf("the deregistration answered %v only once its listing's scan had ended and stopped its watch, want it answered while the listing still waits: the scan is delivered nothing and its idle bound runs on the registry's timer clock, which nothing moves, so an answer that waited for the scan's end is the fallback waiting for the listing rather than for its request",
+			err)
 	default:
 	}
-	t.Logf("the deregistration answered %v, with the stalled scan's own idle bound at %s", err, kvwatch.ScanIdleTimeout)
+	t.Logf("the deregistration answered %v at the request's deadline on the case's fake, with the stalled scan's own idle bound, %s, on the registry's timer clock, held still", err, kvwatch.ScanIdleTimeout)
 
-	// The request's own deadline, not the scan's timeout: a fallback that waited for the listing
-	// would answer kvwatch.ErrScanTimedOut instead, and ten seconds later.
+	// The request's own deadline, not the scan's timeout: the scan's idle bound runs on the
+	// registry's timer clock, held still, so a fallback that waited for the listing would not
+	// answer at all here, and in production would answer kvwatch.ErrScanTimedOut ten seconds later.
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Remove(%s) over a stalled listing answered %v, want the request's own deadline", session, err)
 	}

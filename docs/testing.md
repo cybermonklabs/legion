@@ -885,8 +885,10 @@ verdict reads the wall clock:
   scan's deadline, its idle bound and its polls as each case needs, once the scan has armed each.
 - The reapers (`StartReaper`, `StartRoleClaimReaper`) and the interest marker collector tick on the
   registry's timer clock (`WithTimerClock`, `Registry.timers` on a registry built without `Open`),
-  and the collector's scan runs its idle bound on it. Each tick after a pass is armed only once that
-  pass returned, so a test that sees the next tick armed on its fake knows the pass is done.
+  and the collector's scan and the role claim listing's scan (`roleClaimsUntil`, which the
+  deregistration's fallback, `ReleaseRefusedRoleClaims`' fallback and the role claim reaper's pass
+  run) run their idle bounds on it. Each tick after a pass is armed only once that pass returned,
+  so a test that sees the next tick armed on its fake knows the pass is done.
 - A claim whose caller's context has no deadline runs its rollback or its topic merge in
   `claimCleanupWindow` on the same timer clock. `openOnScanClock` and `coldRegistry` give the
   registry a timer clock that nothing moves, so that window never ends under the parallel tests'

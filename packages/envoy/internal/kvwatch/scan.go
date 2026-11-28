@@ -73,9 +73,10 @@ func ScanExistingKeys(ctx context.Context, kv bus.KeyValue, keys, what string, i
 
 // ScanExistingKeysOn is ScanExistingKeys whose idle bound runs on idleClock, the clock the caller
 // passes: ScanExistingKeys passes clock.Real(), and a caller whose own timers a test drives on a
-// clocktest fake (the role claim scan, scanRoleClaims, and the interest marker collector's pass on
-// the registry's timer clock) passes that clock, so the test moves the fake past the idle bound once
-// the scan has armed it rather than wait it out.
+// clocktest fake (the role claim scan, scanRoleClaims; and on the registry's timer clock the
+// interest marker collector's pass and the role claim listing, roleClaimsUntil) passes that clock,
+// so the test moves the fake past the idle bound once the scan has armed it, or holds it still,
+// rather than wait it out.
 func ScanExistingKeysOn(ctx context.Context, kv bus.KeyValue, keys, what string, idle time.Duration, idleClock clock.Clock, log *slog.Logger, visitLive func(Entry) error, opts ...jetstream.WatchOpt) (KeyScan, error) {
 	watchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

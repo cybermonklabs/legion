@@ -654,7 +654,7 @@ type scannedRoleClaim struct {
 }
 
 // roleClaimsUntil lists every role claim the role bucket holds, sorted by role, from one scan of
-// its existing keys (kvwatch.ScanExistingKeys) with delete markers left out: nats.go's Keys runs
+// its existing keys (kvwatch.ScanExistingKeysOn) with delete markers left out: nats.go's Keys runs
 // its legacy watcher (bus.KeyValue says why none may run). An empty bucket lists no claim. A scan
 // short of the bucket fails the caller rather than list part of it, where nats.go's Keys would
 // hand over what had arrived when its watcher gave up, so a sweep never takes a partial list for
@@ -666,13 +666,14 @@ type scannedRoleClaim struct {
 //
 // It refuses at the first key it is handed once ctx has ended, so a listing its caller walked
 // away from ends there. The scan must end on its own account, because it has a context of its
-// own (kvwatch.ScanExistingKeys builds one): one left running goes on holding an ordered
+// own (kvwatch.ScanExistingKeysOn builds one): one left running goes on holding an ordered
 // consumer and appending to a map nobody reads until the bucket's last key arrives or its idle
-// bound elapses (kvwatch.ScanIdleTimeout, 10 s), while the client's retry starts a second scan
-// of the whole bucket - against the bucket already too far behind to serve the claim view, which
-// is the only reason the deregistration's listing runs at all. The error a visit returns ends
-// the scan, and the scan then stops and drains its watcher (kvwatch.drainScan), so the listing
-// costs the bucket nothing past the answer its caller already has.
+// bound elapses (kvwatch.ScanIdleTimeout, 10 s, on the registry's timer clock, timerClock, which
+// is clock.Real() in production), while the client's retry starts a second scan of the whole
+// bucket - against the bucket already too far behind to serve the claim view, which is the only
+// reason the deregistration's listing runs at all. The error a visit returns ends the scan, and
+// the scan then stops and drains its watcher (kvwatch.drainScan), so the listing costs the bucket
+// nothing past the answer its caller already has.
 //
 // The claims are collected into a map keyed by the stored key, the higher revision winning, and
 // only then sorted into a slice. The map is what makes a key delivered twice one claim: an ordered
@@ -687,7 +688,7 @@ type scannedRoleClaim struct {
 // claim's two strings and its two numbers - which at the fleet's ~5,000 claims is under about 1 MB.
 func (r *Registry) roleClaimsUntil(ctx context.Context) ([]scannedRoleClaim, error) {
 	claims := map[string]scannedRoleClaim{}
-	_, err := kvwatch.ScanExistingKeys(context.Background(), r.roles(), jetstream.AllKeys, "role claims", kvwatch.ScanIdleTimeout, r.logger(), func(entry kvwatch.Entry) error {
+	_, err := kvwatch.ScanExistingKeysOn(context.Background(), r.roles(), jetstream.AllKeys, "role claims", kvwatch.ScanIdleTimeout, r.timerClock(), r.logger(), func(entry kvwatch.Entry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

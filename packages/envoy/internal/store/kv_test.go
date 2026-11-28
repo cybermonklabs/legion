@@ -571,10 +571,12 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
+	// Stamped on the clock the registry reads (WithClock), a fake.
+	clock := clocktest.New(registryClockStart)
+	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}}, clock.Now)
 
 	// Open registry — watch() populates cache asynchronously
-	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -628,9 +630,10 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
+	clock := clocktest.New(registryClockStart)
+	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}}, clock.Now)
 
-	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -661,9 +664,10 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
+	clock := clocktest.New(registryClockStart)
+	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}}, clock.Now)
 
-	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -696,9 +700,10 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
+	clock := clocktest.New(registryClockStart)
+	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}}, clock.Now)
 
-	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}

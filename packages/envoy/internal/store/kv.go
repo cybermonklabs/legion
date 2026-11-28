@@ -115,14 +115,16 @@ func WithClock(now func() time.Time) OpenOption {
 }
 
 // WithTimerClock sets the clock the registry's own timers run on: the tick of each pass of
-// StartReaper, StartRoleClaimReaper and StartInterestMarkerCollector, the idle bound of the
-// collector's scan of the interest bucket (kvwatch.ScanIdleTimeout), and the window a claim's
-// rollback or topic merge runs in when its caller's context has no deadline (claimCleanupWindow). It
-// is a test seam: the listener passes none, and the default is clock.Real(). A test hands a
-// clocktest fake and moves it past a loop's tick once the loop has armed it, so it waits out no
-// interval, and a window it does not move past never ends under the test's load. WithClock is the
-// time the registry records and judges windows by; a test that wants both on one fake passes that
-// fake's Now to WithClock too.
+// StartReaper, StartRoleClaimReaper and StartInterestMarkerCollector, the idle bound
+// (kvwatch.ScanIdleTimeout) of the collector's scan of the interest bucket and of the role claim
+// listing's scan of the role bucket (roleClaimsUntil, which the deregistration's fallback,
+// ReleaseRefusedRoleClaims' fallback and the role claim reaper's pass run), and the window a
+// claim's rollback or topic merge runs in when its caller's context has no deadline
+// (claimCleanupWindow). It is a test seam: the listener passes none, and the default is
+// clock.Real(). A test hands a clocktest fake and moves it past a loop's tick once the loop has
+// armed it, so it waits out no interval, and a window it does not move past never ends under the
+// test's load. WithClock is the time the registry records and judges windows by; a test that
+// wants both on one fake passes that fake's Now to WithClock too.
 func WithTimerClock(c clock.Clock) OpenOption {
 	return func(o *openOpts) { o.timers = c }
 }

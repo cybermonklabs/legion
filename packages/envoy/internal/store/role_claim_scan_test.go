@@ -328,6 +328,9 @@ func TestARoleClaimScanThatNeverCompletesFailsTheStart(t *testing.T) {
 		if runs := scan.probe.count(); runs != 1 {
 			t.Fatalf("Open made %d runs of a scan that met no reconnect; want 1", runs)
 		}
+		if lasted := result.at.Sub(scan.probe.pace.started()); lasted <= roleClaimScanDeadline {
+			t.Fatalf("the scan lasted %s on its clock, not past the deadline (%s): this case tests nothing", lasted, roleClaimScanDeadline)
+		}
 		requireRevisions(t, result.registry.restoredRoleRevisions, server.revisions, "the bucket's")
 	})
 
