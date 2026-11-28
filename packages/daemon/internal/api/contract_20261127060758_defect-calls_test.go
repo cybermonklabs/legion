@@ -120,8 +120,9 @@ type servedIssue struct {
 	CloseWait json.RawMessage `json:"closeWait"`
 }
 
-// servedIssues is each issue of a state body, by key.
-func servedIssues(t *testing.T, body []byte) map[string]servedIssue {
+// defectCallsIssues is each issue of a state body, by key. (left_session_claims_test.go's
+// servedIssues is main's reader of the whole route, at a stated contract.)
+func defectCallsIssues(t *testing.T, body []byte) map[string]servedIssue {
 	t.Helper()
 	var served struct {
 		Issues map[string]servedIssue `json:"issues"`
@@ -160,7 +161,7 @@ func TestAnOlderContractSeesMergingAndNoCloseWait(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := stateServer(t, state, tc.claims)
-			issues := servedIssues(t, stateStating(t, handler, tc.remote, tc.stated))
+			issues := defectCallsIssues(t, stateStating(t, handler, tc.remote, tc.stated))
 			if got := issues["LEGION-208"].Phase; got != string(tc.phase) {
 				t.Errorf("LEGION-208's phase is served as %q, want %q", got, tc.phase)
 			}
