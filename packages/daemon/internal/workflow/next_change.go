@@ -530,13 +530,6 @@ func (e *Engine) judgeOpenChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if view, err = e.closeWait(ctx, tx, issue); err != nil {
 		return err
 	}
-	none, err := e.changeOpenedNoPullRequest(ctx, tx, issue)
-	if err != nil {
-		return err
-	}
-	if none && changeResolved(issue, view) {
-		return e.endChange(ctx, tx, issue, withdrawn)
-	}
 	old, err := storedWaitOf(issue)
 	if err != nil {
 		return err
