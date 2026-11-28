@@ -209,16 +209,22 @@ const readBoundPlantKey = 6354
 // waiting, the test releases the lock and the plant answers, so the failure comes from the bound in
 // force where the savepoint ends, and the control's verdict is that release, never a span. A read
 // past 30 s in the control would make censusTable refuse the table and return no error, so the
-// control also finds no refusal.
+// control also finds no refusal. Each row also checks the statement_timeout its savepoint's end
+// started under, which spySavepoint reads before it sends the plant: 5s in the failing row and
+// 30s in the control. The plant waits for a lock the failing row never releases, so any longer
+// bound, CensusStatementTimeout among them, would cancel it too, only later, with the same
+// SQLSTATE and the same name; without that check the row would pass and not tell the reads' bound
+// from a longer one.
 func TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound(t *testing.T) {
 	t.Parallel()
 	locking := Locking{Timeout: time.Minute}
 	for name, row := range map[string]struct {
 		readTimeout time.Duration
 		fails       bool
+		atEnd       string
 	}{
-		"under the reads' 5 s":           {5 * time.Second, true},
-		"control: under the reads' 30 s": {30 * time.Second, false},
+		"under the reads' 5 s":           {5 * time.Second, true, "5s"},
+		"control: under the reads' 30 s": {30 * time.Second, false, "30s"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -257,6 +263,9 @@ func TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound(t *testi
 			err := testwait.Receive(t, "censusTable to return", done)
 			if len(spy.savepoints) == 0 || !spy.savepoints[0].planted {
 				t.Fatalf("the plant did not run where the reads' savepoint ends (%d savepoints)", len(spy.savepoints))
+			}
+			if atEnd := spy.savepoints[0].atEnd; atEnd != row.atEnd {
+				t.Errorf("the reads' savepoint ended under statement_timeout %q, want %q, the reads' TableReadTimeout", atEnd, row.atEnd)
 			}
 			var pgErr *pgconn.PgError
 			switch {
