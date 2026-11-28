@@ -305,36 +305,50 @@ export function placingOf({ node, place }: PlacingInput): Placing {
 /**
  * Whether `held` holds `node`, a new row's, where its placing `PATCH` of `body` put it, `answer`
  * the server's answer to it, null for a landing that gave none: ranked under the parent the answer
- * names, the body's where there is no answer, and, under the body's parent, right after the ranked
- * sibling the body's `after` names, or, where that is null, after no ranked sibling of the node's
- * own band or a later one.
+ * names; where no answer came, ranked under the body's parent, right after the ranked sibling the
+ * body's `after` names, or, where that is null, after no ranked sibling of the node's own band or
+ * a later one.
  *
- * The body's `after` is judged there, not the answer's: the server answers a named `after` with
- * that same sibling, and a null one with the last ranked sibling of an earlier band it holds, which
- * can be a gone block that keeps its rank and that no read holds. Under another parent than the
- * body's, the body's `after` says nothing: the answer's is judged where the held read holds it
- * among that parent's ranked children, and the parent alone where it does not, a gone sibling or a
- * node on no page read.
+ * Once an answer came, the parent it names alone decides. Its `after` can name a sibling no read
+ * holds: the server answers a null `after` with the last ranked sibling of an earlier band it
+ * holds, and a named one with that same sibling, and either can be a gone block that keeps its
+ * rank. The body's place can be one the node never stands at: the server puts each placing with
+ * a null `after` first in its band as it takes it, so of two that land together under one parent
+ * the one it took first stands after the other, and a named `after` can be gone by the time the
+ * `PATCH` goes.
  */
 export function standsAt(
   held: TreeAnswer,
   node: TreeAnswerNode,
   body: Place,
-  answer: Place | null
+  answer: Pick<Place, "parent"> | null
 ): boolean {
   const under = node.parent;
   if (under === null || !names(under, (answer ?? body).parent)) return false;
   const siblings = rankedChildren(walkOf(held), under.id);
   const at = siblings.indexOf(node);
   if (at < 0) return false;
+  if (answer !== null) return true;
   const before = siblings[at - 1];
-  if (answer === null || names(under, body.parent)) {
-    if (body.after !== null) return before !== undefined && names(before, body.after);
-    return before === undefined || bandOf(before) < bandOf(node);
-  }
-  const { after } = answer;
-  if (after === null || !siblings.some((each) => names(each, after))) return true;
-  return before !== undefined && names(before, after);
+  if (body.after !== null) return before !== undefined && names(before, body.after);
+  return before === undefined || bandOf(before) < bandOf(node);
+}
+
+/** Whether `held` holds the place a taken move's answer, `place`, names for `node`, a node it
+ *  holds: the node `parent` names, and the sibling `after` names, or nothing more where `after` is
+ *  null. Where it holds no node `after` names, the place is held once every child of that parent
+ *  of `node`'s band is (`incomplete`): no next page holds that sibling then, which is gone, since
+ *  the tree read leaves a gone block out. */
+export function holdsPlace(
+  held: TreeAnswer,
+  node: TreeAnswerNode,
+  { after, parent }: Place
+): boolean {
+  const nodes = held.nodes ?? [];
+  const under = nodes.find((each) => names(each, parent));
+  if (under === undefined) return false;
+  if (after === null || nodes.some((each) => names(each, after))) return true;
+  return !incomplete(walkOf(held), under.id, bandOf(node));
 }
 
 /** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the
