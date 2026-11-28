@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math/rand/v2"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,6 +79,11 @@ const (
 	keptBlocker = "LEGION-9"
 	// keptTogether is the most rows the concurrent step runs at once, each on a lane of its own.
 	keptTogether = 3
+	// keptCrashLapseSteps is how many drive steps the lease a simulated crash left stands before
+	// the run lapses it (lapseCrashes). Until then no lane claims the crashed row, nor, for a
+	// lifecycle row, any other lifecycle row of its issue (outboxLaneFree), as a crashed daemon's
+	// lease holds them until it lapses (outboxLease).
+	keptCrashLapseSteps = 3
 )
 
 // keptTelling is one time an architect was told a kept decision: the generation the telling names
@@ -193,7 +201,7 @@ type keptRace struct {
 	err     error
 	outcome string
 	// unrun undoes what preparing the operation took when the publish never came, so the race ran
-	// nothing: the row op's lease, which no run then holds.
+	// nothing: the row op's claim, which no run then holds.
 	unrun func() error
 }
 
@@ -369,10 +377,15 @@ func (p *keptPublisher) published() []outboxPublish {
 type keptForgetStore struct {
 	record.Store
 	fails atomic.Bool
+	run   *keptRun
 	// failedTellings is every catch-up telling, by the outbox row its publish went out under (the
-	// row a re-held copy copies), whose forget failed: the telling's own write did not commit, so
-	// the decision it told stands kept and a later catch-up may name it again (held, tell).
+	// row a re-held copy copies), whose forget or told mark failed: the telling's own write did not
+	// commit, so the decision it told stands kept and a later catch-up may name it again (held,
+	// tell).
 	failedTellings sync.Map
+	// failsToldMark arms the failure of the next told mark of a catch-up telling (MarkProcessed),
+	// which only the seek of seed 41's state arms (seekToldAgainAfterAFailedWrite).
+	failsToldMark atomic.Bool
 }
 
 func (s *keptForgetStore) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, root string, kept record.KeptDecisions, row int64) error {
@@ -388,7 +401,8 @@ func (s *keptForgetStore) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, ro
 	return s.Store.ForgetKeptDecisions(ctx, tx, root, kept, row)
 }
 
-// tellingFailed is whether the catch-up telling published under row had its forget fail.
+// tellingFailed is whether the catch-up telling published under row had its forget or its told
+// mark fail.
 func (s *keptForgetStore) tellingFailed(row int64) bool {
 	_, failed := s.failedTellings.Load(row)
 	return failed
@@ -795,13 +809,59 @@ type keptRun struct {
 	// among the enabled steps. Until then it also keeps the child and the grandchild in the root's
 	// tree for that step: no other step hands them over, orphans the child or closes the tree
 	// (reservesMembers). Without that, a schedule that hands both over before the root holds such
-	// a task never enables the step at all, which seed 24 took under -race (run 41808140568). The
-	// seeds that test that window then reach it on every schedule that reaches a held task naming
-	// kept decisions while the root lingers (TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild).
+	// a task never enables the step at all, which seed 24 took under -race (run 41808140568).
+	// Until then, too, it steers the drive into that window and holds it open. A step that runs
+	// rows runs a start of the root that names kept decisions whenever a lane could claim one,
+	// which is what puts such a task on the root's claim: runRow runs it, and runTogether claims
+	// it first (soughtStart). And while the root's task names kept decisions and is not
+	// confirmed, the drive leaves out every step that would confirm it (holdsTheWindowOpen), so
+	// the window stays open until the hand-over is enabled. The model claims rows as a lane does,
+	// one lifecycle row of an issue at a time (outboxLaneFree), and a crash's lease holds its row
+	// until the run lapses it (lapseCrashes), which delays the root's start: claiming that way
+	// without the steering, the seeds missed the hand-over in 4 of 45 runs (dispatch://INFRA-2836,
+	// told-twice-cause-md section 8). The seeds that test that window then reach it on every
+	// schedule that reaches a held task naming kept decisions while the root lingers
+	// (TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild).
 	seekHeldHandOver bool
-	// crashed is the lease each crash the run simulated left on a row, by row (noteCrash): the one
-	// lease heldNoStaleLease lets stand at the end of a step while no run holds it.
+	// crashed is the lease each crash the run simulated left on a row, by row (noteCrash), as it
+	// stands now: live until the run lapses it, and lapsed from then on (lapseCrashes). Its token
+	// is the one heldNoStaleLease lets stand at the end of a step while no run holds it.
 	crashed map[int64]keptCrashLease
+	// audit holds each row the run claims to the lanes' claim rule (keptLaneAudit). It is nil, and
+	// audits nothing, unless TestTheKeptModelRunsOnlyRowsALaneWouldClaim sets it.
+	audit *keptLaneAudit
+	// faults counts the fault states the regression seeds guard (kept_decision_faults_test.go),
+	// and delivering is the row whose publish raceRow holds open with a delivering answer, set for
+	// the time the race op runs so DropCatchUps can read it.
+	faults     keptFaultMarkers
+	delivering atomic.Int64
+	// seekToldAgainAfterAFailedWrite, seekDropBesideADeliveringTelling and seekSpentRehold each
+	// steer the drive to the fault state of one regression seed (41, 427 and 701), until that
+	// state's marker has fired, as seekHeldHandOver steers it to the hand-over: whenever a step of
+	// the way there is enabled, the drive takes that step rather than the generator's pick
+	// (faultSeekSteps), runRow and raceRow take the row the seek needs (soughtRow, soughtRace), a
+	// race runs the operation and draws the answer it needs (soughtRaceOp, soughtRaceMode), and
+	// runRow loses a finish to a crash where the seek needs it (crashesForTheDrop). Without a seek
+	// those states come only on some schedules, which a regression seed must not depend on. Only
+	// the regression seeds' tests set one, each for its seed alone (keptFaultSeeds), and what each
+	// takes is in kept_decision_faults_test.go.
+	seekToldAgainAfterAFailedWrite   bool
+	seekDropBesideADeliveringTelling bool
+	seekSpentRehold                  bool
+	// spentHold is the tree whose architect the seek of seed 701's state holds at its launch once
+	// that state's marker has fired (holdTheSpentState), nil until then and in every run whose
+	// seek is not seekSpentRehold: the drive leaves out each step that would end, refuse or
+	// relaunch that architect or give it a new launch (spentHolding, spentHoldOn).
+	spentHold *keptTree
+	// seekPlan is the plan of the fault seek for the step now running (faultSeekPlan), computed
+	// once as the step begins and cleared once it has run (drive): the drive's choice among the
+	// seek's steps (faultSeekSteps) and the row, the operation and the answer runRow and raceRow
+	// take (soughtRow, soughtRace, soughtRaceOp, soughtRaceMode) all read it, so no choice of the
+	// step reads a plan computed at another moment. It is empty in every run without a seek.
+	seekPlan keptSeekPlan
+	// spentLines is the key of each line of reholdNotice's spent branch the outbox runner has
+	// logged (outboxLog), which the marker of seed 701's state reads (markSpentRehold).
+	spentLines keptSpentLines
 }
 
 // A person's decision on a tree nobody in it can hear reaches an architect of that tree exactly
@@ -846,7 +906,7 @@ type keptRun struct {
 // timers are armed and never fire (stillClock, whose Now is the wall clock), and every wait is
 // for a goroutine the step started. A run whose steps all ran one at a time replays exactly from
 // its seed; the two steps that run rows beside each other — raceRow, which holds one catch-up's
-// publish open while one other operation runs, and runTogether, which runs several due rows at
+// publish open while one other operation runs, and runTogether, which runs several claimed rows at
 // once on lanes of their own — are ordered by PostgreSQL and the Go scheduler as much as by the
 // seed, so a failure either reaches is reported with its seed and its whole trace and may need
 // more than one replay to come back.
@@ -860,15 +920,15 @@ type keptRun struct {
 // the grandchild, a person's todo that orphans the parked child of a tree nobody runs, a person's
 // re-parenting of the queued root under a live tree, which admission adopts, the expiry of the
 // root's linger, which closes the tree for good and hands over what it still had in the workflow
-// (closeTree), one due supervise or notice row of a driven tree run in no particular order
-// (finished, or its finish lost to a crash), several due rows run at once, one catch-up run with
-// its publish held open for another operation, an architect's agent coming up on its launch, the
-// ready fact the daemon's terminal hook then tells the workflow, its turn on the task it holds, a
-// turn the agent started on its own while a task nobody sent waits on the claim, the send a turn
-// of the agent's own confirmed and the agent then answered busy, which takes that confirmation
-// back (busyRefusalAfterAConfirmation), the shim's replayed refusal that takes back a
-// confirmation a foreign turn made (lateRefusalAfterAConfirmation), the death of the process
-// running a task's turn, which takes the task back for the relaunch (deathInTheTasksTurn),
+// (closeTree), one supervise or notice row of a driven tree that a lane could claim, run in no
+// particular order (finished, or its finish lost to a crash), several such rows run at once, one
+// catch-up run with its publish held open for another operation, an architect's agent coming up
+// on its launch, the ready fact the daemon's terminal hook then tells the workflow, its turn on
+// the task it holds, a turn the agent started on its own while a task nobody sent waits on the
+// claim, the send a turn of the agent's own confirmed and the agent then answered busy, which
+// takes that confirmation back (busyRefusalAfterAConfirmation), the shim's replayed refusal that
+// takes back a confirmation a foreign turn made (lateRefusalAfterAConfirmation), the death of the
+// process running a task's turn, which takes the task back for the relaunch (deathInTheTasksTurn),
 // the daemon's restart, the restart whose agent then answers get_state in a turn, the forget's
 // failure switched on and off, the runtime's refusal of every launch switched on and off, and the
 // listener switched between delivering, holding no session, refusing the delivery mode, not
@@ -1018,6 +1078,7 @@ func newKeptRun(t *testing.T, seed int64, steps int) *keptRun {
 		applied:    map[string]bool{},
 		resent:     map[string]int64{},
 	}
+	records.run = run
 	run.publisher.atPublish = run.rootGeneration
 	parent, childKey := keptRoot, keptChild
 	run.root = &keptTree{key: keptRoot, token: mustClaimToken(t, keptRoot, claim.RoleArchitect), conn: newKeptConn(),
@@ -1137,7 +1198,7 @@ func (r *keptRun) restart() {
 	}
 	r.sup = sup
 	r.runner = &outbox{
-		log: quietLogger(), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.publisher,
+		log: r.outboxLog(), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.publisher,
 		supervisor: sup, trees: r.trees, tokens: outboxTokens{}, handlers: []intake.Handler{r.engine},
 		project: "legion", stateDir: r.stateDir, now: time.Now,
 		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
@@ -1158,13 +1219,18 @@ func (r *keptRun) storedClaims() []supervise.Claim {
 
 // drive runs the seed's operations, each chosen among those the model state enables. Every step
 // is read for the moves it made: an issue that left one tree for another takes the decisions
-// still owed on it with it (noteMoves).
+// still owed on it with it (noteMoves). A step first lapses the lease each crash left
+// keptCrashLapseSteps steps before it (lapseCrashes), and computes the fault seek's plan for the
+// step once (seekPlan), which every choice of the step reads and which is cleared once it has run.
 func (r *keptRun) drive() {
 	for r.step = 1; r.step <= r.steps; r.step++ {
+		r.lapseCrashes(false)
 		r.snapshotRows()
 		r.noteBefore()
+		r.seekPlan = r.faultSeekPlan()
 		enabled := r.enabled()
 		enabled[r.rng.IntN(len(enabled))]()
+		r.seekPlan = keptSeekPlan{}
 		r.noteMoves()
 		r.observe()
 		r.deliverRowsTheRunDoesNotDrive()
@@ -1173,9 +1239,18 @@ func (r *keptRun) drive() {
 }
 
 // enabled is every operation the model state allows now, in a fixed order so one seed always picks
-// the same one.
+// the same one. While a fault seek has a step to take, it is the steps that seek allows
+// (faultSeekSteps); while the seek of seed 701's state holds that state open, the steps that would
+// end it are left out (spentHolding, spentHoldOn).
 func (r *keptRun) enabled() []func() {
-	ops := []func(){r.toggleForget, r.togglePublisher, r.toggleLaunch, r.restartDaemon}
+	if sought := r.faultSeekSteps(); sought != nil {
+		return sought
+	}
+	ops := []func(){r.toggleForget}
+	if !r.spentHolding() {
+		ops = append(ops, r.togglePublisher)
+	}
+	ops = append(ops, r.toggleLaunch, r.restartDaemon)
 	if !r.architectHears(r.root) {
 		ops = append(ops, r.decide)
 	}
@@ -1188,7 +1263,7 @@ func (r *keptRun) enabled() []func() {
 	if !r.queued.handed && r.waitsForItsSlot(r.queued) {
 		ops = append(ops, r.decideQueued)
 	}
-	if r.root.issue.Status == "in_progress" && !r.root.issue.Lingers() {
+	if r.root.issue.Status == "in_progress" && !r.root.issue.Lingers() && !r.spentHoldOn(r.root) {
 		ops = append(ops, r.park)
 	}
 	if record.OutOfWorkflow(r.root.issue.Status) && !r.root.issue.Lingers() {
@@ -1212,13 +1287,15 @@ func (r *keptRun) enabled() []func() {
 	if !reserved && r.orphanEnabled() {
 		ops = append(ops, r.orphanChild)
 	}
-	if !r.queued.handed && r.adoptionTarget() != nil {
-		ops = append(ops, r.adoptQueued)
+	if !r.queued.handed {
+		if target := r.adoptionTarget(); target != nil && !r.spentHoldOn(target) {
+			ops = append(ops, r.adoptQueued)
+		}
 	}
 	if !reserved && r.closeEnabled() {
 		ops = append(ops, r.closeTree)
 	}
-	due := r.rows(true)
+	due := r.claimable()
 	if len(due) > 0 {
 		ops = append(ops, r.runRow)
 	}
@@ -1236,6 +1313,9 @@ func (r *keptRun) enabled() []func() {
 		if _, _, told := r.readyFactEnabled(tree); told {
 			ops = append(ops, func() { r.readyFact(tree) })
 		}
+		if r.holdsTheWindowOpen(tree) {
+			continue
+		}
 		if r.turnEnabled(tree) {
 			ops = append(ops, func() { r.turn(tree) })
 		}
@@ -1248,7 +1328,7 @@ func (r *keptRun) enabled() []func() {
 		if r.lateRefusalEnabled(tree) {
 			ops = append(ops, func() { r.lateRefusalAfterAConfirmation(tree) })
 		}
-		if r.deathEnabled(tree) {
+		if r.deathEnabled(tree) && !r.spentHoldOn(tree) {
 			ops = append(ops, func() { r.deathInTheTasksTurn(tree) })
 		}
 	}
@@ -1266,6 +1346,38 @@ func (r *keptRun) enabled() []func() {
 // inside a held task (seekHeldHandOver): no other step moves them out until one has counted.
 func (r *keptRun) reservesMembers() bool {
 	return r.seekHeldHandOver && r.counts.handedBeforeConfirm == 0
+}
+
+// holdsTheWindowOpen is whether the drive leaves out every step that would confirm the task
+// tree's architect holds, which it does for the root's while it seeks the hand-over inside a held
+// task (reservesMembers) and that task names kept decisions and is not confirmed: the turn on
+// it, a foreign turn, a restart that meets the agent streaming, the busy refusal and the late one
+// after a confirmation, and the death of the process in the task's turn. The window between the
+// held task's queue and its confirmation then stays open until the hand-over inside it is
+// enabled, which the seek takes.
+func (r *keptRun) holdsTheWindowOpen(tree *keptTree) bool {
+	return tree == r.root && r.reservesMembers() && r.awaitingConfirmation(tree) && r.namesKeptDecisions(tree)
+}
+
+// soughtStart is the index in rows of the first start of the root that names kept decisions,
+// while the drive seeks the hand-over inside a held task (reservesMembers), and -1 for none or
+// when it does not seek: running that start puts a task naming kept decisions on the root's
+// claim, which opens the window the seek is for.
+func (r *keptRun) soughtStart(rows []record.OutboxRow) int {
+	if !r.reservesMembers() {
+		return -1
+	}
+	return slices.IndexFunc(rows, func(row record.OutboxRow) bool {
+		if row.Issue != keptRoot || row.Kind != record.OutboxKindSupervise {
+			return false
+		}
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			return false
+		}
+		request, ok := payload.(record.SuperviseRequest)
+		return ok && request.Op == "start" && keptCount(request.Kept) > 0
+	})
 }
 
 // trackedIssues is every issue this run records decisions on, which is where a move can carry a
@@ -2035,67 +2147,90 @@ func (r *keptRun) mirroredBlockers(key string) []string {
 	return blocked
 }
 
-// runRow runs one due supervise or notice row of a driven tree, chosen at random rather than in
-// row order: the supervise rows of one issue do not run in row order (record's outboxInOrder). A
-// row whose run returns nothing is finished as its lane finishes it, unless the generator chose
-// the crash: the finish never commits and the row keeps its lease, as a crashed daemon's row keeps
-// it until it lapses (outboxLease), so the row runs again at a later step under a fresh lease
-// (noteCrash records the lease it left). A row whose run failed is settled as its lane settles it
-// (runOne).
+// runRow runs one supervise or notice row of a driven tree that a lane could claim now
+// (claimable), chosen at random rather than in row order: the supervise rows of one issue do not
+// run in row order (record's outboxInOrder). The row is claimed as its lane claims it, and a claim
+// that takes nothing runs nothing (runOne). A row whose run returns nothing is finished as its lane
+// finishes it, unless the generator chose the crash: the finish never commits and the row keeps
+// the claim's lease, as a crashed daemon's row keeps it until it lapses (outboxLease), and
+// noteCrash records the lease it left. The run lapses it keptCrashLapseSteps drive steps later
+// (lapseCrashes), and the row runs again at a later step under a fresh claim. A row whose run
+// failed is settled as its lane settles it (runOne). While the drive seeks the hand-over inside a
+// held task, a start of the root that names kept decisions is the row it runs (soughtStart); while
+// a fault seek needs a row run, it is that row (soughtRow), and the finish is lost to a crash where
+// that seek needs it (crashesForTheDrop).
 func (r *keptRun) runRow() {
-	due := r.rows(true)
-	row := due[r.rng.IntN(len(due))]
+	due := r.claimable()
+	pick := r.soughtStart(due)
+	if pick < 0 {
+		pick = r.soughtRow(due)
+	}
+	if pick < 0 {
+		pick = r.rng.IntN(len(due))
+	}
+	row := due[pick]
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
 	}
-	runErr := r.runOne(&row, payload)
-	crashed := runErr == nil && r.rng.IntN(6) == 0
-	if runErr == nil && !crashed {
+	claimed, runErr := r.runOne(keptSiteRunRow, &row, payload)
+	crashed := claimed && runErr == nil && (r.rng.IntN(6) == 0 || r.crashesForTheDrop(row))
+	if claimed && runErr == nil && !crashed {
 		if err := r.finishRow(row); err != nil {
 			r.fatalf("finish outbox row %d: %v", row.ID, err)
 		}
 	}
 	r.tracef("run-row id=%d issue=%s kind=%s what=%s outcome=%s", row.ID, row.Issue, row.Kind, keptRowWhat(payload),
-		keptRunOutcome(runErr, crashed))
+		keptRunOutcome(claimed, runErr, crashed))
 	if crashed {
 		r.noteCrash(row)
 	}
 }
 
-// runTogether is the daemon's lanes running beside each other: several due rows of the driven
-// trees, each under a lease token of its own, run on a goroutine each and all waited for. One row
-// at a time is the shape every other step has, and it is not the shape the daemon has: two lanes
-// publish, settle and drop catch-ups beside each other, and only the database serializes them.
-// Every row of the step holds its lease (leaseOutboxRow) before any row of the step starts to run,
-// as a lane holds its claim (record.Store.ClaimRow) before it starts its row, so a drop of the
-// root's catch-ups (record.Store.DropCatchUps) that one row runs sees the lease of each other row
-// as it sees a lane's claim. A lease written after another row of the step has started can commit
-// inside that row's drop, which then deletes a row it read unleased, a schedule no lane makes while
-// its lease is live (dispatch://INFRA-2836). The model picks its rows by next_at alone, without the
-// lanes' claim rule (record's outboxClaimable), so it still differs from a lane in three cases: a
-// step can run two rows of one issue's lifecycle lane at once, which outboxLaneFree forbids the
-// lanes; a row whose simulated crash left its lease can run again at a later step while that lease
-// is live, where a lane waits for the lease to lapse; and quiesce, which runs any row left, can run
-// a start that outboxInOrder holds behind an older issue_branch row of its issue. A row whose run
-// returned nothing is finished and one whose run failed is settled as its lane settles it
+// runTogether is the daemon's lanes running beside each other: several rows of the driven trees,
+// each under a claim of its own, run on a goroutine each and all waited for. One row at a time is
+// the shape every other step has, and it is not the shape the daemon has: two lanes publish,
+// settle and drop catch-ups beside each other, and only the database serializes them. The step
+// takes its rows from those a lane could claim now (claimable, record.Store.DueRows), and every
+// row of the step is claimed through record.Store.ClaimRow, as a lane claims a row it listed,
+// before any row of the step starts to run, so no step runs a row a lane would not claim, and a
+// drop of the root's catch-ups (record.Store.DropCatchUps) that one row runs sees the claim of
+// each other row as it sees a lane's. A claim written after another row of the step has started
+// could commit inside that row's drop, which would then delete a row it read unclaimed, a
+// schedule no lane makes while its claim is live (dispatch://INFRA-2836). The step shuffles the
+// rows, draws how many to run, and claims them in the shuffled order until it holds that many or
+// the list ends. A row whose claim takes nothing, as a lifecycle row of an issue whose lifecycle
+// lane a row claimed before it now holds (outboxLaneFree), runs nothing and is passed over, as a
+// lane passes over a row another lane took. While the drive seeks the hand-over inside a held
+// task, a start of the root that names kept decisions is claimed first (soughtStart). A row whose
+// run returned nothing is finished and one whose run failed is settled as its lane settles it
 // (retryRow). What a step in this mode did is read once every goroutine is done, so a failure it
 // finds is reported with its seed and its trace, which replay may not reproduce exactly.
 func (r *keptRun) runTogether() {
-	due := r.rows(true)
+	due := r.claimable()
 	r.rng.Shuffle(len(due), func(i, j int) { due[i], due[j] = due[j], due[i] })
 	count := 2
 	if most := min(len(due), keptTogether); most > 2 {
 		count = 2 + r.rng.IntN(most-1)
 	}
-	rows := due[:count]
+	if sought := r.soughtStart(due); sought > 0 {
+		due[0], due[sought] = due[sought], due[0]
+	}
 	before := r.claimStates()
 	answered := r.publisher.answers()
-	errs := make([]error, count)
-	var wg sync.WaitGroup
-	for i := range rows {
-		rows[i].LeaseToken = leaseOutboxRow(r.t, r.pool, rows[i].ID)
+	var rows, refused []record.OutboxRow
+	for _, row := range due {
+		if len(rows) == count {
+			break
+		}
+		if r.claimRow(keptSiteTogether, &row) {
+			rows = append(rows, row)
+		} else {
+			refused = append(refused, row)
+		}
 	}
+	errs := make([]error, len(rows))
+	var wg sync.WaitGroup
 	for i := range rows {
 		wg.Add(1)
 		go func(i int) {
@@ -2105,12 +2240,15 @@ func (r *keptRun) runTogether() {
 	}
 	wg.Wait()
 	r.waitMachines()
-	what := make([]string, 0, count)
-	for i, row := range rows {
+	what := make([]string, 0, len(rows)+len(refused))
+	note := func(row record.OutboxRow, outcome string) {
 		payload, err := record.DecodeOutboxPayload(row)
 		if err != nil {
 			r.fatalf("decode outbox row %d: %v", row.ID, err)
 		}
+		what = append(what, fmt.Sprintf("id=%d issue=%s what=%s outcome=%s", row.ID, row.Issue, keptRowWhat(payload), outcome))
+	}
+	for i, row := range rows {
 		if errs[i] == nil {
 			if err := r.finishRow(row); err != nil {
 				r.fatalf("finish outbox row %d: %v", row.ID, err)
@@ -2118,24 +2256,35 @@ func (r *keptRun) runTogether() {
 		} else if err := r.retryRow(row, errs[i]); err != nil {
 			r.fatalf("retry outbox row %d: %v", row.ID, err)
 		}
-		what = append(what, fmt.Sprintf("id=%d issue=%s what=%s outcome=%s", row.ID, row.Issue, keptRowWhat(payload),
-			keptRunOutcome(errs[i], false)))
+		note(row, keptRunOutcome(true, errs[i], false))
+	}
+	for _, row := range refused {
+		note(row, keptRunOutcome(false, nil, false))
 	}
 	r.noteTogether(before, answered)
 	r.counts.together++
-	r.tracef("run-together rows=%d [%s]", count, strings.Join(what, " | "))
+	r.tracef("run-together rows=%d [%s]", len(rows), strings.Join(what, " | "))
 }
 
-// raceRow runs one due catch-up with the listener's answer held open: while the listener has the
-// notice and has answered nothing, one other operation runs to completion on a goroutine of its
-// own, and only then does the publish answer. It is the one interleaving the daemon holds no lock
-// across — the publish is outside every transaction of the row's run — and it is where a ready, a
-// start's settlement and a re-admission meet a catch-up that is already on its way: each of them
-// drops the root's queued catch-ups (Store.DropCatchUps) or moves the root past the generation the
-// catch-up states, while the row that is publishing still claims the decisions it names.
+// raceRow runs one catch-up a lane could claim with the listener's answer held open: while the
+// listener has the notice and has answered nothing, one other operation runs to completion on a
+// goroutine of its own, and only then does the publish answer. It is the one interleaving the
+// daemon holds no lock across — the publish is outside every transaction of the row's run — and it
+// is where a ready, a start's settlement and a re-admission meet a catch-up that is already on its
+// way: each of them drops the root's queued catch-ups (Store.DropCatchUps) or moves the root past
+// the generation the catch-up states, while the row that is publishing still claims the decisions
+// it names. The row an operation runs is claimed as the race is prepared (prepareRace) and the
+// catch-up just before its run (runOne), so both are claimed before the publish starts, as two
+// lanes each hold their claim before they run their row. While a fault seek races a catch-up, it
+// is that catch-up, the operation and the answer that seek needs (soughtRace, soughtRaceOp,
+// soughtRaceMode).
 func (r *keptRun) raceRow() {
-	catchUps := r.keptCatchUps(r.rows(true))
-	row := catchUps[r.rng.IntN(len(catchUps))]
+	catchUps := r.keptCatchUps(r.claimable())
+	pick := r.soughtRace(catchUps)
+	if pick < 0 {
+		pick = r.rng.IntN(len(catchUps))
+	}
+	row := catchUps[pick]
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
@@ -2144,13 +2293,23 @@ func (r *keptRun) raceRow() {
 	if len(ops) == 0 {
 		r.fatalf("no operation to interleave with the publish of outbox row %d", row.ID)
 	}
-	race := r.prepareRace(ops[r.rng.IntN(len(ops))])
-	race.mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
+	op := r.soughtRaceOp(row, ops)
+	if op < 0 {
+		op = r.rng.IntN(len(ops))
+	}
+	race := r.prepareRace(ops[op])
+	mode, sought := r.soughtRaceMode(row)
+	if !sought {
+		mode = []keptPublishMode{keptDelivers, keptReceiptTimeout}[r.rng.IntN(2)]
+	}
+	race.mode = mode
+	r.markDelivering(race, row.ID)
 	answered := r.publisher.answers()
+	spent := r.spentLines.mark()
 	r.publisher.arm(race)
-	runErr := r.runOne(&row, payload)
+	claimed, runErr := r.runOne(keptSiteRaceCatchUp, &row, payload)
 	r.publisher.disarm()
-	if runErr == nil {
+	if claimed && runErr == nil {
 		if err := r.finishRow(row); err != nil {
 			r.fatalf("finish outbox row %d: %v", row.ID, err)
 		}
@@ -2166,15 +2325,20 @@ func (r *keptRun) raceRow() {
 		r.fatalf("the operation interleaved with the publish of outbox row %d (%s) failed: %v", row.ID, race.what, race.err)
 	}
 	r.tracef("race-row id=%d what=%s answer=%s during=%s ran=%t [%s] outcome=%s", row.ID, keptRowWhat(payload),
-		race.mode, race.what, race.ran, race.outcome, keptRunOutcome(runErr, false))
+		race.mode, race.what, race.ran, race.outcome, keptRunOutcome(claimed, runErr, false))
 	// A receipt timeout the re-hold answered with no copy of its own is the superseded branch or
 	// the spent one (notice_exceptions.go's reholdNotice): the operation that ran inside the
 	// publish moved the root or its architect past the catch-up, or the row was the last copy the
 	// re-hold queues. Nothing takes over the claims this row holds, so they are handed to a fresh
 	// catch-up.
-	if r.publisher.answers()[keptReceiptTimeout] > answered[keptReceiptTimeout] && r.copiesOf(row.ID) == 0 {
-		r.counts.supersededTimeouts++
-		r.tracef("the re-hold of row %d queued no copy: the publish was superseded while it ran or its re-holds are spent, so what it claimed is handed over", row.ID)
+	if r.publisher.answers()[keptReceiptTimeout] > answered[keptReceiptTimeout] {
+		if r.copiesOf(row.ID) == 0 {
+			r.counts.supersededTimeouts++
+			r.tracef("the re-hold of row %d queued no copy: the publish was superseded while it ran or its re-holds are spent, so what it claimed is handed over", row.ID)
+		}
+		if runErr == nil {
+			r.markSpentRehold(row, payload, spent)
+		}
 	}
 }
 
@@ -2201,15 +2365,15 @@ type keptRaceOp struct {
 
 // raceOps is every operation that can run inside a catch-up's publish now: the ready fact of a
 // launch whose agent is up and whose ready the daemon has not told the workflow yet, which writes
-// that launch its catch-up; one other due start row of a driven tree — a stale start, whose
-// settlement hands over, or one that finds the architect running and applies the ready fact
-// itself; the root's re-admission, which is the other thing that supersedes a catch-up
-// (catchUpSuperseded reads the root's generation against the catch-up's); and the hand-over of a
-// member into a tree of its own, which is the one that moves the debt itself: the catch-up was
-// composed while the issue still stood in this tree and publishes once it no longer does, so its
-// publish must tell the old architect and leave the row for the tree the issue moved to
-// (record.Store.ForgetKeptDecisions). The row the step is publishing is left out, and so is every
-// row that touches no kept decision.
+// that launch its catch-up; one other start row of a driven tree that a lane could claim now — a
+// stale start, whose settlement hands over, or one that finds the architect running and applies
+// the ready fact itself; the root's re-admission, which is the other thing that supersedes a
+// catch-up (catchUpSuperseded reads the root's generation against the catch-up's); and the
+// hand-over of a member into a tree of its own, which is the one that moves the debt itself: the
+// catch-up was composed while the issue still stood in this tree and publishes once it no longer
+// does, so its publish must tell the old architect and leave the row for the tree the issue moved
+// to (record.Store.ForgetKeptDecisions). The row the step is publishing is left out, and so is
+// every row that touches no kept decision.
 func (r *keptRun) raceOps(publishing int64) []keptRaceOp {
 	var ops []keptRaceOp
 	for _, tree := range r.roots {
@@ -2220,7 +2384,7 @@ func (r *keptRun) raceOps(publishing int64) []keptRaceOp {
 		ops = append(ops, keptRaceOp{kind: "ready", tree: tree, key: key, launch: launch,
 			what: fmt.Sprintf("the ready fact of %s's architect at launch %d", tree.key, launch)})
 	}
-	for _, row := range r.rows(true) {
+	for _, row := range r.claimable() {
 		if row.ID == publishing || row.Kind != record.OutboxKindSupervise {
 			continue
 		}
@@ -2271,7 +2435,13 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 		}
 	case "row":
 		row := op.row
-		row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
+		if !r.claimRow(keptSiteRaceOpRow, &row) {
+			race.run = func() error {
+				race.outcome = keptRunOutcome(false, nil, false)
+				return nil
+			}
+			break
+		}
 		race.run = func() error {
 			runErr := r.runner.execute(r.ctx, row)
 			if runErr == nil {
@@ -2281,7 +2451,7 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 			} else if err := r.retryRow(row, runErr); err != nil {
 				return err
 			}
-			race.outcome = keptRunOutcome(runErr, false)
+			race.outcome = keptRunOutcome(true, runErr, false)
 			return nil
 		}
 		race.unrun = func() error {
@@ -2301,13 +2471,18 @@ func (r *keptRun) prepareRace(op keptRaceOp) *keptRace {
 	return race
 }
 
-// runOne leases the row and runs it as its lane would, settles a run that returned an error as the
-// lane settles it (retryRow), and records what the run did to the architect's claim and to what
-// the row named (noteRun). A row that ran without error is the caller's to finish.
-func (r *keptRun) runOne(row *record.OutboxRow, payload record.OutboxPayload) error {
+// runOne claims the row as its lane claims it (claimRow) and, if the claim took it, runs it as its
+// lane would, settles a run that returned an error as the lane settles it (retryRow), and records
+// what the run did to the architect's claim and to what the row named (noteRun). It says whether
+// the claim took the row and what the run returned: a row the claim did not take ran nowhere, and
+// a row that ran without error is the caller's to finish. site is the caller's place among
+// keptRowSites, which the audit names (keptLaneAudit).
+func (r *keptRun) runOne(site string, row *record.OutboxRow, payload record.OutboxPayload) (bool, error) {
 	tree := r.treeRow(row.Issue)
 	state, answered := r.claimState(tree), r.publisher.answers()
-	row.LeaseToken = leaseOutboxRow(r.t, r.pool, row.ID)
+	if !r.claimRow(site, row) {
+		return false, nil
+	}
 	runErr := r.runner.execute(r.ctx, *row)
 	r.waitMachines()
 	if runErr != nil {
@@ -2316,7 +2491,32 @@ func (r *keptRun) runOne(row *record.OutboxRow, payload record.OutboxPayload) er
 		}
 	}
 	r.noteRun(tree, state, answered, payload, runErr)
-	return runErr
+	return true, runErr
+}
+
+// claimRow claims row for the place site of the run as a lane claims a row it listed
+// (outbox_lanes.go's runRow): record.Store.ClaimRow, in a transaction of its own, which takes the
+// row only if a lane may still run it now (record's outboxClaimable). A claim that took it leaves
+// row as the claim wrote it, under the claim's lease token; false is a claim that took nothing,
+// and the row is not run. The audit reads the rule just before the claim and holds a row the claim
+// took to it (keptLaneAudit).
+func (r *keptRun) claimRow(site string, row *record.OutboxRow) bool {
+	r.audit.before(site, *row)
+	var leased record.OutboxRow
+	var claimed bool
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		leased, claimed, err = r.records.ClaimRow(r.ctx, tx, row.ID, time.Now().UTC(), time.Minute)
+		return err
+	}); err != nil {
+		r.fatalf("claim outbox row %d: %v", row.ID, err)
+	}
+	if !claimed {
+		return false
+	}
+	*row = leased
+	r.audit.ran(site, *row)
+	return true
 }
 
 // finishRow finishes a row as its lane finishes it, under the lease the run took.
@@ -2335,16 +2535,21 @@ func (r *keptRun) retryRow(row record.OutboxRow, runErr error) error {
 	})
 }
 
-// keptCrashLease is the lease a crash the run simulated left on a row (runRow): its token and the
-// moment it lapses. A new lease of the row writes a new moment, so it no longer matches.
+// keptCrashLease is the lease a crash the run simulated left on a row (runRow): its token, the
+// moment it lapses, and the drive step the crash came at. A new claim of the row writes a token of
+// its own, so it no longer matches.
 type keptCrashLease struct {
 	token string
 	until time.Time
+	step  int
 }
 
 // noteCrash records the lease a simulated crash left on row, which heldNoStaleLease lets stand
-// while it does: a crashed daemon's lease stays until it lapses (outboxLease), and the run
-// leases the row afresh at the later step that runs it again.
+// while it does: a crashed daemon's lease stays until it lapses (outboxLease), and while it is
+// live no lane claims the row, nor, for a lifecycle row, any other lifecycle row of its issue
+// (outboxLaneFree). The run lapses it keptCrashLapseSteps drive steps after the crash
+// (lapseCrashes), and a lane may claim the row afresh from then on, which the later step that runs
+// it again does.
 func (r *keptRun) noteCrash(row record.OutboxRow) {
 	var until time.Time
 	if err := r.pool.QueryRow(r.ctx, "select lease_until from outbox where id = $1 and lease_token = $2",
@@ -2354,24 +2559,55 @@ func (r *keptRun) noteCrash(row record.OutboxRow) {
 	if r.crashed == nil {
 		r.crashed = map[int64]keptCrashLease{}
 	}
-	r.crashed[row.ID] = keptCrashLease{token: row.LeaseToken, until: until}
+	r.crashed[row.ID] = keptCrashLease{token: row.LeaseToken, until: until, step: r.step}
+}
+
+// lapseCrashes lapses the lease of each crash the run simulated once keptCrashLapseSteps drive
+// steps have passed since the crash, or of every crash whose lease is still live when all is set,
+// which quiesce asks for: the daemon runs on long after them. Its lease_until moves an hour into
+// the past under the crash's token, as a crashed daemon's lease lapses (outboxLease), and crashed
+// takes the moment it moved to. The token stands, as a crashed daemon's does, so a drop of the
+// root's catch-ups keeps a row of a kept telling it holds (record.Store.DropCatchUps) and
+// heldNoStaleLease lets it stand, until a lane's claim of the row writes a token of its own. A
+// crashed row a drop has deleted since has no lease to lapse, and crashed lets it go.
+func (r *keptRun) lapseCrashes(all bool) {
+	now := time.Now().UTC()
+	for _, id := range slices.Sorted(maps.Keys(r.crashed)) {
+		crash := r.crashed[id]
+		if !crash.until.After(now) || (!all && r.step-crash.step < keptCrashLapseSteps) {
+			continue
+		}
+		err := r.pool.QueryRow(r.ctx, "update outbox set lease_until = $3 where id = $1 and lease_token = $2 returning lease_until",
+			id, crash.token, now.Add(-time.Hour)).Scan(&crash.until)
+		if errors.Is(err, pgx.ErrNoRows) {
+			delete(r.crashed, id)
+			r.tracef("crash-lapse id=%d: the row the crash at step %d left leased is gone", id, crash.step)
+			continue
+		}
+		if err != nil {
+			r.fatalf("lapse the lease the crash at step %d left on outbox row %d: %v", crash.step, id, err)
+		}
+		r.crashed[id] = crash
+		r.tracef("crash-lapse id=%d: the lease the crash at step %d left has lapsed", id, crash.step)
+	}
 }
 
 // heldNoStaleLease is a check of the model itself, run at the end of every step of drive, when no
-// goroutine of the model runs a row: no row of a driven tree holds a live lease (a lease token and
-// a lease_until after now) that no run holds. A lane's settle clears or ends the lease of every row
-// it ran — finished, retried — so a lease the run leaves standing is a lane that does not exist,
-// and a drop of the root's catch-ups (record.Store.DropCatchUps) keeps a catch-up for it that a
-// daemon would drop. The one lease let stand is the one a crash the run simulated left (noteCrash),
-// and only while it stands: the row's next lease, its finish or its retry ends it.
+// goroutine of the model runs a row: no row of a driven tree holds a lease token that no run holds,
+// whether its lease_until is still ahead or already past. A lane's settle clears the token of
+// every row it ran — finished, retried — so a token the run leaves standing is a lane that does
+// not exist, and a drop of the root's catch-ups (record.Store.DropCatchUps) keeps a catch-up of a
+// kept telling for it, whatever its lease says, that a daemon would drop. The one token let stand
+// is the one a crash the run simulated left (noteCrash), before its lapse and after it
+// (lapseCrashes), and only while it stands: the row's next claim, its finish or its retry ends it.
 func (r *keptRun) heldNoStaleLease() {
 	type leased struct {
 		id          int64
 		what, token string
-		until       time.Time
+		until       *time.Time
 	}
 	rows, err := r.pool.Query(r.ctx, `select id, kind || ' ' || coalesce(payload->>'op', payload->>'kind', ''), lease_token, lease_until
-		from outbox where issue = any($1) and lease_token <> '' and lease_until > now() order by id`, r.rootKeys())
+		from outbox where issue = any($1) and lease_token <> '' order by id`, r.rootKeys())
 	if err != nil {
 		r.fatalf("read the leased rows of %s: %v", strings.Join(r.rootKeys(), ", "), err)
 	}
@@ -2389,7 +2625,7 @@ func (r *keptRun) heldNoStaleLease() {
 		r.fatalf("read the leased rows of %s: %v", strings.Join(r.rootKeys(), ", "), err)
 	}
 	for _, row := range found {
-		if crash, ok := r.crashed[row.id]; ok && crash.token == row.token && crash.until.Equal(row.until) {
+		if crash, ok := r.crashed[row.id]; ok && crash.token == row.token && row.until != nil && crash.until.Equal(*row.until) {
 			continue
 		}
 		r.fatalf("outbox row %d (%s) still holds lease %s when step %d has ended and no run holds it: a lane's "+
@@ -2544,8 +2780,12 @@ func (r *keptRun) claimFailed(tree *keptTree) {
 	r.tracef("claim-failed tree=%s launch=%d refusals=%d notice-row=%d", tree.key, held.Generation, r.rt.refused(), r.lastRow())
 }
 
-func keptRunOutcome(err error, crashed bool) string {
+// keptRunOutcome names for the trace what came of a row a step took: a claim that took nothing ran
+// nothing, and a claimed row's run failed, lost its finish to a crash, or finished.
+func keptRunOutcome(claimed bool, err error, crashed bool) string {
 	switch {
+	case !claimed:
+		return "not claimed"
 	case err != nil:
 		return "error: " + err.Error()
 	case crashed:
@@ -2732,13 +2972,15 @@ func (r *keptRun) namesKeptDecisions(tree *keptTree) bool {
 
 // handOverInsideAHeldTask is an issue leaving its tree inside that window, and then the whole of
 // what closes it: the hand-over runs, the root is re-admitted when nothing of it runs, so its
-// architect hears again, every start row of the root then due is run — which is where the held
-// task is narrowed of what has left this tree and sent (supervise's Deps.RootTask) — and the turn
-// that confirms it starts at once. The confirmation's own transaction is the first thing to read
-// the record the hand-over left, and what it tells is held to the same rule everything else is: a
-// row whose issue has left the claim's tree is not told but left kept, for the tree it moved into
-// to name (the claim store's tellKeptDecisions). Each piece is an operation the model drives on
-// its own; this step runs them back to back so the window is reached rather than waited for.
+// architect hears again, every start row of the root a lane could then claim is run, one after
+// another as the root's lifecycle lane runs them, each claimed just before it runs and settled
+// before the next is claimed — which is where the held task is narrowed of what has left this
+// tree and sent (supervise's Deps.RootTask) — and the turn that confirms it starts at once. The
+// confirmation's own transaction is the first thing to read the record the hand-over left, and
+// what it tells is held to the same rule everything else is: a row whose issue has left the
+// claim's tree is not told but left kept, for the tree it moved into to name (the claim store's
+// tellKeptDecisions). Each piece is an operation the model drives on its own; this step runs them
+// back to back so the window is reached rather than waited for.
 func (r *keptRun) handOverInsideAHeldTask(over keptHandOver) {
 	if err := over.run(); err != nil {
 		r.fatalf("%s, inside the window between the root's held task and its confirmation: %v", over.what, err)
@@ -2750,7 +2992,7 @@ func (r *keptRun) handOverInsideAHeldTask(over keptHandOver) {
 	if r.parkedOrWaiting() {
 		r.readmit()
 	}
-	for _, row := range r.rows(true) {
+	for _, row := range r.claimable() {
 		if row.Issue != keptRoot || row.Kind != record.OutboxKindSupervise {
 			continue
 		}
@@ -2761,7 +3003,12 @@ func (r *keptRun) handOverInsideAHeldTask(over keptHandOver) {
 		if request, ok := payload.(record.SuperviseRequest); !ok || request.Op != "start" {
 			continue
 		}
-		if runErr := r.runOne(&row, payload); runErr == nil {
+		claimed, runErr := r.runOne(keptSiteHandOverStarts, &row, payload)
+		if !claimed {
+			r.tracef("hand-over start-row id=%d what=%s outcome=%s", row.ID, keptRowWhat(payload), keptRunOutcome(false, nil, false))
+			continue
+		}
+		if runErr == nil {
 			if err := r.finishRow(row); err != nil {
 				r.fatalf("finish the start row %d that sends the held task: %v", row.ID, err)
 			}
@@ -3138,10 +3385,12 @@ func (r *keptRun) restartDaemon() {
 	r.tracef("restart claims=%d architect=%s", r.sup.count(), keptClaimState(r.claimState(r.root)))
 }
 
-// quiesce ends the run: every injected failure off, the root re-admitted when it is parked or
-// waiting — never when it runs, which would hand a lost decision a fresh namer and hide it — and
-// then the rows of every driven tree, its architects' launches and their turns driven, in random
-// order, until no row is left and no delivery is pending.
+// quiesce ends the run: every injected failure off, the lease of every crash lapsed (lapseCrashes),
+// the root re-admitted when it is parked or waiting — never when it runs, which would hand a lost
+// decision a fresh namer and hide it — and then the rows of every driven tree, its architects'
+// launches and their turns driven, in random order, until no row is left and no delivery is
+// pending. Each step first delivers the rows the run does not drive, so a start is never held
+// behind an issue_branch row the run had not yet delivered (deliverRowsTheRunDoesNotDrive).
 // Two things more are driven. What holds a root out of the admission line is finished, as the
 // person who closes that Dispatch issue finishes it, and a controller tick is applied so that
 // admission promotes every root left waiting (unblockAndPromote): a root nobody promotes has no
@@ -3158,6 +3407,7 @@ func (r *keptRun) quiesce() {
 	r.rt.setRefuses(false)
 	r.publisher.setMode(keptDelivers)
 	r.tracef("quiesce: every failure off, launches open, publisher delivers")
+	r.lapseCrashes(true)
 	r.noteBefore()
 	if r.parkedOrWaiting() {
 		r.readmit()
@@ -3166,6 +3416,7 @@ func (r *keptRun) quiesce() {
 	r.noteMoves()
 	for range keptQuiesceBound {
 		r.step++
+		r.deliverRowsTheRunDoesNotDrive()
 		r.snapshotRows()
 		r.noteBefore()
 		actions := []func(){}
@@ -3193,7 +3444,6 @@ func (r *keptRun) quiesce() {
 		actions[r.rng.IntN(len(actions))]()
 		r.noteMoves()
 		r.observe()
-		r.deliverRowsTheRunDoesNotDrive()
 	}
 	r.fatalf("the rows and deliveries of %s did not drain in %d quiescence steps", strings.Join(r.rootKeys(), ", "), keptQuiesceBound)
 }
@@ -3257,7 +3507,10 @@ func (r *keptRun) relaunchAfterRefusal() bool {
 }
 
 // runLeftoverRow runs one of the remaining rows whatever its backoff says: a quiesced daemon has
-// run every row it holds, including a re-held copy waiting out its delay.
+// run every row it holds, including a re-held copy waiting out its delay. Time passes while the
+// daemon runs on, so the row is first brought due (record.Store.ExpediteOutbox), and then claimed
+// as its lane claims it (runOne): a claim that takes nothing runs nothing, and the next step lists
+// the rows again.
 func (r *keptRun) runLeftoverRow() {
 	left := r.rows(false)
 	row := left[r.rng.IntN(len(left))]
@@ -3265,14 +3518,26 @@ func (r *keptRun) runLeftoverRow() {
 	if err != nil {
 		r.fatalf("decode outbox row %d: %v", row.ID, err)
 	}
-	runErr := r.runOne(&row, payload)
-	if runErr == nil {
+	r.expedite(row.ID)
+	claimed, runErr := r.runOne(keptSiteLeftovers, &row, payload)
+	if claimed && runErr == nil {
 		if err := r.finishRow(row); err != nil {
 			r.fatalf("finish outbox row %d: %v", row.ID, err)
 		}
 	}
 	r.tracef("run-row id=%d issue=%s kind=%s what=%s outcome=%s", row.ID, row.Issue, row.Kind, keptRowWhat(payload),
-		keptRunOutcome(runErr, false))
+		keptRunOutcome(claimed, runErr, false))
+}
+
+// expedite makes row id due now (record.Store.ExpediteOutbox) and traces nothing: each caller
+// traces what it brought the row due for (bringDue, runLeftoverRow).
+func (r *keptRun) expedite(id int64) {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := r.records.ExpediteOutbox(r.ctx, tx, record.OutboxRow{ID: id}, time.Now().UTC())
+		return err
+	}); err != nil {
+		r.fatalf("bring outbox row %d due: %v", id, err)
+	}
 }
 
 // report says what the run's injected failures drove, so a reader of the test's output sees the
@@ -3563,6 +3828,9 @@ func (r *keptRun) tell(telling keptTelling) {
 			excused++
 		}
 	}
+	if earlier > 0 && excused > 0 {
+		r.markToldAgainAfterAFailedWrite(telling.ref, telling.tree)
+	}
 	switch {
 	case earlier == 0:
 	case earlier-excused == 0 && excused <= 1 && !telling.retold:
@@ -3630,7 +3898,8 @@ func keptRowOfKey(key string) int64 {
 }
 
 // rows is the supervise and notice rows of every driven tree, those due now or every one left, in
-// id order; the caller picks among them at random.
+// id order, whatever the lanes' claim rule says of them: what is left for quiesce to run, and what
+// each row names (snapshotRows). What a step may run is what a lane could claim (claimable).
 func (r *keptRun) rows(dueOnly bool) []record.OutboxRow {
 	r.t.Helper()
 	query := `select id, kind, issue, payload from outbox where issue = any($1) and kind = any($2)`
@@ -3658,6 +3927,27 @@ func (r *keptRun) rows(dueOnly bool) []record.OutboxRow {
 		r.fatalf("list the outbox rows: %v", err)
 	}
 	return listed
+}
+
+// claimable is the supervise and notice rows of every driven tree that a lane could claim now,
+// which is what a step may run: the rows record.Store.DueRows lists, under the lanes' own rule
+// (record's outboxClaimable) — due, under no live lease, in order, and with no other lifecycle row
+// of its issue under a live lease — in id order, as rows lists them; the caller picks among them.
+func (r *keptRun) claimable() []record.OutboxRow {
+	r.t.Helper()
+	var due []record.OutboxRow
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		due, err = r.records.DueRows(r.ctx, tx, "LEGION", "", []record.OutboxKind{record.OutboxKindSupervise, record.OutboxKindNotice},
+			time.Now().UTC())
+		return err
+	}); err != nil {
+		r.fatalf("list the rows a lane could claim: %v", err)
+	}
+	roots := r.rootKeys()
+	due = slices.DeleteFunc(due, func(row record.OutboxRow) bool { return !slices.Contains(roots, row.Issue) })
+	slices.SortFunc(due, func(a, b record.OutboxRow) int { return cmp.Compare(a.ID, b.ID) })
+	return due
 }
 
 // keptCatchUps is the catch-ups among rows that name decisions their root keeps. They are the

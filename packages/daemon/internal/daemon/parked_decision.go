@@ -302,10 +302,12 @@ func (r *outbox) toldKept(ctx context.Context, root, key string) error {
 
 // settleTold tells what outbox row's catch-up named of what its tree is owed, once the row has run
 // and told it (toldKept), however that run ended: the publish that told it, a newer catch-up that
-// superseded the row since, a holder that refused it, a grant that denied it, an architect that
-// will not hold its role again, or the row's own deletion under its lease. The telling is held to
-// the one validity rule (record.Store.ForgetKeptDecisions): a row whose issue has left this tree
-// since the catch-up was composed is not deleted but left KEPT, for the tree it stands in now to
+// superseded the row since, a holder that refused it, a grant that denied it, or an architect that
+// will not hold its role again. The row's own deletion under its lease is no longer among them: a
+// catch-up that carries kept decisions is no longer deleted under its claim, since DropCatchUps
+// keeps it while a row of its telling holds a claim. The telling is held to the one validity rule
+// (record.Store.ForgetKeptDecisions): a row whose issue has left this tree since the catch-up was
+// composed is not deleted but left KEPT, for the tree it stands in now to
 // name. Only a row that told nothing is left to settle another way — the hand-over of a superseded
 // catch-up (supersededKept), and otherwise the architect's next ready, which names every unclaimed
 // decision. A failure returns an error, so the row retries and tells again; a telling of what is

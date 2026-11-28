@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    Dropping an issue's queued catch-ups (`DropCatchUps`) now keeps a catch-up that carries kept
+    decisions while any row of its telling holds a claim token, whatever its lease expiry says, so a
+    run whose lease lapsed still settles its own telling without a fresh catch-up telling the same
+    decisions twice. When an outbox row settles after the last lease it committed, its lane now logs
+    one warning line (`outbox row ran past its lease; its finish or retry fences on the token, and a
+    drop of its issue's catch-ups keeps a catch-up naming kept decisions while its claim stands`).
+time: 2026-11-27T17:51:27Z
+custom:
+    Issue: INFRA-3521

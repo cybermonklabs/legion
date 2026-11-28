@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 // holderPublisher is the listener as a role publish meets it: a role topic in absent has no live
@@ -895,7 +896,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 		t.Fatalf("lease the first catch-up: %v", err)
 	}
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
+		if _, err := records.DropCatchUps(ctx, tx, "LEGION-1"); err != nil {
 			return err
 		}
 		return records.Enqueue(ctx, tx, mustOutboxRow(t, "LEGION-1", catchUp(2), clock))
@@ -922,4 +923,263 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	if fmt.Sprint(got) != "[generation 2]" || outboxRows(t, pool) != 0 {
 		t.Fatalf("delivered %v with %d rows left; want the second catch-up alone", got, outboxRows(t, pool))
 	}
+}
+
+// ranPastItsLeaseLine is the lane's one line for a run that settles after the last lease it
+// committed (runRow).
+const ranPastItsLeaseLine = "outbox row ran past its lease; its finish or retry fences on the token, and a drop of its issue's catch-ups keeps a catch-up naming kept decisions while its claim stands"
+
+// lapsingAsk is the kept decision a lapsingCatchUp names.
+const lapsingAsk = "dispatch://LEGION-1/ask/ask-1"
+
+// lapsingCatchUp is a root's catch-up that names one kept decision, with the tree it states and
+// the architect claim it goes to, run by an outbox whose clock the test holds (heldClock): no timer
+// of the clock fires unless the test fires it, so a run's lease renewal never ticks, and advance
+// moves the time every claim, drop and settle reads, so the lease a claim wrote lapses while the
+// run goes on. The runner logs to logs and publishes to publisher.
+type lapsingCatchUp struct {
+	pool      *store.Pool
+	records   record.Store
+	clock     *heldClock
+	publisher *hookPublisher
+	logs      *testlog.Buffer
+	runner    *outbox
+	// row is the catch-up as its lane lists it.
+	row record.OutboxRow
+}
+
+// newLapsingCatchUp builds the tree, the architect claim and the kept decision as
+// TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed does, and queues the catch-up of launch 1
+// that names and claims the decision.
+func newLapsingCatchUp(t *testing.T) *lapsingCatchUp {
+	t.Helper()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, false)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+	clock := &heldClock{at: time.Now().UTC().Truncate(time.Microsecond)}
+	keepDecision(t, pool, records, "LEGION-1", lapsingAsk, time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC))
+	keptCatchUp(t, pool, records, "LEGION-1", 1, clock.Now())
+	rows := catchUpRows(t, pool, "LEGION-1")
+	if naming := catchUpsNaming(t, pool, "LEGION-1", 0, lapsingAsk); len(rows) != 1 || namingRef(naming) != 1 {
+		t.Fatalf("the catch-ups of LEGION-1 name %s: %v, want the one catch-up to name it", lapsingAsk, naming)
+	}
+	logs := &testlog.Buffer{}
+	publisher := &hookPublisher{}
+	return &lapsingCatchUp{pool: pool, records: records, clock: clock, publisher: publisher, logs: logs, row: rows[0],
+		runner: &outbox{log: slog.New(slog.NewJSONHandler(logs, nil)), pool: pool, dispatchProject: "LEGION", records: records,
+			notices: publisher, supervisor: sup, project: "legion", now: clock.Now, clock: clock}}
+}
+
+// drop is the architect's next ready while the catch-up's claim stands past its lease: the clock
+// moves on by more than outboxLease from the claim, past the lease the claim wrote, and the ready
+// queues the catch-up of launch at that moment (workflow.QueueCatchUp), which first drops the
+// root's queued catch-ups (DropCatchUps). It answers an error rather than failing the test, so it
+// can run inside the run, and it answers one when the catch-up holds no claim whose lease has
+// lapsed by then, since the drop would then not meet a run past its lease.
+func (l *lapsingCatchUp) drop(launch uint64) error {
+	ctx := context.Background()
+	l.clock.advance(outboxLease + time.Second)
+	now := l.clock.Now()
+	var until time.Time
+	if err := l.pool.QueryRow(ctx, "select lease_until from outbox where id = $1 and lease_token <> ''", l.row.ID).Scan(&until); err != nil {
+		return fmt.Errorf("read the claim of the catch-up %d, which a drop past its lease must meet: %w", l.row.ID, err)
+	}
+	if !until.Before(now) {
+		return fmt.Errorf("the catch-up %d is leased until %s, and the drop is at %s: want its lease lapsed",
+			l.row.ID, until.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	}
+	return queueKeptCatchUp(ctx, l.pool, l.records, "LEGION-1", launch, now)
+}
+
+// runDue runs every row of the outbox due at the clock's time (RunOnce), as the lanes and the
+// sweep would.
+func (l *lapsingCatchUp) runDue(t *testing.T) {
+	t.Helper()
+	if err := l.runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox's due rows: %v", err)
+	}
+}
+
+// toldOnce fails t unless the kept decision was named by exactly one published catch-up, nothing
+// is left kept, and the outbox holds no row, every due row having run. The count is read first:
+// a decision told twice is the fault these tests stand against.
+func (l *lapsingCatchUp) toldOnce(t *testing.T) {
+	t.Helper()
+	var told int
+	for _, published := range l.publisher.published() {
+		if notice, ok := published.payload.(record.Notice); ok && notice.CatchUp != nil && strings.Contains(notice.CatchUp.Decided, lapsingAsk) {
+			told++
+		}
+	}
+	if told != 1 {
+		t.Fatalf("%s was told %d times by the catch-ups published, want once: a run past its lease still tells what its row "+
+			"claims, so a drop of the root's catch-ups keeps that row, and the fresh catch-up names nothing of it", lapsingAsk, told)
+	}
+	if left := keptDecisions(t, l.pool, l.records, "LEGION-1"); len(left) != 0 {
+		t.Fatalf("kept after every due row ran = %s, want none: the telling forgets what it named", keptRefs(left))
+	}
+	if rows := outboxRows(t, l.pool); rows != 0 {
+		t.Fatalf("%d rows left in the outbox after every due row ran, want none", rows)
+	}
+}
+
+// loggedTheRunPastItsLease fails t unless the lane logged once, at Warn, that the catch-up's run
+// settled after its lease, naming the row, its kind, its issue, the lease and the moment it ended.
+func (l *lapsingCatchUp) loggedTheRunPastItsLease(t *testing.T) {
+	t.Helper()
+	lines := loggedMessages(t, l.logs.String(), ranPastItsLeaseLine)
+	if len(lines) != 1 {
+		t.Fatalf("the lane logged %d lines of a run past its lease, want one for row %d: %v", len(lines), l.row.ID, lines)
+	}
+	line := lines[0]
+	if line["msg"] != ranPastItsLeaseLine || line["level"] != "WARN" || line["row"] != float64(l.row.ID) ||
+		line["kind"] != string(record.OutboxKindNotice) || line["issue"] != "LEGION-1" {
+		t.Fatalf("the line of the run past its lease = %v, want it at WARN naming row %d, kind %s and issue LEGION-1",
+			line, l.row.ID, record.OutboxKindNotice)
+	}
+	for _, attr := range []string{"lease_until", "ended"} {
+		if _, ok := line[attr]; !ok {
+			t.Fatalf("the line of the run past its lease = %v, want it to carry %s", line, attr)
+		}
+	}
+}
+
+// toldMarkHook is the record store with one operation run inside the mark that records a catch-up's
+// telling (record.KeptToldSource, the outbox's toldKept): the publish has delivered, and the mark
+// is not yet written. The hook runs once, on a transaction of its own, before the first such mark
+// is written; the mark is then written as the store writes it.
+type toldMarkHook struct {
+	record.Store
+	mu      sync.Mutex
+	hook    func() error
+	hookErr error
+}
+
+func (s *toldMarkHook) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) (bool, error) {
+	if source == record.KeptToldSource {
+		s.mu.Lock()
+		hook := s.hook
+		s.hook = nil
+		s.mu.Unlock()
+		if hook != nil {
+			if err := hook(); err != nil {
+				s.mu.Lock()
+				s.hookErr = err
+				s.mu.Unlock()
+			}
+		}
+	}
+	return s.Store.MarkProcessed(ctx, tx, source, eventID)
+}
+
+func (s *toldMarkHook) ranHook(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hookErr != nil {
+		t.Fatalf("the operation run inside the told mark failed: %v", s.hookErr)
+	}
+	if s.hook != nil {
+		t.Fatal("the operation armed for the told mark never ran: the row marked no telling")
+	}
+}
+
+// A lane runs the row it claimed to its settle whatever its lease says: nothing cancels a row
+// mid-effect, and the renewal that keeps the lease live can be held back (a database it cannot
+// reach, a process the scheduler stalls). A catch-up that names a kept decision and outlives its
+// lease that way still tells the decision once. A drop of the root's catch-ups past the lapse (the
+// architect's next ready, workflow.QueueCatchUp) keeps the row while its claim stands, so the
+// fresh catch-up the drop's transaction writes names nothing of it, whether the drop comes after
+// the run read its row and before its publish, or after the publish and before the mark of the
+// telling commits (toldKept). The lane logs such a run once, at Warn, when it settles past its
+// lease. A run that stops mid-row before its publish, as a daemon that stops leaves it, leaves its
+// claim to lapse: the sweep after the lapse runs the rows, and the decision is still told once.
+// The clock is held (heldClock), so no renewal ticks, and the drop moves it past the claim's lease.
+func TestAKeptDecisionIsToldOnceWhenACatchUpOutlivesItsLease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	t.Run("a drop after the read and before the publish", func(t *testing.T) {
+		l := newLapsingCatchUp(t)
+		// The hook runs inside the publish, after the run read its row under its claim (stillOwed)
+		// and found nothing newer (catchUpSuperseded).
+		l.publisher.hook = func() error { return l.drop(2) }
+		if err := l.runner.runRow(ctx, l.row); err != nil {
+			t.Fatalf("run the catch-up on its lane: %v", err)
+		}
+		l.publisher.ranHook(t)
+		l.runDue(t)
+		l.toldOnce(t)
+		l.loggedTheRunPastItsLease(t)
+	})
+	t.Run("a drop after the publish and before the told mark commits", func(t *testing.T) {
+		l := newLapsingCatchUp(t)
+		marks := &toldMarkHook{Store: l.records, hook: func() error { return l.drop(2) }}
+		l.runner.records = marks
+		if err := l.runner.runRow(ctx, l.row); err != nil {
+			t.Fatalf("run the catch-up on its lane: %v", err)
+		}
+		marks.ranHook(t)
+		l.runDue(t)
+		l.toldOnce(t)
+		l.loggedTheRunPastItsLease(t)
+	})
+	t.Run("a run that stops mid-row before its publish", func(t *testing.T) {
+		l := newLapsingCatchUp(t)
+		// The lane's claim, as runRow takes it, and then nothing: the daemon stopped mid-row.
+		if err := store.Transact(ctx, l.pool, func(ctx context.Context, tx pgx.Tx) error {
+			_, claimed, err := l.records.ClaimRow(ctx, tx, l.row.ID, l.clock.Now(), outboxLease)
+			if err == nil && !claimed {
+				return fmt.Errorf("outbox row %d was not claimed", l.row.ID)
+			}
+			return err
+		}); err != nil {
+			t.Fatalf("claim the catch-up as its lane does: %v", err)
+		}
+		if err := l.drop(2); err != nil {
+			t.Fatalf("the architect's next ready past the claim's lease: %v", err)
+		}
+		// The sweep after the lapse runs every due row.
+		l.runDue(t)
+		l.toldOnce(t)
+	})
+}
+
+// A catch-up whose run outlives its lease and whose publish the architect's session never confirmed
+// (a listener's receipt timeout) is queued again as a copy that takes over the row's claims
+// (reholdNotice, MoveKeptClaims). A drop of the root's catch-ups inside that publish, past the
+// lapse, keeps the row while its claim stands, so the re-hold has the claims to move, the fresh
+// catch-up the drop's transaction writes names nothing of them, and the copy tells the decision
+// once. The fresh catch-up is of the launch the architect stands at, as CatchUpTheTreesOwed writes
+// one, so nothing supersedes the row and the re-hold queues its copy rather than hand the
+// decisions over (catchUpSuperseded). A drop that deleted the row would release its claims to the
+// fresh catch-up and leave the copy the text without them, and both would tell the decision: the
+// re-hold door of cybermonklabs/legion#2743's section "Named, not done".
+func TestAKeptDecisionIsToldOnceWhenAReHeldCatchUpOutlivesItsLease(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	l := newLapsingCatchUp(t)
+	l.publisher.answer = fmt.Errorf("publish notice: listener returned 504 Gateway Timeout: %w",
+		notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses-architect"})
+	l.publisher.hook = func() error { return l.drop(1) }
+	if err := l.runner.runRow(ctx, l.row); err != nil {
+		t.Fatalf("run the catch-up on its lane: %v", err)
+	}
+	l.publisher.ranHook(t)
+	// The copy and the fresh catch-up are delivered; the clock moves past the copy's re-hold delay.
+	l.publisher.mu.Lock()
+	l.publisher.answer = nil
+	l.publisher.mu.Unlock()
+	l.clock.advance(noticeReholdDelays[0] + time.Second)
+	l.runDue(t)
+	l.toldOnce(t)
+	copied := false
+	for _, published := range l.publisher.published() {
+		copied = copied || published.key == record.OutboxKey(l.row.ID)
+	}
+	if !copied {
+		t.Fatalf("no catch-up was published under the key of row %d: the re-hold queued no copy of it", l.row.ID)
+	}
+	l.loggedTheRunPastItsLease(t)
 }

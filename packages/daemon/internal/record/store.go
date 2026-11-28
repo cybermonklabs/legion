@@ -4065,12 +4065,12 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
 	// A catch-up's claim takes an advisory lock of its own, keyed by its issue, which DropCatchUps
-	// takes too: that drop reads the leases of the issue's catch-ups in a subquery over other rows,
-	// which the same recheck does not cover, so a claim committing beside it would be unseen and its
-	// row deleted under it. Under the lock a claim either commits before the drop takes it, and the
-	// drop's delete, a statement of its own, sees the lease, or it waits for the drop and finds the
-	// row gone when the drop deleted it. A row of another kind, a notice that is no catch-up, and a
-	// row finished and gone each select nothing and lock nothing.
+	// takes too: that drop reads the claims (lease tokens) of the issue's catch-ups in a subquery
+	// over other rows, which the same recheck does not cover, so a claim committing beside it would
+	// be unseen and its row deleted under it. Under the lock a claim either commits before the drop
+	// takes it, and the drop's delete, a statement of its own, sees the claim, or it waits for the
+	// drop and finds the row gone when the drop deleted it. A row of another kind, a notice that is
+	// no catch-up, and a row finished and gone each select nothing and lock nothing.
 	if _, err := tx.Exec(ctx, claimCatchUpLockSQL, id, string(OutboxKindNotice)); err != nil {
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
@@ -4385,14 +4385,14 @@ func (s *Postgres) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue 
 	return nil
 }
 
-func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error) {
+func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string) ([]int64, error) {
 	// The claims of the issue's catch-ups are serialized with this drop by an advisory lock keyed
-	// by the issue, which a catch-up's claim takes too (ClaimRow). The lease check below is a
+	// by the issue, which a catch-up's claim takes too (ClaimRow). The claim check below is a
 	// subquery over the outbox, and Postgres rechecks a concurrently updated row's new version
 	// against the where clause, never a subquery over other rows: a delete whose statement began
 	// before a lane's claim committed would wait on the claim's row lock and then delete the row it
-	// had read unleased. Under the lock a claim either commits before the lock is taken, and the
-	// delete, a statement of its own, reads the lease it wrote, or it waits for this transaction
+	// had read unclaimed. Under the lock a claim either commits before the lock is taken, and the
+	// delete, a statement of its own, reads the token it wrote, or it waits for this transaction
 	// and claims nothing when the delete took its row. A copy a re-hold queues while this runs
 	// (reholdNotice, which carries the row's claims onto it) is covered the same way: its own claim
 	// waits here too.
@@ -4405,16 +4405,17 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 		return nil, err
 	}
 	// A catch-up that carries kept decisions and one of whose telling's rows (itself, the row it
-	// copies, or a copy of either) is under a live lease is kept: that row may be publishing now,
-	// and the decisions this one claims are that telling's to settle.
+	// copies, or a copy of either) holds a claim (a lease token) is kept, whatever its lease_until
+	// says: a lane runs the row it claimed to its settle even past its lease, and the decisions
+	// this one claims are that telling's to settle.
 	rows, err := tx.Query(ctx, `delete from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up'
 		and not exists (select 1 from processed_events where source = $3
 			and event_id = $4 || coalesce((outbox.payload->>'resend_of')::bigint, outbox.id))
 		and not (payload->'catch_up'->'kept' is not null and exists (select 1 from outbox live
 			where live.kind = outbox.kind and live.issue = outbox.issue
 			and coalesce((live.payload->>'resend_of')::bigint, live.id) = coalesce((outbox.payload->>'resend_of')::bigint, outbox.id)
-			and live.lease_token <> '' and live.lease_until > $5))
-		returning id`, string(OutboxKindNotice), issue, KeptToldSource, outboxKeyPrefix, now)
+			and live.lease_token <> ''))
+		returning id`, string(OutboxKindNotice), issue, KeptToldSource, outboxKeyPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("drop the queued catch-ups of %s: %w", issue, err)
 	}

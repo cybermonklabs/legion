@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -935,7 +936,8 @@ func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var released sync.Once
 	client := &blockingDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}, entered: entered, release: release}
-	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
+	logs := &testlog.Buffer{}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: slog.New(slog.NewJSONHandler(logs, nil))}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "todo", ""), clock.Now()))
 	runLanes(t, runner, clock, func() { released.Do(func() { close(release) }) })
 	<-entered
@@ -973,6 +975,11 @@ func TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain(t *testing.T) {
 	})
 	if got := client.count(); got != 1 {
 		t.Fatalf("status writes = %d, want the one", got)
+	}
+	// The run ended 60 s after its claim, past the claim's own lease, but within the lease its last
+	// renewal committed: the lane logs no line of a run past its lease.
+	if lines := loggedMessages(t, logs.String(), ranPastItsLeaseLine); len(lines) != 0 {
+		t.Fatalf("the lane logged %d lines of a run past its lease for a row whose renewals kept its lease live: %v", len(lines), lines)
 	}
 }
 

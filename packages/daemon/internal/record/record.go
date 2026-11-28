@@ -3372,30 +3372,30 @@ type Store interface {
 	// from. The first is a row whose publish told the decisions it named (KeptToldSource) and whose
 	// forget has not committed yet: that row still owes them that forget, which its next run makes,
 	// and dropping it would release them for the fresh catch-up to tell a second time. The second is
-	// a row that carries kept decisions under a live lease (lease_until after now, which is the
-	// caller's clock, the one a claim's lease is written from: ClaimRow): its lane may be publishing
-	// it this moment, outside every transaction, and the drop would release what it named for the
-	// fresh catch-up, written in the same transaction, to name again — telling the architect that
-	// already has the publish in its hands a person's decision twice. Such a row is left for its own
-	// ending to settle what it claims: its publish forgets exactly what it named
-	// (ForgetKeptDecisions), a newer catch-up that supersedes it hands those rows over
+	// a row that carries kept decisions while any row of its telling (itself, the row it copies, or
+	// a copy of either) holds a claim (a non-empty lease_token), whatever lease_until says: its lane
+	// runs the row it claimed to its settle even past its lease, and the drop would release what it
+	// named for the fresh catch-up, written in the same transaction, to name again — telling the
+	// architect that already has the publish in its hands a person's decision twice. Such a row is
+	// left for its own ending to settle what it claims (and a row a dead run left claimed waits for
+	// the sweep to claim and settle it after its lease lapses): its publish forgets exactly what it
+	// named (ForgetKeptDecisions), a newer catch-up that supersedes it hands those rows over
 	// (workflow.HandOverKept), and every other ending leaves them to the row's deletion, for the
 	// architect's next ready to name. A claim of one of the issue's catch-ups and this drop are
 	// serialized by an advisory lock keyed by the issue, which ClaimRow takes too: a claim either
-	// commits before the drop reads the leases, and is seen, or it waits for the drop and claims
+	// commits before the drop reads the tokens, and is seen, or it waits for the drop and claims
 	// nothing when the drop deleted its row (TestDroppingCatchUpsLeavesTheRowALaneIsLeasing,
 	// TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued). The drop locks no outbox row before
 	// its delete, since a lane finishing a catch-up waits on the decisions its caller holds
 	// (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting). A leased row with no decisions is
-	// dropped as before: the
-	// runner executes it from memory, and the notice executor publishes it only while OutboxLeased
-	// still finds it, so a dropped row is delivered only when the drop lands during its publish, a
-	// duplicate the fresh catch-up follows. A dropped catch-up's decisions are released with its row
-	// and named again by the fresh catch-up, written in the same transaction as the drop: only a
-	// published catch-up forgets them. It answers the ids of the rows it dropped, so that a
-	// caller whose wake pacing holds one of them gives up that row's place in its queue (the
-	// daemon's projectRecords.DropCatchUps).
-	DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]int64, error)
+	// dropped as before: the runner executes it from memory, and the notice executor publishes it
+	// only while OutboxLeased still finds it, so a dropped row is delivered only when the drop lands
+	// during its publish, a duplicate the fresh catch-up follows. A dropped catch-up's decisions are
+	// released with its row and named again by the fresh catch-up, written in the same transaction as
+	// the drop: only a published catch-up forgets them. It answers the ids of the rows it dropped,
+	// so that a caller whose wake pacing holds one of them gives up that row's place in its queue
+	// (the daemon's projectRecords.DropCatchUps).
+	DropCatchUps(ctx context.Context, tx pgx.Tx, issue string) ([]int64, error)
 	// DropStatusWrites deletes every Dispatch status write of issue the outbox still holds, a row
 	// the runner has leased included; one mid-attempt can still reach Dispatch, and its finish then
 	// finds nothing to delete.
@@ -3470,9 +3470,8 @@ type RoleRun struct {
 // A lane that dies mid-run records neither the row's finish nor its retry, so the row keeps that
 // lane's token and a lease_until in the past until the outbox's sweep wakes its lane and the lane
 // runs it again (internal/daemon's outbox_lanes.go); the store's own due predicate reads such a
-// row as free (outboxUnleasedDue), and Running reads it as a row between runs, by the live-lease
-// term the store already writes in Postgres.DropCatchUps: a token that is set and a lease_until
-// after now.
+// row as free (outboxUnleasedDue), and Running reads it as a row between runs: a live lease is a
+// token that is set and a lease_until after now().
 // lease_until is the daemon's clock at the claim, or at the lane's latest renewal, plus the
 // outbox's lease (internal/daemon's outboxLease), and it is compared here with the store's now(),
 // as Age is; the two clocks agree on a deployment to far less than that lease. The

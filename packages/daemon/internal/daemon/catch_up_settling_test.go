@@ -84,16 +84,21 @@ func (p *hookPublisher) ranHook(t *testing.T) {
 // the launch took its turn at the machine's gate, so the row is due at now.
 func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) {
 	t.Helper()
-	ctx := context.Background()
-	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+	if err := queueKeptCatchUp(context.Background(), pool, records, root, launch, now); err != nil {
+		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
+	}
+}
+
+// queueKeptCatchUp queues keptCatchUp's catch-up and answers its error rather than failing a test,
+// for a caller that runs inside a row's run (lapsingCatchUp.drop).
+func queueKeptCatchUp(ctx context.Context, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) error {
+	return store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		stored, err := records.Issue(ctx, tx, root)
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
 		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now)
-	}); err != nil {
-		t.Fatalf("queue the catch-up of %s for launch %d: %v", root, launch, err)
-	}
+	})
 }
 
 // leaseCatchUp leases the one catch-up of root the outbox holds, as a lane does before it runs it
@@ -200,9 +205,9 @@ func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, r
 // A ready's drop of the root's queued catch-ups (Store.DropCatchUps) leaves the one catch-up that
 // is publishing what it named: the drop would release its decisions and the fresh catch-up, written
 // in the same transaction, would name them again, telling the architect that already has the
-// publish in its hands a person's decision twice. A catch-up under a live lease that carries kept
-// decisions is left for its own ending to settle — here the publish, which forgets exactly what it
-// named — and the fresh catch-up names only what nobody claims.
+// publish in its hands a person's decision twice. A catch-up carrying kept decisions while a row of
+// its telling holds a claim is left for its own ending to settle — here the publish, which forgets
+// exactly what it named — and the fresh catch-up names only what nobody claims.
 func TestAReadyLeavesTheCatchUpThatIsPublishingWhatItNamed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

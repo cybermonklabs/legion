@@ -50,9 +50,15 @@ const (
 	// id is rotated by a prompt retry.
 	outboxDeliveryPrefix = "outbox:"
 	// outboxLease is how long a claim holds a row, and the sweep's default interval
-	// (sweepInterval, outbox_lanes.go): a running row renews its lease every third of it, so a
-	// lease lapses only on a run that ended without its finish or retry recorded, and a sweep at
-	// most this far apart finds the lapsed row within one more.
+	// (sweepInterval, outbox_lanes.go): a running row renews its lease every third of it, and a
+	// sweep at most this far apart finds a lapsed row within one more. A lease lapses on a run that
+	// ended without its finish or retry recorded, and it can lapse while the database answers too,
+	// on a run whose renewals are held back past it, as in a process the scheduler stalls. Such a
+	// run still goes on to its settle. One that ends after the last lease its renewal committed (the
+	// claim's own if none did) is logged at Warn (runRow); a lapse that a later renewal heals is not
+	// logged, since a renewal matches on the token alone (record.Store.RenewOutboxLease) and moves
+	// the lapsed lease ahead again. A drop of the issue's catch-ups keeps a catch-up naming kept
+	// decisions while its claim stands (record.Store.DropCatchUps).
 	outboxLease = 30 * time.Second
 	// outboxSettleTimeout bounds a row's finish or retry once the daemon's stop has cancelled the
 	// lane's context: the row's effect ran, and a settle that waits for the stop's context would

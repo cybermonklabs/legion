@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// keptHandOverSeeds is the seeds of TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild,
+// which TestTheKeptModelRunsOnlyRowsALaneWouldClaim drives under its audit too.
+var keptHandOverSeeds = []int64{13, 20, 24}
+
 // A child's decision that an old root's start task already named, and that the task still holds
 // unsent when the old root's linger hands the child over, belongs to the child's new tree: the
 // hand-over must give it to the child's architect, not leave it in the old architect's task, which
@@ -24,7 +28,7 @@ func TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild(t *testin
 	t.Parallel()
 	// Each seed's run has a database, runtime and state directory of its own (newKeptRun), so the
 	// seeds run in parallel, with each other and with the other kept-decision seed tests.
-	for _, seed := range []int64{13, 20, 24} {
+	for _, seed := range keptHandOverSeeds {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			t.Parallel()
 			run := newKeptRun(t, seed, 300)
