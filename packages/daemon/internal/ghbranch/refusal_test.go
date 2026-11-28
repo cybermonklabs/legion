@@ -102,6 +102,16 @@ func TestEachRefusalForGoodNamesItsKind(t *testing.T) {
 			answer: answering(http.MethodGet, repositoryPath, http.StatusOK, `{"full_name":"acme/widgets","default_branch":"main"}`)}, want: RefusedNoNodeID},
 		{name: "a move whose repository GitHub does not show", write: resetting, g: &github{refs: atMerge(),
 			answer: answering(http.MethodGet, repositoryPath, http.StatusNotFound, `{"message":"Not Found","status":"404"}`)}, want: RefusedNotFound},
+		// A token that cannot see the repository is answered 404 for every read under it, which
+		// is GitHub hiding the repository, not a branch it lacks: not-found, as a create names it,
+		// never no-base, which would send the architect after a base nobody deleted.
+		{name: "a move by a token that cannot see the repository", write: resetting, g: &github{refs: atMerge(),
+			answer: func(r *http.Request) (int, string, bool) {
+				if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, repositoryPath) {
+					return 0, "", false
+				}
+				return http.StatusNotFound, `{"message":"Not Found","status":"404"}`, true
+			}}, want: RefusedNotFound},
 		{name: "a move the GraphQL endpoint forbids", write: resetting, g: &github{refs: atMerge(),
 			answer: answering(http.MethodPost, graphQLPath, http.StatusForbidden, `{"message":"Resource not accessible by integration"}`)}, want: RefusedGraphQLForbidden},
 		{name: "a move with no GraphQL endpoint", write: resetting, g: &github{refs: atMerge(),

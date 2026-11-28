@@ -116,6 +116,26 @@ func TestResetNamesABranchThatIsGoneAfterAnAnswerThatUpdatedNothing(t *testing.T
 	}
 }
 
+// A branch another party creates between Reset's read of it and Reset's create is no refusal:
+// GitHub answers the create 422 "Reference already exists", as Create reads it (alreadyExists),
+// and Reset reads the branch again and judges its tip as any other. Read as the create's 422, it
+// ended the row for good as `unprocessable`, though a retry would have found the branch. The
+// control is a create GitHub refuses as unprocessable for another reason, which stays a refusal
+// (TestEachRefusalForGoodNamesItsKind).
+func TestResetJudgesABranchCreatedAfterItsRead(t *testing.T) {
+	g := &github{refs: map[string]string{"main": baseHead}}
+	g.create = func() (int, string) {
+		g.mu.Lock()
+		g.refs[resetBranch] = baseHead
+		g.mu.Unlock()
+		return http.StatusUnprocessableEntity, `{"message":"Reference already exists","status":"422"}`
+	}
+	got, err := g.reset(t, "main", "main")
+	if err != nil || got.Outcome != Stands || got.Tip != baseHead {
+		t.Fatalf("Reset = %+v, %v; want the branch another party made at the base's head judged as standing there", got, err)
+	}
+}
+
 // A push that lands on the branch between Reset's read of its tip and its move is not overwritten:
 // GitHub refuses the move, which names the merged head as the commit the branch must point at, and
 // Reset reads the branch again and judges its new tip as any other. A tip that holds commits the
