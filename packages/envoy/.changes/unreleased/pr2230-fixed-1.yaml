@@ -20,8 +20,7 @@ body: |-
   is refused by name, because the SDK strips those out of the schema and writes them into the
   node's description, where they are prose to the model. The check reaches every property, every
   array's items and every definition, a definition nested below the root included, and reads
-  each node once however many `$ref`s name it, so it takes time in proportion to the schema's
-  size.
+  each node once however many `$ref`s name it.
 
   Because every Final schema is now inside that subset, an `openai-chat` run sends the schema in
   OpenAI's strict mode — `response_format.json_schema` with `strict: true`, where it sent

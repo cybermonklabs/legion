@@ -45,9 +45,10 @@ var strictFormats = []string{
 // which is how a run finds out that a schema would ride to the model and bind nothing. The
 // error names the JSON path of the node at fault and what is wrong with it, so the caller fixes
 // the schema rather than the symptom; the caller of this function gives it its prefix. The walk
-// starts at the root, then walks each definition it came to, in the order it came to them, until
-// none is left (defs). No node is in progress when one of those walks starts, so a definition is
-// not inside the node whose $defs holds it, and a definition already done is not walked again.
+// starts at the root, then takes each definition it came to off the queue, in the order it came
+// to them, until none is left (defs), and walks it unless a $ref walked it first. No node is in
+// progress when one of those walks starts, so a definition is not inside the node whose $defs
+// holds it.
 func strictFinal(final json.RawMessage) error {
 	var doc any
 	if err := json.Unmarshal(final, &doc); err != nil {
@@ -69,8 +70,8 @@ func strictFinal(final json.RawMessage) error {
 
 // strictSchema is one walk of a Final schema: the whole document, which a $ref points into; how
 // far the walk has come with each node, keyed by the pointer a $ref names the node by (node);
-// and the definitions the walk came to and has not walked yet, in the order it came to them
-// (defs).
+// and the definitions the walk came to, in the order it came to them, which strictFinal walks
+// unless a $ref walked them first (defs).
 type strictSchema struct {
 	doc    any
 	states map[string]strictState
@@ -88,8 +89,9 @@ const (
 	strictDone
 )
 
-// strictDef is a definition the walk came to and walks later: the definition itself, the path an
-// error names it by, and the pointer a $ref names it by.
+// strictDef is a definition the walk came to, which strictFinal walks unless a $ref walked it
+// first: the definition itself, the path an error names it by, and the pointer a $ref names it
+// by.
 type strictDef struct {
 	value         any
 	path, pointer string
@@ -102,13 +104,13 @@ type strictDef struct {
 // checks run once however many $refs name it, and a node in progress that the walk comes to
 // again ends a chain of properties, items and $refs that leads from the node back to itself.
 // That is a recursive schema, which Anthropic does not serve, and the error names the path the
-// walk came to the node by the second time.
+// walk came to the node by the second time and the pointer of the node.
 func (s *strictSchema) node(value any, path, pointer string) error {
 	switch s.states[pointer] {
 	case strictDone:
 		return nil
 	case strictInProgress:
-		return fmt.Errorf("%s: a recursive $ref, %q", at(path), pointer)
+		return fmt.Errorf("%s: a recursive schema, which comes back to %q", at(path), pointer)
 	}
 	s.states[pointer] = strictInProgress
 	if err := s.check(value, path, pointer); err != nil {
@@ -318,9 +320,10 @@ func (s *strictSchema) scalar(m map[string]any, path string) error {
 
 // defs is the node's own definitions put in the walk's queue, each with the path an error names
 // it by and the pointer a $ref names it by, the node's own with the keyword and the definition's
-// name after it. strictFinal walks them once the walk that came to them is over, so a definition
-// the schema never uses is held to the same subset, and a definition that names the node holding
-// it is no recursive schema unless that node leads back to the definition.
+// name after it. Once the walk that came to them is over, strictFinal walks each of them that a
+// $ref did not walk first, so a definition the schema never uses is held to the same subset, and
+// a definition that names the node holding it is no recursive schema unless that node leads back
+// to the definition.
 func (s *strictSchema) defs(m map[string]any, path, pointer string) error {
 	for _, keyword := range []string{"$defs", "definitions"} {
 		raw, ok := m[keyword]

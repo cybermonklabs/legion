@@ -103,7 +103,7 @@ func TestAFinalSchemaOutsideTheStrictSubsetIsRefused(t *testing.T) {
 		final: `{"type":"object","properties":{"node":{"$ref":"#/$defs/node"}},"required":["node"],` +
 			`"additionalProperties":false,"$defs":{"node":{"type":"object",` +
 			`"properties":{"next":{"$ref":"#/$defs/node"}},"required":["next"],"additionalProperties":false}}}`,
-		want: `agentloop: the request's final schema: properties.node.properties.next: a recursive $ref, "#/$defs/node"`,
+		want: `agentloop: the request's final schema: properties.node.properties.next: a recursive schema, which comes back to "#/$defs/node"`,
 	}, {
 		name: "a recursive schema through a definition below a definition",
 		final: `{"type":"object","properties":{"p":{"$ref":"#/$defs/a"}},"required":["p"],` +
@@ -113,7 +113,17 @@ func TestAFinalSchemaOutsideTheStrictSubsetIsRefused(t *testing.T) {
 			`"properties":{"back":{"$ref":"#/$defs/a"}},"required":["back"],"additionalProperties":false}}}}}`,
 		// Every a holds an a2, which is a d, whose back is an a again. The walk comes to
 		// d through a2, not through the $defs of n, so it finds the cycle at back.
-		want: `agentloop: the request's final schema: properties.p.properties.a2.properties.back: a recursive $ref, "#/$defs/a"`,
+		want: `agentloop: the request's final schema: properties.p.properties.a2.properties.back: a recursive schema, which comes back to "#/$defs/a"`,
+	}, {
+		name: "a recursive schema that comes back on a property",
+		final: `{"type":"object","properties":{"p":{"$ref":"#/$defs/a/properties/x"}},"required":["p"],` +
+			`"additionalProperties":false,"$defs":{"a":{"type":"object",` +
+			`"properties":{"x":{"type":"object","properties":{"y":{"$ref":"#/$defs/a"}},"required":["y"],"additionalProperties":false}},` +
+			`"required":["x"],"additionalProperties":false}}}`,
+		// Every x holds a y, which is an a, which holds an x again. The walk comes to x
+		// through the $ref of p, then to x a second time as a property of a, so the node
+		// at the path is the property x and not a $ref.
+		want: `agentloop: the request's final schema: properties.p.properties.y.properties.x: a recursive schema, which comes back to "#/$defs/a/properties/x"`,
 	}, {
 		name: "a $ref that names nothing",
 		final: `{"type":"object","properties":{"step":{"$ref":"#/$defs/step"}},"required":["step"],` +
