@@ -108,6 +108,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import Counter
 
 UNKNOWN = "UNKNOWN"
 
@@ -180,12 +181,11 @@ def shown(value: object, spelled: str = "{}") -> str:
 def cpu_parts(cpuinfo: str) -> str:
     """Each distinct `CPU part` of /proc/cpuinfo with the number of CPUs that have it, in the order
     of first appearance; empty when it names none."""
-    counts: dict[str, int] = {}
+    counts: Counter[str] = Counter()
     for line in cpuinfo.splitlines():
         name, colon, value = line.partition(":")
         if colon and name.strip() == "CPU part":
-            value = value.strip()
-            counts[value] = counts.get(value, 0) + 1
+            counts[value.strip()] += 1
     return ",".join(f"{value}:{count}" for value, count in counts.items())
 
 
@@ -562,14 +562,15 @@ def row_class(row: object) -> str | None:
     return "test"
 
 
-def job_line(directory: str) -> str:
-    """The `go-cpu job:` line of the rows in D."""
+def read_rows(directory: str) -> tuple[list[tuple[str, dict]], int]:
+    """Each row of D with its class, in name order, and the number of its files there that are no
+    row. Only D/*.json are rows: D/runner/ holds the runner's own files."""
     try:
         names = sorted(os.listdir(directory))
     except OSError:
-        names = []
-    counted = nested = runs = bad = 0
-    user = system = wall = 0.0
+        return [], 0
+    rows: list[tuple[str, dict]] = []
+    bad = 0
     for name in names:
         # The wrapper writes a row under a dot name and renames it into place.
         if name.startswith(".") or not name.endswith(".json"):
@@ -585,7 +586,18 @@ def job_line(directory: str) -> str:
         kind = row_class(row)
         if kind is None:
             bad += 1
-        elif kind == "nested":
+        else:
+            rows.append((kind, row))
+    return rows, bad
+
+
+def job_line(directory: str) -> str:
+    """The `go-cpu job:` line of the rows in D."""
+    rows, bad = read_rows(directory)
+    counted = nested = runs = 0
+    user = system = wall = 0.0
+    for kind, row in rows:
+        if kind == "nested":
             nested += 1
         elif kind == "run":
             runs += 1

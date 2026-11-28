@@ -3,12 +3,13 @@
 
 go runs `<this> <binary> <args...>` in the package's directory for each test binary it runs
 (`go test -exec=<this>`, or GOFLAGS=-exec=<this>) and for the program of `go run -exec`. This
-wrapper runs the binary unchanged and exits as it did: its arguments, its environment, its stdin,
-stdout and stderr, its directory and the signals its caller left ignored are the binary's own, and
-SIGINT, SIGTERM, SIGQUIT and SIGHUP sent to the wrapper are passed on to it. Then it writes one
-JSON row for the binary into the record directory: the package's directory, the wall seconds, and
-the user and system CPU seconds of the binary and of every descendant it waited for, with the
-binary's own and its children's apart, so that a CI job can tell which package its CPU went to.
+wrapper runs the binary unchanged: its arguments, its environment, its stdin, stdout and stderr,
+its directory and the signals its caller left ignored are the binary's own, and SIGINT, SIGTERM,
+SIGQUIT and SIGHUP sent to the wrapper are passed on to it. Then it writes one JSON row for the
+binary into the record directory: the package's directory, the wall seconds, and the user and
+system CPU seconds of the binary and of every descendant it waited for, with the binary's own and
+its children's apart, so that a CI job can tell which package its CPU went to. Last it exits as
+the binary did.
 
 The record directory is $GO_CPU_DIR, else $RUNNER_TEMP/go-test-events/cpu. With neither set the
 wrapper execs the binary in its own process and records nothing, so a run outside CI pays only

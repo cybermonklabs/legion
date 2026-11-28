@@ -2977,9 +2977,11 @@ the store-form count runs (`packages/envoy/scripts/backend-count.sh`) and those 
 own test runs (`packages/envoy/scripts/database-skips.test.sh`), and no go test line changes: the
 pins of `.github/ci-gates/envoy-go.py` and the hashes
 `.github/scripts/audited_scripts.py` keeps of the audited scripts stay as they are. The wrapper runs
-the binary unchanged and exits as it did, then writes one JSON row for it into
-`$RUNNER_TEMP/go-test-events/cpu/`; its header says what it passes on and what a row holds.
-`database-skips.test.sh` sets GOFLAGS itself in fourteen runs, each replacing the job's, so it puts
+the binary unchanged, writes one JSON row for it into `$RUNNER_TEMP/go-test-events/cpu/`, then
+exits as the binary did; its header says what it passes on and what a row holds.
+`database-skips.test.sh` sets GOFLAGS itself at fourteen call sites, which run 23 times
+(control 1's loop over four packages runs two of them four times each, and the loop over the two
+variables, each unset and then empty, runs one four times), each replacing the job's, so it puts
 the job's `-exec=` entry first in each of them, and points GO_CPU_DIR at the job's directory.
 
 The CI filter engine refuses an env name outside `ENV_ALLOWED` around a go command it reduces or a
@@ -3016,7 +3018,9 @@ Two steps around each job's tests print what the rows add up to:
 The report only measures: it runs under `if: always()`, so a failed or cancelled job is measured
 too, with `continue-on-error: true`, so it fails neither the job nor its ci-ok report, and with
 `timeout-minutes: 2`. The start's `timeout-minutes: 1` bounds its probe, which hashes 256 MiB once
-and once on each CPU. Each job's `timeout-minutes` and `JOB_TIMEOUT_MINUTES` grew by those 3: the
+and once on each CPU, and its `continue-on-error: true` keeps a start that runs past that minute
+from failing the job or its tests, since no test result may depend on the record. Each job's
+`timeout-minutes` and `JOB_TIMEOUT_MINUTES` grew by those 3: the
 legs, envoy-go-race-impossible and envoy-go-skips from 35 to 38, envoy-go-natslive from 50 to 53 and
 envoy-go-alone from 175 to 178. envoy-go-checks, which runs no go test, runs the same two steps, its
 report printing the usage line alone (`rows: "false"`, with no Postgres and no upload), and its

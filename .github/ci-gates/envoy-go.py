@@ -1,7 +1,3 @@
-# The two steps of each Go job of ENVOY_GO_FILE that open and close its CPU record around its go
-# tests (.github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary).
-GO_CPU_START = "Record the runner's facts and start its CPU sample"
-GO_CPU_REPORT = "Report the CPU time of each test binary"
 # The envoy_go filter's gate: what job envoy-go reads. Its steps are in the jobs of the file it
 # calls (ENVOY_GO_FILE): the unit step in the legs of envoy-go-legs, each over the packages
 # .github/go-legs.yaml lists for it, and the job's other steps beside them in envoy-go-alone,
@@ -112,12 +108,8 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (".github/scripts/go-cpu-exec.py",
      f"{ENVOY_GO_FILE}'s env hands it to every go test of the file's jobs as GOFLAGS' -exec, so each test "
      f"binary of {at(ENVOY_LEGS_JOB, UNIT_TEST_STEP, ENVOY_GO_FILE)} and of every other go test there runs through it"),
-    (".github/scripts/go-cpu-runner.py",
-     f"{at(ENVOY_LEGS_JOB, GO_CPU_START, ENVOY_GO_FILE)} and {at(ENVOY_LEGS_JOB, GO_CPU_REPORT, ENVOY_GO_FILE)} "
-     "run it through their actions"),
-    (".github/actions/go-cpu-start/**", at(ENVOY_LEGS_JOB, GO_CPU_START, ENVOY_GO_FILE)),
-    (".github/actions/go-cpu-report/**", at(ENVOY_LEGS_JOB, GO_CPU_REPORT, ENVOY_GO_FILE)),
-) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+) + go_cpu_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
   + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE))
 GATE = with_reads(GATE, [

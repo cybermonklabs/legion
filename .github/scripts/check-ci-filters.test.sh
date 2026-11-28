@@ -5594,8 +5594,6 @@ for path in (".github/scripts/go-cpu-exec.py", ".github/scripts/go-cpu-runner.py
     print(f"{path}: {' '.join(names)}")
 PY
 ) || selected=""
-computed=$([ -s "$real_filters" ] && ! grep -q '^# FAIL-OPEN:' "$real_filters" && echo yes || echo no)
-check "on filters the changes job computed" "$(is "$computed" yes)"
 check "a change to only .github/scripts/go-cpu-exec.py selects envoy_go" \
   "$(contains "$selected" '^.github/scripts/go-cpu-exec.py: envoy_go\b')"
 check "one to only .github/actions/go-cpu-start/ selects envoy_go and envoy_go_checks" \

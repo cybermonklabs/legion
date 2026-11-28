@@ -508,7 +508,7 @@ check "and its statistic within each value of the second" "$(is "$(grep '^within
 
 echo "case F5: the package directories whose tests use Postgres, and the others"
 tree="$work/envoy"
-mkdir -p "$tree/store" "$tree/broker" "$tree/comment" "$tree/lookalike" "$tree/aliased" "$tree/plain" "$tree/testdata/ignored"
+mkdir -p "$tree/store" "$tree/broker" "$tree/comment" "$tree/lookalike" "$tree/aliased" "$tree/plain" "$tree/testdata/ignored" "$tree/nested"
 cat > "$tree/store/store_test.go" << 'EOF'
 package store
 
@@ -570,6 +570,12 @@ package ignored
 
 import "example.com/storetest"
 EOF
+printf 'module example.com/nested\n\ngo 1.27.3\n' > "$tree/nested/go.mod"
+cat > "$tree/nested/nested_test.go" << 'EOF'
+package nested
+
+import "example.com/storetest"
+EOF
 read_run postgres-packages --root "$tree"
 check "a package whose test imports storetest uses Postgres" "$(is "$(pick packages package=store postgres why)" $'yes\tstore/store_test.go imports github.com/cybermonklabs/legion/packages/envoy/internal/dispatch/store/storetest')"
 check "so does one whose test names BROKER_TEST_DATABASE_URL" "$(is "$(pick packages package=broker postgres why)" $'yes\tbroker/broker_test.go names BROKER_TEST_DATABASE_URL')"
@@ -578,6 +584,7 @@ check "a package that names the variable only in a comment of a file that is no 
 check "nor one whose import only ends in the same letters, under a comment that names storetest" "$(is "$(pick packages package=lookalike postgres)" no)"
 check "nor one with no test file" "$(is "$(pick packages package=plain postgres)" no)"
 check "and a directory go ignores, testdata, is no package" "$(is "$(pick packages package=testdata/ignored postgres)" "")"
+check "nor is a nested module, a directory with its own go.mod, which go test ./... here does not walk" "$(is "$(pick packages package=nested postgres)" "")"
 check "it exits 0" "$(is "$status" 0)"
 
 echo "case F5 applied: the per-package ratios over five runs of leg 5, whose second waits on Postgres"

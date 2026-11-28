@@ -2000,11 +2000,11 @@ def env_reason(document: dict, job: dict, steps: list, exec_wrapped: bool) -> st
     to GO_CPU_GOFLAGS."""
     blocks = [("the workflow's", document.get("env"), exec_wrapped), ("the job's", job.get("env"), exec_wrapped)]
     blocks += [(f'step "{step_label(s)}"\'s', s.get("env"), False) for s in steps]
-    for where, env, wrapped in blocks:
+    for where, env, takes_exec in blocks:
         if env is not None and not isinstance(env, dict):
             return f"{where} env is an expression"
         for name in env or {}:
-            if name in ENV_ALLOWED or (wrapped and name == "GOFLAGS" and env[name] == GO_CPU_GOFLAGS):
+            if name in ENV_ALLOWED or (takes_exec and name == "GOFLAGS" and env[name] == GO_CPU_GOFLAGS):
                 continue
             return f"{where} env sets {name}"
     return ""

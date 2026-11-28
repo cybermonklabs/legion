@@ -13,7 +13,9 @@ description: >-
   The calling step goes right after the job's cache restore, so the cache count is that of the
   restored cache and new_cache_entries in the report is what the job's own builds added, and it
   sets `timeout-minutes: 1`: the probe hashes 256 MiB once and once on each CPU, which takes
-  seconds, and a step of a composite action cannot set a timeout of its own.
+  seconds, and a step of a composite action cannot set a timeout of its own. It sets
+  `continue-on-error: true` too, so a start that runs past its minute fails neither the job nor
+  its tests: no test result may depend on the record.
 
 inputs:
   sampler:
@@ -33,11 +35,13 @@ runs:
         SAMPLER: ${{ inputs.sampler }}
       run: |
         set -euo pipefail
+        arguments=()
         case "$SAMPLER" in
-          true) "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" start ;;
-          false) "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" start --no-sampler ;;
+          true) ;;
+          false) arguments+=(--no-sampler) ;;
           *)
             echo "::error::go-cpu-start: the sampler input is \"$SAMPLER\", and it takes \"true\" or \"false\"" >&2
             exit 1
             ;;
         esac
+        "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" start "${arguments[@]}"

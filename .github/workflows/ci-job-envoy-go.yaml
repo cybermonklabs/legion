@@ -112,6 +112,7 @@ jobs:
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
       - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
         timeout-minutes: 1
         uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
@@ -294,6 +295,7 @@ jobs:
       # No sampler: nothing but the rows that measure time may load this runner.
       # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
       - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
         timeout-minutes: 1
         uses: ./.github/actions/go-cpu-start
         with:
@@ -431,6 +433,7 @@ jobs:
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
       - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
         timeout-minutes: 1
         uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
@@ -577,6 +580,7 @@ jobs:
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
       - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
         timeout-minutes: 1
         uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one
@@ -717,6 +721,7 @@ jobs:
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
       - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
         timeout-minutes: 1
         uses: ./.github/actions/go-cpu-start
       # The settings the service's command: line asks for, read back from the server; why each one

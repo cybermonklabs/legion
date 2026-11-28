@@ -2593,6 +2593,22 @@ SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispat
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
 # and is the verdict on them; envoy-go-checks and the test job each end with one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
+# The two steps that open and close a job's CPU record, in each Go job of ENVOY_GO_FILE and in
+# envoy-go-checks (.github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary).
+GO_CPU_START = "Record the runner's facts and start its CPU sample"
+GO_CPU_REPORT = "Report the CPU time of each test binary"
+
+
+def go_cpu_reads(job, workflow=""):
+    """The CPU record's two actions, and the script both run, in `job`'s two steps of them."""
+    start, report = at(job, GO_CPU_START, workflow), at(job, GO_CPU_REPORT, workflow)
+    return reads(
+        (".github/actions/go-cpu-start/**", start),
+        (".github/actions/go-cpu-report/**", report),
+        (".github/scripts/go-cpu-runner.py", f"{start} and {report} run it through their actions"),
+    )
+
+
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
 # stands for the command it compiles. EDITED_MIGRATIONS_BASE, which the step runs first, picks the

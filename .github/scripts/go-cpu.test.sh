@@ -153,23 +153,25 @@ wait_for() {
   return 1
 }
 
+# stat_field <pid> <n>: field <n> of /proc/<pid>/stat after its comm field, which a process's own
+# name cannot shift (1 is the state, 2 the parent's pid, 4 the session), or nothing when there is
+# no process <pid>. It forks nothing.
+stat_field() {
+  local stat fields
+  { read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 0
+  read -r -a fields <<< "${stat##*) }"
+  echo "${fields[$2 - 1]}"
+}
+
 # gone <pid>: succeeds when no process <pid> runs: there is none, or it is a zombie, which has
-# ended and waits only for whoever adopted it to reap it. It forks nothing, so a loop of it
+# ended and waits only for whoever adopted it to reap it. It starts no program, so a loop of it
 # measures the process rather than itself.
 gone() {
-  local stat
-  { read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 0
-  stat=${stat##*) }
-  [ "${stat%% *}" = Z ]
+  [[ $(stat_field "$1" 1) =~ ^Z?$ ]]
 }
 
 # parent_of <pid>: the pid of <pid>'s parent, or nothing when there is no process <pid>.
-parent_of() {
-  local stat state ppid rest
-  { read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 0
-  read -r state ppid rest <<< "${stat##*) }"
-  echo "$ppid"
-}
+parent_of() { stat_field "$1" 2; }
 
 # now_us: the time in microseconds, from bash itself, so reading it forks nothing.
 now_us() {
@@ -635,12 +637,7 @@ matches() { [[ $1 =~ $2 ]] && echo true || echo false; }
 lines_in() { { wc -l < "$1"; } 2> /dev/null || echo 0; }
 
 # session_of <pid>: the session of <pid>, or nothing when there is no process <pid>.
-session_of() {
-  local stat session
-  { read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 0
-  read -r _ _ _ session _ <<< "${stat##*) }"
-  echo "$session"
-}
+session_of() { stat_field "$1" 4; }
 
 # The files of real runners R1, R3 and R4 parse, as the header says.
 fixtures="$script_dir/testdata/go-cpu"

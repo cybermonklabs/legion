@@ -77,6 +77,7 @@ jobs:
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
       - name: Record the runner's facts and start its CPU sample
+        continue-on-error: true
         timeout-minutes: 1
         uses: ./.github/actions/go-cpu-start
 
