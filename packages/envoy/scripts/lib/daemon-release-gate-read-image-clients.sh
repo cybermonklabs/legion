@@ -4,7 +4,8 @@
 # The --clients reader of the images, which daemon-release-gate.sh sources; it is not run on its
 # own. It reads the gate's deployment, work, compared, unknown, printable, first_line, last_line,
 # fetch, stack_pin (which sets pin and refuses one that is no image reference), its
-# compare_revision, and judge_release, which lib/daemon-release-gate-read-developer-box.sh defines.
+# compare_revision and its python3 reader (gate_python), and judge_release, which
+# lib/daemon-release-gate-read-developer-box.sh defines.
 # shellcheck disable=SC2154 # deployment, work, pin and fetch_error are the gate's
 
 # in_image <ref> <entrypoint> [<arg>...]: the output of <entrypoint> run in a container of <ref> with
@@ -96,12 +97,12 @@ client_image() {
   esac
 }
 
-# golden_pi_envoy <file> <path>: the pi_envoy <file>, the project's rendered legion.yaml at <path> in
-# the deployment, sets under runtime.kubernetes.plugins, or nothing when it sets no plugins; it
+# golden_pi_envoy <out> <file> <path>: writes the pi_envoy <file>, the project's rendered
+# legion.yaml at <path> in the deployment, sets under runtime.kubernetes.plugins, or nothing;
 # fails, naming why, on a file that is not one YAML mapping and on plugins that name no pi_envoy
 # this gate can read, as the daemon refuses a plugins block that is no mapping of both versions.
 golden_pi_envoy() {
-  python3 - "$1" "$2" <<'PY'
+  gate_python "$@" <<'PY'
 import json
 import sys
 
@@ -153,11 +154,12 @@ client_daemon() {
     unknown=$((unknown + 1))
     return
   fi
-  if ! version=$(golden_pi_envoy "$work/golden.yaml" "$golden" 2>"$work/err"); then
+  if ! golden_pi_envoy "$work/python.out" "$work/golden.yaml" "$golden"; then
     printf 'UNKNOWN: %s: %s %s\n' "$label" "$deployment" "$(last_line "$work/err")"
     unknown=$((unknown + 1))
     return
   fi
+  version=$(<"$work/python.out")
   if [ -n "$version" ]; then
     judge_release "$label" pi-envoy "$version" "; $golden sets it as runtime.kubernetes.plugins.pi_envoy"
     return

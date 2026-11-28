@@ -508,18 +508,16 @@ if ! { kc get pods --all-namespaces -o json >"$work/pods.json" 2>"$work/pods.err
          machine: ($c | machine), machine_from: ($c | machine_from), duplicates: ($c | duplicates),
          urls: ([$c.env[]? | select(.name == "NATS_URLS") | .value // empty] | first // null)}]
     | {bus: map(select(on_bus)), other: map(select(on_bus | not))}' \
-    "$work/pods.json" >"$work/listener-sets.json" 2>"$work/pods.err" &&
-  jq -c '.bus' "$work/listener-sets.json" >"$work/listeners.json" &&
-  jq -c '.other' "$work/listener-sets.json" >"$work/other-bus.json"; }; then
+    "$work/pods.json" >"$work/listener-sets.json" 2>"$work/pods.err"; }; then
   pods_error="the cluster's pods could not be listed: $(first_line "$work/pods.err")"
-  echo '[]' >"$work/listeners.json"
-  echo '[]' >"$work/other-bus.json"
+  # A failed listing leaves no listener on either side, never a partial classification.
+  echo '{"bus":[],"other":[]}' >"$work/listener-sets.json"
 fi
 
-# Each running listener's newest "listener legacy subjects" log line: {ok, text, at}, the metrics
-# text and the second it was read at, or {ok: false, error}. One jq lists the listeners' fields and
-# one joins every read to its listener, so a reading starts one jq per running listener and not
-# eight: a cluster runs a listener per machine.
+# Each running listener of the bus's set (listener-sets.json's .bus): its newest "listener legacy
+# subjects" log line, {ok, text, at}, the metrics text and the second it was read at, or {ok: false,
+# error}. One jq lists the listeners' fields and one joins every read to its listener, so a reading
+# starts one jq per running listener and not eight: a cluster runs a listener per machine.
 : >"$work/reads.jsonl"
 while IFS=$'\x1f' read -r ns pod container running; do
   read_json='{"ok": false, "error": "not running"}'
@@ -534,8 +532,8 @@ while IFS=$'\x1f' read -r ns pod container running; do
     fi
   fi
   printf '%s\n' "$read_json" >>"$work/reads.jsonl"
-done < <(jq -r '.[] | [.ns, .pod, .container, (.running | tostring)] | join("\u001f")' "$work/listeners.json")
-jq -c --slurpfile reads "$work/reads.jsonl" 'to_entries[] | .value + {read: $reads[.key]}' "$work/listeners.json" >"$work/pod-reads.jsonl"
+done < <(jq -r '.bus[] | [.ns, .pod, .container, (.running | tostring)] | join("\u001f")' "$work/listener-sets.json")
+jq -c --slurpfile reads "$work/reads.jsonl" '.bus | to_entries[] | .value + {read: $reads[.key]}' "$work/listener-sets.json" >"$work/pod-reads.jsonl"
 
 # --- the listeners outside it ---------------------------------------------------------------------
 : >"$work/outside-reads.jsonl"
@@ -544,11 +542,10 @@ for entry in ${outside[@]+"${outside[@]}"}; do
   url=${entry#*=}
   url=${url%/}
   if status=$(curl -sS --max-time 15 -o "$work/metrics" -w '%{http_code}' "$url/metrics" 2>"$work/metrics.err") && [ "$status" = 200 ]; then
-    read_json=$(jq -cn --rawfile text "$work/metrics" '{ok: true, text: $text}')
+    jq -cn --arg name "$name" --arg url "$url" --rawfile text "$work/metrics" '{name: $name, url: $url, read: {ok: true, text: $text}}' >>"$work/outside-reads.jsonl"
   else
-    read_json=$(jq -cn --arg error "${status:+HTTP $status }$(first_line "$work/metrics.err")" '{ok: false, error: "its /metrics could not be read: \($error)"}')
+    jq -cn --arg name "$name" --arg url "$url" --arg error "${status:+HTTP $status }$(first_line "$work/metrics.err")" '{name: $name, url: $url, read: {ok: false, error: "its /metrics could not be read: \($error)"}}' >>"$work/outside-reads.jsonl"
   fi
-  jq -cn --arg name "$name" --arg url "$url" --argjson read "$read_json" '{name: $name, url: $url, read: $read}' >>"$work/outside-reads.jsonl"
 done
 
 # --- the five facts' reads, at a second reading -------------------------------------------------
@@ -626,7 +623,13 @@ if [ -n "$since" ]; then
       : >"$work/auth-holders"
       while IFS= read -r configmap; do
         if kc -n "$job_namespace" get configmap "$configmap" -o json >"$work/configmap.json" 2>"$work/configmap.err"; then
-          if jq -e '.data | type == "object" and has("auth.conf")' "$work/configmap.json" >/dev/null 2>&1; then
+          # 10 means a single document without auth.conf. Keep the original reads for other errors.
+          if jq -js 'if length != 1 then halt_error(11)
+            elif (.[0].data | type == "object" and has("auth.conf")) then .[0].data["auth.conf"]
+            else halt_error(10) end' "$work/configmap.json" >"$work/auth.tmp" 2>/dev/null; then
+            echo "$configmap" >>"$work/auth-holders"
+            mv "$work/auth.tmp" "$work/auth.conf"
+          elif [ "$?" != 10 ] && jq -e '.data | type == "object" and has("auth.conf")' "$work/configmap.json" >/dev/null 2>&1; then
             echo "$configmap" >>"$work/auth-holders"
             jq -j '.data["auth.conf"]' "$work/configmap.json" >"$work/auth.conf"
           fi
@@ -653,11 +656,14 @@ if [ -n "$since" ]; then
   # in one queue group, so the spec is what is admitted only once the Deployment has settled on it:
   # its controller has seen this generation, every replica it runs is of this spec and available,
   # and none is still terminating where the cluster counts those. A Deployment that is rolling out,
-  # stalled included, may still admit through an older pod an entry its spec no longer lists.
+  # stalled included, may still admit through an older pod an entry its spec no longer lists. An
+  # answer that is not exactly one JSON document (none, or more than one) is no Deployment either:
+  # it is read as one that is no JSON object, never passed on to the judge as no value at all.
   broker_read='{"given": false}'
   if [ -n "$broker" ]; then
     if kc -n "${broker%%/*}" get deployment "${broker#*/}" -o json >"$work/broker.json" 2>"$work/broker.err"; then
-      broker_read=$(jq -c '(.spec.replicas // 1) as $want | (.status // {}) as $s
+      broker_read=$(jq -c -s --arg broker "$broker" 'if length == 1 then .[0] else error("not one document") end
+        | (.spec.replicas // 1) as $want | (.status // {}) as $s
         | {given: true}
         + if (.metadata.generation | type) != "number" or $s.observedGeneration != .metadata.generation
             or ($s.replicas // 0) != $want or ($s.updatedReplicas // 0) != $want
@@ -669,9 +675,8 @@ if [ -n "$since" ]; then
               elif ($e | length) > 1 then {error: "its containers set BROKER_NATS_SERVICES \($e | length) times"}
               elif ($e[0].value | type) != "string" or $e[0].valueFrom != null then {error: "its BROKER_NATS_SERVICES is no literal value (set through valueFrom)"}
               else {value: $e[0].value} end
-          end' "$work/broker.json" 2>/dev/null) ||
-        broker_read='{"given": true, "error": "its Deployment is no JSON object"}'
-      broker_read=$(jq -c --arg broker "$broker" 'if .error then .error = "the Deployment \($broker): \(.error)" else . end' <<<"$broker_read")
+          end | if .error then .error = "the Deployment \($broker): \(.error)" else . end' "$work/broker.json" 2>/dev/null) ||
+        broker_read='{"given":true,"error":"the Deployment '"$broker"': its Deployment is no JSON object"}'
     else
       broker_read=$(jq -cn --arg error "the Deployment $broker could not be read: $(first_line "$work/broker.err")" '{given: true, error: $error}')
     fi
@@ -847,7 +852,7 @@ jq -n \
   --argjson earlier "$earlier" \
   --arg pods_error "$pods_error" \
   --slurpfile pods "$work/pod-reads.jsonl" \
-  --slurpfile other_bus "$work/other-bus.json" \
+  --slurpfile listener_sets "$work/listener-sets.json" \
   --arg bus "$bus_urls" \
   --argjson bus_aliases "$bus_aliases" \
   --slurpfile outside "$work/outside-reads.jsonl" \
@@ -857,7 +862,7 @@ jq -n \
   --slurpfile facts "$work/facts.json" \
   '{context: $context, started_at: $started, finished_at: $finished, earlier: $earlier,
     pods_error: (if $pods_error == "" then null else $pods_error end),
-    pods: $pods, other_bus: ($other_bus[0] // []), bus: $bus, bus_aliases: $bus_aliases, outside: $outside,
+    pods: $pods, other_bus: ($listener_sets[0].other // []), bus: $bus, bus_aliases: $bus_aliases, outside: $outside,
     job: {ok: ($job_ok == 1), error: (if $job_error == "" then null else $job_error end), lines: $lines},
     facts: $facts[0]}' >"$work/input.json"
 # A judgement that fails on what it was given (a fault in the judge itself) is a reading that could
@@ -889,15 +894,27 @@ if ! (set -o noclobber && jq '.record' "$work/judgement.json" >"$record") 2>"$wo
   exit 3
 fi
 
-verdict=$(jq -r .verdict "$work/judgement.json")
+# Read only the fields used by this verdict. For an unexpected judge result, keep the
+# separate reads and their diagnostics. Only jq's shell-quoted assignments reach eval.
+if verdict_fields=$(jq -ers 'select(length == 1) | .[0]
+    | if .verdict == "clean" and (.found | type == "number") and (.last_seq | type == "number" or . == null) then
+        @sh "verdict=clean again=\(.again | todate) found=\(.found) last_seq=\(.last_seq)"
+      elif .verdict == "open" or .verdict == "shut" or .verdict == "unknown" then @sh "verdict=\(.verdict)"
+      else empty end' "$work/judgement.json" 2>/dev/null); then
+  eval "$verdict_fields"
+else
+  verdict=$(jq -r .verdict "$work/judgement.json")
+fi
 case "$verdict" in
   open) echo "GATE OPEN"; exit 0 ;;
   shut) echo "GATE SHUT"; exit 1 ;;
   unknown) echo "UNKNOWN"; exit 3 ;;
   clean)
-    again=$(jq -r '.again | todate' "$work/judgement.json")
-    found=$(jq -r .found "$work/judgement.json")
-    last_seq=$(jq -r .last_seq "$work/judgement.json")
+    if [ -z "$verdict_fields" ]; then
+      again=$(jq -r '.again | todate' "$work/judgement.json")
+      found=$(jq -r .found "$work/judgement.json")
+      last_seq=$(jq -r .last_seq "$work/judgement.json")
+    fi
     echo "FIRST READING: $record holds a first reading of every surface, with $found FOUND line(s) naming old-form names still in use; read again at or after $again with --since $record and the five facts' flags: that reading opens only if the stream then holds no old-form message (none after stream sequence $last_seq), no listener's count moved, no interest record or consumer filter holds an old form, and the pins, the running clients, the publishers and the consumers are all past the old form"
     exit 4
     ;;

@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `daemon-release-gate.sh --clients` reads a python3 reader that ends, or never starts, before it
+  answers as no answer: each question it then leaves open is UNKNOWN naming the reader. Such a
+  reader used to stop the gate with no verdict line when it ended at the question whether the
+  dotfiles' pi-envoy resolves, and its silence at the question whether HOME, the dotfiles directory
+  or CLAUDE_CONFIG_DIR is UTF-8 read as a name that is no UTF-8.
+time: 2026-11-28T16:30:42Z
+custom:
+    Issue: INFRA-6359

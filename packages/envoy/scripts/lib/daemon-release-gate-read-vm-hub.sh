@@ -2,8 +2,8 @@
 # packages/envoy/scripts/lib/daemon-release-gate-read-vm-hub.sh
 #
 # The --listeners leg's reader of the VM hub, which daemon-release-gate.sh sources; it is not run on
-# its own. It reads the gate's deployment, work and first_line and last_line, and sets hub, hub_use,
-# hub_how and hub_head for the gate.
+# its own. It reads the gate's deployment, work, first_line and last_line and its python3 reader
+# (gate_python), and sets hub, hub_use, hub_how and hub_head for the gate.
 # shellcheck disable=SC2154 # deployment and work are the gate's
 # shellcheck disable=SC2034 # hub, hub_use, hub_how and hub_head are the gate's to read
 
@@ -64,7 +64,7 @@ vm_hub() {
     printf 'UNKNOWN: envoy: cannot fetch %s at %s: %s\n' "$deployment" "$hub_head" "$(first_line "$work/err")"
     return 1
   fi
-  if ! python3 - "$work/repo.tgz" "$work/tree.json" >"$work/go.hub" 2>"$work/err" <<'PY'; then
+  if ! gate_python "$work/go.hub" "$work/repo.tgz" "$work/tree.json" <<'PY'; then
 import ast
 import bisect
 import hashlib

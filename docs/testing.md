@@ -1467,6 +1467,8 @@ A reader takes the record as whole only when those two numbers agree, and the wa
 
 The job uploads those files, with each entry's `.name`, `.started`, `.ended` (the exact moment its command returned, `date +%s.%N`), `.seconds`, `.exit` and `.bound` and the wait's `judged` (how many harnesses it judged, which tells a job that queued none from one whose record was lost), as the artifact `harness-times-<job id>` with `.github/actions/harness-times-upload` (`if: always()`, so a failed, timed-out or cancelled job keeps what was stamped).
 The harnesses' own logs are not uploaded: `.lines` carries every line's text beside its time, and the wait step still prints each log into the job's log.
+A job may also keep the runner's load beside them: envoy-go-checks starts `.github/scripts/runner-load.sh` before it queues its first harness and stops it before the upload, which then carries `runner-load.tsv`, one line a second of `/proc/stat`'s processor ticks, context switches, forks and run queue, and the kernel's pressure stall totals for the processors, I/O and memory.
+An entry whose CPU is far below its wall waited, and the lines between its `.started` and `.ended` say on what: the difference of the first and the last gives the processors' busy, iowait and steal shares and the share of the interval in which tasks stalled, and `procs_running` above the processor count in most of them is a wait for a processor.
 The artifact is kept for 90 days, this repository's default: the two artifacts of run 46030298068, made on 2026-11-27, carry `expires_at` 2027-02-25.
 They are small — 193,212 bytes for the test job's 55 harnesses and 77,657 for envoy-go-checks' 26, as GitHub stored them in that run.
 

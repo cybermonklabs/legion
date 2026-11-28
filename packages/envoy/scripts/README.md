@@ -1234,14 +1234,26 @@ answers a single image and an index the way the real one does and runs an image'
 fake `npm`. Its fakes, fixture builders and assertion helpers are in
 `lib/daemon-release-gate-harness.sh`, and its scenarios of the daemon leg, the listener pins, the
 VM hub, the images' clients, the developer box, its versions, a project's fields and the reads
-that come back short in `lib/daemon-release-gate-cases-<group>.sh`, one file a group. The test
-runs each group in a process of its own (`lib/daemon-release-gate-group.sh`), up to one group per
-core at a time, and prints the groups in reading order once they have all ended, each with the
-seconds it took; `GATE_TEST_GROUP_SLOTS=1` runs them one at a time, to read a group's output as it
-runs, and `bash lib/daemon-release-gate-group.sh <group> /dev/null` runs one group alone. CI runs
-the test in the `envoy-go-checks` job of `.github/workflows/ci.yaml`. Two controls run
-with it: a copy of the gate whose VM leg reads an absent `listenerImage` as no hub, and one that
-reads pi-envoy alone in an image, must each open on the fixture that exists to catch it.
+that come back short in `lib/daemon-release-gate-cases-<group>.sh`, one file a group. Each run of
+the test runs one group, in a process of its own (`lib/daemon-release-gate-group.sh`), and prints
+its output as it runs, then the group's line with the seconds it took. From `packages/envoy`:
+
+```bash
+bash scripts/daemon-release-gate.test.sh <group>     # one group alone
+bash scripts/daemon-release-gate.test.sh --groups    # the group names, one a line, longest first
+failed=0; for g in $(bash scripts/daemon-release-gate.test.sh --groups); do bash scripts/daemon-release-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]
+```
+
+The groups are `versions`, `listeners`, `developer-box-surfaces`, `developer-box-records`,
+`developer-box`, `short-reads`, `short-reads-clients`, `vm-hub-archive`, `image-clients`,
+`image-clients-pins`, `vm-hub`, `daemons` and `project-fields`. With no group, or a name that is
+no group, the test exits 2 before it sets anything up, and so does any run while the list and the
+case files under `lib/` do not name the same groups.
+CI runs each group as a pool entry of its own,
+`scripts/daemon-release-gate.test.sh <group>`, in the `envoy-go-checks` job of
+`.github/workflows/ci.yaml`. Two controls run with it: a copy of the gate whose VM leg reads an
+absent `listenerImage` as no hub, and one that reads pi-envoy alone in an image, must each open on
+the fixture that exists to catch it.
 
 ## legacy-subjects-gate.sh
 
@@ -1608,8 +1620,14 @@ with `--broker` read of that Deployment in its namespace, and what `daemon-relea
 
 `legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl`, a fake `curl`, a fake
 `gh` and a fake `daemon-release-gate.sh`, with each Job's log written in its own format, runs the
-Job's own script under `sh` behind a fake `nats`, and holds the old-form rule row by row; CI runs
-it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`.
+Job's own script under `sh` behind a fake `nats`, and holds the old-form rule row by row. Each run
+of the test runs one group of its cases, `readings`, `facts`, `publishers` or `rules`, with the same
+command shape as `daemon-release-gate.test.sh` (`<group>`, `--groups`, exit 2 for none or an unknown
+one, and for any run while a `group_<name>` function of the file is one the list does not name),
+and the loop that runs every group, each alone, is
+`failed=0; for g in $(bash scripts/legacy-subjects-gate.test.sh --groups); do bash scripts/legacy-subjects-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]`.
+CI runs each group as a pool entry of its own in the `envoy-go-checks` job of
+`.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
 

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `daemon-release-gate.sh --clients` holds the marketplace path it reads to its rule after the
+  shell has taken a trailing newline or a NUL off it, so a path such as `a/..` followed by a
+  newline is UNKNOWN as no plain path inside the repository, never read; a path that is empty, as
+  a newline alone is once the shell takes it off, is UNKNOWN the same way, where the gate used to
+  ask GitHub for the contents of the repository's root in place of a marketplace file; and it
+  reads a marketplace source or an npm source that sets the empty key `""` as one setting a key the
+  gate does not read, UNKNOWN by name, where such a key used to pass as no key at all.
+time: 2026-11-28T13:36:20Z
+custom:
+    Issue: INFRA-6359

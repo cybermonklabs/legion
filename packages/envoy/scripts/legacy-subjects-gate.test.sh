@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # packages/envoy/scripts/legacy-subjects-gate.test.sh
 #
+# Run one group alone: bash scripts/legacy-subjects-gate.test.sh <group>
+# List the groups: bash scripts/legacy-subjects-gate.test.sh --groups
+#
 # Verdict test for legacy-subjects-gate.sh, behind a fake kubectl and a fake curl that answer from
 # a case directory and record every call, so it reads no cluster and no bus. The NATS Job's log is
 # written here in the Job's own format (lib/legacy-subjects-gate-nats.sh: five tab-separated fields,
@@ -49,9 +52,41 @@
 # held row by row. The summary counts cases.
 set -euo pipefail
 
+# CPU seconds at main 8e248d6c, run 46127046034 (job 140924069070), longest first:
+# publishers 23.2, readings 21.5, rules 18.1, facts 15.8.
+# Source: dispatch://INFRA-6359/artifact/case-cpu-at-main-tsv.
+readonly groups=(publishers readings rules facts)
+
+is_group() {
+  local name
+  for name in "${groups[@]}"; do
+    [ "$name" != "$1" ] || return 0
+  done
+  return 1
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = --groups ]; then
+  printf '%s\n' "${groups[@]}"
+  exit 0
+fi
+if [ "$#" -ne 1 ] || ! is_group "$1"; then
+  {
+    printf 'usage: bash scripts/legacy-subjects-gate.test.sh <group|--groups>; groups: %s\n' "${groups[*]}"
+    echo 'Run all: failed=0; for g in $(bash scripts/legacy-subjects-gate.test.sh --groups); do bash scripts/legacy-subjects-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]'
+  } >&2
+  exit 2
+fi
+readonly group=$1
+
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
+# fake <path>: writes the fake command at <path> from the body on stdin, started by the bash that
+# runs this test ($BASH) by its path: an `env bash` line would start env on every call.
+fake() {
+  { printf '#!%s\n' "$BASH" && cat; } >"$1"
+  chmod +x "$1"
+}
 # The gate runs from a copy of this directory's gate and lib/, beside a fake daemon-release-gate.sh
 # (the census of pinned builds (a1) and of listener pins (a3) read), which adds its arguments as a
 # line to $FAKE/release-gate.args and, with --listeners, prints $FAKE/release-gate-listeners.out
@@ -60,8 +95,7 @@ trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/gate/lib"
 cp "$here/legacy-subjects-gate.sh" "$root/gate/"
 cp "$here"/lib/legacy-subjects-gate-*.* "$root/gate/lib/"
-cat >"$root/gate/daemon-release-gate.sh" <<'EOF'
-#!/usr/bin/env bash
+fake "$root/gate/daemon-release-gate.sh" <<'EOF'
 printf '%s\n' "$*" >>"$FAKE/release-gate.args"
 case " $* " in
   *" --listeners "*)
@@ -71,7 +105,6 @@ esac
 cat "$FAKE/release-gate.out"
 exit "$(cat "$FAKE/release-gate.rc" 2>/dev/null || echo 0)"
 EOF
-chmod +x "$root/gate/daemon-release-gate.sh"
 gate="$root/gate/legacy-subjects-gate.sh"
 passed=0
 failed=0
@@ -83,8 +116,7 @@ fail() {
 
 # --- the fakes ------------------------------------------------------------------------------------
 mkdir -p "$root/bin"
-cat >"$root/bin/kubectl" <<'EOF'
-#!/usr/bin/env bash
+fake "$root/bin/kubectl" <<'EOF'
 # A fake kubectl that answers from the case directory $FAKE and records each call in $FAKE/calls.
 # A listener pod's log is its metrics file ($FAKE/metrics/<ns>.<pod>) written as the listener logs
 # it, on a "listener legacy subjects" line logged at $FAKE/log_at (now when that file is absent),
@@ -146,7 +178,9 @@ case "$*" in
     ns=$2
     pod=$4
     if [ -f "$FAKE/metrics/$ns.$pod" ]; then
-      at=$(cat "$FAKE/log_at" 2>/dev/null || date -u +%s)
+      if ! { [ -f "$FAKE/log_at" ] && at=$(<"$FAKE/log_at"); } 2>/dev/null; then
+        printf -v at '%(%s)T' -1
+      fi
       echo '{"time":"2026-11-21T00:00:00Z","level":"INFO","msg":"role claims cache warm-up"}'
       jq -cn --rawfile m "$FAKE/metrics/$ns.$pod" --argjson at "$at" '{time: ($at | todate), level: "INFO", msg: "listener legacy subjects", at: $at, metrics: $m}'
     else echo "Error from server (Forbidden): pods \"$pod\" is forbidden: User cannot get resource \"pods/log\"" >&2; exit 1
@@ -154,13 +188,14 @@ case "$*" in
   "-n envoy get deployment envoy-listener -o json") cat "$FAKE/deployment.json" ;;
   "-n envoy create -f "*" -o name")
     [ ! -e "$FAKE/create.fail" ] || { echo "Error from server (Forbidden): jobs.batch is forbidden" >&2; exit 1; }
-    case "$(jq -r .metadata.name "$5")" in
+    job_name=$(jq -r .metadata.name "$5")
+    case "$job_name" in
       legacy-subjects-census-*) cp "$5" "$FAKE/created-census-job.json" ;;
       *) cp "$5" "$FAKE/created-job.json" ;;
     esac
     # A file made at the record's path while the gate runs, the path named in record.racer.
-    [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(cat "$FAKE/record.racer")"
-    echo "job.batch/$(jq -r .metadata.name "$5")" ;;
+    [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(<"$FAKE/record.racer")"
+    echo "job.batch/$job_name" ;;
   "-n envoy get job "*" -o json") cat "$FAKE/job-status.json" ;;
   "-n envoy delete job "*) : ;;
   "-n envoy get job "*" --ignore-not-found -o name")
@@ -169,8 +204,7 @@ case "$*" in
   *) echo "fake kubectl: no answer for: $*" >&2; exit 99 ;;
 esac
 EOF
-cat >"$root/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+fake "$root/bin/gh" <<'EOF'
 # A fake gh for `gh api repos/cybermonklabs/legion/compare/<base>...<head> --jq <filter>`, answering
 # from $FAKE/compare/<head> and recording the call in $FAKE/calls.
 set -u
@@ -181,8 +215,7 @@ if [ -f "$FAKE/compare/$head" ]; then jq -c "$4" "$FAKE/compare/$head"
 else echo "gh: Not Found (HTTP 404)" >&2; exit 1
 fi
 EOF
-cat >"$root/bin/curl" <<'EOF'
-#!/usr/bin/env bash
+fake "$root/bin/curl" <<'EOF'
 # A fake curl for `curl -sS --max-time N -o FILE -w '%{http_code}' URL`, answering URL from
 # $FAKE/outside/<host> and recording the call in $FAKE/calls.
 set -u
@@ -203,7 +236,6 @@ if [ -f "$FAKE/outside/$host" ]; then cp "$FAKE/outside/$host" "$out"; printf 20
 else echo "curl: (7) Failed to connect to $host port 9020" >&2; exit 7
 fi
 EOF
-chmod +x "$root/bin/kubectl" "$root/bin/curl" "$root/bin/gh"
 
 # --- the clean fixture ----------------------------------------------------------------------------
 readonly envoy_image="ghcr.io/cybermonklabs/legion/envoy@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -581,20 +613,242 @@ first_reading_with() {
   first_reading_secs "$((hours * 3600))" "$@"
 }
 
+# first_reading_inputs prints the hash of the case directory's first-reading inputs: each path, its
+# type, its mode and its bytes in a stable order, independent of copy times.
+# calls, record.json and earlier.json are reading bookkeeping, not fixture answers.
+# Only a second reading uses the hub's statefulset{.json,.fail}, configmaps/ and configmap.fail,
+# the auth service's broker{.json,.fail}, release-gate{,-listeners}.{out,rc} and release-gate.args
+# for the pin reads, census.cut for the connection census, compare/ for its build checks, and
+# bsdbin/ for the case that puts a BSD wc on PATH for its second reading.
+# Keep all of job.log: the first reading reads its non-census rows.
+first_reading_inputs() {
+  LC_ALL=C tar -C "$FAKE" --sort=name --format=gnu --mtime=@0 --owner=0 --group=0 \
+    --anchored --no-wildcards \
+    --exclude=./calls --exclude=./record.json --exclude=./earlier.json \
+    --exclude=./statefulset.json --exclude=./statefulset.fail \
+    --exclude=./configmaps --exclude=./configmap.fail \
+    --exclude=./broker.json --exclude=./broker.fail \
+    --exclude=./release-gate.out --exclude=./release-gate.rc \
+    --exclude=./release-gate-listeners.out --exclude=./release-gate-listeners.rc \
+    --exclude=./release-gate.args --exclude=./census.cut --exclude=./compare --exclude=./bsdbin \
+    -cf - . | sha256sum
+}
+
+# The first readings this group took, one for each reader with its arguments: the directory each
+# ran in, the hash of its inputs, its exit status and its output.
+declare -A first_dirs=() first_inputs=() first_statuses=() first_outputs=()
+
 # first_reading_secs SECONDS_AGO READER [ARG...] is first_reading_with, moved SECONDS_AGO seconds.
+# The group takes one first reading for each reader with its arguments, in a copy of the first
+# case directory that asks for it, and a later case whose first-reading inputs hash the same uses
+# it: its status and output, the Job manifest it made, and its record moved so that it finished
+# SECONDS_AGO seconds before this call, as a reading taken now and moved that far would read. A
+# case whose inputs differ takes its own first reading.
 first_reading_secs() {
-  local seconds=$1
+  local seconds=$1 reader inputs record_dir=$FAKE now=null
   shift
-  "$@"
+  printf -v reader '%q ' "$@"
+  # An existing record makes the gate refuse the path. A racer writes to the original case
+  # directory, and a fixed log timestamp must be judged against the clock of this read.
+  if [[ ! -e "$FAKE/record.json" && ! -L "$FAKE/record.json" &&
+        ! -e "$FAKE/record.racer" && ! -e "$FAKE/log_at" ]]; then
+    inputs=$(first_reading_inputs)
+    if [ -z "${first_dirs[$reader]:-}" ]; then
+      record_dir="$root/first-reading-${#first_dirs[@]}"
+      cp -a "$FAKE" "$record_dir"
+      # The reading runs on the copy: FAKE names it for the reader and the fakes it starts.
+      FAKE=$record_dir "$@"
+      first_dirs[$reader]=$record_dir
+      first_inputs[$reader]=$inputs
+      first_statuses[$reader]=$status
+      first_outputs[$reader]=$output
+    elif [ "$inputs" = "${first_inputs[$reader]}" ]; then
+      record_dir=${first_dirs[$reader]}
+      status=${first_statuses[$reader]}
+      output=${first_outputs[$reader]}
+    fi
+  fi
+  if [ "$record_dir" = "$FAKE" ]; then
+    "$@"
+  else
+    printf -v now '%(%s)T' -1
+    # The fake kubectl writes only this Job manifest and calls at a cacheable first reading.
+    if [ -f "$record_dir/created-job.json" ]; then
+      cp "$record_dir/created-job.json" "$FAKE/created-job.json"
+    fi
+  fi
   [ "$status" = 4 ] || fail "the first reading exited $status, want 4 (FIRST READING); output:"$'\n'"$output"
-  if [ -f "$FAKE/record.json" ]; then
-    jq --argjson s "$seconds" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate)
-      | .listeners |= map(.read_at -= $s)' "$FAKE/record.json" >"$FAKE/earlier.json"
+  if [ -f "$record_dir/record.json" ]; then
+    jq --argjson s "$seconds" --argjson now "$now" '
+      ($s + (.finished_at - ($now // .finished_at))) as $shift
+      | .started_at -= $shift | .finished_at -= $shift | .read_at = (.started_at | todate)
+      | .listeners |= map(.read_at -= $shift)' "$record_dir/record.json" >"$FAKE/earlier.json"
   fi
   rm -f "$FAKE/record.json"
   : >"$FAKE/calls"
 }
 
+# The Job's own script, run under sh behind a fake nats that answers as the hub does. The fake
+# records every call, refuses the consumer list the way nats-server refuses a publish the grant
+# lacks (status 0, no output, the violation on standard error), and answers every other read: the
+# agent family lists one old-form subject, whose last message it answers whole, content and
+# headers with it, as the server does.
+mkdir -p "$root/natsbin"
+fake "$root/natsbin/nats" <<'EOF'
+printf '%s\n' "$*" >>"$CALLS"
+# The credential each call carries, as the nats CLI reads it from its environment: the user, and
+# whether a password or a token is set, never their values.
+printf 'user=%s password=%s token=%s\n' "${NATS_USER:-}" "${NATS_PASSWORD:+set}" "${NATS_TOKEN:+set}" >>"$CALLS.credentials"
+case "$1 $2" in
+  "req --raw")
+    case "$3" in
+      '$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS')
+        if [ -n "${REFUSE_LIST:-}" ]; then
+          echo 'nats: permissions violation: Permissions Violation for Publish to "$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS"' >&2
+          exit 0
+        fi
+        offset=$(jq -r .offset <<<"$4")
+        jq -cn --argjson o "$offset" '[range(0; 5) | "c\(.)"] as $all
+          | {type: "io.nats.jetstream.api.v1.consumer_list_response", total: 5, offset: $o, limit: 2,
+             consumers: [$all[$o:$o + 2][] | {name: ., config: {}}]}' ;;
+      '$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS')
+        if [ "$(printf '%s' "$4" | jq -r '.subjects_filter // ""' 2>/dev/null)" = 'notifications.agent.>' ]; then
+          echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":2,"offset":0,"limit":100000,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":3,"subjects":{"notifications.agent.ses_old":2,"notifications.agent.ACME.ses_a":1}}}'
+        else
+          echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0,"offset":0,"limit":0,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":0}}'
+        fi ;;
+      '$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS')
+        if [ -n "${FAKE_MSG_RAW:-}" ]; then
+          echo 'a private message, as no JSON'
+        else
+          jq -cn --argjson q "$4" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", message: {subject: $q.last_by_subj, seq: 77, time: "2026-11-20T10:00:00Z", hdrs: "TkFUUy8xLjANCg0K", data: "eyJtZXNzYWdlIjoiYSBwcml2YXRlIG1lc3NhZ2UifQ=="}}'
+        fi ;;
+      '$SYS.REQ.USER.INFO')
+        echo 'nats: permissions violation: Permissions Violation for Publish to "$SYS.REQ.USER.INFO"' >&2 ;;
+      *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
+    esac ;;
+  "kv ls") echo ses_a ;;
+  "kv get") echo '{"session_id":"ses_a","machine_id":"gke","dir":"/home/someone/private-work","title":"a title","topics":["notifications.agent.ses_a"]}' ;;
+  *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
+esac
+EOF
+# A fake nsc that fails as nsc can, after echoing what it read: the seed in the key directory the
+# Job's script gave it.
+fake "$root/natsbin/nsc" <<'EOF'
+dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir) dir=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat "$dir"/* 2>/dev/null
+echo "nsc: could not import the keys above"
+exit 1
+EOF
+
+# run_reads [ENV...] runs lib/legacy-subjects-gate-nats.sh as the gate's Job runs it (sh -c with the
+# script's text), with the fake nats first on PATH, for at most 20 seconds, keeping its output in
+# $FAKE/reads.out, its calls in $FAKE/reads.calls and its exit status in $status.
+run_reads() {
+  : >"$FAKE/reads.calls"
+  : >"$FAKE/reads.calls.credentials"
+  set +e
+  env -u NATS_USER -u NATS_PASSWORD -u NATS_TOKEN "$@" FORMS_JQ="$(cat "$here/lib/legacy-subjects-gate-forms.jq")" CALLS="$FAKE/reads.calls" WORK_DIR="$FAKE" PATH="$root/natsbin:$PATH" timeout 20 sh -c "$(cat "$here/lib/legacy-subjects-gate-nats.sh")" >"$FAKE/reads.out" 2>"$FAKE/reads.err"
+  status=$?
+  set -e
+}
+
+# The bus a second reading finds before the purge: every producer has moved and the old-form
+# messages are still stored. ACME-13's old-form subject's last message is stream sequence 812.
+# old_stream_rows replaces the case's issue subjects with one that still holds it.
+old_stream_rows() {
+  replace_row subjects "notifications.dispatch.issue.> 0" \
+    "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")" \
+    "$(last_message notifications.dispatch.issue.ACME-13.comment.created 812)"
+}
+
+# purge_refuses FACT WORDS runs legacy-subjects-purge.sh on the case's record and fails the case
+# unless it refuses, naming FACT read as WORDS, before any call.
+purge_refuses() {
+  : >"$FAKE/calls"
+  set +e
+  output=$(PATH="$root/bin:$PATH" bash "$here/legacy-subjects-purge.sh" --context example-cluster --reading "$FAKE/record.json" 2>&1)
+  status=$?
+  set -e
+  expect_status 1
+  expect_line "REFUSED: the reading $FAKE/record.json read $1 $2, not true"
+  [ ! -s "$FAKE/calls" ] || fail "the refused purge called $(head -n 1 "$FAKE/calls")"
+}
+
+# census_page SERVER OFFSET LIMIT TOTAL [CONNECTION...] prints one server's census answer for the
+# page asked at OFFSET.
+census_page() {
+  local server=$1 offset=$2 limit=$3 total=$4
+  shift 4
+  printf '%s\n' "$@" | jq -cs --arg s "$server" --argjson o "$offset" --argjson l "$limit" --argjson t "$total" 'map(select(. != null)) as $c
+    | {server: {name: $s, id: "N\($s)"}, error: null, data: {total: $t, offset: $o, limit: $l, connections: $c}}'
+}
+
+# Consumer pages, as the Job reads a list longer than one answer: each page from the last item of
+# the page before. pages_of TOTAL OFFSET:NAME,NAME... prints one consumers row per page.
+pages_of() {
+  local total=$1 page offset names
+  shift
+  for page in "$@"; do
+    offset=${page%%:*}
+    names=${page#*:}
+    line consumers "$offset" 0 "$(jq -cn --argjson total "$total" --argjson offset "$offset" --arg names "$names" --slurpfile all <(clean_consumers) '
+      ($names | split(",")) as $n
+      | {type: "io.nats.jetstream.api.v1.consumer_list_response", total: $total, offset: $offset, limit: 256,
+         consumers: [$n[] | . as $name | (($all | map(select(.name == $name)) | first) // {name: $name, config: {filter_subject: "notifications.team.\($name)"}})]}')" ""
+  done
+}
+
+# A uid with no passwd entry (a container run as an arbitrary uid) has no name for `id -un`: the
+# reading goes on with the Job's owner `unknown`, and ends in a verdict and a record.
+mkdir -p "$root/idbin"
+fake "$root/idbin/id" <<'EOF'
+if [ "${1:-}" = -un ]; then
+  echo "id: cannot find name for user ID 4242" >&2
+  exit 1
+fi
+exec /usr/bin/id "$@"
+EOF
+
+# A hub moved into the cluster is one bus by two names: Service envoy-hub, which the listener
+# Deployment dials, selects the hub's own pods, and the hub's session listener, which serves as
+# machine envoy-hub and is bound to its durable listener-envoy-hub, dials the hub's own Service.
+# The listener outside the cluster that served as envoy-hub before has left the bus, so these
+# readings name no --listener.
+readonly hub_service_url="nats://envoy-nats.envoy.svc.cluster.local:4222"
+
+# moved_cluster adds the hub's session listener, on the hub's own Service, to the case's cluster.
+moved_cluster() {
+  jq --argjson p "$(pod envoy envoy-nats-listener-5c7d hub-listener-uid-1 listener "$envoy_image" null 0 running envoy-hub "$hub_service_url")" \
+    '.items += [$p]' "$base/pods.json" >"$FAKE/pods.json"
+  metrics 7 0 "$hub_start" 0 envoy-hub >"$FAKE/metrics/envoy.envoy-nats-listener-5c7d"
+}
+
+# moved_reading [ARG...] runs the gate as a reading of the case, naming no listener outside the
+# cluster, writing $FAKE/record.json.
+moved_reading() {
+  local extra=()
+  case " $* " in *" --since "*) extra=("${facts[@]}") ;; esac
+  run_gate --context example-cluster --record "$FAKE/record.json" "$@" ${extra[@]+"${extra[@]}"}
+}
+
+# hub_pod_set JQ sets the hub's session listener's pod in the case's cluster by the jq update JQ.
+hub_pod_set() {
+  jq "(.items[] | select(.metadata.name == \"envoy-nats-listener-5c7d\")) |= ($1)" "$FAKE/pods.json" >"$FAKE/pods.json.new"
+  mv "$FAKE/pods.json.new" "$FAKE/pods.json"
+}
+
+readonly loadtest_url="nats://loadtest-nats.loadtest.svc.cluster.local:4222"
+
+# Each group is one function, called by name below. Its case bodies stay at the file's left margin,
+# so the text of each here-document in them is written byte for byte.
+group_readings() {
 # --- the old-form rule, row by row ----------------------------------------------------------------
 case_name="the old-form rule"
 case_failed=0
@@ -985,81 +1239,6 @@ expect_line "UNKNOWN: the stream's consumers: the request \$JS.API.CONSUMER.LIST
 expect_last "UNKNOWN"
 done_case
 
-# The Job's own script, run under sh behind a fake nats that answers as the hub does. The fake
-# records every call, refuses the consumer list the way nats-server refuses a publish the grant
-# lacks (status 0, no output, the violation on standard error), and answers every other read: the
-# agent family lists one old-form subject, whose last message it answers whole, content and
-# headers with it, as the server does.
-mkdir -p "$root/natsbin"
-cat >"$root/natsbin/nats" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$CALLS"
-# The credential each call carries, as the nats CLI reads it from its environment: the user, and
-# whether a password or a token is set, never their values.
-printf 'user=%s password=%s token=%s\n' "${NATS_USER:-}" "${NATS_PASSWORD:+set}" "${NATS_TOKEN:+set}" >>"$CALLS.credentials"
-case "$1 $2" in
-  "req --raw")
-    case "$3" in
-      '$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS')
-        if [ -n "${REFUSE_LIST:-}" ]; then
-          echo 'nats: permissions violation: Permissions Violation for Publish to "$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS"' >&2
-          exit 0
-        fi
-        offset=$(jq -r .offset <<<"$4")
-        jq -cn --argjson o "$offset" '[range(0; 5) | "c\(.)"] as $all
-          | {type: "io.nats.jetstream.api.v1.consumer_list_response", total: 5, offset: $o, limit: 2,
-             consumers: [$all[$o:$o + 2][] | {name: ., config: {}}]}' ;;
-      '$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS')
-        if [ "$(printf '%s' "$4" | jq -r '.subjects_filter // ""' 2>/dev/null)" = 'notifications.agent.>' ]; then
-          echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":2,"offset":0,"limit":100000,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":3,"subjects":{"notifications.agent.ses_old":2,"notifications.agent.ACME.ses_a":1}}}'
-        else
-          echo '{"type":"io.nats.jetstream.api.v1.stream_info_response","total":0,"offset":0,"limit":0,"config":{"name":"ENVOY_NOTIFICATIONS"},"state":{"messages":0}}'
-        fi ;;
-      '$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS')
-        if [ -n "${FAKE_MSG_RAW:-}" ]; then
-          echo 'a private message, as no JSON'
-        else
-          jq -cn --argjson q "$4" '{type: "io.nats.jetstream.api.v1.stream_msg_get_response", message: {subject: $q.last_by_subj, seq: 77, time: "2026-11-20T10:00:00Z", hdrs: "TkFUUy8xLjANCg0K", data: "eyJtZXNzYWdlIjoiYSBwcml2YXRlIG1lc3NhZ2UifQ=="}}'
-        fi ;;
-      '$SYS.REQ.USER.INFO')
-        echo 'nats: permissions violation: Permissions Violation for Publish to "$SYS.REQ.USER.INFO"' >&2 ;;
-      *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
-    esac ;;
-  "kv ls") echo ses_a ;;
-  "kv get") echo '{"session_id":"ses_a","machine_id":"gke","dir":"/home/someone/private-work","title":"a title","topics":["notifications.agent.ses_a"]}' ;;
-  *) echo "fake nats: no answer for $*" >&2; exit 99 ;;
-esac
-EOF
-chmod +x "$root/natsbin/nats"
-# A fake nsc that fails as nsc can, after echoing what it read: the seed in the key directory the
-# Job's script gave it.
-cat >"$root/natsbin/nsc" <<'EOF'
-#!/usr/bin/env bash
-dir=""
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --dir) dir=$2; shift 2 ;;
-    *) shift ;;
-  esac
-done
-cat "$dir"/* 2>/dev/null
-echo "nsc: could not import the keys above"
-exit 1
-EOF
-chmod +x "$root/natsbin/nsc"
-
-# run_reads [ENV...] runs lib/legacy-subjects-gate-nats.sh as the gate's Job runs it (sh -c with the
-# script's text), with the fake nats first on PATH, for at most 20 seconds, keeping its output in
-# $FAKE/reads.out, its calls in $FAKE/reads.calls and its exit status in $status.
-run_reads() {
-  : >"$FAKE/reads.calls"
-  : >"$FAKE/reads.calls.credentials"
-  set +e
-  env -u NATS_USER -u NATS_PASSWORD -u NATS_TOKEN "$@" FORMS_JQ="$(cat "$here/lib/legacy-subjects-gate-forms.jq")" CALLS="$FAKE/reads.calls" WORK_DIR="$FAKE" PATH="$root/natsbin:$PATH" timeout 20 sh -c "$(cat "$here/lib/legacy-subjects-gate-nats.sh")" >"$FAKE/reads.out" 2>"$FAKE/reads.err"
-  status=$?
-  set -e
-}
-
 # Taken in from Tester4688's red test (nats-reads-end-on-an-empty-answer.test.sh), its assertions
 # unchanged: a refused list is read once and the reads go on to their end line, where the script
 # once asked for it again until the Job's deadline; and the gate names the request refused.
@@ -1125,8 +1304,7 @@ done_case
 # from the offset asked. Each page after the first is asked from the last connection of the page
 # before, so the judge can read a list that moved between two pages.
 mkdir -p "$root/censusbin"
-cat >"$root/censusbin/nats" <<'EOF'
-#!/usr/bin/env bash
+fake "$root/censusbin/nats" <<'EOF'
 subject=${*: -2:1}
 body=${*: -1}
 [ "$subject" = '$SYS.REQ.SERVER.PING.CONNZ' ] || { echo "fake nats: no answer for $*" >&2; exit 99; }
@@ -1134,7 +1312,6 @@ jq -cn --argjson q "$body" '($q.offset) as $o | ($q.limit) as $l
   | {server: {name: "envoy-nats-0", id: "N0"}, data: {total: 2000, offset: $o, limit: $l,
       connections: [range($o; [$o + $l, 2000] | min) | {cid: (. + 1), name: "c\(. + 1) legion@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}'
 EOF
-chmod +x "$root/censusbin/nats"
 new_case "the census asks each next page from the last connection of the page before, and reads the list whole"
 set +e
 env CENSUS_NKEY=/dev/null CENSUS_NAME=legacy-subjects-gate-census-test CENSUS_INBOX_PREFIX=_INBOX_legacy_cutover WORK_DIR="$FAKE" \
@@ -1416,7 +1593,9 @@ reading --since "$FAKE/earlier.json"
 expect_status 0
 expect_last "GATE OPEN"
 done_case
+}
 
+group_facts() {
 # --- the five facts -------------------------------------------------------------------------------
 new_case "a second reading given none of the five facts' flags is UNKNOWN, naming each"
 first_reading_secs 200 reading
@@ -1524,15 +1703,6 @@ expect_status 3
 expect_line "UNKNOWN: (a2) the running clients: the census of the hub's connections, as the legacy-cutover user: the census Job's log ends before its last read, so what it read is not whole"
 done_case
 
-# The bus a second reading finds before the purge: every producer has moved and the old-form
-# messages are still stored. ACME-13's old-form subject's last message is stream sequence 812.
-# old_stream_rows replaces the case's issue subjects with one that still holds it.
-old_stream_rows() {
-  replace_row subjects "notifications.dispatch.issue.> 0" \
-    "$(line subjects "notifications.dispatch.issue.> 0" 0 "$(subjects_page notifications.dispatch.issue.ACME.ACME-12.comment.created notifications.dispatch.issue.ACME-13.comment.created)" "")" \
-    "$(last_message notifications.dispatch.issue.ACME-13.comment.created 812)"
-}
-
 new_case "(b) a daemon's consumer that has not acknowledged the last old-form message it takes shuts the gate"
 first_reading_secs 200 reading
 old_stream_rows
@@ -1596,19 +1766,6 @@ expect_line "REFUSED: the reading $FAKE/record.json read (a2) the running client
 [ ! -s "$FAKE/calls" ] || fail "the refused purge called $(head -n 1 "$FAKE/calls")"
 done_case
 
-# purge_refuses FACT WORDS runs legacy-subjects-purge.sh on the case's record and fails the case
-# unless it refuses, naming FACT read as WORDS, before any call.
-purge_refuses() {
-  : >"$FAKE/calls"
-  set +e
-  output=$(PATH="$root/bin:$PATH" bash "$here/legacy-subjects-purge.sh" --context example-cluster --reading "$FAKE/record.json" 2>&1)
-  status=$?
-  set -e
-  expect_status 1
-  expect_line "REFUSED: the reading $FAKE/record.json read $1 $2, not true"
-  [ ! -s "$FAKE/calls" ] || fail "the refused purge called $(head -n 1 "$FAKE/calls")"
-}
-
 # The reading the purge exists for, with the consumer list the server answered not whole: (b)
 # reads no consumer it could not read, so it is unknown, and the purge, which reads (b) alone of
 # the consumers, refuses it.
@@ -1659,15 +1816,6 @@ expect_line "UNKNOWN: (c) the stream: the stream's subjects under notifications.
 purge_refuses "(b) the consumers" unknown
 done_case
 
-# census_page SERVER OFFSET LIMIT TOTAL [CONNECTION...] prints one server's census answer for the
-# page asked at OFFSET.
-census_page() {
-  local server=$1 offset=$2 limit=$3 total=$4
-  shift 4
-  printf '%s\n' "$@" | jq -cs --arg s "$server" --argjson o "$offset" --argjson l "$limit" --argjson t "$total" 'map(select(. != null)) as $c
-    | {server: {name: $s, id: "N\($s)"}, error: null, data: {total: $t, offset: $o, limit: $l, connections: $c}}'
-}
-
 # A server's list moved under the census: between its first two pages, connections 12 and 13
 # closed below the page read and 17 and 18 opened above it, so the count stayed 6 and every later
 # connection moved down two places. Connection 14, an older client's, moved onto the page already
@@ -1684,7 +1832,9 @@ expect_status 3
 expect_line "UNKNOWN: (a2) the running clients: hub server envoy-nats-0's census page at offset 2 begins with connection 15, not 13, the last of the page before, so the list moved between the two reads and a connection may have been passed over; read again"
 [ "$(jq -r .facts.a2 "$FAKE/record.json")" = unknown ] || fail "the record's (a2) is $(jq -r .facts.a2 "$FAKE/record.json"), want unknown"
 done_case
+}
 
+group_publishers() {
 # --- (a3) the publishers --------------------------------------------------------------------------
 # The reading the purge exists for, with the listener's user mapped to no pin: (a3) is unknown, and
 # the purge driver refuses it. The record keeps the map as the operator gave it.
@@ -1815,6 +1965,26 @@ expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker could not be read: Error from server (Forbidden): deployments.apps \"envoy-broker\" is forbidden"
 done_case
 
+# An answer for the auth service's Deployment that is no JSON document, or more than one, is no
+# Deployment: the reading is UNKNOWN by name and writes its record, never a stop on jq's own error.
+for answer in "no JSON document" "two JSON documents"; do
+new_case "(a3) an auth service's Deployment answered with ${answer} is UNKNOWN, and the reading writes its record"
+hub_configmap "$FAKE" --callout "${clean_users[@]}"
+facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server)
+first_reading_secs 200 reading
+if [ "$answer" = "no JSON document" ]; then
+  : >"$FAKE/broker.json"
+else
+  jq -c . "$FAKE/broker.json" "$FAKE/broker.json" >"$FAKE/broker.tmp" && mv "$FAKE/broker.tmp" "$FAKE/broker.json"
+fi
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and the services its auth service admits could not be read: the Deployment dispatch/envoy-broker: its Deployment is no JSON object"
+[ -f "$FAKE/record.json" ] || fail "the reading wrote no record"
+expect_last "UNKNOWN"
+done_case
+done
+
 new_case "(a3) an auth service whose BROKER_NATS_SERVICES is set through valueFrom is UNKNOWN"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 jq '.spec.template.spec.containers[0].env[1] = {name: "BROKER_NATS_SERVICES", valueFrom: {configMapKeyRef: {name: "envoy-broker", key: "services"}}}' \
@@ -1880,15 +2050,14 @@ purge_refuses "(a3) the publishers" unknown
 done_case
 
 # A list that names kinds without classifying each, and says nothing of a session, as the list did
-# before it classified every kind, is UNKNOWN behind a callout. The gate's copy of the list is
-# changed for this case alone and put back after its reading.
+# before it classified every kind, is UNKNOWN behind a callout. Only this case's copy changes.
 new_case "(a3) behind an auth callout, a list of kinds that does not classify each kind and a session is UNKNOWN"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 facts+=(--publisher listener/host-a=envoy-cluster --publisher dispatch/example-dispatch=dispatch-server --publisher edge-listener/edge-a=envoy-cluster)
 first_reading_secs 200 reading
-echo '{ "kinds": ["dispatch", "edge-listener", "listener"] }' >"$root/gate/lib/legacy-subjects-gate-callout-publishers.json"
-reading --since "$FAKE/earlier.json"
-cp "$here/lib/legacy-subjects-gate-callout-publishers.json" "$root/gate/lib/"
+cp -R "$root/gate" "$root/unclassified"
+echo '{ "kinds": ["dispatch", "edge-listener", "listener"] }' >"$root/unclassified/lib/legacy-subjects-gate-callout-publishers.json"
+gate="$root/unclassified/legacy-subjects-gate.sh" reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the hub runs an auth callout, and this gate's list of the auth service's kinds (lib/legacy-subjects-gate-callout-publishers.json) does not say, kind by kind and for a session, whether its grant publishes a notification subject"
 done_case
@@ -2004,7 +2173,9 @@ reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the hub server(s) envoy-vm that --hub-server names run outside the StatefulSet, whose users this gate cannot read"
 done_case
+}
 
+group_rules() {
 new_case "a stream whose configuration carries no identity is UNKNOWN at a first reading"
 replace_row stream_info - "$(line stream_info - 0 "$(stream_info "" "")" "")"
 reading
@@ -2060,21 +2231,6 @@ reading
 expect_status 3
 expect_line "UNKNOWN: the stream's consumers: no Legion daemon consumer (legion-go-<project>-dispatch) is on the stream"
 done_case
-
-# Consumer pages, as the Job reads a list longer than one answer: each page from the last item of
-# the page before. pages_of TOTAL OFFSET:NAME,NAME... prints one consumers row per page.
-pages_of() {
-  local total=$1 page offset names
-  shift
-  for page in "$@"; do
-    offset=${page%%:*}
-    names=${page#*:}
-    line consumers "$offset" 0 "$(jq -cn --argjson total "$total" --argjson offset "$offset" --arg names "$names" --slurpfile all <(clean_consumers) '
-      ($names | split(",")) as $n
-      | {type: "io.nats.jetstream.api.v1.consumer_list_response", total: $total, offset: $offset, limit: 256,
-         consumers: [$n[] | . as $name | (($all | map(select(.name == $name)) | first) // {name: $name, config: {filter_subject: "notifications.team.\($name)"}})]}')" ""
-  done
-}
 
 new_case "a consumer list read over pages that join is read whole"
 replace_row consumers 0 "$(pages_of 7 "0:legion-go-ACME-dispatch,legion-go-ACME-github,legion-go-ACME-wake,listener-dispatch" "3:listener-dispatch,listener-envoy-hub,listener-gke,ses_twin")"
@@ -2214,19 +2370,6 @@ expect_last "UNKNOWN"
 done_case
 
 # --- the operator's environment -------------------------------------------------------------------
-# A uid with no passwd entry (a container run as an arbitrary uid) has no name for `id -un`: the
-# reading goes on with the Job's owner `unknown`, and ends in a verdict and a record.
-mkdir -p "$root/idbin"
-cat >"$root/idbin/id" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = -un ]; then
-  echo "id: cannot find name for user ID 4242" >&2
-  exit 1
-fi
-exec /usr/bin/id "$@"
-EOF
-chmod +x "$root/idbin/id"
-
 new_case "a uid with no name reads all the same, its Job's owner unknown"
 set +e
 output=$(PATH="$root/idbin:$root/bin:$PATH" bash "$gate" --context example-cluster --record "$FAKE/record.json" --listener envoy-hub=https://envoy-hub.example-tailnet.ts.net:9020 2>&1)
@@ -2293,28 +2436,6 @@ for secret in bus-pass-1e8f lt-pass-7c1d lt-token-4b2a; do
 done
 done_case
 
-# A hub moved into the cluster is one bus by two names: Service envoy-hub, which the listener
-# Deployment dials, selects the hub's own pods, and the hub's session listener, which serves as
-# machine envoy-hub and is bound to its durable listener-envoy-hub, dials the hub's own Service.
-# The listener outside the cluster that served as envoy-hub before has left the bus, so these
-# readings name no --listener.
-readonly hub_service_url="nats://envoy-nats.envoy.svc.cluster.local:4222"
-
-# moved_cluster adds the hub's session listener, on the hub's own Service, to the case's cluster.
-moved_cluster() {
-  jq --argjson p "$(pod envoy envoy-nats-listener-5c7d hub-listener-uid-1 listener "$envoy_image" null 0 running envoy-hub "$hub_service_url")" \
-    '.items += [$p]' "$base/pods.json" >"$FAKE/pods.json"
-  metrics 7 0 "$hub_start" 0 envoy-hub >"$FAKE/metrics/envoy.envoy-nats-listener-5c7d"
-}
-
-# moved_reading [ARG...] runs the gate as a reading of the case, naming no listener outside the
-# cluster, writing $FAKE/record.json.
-moved_reading() {
-  local extra=()
-  case " $* " in *" --since "*) extra=("${facts[@]}") ;; esac
-  run_gate --context example-cluster --record "$FAKE/record.json" "$@" ${extra[@]+"${extra[@]}"}
-}
-
 new_case "a listener that dials the bus by another name is skipped, its durable UNKNOWN, until --bus-alias names that name"
 moved_cluster
 moved_reading
@@ -2365,12 +2486,6 @@ done_case
 
 # A listener read through --bus-alias that restarted between the readings is caught as any
 # listener in the cluster is: by its pod's restart count, its start-time gauge, or a new pod.
-# hub_pod_set JQ sets the hub's session listener's pod in the case's cluster by the jq update JQ.
-hub_pod_set() {
-  jq "(.items[] | select(.metadata.name == \"envoy-nats-listener-5c7d\")) |= ($1)" "$FAKE/pods.json" >"$FAKE/pods.json.new"
-  mv "$FAKE/pods.json.new" "$FAKE/pods.json"
-}
-
 new_case "a listener read through --bus-alias that restarted between the readings, as Kubernetes shows it, is UNKNOWN"
 moved_cluster
 first_reading_with 73 moved_reading --bus-alias "$hub_service_url"
@@ -2419,7 +2534,6 @@ done_case
 # the load-test stack's bus with --bus-alias, and not the hub's own Service, while a load-test
 # listener runs as machine envoy-hub, reads the load-test listener as envoy-hub, so the durable
 # listener-envoy-hub looks read, and the hub's session listener, bound to it, is never read.
-readonly loadtest_url="nats://loadtest-nats.loadtest.svc.cluster.local:4222"
 new_case "a listener on another bus that serves as the machine of a listener read is UNKNOWN, naming both"
 moved_cluster
 jq --argjson p "$(pod loadtest envoy-listener-lt1 lt-uid-1 envoy-listener "$envoy_image" null 0 running envoy-hub "$loadtest_url")" \
@@ -2626,6 +2740,15 @@ reading --since "$FAKE/earlier.json"
 expect_status 3
 expect_line "UNKNOWN: listener pod envoy/envoy-listener-7f9c container envoy-listener served a start-time gauge at one reading and not the other"
 done_case
+}
 
-echo "legacy-subjects-gate.test.sh: $passed cases passed, $failed failed"
-[ "$failed" = 0 ]
+# A group function the list does not name would never run in CI, which queues the list alone.
+for name in $(compgen -A function group_); do
+  if ! is_group "${name#group_}"; then
+    printf 'legacy-subjects-gate.test.sh: the group function %s is not in the list of groups\n' "$name" >&2
+    exit 2
+  fi
+done
+"group_$group"
+echo "legacy-subjects-gate.test.sh $group: $passed cases passed, $failed failed"
+[ "$failed" -eq 0 ] && [ "$passed" -gt 0 ]

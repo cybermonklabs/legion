@@ -198,7 +198,288 @@ readonly image_reference='^[A-Za-z0-9][A-Za-z0-9._/:@+-]*$'
 
 work=$(mktemp -d)
 readonly work
-trap 'rm -rf "$work"' EXIT
+
+# gate_reader_start opens the one python3 a gate run speaks to, in place of a python3 start of its
+# own for each question: the gate starts it once, in its own shell, before its first question, and
+# its exit trap closes the reader's input and waits for it (gate_reader_stop), so the reader's CPU
+# is the gate's and it never outlives the gate. It answers two kinds of question over a pipe, each
+# a frame of NUL-terminated tokens led by their count (gate_reader_call):
+#   - run: one of the gate's python3 programs, its text unchanged, with its stdout and stderr files
+#     and its arguments (gate_python). It runs in a fresh namespace with the argv, sys.path[0] and
+#     stdio encoding a `python3 -` started under the gate's environment would have, and the answer
+#     is the exit status that python3 would give, its traceback or sys.exit text written as it would.
+#   - state, utf8, unresolved and trees: the questions about the developer box's paths that bash
+#     cannot ask (entry_state, utf8, unresolved and plugin_trees in
+#     lib/daemon-release-gate-read-developer-box.sh). A path in an answer, a
+#     plugin tree of plugin_trees, goes back as its own bytes (os.fsencode), the bytes of the name on
+#     disk, whatever locale Python reads names in: under LC_ALL=C it reads café as caf\udcc3\udca9,
+#     and those characters written back as text would name a path that is not there. Text an answer
+#     explains is written in the locale's encoding with each character it cannot write escaped, the
+#     way Python writes an error, so a name that is no UTF-8 comes back escaped, never a failed write.
+# A reader that does not answer makes each question fail, which its caller turns into UNKNOWN.
+gate_reader_start() {
+  gate_text_file "$work/gate-reader.py" <<'PY' || return 1
+import builtins
+import io
+import locale
+import os
+import stat
+import sys
+
+incoming = sys.stdin.buffer
+outgoing = sys.stdout.buffer
+stdout, stderr = sys.stdout, sys.stderr
+answer_encoding = locale.getpreferredencoding(False)
+
+
+def token():
+    """Read a NUL-terminated byte string, or raise EOFError if the pipe closed."""
+    data = bytearray()
+    while True:
+        chunk = incoming.peek()
+        if not chunk:
+            raise EOFError
+        end = chunk.find(b"\0")
+        if end >= 0:
+            data += incoming.read(end + 1)[:-1]
+            return bytes(data)
+        data += incoming.read(len(chunk))
+
+
+def program_stdio(path, original):
+    # Match the non-terminal stream of `python3 -`, including PYTHONUNBUFFERED.
+    raw = open(path, "wb", buffering=0 if original.write_through else -1)
+    return io.TextIOWrapper(raw, encoding=original.encoding, errors=original.errors,
+                            write_through=original.write_through,
+                            line_buffering=original.line_buffering)
+
+
+def run_program(text, out_path, err_path, *args):
+    with program_stdio(out_path, stdout) as out, program_stdio(err_path, stderr) as err:
+        argv, path = sys.argv, sys.path[:]
+        sys.argv = ["-", *map(os.fsdecode, args)]
+        if not getattr(sys.flags, "safe_path", False):
+            sys.path[0] = ""
+        sys.stdout, sys.stderr = out, err
+        try:
+            exec(compile(text, "<stdin>", "exec", dont_inherit=True),
+                 {"__name__": "__main__", "__builtins__": builtins})
+        except SystemExit as error:
+            if error.code is None:
+                return 0
+            if isinstance(error.code, int):
+                return error.code % 256
+            print(error.code, file=err)
+            return 1
+        except BaseException as error:
+            # The hook can read the exception's own traceback when it prints a chain,
+            # so remove the reader frame there before calling it.
+            error = error.with_traceback(error.__traceback__.tb_next)
+            sys.__excepthook__(type(error), error, error.__traceback__)
+            return 1
+        finally:
+            sys.stdout, sys.stderr = stdout, stderr
+            sys.argv, sys.path = argv, path
+        return 0
+
+
+def answer(*parts):
+    """Each part is bytes, sent as they are, or text, sent in the locale's encoding with each
+    character it cannot write escaped."""
+    for part in parts:
+        if isinstance(part, str):
+            part = part.encode(answer_encoding, "backslashreplace")
+        outgoing.write(part + b"\0")
+    outgoing.write(b"\0")
+    outgoing.flush()
+
+
+def state(path):
+    """present when something is at path, a link whose target is gone included; absent when nothing
+    is and the directory that would hold it was searched; unknown and why otherwise."""
+    try:
+        os.lstat(path)
+        return "present"
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        return f"unknown {path}: {error.strerror}"
+    # Nothing is at path, and the deepest ancestor that is decides why: a link there whose target is
+    # gone hides what would be beneath it.
+    parent = path
+    while True:
+        parent = os.path.dirname(parent) or "."
+        try:
+            mode = os.lstat(parent).st_mode
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            return f"unknown {parent}: {error.strerror}"
+        break
+    # Its target, read from the link's own directory, is gone, or is there and does not resolve (a
+    # link whose target is gone). Resolving the link fails with nothing there, as path's lookup did:
+    # any other error, as at a directory the gate may not search or a loop, failed that lookup above
+    # and is named.
+    if stat.S_ISLNK(mode) and not os.path.exists(parent):
+        target = os.readlink(parent)
+        why = "resolve" if os.path.lexists(os.path.join(os.path.dirname(parent), target)) else "exist"
+        return f"unknown {parent} is a link to {target}, which does not {why}"
+    return "absent"
+
+
+def unresolved(link):
+    """How resolving link fails, as the words after "a link to <its target>, which", or None when
+    it resolves."""
+    try:
+        os.stat(link)
+    except FileNotFoundError:
+        target = os.path.join(os.path.dirname(link), os.readlink(link))
+        return "does not resolve" if os.path.lexists(target) else "does not exist"
+    except OSError as error:
+        return f"does not resolve: {error.strerror}"
+    return None
+
+
+def trees(home):
+    """The Oh My Pi plugin trees of this box, ~/.omp/plugins and each profile's, and None; or, for a
+    profiles directory it cannot list (a link there whose target is gone among them) and a profile
+    whose name is no UTF-8, which the gate may not get unchanged, the trees it found before it
+    stopped, ~/.omp/plugins, and why it stopped. The caller still reads ~/.omp/plugins after such
+    a failure, so its line names every surface it could not see at once."""
+    omp = os.path.join(home, ".omp")
+    profiles = os.path.join(omp, "profiles")
+    found = [os.path.join(omp, "plugins")]
+    try:
+        entries = sorted(os.listdir(profiles))
+    except FileNotFoundError:
+        # Nothing there is no profile, but a link there whose target is gone hides every profile it
+        # would hold. A link above it whose target is gone is above ~/.omp/plugins too, and the
+        # state of that path reports it there; a link that loops fails the listing, as any other
+        # error does. The caller prints the last line of the failure, so a newline in the target is
+        # written as printable does.
+        if os.path.islink(profiles):
+            target = os.readlink(profiles)
+            why = "resolve" if os.path.lexists(os.path.join(omp, target)) else "exist"
+            shown = target.replace("\n", "\\x0a")
+            return found, f"{profiles} is a link to {shown}, which does not {why}"
+        entries = []
+    except OSError as error:
+        return found, f"{profiles} cannot be listed: {error.strerror}"
+    # The name's own bytes decide, whatever encoding this locale reads names with.
+    for entry in entries:
+        path = os.fsencode(os.path.join(profiles, entry))
+        try:
+            os.fsencode(entry).decode("utf-8")
+        except UnicodeDecodeError:
+            shown = path.decode("utf-8", "backslashreplace")
+            return found, shown.replace("\n", "\\x0a") + ": the profile's name is no UTF-8"
+    for entry in entries:
+        found.append(os.path.join(profiles, entry, "plugins"))
+    return found, None
+
+
+while True:
+    try:
+        question = [token() for _ in range(int(token()))]
+    except EOFError:
+        break
+    verb = question[0]
+    if verb == b"run":
+        answer(str(run_program(*question[1:])))
+    elif verb == b"state" and len(question) == 2:
+        answer("ok", state(os.fsdecode(question[1])))
+    elif verb == b"utf8" and len(question) == 2:
+        try:
+            question[1].decode("utf-8")
+        except UnicodeDecodeError:
+            answer("no")
+        else:
+            answer("yes")
+    elif verb == b"unresolved" and len(question) == 2:
+        why = unresolved(os.fsdecode(question[1]))
+        answer("no") if why is None else answer("yes", why)
+    elif verb == b"trees" and len(question) == 2:
+        found, problem = trees(os.fsdecode(question[1]))
+        paths = [os.fsencode(tree) for tree in found]
+        answer("ok", *paths) if problem is None else answer("fail", problem, *paths)
+    else:
+        answer("fail", f"the gate asked its python3 reader {verb!r}, which it does not answer")
+PY
+  # The coproc's descriptors are open in the gate's shell and in each $(…) it starts, and closed in
+  # each program it runs. Bash unsets GATE_READER and GATE_READER_PID once it reaps the reader, so
+  # its pid is kept for the exit trap's wait.
+  # shellcheck disable=SC2034 # bash sets GATE_READER's two pipes
+  coproc GATE_READER { exec python3 "$work/gate-reader.py" 2>"$work/reader.err"; }
+  gate_reader_pid=$!
+}
+
+# gate_reader_call <verb> <token>...: sends the token count, then the verb and its arguments, each
+# NUL-terminated, empty arguments included, and sets reader_answer to the tokens of the answer, up
+# to its empty terminator. One question is in flight at a time. It returns 1 when the reader is not
+# there to ask or ends before it answers (the pipe closes), which each caller turns into UNKNOWN:
+# the gate reads no silence as an answer.
+gate_reader_call() {
+  local token to=${GATE_READER[1]-} from=${GATE_READER[0]-}
+  reader_answer=()
+  [ -n "$to" ] && [ -n "$from" ] || return 1
+  # A reader that has ended must not take the shell down with SIGPIPE.
+  trap '' PIPE
+  if ! printf '%s\0' "$#" "$@" 2>/dev/null >&"$to"; then
+    trap - PIPE
+    return 1
+  fi
+  trap - PIPE
+  while IFS= read -r -d '' -u "$from" token; do
+    [ -n "$token" ] || return 0
+    reader_answer+=("$token")
+  done
+  return 1
+}
+
+# gate_text_file <file>: writes its standard input, a here-document, to <file>: a here-document's
+# text ends in one newline, which $(<…) takes off and the printf puts back. It starts no program.
+gate_text_file() {
+  local text
+  text=$(</dev/stdin) || return 1
+  printf '%s\n' "$text" >"$1"
+}
+
+# gate_python <out> <arg>...: runs the python3 program on stdin, a here-document, in the reader,
+# its stdout into <out> and its stderr into $work/err, and returns its exit status.
+gate_python() {
+  local out=$1 text status
+  shift
+  # $(<…) takes off the here-document's one closing newline; it goes back, so the reader compiles
+  # the program's text as python3 - read it.
+  text=$(</dev/stdin)$'\n'
+  if gate_reader_call run "$text" "$out" "$work/err" "$@"; then
+    status=${reader_answer[0]-}
+    if [[ $status =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((status < 256)); then
+      return "$status"
+    fi
+  fi
+  : >"$out"
+  printf '%s\n' "the gate's python3 reader did not answer" >"$work/err"
+  return 1
+}
+
+# gate_reader_stop closes the reader's input, which ends it, and waits for it. What the reader
+# wrote to its own stderr is its own error, such as python3's when it cannot start under an unknown
+# PYTHONIOENCODING, after which no question was answered: it goes to the gate's stderr, so a run
+# whose questions went unanswered says why.
+gate_reader_stop() {
+  local to=${GATE_READER[1]-}
+  if [ -n "$to" ]; then
+    exec {to}>&-
+  fi
+  if [ -n "${gate_reader_pid:-}" ]; then
+    wait "$gate_reader_pid" 2>/dev/null || :
+  fi
+  if [ -s "$work/reader.err" ]; then
+    cat "$work/reader.err" >&2 || :
+  fi
+}
+trap 'gate_reader_stop; rm -rf "$work"' EXIT
 
 shut=0
 unknown=0
@@ -208,7 +489,14 @@ compared=0
 # a tab and an escape among them, written as \x<hh> (\u<hhhh> or \U<hhhhhhhh> past U+00FF), so text
 # the gate reads from outside it (an image, an archive, a marketplace, the dotfiles, an error a
 # command printed) can neither start a line of the gate's output nor rewrite one on a terminal.
+# Text whose every byte is printable ASCII (0x20 to 0x7E) is printed as it is, which is what the
+# python3 below prints for it; any other text goes to that python3, which reads it as its argv
+# (so a launcher that changes an argument that is no UTF-8 changes it there too, as it always did).
 printable() {
+  if printable_ascii "$1"; then
+    printf '%s\n' "$1"
+    return 0
+  fi
   python3 -c '
 import sys
 
@@ -221,6 +509,16 @@ def shown(c):
 print("".join(shown(c) for c in sys.argv[1]))
 ' "$1"
 }
+
+# printable_ascii <text>: true when every byte of <text> is 0x20 to 0x7E. It is judged under the C
+# locale, where [:print:] is exactly those bytes: under a UTF-8 locale it takes in characters past
+# ASCII, and a byte that is no UTF-8 can read as no character at all. The test runs in a subshell,
+# so the gate's shell never sets its locale back: setting back an LC_ALL that names a locale the box
+# does not hold prints a warning on the gate's stderr.
+printable_ascii() (
+  LC_ALL=C
+  [[ $1 != *[![:print:]]* ]]
+)
 
 # first_line <file> and last_line <file>: that line of an error a command left, printable.
 first_line() { printable "$(head -n 1 "$1")"; }
@@ -271,7 +569,7 @@ project_of() {
     project_error=$fetch_error
     return 1
   fi
-  if ! project=$(python3 - "$work/project.yaml" 2>"$work/err" <<'PY'
+  if ! gate_python "$work/python.out" "$work/project.yaml" <<'PY'; then
 import json
 import re
 import sys
@@ -291,10 +589,10 @@ if isinstance(name, str) and name.strip():
         sys.exit(f"its name {json.dumps(name.strip())} is no Pulumi project name")
     print(name.strip())
 PY
-  ); then
     project_error="cannot read ${deployment} $1/Pulumi.yaml: $(first_line "$work/err")"
     return 1
   fi
+  project=$(<"$work/python.out")
   if [ -z "$project" ]; then
     project_error="${deployment} $1/Pulumi.yaml declares no project name, so no key of $1/Pulumi.prod.yaml is known to be its own"
     return 1
@@ -370,7 +668,7 @@ load_entries() {
       return 0
     fi
   done <<<"$names"
-  if ! python3 - "$work/legion.yaml" "${legion_project}:projects" "$work/projects" "$directory" >"$work/entries.json" 2>"$work/err" <<'PY'; then
+  if ! gate_python "$work/entries.json" "$work/legion.yaml" "${legion_project}:projects" "$work/projects" "$directory" <<'PY'; then
 import json
 import os
 import re
@@ -433,8 +731,8 @@ PY
   entries_state="read"
 }
 
-# daemon_pins <daemons|clients>: one line per project of $work/entries.json, tab-separated: the
-# project's key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for a
+# daemon_pins <out> <daemons|clients>: one line per project of $work/entries.json, tab-separated:
+# the project's key, then READ and the image that runs its daemon, SKIP and why it runs none, HOST for a
 # project whose daemon runs on a tmux host, RUNTIME and a runtime the gate does not know, NOIMAGE,
 # or INVALID and the field it cannot take. With clients, a running project's lines are keyed by the
 # field they read, `<key> daemonImage` or `<key> image`: READ and its image, whose clients a session
@@ -448,7 +746,7 @@ PY
 # line, and the gate would read another image) is INVALID, never a project skipped or an image cut
 # short. When the deployment declares no project it prints ERROR and where it looked.
 daemon_pins() {
-  python3 - "$work/entries.json" "$1" "$image_reference" <<'PY'
+  gate_python "$1" "$work/entries.json" "$2" "$image_reference" <<'PY'
 import json
 import re
 import sys
@@ -502,9 +800,9 @@ for entry in loaded["entries"]:
 PY
 }
 
-# config_value <key>...: the first of the config keys $work/stack.yaml sets, or nothing.
+# config_value <out> <key>...: the first of the config keys $work/stack.yaml sets, or nothing.
 config_value() {
-  python3 - "$work/stack.yaml" "$@" <<'PY'
+  gate_python "$1" "$work/stack.yaml" "${@:2}" <<'PY'
 import sys
 
 import yaml
@@ -630,7 +928,7 @@ load_aliases() {
     aliases_error=$entries_error
     return 0
   fi
-  if ! python3 - "$work/entries.json" >"$work/aliases" 2>"$work/err" <<'PY'; then
+  if ! gate_python "$work/aliases" "$work/entries.json" <<'PY'; then
 import json
 import sys
 
@@ -743,11 +1041,12 @@ stack_pin() {
     unknown=$((unknown + 1))
     return 1
   fi
-  if ! pin=$(config_value "$setting" 2>"$work/err"); then
+  if ! config_value "$work/python.out" "$setting"; then
     printf 'UNKNOWN: %s: cannot read %s/Pulumi.prod.yaml: %s\n' "$key" "$stack" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
     return 1
   fi
+  pin=$(<"$work/python.out")
   if [ -z "$pin" ]; then
     printf 'UNKNOWN: %s: %s/Pulumi.prod.yaml sets no %s\n' "$key" "$stack" "$setting"
     unknown=$((unknown + 1))
@@ -779,6 +1078,10 @@ source "${gate_lib}/daemon-release-gate-read-image-clients.sh"
 # shellcheck source=lib/daemon-release-gate-read-developer-box.sh
 source "${gate_lib}/daemon-release-gate-read-developer-box.sh"
 
+# Start the reader in this shell before the first question. Its duplicated pipes also work
+# in command substitutions. A startup failure is reported by each question that needs it.
+gate_reader_start || :
+
 if [ "$mode" = listeners ]; then
   # envoy's listenerImage is read only by the VM hub's listener, and the hub's removal deletes the
   # key with it, so the leg decides from the deployment's program whether the hub is declared
@@ -806,7 +1109,7 @@ else
     printf 'UNKNOWN: %s\n' "$entries_error"
     unknown=$((unknown + 1))
     : >"$work/pins"
-  elif ! daemon_pins "$mode" >"$work/pins" 2>"$work/err"; then
+  elif ! daemon_pins "$work/pins" "$mode"; then
     printf 'UNKNOWN: cannot read %s legion projects: %s\n' "$deployment" "$(first_line "$work/err")"
     unknown=$((unknown + 1))
   fi

@@ -16,6 +16,12 @@ temporary_dir="$(mktemp -d)"
 readonly temporary_dir
 trap 'rm -rf "$temporary_dir"' EXIT
 mkdir -p "${temporary_dir}/bin"
+# fake <path>: writes the fake command at <path> from the body on stdin, started by the bash that
+# runs this harness ($BASH) by its path: an `env bash` line would start env on every call.
+fake() {
+  { printf '#!%s\n' "$BASH" && cat; } >"$1"
+  chmod +x "$1"
+}
 
 readonly commit="52b3cf5c1b6c7f42f6b8d2a1e3c4d5e6f7a8b9c0"
 readonly deployment="example-org/deployment"
@@ -70,8 +76,7 @@ readonly dispatch_listener_pin="ghcr.io/cybermonklabs/legion/envoy@sha256:e004"
 #     FAKE_ROOT/marketplaces/<owner>/<repo>/<path>.
 # An endpoint with a file at FAKE_ROOT/refuse/<endpoint with / as _> fails with that file's text.
 # Any other call is refused as unexpected.
-cat >"${temporary_dir}/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+fake "${temporary_dir}/bin/gh" <<'EOF'
 printf 'gh %s\n' "$*" >>"${FAKE_CALLS:?}"
 [ "$1" = api ] || { echo "fake gh: unexpected command: $*" >&2; exit 2; }
 shift
@@ -170,12 +175,12 @@ PY
     [ "${FAKE_API_DOWN:-0}" != 1 ] || { echo "error connecting to api.github.com" >&2; exit 1; }
     head="${path##*...}"
     [ -f "${FAKE_ROOT}/compare/${head}" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
-    cat "${FAKE_ROOT}/compare/${head}"
+    printf '%s\n' "$(<"${FAKE_ROOT}/compare/${head}")"
     ;;
   repos/cybermonklabs/legion/commits/refs/tags/*)
     tag=${path#repos/cybermonklabs/legion/commits/refs/tags/}
     [ -f "${FAKE_ROOT}/tags/${tag}" ] || { echo "gh: No commit found for SHA: refs/tags/${tag} (HTTP 422)" >&2; exit 1; }
-    cat "${FAKE_ROOT}/tags/${tag}"
+    printf '%s\n' "$(<"${FAKE_ROOT}/tags/${tag}")"
     ;;
   repos/*/contents/.claude-plugin/marketplace.json)
     repo=${path#repos/}
@@ -199,8 +204,7 @@ EOF
 # A ref with no fs/ is one the registry does not hold, and docker answers `run` as it does then.
 # `run` takes the options the gate runs an image under (--rm, --quiet, --network, --read-only,
 # --cap-drop, --security-opt) and refuses any other.
-cat >"${temporary_dir}/bin/docker" <<'EOF'
-#!/usr/bin/env bash
+fake "${temporary_dir}/bin/docker" <<'EOF'
 printf 'docker %s\n' "$*" >>"${FAKE_CALLS:?}"
 if [ "$1" = run ]; then
   shift
@@ -225,6 +229,7 @@ if [ "$1" = run ]; then
   case "$entrypoint $*" in
     "cat "*)
       [ -f "$dir/fs$1" ] || { echo "cat: $1: No such file or directory" >&2; exit 1; }
+      # The entrypoint serves raw fixture files, including any trailing newlines.
       cat "$dir/fs$1"
       ;;
     "/opt/legion/bin/legion version")
@@ -233,7 +238,9 @@ if [ "$1" = run ]; then
         printf '\nRun '"'"'docker run --help'"'"' for more information\n' >&2
         exit 127
       fi
-      cat "$dir/legion-version"
+      # Read to EOF to preserve the exact line endings of the version fixture.
+      IFS= read -r -d '' version <"$dir/legion-version"
+      printf '%s' "$version"
       ;;
     *) echo "fake docker: unexpected run: $entrypoint $*" >&2; exit 2 ;;
   esac
@@ -248,7 +255,7 @@ case "$6" in
   '{{json .Image.Config.Labels}}')
     case "$mediatype" in
       *index*) echo null ;;
-      *) cat "$dir/labels" ;;
+      *) printf '%s\n' "$(<"$dir/labels")" ;;
     esac
     ;;
   '{{range .Manifest.Manifests}}'*) printf '%s' "$(<"$dir/platforms")" ;;
@@ -257,7 +264,7 @@ case "$6" in
     platform=${platform%%'"'*}
     file="$dir/platform-${platform//\//_}"
     [ -f "$file" ] || { echo "ERROR: template: :1:17: executing \"\" at <index .Image \"$platform\">: nil pointer evaluating *v1.Image.Config" >&2; exit 1; }
-    cat "$file"
+    printf '%s\n' "$(<"$file")"
     ;;
   *) echo "fake docker: unexpected format: $6" >&2; exit 2 ;;
 esac
@@ -284,15 +291,15 @@ EOF
 # found costs 0.34 u + 0.19 s of CPU a call against 0.05 u + 0.03 s for the command alone
 # (measured on a developer box, npm 10.9.7 on node 22.22.2), about a fifth of a --clients case, so
 # the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
-# once when it starts: an npm that no longer takes them fails the suite there. A call of any other
+# once in each group, before the group's first --clients run, the only runs that reach npm: an npm
+# that no longer takes them fails the group there. A call of any other
 # shape is refused rather than emulated.
-cat >"${temporary_dir}/bin/npm" <<'EOF'
-#!/usr/bin/env bash
+fake "${temporary_dir}/bin/npm" <<'EOF'
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
 printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
 env | grep '^npm_config_' | sort | sed 's/^/npm-config /' >>"$FAKE_CALLS"
 if [ "$1" = exec ] || { [ "$1" = pack ] && [ "${FAKE_NPM_REAL_PACK:-0}" = 1 ]; }; then
-  mapfile -t real_npm <"$(dirname "$0")/../real-npm"
+  mapfile -t real_npm <"${0%/*}/../real-npm"
   if [ "$1" != exec ]; then
     exec "${real_npm[0]}" "${real_npm[1]}" "$@"
   fi
@@ -327,16 +334,20 @@ jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   entryCount: 0, bundled: []
 }]'
 EOF
-chmod +x "${temporary_dir}/bin/gh" "${temporary_dir}/bin/docker" "${temporary_dir}/bin/npm"
-# The real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the node npm runs
-# on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath, npm_execpath),
-# found once with the caller's own HOME and written beside the fakes. The suite needs npm and node.
-# shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
-if ! (cd "$temporary_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
-  >"${temporary_dir}/real-npm" 2>"${temporary_dir}/real-npm.err" || [ "$(grep -c . "${temporary_dir}/real-npm")" -ne 2 ]; then
-  echo "daemon-release-gate.test.sh needs npm and node on PATH: $(head -n 1 "${temporary_dir}/real-npm.err")" >&2
-  exit 1
-fi
+# find_real_npm: the real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the
+# node npm runs on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath,
+# npm_execpath), found once with the caller's own HOME and written beside the fakes. Only a
+# --clients run reaches npm, so run_bare finds it before the group's first such run, and a group
+# that makes none (the --listeners and VM hub groups) starts no npm. The suite needs npm and node.
+find_real_npm() {
+  [ ! -s "${temporary_dir}/real-npm" ] || return 0
+  # shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
+  if ! (cd "$temporary_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
+    >"${temporary_dir}/real-npm" 2>"${temporary_dir}/real-npm.err" || [ "$(grep -c . "${temporary_dir}/real-npm")" -ne 2 ]; then
+    echo "daemon-release-gate.test.sh needs npm and node on PATH: $(head -n 1 "${temporary_dir}/real-npm.err")" >&2
+    exit 1
+  fi
+}
 
 failures=0
 case_root=""
@@ -377,15 +388,19 @@ refuse() {
 tag() {
   printf '%s\n' "$2" >"${case_root}/tags/$1"
 }
-# image_dir <ref>: the directory of the fake docker's answers for <ref>.
+# image_dir <ref> [<variable>]: print the fake docker's directory for <ref>, or assign it.
 image_dir() {
-  printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
+  if [ "$#" -eq 2 ]; then
+    printf -v "$2" '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
+  else
+    printf '%s/images/%s' "$case_root" "${1//[\/:@]/_}"
+  fi
 }
 # single <ref> <source> <revision>: a single image labelled with source and revision; an empty
 # source or revision leaves that label out.
 single() {
   local dir
-  dir=$(image_dir "$1")
+  image_dir "$1" dir
   mkdir -p "$dir"
   printf '"application/vnd.oci.image.manifest.v1+json"' >"$dir/mediatype"
   labels "$2" "$3" >"$dir/labels"
@@ -396,7 +411,7 @@ single() {
 # holds the two attestation entries alone.
 index() {
   local dir
-  dir=$(image_dir "$1")
+  image_dir "$1" dir
   mkdir -p "$dir"
   printf '"application/vnd.oci.image.index.v1+json"' >"$dir/mediatype"
   if [ "$2" = attestations-only ]; then
@@ -425,7 +440,7 @@ labels() {
 readonly linked_envoy="17.42.0"
 worker_image() {
   local dir
-  dir=$(image_dir "$1")
+  image_dir "$1" dir
   rm -rf "$dir/fs"
   mkdir -p "$dir/fs/opt/legion/pi-envoy" "$dir/fs/opt/legion/claude-envoy"
   printf '{"name": "@sjawhar/pi-envoy", "version": "16.12.1"}\n' >"$dir/fs/opt/legion/pi-envoy/package.json"
@@ -440,9 +455,10 @@ worker_image() {
 }
 # plugins_line <ref> <line>: the second line <ref>'s `legion version` prints, in place of its own.
 plugins_line() {
-  local file
-  file="$(image_dir "$1")/legion-version"
-  printf '%s\n%s\n' "$(head -n 1 "$file")" "$2" >"$file"
+  local dir first
+  image_dir "$1" dir
+  IFS= read -r first <"$dir/legion-version" || true
+  printf '%s\n%s\n' "$first" "$2" >"$dir/legion-version"
 }
 # dotfiles <pi-envoy pin> [<claude-envoy enabled>]: the developer box's ~/.dotfiles, with
 # ~/.omp/plugins linked to its plugin tree, the pin installed there, and a settings.json whose
@@ -493,6 +509,13 @@ daemonImage: ${worker_b}"
 daemon: false
 image: ${worker_smoke}"
 }
+# text_file <file>: writes its standard input, a here-document, to <file>: a here-document's text
+# ends in one newline, which $(<…) takes off and the printf puts back. It starts no program.
+text_file() {
+  local text
+  text=$(</dev/stdin)
+  printf '%s\n' "$text" >"$1"
+}
 # envoy_program <declares|none>: the deployment's envoy/ program and the local module its go.mod
 # replaces, ../shared. Either way the name NewNatsHub stands in every place that is not a use: a
 # func's own name and a method's, a comment, a string and a raw string, a _test.go, and a comment
@@ -503,7 +526,7 @@ envoy_program() {
   local dir="${case_root}/files/envoy"
   mkdir -p "$dir/sdks/gcp" "$dir/testdata" "${case_root}/files/shared" "${case_root}/files/envoy-cluster"
   printf 'module example.org/deployment/envoy\n\nreplace example.org/sdk => ./sdks/gcp // the generated SDK\n\nreplace (\n\texample.org/shared => ../shared\n\texample.org/nats v1.0.0 => example.org/nats v1.0.1\n)\n' >"$dir/go.mod"
-  cat >"$dir/sdks/gcp/natsHub.go" <<'GO'
+  text_file "$dir/sdks/gcp/natsHub.go" <<'GO'
 package gcp
 
 // NewNatsHub registers a hub.
@@ -519,7 +542,7 @@ func NewNatsHub(ctx *pulumi.Context,
 
 func (m *module) NewNatsHub(name string) {}
 GO
-  cat >"$dir/sdks/gcp/init.go" <<'GO'
+  text_file "$dir/sdks/gcp/init.go" <<'GO'
 package gcp
 
 func (m *module) Construct(ctx *pulumi.Context, name, typ, urn string) (r pulumi.Resource, err error) {
@@ -533,7 +556,7 @@ GO
   printf 'package main\n\nfunc TestHub() { _ = envoygcp.NewNatsHub(ctx, "hub") }\n' >"$dir/main_test.go"
   printf 'package fixture\n\n// envoygcp.NewNatsHub(ctx, "hub") once ran here\n' >"$dir/testdata/fixture.go"
   printf 'package main\n\n// envoy/main.go gives envoygcp.NewNatsHub as Zone.\n' >"${case_root}/files/envoy-cluster/alerts.go"
-  cat >"$dir/hub_transform.go" <<'GO'
+  text_file "$dir/hub_transform.go" <<'GO'
 package main
 
 /* envoygcp.NewNatsHub(ctx, "hub") made the VM hub */
@@ -583,6 +606,7 @@ run_bare() {
     fi
   done
   [ "$#" -eq 0 ] || shift
+  case " $* " in *" --clients "*) find_real_npm ;; esac
   : >"$out"
   : >"$err"
   : >"$calls"
