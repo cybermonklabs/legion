@@ -188,7 +188,7 @@ compose_resolves() {
       export "${assignment?}"
     done
     unset ENVOY_IMAGE_TAG
-    "$real_docker" compose -f "$compose/dispatch.compose.yml" config --environment 2>/dev/null |
+    "$docker_direct" compose -f "$compose/dispatch.compose.yml" config --environment 2>/dev/null |
       awk -v key="$name=" 'index($0, key) == 1 && !found { print substr($0, length(key) + 1); found = 1 }'
   )
 }

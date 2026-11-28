@@ -18,6 +18,44 @@ mkdir -p "$compose" "$backups" "$bin" "$tools"
 real_docker=$(command -v docker || true)
 [[ -n "$real_docker" ]] || { printf 'autodeploy_test: docker is not on PATH; this test reads the resolution of docker compose config\n' >&2; exit 1; }
 "$real_docker" compose version >&2 || { printf 'autodeploy_test: docker compose version failed with %s; this test needs Docker Compose\n' "$real_docker" >&2; exit 1; }
+# Each `docker compose` start runs the docker CLI and then its Compose plugin, and the cases make
+# about 235 Compose reads. The INFRA-6360 probe (CI run 46134562966, job 140947658045) ran each read
+# the cases make three ways on the runner: `docker compose`, the plugin straight (`docker-compose
+# <args>`, without the leading `compose`), and the plugin straight with DOCKER_HOST on a socket
+# nothing listens on. For each read but one, all three printed the same standard output, standard
+# error and exit status, byte for byte. The one is compose_resolves' `config --environment`, which
+# prints Compose's whole environment: there the docker CLI's own DOCKER_CLI_PLUGIN_* lines (a new
+# socket name each run), its `_` and the DOCKER_HOST line differ, and the line it reads does not.
+# A read through the CLI took 0.066 s of wall time at the median, the plugin straight 0.035 s, and
+# with no daemon 0.029 s: Compose asks the daemon for /_ping and /info before each command, and with
+# nothing on DOCKER_HOST that ask fails at once, which Compose's config reads do not need. So the
+# test takes the plugin the docker CLI would run, the first docker-compose in the CLI's own search
+# order, which must answer the version `docker compose` answers, and docker_direct below is a
+# `docker` that runs it straight, with that DOCKER_HOST, for `compose ...`, and the docker CLI for
+# anything else: run_deployer hands it to the fake docker as the real binary, and compose_resolves
+# calls it. Production still calls Compose through the docker CLI. A run without the plugin fails
+# here, by name: it never skips.
+plugin_dirs=("${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins" /usr/local/lib/docker/cli-plugins
+  /usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins)
+compose_plugin=
+for plugin_dir in "${plugin_dirs[@]}"; do
+  if [[ -f "$plugin_dir/docker-compose" && -x "$plugin_dir/docker-compose" ]]; then
+    compose_plugin="$plugin_dir/docker-compose"
+    break
+  fi
+done
+[[ -n "$compose_plugin" ]] || { printf 'autodeploy_test: no executable docker-compose in %s; this test runs the config reads on the Compose plugin straight\n' "${plugin_dirs[*]}" >&2; exit 1; }
+compose_version=$("$real_docker" compose version --short) || true
+plugin_version=$("$compose_plugin" version --short) || true
+[[ "$plugin_version" == "$compose_version" ]] || { printf 'autodeploy_test: the Compose plugin %s answers version --short with "%s", and %s compose with "%s"; this test needs the plugin docker compose runs\n' "$compose_plugin" "$plugin_version" "$real_docker" "$compose_version" >&2; exit 1; }
+docker_direct="$root/docker-direct"
+cat >"$docker_direct" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == compose ]] || exec "$real_docker" "\$@"
+shift
+DOCKER_HOST="unix://$root/no-daemon.sock" exec "$compose_plugin" "\$@"
+EOF
+chmod +x "$docker_direct"
 cp "$(dirname "$0")/../compose/dispatch.compose.yml" "$compose/dispatch.compose.yml"
 # Compose takes the shell's value of a setting over the .env's: only a row that means to set one does.
 unset ENVOY_ACCOUNT_GOOGLE_AUDIENCE ENVOY_ACCOUNT_TOKEN_FILE DISPATCH_SERVER_URL DATABASE_URL \
@@ -413,7 +451,7 @@ PATH="$bin:$PATH" python3 -c 'import sys' ||
 run_deployer() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
-    AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$real_docker}" \
+    AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$docker_direct}" \
     BACKUPS="${test_backups-$backups}" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
     "$(dirname "$0")/autodeploy.sh" "$@" 2>&"${test_stderr_fd:-1}"
 }
