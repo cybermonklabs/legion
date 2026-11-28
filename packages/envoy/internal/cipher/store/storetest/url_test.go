@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 
@@ -42,7 +41,10 @@ func TestATemplateServerURLThatDoesNotParseIsNeverPrinted(t *testing.T) {
 // advisory lock per database, so a lock taken in the database the URL names let two builders
 // naming different databases hold two locks, and either one's sweep of unfinished builds could drop
 // the other's build while it migrated. A lock taken where the URL points fails both rows: the first
-// sees the builder return while the holder holds, the second sees it wait.
+// sees the builder return while the holder holds, the second sees it wait. Each builder connects as
+// a login of its own (newLogin), whose template is not on the server, so it reaches the lock: a
+// builder finding its template there would return before it took the lock (template), and the
+// server URL's login's template is there once any test has asked for it.
 func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -52,16 +54,17 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
 		t.Fatalf("%s does not parse", DatabaseURLEnv)
 	}
-	// builder is a URL naming a database of the test's own on the server, whose connections carry
-	// an application_name of their own, so the waiters read are this builder's and no other
-	// binary's.
+	// builder is a URL naming a database of the test's own on the server, as a login of the
+	// test's own that has no template yet, whose connections carry an application_name of their
+	// own, so the waiters read are this builder's and no other binary's.
 	builder := func(t *testing.T) (string, string) {
 		t.Helper()
+		login := newLogin(t, *server, "broker_lock_test")
 		app, err := testdb.NewDatabaseName("broker_lock_test")
 		if err != nil {
 			t.Fatal(err)
 		}
-		return testdb.DatabaseOn(t, raw, "", "broker_lock_test", "application_name="+app), app
+		return testdb.DatabaseOn(t, login.String(), "", "broker_lock_test", "application_name="+app), app
 	}
 	// hold takes templateLockKey on a connection of its own to databaseURL, closed when t ends.
 	hold := func(t *testing.T, databaseURL string) *pgx.Conn {
@@ -142,19 +145,7 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 // tables fails the first.
 func TestEachURLIsAMigratedDatabaseOfItsOwn(t *testing.T) {
 	ctx := context.Background()
-	entries, err := os.ReadDir("../migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := 0
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".up.sql") {
-			want++
-		}
-	}
-	if want == 0 {
-		t.Fatal("../migrations holds no .up.sql file, so there is nothing to compare the copy with")
-	}
+	want := embeddedMigrations(t)
 	connect := func(t *testing.T, dsn string) *pgx.Conn {
 		t.Helper()
 		conn, err := pgx.Connect(ctx, dsn)

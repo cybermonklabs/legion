@@ -121,8 +121,8 @@ func ready(t testing.TB) {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
 	if _, err := url.Parse(raw); err != nil {
-		// url.Parse's own error quotes the URL it was given, which carries a credential.
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatalf("%s does not parse", DatabaseURLEnv)
 	}
 	end, bounded := testdb.ConnectEnd(t)
 	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })

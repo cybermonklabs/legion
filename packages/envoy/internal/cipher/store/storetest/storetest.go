@@ -92,15 +92,20 @@ const testSchema = "broker_test"
 // URL of another login is another key, so each login's call finds that login's own template.
 var templates sync.Map
 
-// templateLockKey is the session advisory lock under which a process looks for its login's
-// template and makes it when it is missing: every broker test binary of a run, and of every other
-// run on the server, whatever its login, asks at once. Postgres keeps an advisory lock per
-// database, so the lock is taken on a connection to the server's postgres database
-// (lockDatabase), whatever database the server's URL names, and under the same key for every
-// login: two binaries that name the same server through different databases, or as different
-// logins, take the one lock. Builds are swept per login: the sweep of unfinished builds below
-// drops every build of its own login it finds, which under the server's one lock is never one
-// another process is building, and leaves every other login's, which only that login may drop.
+// templateLockKey is the session advisory lock under which a process that finds no template of its
+// login (template) looks for it again, since another process may have finished it meanwhile, and
+// when it is still missing sweeps its login's unfinished builds and builds it. A template a process
+// finds before it takes the lock it uses without the lock: a database of the template's name
+// appears only through the rename that ends a build, once the build is whole, so a binary of one
+// login never waits on another login's build when its own template is there. Every broker test
+// binary of a run, and of every other run on the server, whatever its login, may ask at once.
+// Postgres keeps an advisory lock per database, so the lock is taken on a connection to the
+// server's postgres database (lockDatabase), whatever database the server's URL names, and under
+// the same key for every login: two binaries that name the same server through different
+// databases, or as different logins, take the one lock. Builds are swept per login: the sweep of
+// unfinished builds below drops every build of its own login it finds, which under the server's one
+// lock is never one another process is building, and leaves every other login's, which only that
+// login may drop.
 const templateLockKey = "envoy broker storetest template"
 
 // lockDatabase is the database of the server templateLockKey is taken in: one every Postgres
@@ -113,10 +118,11 @@ const lockDatabase = "postgres"
 // store.MigrationsDigest>_<loginKey of the login>, owned by that login (a copy of a database
 // another login owns is refused, the package comment says why), migrated once by the first
 // process of that login to ask and left on the server for the next run of the same migration set.
-// Under templateLockKey it uses that database when it exists; otherwise it drops what a process of
-// the same login that died while building left, builds the template under a name of its own,
-// migrates it and closes it to connections (a database anyone is connected to cannot be copied),
-// and only then renames it, so a database of the template's name is always a whole one.
+// It uses that database when it exists, without taking templateLockKey. Otherwise it takes the
+// lock and looks again, and under the lock, where the template is still missing, it drops what a
+// process of the same login that died while building left, builds the template under a name of its
+// own, migrates it and closes it to connections (a database anyone is connected to cannot be
+// copied), and only then renames it, so a database of the template's name is always a whole one.
 func template(t testing.TB, raw string) string {
 	t.Helper()
 	entry, _ := templates.LoadOrStore(testdb.ServerKey(raw), sync.OnceValues(func() (string, error) { return makeTemplate(raw) }))
@@ -153,10 +159,6 @@ func makeTemplate(raw string) (string, error) {
 		return "", fmt.Errorf("connect to the %s database of %s: %w", lockDatabase, DatabaseURLEnv, err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
-		return "", fmt.Errorf("take the template lock: %w", err)
-	}
-	// The lock is the connection's: closing the connection releases it whatever happens below.
 	// The login is the one every database made below is owned by, and every copy is made as.
 	var login string
 	if err := conn.QueryRow(ctx, "select current_user").Scan(&login); err != nil {
@@ -165,12 +167,29 @@ func makeTemplate(raw string) (string, error) {
 	key := loginKey(login)
 	name := "broker_template_" + digest[:16] + "_" + key
 	builds := "broker_template_build_" + key
-	var exists bool
-	if err := conn.QueryRow(ctx, "select exists (select from pg_database where datname = $1)", name).Scan(&exists); err != nil {
-		return "", fmt.Errorf("look for the template: %w", err)
-	}
-	if exists {
+	// find answers name where the template is on the server, and "" where it is not.
+	find := func() (string, error) {
+		var exists bool
+		if err := conn.QueryRow(ctx, "select exists (select from pg_database where datname = $1)", name).Scan(&exists); err != nil {
+			return "", fmt.Errorf("look for the template: %w", err)
+		}
+		if !exists {
+			return "", nil
+		}
 		return name, nil
+	}
+	// A database of the template's name is a whole one, so one found here is used without the lock.
+	if found, err := find(); err != nil || found != "" {
+		return found, err
+	}
+	if _, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
+		return "", fmt.Errorf("take the template lock: %w", err)
+	}
+	// The lock is the connection's: closing the connection releases it whatever happens below.
+	// Another process of the login may have finished the template between the look above and the
+	// lock.
+	if found, err := find(); err != nil || found != "" {
+		return found, err
 	}
 	// Builds only happen under the lock, which is the server's, so any build of this login on the
 	// server now is one whose process died before it renamed it. The sweep is the login's own: it
@@ -248,7 +267,14 @@ func migrateTemplate(ctx context.Context, server *url.URL, build string) error {
 // server's URL holds. It skips t when DatabaseURLEnv is unset. The server's login needs CREATEDB.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
-	raw := serverURL(t)
+	return urlOn(t, serverURL(t), params...)
+}
+
+// urlOn is URL on the server raw names, as serverURL answers it: a database of the test's own,
+// copied from the template of raw's login (template), with params added as URL adds them. URL
+// calls it on the DatabaseURLEnv server, and a test calls it on that server as another login.
+func urlOn(t testing.TB, raw string, params ...string) string {
+	t.Helper()
 	set := []string{"search_path=" + testSchema}
 	for _, param := range params {
 		if _, err := url.ParseQuery(param); err != nil {

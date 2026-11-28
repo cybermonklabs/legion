@@ -358,7 +358,9 @@ type schemaMigration struct {
 
 // migrateAFreshSchema creates a fresh schema in databaseURL's database, opens a store whose
 // search_path is that schema, and starts its Migrate in a goroutine. The store is closed when t
-// ends; the close waits for the migration to return.
+// ends; the close waits for the migration to return. The store's URL is databaseURL with its
+// search_path and application_name pairs set (testdb.DatabaseURL), every other pair kept byte for
+// byte.
 func migrateAFreshSchema(t *testing.T, databaseURL string) schemaMigration {
 	t.Helper()
 	schema := "broker_fresh_migration_" + randomSuffix(t)
@@ -368,11 +370,9 @@ func migrateAFreshSchema(t *testing.T, databaseURL string) schemaMigration {
 		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
 		t.Fatal("the test database's URL does not parse")
 	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	query.Set("application_name", schema)
-	parsed.RawQuery = query.Encode()
-	s, err := Open(context.Background(), parsed.String())
+	// databaseURL is testdb.DatabaseOn's, whose path is the database's name alone.
+	database := strings.TrimPrefix(parsed.Path, "/")
+	s, err := Open(context.Background(), testdb.DatabaseURL(*parsed, database, "search_path="+schema, "application_name="+schema))
 	if err != nil {
 		t.Fatalf("open schema %s of the test database: %v", schema, err)
 	}
@@ -549,40 +549,33 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 
 // emptySchemaStore opens a store on a schema created empty in a database of the test's own on the
 // BROKER_TEST_DATABASE_URL server (testdb.DatabaseOn, which drops the database when t ends), with
-// params, extra connection parameters as key=value (e.g. "pool_max_conns=4"), added to the URL. A
-// test that migrates a set of its own needs an empty schema: a broker test's database, a copy of
-// the migrated template (storetest.URL), already records the broker's real versions, which would
-// pass over the test set's numbers as applied. The schema is the URL's search_path, a connection
-// option, as storetest.URL sets it for every broker test. The database is the test's own because
-// migrate holds the broker's migration lock (lockAndPin's pg_advisory_xact_lock(8330001)) to the
-// end of each of its transactions, and an advisory lock's key is database-wide: in a database other
-// tests migrated in, a row that makes migrate wait out a lock timeout would hold every other
-// migration there behind it for that long (TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration).
+// params, extra connection parameters as raw query pairs, key=value (e.g. "pool_max_conns=4"),
+// each replacing any pair of its key the server's URL holds. A test that migrates a set of its own
+// needs an empty schema: a broker test's database, a copy of the migrated template
+// (storetest.URL), already records the broker's real versions, which would pass over the test
+// set's numbers as applied. The schema is the URL's search_path, a connection option, as
+// storetest.URL sets it for every broker test. The database is the test's own because migrate
+// holds the broker's migration lock (lockAndPin's pg_advisory_xact_lock(8330001)) to the end of
+// each of its transactions, and an advisory lock's key is database-wide: in a database other tests
+// migrated in, a row that makes migrate wait out a lock timeout would hold every other migration
+// there behind it for that long (TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration).
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
-	databaseURL := testdb.DatabaseOn(t, testServerURL(t), "", "broker_migrate_test")
 	const schema = "broker_migrate_test"
-	adminExec(t, databaseURL, "create schema "+schema)
-	parsed, err := url.Parse(databaseURL)
-	if err != nil {
-		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
-		t.Fatal("the test database's URL does not parse")
-	}
-	query := parsed.Query()
-	query.Set("search_path", schema)
-	for _, param := range params {
-		key, value, ok := strings.Cut(param, "=")
-		if !ok {
-			t.Fatalf("connection parameter %q is not key=value", param)
-		}
-		query.Set(key, value)
-	}
-	parsed.RawQuery = query.Encode()
-	s, err := Open(context.Background(), parsed.String())
+	databaseURL := testdb.DatabaseOn(t, testServerURL(t), "", "broker_migrate_test", append([]string{"search_path=" + schema}, params...)...)
+	ctx := context.Background()
+	s, err := Open(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("open the test schema: %v", err)
 	}
 	t.Cleanup(s.Pool.Close)
+	// Postgres takes a search_path naming a schema that does not exist yet, and finds the schema
+	// once it is made, so the schema is made over the store's own pool. A connection of its own
+	// (adminExec) would send params' pool settings, such as pool_max_conns, which only a pool reads,
+	// to the server as settings, and the server refuses them.
+	if _, err := s.Pool.Exec(ctx, "create schema "+schema); err != nil {
+		t.Fatalf("create schema %s: %v", schema, err)
+	}
 	return s
 }
 
