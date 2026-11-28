@@ -3407,9 +3407,11 @@ type Store interface {
 	// lock and finds the acceptance recorded, so it writes nothing back (the outbox's
 	// overAcceptance).
 	DropSetBacksOver(ctx context.Context, tx pgx.Tx, issue, status string) error
-	// DropOutboxRows deletes each outbox row of rows by id, a row a runner has leased included. A
-	// runner mid-attempt reads its lease (OutboxLeased) before it acts, so it finishes such a row
-	// with nothing done, and its finish then finds nothing to delete.
+	// DropOutboxRows deletes each outbox row of rows by id, a row a runner has leased included. Pass
+	// only rows whose executor reads its lease (OutboxLeased) before it acts, a notice or a status
+	// row: such a runner mid-attempt finishes the row with nothing done, and its finish then finds
+	// nothing to delete. Every other executor runs its payload and fences only at its finish, so a
+	// row of another kind deleted under its lease would still act.
 	DropOutboxRows(ctx context.Context, tx pgx.Tx, rows []int64) error
 	// DropUnfencedCheckWakes deletes every check_wake row of issue the outbox still holds that
 	// carries no wake of its own (CheckWakeDue.WakeAt): a row a release before that field queued,

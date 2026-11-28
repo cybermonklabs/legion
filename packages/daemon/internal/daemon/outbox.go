@@ -1171,8 +1171,8 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	defer r.issueLocks.Lock(row.Issue)()
 	// A row the lane claimed before it waited on the lock may have been deleted meanwhile: the
 	// set-back an acceptance queued before its request, which the act's fact drops once taken
-	// (workflow's closeRoot, signOff), or which the route deletes on Dispatch's refusal of the
-	// request (the API's retireSetBack). Its in-memory payload would still run, so the row reads its
+	// (workflow's closeRoot, signOff), or which the route deletes once nothing is left to undo (the
+	// API's retireSetBack). Its in-memory payload would still run, so the row reads its
 	// own lease, without moving it, and where the lease no longer holds it finishes with no Dispatch
 	// read or write: its finish fences on the lease token and deletes nothing.
 	var held bool
@@ -1409,8 +1409,6 @@ func (r *outbox) overAcceptance(ctx context.Context, row record.OutboxRow, paylo
 	if payload.Kind != record.OrdinaryStatusRow && payload.Kind != record.ReassertStatusRow || payload.Status == shown.Status {
 		return false, nil
 	}
-	// holds says whether the record holds what Dispatch shows: retro, the status of the accepted
-	// phases, held as an acceptance (record.Accepted); done held as done.
 	var holds func(record.Issue) bool
 	switch shown.Status {
 	case workflow.PhaseStatus(phase.Retro):

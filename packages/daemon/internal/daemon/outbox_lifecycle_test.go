@@ -796,7 +796,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	}
 	rows.Close()
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-209", Status: "backlog"}}
-	runner := &outbox{pool: pool, records: record.NewStore(), dispatch: client}
+	runner := &outbox{pool: pool, records: records, dispatch: client}
 	for _, row := range statusRows {
 		if err := runner.execute(ctx, row); err != nil {
 			t.Fatal(err)

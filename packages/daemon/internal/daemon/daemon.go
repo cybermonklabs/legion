@@ -3606,7 +3606,7 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // no outbox row, since their caller queues the publication of the gates they empty (workflow's
 // Engine.ClearGeneration, through EnqueueDesignGates), but the facts they delete are that
 // project's daemon's, and so are the rows DropOutboxRows deletes by id, which only its caller's own
-// read hands it. The state rows that
+// write or read hands it. The state rows that
 // internal/record and internal/store queue inside their own writes (package stateevent's comment
 // names them) are not among those writes: each is keyed by the bare Dispatch project key of what
 // its write names. The boot row goes in through Enqueue (workflowRuntime.queueStateBoot), and its
