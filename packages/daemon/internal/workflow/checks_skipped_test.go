@@ -278,16 +278,25 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 	}
 }
 
-// laneHold is the name of the check run Large PR lanes' hold job leaves where it skips: GitHub
-// leaves a skipped job's name unevaluated, so it is the text of the job's name expression
-// (.github/workflows/large-pr-lanes.yaml, its ci-ok job).
-const laneHold = `${{ github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'ci-ok' || 'large-pr-lanes (not run)' }}`
+// laneHold is the name of the check run Large PR lanes' hold job, ci-ok, leaves where it skips.
+// GitHub leaves a skipped job's name unevaluated and posts the text inside the delimiters of the
+// job's name expression (.github/workflows/large-pr-lanes.yaml, the name: line of its ci-ok job):
+// on the head dce35fe6 of scratch pull request cybermonklabs/legion#5990, the skipped review run
+// 46121655040 left check run 140907301818 under this name.
+const laneHold = `github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'ci-ok' || 'large-pr-lanes (not run)'`
+
+// laneLead is the name of the check run Large PR lanes' lead job leaves where it skips, as laneHold
+// is the hold's: the text inside the delimiters of the job's name expression
+// (.github/workflows/large-pr-lanes.yaml, the name: line of its lead job). The same review run
+// 46121655040 left check run 140907302233 under this name.
+const laneLead = `github.event.review.state == 'approved' && !github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'large-pr') && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) || github.event.review.user.type == 'Bot') && 'lead' || 'large-pr-lanes lead (not run)'`
 
 // lanesSkipped is the three check runs a Large PR lanes run leaves skipped on the head of a review
-// that is no trusted approval of a large pull request, as the decoder reads them: lead, approval
-// and the hold under laneHold, numbered from id.
+// that is no trusted approval of a large pull request, as the decoder reads them: lead's under
+// laneLead, approval, and the hold's under laneHold, numbered from id. None of them is named lead
+// or ci-ok: review run 46121655040 left these three names and no other.
 func lanesSkipped(id int64) []record.AttemptRun {
-	return []record.AttemptRun{skippedRun("lead", id), skippedRun("approval", id+1), skippedRun(laneHold, id+2)}
+	return []record.AttemptRun{skippedRun(laneLead, id), skippedRun("approval", id+1), skippedRun(laneHold, id+2)}
 }
 
 // Every review of a pull request in cybermonklabs/legion starts a Large PR lanes run, and on every
@@ -297,7 +306,8 @@ func lanesSkipped(id int64) []record.AttemptRun {
 // R6). A settlement of the head whose only change since the one standing is such skipped runs
 // tells no role, and is recorded, so the next settlement told names those checks with the rest:
 //
-//   - (a) one that adds lead, approval and the hold, each new to the head and skipped;
+//   - (a) one that adds approval and the hold's and lead's runs under their name texts (laneHold,
+//     laneLead), each new to the head and skipped;
 //   - (g) after (a), one that names the same three under newer run ids.
 //
 // Each of these is told to every role: (b) a settlement that adds a skipped run and changes a told
@@ -310,6 +320,7 @@ func lanesSkipped(id int64) []record.AttemptRun {
 func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 	t.Parallel()
 	hold := strconv.Quote(laneHold)
+	lead := strconv.Quote(laneLead)
 	first := []record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 2, "success")}
 	const firstSaid = `CI settled at head: "build" success, "unit" success`
 	// toldOnce is a pool whose LEGION-208 settled once at head, with first, and was told so, with
@@ -337,10 +348,10 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 	// recordedRuns is the fence the record keeps after a settlement of first and lanesSkipped(id).
 	recordedRuns := func(id int64) []record.AttemptRun {
 		return []record.AttemptRun{
-			{Name: laneHold, ID: id + 2, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
 			{Name: "approval", ID: id + 1, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
 			{Name: "build", ID: 1, Head: "head", Conclusion: record.RunSucceeded, GitHubConclusion: "success"},
-			{Name: "lead", ID: id, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
+			{Name: laneHold, ID: id + 2, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
+			{Name: laneLead, ID: id, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
 			{Name: "unit", ID: 2, Head: "head", Conclusion: record.RunSucceeded, GitHubConclusion: "success"},
 		}
 	}
@@ -372,8 +383,8 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		pool, engine, messages := skippedOnce(t)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 3,
 			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 9, "failure")}, lanesSkipped(3)...), "unit"))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: `+hold+
-			` skipped, "approval" skipped, "build" success, "lead" skipped, "unit" failure; `+skippedSaid))
+		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "approval" skipped, "build" success, `+hold+
+			` skipped, `+lead+` skipped, "unit" failure; `+skippedSaid))
 	})
 
 	for _, tc := range []struct {
@@ -384,8 +395,8 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		said    string
 	}{
 		{"(b) a new skipped run beside a told run's new conclusion is told",
-			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 6, "failure")}, skippedRun("lead", 3)), []string{"unit"},
-			`CI settled at head: "build" success, "lead" skipped, "unit" failure; ` + skippedSaid},
+			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 6, "failure")}, skippedRun(laneLead, 3)), []string{"unit"},
+			`CI settled at head: "build" success, ` + lead + ` skipped, "unit" failure; ` + skippedSaid},
 		{"(c) a skipped run that replaces a told run of another conclusion is told",
 			[]record.AttemptRun{skippedRun("build", 6), wordedRun("unit", 2, "success")}, nil,
 			`CI settled at head: "build" skipped, "unit" success; ` + skippedSaid},
@@ -410,7 +421,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		seedSettlingRound(t, pool)
 		applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, lanesSkipped(1)))
 		assertRoleMessages(t, pool, "LEGION-208", tell(t, nil,
-			`CI settled at head: `+hold+` skipped, "approval" skipped, "lead" skipped; `+skippedSaid))
+			`CI settled at head: "approval" skipped, `+hold+` skipped, `+lead+` skipped; `+skippedSaid))
 	})
 
 	t.Run("(f) the first settlement of the head a push left is told, whatever the head before said", func(t *testing.T) {
@@ -418,8 +429,8 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		pool, engine, messages := toldOnce(t)
 		applyRefusingNothing(t, pool, engine, syncedTo("next"), settledRunsAt("next", 1,
 			append([]record.AttemptRun{wordedRun("build", 11, "success"), wordedRun("unit", 12, "success")}, lanesSkipped(13)...)))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at next: `+hold+
-			` skipped, "approval" skipped, "build" success, "lead" skipped, "unit" success; `+skippedSaid))
+		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at next: "approval" skipped, "build" success, `+hold+
+			` skipped, `+lead+` skipped, "unit" success; `+skippedSaid))
 	})
 
 	t.Run("a changed commit status beside new skipped runs is told", func(t *testing.T) {
@@ -432,8 +443,8 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		assertRoleMessages(t, pool, "LEGION-208", messages)
 		applyRefusingNothing(t, pool, engine,
 			naming(settledRunsAt("head", 2, append(slices.Clone(first), lanesSkipped(3)...)), status("deploy", "failure", 2)))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: `+hold+
-			` skipped, "approval" skipped, "build" success, "lead" skipped, "unit" success; commit statuses: "deploy" failure; `+skippedSaid))
+		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "approval" skipped, "build" success, `+hold+
+			` skipped, `+lead+` skipped, "unit" success; commit statuses: "deploy" failure; `+skippedSaid))
 	})
 }
 

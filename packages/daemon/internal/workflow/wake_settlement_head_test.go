@@ -198,8 +198,8 @@ func TestWakeOnSettlementOfAnEarlyHeadWakesNobody(t *testing.T) {
 //
 //   - a settlement of head1 wakes the implementer once;
 //   - with the pod back and released again after that wake, (a) a later settlement of head1 that
-//     adds only lead, approval and the hold, each skipped, queues no start row, records no resume
-//     and queues no role message;
+//     adds only approval and the hold's and lead's runs under their name texts (lanesSkipped),
+//     each skipped, queues no start row, records no resume and queues no role message;
 //   - (g) nor does a settlement after it that names the same three under newer run ids;
 //   - and a settlement of head1 after those in which build failed wakes the implementer a second
 //     time, with a task naming head1 and build, so the release did let a wake through and the
