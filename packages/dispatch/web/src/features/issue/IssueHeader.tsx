@@ -24,7 +24,7 @@ import type {
 import { CappedGroup } from "../../components/CappedGroup";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
-import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
+import { useSubscribers } from "../../hooks/useHoldsPersonScope";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { inputMethodKey } from "../../lib/input-method-key";
 import {
@@ -150,12 +150,8 @@ export function IssueHeader({
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
   // The issue's subscribers are read under the `person` scope, once a read says the viewer's
-  // credential holds it (`useHoldsPersonScope`): for a viewer without it they are never counted.
-  const subscribers = useQuery({
-    enabled: useHoldsPersonScope(),
-    queryKey: ["subscribers", issue.key],
-    queryFn: () => api.getIssueSubscribers(issue.key),
-  });
+  // credential holds it (`useSubscribers`): for a viewer without it they are never counted.
+  const subscribers = useSubscribers({ id: issue.key, kind: "issue" });
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
