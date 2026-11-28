@@ -18,4 +18,4 @@ body: |-
   so a local run or a test can rehearse a move.
 time: 2026-11-24T18:31:49Z
 custom:
-    Issue: INFRA-5507
+    Issue: pr5791
