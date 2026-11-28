@@ -1258,6 +1258,17 @@ function FactsOverState(): ReactNode {
   return <DetailsFocusedNode issue={issue} state={state} />;
 }
 
+/** Where the comment facts' cases whose suggestion is tied to text tie it: in a document of the
+ *  issue, the mark still in it. */
+const HELD_ANCHOR: NonNullable<Comment["anchor"]> = {
+  artifact_id: "spec-1",
+  block_id: "b-1",
+  mark_id: "mark-1",
+  orphaned: false,
+  quote: "The words it would change.",
+  version: 1,
+};
+
 // The card controls of a comment that heads a thread and suggests a
 // change follow its facts. Each sends its own write, and the facts then draw what that write
 // left: Unpin once it is pinned, Reopen once its thread is resolved - with its Accept and Reject
@@ -1495,17 +1506,6 @@ test("a suggestion decided in another session leaves the focus Accept held on th
 test("a suggestion decided in another session after ArrowDown on Accept leaves the focus on the page's body", async () => {
   await decidedElsewhere("after ArrowDown on Accept", () => userEvent.keyboard("{ArrowDown}"));
 });
-
-/** Where the suggestions of the cases below are tied in a document of the issue, the mark still in
- *  it. */
-const HELD_ANCHOR: NonNullable<Comment["anchor"]> = {
-  artifact_id: "spec-1",
-  block_id: "b-1",
-  mark_id: "mark-1",
-  orphaned: false,
-  quote: "The words it would change.",
-  version: 1,
-};
 
 /** Details' facts on the focused `comment`, under the page's writer, on the fixture's issue open.
  *  `landed` waits for the facts to be on the comment; `control` finds one of their controls by its

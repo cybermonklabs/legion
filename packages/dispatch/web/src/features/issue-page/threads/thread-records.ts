@@ -227,13 +227,13 @@ function nodeOf<P extends Post>(
   return part.answers === undefined ? undefined : entry(part.answers);
 }
 
-/** An entry of `kind` as its node, or undefined where it is one of `agentsOnly`, which the
- *  outline draws none of (`agents-only.ts`). */
+/** An entry of `kind` as its node, or undefined where it is one of `history`, the turns the
+ *  history draws (`historyIds`), which the outline draws none of (`agents-only.ts`). */
 function drawnEntry(
-  agentsOnly: ReadonlySet<string>,
+  history: ReadonlySet<string>,
   kind: "comment" | "message"
 ): (id: string) => RecordNode | undefined {
-  return (id) => (agentsOnly.has(id) ? undefined : { id, kind });
+  return (id) => (history.has(id) ? undefined : { id, kind });
 }
 
 function fieldsOf<P extends Post>(

@@ -296,9 +296,11 @@ export function IssueHistory({
   // `HISTORY_PAGE` are read and not drawn (`pressReads`), or in either case until the log has
   // ended: so each of those draws leaves an entry read and not drawn while an older page is
   // unread, and Show more says how many. Once the first entries are drawn (`end`), nothing but a
-  // press reads on: a history drawn down to every entry read, as to the thread of the turn an
-  // address names where that thread is the oldest entry read, reads the next page only when
-  // Show more is pressed, and Show more says "0+" until then (R9).
+  // press reads on for the entries drawn next (`seeksThread` still reads on for the thread of an
+  // address or of the writer's landing that the history does not hold yet): a history drawn down
+  // to every entry read, as to the thread of the turn an address names where that thread is the
+  // oldest entry read, reads the next page only when Show more is pressed, and Show more says
+  // "0+" until then (R9).
   const short = asked ? pressReads : end === undefined && older && drawn.left === 0;
   // The failure of the last read of the log's next page, which the history holds itself until a
   // next page lands. TanStack Query derives `isFetchNextPageError` from the log's last fetch, so
@@ -322,6 +324,7 @@ export function IssueHistory({
         : undefined;
   if (pageFailure !== heldFailure) setHeldFailure(pageFailure);
   const nextPageFailed = pageFailure !== undefined;
+  const readFailed = log.isError || nextPageFailed;
   // A failed read of the log stops the reading on: the history draws what it holds, and the next
   // page's Retry reads on from there (`failed` below). The next page's failure stops it until a
   // next page lands, whatever a refetch of the log does meanwhile, but while a read of that page
@@ -368,8 +371,7 @@ export function IssueHistory({
     messages.data !== undefined &&
     log.hasNextPage &&
     !log.isFetching &&
-    !log.isError &&
-    !nextPageFailed;
+    !readFailed;
   // The read of the next page while it is out, from a press of Show more, of the next page's
   // Retry, or the history's own reading on: a press made meanwhile joins it and sends nothing,
   // where the render's `isFetchingNextPage` can be older than a second press made before React
@@ -392,8 +394,7 @@ export function IssueHistory({
   // writer's landing, or for the entries it draws next (`short`), once the threads' reads have
   // answered, while no read of the log is out, and never after one failed: the next page's
   // failure, which a refetch leaves standing, is read again only by a press.
-  const readsOn =
-    seeksThread || (short && settled && !log.isFetching && !log.isError && !nextPageFailed);
+  const readsOn = seeksThread || (short && settled && !log.isFetching && !readFailed);
   useEffect(() => {
     if (readsOn) readOlderPage();
   });
@@ -608,8 +609,7 @@ export function IssueHistory({
     pressed.current = undefined;
     const active = document.activeElement;
     const onPage = active === null || active === document.body;
-    const onPressedAfterRead =
-      active === press.control && !(reads && (log.isError || nextPageFailed));
+    const onPressedAfterRead = active === press.control && !(reads && readFailed);
     if (!onPage && !onPressedAfterRead) return;
     if (press.kind === "retry") {
       const retried = failure.current?.querySelector("button") ?? heading.current;
@@ -672,7 +672,7 @@ export function IssueHistory({
     handTo,
     landing,
     list: anchorRoot,
-    readsOnForThread: landingUnread && log.hasNextPage && !log.isError && !nextPageFailed,
+    readsOnForThread: landingUnread && log.hasNextPage && !readFailed,
   });
   // The history draws the log it holds whatever the last read's outcome. The log's own line
   // stands under the heading, in place of the loading line, while the log stands failed
@@ -812,15 +812,17 @@ export function IssueHistory({
           ) : (
             // The count is of the entries read and not drawn, with "+" while an older page of
             // the log is unread: "0+" where every entry read is drawn and no read of the next
-            // page has failed, since once the first entries are drawn only a press reads on
-            // (`short`): the history drawn down to the thread of the turn an address names, or
-            // of the writer's landing, where that thread is the oldest entry read; a first view
-            // whose reading on a refetch that failed over the pages held stopped; or the entries
-            // left under the last one drawn gone from the history, as a thread a person wrote in
-            // goes to the outline. Where the next page's read failed, its Retry stands in this
-            // control's place instead. The control stands only while an entry read is left to
-            // draw or an older page is unread, so it always says a count, and it goes once the
-            // log has ended with every entry drawn.
+            // page has failed, since once the first entries are drawn only a press reads on for
+            // the entries drawn next (`short`; `seeksThread` still reads on for the thread of an
+            // address or of the writer's landing that the history does not hold yet): the history
+            // drawn down to the thread of the turn an address names, or of the writer's landing,
+            // where that thread is the oldest entry read; a first view whose reading on a refetch
+            // that failed over the pages held stopped; or the entries left under the last one
+            // drawn gone from the history, as a thread a person wrote in goes to the outline.
+            // Where the next page's read failed, its Retry stands in this control's place instead.
+            // The control stands only while an entry read is left to draw or an older page is
+            // unread, so it always says a count, and it goes once the log has ended with every
+            // entry drawn.
             <ShowMoreWords
               count={
                 <span data-history-left="" {...authorText}>

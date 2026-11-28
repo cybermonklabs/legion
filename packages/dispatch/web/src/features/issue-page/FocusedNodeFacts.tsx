@@ -81,9 +81,11 @@ import { useThreadsOpen } from "./threads-open";
  * else, with who handed it on and when; on a comment that heads a thread its Resolve or Reopen,
  * and Accept and Reject on a suggestion not yet decided. They are ordinary controls of Details,
  * so Tab reaches each from the row's own facts; Reply and Answer are the row's own
- * (`NodeRow.tsx`). A comment's controls are drawn where today's thread card draws them
- * (`ThreadCard.tsx`), so none is drawn that Dispatch refuses, and none on a closed issue
- * (`isClosed`).
+ * (`NodeRow.tsx`). Each of a comment's controls is hidden where Dispatch refuses it, as today's
+ * thread card (`ThreadCard.tsx`) hides it for those reasons: on a closed issue (`isClosed`),
+ * where Pin and a delivery's Retry stay; Edit on the reader's own deleted comment; Accept and
+ * Reject on an orphaned anchor; Accept on a suggestion tied to no text; and Resolve and Reopen
+ * on a comment under an ask.
  */
 export function FocusedNodeFacts({
   isClosed,
@@ -304,8 +306,11 @@ interface Delivery extends DeliveryOutcome {
 /** The pin of an ask, a comment or a message; an open question's hand-on; a thread head's Resolve
  *  or Reopen, Accept and Reject; the Edit of the reader's own comment, but under Threads, where
  *  the page mounts no box at the foot for it to aim (`useThreadsOpen`); and each delivery to an
- *  agent with its Retry. Resolve, Reopen, Accept, Reject and Edit are drawn where today's thread
- *  card draws them (`ThreadCard.tsx`), so that none is drawn that does nothing (R7). */
+ *  agent with its Retry. Resolve, Reopen, Accept, Reject and Edit are each hidden where Dispatch
+ *  refuses it, as today's thread card (`ThreadCard.tsx`) hides it for those reasons, so that none
+ *  is drawn that does nothing (R7): on a closed issue, where Pin and a delivery's Retry stay;
+ *  Edit on the reader's own deleted comment; Accept and Reject on an orphaned anchor; Accept on
+ *  a suggestion tied to no text; and Resolve and Reopen on a comment under an ask. */
 function ItemControls({
   isClosed,
   issueKey,
@@ -383,10 +388,11 @@ function ItemControls({
     item.kind === "ask"
       ? asks.data?.find((one) => one.id === item.id && one.state === "open")
       : undefined;
-  // A thread's head answers no comment and is no comment under a question, whose thread is the
-  // question's: Dispatch refuses its Reopen ("reopen the thread root"). On a closed issue none of
-  // a comment's controls but Pin is drawn: Dispatch refuses Resolve, Reopen, Accept and Reject
-  // there (`refuseClosed`), and today's thread card draws no Edit there either.
+  // A thread's head answers no comment and is no comment under an ask (a question or an approval
+  // request), whose thread is the ask's: Dispatch refuses its Reopen ("reopen the thread root").
+  // On a closed issue no Resolve, Reopen, Accept, Reject or Edit is drawn; Pin and a delivery's
+  // Retry stay: Dispatch refuses Resolve, Reopen, Accept and Reject there (`refuseClosed`), and
+  // today's thread card draws no Edit there either.
   const head = comment !== undefined && comment.reply_to === null && comment.ask_id === null;
   const undecided = comment?.suggestion !== null && comment?.suggestion?.accepted === null;
   // A suggestion whose anchor is orphaned takes no Accept or Reject (409 ANCHOR_ORPHANED): Resolve
