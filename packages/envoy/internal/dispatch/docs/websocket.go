@@ -246,15 +246,14 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 	return a.StoreUpdateContext(context.Background(), room, update)
 }
 
-// StoreUpdateContext stores a room's update, which ygo's persistence worker hands on one call per
-// update, in order: it appends, in one transaction under the document's advisory lock, every
-// update of the same room instance its update observer recorded before this one and no writer has
-// stored yet, this one, and the run of updates the room recorded after it that its batch takes
-// (roomBatchThrough), in the room's commit order, each with the in-flight credit and the class its
-// observer recorded (AppendRoomFlush, flushRun). So the order ygo's persistence hands updates on
-// in never decides the order they are stored in, and an update another writer stored first is
-// skipped. It returns nil only once the update is durable, by its own transaction or by one that
-// stored it first, so ygo's flush still means every update it held is stored.
+// StoreUpdateContext stores a room's update, which ygo's persistence hands it: it appends, in one
+// transaction under the document's advisory lock, the updates of the same room instance its update
+// observer recorded before this one whose classes are not marked stored, this one, and the run of
+// updates the room recorded after it that its batch takes (roomBatchThrough), in the room's commit
+// order, each with the in-flight credit and the class its observer recorded (AppendRoomFlush,
+// flushRun). So the order of the calls does not decide the order the updates are stored in, and
+// an update whose class is marked stored is skipped. A nil return does not mean the update is
+// durable (room_appends.go, "A nil return").
 //
 // Unless something waits on the room, the call lingers for the room's queue to fill before its
 // batch goes, at most roomAppendLinger from the update's recording (room_appends.go).
@@ -281,9 +280,10 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
 // which is the close-and-reload a replaced history needs (plan D3.3).
 // A refused update on a closed issue - refused with its whole run, or cut from the run whose
-// prefix this call stored (RoomFlush.cut) - is dropped, and this call hands it to
-// refuseClosedIssueAppend. Either is decided under the document's advisory lock, so it is never
-// this process's own write in flight, and needs no room-sync lane to run.
+// prefix this call stored (RoomFlush.cut) - is not stored, and this call calls
+// refuseClosedIssueAppend for the update's room instance. Either is decided under the document's
+// advisory lock, so it is never this process's own write in flight, and needs no room-sync lane
+// to run.
 //
 // Whichever way the call ends, it lands the update's credit (UpdateCredit.landed) and the update
 // leaves its instance's unstored updates.
@@ -376,9 +376,9 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	if class.cursor.takeReplaced() {
 		a.service.closeRoomOnReplacedHistory(room, class.instance)
 	}
-	// When the gate cut this call's own update from the run it stored (RoomFlush.cut), its class
-	// leaves the queue as this call ends, so no later call meets the gate for it: this call hands
-	// it to refuseClosedIssueAppend, as it does when the gate refuses the whole run.
+	// When the gate cut this call's own update from the run it stored (RoomFlush.cut), the update
+	// is not stored: this call calls refuseClosedIssueAppend for its room instance, as it does when
+	// the gate refuses the whole run.
 	if slices.Contains(flush.cut, class) {
 		a.service.refuseClosedIssueAppend(room, class.instance)
 	}

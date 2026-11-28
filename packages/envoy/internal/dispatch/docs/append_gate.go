@@ -245,11 +245,8 @@ func updateAge(observed time.Time) time.Duration {
 // (observedBeforeClose): the admitted updates are a prefix, because the run ascends in the order
 // the room took them and the rule is monotone in an update's age, so this stores exactly what the
 // same updates would have stored one transaction each, and ErrIssueClosed refuses the run only
-// when the prefix is empty. The rest stay queued, and each meets the gate again on its own call,
-// but for the update whose call ran the batch (appendRoomTx), whose class leaves the queue as that
-// call ends: when the gate cuts it, the batch records the cut on its flush (RoomFlush.cut), and
-// that call hands it to refuseClosedIssueAppend once the prefix has committed
-// (StoreUpdateContext).
+// when the prefix is empty. appendRoomTx stores the prefix and records the cut classes of a flush
+// on it (RoomFlush.cut), which stay queued, unstored.
 // The whole run is refused when the room's history was replaced (historyReplaced); an
 // appendDerived run unless the room holds the head exactly. Equality for the derived rule, not
 // `through < head`: a room standing past the head holds a history the store no longer has.

@@ -210,12 +210,12 @@ func (s *Service) committedSince(room string, live *crdt.Doc, point roomPoint) b
 // the versions of the repairs a settlement wrote into the instance and stored between its flushes
 // (storeRepair). state is the record whose queue the classes were last taken from, which a joined
 // transaction's commit holds locked while it commits and marks them (commitConsuming). through is
-// the position through which the transaction has stored every unstored durable class. cut is, for
-// a room's own batch that committed (appendRoomTx), the classes of its run the closed issue's gate
-// cut (gateAppend), left queued and unstored: the call that ran the batch hands its own update to
-// refuseClosedIssueAppend when it is among them (StoreUpdateContext), since that update's class
-// leaves the queue as the call ends. service is the service the flushed room belongs to, which
-// the store calls back into to run the flush (AppendRoomFlush).
+// the highest cutoff flushRun has read the room's queue through for this flush, set before any of
+// that run is written. cut is, for a room's own batch that committed (appendRoomTx), the classes
+// of its run the closed issue's gate cut (gateAppend), left queued and unstored; StoreUpdateContext
+// calls refuseClosedIssueAppend for the room instance when its own update's class is among them.
+// service is the service the flushed room belongs to, which the store calls back into to run the
+// flush (AppendRoomFlush).
 //
 // It crosses VersionedStore, which a test store outside this package wraps, so it is exported
 // with its fields unexported: such a store can only pass it on, as it can an UpdateCredit.
@@ -289,13 +289,10 @@ func foldAppended(base int64, versions []persistence.Version) int64 {
 // way answers ErrIssueClosed and records nothing on flush, so the transaction that joined this
 // flush rolls back and stores nothing of the run - neither the prefix nor the writer's own
 // update, which it would otherwise derive from a room state holding a keystroke the store
-// refused. The prefix rule is the room's own batch path's (appendRoomTx): the room stores what
-// it took in time; the rest meet the gate again on their own calls, but for the update whose call
-// ran that batch, whose class leaves the queue as its call ends: that call hands it to
-// refuseClosedIssueAppend once the prefix has committed (RoomFlush.cut).
+// refused. The prefix rule is the room's own batch path's (appendRoomTx), which stores the prefix
+// and leaves the cut classes queued (RoomFlush.cut).
 // A run this stores whole is recorded on flush, and the transaction's commit marks those classes
-// stored and lands their credits (markStored); a transaction that rolls back marks nothing, and
-// the room's persistence stores them later.
+// stored and lands their credits (markStored); a transaction that rolls back marks nothing.
 //
 // Every flush runs on a transaction or a session that already holds the room's advisory lock,
 // taken before the head it is gated on was read: the room's own persistence worker holds the

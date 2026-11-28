@@ -13,7 +13,7 @@ import (
 // A call that runs a room's batch stores the room's unstored updates recorded before its own
 // (flushRun), and ygo's persistence observer can hand a later update over before an earlier one:
 // ygo runs a transaction's observers once it has released the document's lock, so the hand-overs
-// need not come in the order the room recorded the updates in (room_appends.go, "The batch").
+// need not come in the order the room recorded the updates in (consumeUpdateClass).
 // Here alice's room records keystroke A and then keystroke B, its issue closing between the two,
 // and ygo hands B's update over first. B's call runs the batch, whose run is A and B, and the
 // closed issue's gate admits A, which the room took in time, and cuts B, which it took longer than

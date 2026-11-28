@@ -86,8 +86,8 @@ func (credit *UpdateCredit) take() (authors map[string]model.Actor, lastActor *m
 	return credit.record.authors, credit.record.lastActor, true
 }
 
-// landed takes the credit out of F once its append has committed, or once its own call has ended
-// without appending it. Its state may then be released (unlockState). A second call does nothing.
+// landed takes the credit out of F; its state may then be released (unlockState). A second call
+// does nothing.
 func (credit *UpdateCredit) landed() {
 	if credit == nil {
 		return
