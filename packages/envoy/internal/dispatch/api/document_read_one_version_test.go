@@ -114,7 +114,7 @@ func newOneVersionReadFixture(t *testing.T) *oneVersionReadFixture {
 	// No settlement runs unasked, so no room loads behind a case that reads the stored document and
 	// no version is written that a case did not make.
 	documents := docs.New(docs.Deps{
-		Store: database, Identity: headerIdentity(database), ServerURL: testServerURL, Settle: time.Hour, TestHooks: true,
+		Store: database, Identity: headerIdentity(database), Origins: testOrigins, Settle: time.Hour, TestHooks: true,
 	})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {

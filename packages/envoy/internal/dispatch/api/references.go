@@ -47,7 +47,7 @@ func (s *server) queueAskParts(
 	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, questionReconciled, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.Origins, document, at, questionReconciled, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -92,7 +92,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	who := actor.Recorded()
-	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
+	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.Origins)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -114,7 +114,7 @@ func (s *server) readReferences(
 ) (graphReferencesRead, bool) {
 	var err error
 	if query.Direction == "in" {
-		resolved, ok := s.wholeReference(w, r, ref, who, refs.Viewer{Human: human, ServerURL: s.deps.ServerURL})
+		resolved, ok := s.wholeReference(w, r, ref, who, refs.Viewer{Human: human, Origins: s.deps.Origins})
 		if !ok {
 			return graphReferencesRead{}, false
 		}
@@ -306,7 +306,7 @@ func (s *server) readQuestionMap(w http.ResponseWriter, r *http.Request, who mod
 	if text.IsIDPrefix(id) {
 		// A prefix nothing carries is left as written, and the read below answers this route's
 		// own 404 for a source whose text belongs to no document.
-		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, who, refs.Viewer{Human: human, ServerURL: s.deps.ServerURL})
+		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, who, refs.Viewer{Human: human, Origins: s.deps.Origins})
 		if err != nil {
 			s.writeIDPrefixError(w, r, err)
 			return referenceQuestions{}, false
@@ -581,12 +581,12 @@ var blockPin = regexp.MustCompile(`@v[0-9]+$`)
 
 // pinsAMessageBlock reports whether raw, a reference text.ParseRef refused, is a block of a
 // message pinned to a revision: the grammar reads none, since a message records no revisions.
-func pinsAMessageBlock(raw, serverURL string) bool {
+func pinsAMessageBlock(raw string, origins text.Origins) bool {
 	unpinned := blockPin.ReplaceAllString(raw, "")
 	if unpinned == raw {
 		return false
 	}
-	ref, ok := text.ParseRef(unpinned, serverURL)
+	ref, ok := text.ParseRef(unpinned, origins)
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
@@ -598,10 +598,10 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 // agent's session, a role or a person - which the grammar reads but the graph holds no node for
 // (refs.TargetOf): each caller reads the graph, which has no edge of one in either direction and
 // no name for one, so every reference this answers has a target.
-func parseRequestRef(raw, serverURL string) (text.Ref, error) {
-	ref, ok := text.ParseRef(raw, serverURL)
+func parseRequestRef(raw string, origins text.Origins) (text.Ref, error) {
+	ref, ok := text.ParseRef(raw, origins)
 	if !ok {
-		if pinsAMessageBlock(raw, serverURL) {
+		if pinsAMessageBlock(raw, origins) {
 			return text.Ref{}, errorf(apicode.InvalidReference, "%q pins a block of a message, which records no revisions; name the block without @v<N>", raw)
 		}
 		return text.Ref{}, errorf(apicode.InvalidReference, "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
@@ -618,9 +618,9 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
 // itself is read by parseRequestRef, as the batched read reads each of its own. It returns apart
 // the ?kind= values that are no edge kind of this build.
-func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
+func parseReferencesQuery(r *http.Request, origins text.Origins) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
-	query, ref, unknownKinds, err := referencesQueryFor(values.Get("to"), values.Get("from"), values.Get("kind"), serverURL)
+	query, ref, unknownKinds, err := referencesQueryFor(values.Get("to"), values.Get("from"), values.Get("kind"), origins)
 	if err != nil {
 		return refs.Query{}, text.Ref{}, nil, err
 	}
@@ -637,7 +637,7 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 // referencesQueryFor is the edge query parseReferencesQuery describes, from the values a request
 // gave to, from and kind (a comma list), with no since: each version of the references route
 // reads its own position parameter into the query's Since (listReferencesV2 reads after).
-func referencesQueryFor(to, from, kinds, serverURL string) (refs.Query, text.Ref, []string, error) {
+func referencesQueryFor(to, from, kinds string, origins text.Origins) (refs.Query, text.Ref, []string, error) {
 	to, from = strings.TrimSpace(to), strings.TrimSpace(from)
 	if (to == "") == (from == "") {
 		return refs.Query{}, text.Ref{}, nil, errorf(apicode.InvalidReference, "exactly one of to or from is required")
@@ -646,14 +646,14 @@ func referencesQueryFor(to, from, kinds, serverURL string) (refs.Query, text.Ref
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, err := parseRequestRef(raw, serverURL)
+	ref, err := parseRequestRef(raw, origins)
 	if err != nil {
 		return refs.Query{}, text.Ref{}, nil, err
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind. Every reference parseRequestRef answers has one: it refuses a party.
 	target, _ := refs.TargetOf(ref)
-	query := refs.Query{ServerURL: serverURL, Direction: direction, Kind: target.Kind, ID: target.ID}
+	query := refs.Query{Origins: origins, Direction: direction, Kind: target.Kind, ID: target.ID}
 	var unknownKinds []string
 	if kinds := strings.TrimSpace(kinds); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()
@@ -841,7 +841,7 @@ func (s *server) boundedClosure(ctx context.Context, who model.Actor, issueKey s
 		defer cancelRollback()
 		_ = tx.Rollback(rollback)
 	}()
-	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey, s.deps.ServerURL)
+	return refs.Closure(ctx, closureBudget{tx: tx, started: started}, who, issueKey, s.deps.Origins)
 }
 
 // closureBudget is boundedClosure's transaction tx as refs.Closure reads it (refs.Queryer). Before
@@ -942,7 +942,7 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, who, artifact.RefKey, s.deps.ServerURL)
+	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, who, artifact.RefKey, s.deps.Origins)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

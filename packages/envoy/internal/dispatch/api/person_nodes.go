@@ -265,7 +265,7 @@ func (s *server) readPersonNodes(ctx context.Context, caller model.Actor, rawLog
 			&editedAt, &deletedAt, &deletedBy); err != nil {
 			return personNodes{}, false, err
 		}
-		row.Title = refs.FirstLineWithin(body, s.deps.ServerURL, personNodeTitleRunes)
+		row.Title = refs.FirstLineWithin(body, s.deps.Origins, personNodeTitleRunes)
 		row.CreatedAt = row.CreatedAt.UTC()
 		if editedAt != nil {
 			edited := editedAt.UTC()

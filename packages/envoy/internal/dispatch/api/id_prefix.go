@@ -145,7 +145,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		// always did: a route of the v1 table, a test hook at either version, or a row of the
 		// INFRA-979 tree.
 		who := actor.Recorded()
-		viewer := refs.Viewer{Human: human, Session: requestSession(r), ServerURL: s.deps.ServerURL}
+		viewer := refs.Viewer{Human: human, Session: requestSession(r), Origins: s.deps.Origins}
 		if id != "" {
 			scope := refs.Scope{}
 			if entry.WithinIssue {

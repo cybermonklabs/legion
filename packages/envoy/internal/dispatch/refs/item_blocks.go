@@ -210,13 +210,14 @@ type CarriedEdit struct {
 // owed_at.
 //
 // It returns the targets of the block mentions it inserted or deleted, which the caller's event
-// counts (ItemIndexing.Moved). serverURL is the deployment whose dashboard URLs each block's
+// counts (ItemIndexing.Moved). origins are the server's, whose dashboard URLs each block's
 // excerpt is cut around (BlockExcerpt).
 func IndexItem(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
-	itemID, body, serverURL string,
+	itemID, body string,
+	origins text.Origins,
 	at time.Time,
 	located []text.Located,
 	carried *CarriedEdit,
@@ -225,7 +226,7 @@ func IndexItem(
 	if err != nil {
 		return nil, err
 	}
-	indexing, err := planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, serverURL, located, carried))
+	indexing, err := planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, origins, located, carried))
 	if err != nil {
 		return nil, err
 	}
@@ -239,31 +240,31 @@ func IndexItem(
 }
 
 // itemBlockSource is one reading of an item's blocks, which the index writes: the blocks in
-// order, the sum of the text they were read from (the state row's body_sha256), the deployment
-// whose dashboard URLs each block's excerpt is cut around, how each takes its id against the
+// order, the sum of the text they were read from (the state row's body_sha256), the server's
+// origins, whose dashboard URLs each block's excerpt is cut around, how each takes its id against the
 // blocks the item holds, the maker each records (made_by, for a kind whose blocks have one: nil,
 // or an entry per block, null where the item's own author made it), and the links the blocks hold
 // once their ids are known. The context the blocks are embedded with is not read here: the index
 // records the blocks alone, and the window arm reads that context for itself when it writes the
 // windows (itemWindowText).
 type itemBlockSource struct {
-	blocks    []itemblocks.Block
-	bodySum   string
-	serverURL string
-	ids       func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
-	madeBy    []*string
-	pairs     func(next []itemblocks.Block, ids []string) []blockPair
+	blocks  []itemblocks.Block
+	bodySum string
+	origins text.Origins
+	ids     func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
+	madeBy  []*string
+	pairs   func(next []itemblocks.Block, ids []string) []blockPair
 }
 
 // itemBodySource is the reading of an item's blocks that a body makes, which IndexItem writes and
 // PlanItemIndex plans: the blocks body splits into, the sum its state row records, the ids the
 // carried spans or the text give them, and the links the mentions of located write. A comment's
 // and a message's blocks record no maker of their own, so the source names none.
-func itemBodySource(kind ItemKind, body, serverURL string, located []text.Located, carried *CarriedEdit) itemBlockSource {
+func itemBodySource(kind ItemKind, body string, origins text.Origins, located []text.Located, carried *CarriedEdit) itemBlockSource {
 	return itemBlockSource{
-		blocks:    itemblocks.Split(body),
-		bodySum:   itemblocks.BodySHA256(body),
-		serverURL: serverURL,
+		blocks:  itemblocks.Split(body),
+		bodySum: itemblocks.BodySHA256(body),
+		origins: origins,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error) {
 			if carried != nil && kind == ItemComment && carried.BaseRevision == revision {
 				spans, err := itemblocks.ReadCarried(stored, body, carried.Blocks)
@@ -435,20 +436,21 @@ type ItemIndexing struct {
 
 // PlanItemIndex plans the index of body, written at `at`, of comment or message itemID against
 // index, what its block index holds (ReadItemIndex): the blocks, their ids, the links their
-// mentions write, the excerpt each block stores, cut around the dashboard URLs of the deployment
-// at serverURL (BlockExcerpt), and the targets they move. It reads nothing, and it is where the
+// mentions write, the excerpt each block stores, cut around the dashboard URLs of origins, the
+// server's (BlockExcerpt), and the targets they move. It reads nothing, and it is where the
 // excerpts are cut: a writer plans in its read phase, before its write phase holds a transaction
 // id. A carried id it refuses returns a *itemblocks.CarriedError. An ask's parts are planned from
 // their own reading of its blocks through the same core (PlanAskParts, planItemBlocks).
 func PlanItemIndex(
 	index ItemIndex,
 	kind ItemKind,
-	itemID, body, serverURL string,
+	itemID, body string,
+	origins text.Origins,
 	at time.Time,
 	located []text.Located,
 	carried *CarriedEdit,
 ) (ItemIndexing, error) {
-	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, serverURL, located, carried))
+	return planItemBlocks(index, kind, itemID, at, itemBodySource(kind, body, origins, located, carried))
 }
 
 // NewItemPlan is the index of a body planned for an item that does not exist yet, so carries no
@@ -465,12 +467,12 @@ type NewItemPlan struct {
 // PlanNewItemIndex is PlanItemIndex of body against the index of an item no index holds yet: the
 // index ReadItemIndex reads of an item whose insert the calling transaction has just made, never
 // indexed, with no block and no block mention. It reads nothing and writes nothing; its document
-// work - the split of body, the excerpts cut around the dashboard URLs of the deployment at
-// serverURL (BlockExcerpt), and the extraction located came from - is all of the index's, so
-// binding the plan does none.
-func PlanNewItemIndex(kind ItemKind, body, serverURL string, located []text.Located) (NewItemPlan, error) {
+// work - the split of body, the excerpts cut around the dashboard URLs of origins, the server's
+// (BlockExcerpt), and the extraction located came from - is all of the index's, so binding the
+// plan does none.
+func PlanNewItemIndex(kind ItemKind, body string, origins text.Origins, located []text.Located) (NewItemPlan, error) {
 	fresh := ItemIndex{state: itemState{nextBlock: 1}, stored: []itemblocks.Stored{}}
-	indexing, err := planItemBlocks(fresh, kind, "", time.Time{}, itemBodySource(kind, body, serverURL, located, nil))
+	indexing, err := planItemBlocks(fresh, kind, "", time.Time{}, itemBodySource(kind, body, origins, located, nil))
 	if err != nil {
 		return NewItemPlan{}, err
 	}
@@ -534,7 +536,7 @@ func planItemBlocks(
 	for position, block := range next {
 		row := itemBlockRow{
 			id: ids[position], position: position, nodeType: block.Type, sum: block.Hash,
-			excerpt: BlockExcerpt(block.Text, source.serverURL), text: block.Text,
+			excerpt: BlockExcerpt(block.Text, source.origins), text: block.Text,
 		}
 		if position < len(source.madeBy) {
 			row.madeBy = source.madeBy[position]
@@ -1191,7 +1193,7 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // item's own references, an ask's question's after its parts - so it settles what the forms queue
 // holds for the item after every delete it made (RefsFormsOwed), which rebuild-refs leaves owed
 // until this index runs.
-func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, serverURL string) (bool, error) {
+func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, origins text.Origins) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {
 		return false, err
@@ -1207,7 +1209,7 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 	if err != nil || !found {
 		return false, err
 	}
-	indexed, err := IndexItemIfOwed(ctx, tx, item.Kind, item.ID, serverURL)
+	indexed, err := IndexItemIfOwed(ctx, tx, item.Kind, item.ID, origins)
 	if err != nil {
 		return false, err
 	}

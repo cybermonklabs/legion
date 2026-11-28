@@ -288,3 +288,55 @@ func TestServerClosesConnectionsAfterShutdownBegins(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 }
+
+// loadBalancerBackendKeepalive is how long Google's internal Application Load Balancer keeps an
+// idle connection to a backend open, a value Google fixes, and asks of the backend's own idle
+// timeout that it be longer ("Backend HTTP keepalive timeout",
+// https://docs.cloud.google.com/load-balancing/docs/l7-internal).
+const loadBalancerBackendKeepalive = 600 * time.Second
+
+// idleTimeoutOutlastsTheBalancer is nil when server keeps an idle keep-alive connection open longer
+// than loadBalancerBackendKeepalive, as net/http reads its idle timeout: IdleTimeout, or ReadTimeout
+// where IdleTimeout is zero, and no limit at all where that is zero or negative. Otherwise it says
+// what the balancer meets: a server that closes an idle connection first lets the balancer send a
+// request on a connection the server has closed, and that request fails with a 502.
+func idleTimeoutOutlastsTheBalancer(server *http.Server) error {
+	idle := server.IdleTimeout
+	if idle == 0 {
+		idle = server.ReadTimeout
+	}
+	if idle > 0 && idle <= loadBalancerBackendKeepalive {
+		return fmt.Errorf("the server closes a connection idle for %v, no longer than the %v an internal Application Load Balancer keeps one open, so the balancer can send a request on a connection the server has closed and get a 502", idle, loadBalancerBackendKeepalive)
+	}
+	return nil
+}
+
+// The server main runs (newHTTPServer) keeps an idle connection open past the internal load
+// balancer's backend keepalive. The test reads the server's own setting and waits for no idle
+// period, so it takes no time and dials nothing.
+func TestTheServerKeepsAnIdleConnectionOpenPastTheLoadBalancersBackendKeepalive(t *testing.T) {
+	if err := idleTimeoutOutlastsTheBalancer(newHTTPServer(http.NotFoundHandler(), time.Now)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The check above fails at the server's old idle timeout of 120 seconds, at the balancer's own 600
+// seconds and at a nanosecond, and passes at 601 and 650 seconds, so its failure at a value at or
+// below 600 seconds is shown with no edit of the server.
+func TestTheIdleCheckFailsAtOrBelowSixHundredSeconds(t *testing.T) {
+	for _, row := range []struct {
+		idle   time.Duration
+		passes bool
+	}{
+		{120 * time.Second, false},
+		{600 * time.Second, false},
+		{time.Nanosecond, false},
+		{601 * time.Second, true},
+		{650 * time.Second, true},
+	} {
+		err := idleTimeoutOutlastsTheBalancer(&http.Server{IdleTimeout: row.idle})
+		if passes := err == nil; passes != row.passes {
+			t.Errorf("a server whose IdleTimeout is %v passes the idle check: %t (%v), want %t", row.idle, passes, err, row.passes)
+		}
+	}
+}

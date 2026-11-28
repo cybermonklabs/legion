@@ -838,7 +838,7 @@ func (s *server) listArtifactReferencesV2(w http.ResponseWriter, r *http.Request
 			}
 		}
 	} else {
-		referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, s.requestReader(r), artifact.RefKey, s.deps.ServerURL)
+		referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, s.requestReader(r), artifact.RefKey, s.deps.Origins)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return

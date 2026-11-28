@@ -36,7 +36,8 @@ type property struct {
 	Plain  bool   `json:"plain"`
 	Ref    string `json:"$ref"`
 	Items  struct {
-		Ref string `json:"$ref"`
+		Type string `json:"type"`
+		Ref  string `json:"$ref"`
 	} `json:"items"`
 }
 
@@ -305,20 +306,29 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	// The pods' disruption protection, the front door's and the listener's replica counts, the
-	// listener's sender limit, the database's availability and the image cert-publish runs on are
-	// optional plain strings and integers. Every input that configures Dispatch is optional in the
-	// schema: a generated Go SDK's constructor refuses a nil required input, so a cluster-only
-	// consumer could not call the component at all while one stayed required, and the resolver is
-	// what requires it with clusterOnly off.
+	// listener's sender limit, the database's availability, the image cert-publish runs on and the
+	// app pod's drain are optional plain strings and integers. Every input that configures
+	// Dispatch is optional in the schema: a generated Go SDK's constructor refuses a nil required
+	// input, so a cluster-only consumer could not call the component at all while one stayed
+	// required, and the resolver is what requires it with clusterOnly off.
 	for input, typ := range map[string]string{
 		"priorityClassName": "string", "appPdbMinAvailable": "integer",
 		"frontDoorPdbMinAvailable": "integer", "listenerPdbMinAvailable": "integer",
 		"frontDoorReplicas": "integer", "listenerReplicas": "integer",
 		"senderMessagesPerMinute": "integer", "senderMessageBurst": "integer",
 		"databaseAvailabilityType": "string", "frontDoorToolsImage": "string",
+		"preStopSeconds": "integer", "terminationGracePeriodSeconds": "integer",
 	} {
 		require.Equal(t, typ, dispatch.InputProperties[input].Type, input)
 		require.True(t, dispatch.InputProperties[input].Plain, input)
+		require.False(t, dispatch.InputProperties[input].Secret, input)
+		require.NotContains(t, dispatch.RequiredInputs, input)
+	}
+	// The served and former addresses and the trusted proxy ranges are optional lists of strings,
+	// none a secret: origins and CIDRs, rendered as plain settings.
+	for _, input := range []string{"servedOrigins", "formerOrigins", "trustedProxyRanges"} {
+		require.Equal(t, "array", dispatch.InputProperties[input].Type, input)
+		require.Equal(t, "string", dispatch.InputProperties[input].Items.Type, input)
 		require.False(t, dispatch.InputProperties[input].Secret, input)
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}

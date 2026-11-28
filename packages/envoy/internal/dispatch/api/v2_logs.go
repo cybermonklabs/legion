@@ -463,7 +463,7 @@ func (s *server) listReferencesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := v2Query[referencesV2Query](r)
-	edgeQuery, ref, unknownKinds, err := referencesQueryFor(query.To, query.From, strings.Join(query.Kind, ","), s.deps.ServerURL)
+	edgeQuery, ref, unknownKinds, err := referencesQueryFor(query.To, query.From, strings.Join(query.Kind, ","), s.deps.Origins)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

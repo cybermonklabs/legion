@@ -182,7 +182,7 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 	t.Helper()
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{
-		Store: database, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
+		Store: database, Events: broker, Origins: testOrigins, Settle: 20 * time.Millisecond,
 	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {

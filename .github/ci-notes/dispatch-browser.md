@@ -128,8 +128,8 @@ can move what a go command compiles, so a go command there would fall out of
 check-ci-filters.sh's reduction and be counted as reading every Go file of the repository,
 which is the opposite of what the `dispatch_browser` filter is for. So the builds live in
 this job, which takes no container, and the suite's own scripts execute what it built
-instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN and
-run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
+instead of building it (packages/dispatch/e2e/run-server.sh's DISPATCH_E2E_SERVER_BIN,
+run-signin-issuer.sh's DISPATCH_E2E_ISSUER_BIN and run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
 already decided the call. ci.yaml's three callers hold the `dispatch_browser`,
@@ -460,7 +460,9 @@ and go-envoy cache restore, which are gone: with no go command left here they bo
 nothing, and the restore was there only for the build run-server.sh no longer does.
 The directory is the one run-broker.sh built the broker's three binaries in, which is
 the directory `packages/dispatch/e2e/real-broker.ts#requestseed` points into, so the suite runs requestseed from there; the server
-binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN (.github/scripts/dispatch-browser-shard-suite.sh).
+binary rides along in it and is named by path in DISPATCH_E2E_SERVER_BIN, and the dev-oidc-issuer
+of the broker's three is named by path in DISPATCH_E2E_ISSUER_BIN as well, for the sign-in issuer
+e2e/served-addresses.e2e.ts starts (.github/scripts/dispatch-browser-shard-suite.sh).
 
 A BOUND OF ITS OWN AND A SECOND ATTEMPT. A read of this artifact took 2 to 6 s on every
 leg but one, which took 428 s (the budget note above), so a slow read is answered by

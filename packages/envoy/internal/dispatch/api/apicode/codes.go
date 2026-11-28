@@ -499,6 +499,10 @@ var (
 	// HostMismatch is dev sign-in mode's 421 for a request whose Host is not the dashboard's
 	// origin, which answers every path.
 	HostMismatch = both("HOST_MISMATCH", http.StatusMisdirectedRequest)
+	// ForwardedForInvalid is the 400 the router answers, in front of everything else it runs, a
+	// request from a trusted proxy (DISPATCH_TRUSTED_PROXY_RANGES) whose X-Forwarded-For that proxy
+	// could not have written (routes' resolveClientAddress).
+	ForwardedForInvalid = both("FORWARDED_FOR_INVALID", http.StatusBadRequest)
 )
 
 // The codes /api/v1 wrote at two statuses, or for two conditions /api/v2 tells apart: one

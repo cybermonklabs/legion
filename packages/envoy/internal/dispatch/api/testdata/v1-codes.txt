@@ -296,6 +296,7 @@ DEPLOY_NOT_NEWEST 409 # #5416, a deploy older than the program's current one is 
 DOCUMENT_WRITER_NOT_ARCHITECT 403 # #4725, only a person or an architect of its tree writes the spec or Verification document of an issue Legion runs
 FILES_UNREADABLE 503 # #4184, a CI run's token writes its project's results and nothing else
 FOREIGN_CHILD_OPEN 409 # #4884, an acceptance write waits for an open child of another project
+FORWARDED_FOR_INVALID 400 # #5550, a request from a trusted proxy whose X-Forwarded-For that proxy could not have written is refused before any route runs
 INVALID_AS_OF 400 # #4639, read routes answer as they stood at a past time
 INVALID_REPOSITORY 400 # #4457, each project has an optional default repository, and Dispatch writes no repository mapping
 INVALID_ROLE_HOLDER 400 # #4228, the Legion daemon publishes the session of each role of an issue

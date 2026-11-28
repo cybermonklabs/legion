@@ -233,8 +233,8 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 				"committed so a client's types can be rendered from it, and `envoy-dispatch openapi " +
 				"--check` refuses a tree where it is stale. Each operation of a /api/v2 row lists " +
 				"the refusal codes it can answer with their statuses (x-refusal-codes): its row's own and " +
-				"those of every layer the server runs it behind, but the router's origin and host guards " +
-				"in front of every route (ORIGIN_REFUSED, HOST_MISMATCH), the test hooks " +
+				"those of every layer the server runs it behind, but the router's origin, host and forwarded-address " +
+				"guards in front of every route (ORIGIN_REFUSED, HOST_MISMATCH, FORWARDED_FOR_INVALID), the test hooks " +
 				"(SLOW_WRITE_CUT_OFF) and a server built with no store (DATABASE_UNAVAILABLE). " +
 				"The nine delivery and Legion rows of the INFRA-979 tree are the exception (the GET of " +
 				"/api/v2/delivery/measures, /api/v2/delivery/pipeline, /api/v2/delivery/timeline and " +
@@ -1018,8 +1018,9 @@ var callerCodes = []apicode.Code{
 //
 // Three answers stand outside the list, since no layer of the mount writes them for a request a
 // deployment serves: the router's guards in front of the mount (ORIGIN_REFUSED of the cookie-origin
-// guard, HOST_MISMATCH of dev sign-in mode), the slow-write test hook's SLOW_WRITE_CUT_OFF, and
-// DATABASE_UNAVAILABLE, which only a server built with no store answers.
+// guard, HOST_MISMATCH of dev sign-in mode, FORWARDED_FOR_INVALID of the client-address check), the
+// slow-write test hook's SLOW_WRITE_CUT_OFF, and DATABASE_UNAVAILABLE, which only a server built
+// with no store answers.
 func openAPIOperationCodes(route apiRoute) map[string]any {
 	codes := []apicode.Code{apicode.QueryKeyUnknown, apicode.InvalidQuery, apicode.NULCharacter, apicode.InvalidUTF8, apicode.InternalError}
 	for _, refusal := range route.Refusals {

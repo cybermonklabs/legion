@@ -136,7 +136,8 @@ type meV2 struct {
 	SignInRequired bool `json:"sign_in_required"`
 }
 
-// getMeV2 answers GET /api/v2/me: what GET /api/v1/whoami tells the caller, in one shape.
+// getMeV2 answers GET /api/v2/me: who GET /api/v1/whoami tells the caller it is, in one shape. The
+// server's origins, which whoami names beside it (Deps.WhoamiOrigins), are no member of meV2.
 func (s *server) getMeV2(w http.ResponseWriter, r *http.Request) {
 	actor, human, err := s.optionalActor(r)
 	if err != nil {

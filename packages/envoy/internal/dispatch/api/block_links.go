@@ -60,7 +60,7 @@ func (s *server) blockLinkDocuments(ctx context.Context, who model.Actor, raws [
 // is 400 INVALID_REFERENCE, and found is false for a document that does not exist or that who may
 // not see.
 func (s *server) blockLinksDocument(ctx context.Context, who model.Actor, param, raw string) (model.GraphNode, bool, error) {
-	ref, ok := text.ParseRef(raw, s.deps.ServerURL)
+	ref, ok := text.ParseRef(raw, s.deps.Origins)
 	if !ok || ref.Kind != "artifact" || ref.Session != "" {
 		return model.GraphNode{}, false, errorf(apicode.InvalidReference, "%s must name a document: dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>", param)
 	}

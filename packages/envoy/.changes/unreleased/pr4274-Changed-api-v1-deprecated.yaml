@@ -3,9 +3,11 @@ custom:
   Issue: pr4274
 body: |-
   `/api/v1` is deprecated; its answers change only where this release's changelog entries say so,
-  and each `/api/v1` answer, but dev sign-in's `421 HOST_MISMATCH` and the redirect of a path that
-  is not clean (`/api/v1//issues`), carries a `Deprecation` header (RFC 9745) and a `Link` header with
-  `rel="successor-version"` naming the `/api/v2` route that answers for it, or `GET /api/v2`. The
+  and each `/api/v1` answer, but dev sign-in's `421 HOST_MISMATCH`, the `400 FORWARDED_FOR_INVALID`
+  of a request whose `X-Forwarded-For` a trusted proxy could not have written, and the redirect of a
+  path that is not clean (`/api/v1//issues`), carries a `Deprecation` header (RFC 9745) and a `Link`
+  header with `rel="successor-version"` naming the `/api/v2` route that answers for it, or
+  `GET /api/v2`. The
   deprecation date marks this change, not the configured sunset.
   `DISPATCH_API_V1_END`, an RFC 3339 instant, ends `/api/v1`, and `envoy-infra`'s
   `gcp:Dispatch` sets it from its new `apiV1End` input: while the instant is ahead each `/api/v1`

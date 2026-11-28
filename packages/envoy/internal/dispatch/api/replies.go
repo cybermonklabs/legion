@@ -869,7 +869,7 @@ func (s *server) readMyReplyRows(
 		row.Project = &projectKey
 		row.ReadThrough = &readThrough
 		row.Version = &version
-		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
+		row.Subject = refs.FirstLine(subject, s.deps.Origins)
 		if replyID != nil {
 			row.Reply.ID = *replyID
 		}
@@ -891,7 +891,7 @@ func (s *server) readMyReplyRows(
 			}
 			row.Anchor = &value
 		}
-		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
+		row.Reply.FirstLine = refs.FirstLine(body, s.deps.Origins)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {

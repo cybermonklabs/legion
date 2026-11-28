@@ -467,8 +467,9 @@ the API with its token as `Authorization: Bearer <token>`. A session under
 On `/api/v2` every list answers `{items, total, limit, offset}` and every refusal `{code, error}`,
 its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route
 (`x-refusal-codes`), but for the codes the router answers in front of every route
-(`ORIGIN_REFUSED`, `HOST_MISMATCH`), a write a test hook slowed (`SLOW_WRITE_CUT_OFF`) and a server
-built with no store (`DATABASE_UNAVAILABLE`). A query key the route does not declare is refused
+(`ORIGIN_REFUSED`, `HOST_MISMATCH`, `FORWARDED_FOR_INVALID`), a write a test hook slowed
+(`SLOW_WRITE_CUT_OFF`) and a server built with no store (`DATABASE_UNAVAILABLE`). A query key the
+route does not declare is refused
 `400 QUERY_KEY_UNKNOWN`, naming the key and every key the route declares, so a misspelt filter is
 never read as no filter,
 and every write takes an `Idempotency-Key`. Nine delivery and Legion routes are the exception:
@@ -482,9 +483,10 @@ only with `DISPATCH_TEST_HOOKS=1`, keep their `/api/v1` rules the same way.
 
 `/api/v1` is deprecated. Its routes keep their answers but for a few fixes of this release (the
 `unsettled` member a document's text read adds among them), each answer but dev sign-in's
-`421 HOST_MISMATCH` and the redirect of a path that is not clean carries a `Link` header
-(`rel="successor-version"`) naming the `/api/v2` route that answers for it (or `GET /api/v2`), and
-a deployment ends it on a date it sets, after which every `/api/v1` path answers `410 API_V1_ENDED`
+`421 HOST_MISMATCH`, the router's `400 FORWARDED_FOR_INVALID` and the redirect of a path that is
+not clean carries a `Link` header (`rel="successor-version"`) naming the `/api/v2` route that
+answers for it (or `GET /api/v2`), and a deployment ends it on a date it sets, after which every
+`/api/v1` path answers `410 API_V1_ENDED`
 ([HTTP API v1](/legion/dispatch/reference/api-v1/)). The `dispatch` command still calls `/api/v1`
 at that release, and names itself and its release in its `User-Agent`
 (`dispatch/<version> (<plugin>)`), which Dispatch's access log records.
