@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -69,8 +70,9 @@ func passIncidents(ctx context.Context, pool *store.Pool, safe int64) error {
 // and its refusal of that deploy commits in the transaction that asked (writeSignal,
 // incidentRefusal): a later event that blames the same deploy writes nothing, and a link that
 // makes another deploy the blamed one, which counts for the issue's project, writes its row. One
-// whose blamed deploy counts for no project writes nothing and is not refused, so a later event
-// asks again. A repeat writes nothing, and an incident whose row is made already reads no link.
+// whose blamed deploy counts for no project writes nothing and is not refused: it is logged with
+// the issue and the deploy (unmatchedIncident), and a later event asks again. A repeat writes
+// nothing, and an incident whose row is made already reads no link.
 func recordIncident(ctx context.Context, pool *store.Pool, issue string, detected time.Time, actor model.Actor) (bool, error) {
 	var project string
 	if err := pool.QueryRow(ctx, `select project_key from issues where key = $1`, issue).Scan(&project); err != nil {
@@ -128,7 +130,7 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 		return false, fmt.Errorf("begin the incident_issue of %s: %w", issue, err)
 	}
 	defer tx.Rollback(ctx)
-	created, err := writeSignal(ctx, pool, tx, prodevents.Event{
+	created, matched, err := writeSignal(ctx, pool, tx, prodevents.Event{
 		ProjectKey: project, Kind: prodevents.KindFailure, Source: prodevents.SourceIncidentLabel,
 		SourceRef: ref, PullRequests: pulls, Actor: actor,
 		DeployID: new(blamed.ID), Signal: new(prodevents.SignalIncidentIssue), DetectedAt: new(detected.UTC()),
@@ -136,7 +138,18 @@ func recordIncident(ctx context.Context, pool *store.Pool, issue string, detecte
 	if err != nil {
 		return false, fmt.Errorf("write the incident_issue of %s: %w", issue, err)
 	}
+	if !matched {
+		unmatchedIncident(issue, blamed.ID)
+	}
 	return created, nil
+}
+
+// unmatchedIncident logs issue, an incident whose links blame deploy, a deploy that counts for no
+// project, or whose row is gone since the incident's lookup: the incident writes no row and is not
+// refused, and a later event of the issue asks again.
+func unmatchedIncident(issue, deploy string) {
+	slog.Info("dispatch: an incident issue blames a deploy that counts for no project and makes no failure of it yet; a later event of the issue asks again",
+		"issue", issue, "deploy", deploy)
 }
 
 // incidentRefusal is issue's refusal of a deploy its links blame (incident_refusals): a later event

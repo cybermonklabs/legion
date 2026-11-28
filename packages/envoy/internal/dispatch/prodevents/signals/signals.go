@@ -189,9 +189,11 @@ func moveCursor(ctx context.Context, pool *store.Pool, name string, position int
 
 // The write every automatic signal makes of its failure, the check_fail (RecordCheckFailure), the
 // incident_issue (recordIncident) and the revert (revertFailures): writeSignal writes the row only
-// where the deploy it blames counts for the row's project, judged in the write's transaction, and
+// where the deploy it blames counts for the row's project, judged in the write's transaction,
 // keeps for good the signal's refusal of a deploy that counts for other projects alone
-// (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706).
+// (dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706), and tells its caller where
+// the deploy matched nothing, which the caller logs: the signal stays unmatched
+// (dispatch://INFRA-978/comment/527e19cd-344b-4a20-9a4b-b7d515da91b0).
 
 // errCountsElsewhere is deployCountsForRow's refusal of the deploy an automatic signal's row blames
 // where that deploy counts for other projects than the row's alone: writeSignal refuses the signal
@@ -229,38 +231,40 @@ func commitRefusal(ctx context.Context, tx pgx.Tx, refused refusal, deploy, why 
 // writeSignal writes event, an automatic signal's failure, in tx, the transaction its caller began
 // and read the signal in, which takes the delivery change log's lock nowhere, then commits tx and,
 // where it created the row, drains the change rows the write left in the outbox, as
-// prodevents.Write does; it reports whether it created the row. The row is written only where the
-// deploy it blames counts for its project (countsForRow). bind, where not nil, runs in tx before
-// the commit, on the row written or on the row the project holds under event's source_ref already.
-// Where the blamed deploy counts for other projects alone, refused records the signal's refusal of
-// it in tx, which commits it (commitRefusal), so no later write of the signal makes a row blaming
-// that deploy. Where it counts for no project, as a deploy a rule change dropped since the signal's
-// lookup does, or where its row is gone since then, the write records nothing and commits nothing:
-// the signal stays unmatched, and a later write of it asks again.
+// prodevents.Write does. It reports whether it created the row, and whether the deploy it blames
+// matched: counted for some project. The row is written only where that deploy counts for its
+// project (countsForRow). bind, where not nil, runs in tx before the commit, on the row written or
+// on the row the project holds under event's source_ref already. Where the blamed deploy counts for
+// other projects alone, refused records the signal's refusal of it in tx, which commits it
+// (commitRefusal), so no later write of the signal makes a row blaming that deploy. Where it counts
+// for no project, as a deploy a rule change dropped since the signal's lookup does, or where its row
+// is gone since then, the deploy matched nothing: the write records nothing and commits nothing,
+// leaving tx open to its caller, which logs the signal as unmatched, and a later write of it asks
+// again.
 func writeSignal(ctx context.Context, pool *store.Pool, tx pgx.Tx, event prodevents.Event, refused refusal,
-	bind func(context.Context, pgx.Tx, prodevents.Event) error) (bool, error) {
+	bind func(context.Context, pgx.Tx, prodevents.Event) error) (created, matched bool, err error) {
 	blamed := *event.DeployID
 	row, created, err := prodevents.WriteIn(ctx, tx, event, countsForRow(event.ProjectKey, blamed))
 	switch {
 	case errors.Is(err, errCountsElsewhere):
-		return false, commitRefusal(ctx, tx, refused, blamed, "it counts for other projects than "+event.ProjectKey+" alone")
+		return false, true, commitRefusal(ctx, tx, refused, blamed, "it counts for other projects than "+event.ProjectKey+" alone")
 	case blamesNoDeploy(err):
-		return false, nil
+		return false, false, nil
 	case err != nil:
-		return false, err
+		return false, false, err
 	}
 	if bind != nil {
 		if err := bind(ctx, tx, row); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
+		return false, false, fmt.Errorf("commit production event %s of %s: %w", event.SourceRef, event.ProjectKey, err)
 	}
 	if created {
 		delivery.DrainAfterCommit(ctx, pool, "drain the change rows of an automatic signal's write")
 	}
-	return created, nil
+	return created, true, nil
 }
 
 // countsForRow is the question an automatic signal's write of a row of project asks of the deploy
@@ -306,11 +310,11 @@ func deployCountsForRow(ctx context.Context, tx pgx.Tx, project string, deploy p
 // stored: each project's default_repo, the project of the issue of each pull request deploy ships
 // (a pull request no issue Dispatch holds attributes counts for none, so for the projects whose
 // default repository is the deploy's), and, where it ships no pull request, the project whose
-// deploy source reads its repository by the stored settings' rules (delivery.SourceRules). A posted
-// and a dropped deploy read none of it.
+// deploy source reads its repository by the stored settings' rules (delivery.SourceRules). A deploy
+// that reads no facts, a posted or a dropped one (prodevents.ReadsFacts), reads none of it.
 func storedDeployFacts(ctx context.Context, q delivery.Querier, deploy prodevents.Event) (prodevents.DeployFacts, error) {
 	facts := prodevents.DeployFacts{Defaults: map[string]string{}}
-	if deploy.Source != prodevents.SourceGitHub || deploy.Dropped() {
+	if !prodevents.ReadsFacts(deploy) {
 		return facts, nil
 	}
 	var repos []string
@@ -363,7 +367,7 @@ func storedDeployFacts(ctx context.Context, q delivery.Querier, deploy prodevent
 // blamesNoDeploy reports whether err is the store's refusal of the deploy an automatic row blames
 // as no deploy row (prodevents.CodeNoDeploy): a deploy row gone since the signal's lookup, or a
 // deploy that counts for no project (deployCountsForRow). The signal writes no row of it, as it
-// writes none where no deploy holds what it names, and is not refused.
+// writes none where no deploy holds what it names, is not refused, and is logged as unmatched.
 func blamesNoDeploy(err error) bool {
 	var refused *prodevents.Error
 	return errors.As(err, &refused) && refused.Code == prodevents.CodeNoDeploy

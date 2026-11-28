@@ -278,3 +278,46 @@ func TestARefusedIncidentStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
 		t.Errorf("the refusals logged = %q; want %q, once", logged, want)
 	}
 }
+
+// TestAnIncidentWhoseDeployCountsForNoProjectIsLoggedAndAskedAgain (the architect's ruling,
+// dispatch://INFRA-978/comment/527e19cd-344b-4a20-9a4b-b7d515da91b0, for the incident signal): ALPHA
+// gives up the source that found run 320's deploy, which ships no pull request, so that deploy, kept
+// and not dropped, counts for no project. An incident linking the run then writes no row and no
+// refusal, and logs the unmatched line naming the issue and the deploy. Once ALPHA's source is back,
+// a later event of the incident writes its row, blaming that deploy.
+func TestAnIncidentWhoseDeployCountsForNoProjectIsLoggedAndAskedAgain(t *testing.T) {
+	r := newRig(t)
+	lines := r.logLines()
+	r.deployRun(320, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(320)
+	r.deliveryOff(alpha)
+	r.passDeploys()
+	const runLink = "https://github.com/acme/widgets/actions/runs/320"
+	incident := r.issue(20, "incident")
+	r.link(incident, runLink)
+	r.issueEvent(incident, "issue.created", []string{"incident"}, []string{runLink}, nil)
+	r.passEvents()
+	if rows := r.failures(); len(rows) != 0 {
+		t.Fatalf("with no source reading acme/widgets, failure rows = %+v; want none", rows)
+	}
+	var refused int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from incident_refusals`).Scan(&refused); err != nil || refused != 0 {
+		t.Errorf("the record holds %d incident refusals (%v); want none", refused, err)
+	}
+	if logged, want := lines("", "issue", "deploy"), []string{incident + " " + deploy.ID}; !slices.Equal(logged, want) {
+		t.Errorf("the unmatched lines logged = %q; want %q", logged, want)
+	}
+	if logged := lines(refusedMessage, "key"); len(logged) != 0 {
+		t.Errorf("the refusals logged = %q; want none", logged)
+	}
+
+	r.saveRule(prodJob)
+	r.passDeploys()
+	r.issueEvent(incident, "issue.updated", []string{"incident", "sev1"}, []string{runLink}, []string{"labels"})
+	r.passEvents()
+	if rows := r.failures(); len(rows) != 1 || rows[0].SourceRef != IncidentSourceRef(incident) || *rows[0].DeployID != deploy.ID {
+		t.Fatalf("once ALPHA's source is back, a later event of the incident leaves failure rows %+v; want the incident's, blaming %s",
+			rows, deploy.ID)
+	}
+}

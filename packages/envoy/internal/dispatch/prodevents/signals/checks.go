@@ -155,8 +155,10 @@ func lockResult(ctx context.Context, tx pgx.Tx, id string) error {
 // alone is refused in the transaction that asked (checkRefusal), and no later call writes it. A
 // result no deploy holds yet is logged with its id (unmatchedCheck) and stays bound to no row, and
 // makes its row when a deploy row that holds its commit lands (matchEarlyChecks); a result whose
-// deploy counts for no project, or whose deploy row is gone since its lookup, is not refused either
-// and stays bound to no row.
+// deploy counts for no project, or whose deploy row is gone since its lookup, is not refused either:
+// it is logged with its id the same way and stays bound to no row, and makes its row once a derive
+// makes that deploy count for its project
+// (dispatch://INFRA-978/comment/527e19cd-344b-4a20-9a4b-b7d515da91b0).
 func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool, error) {
 	if result, found, err := readCheckResult(ctx, pool, id); err != nil || !found || !result.counts() || result.matched() {
 		return false, err
@@ -185,7 +187,7 @@ func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool,
 	if err != nil {
 		return false, err
 	}
-	created, err := writeSignal(ctx, pool, tx, prodevents.Event{
+	created, matched, err := writeSignal(ctx, pool, tx, prodevents.Event{
 		ProjectKey: result.project, Kind: prodevents.KindFailure, Source: prodevents.SourceCheckResults,
 		SourceRef: CheckSourceRef(result.artifactID, result.blockID, deploy.ID), PullRequests: pulls, Actor: result.actor,
 		DeployID: new(deploy.ID), Signal: new(prodevents.SignalCheckFail), DetectedAt: new(result.createdAt.UTC()),
@@ -198,6 +200,9 @@ func RecordCheckFailure(ctx context.Context, pool *store.Pool, id string) (bool,
 	})
 	if err != nil {
 		return false, fmt.Errorf("write the check_fail of result %s: %w", result.id, err)
+	}
+	if !matched {
+		unmatchedCheck(result)
 	}
 	return created, nil
 }
@@ -215,10 +220,13 @@ func checkRefusal(result checkResult) refusal {
 	}}
 }
 
-// unmatchedCheck logs result, a check_fail signal whose commit no deploy row holds yet: the deploy
-// row that holds it, once it lands, makes its row (matchEarlyChecks).
+// unmatchedCheck logs result, a check_fail signal that matches no deploy yet: no deploy row holds
+// its commit, or the deploy row that first shipped it counts for no project, as one a rule change
+// drops or one whose repository no project's source reads any more, or that row is gone since the
+// result's lookup. A deploy row that holds its commit and counts for a project, once a derive writes
+// it or makes it count, makes its row (matchEarlyChecks).
 func unmatchedCheck(result checkResult) {
-	slog.Info("dispatch: a failed after-merge check names a commit no deploy row holds yet; its deploy row makes its failure",
+	slog.Info("dispatch: a failed after-merge check names a commit no deploy row that counts for a project holds yet; the derive that writes such a row, or makes one count, makes its failure",
 		"result", result.id, "commit", result.commitSHA)
 }
 

@@ -133,6 +133,64 @@ func TestAnEarlyCheckFailIsMatchedWhenItsDeployRowLands(t *testing.T) {
 	}
 }
 
+// TestACheckFailWhoseDeployCountsForNoProjectIsLoggedAndBoundOnceItCounts (the architect's ruling,
+// dispatch://INFRA-978/comment/527e19cd-344b-4a20-9a4b-b7d515da91b0): ALPHA gives up the source that
+// found run 500's deploy, which ships no pull request, so that deploy, kept and not dropped, counts
+// for no project. A fail of an after_merge check at its head then writes no row and no refusal and
+// binds to nothing, through the handler's write and through the checks feed alike, and each logs
+// the unmatched line with the result's id, as a commit no deploy row holds does. Once ALPHA's
+// source is back, the derive binds the result to a check_fail row blaming that deploy, and logs it
+// unmatched no more.
+func TestACheckFailWhoseDeployCountsForNoProjectIsLoggedAndBoundOnceItCounts(t *testing.T) {
+	r := newRig(t)
+	lines := r.logLines()
+	unmatched := func() []string { return lines("dispatch: a failed after-merge check", "result") }
+	issue := r.issue(13)
+	r.deployRun(500, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(500)
+	r.deliveryOff(alpha)
+	r.passDeploys()
+	if kept := r.deployOf(500); kept.ID != deploy.ID || kept.Dropped() {
+		t.Fatalf("with no source reading acme/widgets, run 500's row = %+v; want %s kept, not dropped", kept, deploy.ID)
+	}
+
+	result := r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if created, err := RecordCheckFailure(r.ctx, r.pool, result); err != nil || created {
+		t.Fatalf("RecordCheckFailure at a deploy that counts for no project = %v, %v; want no row", created, err)
+	}
+	r.passEvents()
+	if rows := r.failures(); len(rows) != 0 {
+		t.Fatalf("with no source reading acme/widgets, failure rows = %+v; want none", rows)
+	}
+	var refused int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from check_fail_refusals`).Scan(&refused); err != nil || refused != 0 {
+		t.Errorf("the record holds %d check_fail refusals (%v); want none", refused, err)
+	}
+	if bound := r.boundTo(result); bound != "" {
+		t.Errorf("the result is bound to %q; want it unbound", bound)
+	}
+	if logged, want := unmatched(), []string{result, result}; !slices.Equal(logged, want) {
+		t.Errorf("the unmatched lines logged name %q; want the result %s, once for the handler's write and once for the feed's", logged, result)
+	}
+	if logged := lines(refusedMessage, "key"); len(logged) != 0 {
+		t.Errorf("the refusals logged = %q; want none", logged)
+	}
+
+	r.saveRule(prodJob)
+	r.passDeploys()
+	rows := r.failures()
+	if len(rows) != 1 || *rows[0].DeployID != deploy.ID || rows[0].SourceRef != CheckSourceRef(r.verification(issue), "c1", deploy.ID) {
+		t.Fatalf("once ALPHA's source is back, failure rows = %+v; want the check_fail blaming run 500's deploy %s", rows, deploy.ID)
+	}
+	if bound := r.boundTo(result); bound != rows[0].ID {
+		t.Errorf("once ALPHA's source is back, the result is bound to %q; want %s", bound, rows[0].ID)
+	}
+	if logged := unmatched(); len(logged) != 2 {
+		t.Errorf("once ALPHA's source is back, the unmatched lines logged name %q; want the two logged before", logged)
+	}
+}
+
 // failNextInsert makes the next row of table that when holds of refused, once: the interruption of
 // a write between its first statement and its commit. A sequence counts the refusal, and no
 // rollback takes it back, so the insert after it goes through.

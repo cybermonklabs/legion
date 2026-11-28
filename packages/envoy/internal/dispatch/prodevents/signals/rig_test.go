@@ -73,17 +73,17 @@ func (r *rig) exec(what, statement string, args ...any) {
 	}
 }
 
-// logRefusals makes a Recorder the default logger's handler until the test ends, and answers a
-// read of each refusal of a signal logged since (refusedMessage), in order, as
-// "<signal> <key> <deploy>".
-func (r *rig) logRefusals() func() []string {
+// logLines makes a Recorder the default logger's handler until the test ends, and answers a read
+// of each line logged since whose message starts with prefix and that holds every attribute of
+// keys, in order, as the values of those attributes, space-separated.
+func (r *rig) logLines() func(prefix string, keys ...string) []string {
 	r.t.Helper()
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(r.t, recorder)
-	return func() []string {
+	return func(prefix string, keys ...string) []string {
 		var logged []string
 		for _, record := range recorder.Records() {
-			if record.Message != refusedMessage {
+			if !strings.HasPrefix(record.Message, prefix) {
 				continue
 			}
 			attrs := map[string]string{}
@@ -91,10 +91,26 @@ func (r *rig) logRefusals() func() []string {
 				attrs[attr.Key] = attr.Value.String()
 				return true
 			})
-			logged = append(logged, attrs["signal"]+" "+attrs["key"]+" "+attrs["deploy"])
+			values := make([]string, 0, len(keys))
+			for _, key := range keys {
+				if value, held := attrs[key]; held {
+					values = append(values, value)
+				}
+			}
+			if len(values) == len(keys) {
+				logged = append(logged, strings.Join(values, " "))
+			}
 		}
 		return logged
 	}
+}
+
+// logRefusals is logLines read for each refusal of a signal (refusedMessage), as
+// "<signal> <key> <deploy>".
+func (r *rig) logRefusals() func() []string {
+	r.t.Helper()
+	lines := r.logLines()
+	return func() []string { return lines(refusedMessage, "signal", "key", "deploy") }
 }
 
 // rule is acme/widgets's rule with production jobs jobs and the apply step.
@@ -163,6 +179,31 @@ func (r *rig) deployRun(id int64, created time.Time, head, job string, conclusio
 	}
 	if err := delivery.UpsertRunJobs(r.ctx, r.pool, widgets, id, []delivery.DeliveryRunJob{jobRow}, conclusion != nil); err != nil {
 		r.t.Fatalf("store the jobs of run %d: %v", id, err)
+	}
+}
+
+// rerun stores a second attempt of deploy run id, which deployRun stored created at created with
+// head head: GitHub keeps the run's creation and head, and runs its one job, job, again, from ten
+// minutes before done to done, the job and its apply step succeeding. It writes the run and its job
+// as deployRun does, so the run's deploy row keeps its id and finishes at done, moved in place
+// (prodevents.UpsertGitHubDeploy).
+func (r *rig) rerun(id int64, created time.Time, head, job string, done time.Time) {
+	r.t.Helper()
+	started := done.Add(-10 * time.Minute)
+	if err := delivery.UpsertRun(r.ctx, r.pool, delivery.DeliveryRun{
+		Repo: widgets, RunID: id, Kind: delivery.DeliveryRunKindDeploy, HeadSHA: head, HeadCommitAt: created.Add(-time.Minute),
+		StartedAt: started, CreatedAt: new(created), CompletedAt: &done,
+		Conclusion: new(delivery.DeliveryRunConclusion(delivery.DeliveryRunConclusionSuccess)),
+		URL:        fmt.Sprintf("https://github.com/%s/actions/runs/%d", widgets, id), HeadBranch: new("main"), Event: new("push"),
+		RunAttempt: new(2),
+	}); err != nil {
+		r.t.Fatalf("store the second attempt of run %d: %v", id, err)
+	}
+	if err := delivery.UpsertRunJobs(r.ctx, r.pool, widgets, id, []delivery.DeliveryRunJob{{
+		Repo: widgets, RunID: id, Name: job, StartedAt: &started, CompletedAt: &done, Conclusion: success,
+		ApplyStep: new(applyStep), ApplyStepConclusion: success,
+	}}, true); err != nil {
+		r.t.Fatalf("store the jobs of the second attempt of run %d: %v", id, err)
 	}
 }
 

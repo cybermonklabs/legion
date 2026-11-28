@@ -28,6 +28,16 @@ type DeployFacts struct {
 	Pulls    []PullAttribution
 }
 
+// ReadsFacts reports whether deploy is counted by facts (DeployProjects): a GitHub deploy that is
+// not dropped. A deploy row is the GitHub adapter's or a system's post (UpsertGitHubDeploy, the
+// production events route, which posts a deploy of source api alone), so every other deploy row
+// is a posted one, which counts for its route's project alone, or a dropped one, which counts for
+// none, and a reader fills no facts for it (evals' readPublishedDeployFacts, signals'
+// storedDeployFacts).
+func ReadsFacts(deploy Event) bool {
+	return deploy.Source == SourceGitHub && !deploy.Dropped()
+}
+
 // DeployProjects is the projects deploy counts for under facts: the restatement in Go, over facts
 // a caller supplies, of the rule the delivery evals and the failure measures count a deploy by in
 // SQL, through the owner keys of its repository and the projects eval_owner_readers names as
@@ -35,18 +45,18 @@ type DeployFacts struct {
 // R12, INFRA-2916 R15). It serves the readers that judge one deploy, or one page's, where no day
 // row is built: the record's routes over the published state and the production signals over the
 // stored facts (dispatch://INFRA-978/comment/6da2d490-27d2-4d03-816a-a164a8d24dde). A change to
-// the rule lands in both. A posted deploy counts for its route's project alone; a dropped GitHub
-// deploy for none; a GitHub deploy that ships no pull request for the project that reads its
-// repository (facts.Source); and one that ships pull requests for the project each one's list
-// picks, the first of its conditions whose default repository is the deploy's, else its terminal,
-// a project that exists (facts.Defaults) alone, and, where some list picks none, for each project
-// whose default repository is the deploy's.
+// the rule lands in both. A posted deploy counts for its route's project alone; any other deploy
+// that reads no facts (ReadsFacts), a dropped GitHub deploy, for none; a GitHub deploy that ships no
+// pull request for the project that reads its repository (facts.Source); and one that ships pull
+// requests for the project each one's list picks, the first of its conditions whose default
+// repository is the deploy's, else its terminal, a project that exists (facts.Defaults) alone, and,
+// where some list picks none, for each project whose default repository is the deploy's.
 func DeployProjects(deploy Event, facts DeployFacts) []string {
 	switch {
-	case deploy.Dropped():
-		return nil
 	case deploy.Source == SourceAPI:
 		return []string{deploy.ProjectKey}
+	case !ReadsFacts(deploy):
+		return nil
 	case len(facts.Pulls) == 0:
 		if facts.Source == "" {
 			return nil

@@ -398,11 +398,11 @@ func readRecordReaders(ctx context.Context, q delivery.Querier, attributor *deli
 // (eval_days_defaults), the attribution of the pull requests each deploy ships
 // (readShippedAttribution) and, for a deploy that ships none, the project eval_days_rules records as
 // reading its repository. Each is one read for all of deploys, so a page's deploys cost what one
-// deploy does. A posted and a dropped deploy read none of it, and nothing is read where every deploy
-// is one.
+// deploy does. A deploy that reads no facts, a posted or a dropped one (prodevents.ReadsFacts),
+// reads none of it, and nothing is read where every deploy is one.
 func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributor *delivery.Attributor, deploys []prodevents.Event) ([]prodevents.DeployFacts, error) {
 	facts := make([]prodevents.DeployFacts, len(deploys))
-	if !slices.ContainsFunc(deploys, func(deploy prodevents.Event) bool { return deploy.Source != prodevents.SourceAPI && !deploy.Dropped() }) {
+	if !slices.ContainsFunc(deploys, prodevents.ReadsFacts) {
 		return facts, nil
 	}
 	attribute, err := readShippedAttribution(ctx, q, attributor, deploys)
@@ -421,9 +421,12 @@ func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributo
 	}); err != nil {
 		return nil, fmt.Errorf("read the projects' published default repositories: %w", err)
 	}
-	var unshipped []string
+	// unshipped is the index of each deploy that reads facts and ships no pull request, whose facts
+	// take the project that reads its repository, and repos is their repositories, each once.
+	var unshipped []int
+	var repos []string
 	for i, deploy := range deploys {
-		if deploy.Source == prodevents.SourceAPI || deploy.Dropped() {
+		if !prodevents.ReadsFacts(deploy) {
 			continue
 		}
 		facts[i].Defaults = defaults
@@ -433,8 +436,11 @@ func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributo
 				facts[i].Pulls = append(facts[i].Pulls, prodevents.PullAttribution{Conditions: list.conditions, Terminal: list.terminal})
 			}
 		}
-		if repo := strings.ToLower(deploy.Repo); len(facts[i].Pulls) == 0 && !slices.Contains(unshipped, repo) {
-			unshipped = append(unshipped, repo)
+		if len(facts[i].Pulls) == 0 {
+			unshipped = append(unshipped, i)
+			if repo := strings.ToLower(deploy.Repo); !slices.Contains(repos, repo) {
+				repos = append(repos, repo)
+			}
 		}
 	}
 	if len(unshipped) == 0 {
@@ -442,9 +448,9 @@ func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributo
 	}
 	sources := map[string]string{}
 	rows, err = q.Query(ctx, `select lower(repo), coalesce(project_key, '') from eval_days_rules where lower(repo) = any($1::text[]) order by repo`,
-		unshipped)
+		repos)
 	if err != nil {
-		return nil, fmt.Errorf("read the projects that read %d repositories: %w", len(unshipped), err)
+		return nil, fmt.Errorf("read the projects that read %d repositories: %w", len(repos), err)
 	}
 	if _, err := pgx.ForEachRow(rows, []any{&repo, &project}, func() error {
 		if _, held := sources[repo]; !held {
@@ -452,12 +458,10 @@ func readPublishedDeployFacts(ctx context.Context, q delivery.Querier, attributo
 		}
 		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("read the projects that read %d repositories: %w", len(unshipped), err)
+		return nil, fmt.Errorf("read the projects that read %d repositories: %w", len(repos), err)
 	}
-	for i, deploy := range deploys {
-		if facts[i].Defaults != nil && len(facts[i].Pulls) == 0 {
-			facts[i].Source = sources[strings.ToLower(deploy.Repo)]
-		}
+	for _, i := range unshipped {
+		facts[i].Source = sources[strings.ToLower(deploys[i].Repo)]
 	}
 	return facts, nil
 }
