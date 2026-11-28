@@ -167,6 +167,32 @@ func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
 	})
 }
 
+// A continuing step keeps the branch its open start is bound to until that step ends, also after
+// its fix ended with its way pending. The tester runs when fix 1 starts, so its open start is bound
+// to its own branch beside fix 1; fix 1 pushes headTwo and ends while the tester still runs, so the
+// way after it waits for the tester's step. A start of the tester then, a resume of the step that
+// still runs, is told fix 1 and the branch its start is bound to (boundFacts), never the task's
+// branch, which a tester told no fix would push to. Its red is boundBranch answering no branch: the
+// resume is then told no fix and no branch.
+func TestAContinuingStepKeepsItsBoundBranchUntilItEnds(t *testing.T) {
+	r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
+	r.fails(fixHead, "k-ci")
+	r.readJob(intake.FixJobRead{Name: "unit", URL: fixPage})
+	tester := besideFix1(t, claim.RoleTester)
+	if facts := r.startFactsIn(phase.Testing); facts.Fix != 1 || facts.Branch != tester {
+		t.Fatalf("a tester's start facts while fix 1 runs = %+v, want fix 1 on %s", facts, tester)
+	}
+	r.fixPushes(headTwo)
+	if result := r.apply("fix-done", fixCompletion(headTwo)); result.Refusal != nil {
+		t.Fatalf("the fix's completion was refused: %+v", result.Refusal)
+	}
+	r.assertFixEnded("passed", headTwo, false, 0)
+	assertPhase(t, r.pool, phase.Testing)
+	if facts := r.startFactsIn(phase.Testing); facts.Fix != 1 || facts.Branch != tester || facts.Kept {
+		t.Fatalf("a resume of the tester after fix 1 ended with its way pending is told %+v, want fix 1 on the branch its start is bound to, %s", facts, tester)
+	}
+}
+
 // deletions is each deletion of branches beside the fixes of a task queued for LEGION-208, oldest
 // first, as `<generation> <task> through <m>`, m being the newest fix the task held when the row
 // was queued (record.BesideBranchesDelete).
