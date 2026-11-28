@@ -61,9 +61,10 @@ import type { AgentEndMessage } from "@legion/pi-shared/pi-types";
  * after that call ends, and goes then or with an earlier send, which takes everything pending,
  * while every other request keeps its own deadline. Only a deadline or the turn's end makes a
  * send, and a call's end only arms the timer, so a failing daemon is never called in a loop. A
- * request the contract refuses is dropped at `messageEnded` with a warning, so it never shares a
- * batch. A request older than an hour is dropped with a warning. A report the daemon refuses (a
- * 4xx) is dropped with a warning, as a turn outcome's is.
+ * request the contract refuses — one with no model, or an id, session or model the daemon reads
+ * as blank — is dropped at `messageEnded` with a warning naming its id and the contract's reason,
+ * so it never shares a batch. A request older than an hour is dropped with a warning. A report
+ * the daemon refuses (a 4xx) is dropped with a warning, as a turn outcome's is.
  * Nothing of the session waits on any of it: the hooks return at once.
  *
  * The turn's outcome report (`./turn-outcome`) is a separate route and is unchanged by this one.
@@ -317,7 +318,6 @@ export function createModelRequestsReporter(
         tokens(usage?.cacheRead) +
         tokens(usage?.output);
       if (message.responseId === undefined && counted === 0) return;
-      if (message.model === undefined || message.model === "") return;
       const endedAt = message.completedAt ?? deps.now();
       const id = deps.newId();
       const endedDate = new Date(endedAt);

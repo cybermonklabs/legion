@@ -2601,6 +2601,37 @@ test("an escalation rejects empty required fields", () => {
   }
 });
 
+// The daemon's `modelRequestsProblem` refuses a report with a 400 where a request's id, session or
+// model is blank as Go's strings.TrimSpace reads it, so the request body's schema refuses each such
+// request too, by goBlankPattern rather than JavaScript's trim (`./go-blank.ts`): only spaces, or
+// only U+0085, which trim keeps. A value with content is sent as it is, never trimmed.
+test("a report of model requests refuses a request whose id, session or model is blank", () => {
+  const request = {
+    id: "req-1",
+    session: "ses_implementer_208",
+    model: "standin-model",
+    endedAt: "2026-11-25T21:53:17.412Z",
+  };
+  const report = (requests: (typeof request)[]) => ({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: CLAIM_SECRET,
+    generation: 3,
+    requests,
+  });
+  expect(LegionModelRequestsRequest.safeParse(report([request])).success).toBeTrue();
+  for (const field of ["id", "session", "model"] as const) {
+    for (const blank of ["", " ", "   ", "\u0085"]) {
+      expect(
+        LegionModelRequestsRequest.safeParse(report([{ ...request, [field]: blank }])).success,
+        `${field} ${JSON.stringify(blank)} is refused`
+      ).toBeFalse();
+    }
+    const padded = report([{ ...request, [field]: ` ${request[field]} ` }]);
+    expect(LegionModelRequestsRequest.parse(padded)).toEqual(padded);
+  }
+});
+
 test("a workflow refusal preserves its stable code and message", () => {
   expect(
     LegionErrorResponse.safeParse({

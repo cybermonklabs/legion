@@ -2155,6 +2155,15 @@ export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 /** The most requests one report of model requests carries (`claim.MaxModelRequests`). */
 export const LEGION_MAX_MODEL_REQUESTS = 200;
 
+/** A text field of a model request the daemon requires, named `field`: refused where Go's
+ * strings.TrimSpace empties it (`goBlankPattern`), as `modelRequestsProblem` in
+ * `packages/daemon/internal/api/model_requests.go` refuses it, with a 400 for the whole report, so
+ * one blank request would cost every request of its batch. The value is sent as the host gave it,
+ * never trimmed. */
+function modelRequestField(field: string): z.ZodString {
+  return z.string().refine((text) => !goBlankPattern.test(text), { error: `${field} is required` });
+}
+
 /** `claim.ModelRequest`, one model request a host made for a session of the project, and nothing
  * else of it: no prompt, no answer and no text of an error. `id` is the host's own, unique within
  * the claim's launch generation and kept across the host's retries, so a request reported twice is
@@ -2166,11 +2175,13 @@ export const LEGION_MAX_MODEL_REQUESTS = 200;
  * request to the later end's minute; an earlier or equal end moves nothing. `uncachedInputTokens`
  * is its fresh input plus its cache writes, never its cache reads, and absent where the host did
  * not learn it: a request of a model the project counts with none leaves its minute's tokens
- * unknown, so the headroom of that minute is not recorded, never the sum of the other requests. */
+ * unknown, so the headroom of that minute is not recorded, never the sum of the other requests.
+ * `id`, `session` and `model` are each refused where Go's strings.TrimSpace empties them
+ * (`modelRequestField`). */
 export const LegionModelRequest = z.strictObject({
-  id: nonEmptyString,
-  session: nonEmptyString,
-  model: nonEmptyString,
+  id: modelRequestField("id"),
+  session: modelRequestField("session"),
+  model: modelRequestField("model"),
   endedAt: timestamp,
   uncachedInputTokens: z.number().int().nonnegative().optional(),
 });

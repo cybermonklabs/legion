@@ -663,9 +663,10 @@ test("a call that fails before it leaves is a failed call, and the run's end ret
   expect(warned).toHaveLength(2);
 });
 
-// A request the contract's per-request schema refuses (a `session` of "", which `nonEmptyString`
-// refuses) is dropped at `messageEnded` with a warning naming its id and the schema's reason, so
-// it never shares a batch with its owner's other requests, which go by their deadlines.
+// A request the contract's per-request schema refuses (a `session` of "", which
+// `LegionModelRequest` refuses as the daemon does) is dropped at `messageEnded` with a warning
+// naming its id and the schema's reason, so it never shares a batch with its owner's other
+// requests, which go by their deadlines.
 test("a request the contract refuses is dropped at messageEnded with a warning, and its owner's other requests go on time", async () => {
   const { reporter, batches, warnings, advance, now } = rig({ credential: () => implementer });
   reporter.messageEnded({ session: "", subagent: false }, answered(now()));
@@ -688,6 +689,44 @@ test("a request the contract refuses is dropped at messageEnded with a warning, 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
   expect(batches()).toHaveLength(1);
   expect(warnings).toHaveLength(1);
+});
+
+// An answered request with a model of "", with none, or with one only spaces, which the daemon's
+// `modelRequestsProblem` refuses with a 400 for the whole report, is refused by the contract's
+// per-request schema too: each is dropped at `messageEnded` with one warning naming its id and
+// `model` as the reason's field, never silently, and its owner's valid request beside them goes
+// on time, alone in its report.
+test("a request with an empty, absent or blank model is dropped at messageEnded with a warning, and its owner's valid request goes on time alone", async () => {
+  const { reporter, batches, warnings, advance, now } = rig();
+  const validEnd = now();
+  reporter.messageEnded(role, answered(validEnd));
+  const { model: _model, ...absent } = answered(now());
+  for (const message of [answered(now(), undefined, ""), absent, answered(now(), undefined, " ")]) {
+    reporter.messageEnded(role, message);
+  }
+  expect(
+    warnings.map(
+      ({ message, context }) =>
+        `${message}; id ${String(context?.id)}; reason names model: ${String(context?.reason).startsWith("model: ")}`
+    )
+  ).toEqual(
+    ["req-2", "req-3", "req-4"].map(
+      (id) =>
+        `legion: dropped a model request the contract refuses; id ${id}; reason names model: true`
+    )
+  );
+
+  await advance(MODEL_REQUEST_DUE_AFTER_MS - 1);
+  expect(batches()).toEqual([]);
+  await advance(1);
+  expect(
+    batches().map((batch) => (batch.requests as { id: string }[]).map(({ id }) => id))
+  ).toEqual([["req-1"]]);
+  expect(now() - validEnd).toBe(MODEL_REQUEST_DUE_AFTER_MS);
+
+  await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
+  expect(batches()).toHaveLength(1);
+  expect(warnings).toHaveLength(3);
 });
 
 // The 4xx rule, each branch. A proxy in front of the daemon that answers 429 with a page of its
