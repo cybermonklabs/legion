@@ -566,11 +566,14 @@ func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervi
 }
 
 // operatorRequest sends one operator request from a goroutine of its own and answers its status on
-// the returned channel, -1 when it got none.
+// the returned channel, -1 when it got none. Its reply is waited for under replyContext, made here
+// on the test's goroutine.
 func operatorRequest(d *daemon, method, path string, body []byte) <-chan int {
 	answered := make(chan int, 1)
+	ctx, cancel := replyContext(d.t)
 	go func() {
-		req, err := http.NewRequest(method, d.base+path, bytes.NewReader(body))
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, method, d.base+path, bytes.NewReader(body))
 		if err != nil {
 			answered <- -1
 			return

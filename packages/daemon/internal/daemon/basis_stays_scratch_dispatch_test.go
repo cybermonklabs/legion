@@ -1058,6 +1058,22 @@ func (r *personHandoverRig) pendingRegistered(run basisRun, ask string, told boo
 		run.basisVersion, standing, run.parent.Key, told)
 }
 
+// pendingBasisEndBound is how long pendingEnded waits for the daemon to end a step's wait on an
+// ancestor's request after the act that ends it, above which the act is taken never to have
+// reached the step. It is a ceiling on a quantity this rig has measured, not a span standing in
+// for an event. The quantity is the test-side wait itself, from the act to the state showing the
+// step's wait ended: 25 readings in one unforced head run gave a minimum of 11 ms, a median of 58
+// ms and a maximum of 221 ms, so a minute is 271 times the slowest. (The daemon's own log shows its
+// cue and its verdict 8 to 30 ms apart, in daemon-go-race (leg 3) job 140311446907 at #5660's
+// f1db1daf; that is the daemon's internal step, not the quantity this bounds.) It exists because
+// the binary's deadline is the wrong ceiling for this one wait: in that run the daemon applied no
+// Dispatch event at all for 29 minutes, the wait ran 1,729.51 s to testwait's margin, and the
+// binary's alarm then failed 47 other top-level tests and 9 subtests that were still running. This
+// bound makes that failure cost a minute and name itself; it does not fix the cause, which is the
+// open question of why the daemon applied no event (the row in
+// dispatch://INFRA-3904/artifact/found-rows-md).
+const pendingBasisEndBound = time.Minute
+
 // restingRegistration is the sentence of the resting-root notice that tells P's architect of the
 // pending registration of run's root on P's request ask (workflow's tellRegisteredBasis), and
 // whether a notice is that one.
@@ -1082,7 +1098,7 @@ func restingRegistration(run basisRun, ask string) (string, func(record.Notice) 
 func (r *personHandoverRig) pendingEnded(run basisRun, ask, act string, told bool, standing phase.Phase) {
 	t := r.t
 	t.Helper()
-	state, body := settled(t, r.d, "end the wait of "+run.root.Key+" on "+ask, func(s api.State) bool {
+	state, body := settledWithin(t, r.d, pendingBasisEndBound, "end the wait of "+run.root.Key+" on "+ask, func(s api.State) bool {
 		step := stepOf(s, run.root.Key)
 		return step.Status != api.GatedStepPendingOnBasis && step.Status != api.GatedStepUnregistered
 	})
@@ -1429,12 +1445,20 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.approve(nested.parent.PrimaryArtifactID)
 	r.openedOnBasis(nested.root, nested.parent, 1, nested.basisVersion)
 
-	// P a Legion root on the backlog the daemon has not recorded.
+	// P a Legion root on the backlog the daemon has not recorded. The person's approval of P does
+	// two things the daemon applies apart: R's pending-basis seed reads it and opens R's step, which
+	// takes R to planning, and it is the person's handover of P, a todo write whose event re-admits
+	// P. P's admission composes its architect's start task, naming R at the phase R stands at then,
+	// and nothing writes that task again. Which of the two comes first is the machine's, so P's
+	// handover waits in the outbox until R's step has opened, and the task names R in planning
+	// whatever the load; read in the other order it named R in admitted.
 	onBacklog := r.pendingWorld([]string{"Seed vault humidity", "Agricultural heritage archive"}, pendingOptions{place: ancestorOnBacklog})
 	r.registerOn(onBacklog.basisRun)
 	r.pendingRegistered(onBacklog.basisRun, onBacklog.ask, false, phase.Admitted)
+	held.hold(onBacklog.parent.Key, record.OutboxKindDispatchStatus)
 	r.approve(onBacklog.parent.PrimaryArtifactID)
 	r.openedOnBasis(onBacklog.root, onBacklog.parent, 1, onBacklog.basisVersion)
+	held.release(onBacklog.parent.Key)
 	started := r.launchedArchitect(onBacklog.parent.Key)
 	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", onBacklog.parent.Key, onBacklog.root.Key)
 	if started.Pending == nil || !strings.Contains(started.Pending.Task, restingTask) {
@@ -1471,26 +1495,15 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	held.hold(window.root.Key, record.OutboxKindPendingBasisSeed)
 	reached, release := pause.arm(window.root.Key)
 	answered := r.gateCallAsync(basisCall(window.grant(), window.root, window.rootVersion, window.parent.PrimaryArtifactID, window.basisVersion, basisReason))
-	select {
-	case <-reached:
-	case answer := <-answered:
-		t.Fatalf("the registration answered %d %s before it was held: %v", answer.status, answer.body, answer.err)
-	case <-time.After(time.Minute):
-		t.Fatal("the registration was never held after its Dispatch reads")
-	}
+	r.heldAfterReads(reached, answered)
 	windowApproval := r.approve(window.parent.PrimaryArtifactID)
 	r.applied(r.newestEvent(window.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == windowApproval.Version }))
 	if gates := r.gates(window.root.Key); len(gates) != 0 {
 		t.Fatalf("while the registration is held, %s holds the gates %+v, want none", window.root.Key, gates)
 	}
 	release()
-	select {
-	case answer := <-answered:
-		if answer.err != nil || answer.status != http.StatusOK {
-			t.Fatalf("the held registration of %s = %d %s (%v), want 200", window.root.Key, answer.status, answer.body, answer.err)
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the released registration never answered")
+	if answer := r.releasedAnswer(answered); answer.err != nil || answer.status != http.StatusOK {
+		t.Fatalf("the held registration of %s = %d %s (%v), want 200", window.root.Key, answer.status, answer.body, answer.err)
 	}
 	r.pendingRegistered(window.basisRun, window.ask, true, phase.Admitted)
 	held.release(window.root.Key)
@@ -1521,13 +1534,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	inside := r.pendingWorld([]string{"Glasshouse vent opener", "Botanical garden renewal"}, pendingOptions{place: ancestorLive, noV4: true})
 	reached, release = pause.arm(inside.root.Key)
 	answered = r.gateCallAsync(basisCall(inside.grant(), inside.root, inside.rootVersion, inside.parent.PrimaryArtifactID, inside.basisVersion, basisReason))
-	select {
-	case <-reached:
-	case answer := <-answered:
-		t.Fatalf("the registration answered %d %s before it was held: %v", answer.status, answer.body, answer.err)
-	case <-time.After(time.Minute):
-		t.Fatal("the registration was never held after its Dispatch reads")
-	}
+	r.heldAfterReads(reached, answered)
 	r.requestChanges(inside.parent.PrimaryArtifactID, "Name p2's owner.")
 	r.applied(r.newestEvent(inside.parent.Key, "artifact.changes_requested", nil))
 	if told := r.notices(inside.root.Key, "basis-changes-requested"); len(told) != 0 || len(r.gates(inside.root.Key)) != 0 {
@@ -1535,13 +1542,8 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 			inside.root.Key, r.gates(inside.root.Key), told)
 	}
 	release()
-	select {
-	case answer := <-answered:
-		if answer.err != nil || answer.status != http.StatusOK {
-			t.Fatalf("the held registration of %s = %d %s (%v), want 200", inside.root.Key, answer.status, answer.body, answer.err)
-		}
-	case <-time.After(time.Minute):
-		t.Fatal("the released registration never answered")
+	if answer := r.releasedAnswer(answered); answer.err != nil || answer.status != http.StatusOK {
+		t.Fatalf("the held registration of %s = %d %s (%v), want 200", inside.root.Key, answer.status, answer.body, answer.err)
 	}
 	r.openedOnBasis(inside.root, inside.parent, 1, inside.basisVersion)
 	r.basisChangesTold(inside.basisRun, "Name p2's owner.", true)

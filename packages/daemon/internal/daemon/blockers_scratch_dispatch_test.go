@@ -866,12 +866,23 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 // settled polls the daemon's state until want holds and returns it with the JSON it was read
 // from, so every assertion over it quotes the very answer it judged. The daemon is event-driven:
 // nothing here waits a fixed span, and a condition that never holds fails naming the state the
-// last poll read — what Legion was doing instead.
+// last poll read — what Legion was doing instead. Its one bound is the test binary's deadline less
+// testwait's margin; a wait whose event is known to arrive in milliseconds, and whose failure
+// would otherwise spend the whole package's budget, names a smaller ceiling of its own
+// (settledWithin).
 func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (api.State, string) {
+	t.Helper()
+	return settledWithin(t, d, testwait.Remaining(t), what, want)
+}
+
+// settledWithin is settled under a ceiling of its own: the wait still ends on the state the
+// daemon reaches, and within only says how long a state that never comes is waited for, never
+// above the binary's deadline less the margin (testwait.Remaining).
+func settledWithin(t *testing.T, d *daemon, within time.Duration, what string, want func(api.State) bool) (api.State, string) {
 	t.Helper()
 	var state api.State
 	var body []byte
-	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(min(within, testwait.Remaining(t)), 20*time.Millisecond, func() bool {
 		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 		body = read
 		if status != http.StatusOK {
@@ -883,7 +894,7 @@ func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (a
 		}
 		return want(state)
 	}) {
-		t.Fatalf("Legion did not %s; its state is %s", what, body)
+		t.Fatalf("Legion did not %s within %s; its state is %s", what, min(within, testwait.Remaining(t)).Round(time.Second), body)
 	}
 	return state, string(body)
 }
@@ -1020,8 +1031,8 @@ func blockersGitHub(t *testing.T) string {
 }
 
 // scratchDispatchClient is the test's own client of the scratch Dispatch server; the daemon has
-// its own.
-var scratchDispatchClient = &http.Client{Timeout: 10 * time.Second}
+// its own. It sets no span of its own: each request waits for its reply under replyContext.
+var scratchDispatchClient = &http.Client{}
 
 // dispatchCall sends one request to the scratch Dispatch server as the person `smoke` — the
 // trusted identity header the harness starts the server with — and decodes its answer into `into`
@@ -1036,7 +1047,9 @@ func dispatchCall(t *testing.T, baseURL, method, path string, body, into any) {
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequest(method, baseURL+path, reader)
+	ctx, cancel := replyContext(t)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build %s %s: %v", method, path, err)
 	}
