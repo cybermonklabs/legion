@@ -350,6 +350,39 @@ func newTestServer(t testing.TB, options testServerOptions) (http.Handler, *stor
 // delivery hub and open sockets a socket test reads.
 func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
+	return buildTestServer(t, options, t.Cleanup)
+}
+
+// newStoppableTestServer is newRegisteredTestServer for a server that has to stop before its test
+// ends: the one a filled template's Fill stands up (storetest.Filled), whose template must hold no
+// session of the server's once Fill returns, long before t's cleanups run. It runs on a lifetime
+// of its own, ended by stop, which then runs the steps newRegisteredTestServer leaves to t's
+// cleanups, in the order those run: the wait for the server's background work
+// (waitBackgroundOf), its removal from the quiet wait's registry and its document service's
+// Shutdown. stop runs them once, however often it is called. It closes no pool: the server runs on
+// options.store, whose owner closes it once stop has returned.
+func newStoppableTestServer(t testing.TB, options testServerOptions) (handler http.Handler, deps Deps, stop func()) {
+	t.Helper()
+	if options.lifetime == nil {
+		options.lifetime = t.Context()
+	}
+	lifetime, end := context.WithCancel(options.lifetime)
+	options.lifetime = lifetime
+	var steps []func()
+	handler, _, deps, _ = buildTestServer(t, options, func(step func()) { steps = append(steps, step) })
+	return handler, deps, sync.OnceFunc(func() {
+		end()
+		for _, step := range slices.Backward(steps) {
+			step()
+		}
+	})
+}
+
+// buildTestServer builds the server newRegisteredTestServer and newStoppableTestServer answer,
+// handing each step that has to run once the server is done to atEnd, in the order they register:
+// t.Cleanup for newRegisteredTestServer, which runs them last first.
+func buildTestServer(t testing.TB, options testServerOptions, atEnd func(func())) (http.Handler, *store.Store, Deps, *server) {
+	t.Helper()
 	settle := options.settle
 	if settle == 0 {
 		settle = 20 * time.Millisecond
@@ -375,7 +408,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		brokerTokens = options.brokerTokens(database)
 	}
 	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
-	t.Cleanup(func() {
+	atEnd(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -458,13 +491,13 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// The quiet wait (awaitQuietDatabase) finds the server by its database's name and waits out its
-	// background work and its document service's; registerQuietServer counts its read workers too.
-	registerQuietServer(t, database, served, documentService)
+	// background work and its document service's; registerQuietServerUntil counts its read workers too.
+	registerQuietServerUntil(atEnd, database, served, documentService)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
 	// so a test that did not wait for them would close its database under a worker still writing.
-	t.Cleanup(func() { waitBackgroundOf(t, served) })
+	atEnd(func() { waitBackgroundOf(t, served) })
 	return mux, database, deps, served
 }
 
@@ -2619,27 +2652,34 @@ type quietServer struct {
 }
 
 // quietServers is every server an API test stood up through newRegisteredTestServer or
-// newRepairFixtureOn and whose test has not ended, by the name of the database it runs on: the
-// servers awaitQuietDatabase waits out. A traced and an untraced store of one database share the
-// name, so a wait given either finds the same servers.
+// newRepairFixtureOn and whose test has not ended, and every server newStoppableTestServer stood up
+// and no stop has stopped, by the name of the database it runs on: the servers awaitQuietDatabase
+// waits out. A traced and an untraced store of one database share the name, so a wait given either
+// finds the same servers.
 var quietServers = struct {
 	sync.Mutex
 	byDatabase map[string][]*quietServer
 }{byDatabase: map[string][]*quietServer{}}
 
 // registerQuietServer records served, and documents, the document service it serves, as running
-// on database until t ends. It also counts the read workers served starts past their requests
-// (readWorkers, goReadWorker), which production leaves uncounted, so the wait sees them; a test
-// that sets a counter of its own afterwards, as the drive rig does, replaces this one, and the
-// wait reads whichever the field holds when it reads.
+// on database until t ends (registerQuietServerUntil).
 func registerQuietServer(t testing.TB, database *store.Store, served *server, documents *docs.Service) {
+	registerQuietServerUntil(t.Cleanup, database, served, documents)
+}
+
+// registerQuietServerUntil records served, and documents, the document service it serves, as
+// running on database until the step it hands atEnd runs. It also counts the read workers served
+// starts past their requests (readWorkers, goReadWorker), which production leaves uncounted, so the
+// wait sees them; a test that sets a counter of its own afterwards, as the drive rig does, replaces
+// this one, and the wait reads whichever the field holds when it reads.
+func registerQuietServerUntil(atEnd func(func()), database *store.Store, served *server, documents *docs.Service) {
 	served.readWorkers = &backgroundWork{}
 	name := database.Pool.Config().ConnConfig.Database
 	entry := &quietServer{served: served, documents: documents}
 	quietServers.Lock()
 	quietServers.byDatabase[name] = append(quietServers.byDatabase[name], entry)
 	quietServers.Unlock()
-	t.Cleanup(func() {
+	atEnd(func() {
 		quietServers.Lock()
 		defer quietServers.Unlock()
 		kept := slices.DeleteFunc(quietServers.byDatabase[name], func(registered *quietServer) bool { return registered == entry })

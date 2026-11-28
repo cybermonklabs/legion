@@ -41,13 +41,15 @@ import (
 // window rows, the API's issue-list bound and the auth service's storm, alone" runs them, judging
 // shape and gaps both.
 //
-// Seeding the fixture is most of what a window test costs: twenty anchored writes on a 40 KB
+// Seeding the fixture is most of what a window test would cost: twenty anchored writes on a 40 KB
 // spec, each of which renders the spec, about fifteen seconds of a race-built run on a two-core
-// pod against well under one for the measured request. So the measurements run as steps on as
-// few fixtures as their requests allow (runXidSteps), each step a subtest that seeds what its
-// own request needs, waits for the work that seeding left running to end and measures that
-// request alone. A step anchors its writes on a spare cell of its own (takeSpare) and acts on a
-// seed item no other step touches, so it meets the fixture as a fixture of its own would show it,
+// pod against well under one for the measured request. So each fixture is seeded once per test
+// binary, into a filled template every fixture of its seeding clones (newXidFixture,
+// storetest.OpenFilled), and the measurements run as steps on as few fixtures as their requests
+// allow (runXidSteps), each step a subtest that seeds what its own request needs, waits for the
+// work that seeding left running to end and measures that request alone. A step anchors its
+// writes on a spare cell of its own (takeSpare) and acts on a seed item no other step touches, so
+// it meets the fixture as a fixture of its own would show it,
 // plus the rows the steps before it added beside its own; and the steps of a run are ordered so
 // that no step meets a state that would send its request down another path: the anchored writes
 // before the spec is versioned, the versions before an approval request is open (every version
