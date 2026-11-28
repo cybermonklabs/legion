@@ -192,6 +192,8 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 
 	deps := rig.deps()
 	deps.Listen = rig.database.Pool.Listener
+	topicAck := make(chan error, 1)
+	deps.Publisher = reportTopicAck{Publisher: rig.client, result: topicAck}
 	outbox := New(deps)
 	stop, atRest := runResting(t, outbox, timers)
 	defer stop()
@@ -199,6 +201,7 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 	plantRetry(t, rig.database, timers, first.ID)
 
 	testwait.Receive(t, "the stalled holder's forward of the first issue", silent.arrived)
+	awaitTopicAck(t, topicAck)
 	// The first issue is in flight on its wait for an acknowledgement. The second issue falls
 	// due, which wakes nothing - an update notifies no listener - and the first issue's second
 	// event commits: its one wake is spent on the batch that reads the second issue and skips the
@@ -211,6 +214,9 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 	if otherForward.SourceEventID != fmt.Sprint(other.ID) {
 		t.Fatalf("the scan read event %s while its owner was in flight; want only event %d", otherForward.SourceEventID, other.ID)
 	}
+	// The ordinary topic sends use the same fake and arm at the same deadline as the forwards.
+	// Wait for their real acknowledgements so the timer count can only name the two forwards.
+	awaitTopicAck(t, topicAck)
 	ack.AwaitArmedCountAt(t, "both forward acknowledgement deadlines", firstForward, 2)
 	crossDeadline(ack, firstForward, func() {
 		for _, event := range []model.Event{first, other} {
