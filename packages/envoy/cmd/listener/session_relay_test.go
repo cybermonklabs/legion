@@ -260,6 +260,43 @@ func (s *sessionStandIn) none(t *testing.T, window time.Duration) {
 	}
 }
 
+// receive is collect without a bound of its own. It waits for the next n frames through
+// testwait.Receive so a slow delivery is bounded only by the test binary's deadline.
+func (s *sessionStandIn) receive(t *testing.T, n int) []relayedFrame {
+	t.Helper()
+	frames := make([]relayedFrame, 0, n)
+	for len(frames) < n {
+		what := fmt.Sprintf("frame %d of %d for the session (received so far: %v)", len(frames)+1, n, frameEvents(frames))
+		frames = append(frames, testwait.Receive(t, what, s.frames))
+	}
+	return frames
+}
+
+// noneBefore proves the session receives no further frame before marker, and returns the
+// marker's frame. The test stores marker on a subject the consumer captures, after the last
+// message whose frame the session must not receive. The relay sends frames in stream order
+// (relayNATS) and a restart sends again from the ack floor, so any frame it would still send
+// for a message stored or delivered before marker reaches the stand-in before marker's frame.
+// A silent stand-in or paused relay does not send the marker, so such a row needs another proof.
+func (s *sessionStandIn) noneBefore(t *testing.T, marker contracts.Envelope) relayedFrame {
+	t.Helper()
+	frame := testwait.Receive(t, fmt.Sprintf("marker frame for event %q", marker.EventID), s.frames)
+	if frame.item.EventID != marker.EventID {
+		t.Fatalf("the session received another frame before marker event %q: seq %d event %q on topic %q", marker.EventID, frame.seq, frame.item.EventID, frame.item.Topic)
+	}
+	return frame
+}
+
+// noneThroughMarker stores a marker on the session's own agent subject, which every consumer
+// of the session captures (bus.SessionConsumerFilters), and checks that it is the next frame.
+// The stand-in answers the marker with its answer, as for any frame, so a row that later reads
+// the consumer's ack state counts the marker.
+func (rig *relayRig) noneThroughMarker(t *testing.T, standIn *sessionStandIn, sessionID string) relayedFrame {
+	t.Helper()
+	marker, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
+	return standIn.noneBefore(t, marker)
+}
+
 func frameEvents(frames []relayedFrame) []string {
 	events := make([]string, len(frames))
 	for i, frame := range frames {
@@ -328,7 +365,7 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 	first := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	before, beforeSeq := rig.storeEvent(t, agent)
-	requireFrames(t, first.collect(t, 1, 5*time.Second), before)
+	requireFrames(t, first.receive(t, 1), before)
 	awaitAcked(t, rig.consumers, sessionID, beforeSeq)
 
 	first.close()
@@ -337,8 +374,6 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 		item, _ := rig.storeEvent(t, agent)
 		away = append(away, item)
 	}
-	// The relay sends what it pulls at once, to nobody now.
-	time.Sleep(300 * time.Millisecond)
 	// The registration below restarts the relay at the ack floor, which deletes the consumer
 	// holding those three unanswered and creates it again.
 	awaitAckState(t, rig.consumers, sessionID, len(away), beforeSeq)
@@ -346,8 +381,8 @@ func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T)
 
 	second := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2"))
-	requireFrames(t, second.collect(t, 3, 5*time.Second), away...)
-	second.none(t, time.Second)
+	requireFrames(t, second.receive(t, 3), away...)
+	rig.noneThroughMarker(t, second, sessionID)
 }
 
 // A frame is acked only once the session answers done: after received alone the consumer still
