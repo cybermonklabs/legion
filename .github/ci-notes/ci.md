@@ -2931,10 +2931,13 @@ Two inputs, each a literal of its caller's. `lane` decides the projects each job
 workflow runs, so nothing here chooses them a second time; it picks no browser to install any
 more: the shard and alone jobs run in the image this repository builds, which carries all three
 engines (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
-`job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, so a
-pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like, and a
-`ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
-without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
+`job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, and
+`<outer> / <caller> / <job>` where the caller is itself in a called workflow, as ci.yaml is under
+`.github/workflows/large-pr-lanes.yaml#approval`. So a pull request's browser checks are
+`dispatch-browser-pr / shard (1)` and the like, an approval-time run's are
+`approval / dispatch-browser / shard (1)`, and a `ci_check` naming `dispatch-browser / merge`
+finds no run of that name on a pull request without the label: the dispatch-browser job's own
+run concludes `skipped`, and no job of
 dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
 caller, every artifact name starts with the id so callers that share a run share none, and
 the merge job's ci-ok report names it.
