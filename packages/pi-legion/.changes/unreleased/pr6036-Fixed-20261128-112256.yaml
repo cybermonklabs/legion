@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The `legion-architect` and `legion-controller` skills narrow the implement App token with
+    `--target <owner>/<repo>` and read `<owner>`'s token out of the JSON object of installations
+    with `jq -e`. They named `--github-owner`, `--github-repo` and `--github-token`, which
+    `agent-secrets` refuses with exit 2, so the architect's GitHub write, the controller's CI
+    re-run and its reply to a GitHub mention each ran nothing.
+time: 2026-11-28T11:22:56.153957801Z
+custom:
+    Issue: pr6036
