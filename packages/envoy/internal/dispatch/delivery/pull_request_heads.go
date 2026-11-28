@@ -424,17 +424,20 @@ const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked
 // (ListStalePullRequestHeads), and stores GitHub's state, which a read settles. Open is the one
 // state the reconcile reads again: a closed row is never read again, so a stale copy that closed
 // an open pull request would take it out of its issue's checks for good, while one left open
-// holds those checks back only until that read. A copy no newer than the row that agrees with it
-// is no read either, so it leaves the row's read time and the rule that judged it, and a row such
-// a conflict left due stays due however often the copy is delivered again. An event's copy that
-// says a merged row is not merged changes nothing at all (upsertHeadQuery).
+// holds those checks back only until that read. That read comes wherever such a write is made:
+// the intakes alone store an event's copy, and they are idle without the GitHub App client the
+// reconcile reads with (startIntakes, Reconcile.HasApp). A copy that says merged is no
+// disagreement, since a merge is final and so newer than any copy that says otherwise. A copy no
+// newer than the row that agrees with it is no read either, so it leaves the row's read time and
+// the rule that judged it, and a row such a conflict left due stays due however often the copy is
+// delivered again. An event's copy that says a merged row is not merged changes nothing at all
+// (upsertHeadQuery), so these rules never meet a merged row with another state.
 func headLaidRules(complete, hasMerge, fromEvent string) []string {
 	state, checked := "excluded.state", "coalesce(excluded.checked_at, stored.checked_at)"
 	rule := "case when excluded.checked_at is null then stored.attribution_rule else excluded.attribution_rule end"
 	if fromEvent != "" {
 		noNewer := "(" + fromEvent + " and not coalesce(excluded.event_at > stored.event_at, false))"
-		unordered := "(" + noNewer + ` and excluded.state <> stored.state
-			and excluded.state <> 'merged' and stored.state <> 'merged')`
+		unordered := "(" + noNewer + " and excluded.state <> stored.state and excluded.state <> 'merged')"
 		state = "case when " + unordered + " then 'open' else excluded.state end"
 		checked = "case when " + unordered + " then null when " + noNewer + " then stored.checked_at else " + checked + " end"
 		rule = "case when " + noNewer + " or excluded.checked_at is null then stored.attribution_rule else excluded.attribution_rule end"

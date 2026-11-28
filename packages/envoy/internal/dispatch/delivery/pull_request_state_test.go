@@ -2,12 +2,14 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -25,32 +27,18 @@ var statelessPullRequestActions = []string{
 	"unlabeled", "unlocked",
 }
 
-// pullRequestStateEvent is the body GitHub posts for one `pull_request` event of a pull request
-// of acme/widgets on issue's branch: the action, and the pull request as GitHub held it when the
-// event happened, its updated_at among it. state is open, closed, or merged for one GitHub calls
-// closed and merged.
+// pullRequestStateEvent is pullRequestWebhook's body for one `pull_request` event of issue's pull
+// request, at the head fmt.Sprintf("%040x", number) on main and last updated at updatedAt, with
+// the pull request's state as GitHub held it at that event: open, closed, or merged for one
+// GitHub calls closed and merged, which merged at updatedAt.
 func pullRequestStateEvent(issue, action, state string, number int, updatedAt string) map[string]any {
-	pullRequest := map[string]any{
-		"number": number, "title": issue + " the work", "body": "",
-		"html_url": "https://github.com/acme/widgets/pull/" + strconv.Itoa(number),
-		"user":     map[string]any{"login": "author"},
-		"state":    state, "merged": false, "merged_at": nil, "merge_commit_sha": nil,
-		"updated_at": updatedAt,
-		"head": map[string]any{
-			"sha": fmt.Sprintf("%040x", number), "ref": "legion/" + issue,
-			"repo": map[string]any{"full_name": "acme/widgets"},
-		},
-		"base": map[string]any{"ref": "main"},
+	body := pullRequestWebhook(issue, action, number, fmt.Sprintf("%040x", number), "main",
+		fmt.Sprintf("%040x", 0xa0000+number), updatedAt, updatedAt)
+	if state != "merged" {
+		pullRequest := body["pull_request"].(map[string]any)
+		pullRequest["state"], pullRequest["merged"], pullRequest["merged_at"], pullRequest["merge_commit_sha"] = state, false, nil, nil
 	}
-	if state == "merged" {
-		pullRequest["state"], pullRequest["merged"], pullRequest["merged_at"] = "closed", true, updatedAt
-		pullRequest["merge_commit_sha"] = fmt.Sprintf("%040x", 0xa0000+number)
-	}
-	return map[string]any{
-		"action":       action,
-		"repository":   map[string]any{"full_name": "acme/widgets"},
-		"pull_request": pullRequest,
-	}
+	return body
 }
 
 // stateIntake is an intake whose head writes the tests below drive one envelope at a time, as
@@ -281,6 +269,26 @@ func TestAMergedPullRequestStaysMerged(t *testing.T) {
 	}
 }
 
+// A merge whose event shares its second with the row's is stored merged, with its merge commit:
+// a merge is final, so a copy that says merged is newer than any that says otherwise, and no
+// disagreement to leave for the reconcile. The merge queue's `dequeued` and then the merge in
+// one second is one such pair.
+func TestAMergeInTheRowsOwnSecondIsStoredMerged(t *testing.T) {
+	t.Parallel()
+	intake := newStateIntake(t)
+	const number = 6495
+	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
+	intake.deliver(number, pullRequestStateEvent(issue, "opened", "open", number, "2026-11-23T21:00:00Z"))
+	intake.deliver(number, pullRequestStateEvent(issue, "dequeued", "open", number, "2026-11-23T21:10:00Z"))
+	intake.deliver(number, pullRequestStateEvent(issue, "closed", "merged", number, "2026-11-23T21:10:00Z"))
+	stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
+	merge := readMerge(t, intake.ctx, intake.pool, "acme/widgets", number)
+	if want := fmt.Sprintf("%040x", 0xa0000+number); stored.State != "merged" || merge.mergeCommitSHA != want {
+		t.Fatalf("a merge in the row's own second stores #%d %q with merge commit %q, want merged with %s",
+			number, stored.State, merge.mergeCommitSHA, want)
+	}
+}
+
 // An envelope a listener published before it carried the pull request's state names only the
 // action, and the stream can still hold one when this build starts. Its close still stores the
 // pull request closed and its reopen open, as the action says.
@@ -307,6 +315,8 @@ func TestAnEnvelopeWithNoStateStoresWhatItsActionSays(t *testing.T) {
 // request is open, so its write is no read of the state: it leaves the row's checked_at where
 // the last read of the pull request put it. So a guess after a close holds only until the
 // reconcile's next read of the row, however many such envelopes come, and that read closes it.
+// The close's read is set to a fixed moment long past, so a guess that stamped a read would move
+// it to the present: unequal to that moment, and not yet due at the pass that moment makes due.
 func TestAGuessedStateDoesNotPutOffTheReconcilesRead(t *testing.T) {
 	fastPageRetries(t)
 	intake := newStateIntake(t)
@@ -314,9 +324,13 @@ func TestAGuessedStateDoesNotPutOffTheReconcilesRead(t *testing.T) {
 	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
 	intake.deliver(number, pullRequestStateEvent(issue, "opened", "open", number, "2026-11-23T21:00:00Z"))
 	intake.deliver(number, pullRequestStateEvent(issue, "closed", "closed", number, "2026-11-23T21:10:00Z"))
-	closed := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
-	if closed.State != "closed" || closed.CheckedAt == nil {
-		t.Fatalf("after the close #%d is stored %q checked at %v, want closed and checked", number, closed.State, closed.CheckedAt)
+	read := time.Date(2026, 11, 23, 21, 10, 0, 0, time.UTC)
+	tag, err := intake.pool.Exec(intake.ctx, `
+		update pull_request_heads set checked_at = $3
+		where repo = $1 and number = $2 and state = 'closed' and checked_at is not null
+	`, "acme/widgets", number, read)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("set the close's read of #%d to %v: %v, %d rows; want the closed, checked row", number, read, err, tag.RowsAffected())
 	}
 	for _, at := range []string{"2026-11-23T21:11:00Z", "2026-11-23T21:12:00Z"} {
 		payload := envelopePayload(t, pullRequestStateEvent(issue, "labeled", "closed", number, at))
@@ -324,12 +338,13 @@ func TestAGuessedStateDoesNotPutOffTheReconcilesRead(t *testing.T) {
 		intake.deliverPayload(number, payload)
 	}
 	guessed := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
-	if guessed.CheckedAt == nil || !guessed.CheckedAt.Equal(*closed.CheckedAt) {
-		t.Fatalf("after two labels with no state #%d is checked at %v, want %v, the close's read", number, guessed.CheckedAt, closed.CheckedAt)
+	if guessed.State != "open" || guessed.CheckedAt == nil || !guessed.CheckedAt.Equal(read) {
+		t.Errorf("after two labels with no state #%d is %q checked at %v, want the guess open and still checked at %v, the close's read",
+			number, guessed.State, guessed.CheckedAt, read)
 	}
-	intake.reconcileAnswering(issue, "closed", "2026-11-23T21:12:00Z", closed.CheckedAt.Add(PullRequestHeadStaleAfter+time.Second))
+	intake.reconcileAnswering(issue, "closed", "2026-11-23T21:12:00Z", read.Add(PullRequestHeadStaleAfter+time.Second))
 	if stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number); stored.State != "closed" {
-		t.Fatalf("after the reconcile's read due from the close #%d is stored %q, want closed", number, stored.State)
+		t.Fatalf("after the reconcile's pass due from the close's read #%d is stored %q, want closed", number, stored.State)
 	}
 }
 
@@ -342,7 +357,8 @@ func TestTheReconcileClosesAClosedPullRequestStoredOpen(t *testing.T) {
 	intake := newStateIntake(t)
 	const number = 6470
 	issue := seedHeadIssue(t, intake.ctx, intake.pool, number)
-	stale, eventAt := time.Now().Add(-10*time.Minute), time.Date(2026, 11, 23, 21, 59, 0, 0, time.UTC)
+	now := time.Now()
+	stale, eventAt := now.Add(-10*time.Minute), time.Date(2026, 11, 23, 21, 59, 0, 0, time.UTC)
 	if err := UpsertPullRequestHead(intake.ctx, intake.pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: fmt.Sprintf("%040x", number), HeadRef: "legion/" + issue,
 		BaseRef: "main", State: "open", IssueKey: &issue, AttributionSource: "branch", AttributionComplete: true,
@@ -353,9 +369,30 @@ func TestTheReconcileClosesAClosedPullRequestStoredOpen(t *testing.T) {
 	if subjects := intake.subjects(issue); len(subjects) != 1 {
 		t.Fatalf("before the reconcile %s's head set holds %v, want #%d", issue, subjects, number)
 	}
-	intake.reconcileAnswering(issue, "closed", "2026-11-23T21:59:00Z", time.Now())
+	intake.reconcileAnswering(issue, "closed", "2026-11-23T21:59:00Z", now)
 	stored := readHead(t, intake.ctx, intake.pool, "acme/widgets", number)
 	if subjects := intake.subjects(issue); stored.State != "closed" || len(subjects) != 0 {
 		t.Fatalf("after the reconcile #%d is stored %q and %s's head set holds %v, want it closed and none", number, stored.State, issue, subjects)
+	}
+}
+
+// The rule that leaves a same-second disagreement open and unread for the reconcile to settle
+// (headLaidRules) holds only where the reconcile reads: an event's copy is stored by the intakes
+// alone, and they are idle without the GitHub App client the reconcile reads with (startIntakes,
+// Reconcile.HasApp; cmd/dispatch hands both the same one). So a deployment with no App key stores
+// no event's copy at all, and leaves no row waiting for a read that never comes.
+func TestTheIntakesStoreNoEventWithoutTheAppTheReconcileReadsWith(t *testing.T) {
+	t.Parallel()
+	connected := false
+	stop, err := startIntakes(t.Context(), tuningFor(t), func(string) (*bus.Client, error) {
+		connected = true
+		return nil, errors.New("an intake connected with no GitHub App client")
+	}, nil, IntakeLeases{}, nil, nil, nil, nil, unrenamed())
+	if err != nil || connected {
+		t.Fatalf("startIntakes with no GitHub App client: connected %v, error %v; want it idle", connected, err)
+	}
+	stop()
+	if NewReconcile(nil, nil, nil, unrenamed()).HasApp() {
+		t.Fatalf("a reconcile with no GitHub App client says it has the App")
 	}
 }
