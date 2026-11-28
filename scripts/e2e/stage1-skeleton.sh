@@ -175,7 +175,10 @@ command -v tmux >/dev/null || {
   exit 1
 }
 export XDG_STATE_HOME="$work/xdg" # the registry lands here, never in the devbox's real one
-project="E2E$$$(date +%s)"        # daemon_boot counts per project; a fresh key makes boots==1 true on any store
+# daemon_boot counts per project; a fresh key makes boots==1 true on any store. The key, and the
+# proxied daemon's key, which is this one with R after it, are each a Dispatch project key of at
+# most ten characters, the one shape the loader takes.
+project="E2E$(( ($$ + $(date +%s)) % 1000000 ))"
 # A port this run holds alone, so a daemon of another run is never mistaken for this one's: a keeper
 # holds a socket on a port the kernel chose for the whole run (lib/rig.sh's keep_port), legion.yaml
 # names that port, and each start serves on a copy of the socket (LEGION_LISTEN_FD), so the restart

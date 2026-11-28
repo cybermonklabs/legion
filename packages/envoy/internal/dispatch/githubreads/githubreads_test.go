@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -95,7 +96,7 @@ func TestCauseLeavesOutWholeAMultibyteCharacterAcrossTheCut(t *testing.T) {
 // sent request is marked apart from the failures, and a context with no attempt takes every note
 // and changes nothing.
 func TestTheCauseIsTheFirstFailureNoted(t *testing.T) {
-	ctx, attempt := Begin(context.Background())
+	ctx, attempt := Begin(context.Background(), CIReconcile)
 	if sent, failed, cause := attempt.Outcome(); sent || failed || cause != "" {
 		t.Fatalf("a new attempt: sent %v, failed %v, cause %q; want nothing", sent, failed, cause)
 	}
@@ -129,7 +130,7 @@ func TestTheCauseIsTheFirstFailureNoted(t *testing.T) {
 func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 	failure := errors.New("POST https://api.github.com/graphql: status 502: bad gateway")
 	t.Run("kept", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		held, scope := Hold(ctx)
 		NoteSent(held)
 		NoteFailure(held, failure)
@@ -142,7 +143,7 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 		}
 	})
 	t.Run("dropped", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		held, scope := Hold(ctx)
 		NoteSent(held)
 		NoteFailure(held, failure)
@@ -155,7 +156,7 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 		}
 	})
 	t.Run("a note after Keep goes straight on", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		held, scope := Hold(ctx)
 		scope.Keep()
 		NoteFailure(held, failure)
@@ -164,7 +165,7 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 		}
 	})
 	t.Run("a failure that reached the attempt first stays the cause", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		held, scope := Hold(ctx)
 		NoteFailure(held, failure)
 		NoteFailure(ctx, errors.New("the loop's own, noted first on the attempt"))
@@ -174,7 +175,7 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 		}
 	})
 	t.Run("nested", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		outer, outerScope := Hold(ctx)
 		inner, innerScope := Hold(outer)
 		NoteSent(inner)
@@ -188,7 +189,7 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 			t.Fatalf("both kept: failed %v, cause %q; want the inner scope's failure", failed, cause)
 		}
 
-		ctx, attempt = Begin(context.Background())
+		ctx, attempt = Begin(context.Background(), CIReconcile)
 		outer, outerScope = Hold(ctx)
 		inner, innerScope = Hold(outer)
 		NoteFailure(inner, failure)
@@ -209,7 +210,7 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 func TestAHeldScopeReachedGitHubBySendingOrByAFailure(t *testing.T) {
 	failure := errors.New("GitHub rate limit on installation:7 recorded at 2026-11-18T08:00:00Z is in force; the request was not sent")
 	t.Run("a request sent in a nested scope", func(t *testing.T) {
-		ctx, _ := Begin(context.Background())
+		ctx, _ := Begin(context.Background(), CIReconcile)
 		outer, outerScope := Hold(ctx)
 		inner, innerScope := Hold(outer)
 		_, sibling := Hold(outer)
@@ -224,7 +225,7 @@ func TestAHeldScopeReachedGitHubBySendingOrByAFailure(t *testing.T) {
 		}
 	})
 	t.Run("a failure with no request", func(t *testing.T) {
-		ctx, _ := Begin(context.Background())
+		ctx, _ := Begin(context.Background(), CIReconcile)
 		outer, outerScope := Hold(ctx)
 		inner, innerScope := Hold(outer)
 		NoteFailure(inner, failure)
@@ -236,7 +237,7 @@ func TestAHeldScopeReachedGitHubBySendingOrByAFailure(t *testing.T) {
 			t.Fatal("the inner scope kept its failure: the outer scope did not reach GitHub")
 		}
 
-		ctx, _ = Begin(context.Background())
+		ctx, _ = Begin(context.Background(), CIReconcile)
 		outer, outerScope = Hold(ctx)
 		inner, innerScope = Hold(outer)
 		NoteFailure(inner, failure)
@@ -246,7 +247,7 @@ func TestAHeldScopeReachedGitHubBySendingOrByAFailure(t *testing.T) {
 		}
 	})
 	t.Run("a note after the attempt's first failure", func(t *testing.T) {
-		ctx, _ := Begin(context.Background())
+		ctx, _ := Begin(context.Background(), CIReconcile)
 		NoteFailure(ctx, failure)
 		held, scope := Hold(ctx)
 		NoteFailure(held, errors.New("a later failure"))
@@ -255,7 +256,7 @@ func TestAHeldScopeReachedGitHubBySendingOrByAFailure(t *testing.T) {
 		}
 	})
 	t.Run("nothing", func(t *testing.T) {
-		ctx, _ := Begin(context.Background())
+		ctx, _ := Begin(context.Background(), CIReconcile)
 		if _, scope := Hold(ctx); scope.Reached() {
 			t.Fatal("a scope nothing was sent or noted in reached GitHub")
 		}
@@ -282,7 +283,7 @@ func (e *countedError) Error() string {
 func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 	const first = "GET https://api.github.com/app/hook/deliveries: status 503: first"
 	t.Run("outside a held scope", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		NoteFailure(ctx, errors.New(first))
 		late := &countedError{}
 		NoteFailure(ctx, late)
@@ -292,7 +293,7 @@ func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 		}
 	})
 	t.Run("inside a held scope", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		held, scope := Hold(ctx)
 		NoteFailure(ctx, errors.New(first))
 		late := &countedError{}
@@ -304,7 +305,7 @@ func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 		}
 	})
 	t.Run("a note a held scope forgets", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		held, scope := Hold(ctx)
 		NoteFailure(held, errors.New(first))
 		late := &countedError{}
@@ -323,7 +324,7 @@ func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 		}
 	})
 	t.Run("NoteFailuref where its note can be the cause", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), CIReconcile)
 		NoteFailuref(ctx, "re-read the head of %s PR #%d: %w", "acme/web", 7, errors.New("status 502"))
 		if _, failed, cause := attempt.Outcome(); !failed || cause != "re-read the head of acme/web PR #7: status 502" {
 			t.Fatalf("failed %v, cause %q; want the formatted note", failed, cause)
@@ -384,7 +385,7 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			caller, end := context.WithCancel(context.Background())
 			defer end()
-			ctx, attempt := Begin(caller)
+			ctx, attempt := Begin(caller, CIReconcile)
 			tc.note(ctx)
 			if tc.ended {
 				end()
@@ -398,7 +399,7 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 					return ctx.Err()
 				}
 			}
-			Finish(caller, CIReconcile, attempt, record, nil)
+			Finish(caller, attempt, record, nil)
 			switch {
 			case tc.want == nil && len(calls) != 0:
 				t.Fatalf("recorded %+v, want nothing", calls)
@@ -409,11 +410,11 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 	}
 
 	t.Run("a recorder that fails", func(t *testing.T) {
-		ctx, attempt := Begin(context.Background())
+		ctx, attempt := Begin(context.Background(), WebhookRedelivery)
 		NoteSent(ctx)
 		logs := &logtest.Recorder{}
 		refused := errors.New("the database refused the write")
-		Finish(context.Background(), WebhookRedelivery, attempt, func(context.Context, Read, bool, string) error { return refused }, slog.New(logs))
+		Finish(context.Background(), attempt, func(context.Context, Read, bool, string) error { return refused }, slog.New(logs))
 		records := logs.Records()
 		if len(records) != 1 || records[0].Level != slog.LevelError {
 			t.Fatalf("logged %d records (%v), want one at ERROR", len(records), records)
@@ -427,6 +428,31 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 			t.Fatalf("the ERROR line carries %v, want the read and the error", attributes)
 		}
 	})
+}
+
+// One Begin names a pass's read, and that one naming is the caller kind of every call the pass
+// sends (githubrate.CallerOf), which the rate reading counts it under, and the read Finish records
+// the attempt under: a pass cannot count under one read and be recorded under another.
+func TestBeginNamesThePassesCallerKindAndTheReadFinishRecords(t *testing.T) {
+	for _, read := range Reads() {
+		ctx, attempt := Begin(context.Background(), read)
+		if kind := githubrate.CallerOf(ctx); kind != string(read) {
+			t.Errorf("a pass of %s calls GitHub as %q, want %q", read, kind, read)
+		}
+		held, _ := Hold(ctx)
+		if kind := githubrate.CallerOf(held); kind != string(read) {
+			t.Errorf("a held try of %s calls GitHub as %q, want %q", read, kind, read)
+		}
+		NoteSent(ctx)
+		var recordedRead Read
+		Finish(context.Background(), attempt, func(_ context.Context, read Read, _ bool, _ string) error {
+			recordedRead = read
+			return nil
+		}, nil)
+		if recordedRead != read {
+			t.Errorf("a pass begun as %s was recorded as %q", read, recordedRead)
+		}
+	}
 }
 
 // loadAnswer is what one of the test's loads of the record answers.

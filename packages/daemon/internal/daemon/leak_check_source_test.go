@@ -343,7 +343,7 @@ func TestTheLeakCheckTokenInTokenModeIsTheCommandsReadOnlyRelease(t *testing.T) 
 				case r.URL.Path == "/apps/legion-implementer":
 					fmt.Fprint(w, `{"id":12345,"slug":"legion-implementer"}`)
 				case r.URL.Path == "/users/legion-implementer[bot]":
-					fmt.Fprint(w, `{"id":271566630}`)
+					fmt.Fprint(w, `{"id":100000001}`)
 				case r.URL.Path == leakCheckTarballRoute+leakCheckTag:
 					tarballs.Add(1)
 					if r.Header.Get("Authorization") != "Bearer "+leakCheckLease {

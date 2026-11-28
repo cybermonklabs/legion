@@ -336,11 +336,9 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // 390 px the view row stays there. A row whose top lies 10 px under it takes the focus with no
 // scroll of the browser's own (`preventScroll`, as a chord or an address puts the focus), so
 // only the row's own placement (`useRowOnScreen`) can move it: under part G the header publishes
-// no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
-// page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
-// places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
-// goes on to `t c`, whose outline takes the focus; reading `t s` again is left to the Spec view's
-// own rows, which this tree does not hold yet.
+// no band, and `bringOnScreen` alone leaves the row where it is. Then `t s` puts the focus on the
+// Spec view's tab-stop row from the page's foot, which the chord shows and the row places: the
+// Spec view draws its statements as rows, so `t s` alone reaches one.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({
@@ -393,18 +391,11 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
     await expect(page, "t s did not open Spec").toHaveURL(
       new RegExp(`${presetPath(seeded.key, "spec")}$`)
     );
-    // The Spec view is empty until its own slot is filled, so Conversation brings the outline back.
-    await page.keyboard.press("t");
-    await page.keyboard.press("c");
-    await expect(page, "t c did not open Conversation").toHaveURL(
-      new RegExp(`${presetPath(seeded.key, "conversation")}$`)
-    );
     const first = page.locator("[data-node-row]:focus");
-    await expect(first, "t s then t c focused no row").toHaveCount(1);
+    await expect(first, "t s focused no row").toHaveCount(1);
     await expect
       .poll(async () => (await belowWhatStays(first)) ?? -1, {
-        message:
-          "after t s then t c the focused row's top lies under the view row that stays at the top",
+        message: "after t s the focused row's top lies under the view row that stays at the top",
       })
       .toBeGreaterThanOrEqual(0);
   });
@@ -911,7 +902,7 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
 
 // c-writer: R7 and R10 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
-// six rows focused, two presses waited out for the writer's frames, and a read of the API.
+// six rows focused, three presses waited out for the writer's frames, and a read of the API.
 test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it", async ({
   browser,
 }) => {
@@ -921,12 +912,18 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     await expectSeedDrawn(page, seeded);
     const writes = watchApiRequests(page);
 
+    // Reply aims the box at the foot (part L's `IssueComposer.tsx`) and puts the caret in its
+    // line, the one the box draws: the line that writes on the issue stays mounted, hidden, while
+    // the line edits a comment. Answer and a press on an option put no caret in the box, which
+    // answers no ask (`OutlineWriter.answer`).
+    const boxField = page.locator('[data-testid="issue-composer"] textarea:visible');
     const comment = await focusRow(page, seeded.comment);
     await expect(rowAct(comment, "reply"), "the focused comment draws no Reply").toHaveCount(1);
     await expect(rowAct(comment, "answer")).toHaveCount(0);
     await rowAct(comment, "reply").click();
     await writerFramesPass(page);
-    await expect(comment).toBeFocused();
+    await expect(boxField, "Reply does not put the caret in the box").toBeFocused();
+    await expect(comment).not.toBeFocused();
 
     const question = await focusRow(page, seeded.openQuestion);
     await expect(rowAct(question, "answer")).toHaveCount(1);
@@ -936,15 +933,26 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     await expect(option).toHaveAttribute("aria-pressed", "true");
     await expect(option).toContainText("●");
     await expect(question.locator('[data-pick-option="1280 px"]')).toContainText("○");
+    await writerFramesPass(page);
+    await expect(
+      boxField,
+      "a press on an option put the caret in the box, which answers no ask"
+    ).not.toBeFocused();
     await rowAct(question, "answer").click();
     await writerFramesPass(page);
+    await expect(
+      boxField,
+      "Answer put the caret in the box, which answers no ask"
+    ).not.toBeFocused();
     await expect(question).toBeFocused();
 
-    // A statement and a check take no reply in today's model, so they draw no act.
-    for (const id of [`${seeded.slugs.spec}#b-r-one`, `${seeded.slugs.verification}#b-c1`]) {
-      const typed = await focusRow(page, id);
-      await expect(typed.locator("[data-row-act]")).toHaveCount(0);
-    }
+    // A statement takes a Reply, which writes a comment on its text (part L's R11), so it draws
+    // Reply; a check takes none in today's model, so it draws no act.
+    const statement = await focusRow(page, `${seeded.slugs.spec}#b-r-one`);
+    await expect(statement.locator("[data-row-act]")).toHaveCount(1);
+    await expect(rowAct(statement, "reply"), "the focused statement draws no Reply").toHaveCount(1);
+    const check = await focusRow(page, `${seeded.slugs.verification}#b-c1`);
+    await expect(check.locator("[data-row-act]")).toHaveCount(0);
 
     // The decision that shaped a statement waits for review: Keep and Change.
     const shaping = await focusRow(page, seeded.shaping);
@@ -968,8 +976,10 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     const outlined = await focusRow(page, seeded.changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
 
-    // Nothing was sent: no box exists until part L draws it. A thread's read mark is the page's
-    // own record of what the reader read (`outline-thread-read.tsx`), and no write of theirs.
+    // Nothing was sent: Reply aims the box at the foot (`IssueComposer.tsx`), Answer and an
+    // option set the page's writer alone, and nothing was typed in the box or sent from it. A
+    // thread's read mark is the page's own record of what the reader read
+    // (`outline-thread-read.tsx`), and no write of theirs.
     expect(
       writes.requests.filter(
         (request) =>

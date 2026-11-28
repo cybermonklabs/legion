@@ -30,19 +30,19 @@ const (
 // (runnerIn), its pull request #86 open at head sha-1 on main with asked as the merge forward the
 // record holds, and a supervisor with no claim on it yet. It drains on the caller's goroutine
 // (RunOnce), as hookRunner's does, and logs to the buffer it answers.
-func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunner(t *testing.T, publisher outboxNotices, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	return mergeForwardRunnerIn(t, publisher, record.PullRequestOpen, asked)
 }
 
 // mergeForwardRunnerIn is mergeForwardRunner with the pull request recorded in state.
-func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunnerIn(t *testing.T, publisher outboxNotices, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	return mergeForwardRunnerAt(t, publisher, phase.Testing, "testing", state, asked)
 }
 
 // mergeForwardRunnerAt is mergeForwardRunnerIn with LEGION-208 standing in at with status.
-func mergeForwardRunnerAt(t *testing.T, publisher notify.Publisher, at phase.Phase, status string, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+func mergeForwardRunnerAt(t *testing.T, publisher outboxNotices, at phase.Phase, status string, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
 	ctx := context.Background()
 	logs := &syncBuffer{}
@@ -76,7 +76,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		publisher := &holderPublisher{}
 		runner, sup, pool, logs := mergeForwardRunner(t, publisher, asked)
 		publisher.setAbsent(topic)
-		machine := releasedClaim(t, sup, claim.RoleImplementer)
+		machine := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ask, time.Now().Add(-time.Minute)))
 		id := noticeRowID(t, pool)
 

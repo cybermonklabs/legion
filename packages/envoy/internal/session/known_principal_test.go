@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -248,13 +249,19 @@ func TestKnownSessionsReadThePrincipalTheBucketHolds(t *testing.T) {
 	})
 }
 
+// errLeaderSilent is what leaderSilent's reads from the stream's leader fail with.
+var errLeaderSilent = errors.New("the stream's leader did not answer")
+
+// errWriteRefused is what writesRefused's writes fail with.
+var errWriteRefused = errors.New("the bucket took no write")
+
 // leaderSilent is a bucket handle whose reads from the stream's leader do not answer
 // (bus.LeaderReads), as a leader being elected or cut off does; every other call is the embedded
 // handle's.
 type leaderSilent struct{ nats.KeyValue }
 
 func (leaderSilent) NewestFromLeader(context.Context, string) (nats.KeyValueEntry, error) {
-	return nil, errors.New("the stream's leader did not answer")
+	return nil, errLeaderSilent
 }
 
 // writesRefused is a bucket handle that refuses every write - a put, a create and an update at a
@@ -262,15 +269,15 @@ func (leaderSilent) NewestFromLeader(context.Context, string) (nats.KeyValueEntr
 type writesRefused struct{ nats.KeyValue }
 
 func (writesRefused) Put(string, []byte) (uint64, error) {
-	return 0, errors.New("the bucket took no write")
+	return 0, errWriteRefused
 }
 
 func (writesRefused) Create(string, []byte) (uint64, error) {
-	return 0, errors.New("the bucket took no write")
+	return 0, errWriteRefused
 }
 
 func (writesRefused) Update(string, []byte, uint64) (uint64, error) {
-	return 0, errors.New("the bucket took no write")
+	return 0, errWriteRefused
 }
 
 // behindCopy writes sessionID's record naming bucketPrincipal, recorded, to known's bucket past
@@ -308,9 +315,12 @@ func behindCopy(t *testing.T, known *KnownSessions, sessionID string, topics []s
 // (ErrPrincipalUnrecorded) and writes nothing; a write that keeps the stored principal writes
 // nothing where the leader does not answer, rather than the principal the copy names; and a
 // registration whose write failed says so (ErrPrincipalUnrecorded), for the registration route's
-// 503, unless the leader confirms it names the registration's own principal, or none. Each case
-// fails where the store decides on its copy alone; each control is the same write where the copy
-// is not behind, or the leader answers, or confirms the registration's own principal or none.
+// 503, unless the leader confirms it names the registration's own principal (ErrRecordStands), or
+// none (the write's failure as it came). Where the leader read after the failed write did not
+// answer, the error wraps that read's failure and gives the write's as text alone, so the route
+// reads a bus that did not answer rather than the write's refusal. Each case fails where the store
+// decides on its copy alone; each control is the same write where the copy is not behind, or the
+// leader answers, or confirms the registration's own principal or none.
 func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 	const (
 		person  = "ada@example.com"
@@ -416,18 +426,21 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 		// one a registration through another listener records after that admission, none for "".
 		admits, between string
 		handle          func(nats.KeyValue) nats.KeyValue
-		unrecorded      bool
+		// unrecorded, stands and readFailed are what the error must say: ErrPrincipalUnrecorded,
+		// ErrRecordStands, and a leader read that failed, whose failure it wraps in place of the
+		// write's.
+		unrecorded, stands, readFailed bool
 	}{
 		{"case: a registration's write fails while the leader names another principal, recorded since the admission", "ses_confirm_unrecorded_leader",
-			person, service, func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, true},
+			person, service, func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, true, false, false},
 		{"case: a registration's write fails while the leader is silent, its admission having cleared another principal", "ses_confirm_unrecorded_copy",
-			person, "", func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, true},
+			person, "", func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, true, false, true},
 		{"case: a registration's write fails while the leader is silent and the record names the registration's own principal", "ses_confirm_unrecorded_copy_same",
-			service, "", func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, true},
+			service, "", func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, true, false, true},
 		{"control: a registration's write fails while the leader names the registration's own principal", "ses_confirm_unrecorded_same",
-			service, "", func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, false},
+			service, "", func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, false, true, false},
 		{"control: a registration's write fails while the leader names none, its admission having cleared another principal", "ses_confirm_unrecorded_cleared",
-			person, "", func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, false},
+			person, "", func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, false, false, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			known := openKnown(t, now)
@@ -449,6 +462,18 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 			}
 			if got := errors.Is(err, ErrPrincipalUnrecorded); got != row.unrecorded {
 				t.Errorf("the failed registration's error %q is ErrPrincipalUnrecorded: %t; want %t", err, got, row.unrecorded)
+			}
+			if got := errors.Is(err, ErrRecordStands); got != row.stands {
+				t.Errorf("the failed registration's error %q is ErrRecordStands: %t; want %t", err, got, row.stands)
+			}
+			if got := errors.Is(err, errLeaderSilent); got != row.readFailed {
+				t.Errorf("the failed registration's error %q wraps the leader read's failure: %t; want %t", err, got, row.readFailed)
+			}
+			if got := errors.Is(err, errWriteRefused); got == row.readFailed {
+				t.Errorf("the failed registration's error %q wraps the write's refusal: %t; want %t", err, got, !row.readFailed)
+			}
+			if !strings.Contains(err.Error(), errWriteRefused.Error()) {
+				t.Errorf("the failed registration's error %q does not name the write's failure", err)
 			}
 		})
 	}

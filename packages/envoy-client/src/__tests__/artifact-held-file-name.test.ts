@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 
@@ -119,6 +121,9 @@ function kindOf(mime: string, bytes: Uint8Array): Kind {
 const refusal = (status: number, code: string, error: string) =>
   Response.json({ code, error }, { status });
 
+/** The upload's route, whose declared answer each stored upload serves (`routeAnswer`). */
+const UPLOAD = "POST /api/v1/issues/{key}/artifacts";
+
 /** One upload, answered as Dispatch answers it. */
 function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precondition: unknown) {
   uploads.push({ name, precondition });
@@ -137,10 +142,14 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
     };
     held.push(created);
     return Response.json(
-      {
-        artifact: artifactOf(created),
-        version: versionOf(created, created.versions[0] as StoredVersion),
-      },
+      routeAnswer(
+        UPLOAD,
+        {
+          artifact: artifactOf(created),
+          version: versionOf(created, created.versions[0] as StoredVersion),
+        },
+        201
+      ),
       { status: 201 }
     );
   }
@@ -174,12 +183,13 @@ function store(name: string, kind: Kind, bytes: Uint8Array, mime: string, precon
   const next: StoredVersion = { number: (standing?.number ?? 0) + 1, bytes, mime, hashed: true };
   target.versions.push(next);
   return Response.json(
-    { artifact: artifactOf(target), version: versionOf(target, next) },
+    routeAnswer(UPLOAD, { artifact: artifactOf(target), version: versionOf(target, next) }, 201),
     { status: 201 }
   );
 }
 
-const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) => {
+/** Dispatch's routes as this test serves them, before the keyed layer (`stubDispatch`). */
+const answerDispatch = async (input: string | URL | Request, init?: RequestInit) => {
   const request = new Request(input, init);
   const { pathname } = new URL(request.url);
   if (request.method === "GET" && pathname === "/api/v1/issues/DSP-1/artifacts") {
@@ -230,6 +240,12 @@ const stubDispatch = (async (input: string | URL | Request, init?: RequestInit) 
     );
   }
   return refusal(404, "NOT_FOUND", "not found");
+};
+
+// Behind Dispatch's keyed layer: each answer of the upload route, its refusals among them, names the
+// upload's key back, as Dispatch's do; the router's 404 for a route it has not names none.
+const stubDispatch = keyedLayer(answerDispatch, {
+  judged: (response) => response.status !== 404,
 }) as typeof fetch;
 
 beforeEach(() => {
@@ -332,40 +348,43 @@ describe("dispatch artifact under a name the owner holds", () => {
   test.each([
     ["a file", "notes", "notes.txt", textOf],
     ["a picture", "chart", "chart.png", pictureOf],
-  ] as const)("for %s, prints no token, and a stale reader following it cannot overwrite the newer version", async (_label, name, file, contentOf) => {
-    const v1Token = await readToken(name);
-    const written = await upload(
-      name,
-      ["--path", pathOf(`b-${file}`, contentOf("from B"))],
-      ["--force"]
-    );
-    expect(written.code, written.stdout).toBe(0);
-    const standing = held.find((artifact) => artifact.name === name)?.versions.at(-1);
+  ] as const)(
+    "for %s, prints no token, and a stale reader following it cannot overwrite the newer version",
+    async (_label, name, file, contentOf) => {
+      const v1Token = await readToken(name);
+      const written = await upload(
+        name,
+        ["--path", pathOf(`b-${file}`, contentOf("from B"))],
+        ["--force"]
+      );
+      expect(written.code, written.stdout).toBe(0);
+      const standing = held.find((artifact) => artifact.name === name)?.versions.at(-1);
 
-    const refused = await upload(name, ["--path", pathOf(`a-${file}`, contentOf("from A"))]);
-    expect(refused.code, refused.stdout).toBe(2);
-    const text = refusalOf(refused.stdout, name);
-    expect(text).not.toContain("sha256:");
-    expect(text).toContain("dispatch doc-read");
-    expect(text).toContain("--force");
+      const refused = await upload(name, ["--path", pathOf(`a-${file}`, contentOf("from A"))]);
+      expect(refused.code, refused.stdout).toBe(2);
+      const text = refusalOf(refused.stdout, name);
+      expect(text).not.toContain("sha256:");
+      expect(text).toContain("dispatch doc-read");
+      expect(text).toContain("--force");
 
-    const stale = await upload(
-      name,
-      ["--path", pathOf(`a-${file}`, contentOf("from A"))],
-      advisedFlags(text, v1Token)
-    );
-    expect(stale.code, stale.stdout).toBe(1);
-    expect(stale.stdout).toContain("PRECONDITION_FAILED");
-    expect(held.find((artifact) => artifact.name === name)?.versions.at(-1)).toBe(standing);
+      const stale = await upload(
+        name,
+        ["--path", pathOf(`a-${file}`, contentOf("from A"))],
+        advisedFlags(text, v1Token)
+      );
+      expect(stale.code, stale.stdout).toBe(1);
+      expect(stale.stdout).toContain("PRECONDITION_FAILED");
+      expect(held.find((artifact) => artifact.name === name)?.versions.at(-1)).toBe(standing);
 
-    const fresh = await upload(
-      name,
-      ["--path", pathOf(`a-${file}`, contentOf("from A"))],
-      advisedFlags(text, await readToken(name))
-    );
-    expect(fresh.code, fresh.stdout).toBe(0);
-    expect(held.find((artifact) => artifact.name === name)?.versions).toHaveLength(3);
-  });
+      const fresh = await upload(
+        name,
+        ["--path", pathOf(`a-${file}`, contentOf("from A"))],
+        advisedFlags(text, await readToken(name))
+      );
+      expect(fresh.code, fresh.stdout).toBe(0);
+      expect(held.find((artifact) => artifact.name === name)?.versions).toHaveLength(3);
+    }
+  );
 
   // R3: where the standing version states no token, --force alone, read out of the refusal, is
   // taken: from a Dispatch without file tokens, and for a version stored with no hash.
@@ -384,22 +403,25 @@ describe("dispatch artifact under a name the owner holds", () => {
           notes.versions[0] = { ...(notes.versions[0] as StoredVersion), hashed: false };
       },
     ],
-  ] as const)("advises --force alone for %s, and the upload sending exactly that is taken", async (_label, arrange) => {
-    arrange();
-    const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
-    expect(refused.code, refused.stdout).toBe(2);
-    const text = refusalOf(refused.stdout, "notes");
-    expect(text).toContain("(--force) alone");
-    expect(text).not.toContain("--precondition-json");
+  ] as const)(
+    "advises --force alone for %s, and the upload sending exactly that is taken",
+    async (_label, arrange) => {
+      arrange();
+      const refused = await upload("notes", ["--path", pathOf("n.txt", textOf("second"))]);
+      expect(refused.code, refused.stdout).toBe(2);
+      const text = refusalOf(refused.stdout, "notes");
+      expect(text).toContain("(--force) alone");
+      expect(text).not.toContain("--precondition-json");
 
-    const taken = await upload(
-      "notes",
-      ["--path", pathOf("n.txt", textOf("second"))],
-      advisedFlags(text, undefined)
-    );
-    expect(taken.code, taken.stdout).toBe(0);
-    expect(uploads).toEqual([{ name: "notes", precondition: undefined }]);
-  });
+      const taken = await upload(
+        "notes",
+        ["--path", pathOf("n.txt", textOf("second"))],
+        advisedFlags(text, undefined)
+      );
+      expect(taken.code, taken.stdout).toBe(0);
+      expect(uploads).toEqual([{ name: "notes", precondition: undefined }]);
+    }
+  );
 
   // R3: an upload of another kind than the name holds, by Dispatch's rule, is told to take another
   // name and is offered no flag: Dispatch refuses it under that name with --force too, and takes

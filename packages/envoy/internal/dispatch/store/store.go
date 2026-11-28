@@ -203,12 +203,23 @@ func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) err
 	if version != math.MaxInt && !slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version == version }) {
 		return fmt.Errorf("migrate through %d: no embedded migration carries that version, none applied", version)
 	}
-	if err := s.prepareVersionTable(ctx, migrations); err != nil {
+	recorded, err := s.prepareVersionTable(ctx, migrations)
+	if err != nil {
 		return err
 	}
 	for _, migration := range migrations {
 		if migration.Version > version {
 			break
+		}
+		// The prepare read these as recorded under the key, in the transaction that judged every
+		// row of the table against this whole set, so this runner applies them no second time and
+		// would otherwise only recheck each one (applyMigrationOnce and
+		// applyNonTransactionalMigration, pgmigrate.RecheckRecorded). Each migration it did not
+		// read as recorded still goes through applyMigration, which judges the table again under
+		// the key before it applies anything, so a version another runner recorded in between is
+		// still found there.
+		if recorded[migration.Version] {
+			continue
 		}
 		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
@@ -393,7 +404,8 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 //
 // It then judges every row before the runner applies anything (pgmigrate.ReconcileRecorded, whose
 // rule pgmigrate.Reconcile states): a refusal writes nothing and applies nothing. The fills commit
-// with the table, and each is logged once they have (pgmigrate.LogFixes).
+// with the table, and each is logged once they have (pgmigrate.LogFixes). It answers the versions
+// that judgment read as recorded, which the runner applies nothing for (migrateThrough).
 //
 // The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
 // statement the runner sends on its version table runs under one set of values:
@@ -403,8 +415,9 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // transaction back and tries it again, as a migration is tried
 // (pgmigrate.RetryVersionTableLockTimeouts), so a boot that starts while a pg_dump or a census
 // holds the table waits it out within that bound rather than fail on its first wait.
-func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) error {
+func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) (map[int]bool, error) {
 	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
+	applied := map[int]bool{}
 	var fixes []pgmigrate.Fix
 	err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
 		fixes = nil
@@ -429,19 +442,23 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 			}); err != nil {
 				return err
 			}
-			_, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
+			rows, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
 			if err != nil {
 				return pgmigrate.Labelled(versionTable, err)
 			}
 			fixes = reconciled
+			clear(applied)
+			for _, row := range rows {
+				applied[row.Version] = true
+			}
 			return nil
 		})
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	pgmigrate.LogFixes(versionTable, fixes)
-	return nil
+	return applied, nil
 }
 
 // applyMigration applies one migration of migrations, the boot's whole set, trying it again while

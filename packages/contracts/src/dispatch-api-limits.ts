@@ -131,6 +131,21 @@ export const MAX_ISSUE_PAGE_LIMIT = 250;
 export const DEFAULT_ISSUE_PAGE_LIMIT = 50;
 
 /**
+ * The most threads one page of an issue's threads holds: `limit` is 1 to this on
+ * `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity`. Generated into Go as
+ * `contracts.MaxThreadPageLimit`, which the server enforces.
+ */
+export const MAX_THREAD_PAGE_LIMIT = 100;
+
+/**
+ * The page size of `GET /api/v1/issues/{key}/comments`, `GET /api/v1/issues/{key}/messages` and
+ * `GET /api/v1/issues/{key}/asks` under `order=activity` when a caller names no `limit`.
+ * Generated into Go as `contracts.DefaultThreadPageLimit`.
+ */
+export const DEFAULT_THREAD_PAGE_LIMIT = 20;
+
+/**
  * How many of an issue's events `dispatch_read` lists, the newest ones, when it names neither
  * `events` nor `all_events`: what `DispatchClient.read` returns by default.
  */
@@ -354,6 +369,33 @@ export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
  * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
  */
 export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
+
+/**
+ * The most characters (Unicode code points, Go's runes) of what a CI job observed that a result
+ * of a spec check keeps (`POST /api/v1/projects/{key}/results`, `observed`). A text of this many
+ * characters or fewer is kept whole. A longer text is kept as its first
+ * `SPEC_CHECK_OBSERVED_START` characters, then `SPEC_CHECK_OBSERVED_CUT_NOTE`, then its last
+ * `SPEC_CHECK_OBSERVED_END` characters, this many characters in all, so the stored text says
+ * where it was cut. Dispatch cuts a longer text so, and `dispatch result --project` cuts it so
+ * before it sends it, since a test's log can be larger than any request Dispatch takes.
+ * Generated into Go as `contracts.SpecCheckObservedMax`.
+ */
+export const SPEC_CHECK_OBSERVED_MAX = 2000;
+
+/** The line between the start and the end of an observed text cut to `SPEC_CHECK_OBSERVED_MAX`,
+ *  which says that the middle was cut. Generated into Go as `contracts.SpecCheckObservedCutNote`. */
+export const SPEC_CHECK_OBSERVED_CUT_NOTE = `\n[The middle of the text is cut here. A result keeps ${SPEC_CHECK_OBSERVED_MAX} characters of what the job observed: its start and its end.]\n`;
+
+/** How many characters of its start a cut observed text keeps: the start names the test that
+ *  ran. Generated into Go as `contracts.SpecCheckObservedStart`. */
+export const SPEC_CHECK_OBSERVED_START = 500;
+
+/** How many characters of its end a cut observed text keeps, the larger share, because a test's
+ *  output says why it failed at its end (the message and the `--- FAIL` line): what
+ *  `SPEC_CHECK_OBSERVED_MAX` leaves after the start and the note. Generated into Go as
+ *  `contracts.SpecCheckObservedEnd`. */
+export const SPEC_CHECK_OBSERVED_END =
+  SPEC_CHECK_OBSERVED_MAX - SPEC_CHECK_OBSERVED_START - [...SPEC_CHECK_OBSERVED_CUT_NOTE].length;
 
 /** The codes of a repeat Dispatch gives no copy of its first answer for: `409 KEY_COMMITTED`, a
  *  write that landed, or a replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats a write's as

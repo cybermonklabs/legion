@@ -16,6 +16,7 @@ import {
   parseIssuePath,
   parseProjectPath,
   routeProjectOf,
+  unknownToShell,
 } from "../refs/routes";
 
 /** How much of a block's own text the chip names it by. */
@@ -83,7 +84,10 @@ export function scopeAtCursor(): string | undefined {
 }
 
 /** The project of the page the bar was opened from, which `Backspace` widens the chip to. */
-export function scopeOfProject(pathname: string): string | undefined {
+export function scopeOfProject(pathname: string, newPage = false): string | undefined {
+  // Each answer of this file is `main`'s at an address of the new issue page alone, where the
+  // reader draws today's page (`newPage` false, the default): no project, page or issue.
+  if (unknownToShell(pathname, newPage)) return undefined;
   const project = routeProjectOf(pathname);
   return project === undefined ? undefined : `the project ${project}`;
 }
@@ -98,8 +102,10 @@ export function scopeOfPage(
   pathname: string,
   search: string,
   documentName: string | undefined,
-  selected: readonly string[]
+  selected: readonly string[],
+  newPage = false
 ): string | undefined {
+  if (unknownToShell(pathname, newPage)) return undefined;
   const issue = parseIssuePath(pathname, search);
   if (issue !== undefined) {
     return issue.key;
@@ -116,7 +122,8 @@ export function scopeOfPage(
 
 /** The issue the page under the bar is on, whatever tab of it, and undefined on every other
  *  page: the issue an offer acts on, as against the chip's words for it. */
-export function issueOfPage(pathname: string, search: string): string | undefined {
+export function issueOfPage(pathname: string, search: string, newPage = false): string | undefined {
+  if (unknownToShell(pathname, newPage)) return undefined;
   return parseIssuePath(pathname, search)?.key;
 }
 

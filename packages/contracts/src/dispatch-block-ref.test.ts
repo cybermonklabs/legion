@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
 import {
   blockPointerValueProblem,
@@ -9,6 +9,7 @@ import {
   encodeBlockId,
   formatBlockReference,
   MAX_BLOCK_ID_BYTES,
+  parentProblem,
   parseBlockFragment,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
@@ -41,6 +42,54 @@ test("a long id is encoded byte for byte and decodes back whole", () => {
   expect(encoded).toBe(`${"a".repeat(3200)}%C3%A9`);
   expect(decodeBlockId(encoded)).toBe(longLatin1);
   expect(parseBlockFragment(`${encoded}@v3`)).toEqual({ block: longLatin1, pin: "3" });
+});
+
+/** A block id as each of its code points' own UTF-8 bytes write it, the rule `encodeBlockId`
+ *  holds to: every byte percent-encoded in upper-case hex save an ASCII letter, digit or `-`. */
+function encodedByCodePoint(id: string): string {
+  const encoder = new TextEncoder();
+  let encoded = "";
+  for (const character of id) {
+    for (const byte of encoder.encode(character)) {
+      const bare =
+        (byte >= 0x30 && byte <= 0x39) ||
+        (byte >= 0x41 && byte <= 0x5a) ||
+        (byte >= 0x61 && byte <= 0x7a) ||
+        byte === 0x2d;
+      encoded += bare
+        ? String.fromCharCode(byte)
+        : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+    }
+  }
+  return encoded;
+}
+
+// Ids of ASCII letters, digits and `-` only, the empty one and a long one included.
+const plainIds = ["", "ship-it", "R1", "0123456789-ABCXYZ-abcxyz", "-", "a".repeat(3200)];
+
+test("encodeBlockId writes every id byte for byte as each code point's UTF-8 does, and an id of plain characters calls no TextEncoder", () => {
+  const ids = [
+    ...plainIds,
+    "decision.1",
+    "two words",
+    "ship-it@v2",
+    "50%",
+    "a/b",
+    "décision:1",
+    "ship-🚀",
+    "\u{1F680}",
+    longLatin1,
+    "é".repeat(1100),
+  ];
+  const wanted = ids.map(encodedByCodePoint);
+  expect(ids.map(encodeBlockId)).toEqual(wanted);
+  const encode = spyOn(TextEncoder.prototype, "encode");
+  try {
+    expect(plainIds.map(encodeBlockId)).toEqual(plainIds);
+    expect(encode, "an id of plain characters called the encoder").toHaveBeenCalledTimes(0);
+  } finally {
+    encode.mockRestore();
+  }
 });
 
 // No id: a raw `@` (`encodeBlockId` writes `@` as `%40`, so one is only ever a pin), an empty
@@ -103,6 +152,18 @@ test("the Go encoder's table is the same table", async () => {
 });
 
 test.each([...DISPATCH_BLOCK_POINTER_VALUES])("decides block[] value %p", (row) => {
+  if (row.attribute !== undefined) {
+    // A row of an attribute's own rule holds a well-formed value, which that attribute takes or
+    // refuses with the row's problem.
+    const pointers = parseBlockPointerValue(row.value);
+    expect(pointers).toBeDefined();
+    const problem = parentProblem(row.attribute, pointers ?? []);
+    expect(problem === undefined).toBe(row.ok);
+    if (row.problem !== undefined) {
+      expect(problem).toContain(row.problem);
+    }
+    return;
+  }
   expect(parseBlockPointerValue(row.value) !== undefined).toBe(row.ok);
   // A refused value has a reason, and an accepted one none.
   expect(blockPointerValueProblem(row.value) === undefined).toBe(row.ok);

@@ -118,7 +118,7 @@ type Credential struct {
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
 	// read-only personal token, a row of agent_read_tokens, which a person made holding read
 	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
-	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseLimitedToken),
 	// before anything else the route does. The scope itself is not among Scopes: those are what a
 	// route can require of a credential, and read meets no route's requirement; it narrows what
 	// this credential may call rather than widening it. whoami lists it as ScopeRead after
@@ -131,7 +131,7 @@ type Credential struct {
 	// never released. It acts as its person with ScopePerson and ScopeApprove, never ScopeP0
 	// (brokerApproveOnlyScopes), and Dispatch serves it on the routes whose declaration states
 	// ApproveOnly (api's routeDecl.ApproveOnly) alone, answering it 403 APPROVE_ONLY_TOKEN on every
-	// other (refuseApproveOnlyToken), before anything else the route does. False for every other
+	// other (refuseLimitedToken), before anything else the route does. False for every other
 	// credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
@@ -141,14 +141,14 @@ type Credential struct {
 	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
 	// mapped to its one project, or to none for an account entry that names a person and no
 	// project or neither; `person`, a token held to no one project, a person's own or a
-	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// machine's nobody signed in on; `none`, the read entry's token's; `public`, a job's token
 	// that names no one project, which writes wherever a token naming no project may, since no
-	// write check reads its list (Projects) at this release. A token narrowed to reading carries
-	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
-	// broker-issued token that names a service and no person writes only under `named` or
-	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
-	// writes are recorded under its account — and is refused every write under any other
-	// (writeNeedsASignedInPerson).
+	// write check reads its list (Projects) at this release; or `results`, a results token's,
+	// which carries ResultsOnly and CI. A token narrowed to reading carries the word it narrows,
+	// with ReadOnly beside it. Empty for every other credential. A broker-issued token that names
+	// a service and no person writes only under `named` or `public` — a job's two shapes, and
+	// under `named` an account entry's naming no person, whose writes are recorded under its
+	// account — and is refused every write under any other (writeNeedsASignedInPerson).
 	ProjectScope string
 	// Principal is who a broker-issued token acts for, in the form that names its kind and scope
 	// (ciphertoken.Caller.Principal): the one the Envoy listener records a registration on that
@@ -161,6 +161,19 @@ type Credential struct {
 	// access.CredentialCovers': for a full member's credential, and one that names no person, only
 	// which private projects it reaches; for a restricted member's, every project it reaches.
 	Projects []string
+	// ResultsOnly is a broker-issued token that writes only the results of its project's spec
+	// checks (ciphertoken.ScopeResults): one the secrets broker minted from a result entry for one
+	// CI run, naming a person, one project and the run. The person stays inside the server: a
+	// result, an answer and the access log name the run (SpecCheckRecorder). Dispatch serves it on
+	// the routes whose declaration states ResultsScope (api's routeDecl.ResultsScope) alone and
+	// answers it 403 RESULTS_ONLY_TOKEN on every other (refuseLimitedToken), before anything else
+	// the route does. False for every other credential.
+	ResultsOnly bool
+	// CI is the run a ResultsOnly credential was minted for, read whole by the verifier
+	// (ciphertoken.Caller.CI, oauthwire.ParseCIRun): what that credential writes is held to the
+	// run's commit, repository and check run, and its stored columns come from this one reading.
+	// Nil for every other credential.
+	CI *oauthwire.Run
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -762,9 +775,9 @@ type PriorityRow struct {
 // and ClosedLast7Days the issues that advance the priority and closed within the last seven days,
 // which is work finished rather than work standing.
 //
-// NewestEventAt is the newest event on any issue that advances the priority, `max(created_at)`
-// over their events: a comment moves it although it writes no issue row, which `issues.updated_at`
-// would not. It is null for a priority no issue advances.
+// NewestEventAt is the newest created_at among the events of last_seq of the issues that advance
+// the priority, one event of each issue read by the unique (issue_key, seq) of events, and it is
+// null when none of those issues has an event.
 type PriorityWork struct {
 	ByStatus        map[string]int `json:"by_status"`
 	Claimed         int            `json:"claimed"`
@@ -1920,6 +1933,86 @@ type CheckResultRetracted struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// SpecCheckResultKindRun is the kind of every result a CI job writes for a check of the spec
+// files: one run of the check's test (SpecCheckResult.Kind).
+const SpecCheckResultKindRun = "run"
+
+// SpecCheckResult is one result a CI job wrote for a check of the spec files at the commit it
+// tested (POST /api/v1/projects/{key}/results): Dispatch's id and record number for it, its kind,
+// and the in-toto statement of the run. Seq orders the results as Dispatch recorded them, and
+// the read orders by it. Nothing updates a stored result: another run, attempt or leg is another
+// one.
+type SpecCheckResult struct {
+	ID          string               `json:"id"`
+	Seq         int64                `json:"seq"`
+	Kind        string               `json:"kind"`
+	Attestation SpecCheckAttestation `json:"attestation"`
+}
+
+// SpecCheckAttestation is an in-toto Statement v1 (https://in-toto.io/Statement/v1): the subject
+// it read, a commit of a repository, and the predicate of a spec check's result.
+type SpecCheckAttestation struct {
+	Type          string               `json:"_type"`
+	Subject       []AttestationSubject `json:"subject"`
+	PredicateType string               `json:"predicateType"`
+	Predicate     SpecCheckPredicate   `json:"predicate"`
+}
+
+// AttestationSubject is one subject of an in-toto statement: its name and its digests by
+// algorithm. A spec check result's one subject is git+https://github.com/<repository> with the
+// digest gitCommit, the commit the job tested.
+type AttestationSubject struct {
+	Name   string            `json:"name"`
+	Digest map[string]string `json:"digest"`
+}
+
+// SpecCheckPredicate is what a spec check's result says. Dispatch writes every field from the
+// results token, from GitHub and from the spec files at the commit, except Verdict and Observed,
+// which the job wrote: Check and ProcedureDigest are the check as the files hold it, Test its test
+// part, Job and Leg the name of the run's check run cut at its last " (", Run the run the token
+// was minted for, and Recorder the run's session and principal the token proved.
+type SpecCheckPredicate struct {
+	Project         string            `json:"project"`
+	Check           string            `json:"check"`
+	ProcedureDigest string            `json:"procedure_digest"`
+	Test            SpecCheckTest     `json:"test"`
+	Verdict         string            `json:"verdict"`
+	Observed        string            `json:"observed"`
+	Job             string            `json:"job"`
+	Leg             string            `json:"leg"`
+	Run             SpecCheckRun      `json:"run"`
+	Recorder        SpecCheckRecorder `json:"recorder"`
+	RecordedAt      time.Time         `json:"recorded_at"`
+}
+
+// SpecCheckTest is the test part of a check: the runner and the selector that pick one test, and
+// the job whose reports alone count for the check.
+type SpecCheckTest struct {
+	Runner   string `json:"runner"`
+	Selector string `json:"selector"`
+	Job      string `json:"job"`
+}
+
+// SpecCheckRun is the GitHub Actions run a result was written in, as its token names it.
+type SpecCheckRun struct {
+	Repository        string `json:"repository"`
+	WorkflowRef       string `json:"workflow_ref"`
+	Ref               string `json:"ref"`
+	EventName         string `json:"event_name"`
+	RunID             string `json:"run_id"`
+	Attempt           int    `json:"attempt"`
+	CheckRunID        string `json:"check_run_id"`
+	RunnerEnvironment string `json:"runner_environment"`
+}
+
+// SpecCheckRecorder is who wrote a result, as its token proved it: the session of the run's
+// workflow and the broker's principal of it. It names no person: the airlock authenticated a run,
+// and the person a result entry names is the broker's configuration, who ran no test.
+type SpecCheckRecorder struct {
+	Session   string `json:"session"`
+	Principal string `json:"principal"`
+}
+
 // CheckResult is one result recorded against a `check` block of an issue's Verification
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
@@ -2015,7 +2108,9 @@ type CheckResultRetraction struct {
 // content whole, links and references kept, as the reader is shown it, present only for a
 // caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
 // code, production or graph, and "" where the block names none, which reads as code. Program is
-// the deployed program it reads, its `program` as stored, "" where it names none.
+// the deployed program it reads, its `program` as stored, "" where it names none. Serves is the
+// references the block's `serves` attribute names, each as the block writes it, in the block's
+// order, and absent on a block that names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -2027,6 +2122,7 @@ type CheckBlock struct {
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
+	Serves          []string      `json:"serves,omitempty"`
 	CICheck         string        `json:"ci_check,omitempty"`
 	Subject         string        `json:"subject,omitempty" enum:"code,production,graph"`
 	Program         string        `json:"program,omitempty"`
@@ -2877,6 +2973,12 @@ type MyReplyRow struct {
 	DeletedAt *time.Time   `json:"deleted_at,omitempty"`
 	DeletedBy *Actor       `json:"deleted_by,omitempty"`
 	Reply     MyReplyReply `json:"reply"`
+	// RootAuthor is the actor who wrote the thread's root, in the shape of Reply.Author and as it
+	// is stored: an ask's asker, a comment thread's root comment's author or a message thread's
+	// root message's author, so a root the Legion daemon wrote reads as its session,
+	// legion-daemon:<PROJECT>. Only the Reply scan sets it (readMyReplyRows, api/replies.go); an
+	// Agent row, whose root is always the caller's own message, carries none.
+	RootAuthor *Actor `json:"root_author,omitempty"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`
@@ -3103,6 +3205,19 @@ const DeliveryTakenStatesSQL = "('" + DeliveryStateSent + "', '" + DeliveryState
 func DeliveryTaken(state string) bool {
 	return state == DeliveryStateSent || state == DeliveryStateQueued
 }
+
+// PersonWordsEventTypesSQL is the five event types that carry a person's words to a session, as
+// the SQL list an `in` test over an event's type takes: an answer (ask.answered), a comment
+// (comment.created), a new message (message.created), a reply to a message (message.answered),
+// and an ask's resolution (ask.resolved). Each query that asks it reads this one definition: the
+// agents' answers read (sessionanswers.query, its reached_by_destination), which lists only the
+// declines among the resolutions (declinedResolution), and the rule for the window it is measured
+// over and its sessions (answerswindow.DeliveredPersonEvent and answerswindow.SessionsQuery),
+// whose predicates test the type alone and so hold for every ask.resolved. The predicates of the
+// partial indexes that read is served by hold the same list in the same order, written out in
+// their migrations, which Go cannot reach (events_person_words_with_declines, 20261111002444, and
+// events_person_words_destinations, 20261125131000): a change of this list is a new index too.
+const PersonWordsEventTypesSQL = "('ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved')"
 
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
@@ -3563,16 +3678,26 @@ type Comment struct {
 // is what says the post itself is gone rather than the one block. All three are absent on a part
 // of an ask, which no correction marks. An event's reply_block keeps the marks the write that
 // appended it read. A reply's delete event (comment.deleted, message.deleted) carries the block
-// with every field but its text, which is empty: a delete event carries no text of another post.
+// with every field but its text, quote and occurrence: its text is empty and the other two are
+// absent, because a delete event carries no text of another post.
+//
+// Quote and Occurrence are the words of the block the reply quotes and which of their matches in
+// the block's plain text they are, counted from 0, as the reply stored them
+// (comments.replies_to_quote and replies_to_occurrence, and the same two of messages): both or
+// neither, absent on a reply that quotes nothing, as the marks are absent where the post holds
+// none. A read leaves both out once the quoted post is deleted (refs.ReplyBlocks), as they are
+// words of that post.
 type ReplyBlock struct {
-	Node      string     `json:"node"`
-	Ref       string     `json:"ref,omitempty"`
-	BlockID   string     `json:"block_id"`
-	Text      string     `json:"text"`
-	Removed   bool       `json:"removed"`
-	EditedAt  *time.Time `json:"edited_at,omitempty"`
-	DeletedAt *time.Time `json:"deleted_at,omitempty"`
-	DeletedBy *Actor     `json:"deleted_by,omitempty"`
+	Node       string     `json:"node"`
+	Ref        string     `json:"ref,omitempty"`
+	BlockID    string     `json:"block_id"`
+	Text       string     `json:"text"`
+	Removed    bool       `json:"removed"`
+	EditedAt   *time.Time `json:"edited_at,omitempty"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy  *Actor     `json:"deleted_by,omitempty"`
+	Quote      *string    `json:"quote,omitempty"`
+	Occurrence *int       `json:"occurrence,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET
@@ -4095,26 +4220,53 @@ type StepRecord struct {
 	Variant      *string    `json:"variant"`
 }
 
-// StepTask is one task of an issue with every run of its steps, in the order they ran.
+// StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
+// steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
+// as the plan node records them, [] for a task that needs none; null where the node did not record
+// them (a daemon of the release before wrote the plan, or a Dispatch of the release before took the
+// write and dropped its needs) and for a task the plan does not hold. It is a pointer, as
+// PlanTask.Needs is, so null and [] are two values of the type and not a nil and an empty slice.
+// Planned are the steps that plan gives the task, in order, each with where it stands; absent for
+// a task the plan does not hold, which only its runs show. Steps are [] for a task of the plan
+// none of whose steps ran.
 type StepTask struct {
-	Task  string       `json:"task"`
-	Steps []StepRecord `json:"steps"`
+	Task    string        `json:"task"`
+	Needs   *[]string     `json:"needs"`
+	Planned []PlannedStep `json:"planned,omitempty"`
+	Steps   []StepRecord  `json:"steps"`
 }
 
-// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
-// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
-// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+// PlannedStep is one step a plan gives a task, as the steps read answers it: its place in the task,
+// from 1, the plan's word for it (a role or `role:key`), and where it stands in the run of the
+// issue the plan is of, read from that run's records alone: `not started` where none of them is a
+// run of the step, `running` while the newest such run has no end, and that run's result
+// (`passed`, `failed` or `stopped`) once it has one. The enum tag is contracts'
+// PLANNED_STEP_STATES, which a tag cannot name; TestTheStepRouteNamesContractsWords holds it to
+// them.
+type PlannedStep struct {
+	Step  int    `json:"step"`
+	Name  string `json:"name"`
+	State string `json:"state" enum:"not started,running,passed,failed,stopped"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the
+// plan's order, each with its needs, its planned steps and every run of them; then every other
+// task with a run, in the order of each such task's first run. An issue with no plan and no run
+// answers no task; a key no issue carries answers 404 NOT_FOUND, and no IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan (`default` for the one task of
-// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), and
-// its steps in order, each a role or `role:key`.
+// an issue whose owner gave no plan, or whose experiment's group takes none from its owner), its
+// steps in order, each a role or `role:key`, and the tasks of the plan it needs, each by its id, []
+// for a task that needs none and null where the write that recorded the plan carried no needs. It
+// has the fields of workflowstore.PlanTask, which the route converts it from.
 type PlanTask struct {
-	ID    string   `json:"id"`
-	Steps []string `json:"steps"`
+	ID    string    `json:"id"`
+	Steps []string  `json:"steps"`
+	Needs *[]string `json:"needs"`
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that

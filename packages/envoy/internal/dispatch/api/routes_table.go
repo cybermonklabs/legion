@@ -38,8 +38,9 @@ type writeScope string
 const (
 	// scopeProject is a write to an object that belongs to one project: the issue-key rows, the
 	// project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the
-	// message rows that carry an issue. A caller whose credential names another project is
-	// refused, naming both projects.
+	// message rows that carry an issue. A caller whose credential names one project may write
+	// such an object of any project. The one exception is a private project it does not name
+	// (access.CredentialCovers). A target that resolves to no project or to nothing is refused.
 	scopeProject writeScope = "project"
 	// scopeSession is a write that belongs to the calling session rather than to any project:
 	// an agent conversation's own artifact, messages and stream frames, the two routes a
@@ -61,13 +62,16 @@ const (
 	//     written by a credential holding the `person` scope and keyed on that person.
 	scopeSession writeScope = "session"
 	// scopeDeployment is a write that belongs to the deployment rather than to any project: a
-	// credential that may write one project may not create another or change a deployment-wide
+	// credential that names one project may not create another or change a deployment-wide
 	// setting, so a project-scoped caller is refused these by name.
 	scopeDeployment writeScope = "deployment"
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
-	// than its path: the issue create, whose project comes from the body. There is no object to
-	// resolve before the handler runs, so createIssue makes the check itself once it has read
-	// that project (refuseWriteOutsideProjectScope), and withinProjectScope passes the row
+	// than its path: the issue create, whose project comes from the body, and the question of an
+	// answer run. There is no object to resolve before the handler runs. So createIssue and
+	// createGoingRequest each read that project's visibility and ask access.CredentialCovers once
+	// they have read that project. Each answers a private project that the credential does not
+	// name, and a project that does not exist, with one answer at that one step: createIssue 404
+	// NOT_FOUND, and createGoingRequest 404 PROJECT_NOT_FOUND. withinProjectScope passes the row
 	// through by this class rather than by a name it compares.
 	scopeProjectInBody writeScope = "project-in-body"
 	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
@@ -230,38 +234,51 @@ type routeDecl struct {
 	// The scope `read` a read-only token holds is never one of these: a scope here is one the
 	// caller must hold, and no person holds that one. The routes such a credential may call are
 	// the GET routes whose declarations class them as reads (Read), which its own gate reads
-	// (refuseReadOnlyToken).
+	// (refuseLimitedToken). The scope `results` a results token holds is never one of these
+	// either: the routes that token may call are the routes that state ResultsScope, which the
+	// same gate reads.
 	//
 	// A route that takes an id written short needs no scope of its own for it: the prefix layer
 	// (resolveIDPrefixes, ID) runs inside this gate - register wraps the gate around it, so a
 	// credential that holds none of the route's scopes is refused before any id is read, and
 	// the one check a request meets ahead of the route's scopes is whether a read-only token may
-	// call the route at all (refuseReadOnlyToken) - and it only rewrites the path value, so a
-	// short id reaches exactly the scopes the whole id reaches, and a route that needs none with
-	// a whole id needs none with a prefix.
+	// call the route at all, or a results token may call it (refuseLimitedToken) - and it only
+	// rewrites the path value, so a short id reaches exactly the scopes the whole id reaches, and
+	// a route that needs none with a whole id needs none with a prefix.
 	OAuthScopes routeScopeSet
 
 	// Read is the read class of a GET route: what it writes when it serves a request, and the
 	// note that says so (readEntry, read_classes.go). A route a read-only credential may call is
 	// one whose class is readWritesNothing; every other route, and GET /ws/live beside them,
 	// answers such a caller 403 READ_ONLY_TOKEN before anything else the route does
-	// (refuseReadOnlyToken), so a route added later is closed to it until someone has read the
+	// (refuseLimitedToken), so a route added later is closed to it until someone has read the
 	// handler and classed it here.
 	//
 	// Every GET route states a class, and no other route states one: a write is not a read
 	// whatever its handler does, and register refuses to mount a table that breaks either rule
 	// (readClassRefusals). The class is not a scope, so the route index (GET /api/v1), the
 	// OpenAPI document and the reference generated from it do not carry it, and only the
-	// read-only gate reads it.
+	// limited-token gate reads it.
 	Read readEntry
+
+	// ResultsScope is a route a results token may call: a token the secrets broker minted from a
+	// result entry for one CI run, which holds the scope results alone and names a person, one
+	// project and the run (model.Credential.ResultsOnly). Every route that does not state
+	// ResultsScope, and GET /ws/live beside them, answers such a token 403 RESULTS_ONLY_TOKEN
+	// before anything else the route does (refuseLimitedToken), so a route added later stays
+	// closed to it until its file states it. It is no value of OAuthScopes: a scope there is one
+	// the caller must hold, and no person holds results, so ResultsScope says what a credential
+	// that holds results alone may still call rather than what a route requires; for the same
+	// reason the route index (GET /api/v1), the OpenAPI document and the reference generated from
+	// it do not carry it, and only the limited-token gate reads it.
+	ResultsScope bool
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints
 	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
 	// released (model.Credential.ApproveOnly). It acts as its person with the scopes person and
 	// approve (brokerApproveOnlyScopes), and every route that does not state ApproveOnly, and GET
-	// /ws/live beside them,
-	// answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
-	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
+	// /ws/live beside them, answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
+	// (refuseLimitedToken), so a route added later stays closed to it until its file states
 	// it.
 	//
 	// The routes that state it are the routes whose OAuthScopes name approve, the routes that
@@ -271,8 +288,8 @@ type routeDecl struct {
 	// states it. Beside them is the answer of an ask, which checks approve in its handler for an
 	// approval request and refuses an approve-only token the answer of every other ask, 403
 	// APPROVE_ONLY_TOKEN, once the ask's kind is read (ask_transitions.go). Like Read, it is no
-	// scope: the route index and the OpenAPI document do not carry it, and only the approve-only
-	// gate reads it.
+	// scope: the route index and the OpenAPI document do not carry it, and only the
+	// limited-token gate reads it.
 	ApproveOnly bool
 
 	// Shape is what the route takes and answers, in the Go types the OpenAPI document is
@@ -382,6 +399,24 @@ func goingCatalogueDescription() string {
 		len(goingToolRoutes), len(contracts.DispatchTools))
 }
 
+// replyQuoteDescription is what each of the six rows that write a reply to a block says of the
+// words of that block the reply quotes (replyQuoteRefusal, namedBlock.setQuote): field is the
+// row's block field and code the code its route gives a bad one. It is one definition, as
+// searchDescription is, so that the six rows state one rule.
+func replyQuoteDescription(field, code string) string {
+	return fmt.Sprintf("Beside %[1]s, quote and occurrence name the words of that block the reply quotes: quote is a run of characters of the block's plain text, its text runs joined with no markdown marks and no heading marker, and occurrence is which match of quote in that one block it is, counted from 0 with overlapping matches counted (0 where none is sent and the block holds quote once); the reply stores both. An occurrence without quote, a quote without %[1]s, an empty quote and an occurrence below 0 are each 400 %[2]s, naming the field. A quote the block's text does not hold, or an occurrence past its last match, is 404 TARGET_NOT_FOUND, and a quote it holds more than once with no occurrence is 409 TARGET_AMBIGUOUS.",
+		field, code)
+}
+
+// threadPageDescription is what each of the three issue thread lists says of its page
+// (parseThreadPage, selectThreads): entries is the route's own sentence on what its thread and
+// its row are, and filters its own sentences on ?person= and the keys only it takes. It is one
+// definition, as replyQuoteDescription is, so that the three rows state one rule.
+func threadPageDescription(entries, filters string) string {
+	return fmt.Sprintf("?order=activity answers one page of the issue's threads in place of the list, {threads, before, remaining}: the thread with the newest last activity first, and of two with the same last activity the one with the larger id first. %[3]s A row's last_activity_at is the newest time an entry of the thread was written, cut to whole microseconds and written in UTC with six fractional digits; a deleted entry counts and an edit does not. ?limit= is how many threads a page holds at most, an integer from 1 to %[1]d, and %[2]d without it. before is the position of the page's last thread, <last_activity_at>,<id>, and null when no thread follows; ?before= with that value answers the threads that follow the position, in the same order, and a thread written in during a walk moves above it. remaining is the exact number of threads that follow the page under the same filters, counted in the same read, and is 0 only when before is null. ?author= keeps the threads that hold an entry that actor wrote: a person's login, matched with no regard to case, or a session id, matched exactly; remaining counts under it. %[4]s Without ?order= the route answers its list. Each refusal is 400 INVALID_QUERY, names the parameter and the values it takes, and answers no thread: ?limit=, ?before=, ?author= or ?person= without ?order=activity, an order other than activity, a limit that is not an integer from 1 to %[1]d, a before that is not a position this API wrote, an empty author, a person value the route does not take, and any of order, limit, before, author and person given twice.",
+		contracts.MaxThreadPageLimit, contracts.DefaultThreadPageLimit, entries, filters)
+}
+
 // routes is every declared route this server mounts, each handler bound to s: every declaration
 // but the test hooks', which are mounted only where Deps.TestHooksEnabled is set. They come
 // sorted by pattern and then method. No reader depends on the order - Register mounts each by its
@@ -396,10 +431,16 @@ func (s *server) routes() []apiRoute {
 		}
 		routes = append(routes, apiRoute{routeDecl: route, Handler: s.bound(route.Handler)})
 	}
-	slices.SortFunc(routes, func(left, right apiRoute) int {
-		return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
-	})
+	slices.SortFunc(routes, func(left, right apiRoute) int { return byPatternThenMethod(left.routeDecl, right.routeDecl) })
 	return routes
+}
+
+// byPatternThenMethod is the one order every reader of the declarations walks them in: by pattern,
+// and by method where one pattern has more than one. routes() sorts what it mounts with it, and so
+// do the results and approve-only refusals, whose messages promise the order routes() mounts them
+// in (resultsOnlyRefusal, approveOnlyRefusal).
+func byPatternThenMethod(left, right routeDecl) int {
+	return cmp.Or(strings.Compare(left.Pattern, right.Pattern), strings.Compare(left.Method, right.Method))
 }
 
 // bound is handler, a method of the server, served by s.

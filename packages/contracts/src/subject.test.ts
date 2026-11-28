@@ -8,12 +8,13 @@ import {
   legacyAgentSubject,
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionStateSubject,
   legionWakeSubject,
   NO_PROJECT,
   roleSubject,
 } from "./subject";
 
-test("builds the Go daemon's controller notice topic, byte for byte notify.ControllerTopic", () => {
+test("builds the controller notice topic a Go daemon of an earlier release publishes to", () => {
   expect(legionControllerNoticeSubject("legion")).toBe("notifications.legion.legion.controller");
 });
 
@@ -33,6 +34,7 @@ const builders: Record<string, (...args: string[]) => string> = {
   legacyAgentSubject: (session = "") => legacyAgentSubject(session),
   roleSubject: (project = "", role = "") => roleSubject(project, role),
   legionWakeSubject: (token = "") => legionWakeSubject(token),
+  legionStateSubject: (token = "") => legionStateSubject(token),
 };
 
 const fixture = JSON.parse(

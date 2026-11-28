@@ -1,11 +1,12 @@
-import { afterAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ArtifactBlock } from "@legion/contracts";
+import type { ArtifactBlock, DispatchToolSpec } from "@legion/contracts";
 import {
   DISPATCH_BLOCK_UNITS,
   DISPATCH_READ_ONLY_TOKEN,
+  dispatchToolSpecs,
   IDEMPOTENCY_KEY_HEADER,
   MARKDOWN_DOCUMENT_MAX_BYTES,
   PROJECT_KEY_RULE,
@@ -13,8 +14,13 @@ import {
 } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
+import { keyedLayer } from "../../test/keyed-layer";
+import { leastAnswerFor, routeAnswer } from "../../test/route-answers";
+import { SPEC_COMMIT, storedSpecResult } from "../../test/spec-check-result";
 import { forgetBrokerClients } from "../broker-credential";
 import { cliRefusals, type DispatchCliIo, fitOutput, runDispatchCli } from "../dispatch-cli";
+import { DRY_RUN_HELP } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { readFileText } from "../dispatch-file-text";
 import { forgetShownPictures } from "../dispatch-picture-tools";
@@ -29,6 +35,15 @@ const makeDirectory = temporaryDirectories("dispatch-cli");
 
 /** The Dispatch bearer each command is handed. */
 const TOKEN = fixtureSecret("dsp");
+
+/**
+ * What each child `bun` a row starts is given beside its own environment: no transpiler cache.
+ * Its HOME is the row's folder (`makeDirectory`), where Bun keeps that cache, about 155 files,
+ * and the folder is removed by an afterEach hook under Bun's 5 s hook limit, which no row's own
+ * limit covers. With the cache off the hook removes what the command itself wrote, where a longer
+ * limit for the hook would still leave it 155 files to remove on a loaded machine.
+ */
+const CHILD_BUN = { BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } as const;
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -102,6 +117,15 @@ const rows = `${Array.from(
   { length: 15 },
   (_, index) => `{"row_id": ${index}, "file_name": "wave_${index}.json", "note": "*kept*"}`
 ).join("\n")}\n`;
+
+/** What ACME's read of SPEC_COMMIT answers, newest first, and the query of each such read. */
+const storedSpecResults = [
+  storedSpecResult(42, "fail", "linux", 2),
+  storedSpecResult(41, "pass", "", 1),
+];
+const specResultQueries: string[] = [];
+/** The query of each search the stand-in was asked. */
+const searchQueries: string[] = [];
 
 /** The Envoy listener's answer for session ses-1's subscriptions. */
 let interests: () => Response = () => Response.json({ error: "unset" }, { status: 500 });
@@ -305,9 +329,10 @@ let issueArtifacts: readonly object[] = [];
  *  refuses it, where a test sets a refusal. */
 let uploadRefusal: (() => Response) | undefined;
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname, search, searchParams } = new URL(request.url);
     // An upload is multipart where it carries a file and JSON where it carries inline content,
     // as the route takes both: a file's part is recorded as the text it carried, since the
@@ -556,8 +581,16 @@ const server = Bun.serve({
         { status: 404 }
       );
     }
+    if (pathname === "/api/v1/projects/ACME/results" && request.method === "GET") {
+      specResultQueries.push(search);
+      return Response.json({ results: storedSpecResults });
+    }
+    if (pathname === "/api/v1/search" && request.method === "GET") {
+      searchQueries.push(search);
+      return Response.json(routeAnswer("GET /api/v1/search", {}, 200));
+    }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -569,6 +602,8 @@ beforeEach(() => {
   blocksServer = { tableRows: true };
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
+  specResultQueries.length = 0;
+  searchQueries.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
   roundTrip = keptText;
   issueArtifacts = [];
@@ -576,6 +611,11 @@ beforeEach(() => {
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
+});
+
+// A system time a row moved, a row its guard ended included, skews no row after it.
+afterEach(() => {
+  setSystemTime();
 });
 
 function environment(
@@ -621,10 +661,10 @@ function nextProcess(sessionId: string): void {
 }
 
 /**
- * The test server behind Dispatch's keyed layer: every answer to a write carries its
- * `Idempotency-Key` back, and the first `failing` message posts fail in transport before they
- * reach it. A `/healthz` read is recorded in `probes` and never answers within any bound, as under
- * the load that stalls a write.
+ * The test server behind Dispatch's keyed layer, which judged every answer to a write and names
+ * its `Idempotency-Key` back on each: the first `failing` message posts fail in transport before
+ * they reach it. A `/healthz` read is recorded in `probes` and never answers within any bound, as
+ * under the load that stalls a write.
  */
 function keyedDispatch(failing: number): {
   readonly fetchImpl: typeof fetch;
@@ -634,24 +674,22 @@ function keyedDispatch(failing: number): {
   const keys: string[] = [];
   const probes: string[] = [];
   let left = failing;
-  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(input, init);
-    const { pathname } = new URL(request.url);
-    if (pathname === "/healthz") {
-      probes.push(pathname);
-      throw new DOMException("The operation timed out.", "TimeoutError");
-    }
-    const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
-    if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-      keys.push(key ?? "");
-      if (left-- > 0) throw new TypeError("fetch failed");
-    }
-    const answer = await fetch(request);
-    if (key === null) return answer;
-    const headers = new Headers(answer.headers);
-    headers.set(IDEMPOTENCY_KEY_HEADER, key);
-    return new Response(answer.body, { status: answer.status, headers });
-  }) as typeof fetch;
+  const fetchImpl = keyedLayer(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (pathname === "/healthz") {
+        probes.push(pathname);
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }
+      if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
+        keys.push(request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "");
+        if (left-- > 0) throw new TypeError("fetch failed");
+      }
+      return fetch(request);
+    },
+    { judged: () => true }
+  ) as typeof fetch;
   return { fetchImpl, keys, probes };
 }
 
@@ -995,13 +1033,41 @@ describe("the dispatch CLI", () => {
     expect(requests.map((request) => request.path)).toEqual(
       Array(4).fill("/api/v1/agents/ses-1/answers")
     );
-  }, 20_000);
+  });
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);
     expect(code).toBe(2);
     expect(stdout.split("\n")[0]).toBe("dispatch message was not called: 1 problem");
     expect(stdout).toContain("- Example: dispatch message");
+    expect(requests).toEqual([]);
+  });
+
+  // An empty key or id is refused before any request, naming the flag: sent, an empty `--issue`
+  // asked `PATCH /api/v1/issues/`, which no route serves, and came back seven seconds later as a
+  // refusal about a rolling release; an empty `--retract` or `--comment` asked
+  // `POST /api/v1/results//retract` or `POST /api/v1/comments//resolve`, which Dispatch's router
+  // answers with a redirect to the cleaned path, printed as a page that blames the Dispatch URL.
+  test("an empty --issue, --retract or --comment is refused before any request, naming the flag", async () => {
+    for (const [argv, command, flag, noun] of [
+      [
+        ["issue-update", "--issue", "", "--status", "in_progress"],
+        "issue-update",
+        "--issue",
+        "issue",
+      ],
+      [["result", "--retract", "", "--reason", "Wrong commit."], "result", "--retract", "result"],
+      [["resolve-comment", "--comment", ""], "resolve-comment", "--comment", "comment"],
+    ] as const) {
+      const { code, stdout } = await run(argv, omp);
+      expect({ code, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
+        code: 2,
+        lines: [
+          `dispatch ${command} was not called: 1 problem`,
+          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+        ],
+      });
+    }
     expect(requests).toEqual([]);
   });
 
@@ -1155,6 +1221,30 @@ describe("the dispatch CLI", () => {
     expect(code, stdout).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ retract: "res-2", reason: "The run was wrong." });
     expect(requests).toEqual([]);
+  });
+
+  test("dispatch results --project lists each stored result of the commit, one line each, newest first", async () => {
+    const listed = await run(["results", "--project", "ACME", "--commit", SPEC_COMMIT], omp);
+    expect(listed.code, listed.stdout).toBe(0);
+    expect(listed.stdout).toBe(
+      [
+        `Results of ACME at ${SPEC_COMMIT}, newest first:`,
+        `- #42 p-1: fail. Job go-checks, leg linux, run 4242 attempt 2, commit ${SPEC_COMMIT}.`,
+        `- #41 p-1: pass. Job go-checks, no leg, run 4242 attempt 1, commit ${SPEC_COMMIT}.`,
+        "",
+      ].join("\n")
+    );
+
+    const rows = await run(
+      ["results", "--project", "ACME", "--commit", SPEC_COMMIT, "--check", "p-1", "--json"],
+      omp
+    );
+    expect(rows.code, rows.stdout).toBe(0);
+    expect(JSON.parse(rows.stdout)).toEqual(storedSpecResults);
+    expect(specResultQueries).toEqual([
+      `?commit=${SPEC_COMMIT}`,
+      `?commit=${SPEC_COMMIT}&check=p-1`,
+    ]);
   });
 
   // No length check stands between the body and Dispatch: the whole text is posted, and what the
@@ -2286,17 +2376,16 @@ describe("the dispatch CLI", () => {
     ]);
   });
 
-  test("artifact's help says its dry run asks Dispatch how it would store the text, and another command's that it sends nothing", async () => {
+  test("artifact's help prints its spec's own dry-run sentence, and another command's the shared one", async () => {
+    const specs = new Map<string, DispatchToolSpec>(dispatchToolSpecs.map((s) => [s.name, s]));
+    const artifactDryRun = specs.get("dispatch_artifact")?.dryRunHelp;
+    expect(typeof artifactDryRun).toBe("string");
+    expect(artifactDryRun).not.toBe(DRY_RUN_HELP);
+    expect(specs.get("dispatch_message")?.dryRunHelp).toBeUndefined();
     const artifact = await run(["artifact", "--help"], omp);
-    const dryRun = artifact.stdout.slice(artifact.stdout.indexOf("  --dry-run\n")).split("\n");
-    expect(dryRun[0]).toBe("  --dry-run");
-    expect(dryRun[1]).toContain(
-      "it asks Dispatch how it would store the text (POST /api/v1/markdown/round-trip)"
-    );
+    expect(artifact.stdout).toContain(`  --dry-run\n      ${artifactDryRun}\n`);
     const message = await run(["message", "--help"], omp);
-    expect(message.stdout).toContain(
-      "  --dry-run\n      Checks the arguments as the call would, then prints them as JSON and sends nothing.\n"
-    );
+    expect(message.stdout).toContain(`  --dry-run\n      ${DRY_RUN_HELP}\n`);
   });
 
   test("the follow notice is printed once per ask across processes", async () => {
@@ -2318,6 +2407,22 @@ describe("the dispatch CLI", () => {
     const second = await run(message, omp);
     expect(first.stdout).toContain("DSP-1 is still in triage");
     expect(second.stdout).not.toContain("is still in triage");
+  });
+
+  // Every `dispatch` command is a process of its own, and its write whose attempt fails is asked
+  // again under its key on its own: Dispatch's keyed layer answers the repeat from the key, so the
+  // call needs nothing an earlier call saw, and the session's state keeps nothing of the layer.
+  test("a failed write is asked again under its key in a call of its own, and the state keeps nothing of the keyed layer", async () => {
+    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
+    const stalled = keyedDispatch(1);
+    const { code, stdout } = await run(message, omp, "", { fetchImpl: stalled.fetchImpl });
+    expect(code, stdout).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
+    const state = JSON.parse(
+      readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
+    );
+    expect(Object.keys(state).sort()).toEqual(["advice", "follows", "pictures"]);
   });
 
   // Every `dispatch` command is a process of its own and carries nothing of Dispatch's keyed layer
@@ -2348,6 +2453,78 @@ describe("the dispatch CLI", () => {
     expect(stalled.probes).toEqual([]);
     expect(JSON.parse(readFileSync(file, "utf-8"))).not.toHaveProperty("keyedLayer");
   });
+
+  // A cache or a front that answers a write by its URL with another call's stored answer gives a
+  // 2xx that names no key back, and Dispatch's keyed layer names the key back on every answer it
+  // gives a keyed write: such a 2xx is never the call's answer, whatever it holds, so the command
+  // says the write may or may not have taken effect, and exits 1. At 7735fa52b4 the command printed
+  // such an answer as this call's write ("Created ACME-7: Another call's title", "Posted comment
+  // <another call's id>", exit 0) while nothing of this call was stored. The stand-in answers each
+  // route with its least declared answer, and the write with another call's, naming no key back.
+  for (const { argv, route, other, shown } of [
+    {
+      argv: ["issue", "--project", "ACME", "--title", "This call's title", "--force"],
+      route: "POST /api/v1/issues",
+      other: { key: "ACME-7", project: "ACME", title: "Another call's title" },
+      shown: "Another call's title",
+    },
+    {
+      argv: ["comment", "--issue", "DSP-1", "--body", "This call's body"],
+      route: "POST /api/v1/issues/DSP-1/comments",
+      other: {
+        id: "0bbbbbbb-0000-4000-8000-000000000007",
+        issue_key: "DSP-1",
+        body: "Another call's body",
+      },
+      shown: "0bbbbbbb-0000-4000-8000-000000000007",
+    },
+  ]) {
+    test(`dispatch ${argv[0]} prints another call's stored answer, naming no key back, as no answer of its own`, async () => {
+      const writes: string[] = [];
+      const cache = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        async fetch(request) {
+          await request.arrayBuffer();
+          const { pathname } = new URL(request.url);
+          const asked = `${request.method} ${pathname}`;
+          let answer: { status: number; body: unknown } | undefined;
+          try {
+            answer = leastAnswerFor(request.method, pathname);
+          } catch {
+            answer = { status: 200, body: [] };
+          }
+          if (answer === undefined) {
+            return Response.json(
+              { code: "NOT_FOUND", error: `no route for ${asked}` },
+              { status: 404 }
+            );
+          }
+          if (asked !== route) return Response.json(answer.body, { status: answer.status });
+          writes.push(asked);
+          return Response.json(
+            { ...(answer.body as Record<string, unknown>), ...other },
+            { status: answer.status }
+          );
+        },
+      });
+      try {
+        const { code, stdout, stderr } = await run(argv, {
+          ...omp,
+          DISPATCH_URL: `http://127.0.0.1:${cache.port}`,
+        });
+        const out = `${stdout}${stderr}`;
+        expect({
+          asked: writes.length > 0,
+          code,
+          printsTheOtherCall: out.includes(shown),
+          unknown: out.includes("may or may not"),
+        }).toEqual({ asked: true, code: 1, printsTheOtherCall: false, unknown: true });
+      } finally {
+        cache.stop(true);
+      }
+    }, 30_000);
+  }
 
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
@@ -2882,6 +3059,26 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // Sent, an empty `--project` of a search searched every project, and said nothing of it. An
+  // empty variable of a step is how one is written, so it is refused before any request, naming
+  // the flag; a search of every project leaves the flag out.
+  test("dispatch search refuses an empty --project, naming the flag, and searches every project without one", async () => {
+    const empty = await run(["search", "--query", "broker token", "--project", ""], omp);
+    expect({ code: empty.code, lines: empty.stdout.split("\n").slice(0, 2) }).toEqual({
+      code: 2,
+      lines: [
+        "dispatch search was not called: 1 problem",
+        "- --project is empty, so the call names no project: a variable that gives it may be empty or unset",
+      ],
+    });
+    expect(requests).toEqual([]);
+    const every = await run(["search", "--query", "broker token"], omp);
+    expect({ code: every.code, searched: searchQueries }).toEqual({
+      code: 0,
+      searched: ["?q=broker+token"],
+    });
+  });
+
   test("dispatch projects prints each project's key and name, keys first", async () => {
     const { code, stdout } = await run(["projects"], omp);
     expect(code).toBe(0);
@@ -3086,6 +3283,7 @@ describe("the dispatch entry as its own process", () => {
     const child = Bun.spawn([process.execPath, entry, ...argv], {
       cwd: stateDir,
       env: {
+        ...CHILD_BUN,
         PATH: process.env.PATH,
         HOME: stateDir,
         DISPATCH_STATE_DIR: stateDir,
@@ -3097,11 +3295,14 @@ describe("the dispatch entry as its own process", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
+    const [stdout, stderr, code] = await settled(
+      `the dispatch entry's exit and output for ${argv[0]}`,
+      Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+    );
     return { code, stdout, stderr };
   }
 
@@ -3110,11 +3311,10 @@ describe("the dispatch entry as its own process", () => {
   // usage error"). The browser row this replaced asserted 1 until cybermonklabs/legion#2781 made
   // the codes distinct.
   //
-  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
-  // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
-  // Measured in a 2-CPU pod: 0.37 s idle; under 16 busy loops (8 x nproc), 3.98 s at most over 23
-  // whole-suite runs and 2.98 s with this file alone, past half that default. It fires only if the
-  // child never exits.
+  // The row runs the entry as a child process, and bun's unwritten 5,000 ms per-test default is a
+  // limit on that work rather than on a hang. Measured in a 2-CPU pod: 0.37 s idle; under 16 busy
+  // loops (8 x nproc), 3.98 s at most over 23 whole-suite runs and 2.98 s with this file alone,
+  // past half that default. A child that never exits fails the wait for it by name.
   test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
     writeFileSync(join(stateDir, "rows.jsonl"), rows);
 
@@ -3132,13 +3332,20 @@ describe("the dispatch entry as its own process", () => {
     expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
     expect(stdout).toContain("--path <file>");
     expect(requests).toEqual([]);
-  }, 30_000);
+  });
 
-  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process twice
-  // over, once per command, and bun's unwritten 5,000 ms per-test default is a limit on that work
-  // rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out at
-  // 5,261.76 ms, 1 run of 3 with this file alone, where it costs 0.70 s idle and 6.81 s at most
-  // over 23 whole-suite runs under those loops. It fires only if a child never exits.
+  // The row's folder is the child's HOME, and the file's afterEach removes it under Bun's 5 s hook
+  // limit, which no row's own limit covers: what the child leaves there is all that removal reads.
+  test("leaves no Bun cache in the row's folder, which is its HOME", async () => {
+    const { code } = await spawnDispatch(["projects"]);
+    expect({ code, cache: existsSync(join(stateDir, ".bun")) }).toEqual({ code: 0, cache: false });
+  });
+
+  // The row runs the entry as a child process twice over, once per command, and bun's unwritten
+  // 5,000 ms per-test default is a limit on that work rather than on a hang. Under 16 busy loops
+  // (8 x nproc) in a 2-CPU pod it timed out at 5,261.76 ms, 1 run of 3 with this file alone, where
+  // it costs 0.70 s idle and 6.81 s at most over 23 whole-suite runs under those loops. A child
+  // that never exits fails the wait for it by name.
   test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
     const refusal = printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
     const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
@@ -3154,15 +3361,14 @@ describe("the dispatch entry as its own process", () => {
       expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
       expect(stdout.trim(), command).toBe(refusal);
     }
-  }, 30_000);
+  });
 
   // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
   // INFRA-1201), and what the writer reads is the whole of the server's message, which says
   // where the question belongs. The refusal now opens with the server's code, because
   // `skill://dispatch` has every agent branch on the code and the command printed none
   // (dispatch://INFRA-1523); the message that INFRA-1201's row was written for follows it
-  // unchanged. The 30 s limit is the hang guard the row above carries, for the reason written
-  // there.
+  // unchanged. It runs the entry twice over too, as the row above does.
   test("exits nonzero on the server's decision-block refusal, printing its code and its whole message", async () => {
     const refusal = `DECISION_BLOCK_IN_BODY: ${decisionBlockRefusal(2)}`;
     const body = 'The mirror is behind.\n\n:::ask{urgency="med"}\nWhich region first?\n:::';
@@ -3179,7 +3385,7 @@ describe("the dispatch entry as its own process", () => {
       expect(stdout.trim(), command).toBe(refusal);
       expect(stdout, command).toContain(decisionBlockRefusal(2));
     }
-  }, 30_000);
+  });
 });
 
 describe("the dispatch CLI's envoy.json", () => {
@@ -3666,18 +3872,20 @@ describe("the dispatch CLI's subscription note", () => {
     expect(requests.some((request) => request.path === "/api/v1/issues/DSP-1/messages")).toBe(true);
   });
 
-  // A write that landed before its answer was lost (409 KEY_COMMITTED) is done: the call succeeds,
-  // and its one line says the write was made and to read it back, since there is nothing to print.
+  // A write that landed before its answer was lost (409 KEY_COMMITTED, naming its key back as the
+  // keyed layer does) is done: the call succeeds, and its one line says the write was made and to
+  // read it back, since there is nothing to print.
   test("a write answered KEY_COMMITTED exits 0 with one line saying to read it back", async () => {
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      if (String(input).endsWith("/api/v1/issues/DSP-1/messages")) {
-        return Response.json(
-          { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-          { status: 409 }
-        );
-      }
-      return fetch(input, init);
-    }) as typeof fetch;
+    const fetchImpl = keyedLayer(
+      async (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).endsWith("/api/v1/issues/DSP-1/messages")
+          ? Response.json(
+              { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
+              { status: 409 }
+            )
+          : fetch(input, init),
+      { judged: (response) => response.ok || response.status === 409 }
+    ) as typeof fetch;
     let stdout = "";
     const code = await runDispatchCli(
       ["message", "--issue", "DSP-1", "--body", "hello"],
@@ -3712,7 +3920,8 @@ describe("the dispatch CLI's subscription note", () => {
         { status, headers: { "Idempotency-Replayed": "?1" } }
       );
     const checkKeys: (string | null)[] = [];
-    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    // Behind Dispatch's keyed layer: each replay names its request's key back, as Dispatch's do.
+    const fetchImpl = keyedLayer(async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       const { pathname } = new URL(request.url);
       if (request.method === "POST" && pathname === "/api/v1/issues") return notKept(201);
@@ -3765,8 +3974,9 @@ describe("the dispatch CLI's subscription note", () => {
         href: "/issues/DSP-9",
       },
     ];
+    // Behind Dispatch's keyed layer: the create's 201 names the write's key back.
     const creating = (refuse: boolean) =>
-      (async (input: RequestInfo | URL, init?: RequestInit) => {
+      keyedLayer(async (input: RequestInfo | URL, init?: RequestInit) => {
         const { pathname } = new URL(String(input));
         if (pathname === "/api/v1/projects/DSP/architecture-sources") {
           return Response.json({ sources: [] });
@@ -3988,6 +4198,16 @@ describe("cliRefusals", () => {
       expect(cliRefusals(stdout)).toEqual([]);
     }
     expect(cliRefusals("It said: dispatch message was not called: 1 problem")).toEqual([]);
+  });
+
+  test("a host the command does not accept is refused by name, with the three it accepts", async () => {
+    const { code, stdout } = await run(["projects"], {
+      DISPATCH_HOST: "opencode",
+      DISPATCH_SESSION_ID: "ses-1",
+    });
+    expect(code).toBe(2);
+    expect(stdout).toBe('dispatch: DISPATCH_HOST is "opencode", not omp, claude or codex.\n');
+    expect(requests).toEqual([]);
   });
 });
 

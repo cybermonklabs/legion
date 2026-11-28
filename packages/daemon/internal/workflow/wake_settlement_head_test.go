@@ -40,8 +40,9 @@ func noWake(t *testing.T, rig wakeRig, what string) {
 //
 //   - a settlement of head0, an old head, queues no start row and records no resume;
 //   - a settlement of head1 then wakes the implementer once;
-//   - with the pod released again after that wake (a new release, the claim released once more),
-//     the same settlement delivered again wakes nobody, since it applies nothing;
+//   - with the pod back and released again after that wake (its start run, a new release, the
+//     claim released once more), the same settlement delivered again wakes nobody, since it
+//     applies nothing;
 //   - and a settlement of head1 at a later generation then wakes the implementer a second time,
 //     so the release did let a wake through and the redelivery was turned away by the rule alone.
 //
@@ -84,16 +85,30 @@ func TestWakeOnSettlementOfAnOldHeadWakesNobody(t *testing.T) {
 			rig.apply("head", settlement("head1", "build"))
 			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1", "build")
 
-			// The pod comes back and is released again: a release that suspends the implementer,
-			// recorded after the wake's resume, which the next wake's take closes as the resume of
-			// a pod gone away (wakeReleased), and the claim released once more.
+			// The pod comes back and is released again. The first wake's start is what brings it
+			// back, and the outbox deletes that start once it has run it (outboxRan), so the pod is
+			// back only after its start ran. The test runs it here because a wake of a role whose
+			// start is still queued takes nothing (wakeReleased, Pods.StartQueued), a gate this
+			// pull request added, which main's wake did not read. Left queued, that start would
+			// turn the later settlement away, and it would turn the redelivery away whatever the
+			// rule says. ran is that start, which the assertions below count with the ones the
+			// outbox still holds. Then a release that suspends the implementer, recorded after
+			// the wake's resume, which the next wake's take closes as the resume of a pod gone
+			// away (wakeReleased), and the claim released once more.
+			ran := wakeStarts(t, rig.pool)
+			outboxRan(t, rig.pool)
 			seedRelease(t, rig.pool, "implementer", wakeAt.Add(time.Minute))
 			claimSuspendedBy(t, rig.pool, claim.RoleImplementer, "released")
 			rig.apply("head-again", settlement("head1", "build"))
-			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1", "build")
+			if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
+				t.Fatalf("supervise start rows after the settlement of head1 delivered again = %+v, want none: a redelivery applies nothing", starts)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 || resumes[0] != [2]string{string(claim.RoleImplementer), pods.WakeChecks} {
+				t.Fatalf("pod resumes after the settlement of head1 delivered again = %v, want the first wake's alone", resumes)
+			}
 
 			rig.apply("head-later", laterSettlement("head1", 2))
-			if starts := wakeStarts(t, rig.pool); len(starts) != 2 || starts[1].Role != claim.RoleImplementer || !strings.Contains(starts[1].Task, "head1") {
+			if starts := append(ran, wakeStarts(t, rig.pool)...); len(starts) != 2 || starts[1].Role != claim.RoleImplementer || !strings.Contains(starts[1].Task, "head1") {
 				t.Fatalf("supervise start rows after a later settlement of head1 = %+v, want the first wake's and a second of the implementer naming head1", starts)
 			}
 			if resumes := wakeResumes(t, rig.pool); len(resumes) != 2 || resumes[1] != [2]string{string(claim.RoleImplementer), pods.WakeChecks} {

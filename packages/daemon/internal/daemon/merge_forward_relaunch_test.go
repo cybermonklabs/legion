@@ -83,7 +83,7 @@ func wokenByTheAsk(t *testing.T) (*outbox, *store.Pool, *holderPublisher, *super
 	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	publisher.setAbsent(notify.RoleTopicPrefix + string(token))
-	machine := releasedClaim(t, sup, claim.RoleImplementer)
+	machine := recordedReleasedClaim(t, runner, claim.RoleImplementer)
 	sup.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
 	// The listener resolves the role to the session the claim records, as it does once that
 	// session claimed its role.

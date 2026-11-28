@@ -234,6 +234,14 @@ const dispatchFrameSchemaJSON = `{
                 "deleted_at": {
                   "type": "string"
                 },
+                "quote": {
+                  "type": "string"
+                },
+                "occurrence": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
                 "deleted_by": {
                   "type": "object",
                   "properties": {
@@ -723,6 +731,14 @@ const dispatchFrameSchemaJSON = `{
                 },
                 "deleted_at": {
                   "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                },
+                "occurrence": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
                 },
                 "deleted_by": {
                   "type": "object",

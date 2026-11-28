@@ -56,7 +56,7 @@ jobs:
         leg: [1, 2, 3, 4, 5]
     # The unit step's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 2 minutes of setup, then the unit step's own timeout-minutes of
-    # 30 (its comment below says why 30), so 35.
+    # 30 (its comment below says why 30), then the connections report's own 1, within 35.
     timeout-minutes: 35
     services:
       postgres:
@@ -127,6 +127,18 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
+      # The unit step below runs the leg's packages in one go test, several test binaries at once
+      # against this one service, and some of them run their own tests several at a time, each
+      # test on a database and pools of its own, so this samples the service's client connections
+      # every 2 s from here on, and the step after the unit step prints the peak against
+      # max_connections: a change that makes the step open more at once shows there before it
+      # shows as a 53300 refusal. Postgres's own background processes are not counted, and each
+      # sample counts one connection of the sampler's own. The loop runs in the background past
+      # its own step, until the runner ends the job.
+      - name: Sample the service's connections while the unit tests run
+        run: |
+          # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
+          nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
       # Each leg runs the packages .github/go-legs.yaml lists for its number under envoy-go, through
       # database-skips.sh: every package of the module but those of the race lane's three jobs,
       # which run them under the detector, and internal/integration, which envoy-go-natslive's
@@ -176,11 +188,27 @@ jobs:
         timeout-minutes: 30
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r scripts/database-skips.sh --timeout 20m --skip '^(TestABatchCutOffInFlightKeepsItsOrder|TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestIdentity|TestNoSecretFormAsksTheBrokerForACredential|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestSyncDeadlineIsRecordedOnTheRow|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --count-table
+          python3 ../../.github/scripts/go_legs.py packages/envoy envoy-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r scripts/database-skips.sh --timeout 20m --skip '^(TestABatchCutOffInFlightKeepsItsOrder|TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|TestAProcessReportsASilentNATSCutWithinSeconds|TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|TestAStalledListingFailsWithinTheReadTimeout|TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites|TestAStandbyTakesAFreeHoldWithNoNotification|TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce|TestAWriteIsEmbeddedOnItsNotification|TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded|TestAnOutboxThatLosesNATSReleasesThePublisher|TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther|TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering|TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown|TestEverySecretFormNamesTheSourceItUses|TestExecLearnsOfAGrantAfterAFullHold|TestExecLearnsOfTheGrantWithinASecond|TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken|TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering|TestHealthzAnswersWhilePostgresStopsAnswering|TestHoldExpiryMatchesTheDatabaseClock|TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail|TestIdentity|TestNoSecretFormAsksTheBrokerForACredential|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds|TestOnlyOneOutboxPublishesAtATime|TestReserveTokensSharesItsBudgetAcrossConnections|TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget|TestSamplerHeapReadDelaysNoSample|TestScanPassReturnsWhenThePendingRowsFallDue|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestSyncDeadlineIsRecordedOnTheRow|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheIdentityStepsRunOnceTheQueueFirstEmbeds|TestTheListenerReplacesAHalfOpenConnection|TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop|TestTheOutboxDoesNotScanWhileIdle|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --count-table
         working-directory: packages/envoy
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
+      - name: Report the service's peak connections
+        if: always()
+        # It only measures, so it may neither fail nor hold the job: each read falls back to
+        # UNKNOWN; the read of max_connections gets TERM after 10 s and KILL 5 s later; and a step
+        # that still reaches its minute shows red without failing the job (continue-on-error).
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          allowed=$(timeout -k 5 10 docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "show max_connections" 2>/dev/null) || allowed=""
+          peak=$(sort -n "$RUNNER_TEMP/pg-connections.txt" 2>/dev/null | tail -n 1) || peak=""
+          samples=$(wc -l 2>/dev/null < "$RUNNER_TEMP/pg-connections.txt") || samples=0
+          if [ -n "$peak" ]; then
+            echo "pg connections: the peak of ${peak} over ${samples} samples, max_connections ${allowed:-UNKNOWN}"
+          else
+            echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed:-UNKNOWN})"
+          fi
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
@@ -287,7 +315,6 @@ jobs:
           go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStandbyTakesAFreeHoldWithNoNotification|TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds)$' ./internal/dispatch/textversions/
           go test -count=1 -parallel 1 -timeout 10m -run '^(TestAStalledListingFailsWithinTheReadTimeout)$' ./internal/legionagents/
           go test -count=1 -parallel 1 -timeout 10m -run '^(TestTheListenerReplacesAHalfOpenConnection)$' ./internal/pglisten/
-          go test -count=1 -parallel 1 -timeout 10m -run '^(TestABucketWaitWhoseLookupsAreHeldFailsByNameInTime)$' ./internal/testnats/
           go test -count=1 -parallel 1 -timeout 10m -run '^(TestSamplerHeapReadDelaysNoSample)$' ./loadtest/
         working-directory: packages/envoy
       # The rows of the plain run the race build cannot make that measure time, alone for the same
@@ -324,9 +351,10 @@ jobs:
   envoy-go-race-impossible:
     name: envoy-go (race-impossible)
     runs-on: ubuntu-24.04-arm
-    # The step's two lines run one after another, each under its own 10-minute -timeout, after
-    # about 2 minutes of setup, so 25.
-    timeout-minutes: 25
+    # The step's three lines run one after another, each under its own 10-minute -timeout, 30
+    # minutes at most after about 2 of setup and the pg_stat_statements Postgres's own
+    # timeout-minutes of 3, so 35.
+    timeout-minutes: 35
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -345,7 +373,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 35 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
@@ -381,14 +409,48 @@ jobs:
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
+      # The priorities read's four tests over its corpus of production's counts run on a Postgres
+      # that preloads pg_stat_statements (PG_STAT_STATEMENTS_TESTS in
+      # .github/scripts/ci_job_reads.py): the bound's test reads each statement's database time from
+      # it, and INFRA-5791's checks run the four on such a server. A server loads that module only
+      # at its start, and the service above starts on the one command line
+      # .github/scripts/postgres-service-settings.sh --command prints, which check-workflow-files.sh's
+      # rule 7 holds every Postgres service to and which preloads nothing, so this step starts one
+      # more Postgres, from the service's own image, which the runner already holds, on port 5433,
+      # with the settings those checks name, and holds it to preloading the module before the step
+      # below, "Test what the race build cannot run at all or at full size", runs the four on it.
+      # Its 3 minutes bound the seconds a server takes to start.
+      - name: Start a Postgres that preloads pg_stat_statements
+        timeout-minutes: 3
+        run: |
+          docker run -d --name pg-stat-statements -e POSTGRES_PASSWORD=ci -p 5433:5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 -c shared_preload_libraries=pg_stat_statements -c max_connections=200
+          for _ in $(seq 1 60); do docker exec pg-stat-statements pg_isready -q -U postgres -h 127.0.0.1 && break; sleep 2; done
+          docker exec pg-stat-statements psql -U postgres -h 127.0.0.1 -Atc 'show shared_preload_libraries' | grep -qx pg_stat_statements
       # The tests the race detector makes impossible that measure no time, which the race job of
       # each of these packages therefore cannot make, so envoy-go keeps a plain run of exactly
       # them: internal/bus counts HoldsSeed's allocations, which the race runtime's own
-      # allocations would be counted into; and the documents package measures the heap a room
-      # keeps, which the detector's shadow memory and instrumentation move. Those are out of the
-      # race build altogether (//go:build !race), and the two render-reuse storms run fewer seeds
-      # and fewer edits under it (raceEnabled), so this is their full-size run. The documents
-      # package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
+      # allocations would be counted into; the API's priorities read's four tests run over a corpus
+      # of production's counts (13,298 issues, 678,943 events), whose seed is heavy work, and the
+      # bound's test prints read times, which the detector stretches; and the documents package
+      # measures the heap a room keeps, which the detector's shadow memory and instrumentation move.
+      # Those are out of the race build altogether (//go:build !race), and the two render-reuse
+      # storms run fewer seeds and fewer edits under it (raceEnabled), so this is their full-size
+      # run. The API's line runs the four on the Postgres the step above starts
+      # (DISPATCH_TEST_DATABASE_URL): the bound's test reads each statement's database time from
+      # pg_stat_statements, which a server loads only at its start, and the service starts on the
+      # one command line every Postgres service is held to, which preloads nothing. The four assert
+      # no time: the bound's test holds the answers of the reads it times and their shape under
+      # each plan (the statements, the round trips and the event probes) and prints their times,
+      # which c-both-forms' step, outside CI, holds to the bound, and the other three hold answers,
+      # walks and buffer ratios on clones of the corpus
+      # the first of them builds once per test binary (storetest.OpenFrom),
+      # so they run in its go test, on the same server. On a four-CPU build pod (c4d-highmem-8,
+      # INFRA-5791), the bound's test (TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan) took
+      # 47.1 s for the corpus's build and its 840 reads,
+      # TestThePrioritiesReadKeepsItsPlansWithAProjectNamed 1.4 s,
+      # TestThePrioritiesReadWalksIssuesOnceOnTheCorpus 1.3 s and
+      # TestThePrioritiesReadAnswersAsTheMergeBaseAnswers 4.5 s, 54.4 s for the package's run. The
+      # documents package's line runs under Go's cleanup detector (GODEBUG=checkfinalizers=1), as
       # envoy-go-race-docs' run of the rest of it does, since it is the one package that registers
       # a cleanup (ci_job_reads.py's CLEANUP_DETECTOR), and with -v, so its TestMain's count of
       # services left alive prints. The rows of that run that measure time (the xid window tests,
@@ -405,6 +467,7 @@ jobs:
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
+          DISPATCH_TEST_DATABASE_URL='postgres://postgres:ci@localhost:5433/postgres?sslmode=disable' go test -count=1 -timeout 10m -run '^(TestThePrioritiesReadAnswersAsTheMergeBaseAnswers|TestThePrioritiesReadAnswersWithinItsBoundOnEveryPlan|TestThePrioritiesReadKeepsItsPlansWithAProjectNamed|TestThePrioritiesReadWalksIssuesOnceOnTheCorpus)$' ./internal/dispatch/api
           GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       - name: Report ci-ok when this job decides a merge-group run
