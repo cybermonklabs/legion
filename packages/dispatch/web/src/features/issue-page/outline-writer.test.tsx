@@ -12,7 +12,6 @@ import {
   newOwnNode,
   type OutlineWriter,
   OutlineWriterProvider,
-  type ReplyItem,
   useOutlineWriter,
 } from "./outline-writer";
 
@@ -84,15 +83,13 @@ interface WriterReads {
 }
 
 /** The writer of issue CORE-1 over `comments` and `messages` and the asks `reads` says, held
- *  under the keys the tree reads them by, with the query client that holds them, drawn with
- *  Conversation open until `threads` draws it again with Threads open or shut. */
+ *  under the keys the tree reads them by, with the query client that holds them. */
 function drawWriter(
   comments: readonly Comment[],
   messages: readonly MessageRead[],
   reads: WriterReads = {}
 ): {
   readonly client: QueryClient;
-  readonly threads: (open: boolean) => void;
   readonly unmount: () => void;
   readonly writer: () => OutlineWriter | undefined;
 } {
@@ -109,17 +106,15 @@ function drawWriter(
     held.writer = useOutlineWriter();
     return null;
   }
-  const drawn = (threads: boolean) => (
+  const view = render(
     <QueryClientProvider client={client}>
-      <OutlineWriterProvider issueKey="CORE-1" openAsks={openAsks} threads={threads}>
+      <OutlineWriterProvider issueKey="CORE-1" openAsks={openAsks}>
         <Capture />
       </OutlineWriterProvider>
     </QueryClientProvider>
   );
-  const view = render(drawn(false));
   return {
     client,
-    threads: (open) => view.rerender(drawn(open)),
     unmount: () => {
       view.unmount();
       client.clear();
@@ -232,55 +227,6 @@ test("a reply to a turn of the Legion daemon's message thread lands in the histo
         `the reply to ${turn.id}, a turn of the daemon's thread, did not land in the history`
       ).toMatchObject({ in: "history", under: { id: turn.id } });
     }
-  } finally {
-    page.unmount();
-  }
-});
-
-// Decision 127 (c-box), the half that waited on INFRA-3948: Threads mounts no box at the foot
-// (`slots/foot.tsx`), so Details' Reply on a turn of its history and its facts' Edit on the
-// reader's own comment set no target there, which Conversation would draw once the reader went
-// back to it. Under Conversation each sets its target, and a target the line held before Threads
-// opened stays held through Threads, whatever is pressed there.
-test("under Threads a Reply and an Edit set no target of the box at the foot, and under Conversation they do", () => {
-  const own = {
-    anchor: null,
-    ask_id: null,
-    author: { id: "alice", kind: "user" },
-    body: "The reader's own words.",
-    id: "c-own",
-    reply_to: null,
-  } as Comment;
-  const bob: Actor = { id: "bob", kind: "user" };
-  const turn: ReplyItem = { author: bob, id: "c-turn", kind: "comment", text: "A turn." };
-  const page = drawWriter([own, { ...own, author: bob, body: turn.text, id: turn.id }], []);
-  const edited = { body: own.body, id: own.id };
-  try {
-    page.threads(true);
-    act(() => page.writer()?.replyTo(turn));
-    expect(page.writer()?.reply, "a Reply under Threads set the line to reply").toBeNull();
-    act(() => page.writer()?.edit(own.id, own.body));
-    expect(page.writer()?.editing, "an Edit under Threads set the line to edit").toBeUndefined();
-
-    page.threads(false);
-    act(() => page.writer()?.replyTo(turn));
-    expect(
-      page.writer()?.reply,
-      "a Reply under Conversation did not set the line to reply"
-    ).toMatchObject({ id: turn.id, parentKind: "comment" });
-    act(() => page.writer()?.edit(own.id, own.body));
-    expect(
-      page.writer()?.editing,
-      "an Edit under Conversation did not set the line to edit"
-    ).toEqual(edited);
-
-    page.threads(true);
-    act(() => page.writer()?.replyTo(turn));
-    expect(
-      page.writer()?.editing,
-      "the edit held before Threads opened was not held through a Reply there"
-    ).toEqual(edited);
-    expect(page.writer()?.reply, "a Reply under Threads set the line to reply").toBeNull();
   } finally {
     page.unmount();
   }
