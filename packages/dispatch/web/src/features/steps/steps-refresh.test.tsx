@@ -79,6 +79,24 @@ function renderLiveTab(read: () => IssueSteps | Promise<IssueSteps>, shown = tru
   };
 }
 
+/** The header of each column whose cell reads `text`, over every row of the task `default`'s
+ *  table. A run that has not ended reads `running` under Result and under Answered by, so a third
+ *  such cell, or one under another column, reads differently. */
+function columnsReading(text: string): string[] {
+  const table = screen.getByRole("table", { name: "Steps of task default" });
+  const headers = within(table)
+    .getAllByRole("columnheader")
+    .map((header) => header.textContent ?? "");
+  return within(table)
+    .getAllByRole("row")
+    .slice(1)
+    .flatMap((row) =>
+      within(row)
+        .getAllByRole("cell")
+        .flatMap((cell, index) => (cell.textContent === text ? [headers[index] ?? ""] : []))
+    );
+}
+
 // An event of the issue that comes with a phase moving redraws the tab with no reload: the
 // refresh is the event feed's own, so the read it reaches must be the very query the tab renders,
 // however that query names its key. The rows are read at 1.5 s: the event's read waits out the
@@ -100,7 +118,7 @@ test("an event of the issue redraws the Steps tab's rows with what the records n
     try {
       await tick(0);
       expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
-      expect(screen.getByRole("cell", { name: "running" })).toBeDefined();
+      expect(columnsReading("running")).toEqual(["Result", "Answered by"]);
 
       answer = {
         issue: "CORE-1",
@@ -309,7 +327,7 @@ test("a read still out at the next deadline lands and is drawn, and the deadline
         ],
       });
       await tick(0);
-      expect(screen.getByRole("cell", { name: "running" })).toBeDefined();
+      expect(columnsReading("running")).toEqual(["Result", "Answered by"]);
 
       await tick(100, 100);
       const reads = tab.fetchedAt.slice(before);

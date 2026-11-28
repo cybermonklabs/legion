@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // armTakeover sets deps's holdRead hook to make another process the publisher hold's holder
@@ -83,7 +84,7 @@ func TestATakeoverOfThePublisherHoldWaitsForAnOpenExpiryRecord(t *testing.T) {
 		var waiting bool
 		if err := rig.database.Pool.QueryRow(ctx, `
 			select exists (
-				select from pg_stat_activity where pid = $1 and wait_event_type = 'Lock'
+				select from pg_stat_activity where pid = $1 and `+lockwaittest.Waiting+`
 				and $2 = any(pg_blocking_pids(pid))
 			)
 		`, taker.pid.Load(), record.pid.Load()).Scan(&waiting); err != nil {

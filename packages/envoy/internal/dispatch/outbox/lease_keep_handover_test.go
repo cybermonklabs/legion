@@ -117,9 +117,9 @@ func startKeepHandoverRow(t *testing.T, name string, kept int) *keepHandoverRow 
 
 // A holder whose NATS connection is cut, or goes silent - still connected, nothing answering -
 // while a scan batch's handover behind a keep reads the role's kept lane gives the publisher hold
-// up for NATS lost. The kept-lane read has probeTimeout to finish. A cut invalidates the pinned
-// window immediately; for a silence, the failed read is followed by a flush probe with its own
-// probeTimeout. Neither path can send a second keep while the first keep's handover is failing.
+// up for NATS lost. The kept-lane read has probeTimeout to finish. If the pinned window has
+// heard of a cut, the probe refuses it at once; otherwise it can wait for its flush deadline,
+// as it does for a silence. Neither path can send a second keep while the first handover fails.
 // The process whose NATS still works takes over and publishes what was written after the loss.
 //
 // Not parallel: it swaps the default logger (logtest.SetDefault).
@@ -128,7 +128,7 @@ func TestAnOutboxThatLosesNATSInAKeepsHandoverGivesThePublisherToTheOther(t *tes
 		row := startKeepHandoverRow(t, "cut", 1)
 		row.proxy.Cut()
 		waitFor(t, "the cut process's client reporting itself disconnected", func() bool { return !row.client.Connected() })
-		row.endKeptLaneRead(t)
+		row.finishCutProbe(t, row.endKeptLaneRead(t))
 		event := row.publishedAfter(t, "a cut")
 		requireTakenOverAfterCut(t, row.recorder, row.held, row.working, event)
 	})
@@ -140,6 +140,31 @@ func TestAnOutboxThatLosesNATSInAKeepsHandoverGivesThePublisherToTheOther(t *tes
 		row := startKeepHandoverRow(t, "silent", 2)
 		row.silenced(t)
 	})
+}
+
+// finishCutProbe waits for either result of probing the pinned window. Connected can report the
+// cut before the window's life ends. In that order the probe enters a flush on the reconnecting
+// connection, so the test must also drive that flush's deadline.
+func (r *keepHandoverRow) finishCutProbe(t *testing.T, readEnd time.Time) {
+	t.Helper()
+	fake := r.probes.fake
+	probeEnd := readEnd.Add(probeTimeout)
+	// The cut read can return as soon as its gate opens, one tick before readEnd, or at readEnd.
+	earlyProbeEnd := probeEnd.Add(-time.Nanosecond)
+	var flushEnd time.Time
+	testwait.Until(t, "the cut handover releasing the hold or arming its probe flush", func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		for _, at := range armed {
+			if at.Equal(probeEnd) || at.Equal(earlyProbeEnd) {
+				flushEnd = at
+				return armed, true
+			}
+		}
+		return armed, r.held.outbox.hold.Load() == nil
+	})
+	if !flushEnd.IsZero() {
+		fake.Set(flushEnd)
+	}
 }
 
 // silenced drives the kept-lane read and the follow-up probe, then checks that only the

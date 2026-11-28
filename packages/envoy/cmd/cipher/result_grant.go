@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -121,10 +122,15 @@ func cmdResultGrant(args []string, stdout, stderr io.Writer) int {
 	}
 	// The command gets the placeholder and no identity of the run's own: buildChildEnv drops
 	// every AGENT_SECRETS_* variable but sessionIdentityVars, AGENT_SECRETS_MACHINE_IDENTITY
-	// among them, which would let an `agent-secrets` the command runs trade the run's token again.
-	// It is released no value, so the trust decided and written is its inherited environment's,
-	// as the exec form decides it (prepareProxyTrustForCommand).
-	environ := os.Environ()
+	// among them, which would let an `agent-secrets` the command runs trade the run's token again,
+	// and GitHub's OIDC token request is dropped here (oidcRequestVars), with which the command could
+	// ask GitHub for the run's token itself. It is released no value, so the trust decided and
+	// written is its inherited environment's, as the exec form decides it
+	// (prepareProxyTrustForCommand).
+	environ := slices.DeleteFunc(os.Environ(), func(variable string) bool {
+		name, _, _ := strings.Cut(variable, "=")
+		return slices.Contains(oidcRequestVars, name)
+	})
 	files, err := prepareProxyTrustForCommand(environ, nil, release, grant.GrantID, &grant.ExpiresAt, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets result-grant: %s\n", redact.OneLine(err.Error()))
@@ -141,6 +147,14 @@ func cmdResultGrant(args []string, stdout, stderr io.Writer) int {
 	}
 	return 0
 }
+
+// oidcRequestVars are GitHub's OIDC token request, the URL and the bearer with which a job that
+// holds `id-token: write` asks GitHub for the run's token. cmdResultGrant reads them to prove the
+// run (cipherclient.MachineIdentity) and its command gets neither: the command writes with the
+// placeholder alone, and with them it could ask GitHub for the run's token and trade it at the
+// broker for a grant of its own. The exec form's child keeps them, since a command run there, such
+// as a signer of the job's own, may ask GitHub for a token.
+var oidcRequestVars = []string{cipherclient.ActionsIDTokenRequestURLVar, cipherclient.ActionsIDTokenRequestTokenVar}
 
 // errNotAWorkflowRun is runIdentity's refusal of a token the identity answered under another type
 // than a GitHub workflow run's.
