@@ -181,8 +181,10 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
+	// The moment of the rows' stamps, the lists and the pass below, read once.
+	now := time.Now()
 	// The row stands at an older head, last checked ten minutes ago.
-	stale := time.Now().Add(-10 * time.Minute)
+	stale := now.Add(-10 * time.Minute)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 42, HeadSHA: "1111111111111111111111111111111111111111",
 		HeadRef: "legion/HEAD-1", BaseRef: "main", State: "open", CheckedAt: &stale,
@@ -190,14 +192,14 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		t.Fatalf("store the stale head: %v", err)
 	}
 	// A row checked just now is not in the batch.
-	fresh := time.Now()
+	fresh := now
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 43, HeadSHA: "4444444444444444444444444444444444444444",
 		State: "open", CheckedAt: &fresh,
 	}); err != nil {
 		t.Fatalf("store the fresh head: %v", err)
 	}
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -206,7 +208,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	}
 
 	reconcile := NewReconcile(pool, client, nil, unrenamed())
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	head := readHead(t, ctx, pool, "acme/widgets", 42)
@@ -223,7 +225,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		t.Fatalf("the re-read paged the commit messages %d times, want none: its title already attributes it", reads)
 	}
 	// The pass is idempotent: nothing is stale a second time.
-	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads again: %v", err)
 	}
@@ -973,7 +975,8 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	// the arm offers a merged row to each rule once, and this row has had its offer. A row
 	// stamped by an older rule is taken, which is
 	// TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody (reconcile_test.go).
-	read := time.Now().Add(-time.Hour)
+	now := time.Now()
+	read := now.Add(-time.Hour)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 63, HeadSHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &eventAt, CheckedAt: &read,
@@ -996,7 +999,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 		t.Fatalf("store the merged head whose pull request is gone: %v", err)
 	}
 	stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", 65)
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -1007,7 +1010,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}
 
 	reconcile := NewReconcile(pool, client, nil, unrenamed())
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	settled := readHead(t, ctx, pool, "acme/widgets", 61)
@@ -1052,7 +1055,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 
 	// Once, and once only: the refresh stamps the row whether or not it could attribute it, and
 	// a row it could not read at all is stamped too, so no row comes back to the list.
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+	if err := reconcile.reconcilePullRequestHeads(ctx, now); err != nil {
 		t.Fatalf("reconcile a second time: %v", err)
 	}
 	if reads := pullReads.Load(); reads != 1 {
@@ -1064,7 +1067,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	if reads := goneReads.Load(); reads != 1 {
 		t.Fatalf("a second pass asked GitHub for the gone #65 again (%d reads in all), want the row taken once: the stamp carries the rule as well as the time", reads)
 	}
-	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads again: %v", err)
 	}
@@ -1318,7 +1321,8 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	// The row the old name left: an earlier head, read long enough ago to be stale, attributed
 	// to nobody, and its event older than the one GitHub answers with below.
 	earlier := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	stale := time.Now().Add(-10 * time.Minute)
+	now := time.Now()
+	stale := now.Add(-10 * time.Minute)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: gadgetsOldRepo, Number: 522, HeadSHA: "6262626262626262626262626262626262626262",
 		HeadRef: "legion/work", BaseRef: "main", State: "open", EventAt: &earlier, CheckedAt: &stale,
@@ -1329,7 +1333,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	fake := gadgetsFake(t, 522, issue+": the work", head)
 	client := fake.newTestClient()
 	attributor := NewAttributor(renamesOf(t, ctx, pool))
-	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now())
+	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, now)
 	if err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
 	}
@@ -1337,7 +1341,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 		t.Fatalf("#522 is stored under %v once it has arrived under both names, want both rows", repos)
 	}
 
-	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
+	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, now); err != nil {
 		t.Fatalf("refresh the row stored under the old name: %v", err)
 	}
 	if repos := headRepos(t, ctx, pool, 522); len(repos) != 1 || repos[0] != gadgetsRepo {
@@ -1366,14 +1370,15 @@ func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
 
 	const head = "2424242424242424242424242424242424242424"
 	client := gadgetsFake(t, 524, issue+": the work, with repo_projects gone", head).newTestClient()
-	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsRepo, 524, time.Now()); err != nil {
+	now := time.Now()
+	if err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, gadgetsRepo, 524, now); err != nil {
 		t.Fatalf("refresh %s#524: %v", gadgetsRepo, err)
 	}
 	if row := readHead(t, ctx, pool, gadgetsRepo, 524); row.IssueKey == nil || *row.IssueKey != issue {
 		t.Fatalf("%s#524 after the refresh = %+v, want %s, which resolves to %s through its project's default",
 			gadgetsRepo, row, issue, gadgetsRepo)
 	}
-	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now())
+	written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, now)
 	if err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written and no error", gadgetsRepo, head, written, err)
 	}

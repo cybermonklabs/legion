@@ -853,7 +853,8 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 	// A row stored before this build: merged, credited to nobody, stamped read, and judged by
 	// the rule that took the first candidate outright, which attribution_rule numbers 0. No
 	// writer stamps that rule, so the row is written and then stamped with it.
-	stamped := time.Now().Add(-24 * time.Hour)
+	now := time.Now()
+	stamped := now.Add(-24 * time.Hour)
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/gadgets", Number: 61, HeadSHA: sha, HeadRef: "topic", BaseRef: "main",
 		State: "merged", IssueKey: nil, AttributionSource: "none", AttributionComplete: true,
@@ -880,7 +881,7 @@ func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
 		t.Fatalf("the two passes read the merged pull request from GitHub %d times, want once: the rule that judged the row is the current one now",
 			reads)
 	}
-	stale, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	stale, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -1014,9 +1015,10 @@ func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // try; in each the cause is the client's, which reaches the attempt before the pass's own note.
 // A page GitHub answers 502 once and then reads is a page read, whose dropped note is no failure,
 // and a pull request of a deleted repository is an answer the pass takes as data, marking it
-// unfetchable: each records succeeded. Each row's pass waits between a page's tries on a fake
-// clock of its own (Reconcile.clock), which the row moves past each wait once the pass has armed
-// it (movePastPageRetries), so the rows run beside each other and beside the package's other tests.
+// unfetchable: each records succeeded. Each row's pass reads its moment from a fake clock of its
+// own (Reconcile.clock) and waits on it between a page's tries; the row moves the fake past each
+// wait once the pass has armed it (movePastPageRetries), so the rows run beside each other and
+// beside the package's other tests.
 func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 	t.Parallel()
 	answer := func(status int, message string) http.HandlerFunc {

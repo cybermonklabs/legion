@@ -658,7 +658,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	}
 	awaitAckPending(t, publisher, 1+queued)
 
-	stopped := time.Now()
+	stopped := testwait.Now()
 	holderStopped := make(chan struct{})
 	go func() {
 		defer close(holderStopped)
@@ -688,7 +688,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 		return fmt.Sprintf("the standby has not handled the stopped holder's %d queued messages of pull request %d: standby %d, holder %d; %s",
 			queued, inFlight, standby.fetches(inFlight), holder.fetches(inFlight), consumerState(publisher))
 	})
-	t.Logf("the standby handled the queued messages %s after the holder's stop", time.Since(stopped))
+	t.Logf("the standby handled the queued messages %s after the holder's stop", testwait.Now().Sub(stopped))
 	if got := holder.fetches(inFlight); got != 1 {
 		t.Errorf("the stopping holder fetched pull request %d %d times; want the one its handler held, the rest handed back", inFlight, got)
 	}

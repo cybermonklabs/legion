@@ -49,16 +49,21 @@ func TestTheLatestShipBeforeReadIsBoundedByItsMoment(t *testing.T) {
 // made for the moment's own value and the generic plan a cached statement settles on), over a year
 // of 4,000 deploy runs with their jobs, analyzed. Neither plan reads delivery_runs or its jobs by a
 // sequential scan, and each reads delivery_runs through delivery_runs_kind_created with the run's
-// creation bounded above by the moment, so the read newest first starts there. The moment is now,
-// a month after the newest run, so a plan that took every run created before it would read them
-// all: that is what the bound's index condition, and not the table's size, keeps it from.
+// creation bounded above by the moment, so the read newest first starts there. The moment is the
+// database's now(), the clock the runs' creation was seeded on, a month after the newest run, so a
+// plan that took every run created before it would read them all: that is what the bound's index
+// condition, and not the table's size, keeps it from.
 func TestTheLatestShipBeforeReadStartsAtItsMomentWhateverThePlan(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAYearOfDeployRuns(t, ctx, pool)
+	var now time.Time
+	if err := pool.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
 	statement := explaintest.Statement{
 		SQL:  latestShipBefore("$1", "$2", "$3", "$4"),
-		Args: []any{"acme/deploy", []string{"production"}, nil, time.Now().UTC()},
+		Args: []any{"acme/deploy", []string{"production"}, nil, now},
 	}
 	for _, mode := range explaintest.PlanCacheModes {
 		plan := json.RawMessage(explaintest.ExplainBuffered(t, ctx, pool, statement, mode, "json"))

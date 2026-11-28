@@ -179,7 +179,8 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	parent := seedHeadIssue(t, ctx, pool, 73)
 	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	read := time.Now().Add(-time.Hour)
+	now := time.Now()
+	read := now.Add(-time.Hour)
 	merged := func(number int) PullRequestHead {
 		head := attributedHeadRow(number, &parent, sourceTitleBody)
 		head.State, head.EventAt, head.CheckedAt = "merged", &eventAt, &read
@@ -193,7 +194,7 @@ func TestTheMergedArmTakesARowAnOlderRuleCredited(t *testing.T) {
 	}
 	stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", 173)
 
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}
@@ -224,7 +225,8 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 75)
 	eventAt := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
-	read := time.Now().Add(-time.Hour)
+	now := time.Now()
+	read := now.Add(-time.Hour)
 	for number := 300; number < 300+RejudgedHeadsPerPass+10; number++ {
 		head := attributedHeadRow(number, &issue, sourceTitleBody)
 		head.State, head.EventAt, head.CheckedAt = "merged", &eventAt, &read
@@ -239,7 +241,7 @@ func TestOnePassOffersBoundedlyManyRowsARaisedRuleBroughtBack(t *testing.T) {
 		t.Fatalf("store the open head: %v", err)
 	}
 
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 	if err != nil {
 		t.Fatalf("list the stale heads: %v", err)
 	}

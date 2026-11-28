@@ -10,7 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
@@ -153,7 +152,7 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	}
 
 	holder.stop()
-	stopped := time.Now()
+	stopped := testwait.Now()
 	// The stop's drain took the holder's subscription off the durable; the server reports it once it
 	// has handled the unsubscribe, which a take-over reads (boundElsewhere).
 	waitFor(t, func() bool { return !deliveryDurableBound(publisher) }, func() string {
@@ -164,7 +163,7 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 			durableBindInterval, consumerState(publisher))
 	}
 	taken := awaitPushBound(t, publisher, held.Config.DeliverSubject, "the standby that took the durable over is not bound to it")
-	t.Logf("the standby took the durable over %s after the holder stopped", time.Since(stopped))
+	t.Logf("the standby took the durable over %s after the holder stopped", testwait.Now().Sub(stopped))
 
 	publishMergedPullRequest(t, publisher, 11)
 	waitFor(t, func() bool { return standby.fetches(11) == 1 }, func() string {

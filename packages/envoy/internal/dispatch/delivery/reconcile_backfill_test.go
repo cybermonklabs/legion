@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -239,6 +240,8 @@ func TestBackfillRunsAdvancesOneFinishedHourAtATime(t *testing.T) {
 // TestBackfillRunsKeepsItsFailuresOutOfTheHealthState: a pass whose backfill hits a rate limit
 // while every regular step succeeds records the reconcile as healthy. The pass runs both deploy
 // backfills, the branch-and-event one and the created_at one, each recording its progress row.
+// The pass reads its moment from the reconcile's clock (Reconcile.clock), a fake standing at a
+// moment the row names, so each stamp the pass writes is compared with that moment exactly.
 func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -268,10 +271,12 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
 	reconcile := NewReconcile(pool, github.newTestClient(), events.NewBroker(), unrenamed())
+	// The pass runs at a moment the row names, on a whole second, so each stamp it writes reads
+	// back exactly.
+	pass := time.Now().UTC().Truncate(time.Second)
+	reconcile.clock = clocktest.New(pass)
 
-	before := time.Now()
 	reconcile.runOnce(ctx)
-	after := time.Now()
 
 	settings, err := GetSettings(ctx, pool)
 	if err != nil {
@@ -280,16 +285,16 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	if settings.LastError != nil {
 		t.Fatalf("last_error = %q, want nil: a backfill failure stays out of the health state", *settings.LastError)
 	}
-	if settings.LastReconcileAt == nil || settings.LastReconcileAt.Before(before.Add(-time.Second)) || settings.LastReconcileAt.After(after.Add(time.Second)) {
-		t.Fatalf("last_reconcile_at = %v, want this pass's time, between %v and %v", settings.LastReconcileAt, before, after)
+	if settings.LastReconcileAt == nil || !settings.LastReconcileAt.Equal(pass) {
+		t.Fatalf("last_reconcile_at = %v, want this pass's moment %v", settings.LastReconcileAt, pass)
 	}
 	through, beganAt, found := deployBackfill(t, reconcile)
-	if !found || through.Before(before.Add(-BackfillWindow-time.Second)) || beganAt.Before(before.Add(-time.Second)) || beganAt.After(after.Add(time.Second)) {
-		t.Fatalf("backfill row = {%v, %v, %t}, want began at this pass and through 28 days before it", through, beganAt, found)
+	if !found || through.Before(pass.Add(-BackfillWindow)) || !beganAt.Equal(pass) {
+		t.Fatalf("backfill row = {%v, %v, %t}, want began at this pass, %v, and through 28 days before it", through, beganAt, found, pass)
 	}
 	created, err := readBackfillProgress(ctx, pool, createdAtBackfillStep, runsProgressScope("acme/widgets", backfillWorkflow))
-	if err != nil || !created.found || created.beganAt.Before(before.Add(-time.Second)) || created.beganAt.After(after.Add(time.Second)) {
-		t.Fatalf("created_at backfill row = %+v, %v, want one begun at this pass", created, err)
+	if err != nil || !created.found || !created.beganAt.Equal(pass) {
+		t.Fatalf("created_at backfill row = %+v, %v, want one begun at this pass, %v", created, err, pass)
 	}
 }
 

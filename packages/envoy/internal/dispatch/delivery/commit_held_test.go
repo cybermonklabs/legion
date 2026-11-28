@@ -106,10 +106,11 @@ func TestAStoredNameGitHubDoesNotAllowMakesNoGitHubRequest(t *testing.T) {
 		}
 	}
 	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	now := time.Now()
 	for old, renamedTo := range renamed {
-		err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, old, 7, time.Now())
+		err := attributor.RefreshPullRequestHead(ctx, pool, client, nil, old, 7, now)
 		refused("RefreshPullRequestHead", renamedTo, err)
-		_, _, err = attributor.ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, time.Now())
+		_, _, err = attributor.ReadThroughCommitPulls(ctx, pool, client, nil, old, sha, now)
 		refused("ReadThroughCommitPulls", renamedTo, err)
 	}
 

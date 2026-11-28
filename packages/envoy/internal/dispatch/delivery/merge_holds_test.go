@@ -236,9 +236,11 @@ func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
 		}
 	}
 
+	// The moment of every list and refresh below, read once.
+	now := time.Now()
 	offered := func() map[int]bool {
 		t.Helper()
-		batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+		batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, now)
 		if err != nil {
 			t.Fatalf("list the stale heads: %v", err)
 		}
@@ -271,7 +273,6 @@ func TestTheReconcileOffersEachMergedRowOnceForItsTime(t *testing.T) {
 		mustEncode(t, w, []any{})
 	})
 	client := fake.newTestClient()
-	now := time.Now()
 	for _, number := range []int{31, 32} {
 		if err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", number, now); err != nil {
 			t.Fatalf("refresh #%d: %v", number, err)

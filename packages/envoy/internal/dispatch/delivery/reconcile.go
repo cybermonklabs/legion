@@ -56,16 +56,25 @@ type Reconcile struct {
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
-	// clock is what every GitHub page read of a pass waits on between its tries (readGitHubPage):
-	// clock.Real, which NewReconcile gives it, and a test's clocktest.Fake, set before the pass, on
-	// which a page GitHub answered its own timeout is asked again only once the test moves the fake
-	// past the wait before it.
-	clock pageClock
+	// clock is what a pass reads its moment from (runOnce, and Run's first pass at its start),
+	// the moment every row the pass stamps carries and every window it reads ends at, and what
+	// every GitHub page read of a pass waits on between its tries (readGitHubPage): clock.Real,
+	// which NewReconcile gives it, and a test's clocktest.Fake, set before the pass, which names
+	// the pass's moment and on which a page GitHub answered its own timeout is asked again only
+	// once the test moves the fake past the wait before it.
+	clock reconcileClock
+}
+
+// reconcileClock is the part of a clock a reconcile pass reads: its moment (Now), and the waits of
+// its page reads (pageClock). A narrowing of clock.Clock.
+type reconcileClock interface {
+	pageClock
+	Now() time.Time
 }
 
 // NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
-// attributor, the Attributor of the rename pairs the process read at boot, and whose page reads
-// wait between their tries on the real clock.
+// attributor, the Attributor of the rename pairs the process read at boot, and whose passes read
+// their moment, and whose page reads wait between their tries, on the real clock.
 func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
 	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor, clock: clock.Real()}
 }
@@ -136,7 +145,7 @@ const deliveryReconcileLease = "delivery-reconcile"
 // return, so it takes the pool cmd/dispatch has already opened (and exits at boot without).
 func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 	if r.atStart && r.HasApp() {
-		r.leasedPass(ctx, leases, time.Now())
+		r.leasedPass(ctx, leases, r.clock.Now())
 	}
 	duty.RunJittered(ctx, r.tickInterval(), func() bool {
 		if r.HasApp() {
@@ -203,7 +212,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx, githubreads.DeliveryReconcile)
 	defer githubreads.Finish(caller, attempt, r.gitHubReads, nil)
-	now := time.Now()
+	now := r.clock.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none

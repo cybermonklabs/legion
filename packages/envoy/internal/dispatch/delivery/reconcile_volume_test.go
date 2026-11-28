@@ -464,7 +464,7 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 		}
 	}
 
-	start := time.Now().UTC().Add(-27 * 24 * time.Hour)
+	start := finished.Add(-27 * 24 * time.Hour)
 	runs := make([]map[string]any, 0, 300)
 	for i := range 300 {
 		runs = append(runs, smallRun(int64(3000+i), start.Add(time.Duration(i)*2*time.Hour)))
