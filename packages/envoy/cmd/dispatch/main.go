@@ -340,8 +340,13 @@ type bootConfig struct {
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	env := processSettings()
+	level, err := logLevel(env)
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	if err != nil {
+		slog.Error("dispatch: read the log level", "error", err)
+		os.Exit(1)
+	}
 	if len(os.Args) > 1 {
 		os.Exit(runSubcommand(context.Background(), os.Args[1:], env, os.Stdout, os.Stderr))
 	}
@@ -1661,6 +1666,24 @@ func main() {
 		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
+	}
+}
+
+// logLevel is the least severe line the server and its subcommands log (DISPATCH_LOG_LEVEL): info
+// where the setting is unset or empty, and an error naming the setting for a value that names no
+// level.
+func logLevel(env settingValues) (slog.Level, error) {
+	switch value := strings.TrimSpace(env.get("DISPATCH_LOG_LEVEL")); value {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("DISPATCH_LOG_LEVEL is debug, info, warn or error, not %q", value)
 	}
 }
 

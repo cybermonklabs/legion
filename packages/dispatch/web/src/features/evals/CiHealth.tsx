@@ -26,6 +26,7 @@ import { type ChartModel, type ChartStatistic, dayChartModel } from "./chart-mod
 import { Timing } from "./chart-renderers";
 import { EvalChart } from "./EvalChart";
 import { EvalTable } from "./EvalTable";
+import { useDrawnMark } from "./useDrawnMark";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
 /** What a CI eval's timing states of each day and of the window (measures.FoldTiming), in its
@@ -271,7 +272,8 @@ function CiChart({
 /** One of pr-ci's job lists, read through its items view (plan D9): its heading and words, then
  *  its table, or what it says while the view is out, refused, or answers no job. Its words and
  *  its empty line are read from its answer (`note`, `empty`), which names the floor a list ranked
- *  by. */
+ *  by. The commit in which it first draws its answer or its refusal is marked
+ *  `dispatch:evals-job-list:<id>` on the page's performance timeline (`useDrawnMark`). */
 function JobList({
   columns,
   empty,
@@ -300,6 +302,7 @@ function JobList({
     })
   );
   const rows = useMemo(() => items.data?.items ?? [], [items.data]);
+  useDrawnMark(`dispatch:evals-job-list:${id}`, items.data !== undefined || items.isError);
   return (
     <section aria-label={title} className="flex flex-col gap-1" data-job-list={id}>
       <h3 className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>{title}</h3>

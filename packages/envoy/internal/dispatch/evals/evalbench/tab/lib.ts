@@ -1,8 +1,10 @@
 // What the Evals tab's browser measurements share (dispatch://INFRA-2918, T27, D16): Playwright's
 // Chromium, resolved from packages/dispatch, which locks it; a signed-in reader's page of the tab
 // with the instrument that times it; the page's own live frames, replayed into what each of its
-// views holds; and the database the bench's Postgres serves. paint.ts and recompute.ts are the two
-// steps that read it, run by evalbench/run.sh's `tab` command with bun.
+// views holds; the server's debug lines, which time the server's steps (its DISPATCH_LOG_LEVEL is
+// debug under run.sh's `tab`); and the database the bench's Postgres serves. paint.ts and
+// recompute.ts are the two steps that read it, run by evalbench/run.sh's `tab` command with bun.
+import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -157,13 +159,17 @@ export async function launchChromium(): Promise<Browser> {
  *  section of the first paint (`[data-section]`, the timeline's left out) first reads
  *  `data-state="painted"`, when each of the CI section's job lists (`[data-job-list]`) first holds
  *  no loading line, when the narrowed cards' loading mark (`[data-narrowing="loading"]`) shows
- *  and when it gives way to the narrowed values; and for every frame of the page's live socket
- *  (`/ws/live`), when it arrived and when the page had painted after it. Every time is read twice:
- *  `at`, the DOM change, and `painted`, two animation frames later, once the browser has
- *  presented the change. Times are milliseconds since the epoch, so they compare with the
- *  database's commit timestamps; the navigation's own start is `start`. */
+ *  and when it gives way to the narrowed values; for every frame of the page's live socket
+ *  (`/ws/live`), when it arrived and when the page had painted after it; when the page sent each
+ *  subscribe frame, by its sub (`sends`); and every performance mark the app sets that is named
+ *  `dispatch:…` (`marks`): a snapshot's parse ended (`dispatch:live-snapshot:<sub>`,
+ *  api/live-socket.ts), and a section or a CI job list committed its drawing
+ *  (`dispatch:evals-section:<id>`, `dispatch:evals-job-list:<id>`, useDrawnMark.ts). Every time of
+ *  a DOM change is read twice: `at`, the change, and `painted`, two animation frames later, once
+ *  the browser has presented it. Times are milliseconds since the epoch, so they compare with the
+ *  database's commit timestamps and the server's log; the navigation's own start is `start`. */
 export const INSTRUMENT = `(() => {
-  const record = { start: performance.timeOrigin, sections: {}, jobLists: {}, narrowing: {}, frames: [], sockets: 0 };
+  const record = { start: performance.timeOrigin, sections: {}, jobLists: {}, narrowing: {}, frames: [], sockets: 0, sends: [], marks: [] };
   window.__evalbench = record;
   const now = () => performance.timeOrigin + performance.now();
   const stamp = (entry) => {
@@ -171,12 +177,14 @@ export const INSTRUMENT = `(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => { entry.painted = now(); }));
     return entry;
   };
+  const SUBSCRIBE = '{"type":"subscribe","sub":"';
   const Native = window.WebSocket;
   class Measured extends Native {
     constructor(url, protocols) {
       super(url, protocols);
       if (!String(url).includes("/ws/live")) return;
       const socket = ++record.sockets;
+      this.__evalbenchSocket = socket;
       let index = 0;
       this.addEventListener("message", () => {
         const entry = { socket, index: index++ };
@@ -184,8 +192,19 @@ export const INSTRUMENT = `(() => {
         stamp(entry);
       });
     }
+    send(data) {
+      if (this.__evalbenchSocket !== undefined && typeof data === "string" && data.startsWith(SUBSCRIBE)) {
+        const end = data.indexOf('"', SUBSCRIBE.length);
+        if (end > 0) record.sends.push({ socket: this.__evalbenchSocket, sub: data.slice(SUBSCRIBE.length, end), at: now() });
+      }
+      return super.send(data);
+    }
   }
   window.WebSocket = Measured;
+  new PerformanceObserver((list) => {
+    for (const entry of list.getEntries())
+      if (entry.name.startsWith("dispatch:")) record.marks.push({ name: entry.name, at: performance.timeOrigin + entry.startTime });
+  }).observe({ type: "mark", buffered: true });
   const check = () => {
     for (const element of document.querySelectorAll("[data-section]")) {
       const id = element.getAttribute("data-section");
@@ -216,6 +235,12 @@ export interface Stamp {
   painted?: number;
 }
 
+/** One `dispatch:` performance mark the app set, at its moment in milliseconds since the epoch. */
+export interface Mark {
+  name: string;
+  at: number;
+}
+
 /** What the instrument holds of one page. */
 export interface Instrumented {
   start: number;
@@ -223,13 +248,39 @@ export interface Instrumented {
   jobLists: Record<string, Stamp & { failed: boolean }>;
   narrowing: { loading?: Stamp; narrowed?: Stamp };
   frames: (Stamp & { socket: number; index: number })[];
+  /** Each subscribe frame the page sent, by its socket and sub, when it sent it. */
+  sends: { socket: number; sub: string; at: number }[];
+  /** Every `dispatch:` mark set, the ones the app has cleared since among them, each once. */
+  marks: Mark[];
 }
 
-/** Reads the instrument's record off the page, its frames from `fromFrame` on. */
-export function readInstrument(page: Page, fromFrame = 0): Promise<Instrumented> {
-  return page.evaluate<Instrumented>(
-    `(() => { const r = window.__evalbench; return { start: r.start, sections: r.sections, jobLists: r.jobLists, narrowing: r.narrowing, frames: r.frames.slice(${fromFrame}) }; })()`
+/** Reads the instrument's record off the page, its frames from `fromFrame` on: the marks its
+ *  observer has been handed so far, and every mark the page's timeline still holds, which an
+ *  observer not yet called has not been handed. */
+export async function readInstrument(page: Page, fromFrame = 0): Promise<Instrumented> {
+  const record = await page.evaluate<Instrumented>(
+    `(() => { const r = window.__evalbench;
+       const held = performance.getEntriesByType("mark").filter((entry) => entry.name.startsWith("dispatch:"))
+         .map((entry) => ({ name: entry.name, at: performance.timeOrigin + entry.startTime }));
+       return { start: r.start, sections: r.sections, jobLists: r.jobLists, narrowing: r.narrowing,
+         frames: r.frames.slice(${fromFrame}), sends: r.sends, marks: r.marks.concat(held) }; })()`
   );
+  const seen = new Set<string>();
+  record.marks = record.marks.filter((one) => {
+    const key = `${one.name} ${one.at}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return record;
+}
+
+/** The first moment the mark `name` was set on a page, in milliseconds since the epoch. */
+export function firstMark(record: Instrumented, name: string): number | undefined {
+  let first: number | undefined;
+  for (const one of record.marks)
+    if (one.name === name && (first === undefined || one.at < first)) first = one.at;
+  return first;
 }
 
 /** A signed-in reader's browser context: the instrument on every page it opens, and the session
@@ -528,6 +579,110 @@ export class Replay {
     }
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The server's debug lines
+
+/** The messages of the server's debug lines the steps read (cmd/dispatch/README.md, Logging): a
+ *  page of the eval day-row refresher that read changes, a read of the change log by the live
+ *  hub, a recompute of the hub, and a snapshot or delta a live socket wrote. */
+export const LOGGED = {
+  page: "dispatch: the eval day-row refresher read a page of changes",
+  changes: "dispatch: delivery live hub read changes",
+  recompute: "dispatch: delivery live hub timed a recompute",
+  frame: "dispatch: live socket wrote a frame",
+} as const;
+
+/** One of slog's attributes in a line of its text form, `key=value` or `key="quoted value"`. */
+const ATTRIBUTE = /(?:^|\s)([A-Za-z_][\w.]*)=("(?:[^"\\]|\\.)*"|\S*)/g;
+
+/** One line of the server's log in slog's text form (`time=… level=… msg="…" key=value …`): its
+ *  message and its attributes, a quoted value unquoted. */
+export class Logged {
+  constructor(
+    readonly msg: string,
+    private readonly attrs: ReadonlyMap<string, string>
+  ) {}
+
+  /** The attribute `key` as text, "" where the line holds none. */
+  text(key: string): string {
+    return this.attrs.get(key) ?? "";
+  }
+
+  /** The attribute `key` as a number, null where the line holds none or no number. */
+  number(key: string): number | null {
+    const value = this.attrs.get(key);
+    if (value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  /** The moment the attribute `key` states in Unix microseconds, in milliseconds since the epoch
+   *  as the page's and the database's times are, null where it states none (0). */
+  at(key: string): number | null {
+    const micros = this.number(key);
+    return micros === null || micros === 0 ? null : micros / 1000;
+  }
+}
+
+/** How many bytes the server's log at path holds now, 0 where it does not exist yet: where a read
+ *  of what the server logs from now on starts (serverLines). */
+export function logSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** Every line of the server's log at path from byte `from` on whose message is one of LOGGED's,
+ *  in the order the server logged them; none where the log cannot be read. */
+export function serverLines(path: string, from: number): Logged[] {
+  let text: string;
+  try {
+    text = readFileSync(path).subarray(from).toString("utf8");
+  } catch {
+    return [];
+  }
+  const wanted = Object.values(LOGGED).map((msg) => [msg, `msg=${JSON.stringify(msg)}`] as const);
+  const out: Logged[] = [];
+  for (const line of text.split("\n")) {
+    const msg = wanted.find(([, quoted]) => line.includes(quoted))?.[0];
+    if (msg === undefined) continue;
+    const attrs = new Map<string, string>();
+    for (const [, key, value] of line.matchAll(ATTRIBUTE)) {
+      if (key === undefined || value === undefined) continue;
+      attrs.set(key, value.startsWith('"') ? unquote(value) : value);
+    }
+    out.push(new Logged(msg, attrs));
+  }
+  return out;
+}
+
+/** A value slog quoted (strconv.Quote), unquoted. */
+function unquote(value: string): string {
+  try {
+    return String(JSON.parse(value));
+  } catch {
+    return value.slice(1, -1);
+  }
+}
+
+/** Whether a recompute's line (LOGGED.recompute) is one of view's, a view a page subscribed that
+ *  `narrowed` says whether a facet narrows: the line's view kind, kind of eval, page offset,
+ *  narrowing, eval and order are the view's. */
+export function recomputes(line: Logged, view: View, narrowed: boolean): boolean {
+  const viewQuery = new URLSearchParams(typeof view.query === "string" ? view.query : "");
+  return (
+    line.msg === LOGGED.recompute &&
+    line.text("view") === view.kind &&
+    line.text("evals_kind") === (viewQuery.get("kind") ?? "") &&
+    line.text("offset") === (viewQuery.get("offset") ?? "") &&
+    line.text("narrowed") === String(narrowed) &&
+    line.text("slug") === (typeof view.slug === "string" ? view.slug : "") &&
+    line.text("sort") === (viewQuery.get("sort") ?? "")
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

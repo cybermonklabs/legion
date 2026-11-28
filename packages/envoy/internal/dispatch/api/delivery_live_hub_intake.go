@@ -184,7 +184,8 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 // The clock is read once before each page, for the check and for the cursor's ReadAt: a page
 // shorter than its limit and a move to the newest row read the log to its end and take that
 // reading, and a full page moves the cursor and leaves its ReadAt where it stood
-// (delivery.ChangeCursor and its Through).
+// (delivery.ChangeCursor and its Through). Where the server logs at slog's debug level, each page
+// of changes read logs the positions it read, how many marks they made, and when they made them.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	if _, err := delivery.DrainPending(ctx, pool); err != nil {
@@ -219,9 +220,13 @@ func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 		}
 		now := h.clock.Now()
 		h.mu.Lock()
-		h.markChangesLocked(g, changes, now)
+		marks := h.markChangesLocked(g, changes, now)
 		g.change = g.change.Through(changes, deliveryLivePage, checked)
 		h.mu.Unlock()
+		if len(changes) > 0 && slog.Default().Enabled(ctx, slog.LevelDebug) {
+			slog.Debug("dispatch: delivery live hub read changes", "after", cursor.Seq, "through", changes[len(changes)-1].Seq,
+				"changes", len(changes), "marks", marks, "marked_unix_us", logUnixMicros(now))
+		}
 		if len(changes) < deliveryLivePage {
 			return nil
 		}
@@ -384,8 +389,9 @@ func (h *deliveryHub) dirtyAllLocked(g *hubGeneration, now time.Time) {
 // waits for a quiet (delivery.EvalDaysImmediate, markDirtyLocked). Every other change waits the
 // quiet. The mark is the change's own. The rewrite, the rebuild and the publishing each write what
 // they move in one transaction, so their changes reach the log together, and the one recompute
-// they make due answers them all.
-func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) {
+// they make due answers them all. It answers how many marks it made, one for each change and view.
+func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Change, now time.Time) int {
+	marks := 0
 	for _, change := range changes {
 		cause := deliveryCauseChange
 		if delivery.EvalDaysImmediate(change) {
@@ -401,9 +407,11 @@ func (h *deliveryHub) markChangesLocked(g *hubGeneration, changes []delivery.Cha
 		for _, view := range g.views {
 			if change.Seq > max(view.seq, view.readingSeq) && view.touchedBy(change, now) {
 				h.markDirtyLocked(g, view, now, cause)
+				marks++
 			}
 		}
 	}
+	return marks
 }
 
 // markDirtyLocked marks view for a recompute and wakes g's worker. Marks coalesce on the view

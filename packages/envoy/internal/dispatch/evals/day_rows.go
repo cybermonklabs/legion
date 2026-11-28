@@ -147,14 +147,23 @@ func (s *Store) writeProjectDay(ctx context.Context, family dayFamily, day Proje
 // (spanWrite). Where a rebuild is building, the triggers of eval_days and eval_day_members queue
 // the days for it to build again (migration 20261117100021).
 func (s *Store) writeProjectDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool) error {
-	return s.writeDays(ctx, family, days, builtBy, figures, nil)
+	return s.writeDays(ctx, family, days, builtBy, figures, nil, nil)
+}
+
+// dayWriteTimes is when one write of day rows (writeDays) began, ended its fold of the stored
+// figures (the moment it wrote its rows and members, where it folds none), and committed, before
+// its drain moved its changes into the log: what a page's debug line states of its writes
+// (pageTimes).
+type dayWriteTimes struct {
+	began, folded, committed time.Time
 }
 
 // writeDays is writeProjectDays with then, where it is not nil, written in the same transaction
 // after the rows, the members and the figures: a walk's records of the day it wrote
 // (refresh.walkWrite, recordWalkIn), so the commit that writes a day of every key a project reads
-// is the one that says the stored rows are whole through it (eval_days_serving).
-func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool, then func(tx pgx.Tx) error) error {
+// is the one that says the stored rows are whole through it (eval_days_serving). Where times is
+// not nil, the write records there when its steps ended (dayWriteTimes).
+func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectDay, builtBy string, figures bool, then func(tx pgx.Tx) error, times *dayWriteTimes) error {
 	if len(days) == 0 {
 		return nil
 	}
@@ -162,6 +171,9 @@ func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectD
 		if err := checkProjectDay(family.what, day, family.slugs, family.families); err != nil {
 			return err
 		}
+	}
+	if times != nil {
+		times.began = time.Now()
 	}
 	if err := s.inTx(ctx, "the day rows of "+daysNamed(days), func(tx pgx.Tx) error {
 		if err := writeDayRowsIn(ctx, tx, days, family.slugs, builtBy); err != nil {
@@ -182,12 +194,18 @@ func (s *Store) writeDays(ctx context.Context, family dayFamily, days []ProjectD
 				return err
 			}
 		}
+		if times != nil {
+			times.folded = time.Now()
+		}
 		if then == nil {
 			return nil
 		}
 		return then(tx)
 	}); err != nil {
 		return err
+	}
+	if times != nil {
+		times.committed = time.Now()
 	}
 	s.drainChanges(ctx)
 	return nil

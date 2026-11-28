@@ -130,22 +130,29 @@ func (view *deliveryView) dueAt() (time.Time, string, bool) {
 		return time.Time{}, "", false
 	}
 	if view.dirty {
-		at := view.lastDirty.Add(viewQuiet)
-		if latest := view.firstDirty.Add(viewMaxWait); latest.Before(at) {
-			at = latest
-		}
-		if view.immediate {
-			at = view.firstDirty
-		}
-		if at.Before(view.notBefore) {
-			at = view.notBefore
-		}
-		return at, view.cause, true
+		return view.dirtyDue(), view.cause, true
 	}
 	if view.body != nil && !view.expiry.IsZero() {
 		return view.expiry, deliveryCauseExpiry, true
 	}
 	return time.Time{}, "", false
+}
+
+// dirtyDue is when a dirty view falls due (dueAt): viewQuiet after its last mark or viewMaxWait
+// after its first, whichever is sooner, or at its first mark where that mark waits for no quiet,
+// never before a failed read's retry.
+func (view *deliveryView) dirtyDue() time.Time {
+	at := view.lastDirty.Add(viewQuiet)
+	if latest := view.firstDirty.Add(viewMaxWait); latest.Before(at) {
+		at = latest
+	}
+	if view.immediate {
+		at = view.firstDirty
+	}
+	if at.Before(view.notBefore) {
+		at = view.notBefore
+	}
+	return at
 }
 
 // nextWakeLocked is the earliest moment after now a view is due or g's verdict's reconciled
@@ -188,6 +195,54 @@ type deliveryViewRead struct {
 	// ageStep is an evals read's coarse refresher age (refresherAgeStep), which its body's
 	// freshness revision holds, and 0 where the body states no age.
 	ageStep int
+	// listTimes is where an evals view's list read records how long its steps took
+	// (readProjectEvalList), nil for a recompute that times nothing (recomputeTrace).
+	listTimes *evalReadTimes
+}
+
+// recomputeTrace is what one recompute's debug line states (log), kept only while the server
+// logs at slog's debug level, so one that does not times nothing: how its view stood marked as it
+// began (whether dirty, whether a mark waited for no quiet, its first and last mark since its last
+// read, and when those made it due, dirtyDue), how long each step of its read took: the change
+// position (head), the read and compute of its body (read), within it an evals view's list read
+// (list), and the encode of the body (encode), and when it ended, once its frames were queued to
+// the sockets (ended).
+type recomputeTrace struct {
+	marked, immediate       bool
+	firstMarked, lastMarked time.Time
+	due, ended              time.Time
+	head, read, encode      time.Duration
+	list                    evalReadTimes
+}
+
+// log writes the recompute's debug line: its view (its kind, an evals view's kind of eval, page
+// offset and whether a facet narrows it, an items view's eval and order, and its preset's days),
+// the cause, the change position it read, how many frames it sent and whether its read failed;
+// how the view stood marked; and when it began and ended, each moment in Unix microseconds, 0 for
+// none, and each step's time in milliseconds.
+func (trace *recomputeTrace) log(spec deliveryLiveSpec, cause string, seq int64, sent int, failed bool, began time.Time) {
+	slog.Debug("dispatch: delivery live hub timed a recompute",
+		"view", spec.kind, "evals_kind", spec.query.Get("kind"), "offset", spec.query.Get("offset"), "narrowed", spec.narrowed,
+		"slug", spec.slug, "sort", spec.query.Get("sort"),
+		"preset", spec.preset, "cause", cause, "seq", seq, "sent", sent, "failed", failed,
+		"marked", trace.marked, "immediate", trace.immediate, "first_marked_unix_us", logUnixMicros(trace.firstMarked),
+		"last_marked_unix_us", logUnixMicros(trace.lastMarked), "due_unix_us", logUnixMicros(trace.due),
+		"began_unix_us", logUnixMicros(began), "head_ms", logMillis(trace.head), "read_ms", logMillis(trace.read),
+		"snapshot_ms", logMillis(trace.list.snapshot), "fold_ms", logMillis(trace.list.fold), "freshness_ms", logMillis(trace.list.freshness),
+		"encode_ms", logMillis(trace.encode), "ended_unix_us", logUnixMicros(trace.ended))
+}
+
+// logUnixMicros is a moment as a debug line states it: Unix microseconds, 0 for the zero time.
+func logUnixMicros(at time.Time) int64 {
+	if at.IsZero() {
+		return 0
+	}
+	return at.UnixMicro()
+}
+
+// logMillis is a span as a debug line states it: milliseconds, to the microsecond.
+func logMillis(took time.Duration) float64 {
+	return float64(took.Microseconds()) / 1000
 }
 
 // recompute answers one dirty view from a fresh read: the newest change position first, which
@@ -195,15 +250,24 @@ type deliveryViewRead struct {
 // it and marks the view again; then the GET route's population read, the ancestors of the issues
 // it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
 // a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
+// Where the server logs at slog's debug level, it logs how long each step took (recomputeTrace).
 func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string) {
 	started := time.Now()
+	var trace *recomputeTrace
+	if slog.Default().Enabled(g.ctx, slog.LevelDebug) {
+		trace = &recomputeTrace{}
+	}
 	h.mu.Lock()
+	if trace != nil && view.dirty {
+		trace.marked, trace.immediate, trace.firstMarked, trace.lastMarked = true, view.immediate, view.firstDirty, view.lastDirty
+		trace.due = view.dirtyDue()
+	}
 	view.computing = true
 	spec, epoch := view.spec, g.epoch
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: cause})
 
-	read, err := h.read(g, view, spec, epoch)
+	read, err := h.read(g, view, spec, epoch, trace)
 	h.note(deliveryHubNote{what: "recompute read", view: spec.key, cause: cause, through: read.seq})
 
 	now := h.clock.Now()
@@ -268,7 +332,13 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	h.recheckHeardLocked(g, view, now)
 	subscribers := len(view.subs)
 	h.mu.Unlock()
+	if trace != nil {
+		trace.ended = time.Now()
+	}
 	h.finishRecompute(spec, cause, started, read.prs, read.runs, subscribers, sent)
+	if trace != nil {
+		trace.log(spec, cause, read.seq, sent, err != nil, started)
+	}
 }
 
 // read is recompute's read and compute, outside the hub's lock, on g's context. Once it holds the
@@ -278,13 +348,22 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // (readingSeq) while what the intake hears about the view is kept for recompute to judge the
 // read's answer by (reading, recheckHeardLocked). A reset of the change log since the recompute
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
-// while the generation stands at the epoch the recompute read.
-func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64) (deliveryViewRead, error) {
+// while the generation stands at the epoch the recompute read. Where trace is not nil, it records
+// there how long each step took.
+func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64, trace *recomputeTrace) (deliveryViewRead, error) {
 	ctx := g.readContext()
 	var read deliveryViewRead
+	var began time.Time
+	if trace != nil {
+		began = time.Now()
+	}
 	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
 	if err != nil {
 		return read, err
+	}
+	if trace != nil {
+		trace.head = time.Since(began)
+		read.listTimes = &trace.list
 	}
 	read.seq, read.changedAt = head.Seq, head.At
 	h.note(deliveryHubNote{what: "recompute position", view: spec.key, through: read.seq})
@@ -298,13 +377,23 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 	}
 	h.mu.Unlock()
 	now := h.clock.Now()
+	if trace != nil {
+		began = time.Now()
+	}
 	body, err := spec.classes().read(h, ctx, spec, now, &read)
 	if err != nil {
 		return read, err
 	}
+	if trace != nil {
+		trace.read = time.Since(began)
+		began = time.Now()
+	}
 	read.body, err = encodeDeliveryBody(spec.kind, body)
 	if err == nil && read.ageStep > 0 {
 		read.body.foldRefresherAgeStep(read.ageStep)
+	}
+	if trace != nil {
+		trace.encode = time.Since(began)
 	}
 	return read, err
 }
@@ -386,7 +475,7 @@ func (h *deliveryHub) readLegionReadView(ctx context.Context, spec deliveryLiveS
 // session with the title it shows, whose write can move what a facet selects. An unnarrowed view
 // names no issue and no session.
 func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
-	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now)
+	answer, narrowing, err := h.server.readProjectEvalList(ctx, spec.evalsQuery(now), spec.project, now, read.listTimes)
 	if err != nil {
 		return nil, err
 	}

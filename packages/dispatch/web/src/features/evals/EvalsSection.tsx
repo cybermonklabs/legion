@@ -5,6 +5,7 @@ import { QueryError } from "../../components/QueryError";
 import { textMutedOnCanvas, textPrimaryOnCanvas } from "../../theme/classes";
 import { WINDOW_ONLY } from "./narrowing";
 import { UnservedViews } from "./unserved";
+import { useDrawnMark } from "./useDrawnMark";
 import {
   type EvalsScope,
   type EvalsViewSelect,
@@ -35,7 +36,9 @@ function sectionState(statuses: readonly EvalsViewStatus[]): SectionState {
  * their cards, each as its own view lands). A section of evals no facet narrows (`windowOnly`)
  * says "window and repository only" under its heading while a facet or the search is set (plan
  * D3). A section shown only once it holds an eval (`untilHeld`) draws nothing before, while its
- * views stay open, unless the server does not serve them or refuses them.
+ * views stay open, unless the server does not serve them or refuses them. The commit in which it
+ * first draws every view painted is marked `dispatch:evals-section:<id>` on the page's performance
+ * timeline (`useDrawnMark`).
  */
 export function EvalsSection({
   children,
@@ -69,13 +72,10 @@ export function EvalsSection({
   const views = useEvalsViews(scope, kinds, select);
   const state = sectionState(views.map((view) => view.status));
   const notServed = unserved && state !== "painted";
-  if (
-    untilHeld &&
-    !notServed &&
-    state !== "failed" &&
-    views.every((view) => view.items.length === 0)
-  )
-    return null;
+  const hidden =
+    untilHeld && !notServed && state !== "failed" && views.every((view) => view.items.length === 0);
+  useDrawnMark(`dispatch:evals-section:${id}`, state === "painted" && !hidden);
+  if (hidden) return null;
   return (
     <section
       aria-labelledby={headingId}

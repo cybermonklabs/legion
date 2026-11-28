@@ -723,7 +723,8 @@ type keptMove struct {
 // theirs left (nameLeft). Where the days move no series' first input day, kept names no change of
 // a day the stored rows are whole through (or no walk or rebuild has served the family's rows yet),
 // and withPage is not set (the page's commit publishes no default move beside them), it writes
-// every day in one transaction of their own (writeProjectDays), by the stored first input days,
+// every day in one transaction of their own (writeProjectDays, through writeDays, which records the
+// write's times on the page's trace: dayWrite), by the stored first input days,
 // with its zero rows where the stored rows are whole through it (servingNext), and answers nil:
 // one commit, which logs one change of each eval the days moved. Where withPage is set with no
 // span to build, it answers a span write of the named days alone, so the page's commit writes them
@@ -806,7 +807,7 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 			}
 			return b, nil
 		}
-		if err := r.store.writeProjectDays(ctx, family, written, r.build, true); err != nil {
+		if err := r.store.writeDays(ctx, family, written, r.build, true, nil, r.dayWrite(family.walk)); err != nil {
 			return nil, err
 		}
 		for _, day := range written {

@@ -220,6 +220,15 @@ function liveSocketUrl(): string {
   return `${protocol}//${window.location.host}/ws/live`;
 }
 
+/** The performance mark a delivery subscription's snapshot sets once its frame is parsed
+ *  (`onSnapshot`), which a browser measurement of the page reads (packages/envoy's
+ *  evalbench/tab/paint.ts observes every `dispatch:` mark); nothing else does. Each snapshot
+ *  replaces its subscription's mark, and the subscription's removal clears it, so the timeline
+ *  holds at most one for each subscription open. */
+function snapshotMark(sub: string): string {
+  return `dispatch:live-snapshot:${sub}`;
+}
+
 /** `fn` after `ms`, and the function that cancels it. */
 function after(ms: number, fn: () => void): () => void {
   const handle = setTimeout(fn, ms);
@@ -339,6 +348,9 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
   const onSnapshot = (frame: DeliveryLiveSnapshot) => {
     const sub = held(frame.sub, "delivery");
     if (sub === undefined) return;
+    // The frame's parse has ended (`receive`): its mark says when.
+    performance.clearMarks(snapshotMark(sub.id));
+    performance.mark(snapshotMark(sub.id));
     sub.seq = frame.seq;
     sub.revs = frame.revs;
     queryClient.setQueryData(sub.queryKey, frame.body);
@@ -697,7 +709,10 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     subs.delete(sub.id);
     if (sub.kind === "agent") reportAgentSubscriptions();
     if (sub.kind === "events") sub.cancelRetry?.();
-    if (sub.kind === "delivery" && byHash.get(sub.hash) === sub) byHash.delete(sub.hash);
+    if (sub.kind === "delivery") {
+      if (byHash.get(sub.hash) === sub) byHash.delete(sub.hash);
+      performance.clearMarks(snapshotMark(sub.id));
+    }
     // Told even for a feed waiting out a backoff: Dispatch holds a subscription whose events
     // ended against the socket's cap of them until it is unsubscribed, and a page that never
     // said so would spend a slot of every such feed for the socket's life. An unsubscribe for a

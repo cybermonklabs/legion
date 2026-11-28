@@ -36,8 +36,24 @@
 // and a view with no leaf for a write is not judged for it. Budget (spec R4, R17, R21): every
 // judged write reaches each page within 2 s; a write that never reaches one fails.
 //
+// The trace (item 5 of the architect's ruling on T33's misses,
+// dispatch://INFRA-2918/comment/0d0aa027-83af-4a1b-9042-69f5d161ec32): once a phase is judged,
+// each of its --traced slowest writes (10), a write's delay its slowest page's and view's, gets
+// one `RESULT tab recompute trace` line with the time of each step from its commit: its own change
+// written and entered in the change log (a job write's in its own transaction; a facts write's by
+// the Legion facts pass), the eval day-row refresher's pass and the page that read that change,
+// the page's rewrite of the family's day rows (begun, folded, committed) and its own eval_days
+// change, written in that rewrite and entered in the log by a drain, the live hub's read of the
+// log that marked the view for it, the view's first and last marks and when they made it due, the
+// recompute whose answer carried it (its change position is the frame's) and how long its steps
+// took, and the frame's write, arrival and presentation. The changes are delivery_changes' rows
+// (their `at` and the commit of the transaction that entered each, track_commit_timestamp on); the
+// server's steps its debug lines (lib.ts's LOGGED) in the log --server-log names, none without it.
+// The trace judges nothing.
+//
 //   bun recompute.ts --url <server> --database <url> --project INFRA [--rate stated|ten] \
-//     [--token-file <file holding the agent token>] [--phases A,B,C,D] [lat_r16.py's phase flags]
+//     [--token-file <file holding the agent token>] [--server-log <file>] [--traced 10] \
+//     [--phases A,B,C,D] [lat_r16.py's phase flags]
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
@@ -51,8 +67,11 @@ import {
   flatten,
   frameKey,
   LiveLog,
+  LOGGED,
+  type Logged,
   launchChromium,
   leafAt,
+  logSize,
   mark,
   ms,
   need,
@@ -65,8 +84,10 @@ import {
   rank,
   readerContext,
   readInstrument,
+  recomputes,
   result,
   type Step,
+  serverLines,
   shown,
   sleep,
   type View,
@@ -83,6 +104,7 @@ const tokenFile = given.get("token-file");
 const token = tokenFile ? readFileSync(tokenFile, "utf8").trim() : "evalbench-token";
 const login = given.get("login") ?? "alice";
 const phases = (given.get("phases") ?? "A,B,C,D").split(",");
+const serverLog = given.get("server-log");
 const o = {
   aSeconds: numberOf(given, "a-seconds", 300),
   aRate: numberOf(given, "a-rate", 0),
@@ -103,6 +125,7 @@ const o = {
   pollMs: numberOf(given, "poll-ms", 2),
   seed: numberOf(given, "seed", 16),
   timeoutMs: numberOf(given, "timeout", 180) * 1000,
+  traced: numberOf(given, "traced", 10),
 };
 const BOUND_MS = 2000;
 const sections = (given.get("sections") ?? "cards,legion,ci,deploys,logged").split(",");
@@ -195,13 +218,23 @@ interface TabPage {
   watch: Watch | null;
 }
 
+/** One frame that moved a watched leaf of a view: its key, when the bench heard it, the leaves it
+ *  moved, and the sub and the change position it carried (the trace's). */
+interface Moved {
+  key: string;
+  heard: number;
+  changed: [string, unknown][];
+  sub: string;
+  seq: string;
+}
+
 /** What a phase reads of a page's views: for each view, the leaves of its writes, their values
  *  at the phase's start and now, and each frame that moved one. */
 interface Watch {
   paths: Map<string, Map<string, Step[]>>;
   start: Map<string, Map<string, unknown>>;
   now: Map<string, Map<string, unknown>>;
-  stream: Map<string, { key: string; heard: number; changed: [string, unknown][] }[]>;
+  stream: Map<string, Moved[]>;
 }
 
 /** The key one view of a page is known by across its subscriptions: its kind, window and query. */
@@ -251,7 +284,14 @@ function onFrame(tab: TabPage, frame: Frame): void {
   if (changed.length > 0) {
     const stream = watch.stream.get(key) ?? [];
     watch.stream.set(key, stream);
-    stream.push({ key: frameKey(frame.socket, frame.index), heard: frame.heard, changed });
+    const seq = frame.parsed?.seq;
+    stream.push({
+      key: frameKey(frame.socket, frame.index),
+      heard: frame.heard,
+      changed,
+      sub: moved.sub,
+      seq: typeof seq === "string" ? seq : "",
+    });
   }
 }
 
@@ -752,6 +792,9 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
     passStarts.length = 0;
     pollTask = pollPasses();
   }
+  // Where the trace reads from: the server's log as it stands, and the change log's position.
+  const logFrom = serverLog === undefined ? 0 : logSize(serverLog);
+  const changesFrom = await changesHead();
   const started = Date.now();
   const base0 = started + 300;
   for (const write of writes) if (write.atMs !== undefined) write.atMs += base0;
@@ -793,6 +836,7 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
 
   let phaseWorst = 0;
   let phaseUnreflected = 0;
+  const slowest = new Map<Write, Slowest & { tab: TabPage }>();
   for (const [index, tab] of tabs.entries()) {
     const watch = watches[index];
     if (watch === null || watch === undefined) continue;
@@ -801,6 +845,10 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
     const worst = delays.length > 0 ? Math.max(...delays) : null;
     phaseWorst = Math.max(phaseWorst, worst ?? 0);
     phaseUnreflected += judged.unreflected.length;
+    for (const [write, one] of judged.slowest) {
+      const held = slowest.get(write);
+      if (held === undefined || one.delay > held.delay) slowest.set(write, { ...one, tab });
+    }
     result(
       `tab recompute phase=${name} rate=${rate} page=${tab.name} writes=${writes.length} judged=${judged.judged} ` +
         `median_ms=${ms(rank(delays, 0.5))} p90_ms=${ms(rank(delays, 0.9))} max_ms=${ms(worst)} over_2s=${delays.filter((x) => x > BOUND_MS).length} ` +
@@ -820,6 +868,7 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
   result(
     `tab recompute phase=${name} rate=${rate} pages=${tabs.length} worst_ms=${ms(phaseWorst)} unreflected=${phaseUnreflected} budget_ms=${BOUND_MS}`
   );
+  await traceWrites(name, slowest, logFrom, changesFrom);
   if (phaseWorst > BOUND_MS || phaseUnreflected > 0) {
     fail(
       `tab recompute phase=${name} rate=${rate}: the slowest write reached a page ${ms(phaseWorst)} ms after its commit, and ${phaseUnreflected} never did, over the ${BOUND_MS} ms`
@@ -827,8 +876,24 @@ async function runPhase(name: string, writes: Write[], note: string): Promise<vo
   }
 }
 
+/** The frame that showed a write on a view, with when it arrived and when the page presented it. */
+interface Shown {
+  entry: Moved;
+  arrived: number;
+  presented: number;
+}
+
+/** A judged write's delay on one page: its slowest view, the delay there, and the frame that showed
+ *  it there (none where it was shown at its commit). */
+interface Slowest {
+  view: string;
+  delay: number;
+  shown: Shown | null;
+}
+
 /** Each judged write's delay to the page (the header): its slowest view's presentation after
- *  the commit, lat_r16.py's attribution over the page's own frames. */
+ *  the commit, lat_r16.py's attribution over the page's own frames; and each judged write's
+ *  slowest view with the frame that showed the write there (`slowest`, the trace's). */
 async function judge(
   tab: TabPage,
   watch: Watch,
@@ -840,6 +905,7 @@ async function judge(
   early: number;
   dropped: string[];
   worstView: string | null;
+  slowest: Map<Write, Slowest>;
 }> {
   const timings = new Map<string, { at?: number; painted?: number }>();
   for (const frame of (await readInstrument(tab.page)).frames)
@@ -889,6 +955,7 @@ async function judge(
     uses.set(write, use);
   }
   const latency = new Map<Write, Map<string, number | null>>();
+  const shownBy = new Map<Write, Map<string, Shown>>();
   let early = 0;
   for (const view of watch.paths.keys()) {
     const judged = usable.filter((write) => uses.get(write)?.has(view));
@@ -910,10 +977,14 @@ async function judge(
       }
       return use.own.every((text) => values.get(text) !== start.get(text));
     };
-    const set = (write: Write, value: number | null) => {
+    const set = (write: Write, value: number | null, shown?: Shown) => {
       const held = latency.get(write) ?? new Map<string, number | null>();
       latency.set(write, held);
       held.set(view, value);
+      if (shown === undefined) return;
+      const frames = shownBy.get(write) ?? new Map<string, Shown>();
+      shownBy.set(write, frames);
+      frames.set(view, shown);
     };
     let next = 0;
     let pending: Write[] = [];
@@ -931,7 +1002,11 @@ async function judge(
       for (const [text, value] of entry.changed) values.set(text, value);
       pending = pending.filter((write) => {
         if (!shows(write)) return true;
-        set(write, Math.round((presented - (write.commit ?? presented)) * 10) / 10);
+        set(write, Math.round((presented - (write.commit ?? presented)) * 10) / 10, {
+          entry,
+          arrived,
+          presented,
+        });
         return false;
       });
     }
@@ -939,6 +1014,7 @@ async function judge(
   }
   const delays: number[] = [];
   const unreflected: string[] = [];
+  const slowestOf = new Map<Write, Slowest>();
   let worst = -1;
   let worstView: string | null = null;
   for (const write of usable) {
@@ -954,10 +1030,16 @@ async function judge(
       continue;
     }
     const slowest = Math.max(...([...held.values()] as number[]));
+    const slowView = [...held].find(([, value]) => value === slowest)?.[0] ?? "";
     delays.push(slowest);
+    slowestOf.set(write, {
+      view: slowView,
+      delay: slowest,
+      shown: shownBy.get(write)?.get(slowView) ?? null,
+    });
     if (slowest > worst) {
       worst = slowest;
-      worstView = [...held].find(([, value]) => value === slowest)?.[0] ?? null;
+      worstView = slowView;
     }
   }
   return {
@@ -967,7 +1049,155 @@ async function judge(
     early,
     dropped: [...bad],
     worstView,
+    slowest: slowestOf,
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The trace
+
+/** One row of delivery_changes the trace reads: its position, kind, repository (a project's key
+ *  for an eval or Legion kind) and ref, the transaction that entered it (its 32-bit xid, as text),
+ *  when it was written (`at`: a drained change keeps its outbox row's) and when the transaction
+ *  that entered it committed (none without track_commit_timestamp), each in milliseconds since the
+ *  epoch. */
+interface LoggedChange {
+  seq: number;
+  kind: string;
+  repo: string | null;
+  ref: string | null;
+  x: string;
+  at: number;
+  logged: number | null;
+}
+
+/** The change log's newest position, 0 for an empty log. */
+async function changesHead(): Promise<number> {
+  const [row] = await rows<{ seq: number | null }>(
+    "select max(seq)::float8 as seq from delivery_changes"
+  );
+  return Number(row?.seq ?? 0);
+}
+
+/** Prints the trace of a phase's slowest writes (the header): its --traced judged writes the pages
+ *  showed after their commit, slowest first, each on its slowest page and view, every step's time
+ *  from the write's commit, read from the change log's rows after `after` and the server's debug
+ *  lines from byte `logFrom` of its log on. A step the log or the rows do not hold is none. */
+async function traceWrites(
+  phase: string,
+  slowest: Map<Write, Slowest & { tab: TabPage }>,
+  logFrom: number,
+  after: number
+): Promise<void> {
+  const ranked = [...slowest]
+    .filter(([write, one]) => one.shown !== null && write.commit !== undefined)
+    .sort((x, y) => y[1].delay - x[1].delay)
+    .slice(0, Math.max(0, o.traced));
+  if (ranked.length === 0) return;
+  const lines = serverLog === undefined ? [] : serverLines(serverLog, logFrom);
+  const committed = tracked
+    ? "(extract(epoch from pg_xact_commit_timestamp(xmin)) * 1000)::float8"
+    : "null::float8";
+  const changes = await rows<LoggedChange>(
+    `select seq::float8 as seq, kind, repo, ref, xmin::text as x, (extract(epoch from at) * 1000)::float8 as at,
+       ${committed} as logged
+     from delivery_changes where seq > ${after} and kind in ('run_job', 'issue_facts', 'eval_days') order by seq`
+  );
+  // Whether a page of the refresher or a read of the hub (after, through] read the change at seq.
+  const read = (line: Logged, seq: number) =>
+    (line.number("after") ?? Number.POSITIVE_INFINITY) < seq &&
+    seq <= (line.number("through") ?? Number.NEGATIVE_INFINITY);
+  for (const [index, [write, one]] of ranked.entries()) {
+    const frame = one.shown as Shown;
+    const commit = write.commit as number;
+    const from = (at: number | null | undefined) =>
+      at === null || at === undefined ? null : at - commit;
+    // The write's own change: a job write's run_job row, which its own transaction entered; a
+    // facts write's issue_facts row, which the Legion facts pass wrote after the write's commit.
+    const xid = write.xid ? String(BigInt(write.xid) % 4294967296n) : "";
+    const own =
+      write.family === "job"
+        ? changes.find((row) => row.kind === "run_job" && row.ref === write.item && row.x === xid)
+        : changes.find(
+            (row) =>
+              row.kind === "issue_facts" &&
+              row.repo === project &&
+              row.ref === write.item &&
+              row.at >= commit - 1
+          );
+    // The refresher's page that read it, and that page's rewrite of the write's family's day rows:
+    // a transaction of its own, or the page's commit where the page wrote them as a span.
+    const page =
+      own === undefined
+        ? undefined
+        : lines.find((line) => line.msg === LOGGED.page && read(line, own.seq));
+    const family = write.family === "facts" ? "legion" : "delivery";
+    const spans = page?.number("spans") ?? 0;
+    const rewritten =
+      page?.at(`${family}_committed_unix_us`) ??
+      (spans > 0 ? (page?.at("page_committed_unix_us") ?? null) : null);
+    const readAt = page?.at("read_unix_us") ?? null;
+    // The rewrite's own eval_days change: the project's first written between the page's read and
+    // the rewrite's commit, and the hub's read of the log that marked the views for it.
+    const dayChange =
+      own === undefined || readAt === null || rewritten === null
+        ? undefined
+        : changes.find(
+            (row) =>
+              row.kind === "eval_days" &&
+              row.repo === project &&
+              row.seq > own.seq &&
+              row.at >= readAt - 1 &&
+              row.at <= rewritten + 1
+          );
+    const marked =
+      dayChange === undefined
+        ? undefined
+        : lines.find((line) => line.msg === LOGGED.changes && read(line, dayChange.seq));
+    // The recompute whose answer the frame carried, at the frame's change position, and the
+    // frame's write, each the last before the frame arrived.
+    const view = one.tab.log.views.get(frame.entry.sub);
+    const before = (line: Logged, key: string) =>
+      (line.at(key) ?? Number.POSITIVE_INFINITY) <= frame.arrived + 1;
+    const recompute =
+      view === undefined
+        ? undefined
+        : lines.findLast(
+            (line) =>
+              line.text("seq") === frame.entry.seq &&
+              recomputes(line, view, false) &&
+              before(line, "ended_unix_us")
+          );
+    const wrote = lines.findLast(
+      (line) =>
+        line.msg === LOGGED.frame &&
+        line.text("sub") === frame.entry.sub &&
+        line.text("seq") === frame.entry.seq &&
+        before(line, "wrote_unix_us")
+    );
+    const viewQuery = new URLSearchParams(typeof view?.query === "string" ? view.query : "");
+    const shownOn = [view?.kind ?? one.view.split(" ")[0], viewQuery.get("kind") ?? view?.slug]
+      .filter((part) => typeof part === "string" && part !== "")
+      .join(":");
+    result(
+      `tab recompute trace phase=${phase} rate=${rate} rank=${index + 1} write=${write.id} family=${write.family} ` +
+        `day=${write.day} page=${one.tab.name} view=${shownOn} delay_ms=${ms(one.delay)} ` +
+        `own_change_seq=${own?.seq ?? "none"} own_change_written_ms=${ms(from(own?.at))} own_change_logged_ms=${ms(from(own?.logged))} ` +
+        `refresher_pass_began_ms=${ms(from(page?.at("pass_began_unix_us")))} refresher_read_ms=${ms(from(readAt))} ` +
+        `rewrite_began_ms=${ms(from(page?.at(`${family}_began_unix_us`)))} rewrite_folded_ms=${ms(from(page?.at(`${family}_folded_unix_us`)))} ` +
+        `rewrite_committed_ms=${ms(from(rewritten))} rewrite_spans=${spans} refresher_page_ended_ms=${ms(from(page?.at("ended_unix_us")))} ` +
+        `day_change_seq=${dayChange?.seq ?? "none"} day_change_written_ms=${ms(from(dayChange?.at))} day_change_logged_ms=${ms(from(dayChange?.logged))} ` +
+        `hub_marked_ms=${ms(from(marked?.at("marked_unix_us")))} ` +
+        `view_first_marked_ms=${ms(from(recompute?.at("first_marked_unix_us")))} view_last_marked_ms=${ms(from(recompute?.at("last_marked_unix_us")))} ` +
+        `recompute_due_ms=${ms(from(recompute?.at("due_unix_us")))} recompute_cause=${recompute?.text("cause") || "none"} ` +
+        `recompute_seq=${frame.entry.seq || "none"} recompute_began_ms=${ms(from(recompute?.at("began_unix_us")))} ` +
+        `recompute_head_ms=${ms(recompute?.number("head_ms"))} recompute_read_ms=${ms(recompute?.number("read_ms"))} ` +
+        `recompute_snapshot_ms=${ms(recompute?.number("snapshot_ms"))} recompute_fold_ms=${ms(recompute?.number("fold_ms"))} ` +
+        `recompute_encode_ms=${ms(recompute?.number("encode_ms"))} recompute_ended_ms=${ms(from(recompute?.at("ended_unix_us")))} ` +
+        `frame_written_ms=${ms(from(wrote?.at("wrote_unix_us")))} frame_write_ms=${ms(wrote?.number("write_ms"))} ` +
+        `frame_arrived_ms=${ms(from(frame.arrived))} presented_ms=${ms(from(frame.presented))}`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

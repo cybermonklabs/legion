@@ -12,9 +12,23 @@
 // the paint's database time, less the statements a quiet window before it shows the server's
 // background loops run (measure paint's catalogue).
 //
+// The split of the first paint (item 1 of the architect's ruling on T33's misses,
+// dispatch://INFRA-2918/comment/0d0aa027-83af-4a1b-9042-69f5d161ec32), one
+// `RESULT tab paint split` line a case: for each view of the first payload (`evals.<kind>`,
+// `items.<sort>`, `legion-read`), each time from the navigation, when the page sent its subscribe,
+// when the server's recompute of it began and ended and how long its steps took (the change
+// position, the read, within it an evals view's snapshot of reads, their fold and the delivery
+// freshness, and the encode of the body), how long the socket took to encode its snapshot frame
+// and to compress and write it and when the write ended, when the frame arrived and when its
+// parse ended, and its size; and for each section and CI job list, when its drawing committed and
+// when the browser presented it. The server's times are its debug lines (lib.ts's LOGGED) in the
+// log --server-log names; the page's are the instrument's and the app's `dispatch:` marks. Without
+// --server-log the server's times are none.
+//
 //   bun paint.ts --url <server> --database <url> --project INFRA --case <84d-compare|28d|84d-author> \
-//     [--warmed <file> --restarted <file>] [--rate stated|ten] [--quiet 30] [--catalog 65] \
-//     [--timeout 120] [--author <login>] [--sections cards,legion,ci,deploys,logged] [--login alice]
+//     [--warmed <file> --restarted <file>] [--server-log <file>] [--rate stated|ten] [--quiet 30] \
+//     [--catalog 65] [--timeout 120] [--author <login>] [--sections cards,legion,ci,deploys,logged] \
+//     [--login alice]
 //
 // The handshake: with --warmed, once the cold navigation is done the step writes that file and
 // waits for the one --restarted names, which run.sh writes once the restarted server serves, then
@@ -25,26 +39,41 @@
 // range from an address that sets the author facet, whose first paint is the unnarrowed one
 // (plan D7a), the page subscribing the narrowed delivery view only once the unnarrowed one has
 // landed (D25 step 2), so its narrowed cards draw after the paint under a loading mark, the delay
-// this case records beside the paint with the database time the narrowed read adds.
+// this case records beside the paint with the database time the narrowed read adds. Its narrowed
+// line also gives, from the navigation, when the page subscribed the narrowed view (and how long
+// after the unnarrowed delivery view's snapshot arrived and was parsed), the server's time and
+// database time for its read, and when its snapshot arrived and was parsed (the ruling's item 3);
+// and its database line splits db_ms into the first paint's reads and the narrowed read (item 4): the
+// narrowed read's database time is its own, read again alone through the list route, which
+// answers the narrowed view's body through the same read (readProjectEvalList), once the narrowed
+// cards have drawn, and the first paint's reads are db_ms less that time where the server's log
+// shows the narrowed read ran before the paint was read (`narrowed_read_in_paint`: whole, part or
+// none).
 // Budgets (spec R4, R17): every section painted within 400 ms of the navigation, the first payload
 // at most 300 KB compressed, at most 150 ms of database time at 84 days with a compare range and
 // 60 ms at 28 days with none, and the narrowed cards drawn within 2 s of the navigation. A bundle
 // load alone over 400 ms fails nothing: its line goes to the architect with its numbers (ledger
 // item 62). Each line is a RESULT, each missed budget a FAIL, and the step exits 1 when any FAIL
-// was printed.
+// was printed; the split's and the narrowed read's fields judge nothing.
 import { existsSync, writeFileSync } from "node:fs";
 
 import {
   type Counted,
   counted,
   database,
+  type Frame,
   fail,
   failed,
+  firstMark,
   flags,
+  frameKey,
   gzipBytes,
   type Instrumented,
   LiveLog,
+  LOGGED,
+  type Logged,
   launchChromium,
+  logSize,
   mark,
   ms,
   need,
@@ -53,10 +82,13 @@ import {
   type Page,
   readerContext,
   readInstrument,
+  recomputes,
   resetStatements,
   result,
+  serverLines,
   signIn,
   sleep,
+  type View,
 } from "./lib";
 
 const given = flags(process.argv.slice(2));
@@ -71,6 +103,7 @@ const sections = (given.get("sections") ?? "cards,legion,ci,deploys,logged").spl
 const login = given.get("login") ?? "alice";
 const warmedFile = given.get("warmed");
 const restartedFile = given.get("restarted");
+const serverLog = given.get("server-log");
 if ((warmedFile === undefined) !== (restartedFile === undefined))
   throw new Error(
     "--warmed and --restarted name the handshake's two files, together or not at all"
@@ -212,7 +245,8 @@ result(
 );
 
 // The paint: pg_stat_statements reset, the navigation in the warm browser, every first-paint
-// section painted, and pg_stat_statements read then.
+// section painted, and pg_stat_statements read then; the server's log is read from here on.
+const logFrom = serverLog === undefined ? 0 : logSize(serverLog);
 await resetStatements(db);
 const called = Date.now();
 await page.goto(`${base}${path}`, { waitUntil: "commit", timeout: timeoutMs });
@@ -301,6 +335,126 @@ const raw = budgeted.reduce((n, one) => n + (one?.raw ?? 0), 0);
 const own = (rows: Counted[]) => rows.filter((one) => !catalog.has(one.queryid));
 const total = (rows: Counted[]) => rows.reduce((n, one) => n + one.ms, 0);
 const dbMs = total(own(atPaint));
+
+// The split's views: the first snapshot the page heard of each subscription it holds, with the view
+// it answers and its name in the split (`evals.<kind>`, `narrowed.<kind>`, `items.<sort>`,
+// `legion-read`, an evals view of a page past the first with `@<offset>` after it), none for any
+// other view; and the server's debug lines since the navigation.
+const queryOf = (view: View) =>
+  new URLSearchParams(typeof view.query === "string" ? view.query : "");
+const nameOf = (view: View): string | null => {
+  const kind = classOf(view);
+  const viewQuery = queryOf(view);
+  if (kind === "evals" || kind === "narrowed") {
+    const offset = viewQuery.get("offset");
+    return `${kind}.${viewQuery.get("kind") ?? "all"}${offset === null ? "" : `@${offset}`}`;
+  }
+  if (kind === "items") return `items.${viewQuery.get("sort") ?? "rows"}`;
+  return kind === "legion-read" ? kind : null;
+};
+type Snapshot = { name: string; sub: string; view: View; frame: Frame };
+const snapshots: Snapshot[] = [];
+for (const frame of live.frames) {
+  const parsed = frame.parsed;
+  if (parsed === null || parsed.type !== "snapshot" || typeof parsed.sub !== "string") continue;
+  const view = live.views.get(parsed.sub);
+  const name = view === undefined ? null : nameOf(view);
+  if (view === undefined || name === null || snapshots.some((one) => one.sub === parsed.sub))
+    continue;
+  snapshots.push({ name, sub: parsed.sub, view, frame });
+}
+const logged = serverLog === undefined ? [] : serverLines(serverLog, logFrom);
+const arrivals = new Map(record.frames.map((one) => [frameKey(one.socket, one.index), one.at]));
+const fromStart = (at: number | null | undefined) =>
+  at === null || at === undefined ? null : at - record.start;
+/** The server's recompute of a view for its first subscriber (LOGGED.recompute, cause
+ *  subscribe). */
+const recomputeOf = (view: View): Logged | undefined =>
+  logged.find(
+    (line) =>
+      line.text("cause") === "subscribe" && recomputes(line, view, classOf(view) === "narrowed")
+  );
+/** Each time of a snapshot's way to the page, from the navigation, and each of the server's steps
+ *  in milliseconds, by its name in the split. */
+const timesOf = (one: Snapshot): [string, number | null][] => {
+  const recompute = recomputeOf(one.view);
+  const wrote = logged.find(
+    (line) =>
+      line.msg === LOGGED.frame && line.text("type") === "snapshot" && line.text("sub") === one.sub
+  );
+  const sent = record.sends.find(
+    (send) => send.socket === one.frame.socket && send.sub === one.sub
+  );
+  return [
+    ["subscribed_ms", fromStart(sent?.at)],
+    ["server_began_ms", fromStart(recompute?.at("began_unix_us"))],
+    ["head_ms", recompute?.number("head_ms") ?? null],
+    ["read_ms", recompute?.number("read_ms") ?? null],
+    ["snapshot_ms", recompute?.number("snapshot_ms") ?? null],
+    ["fold_ms", recompute?.number("fold_ms") ?? null],
+    ["freshness_ms", recompute?.number("freshness_ms") ?? null],
+    ["encode_ms", recompute?.number("encode_ms") ?? null],
+    ["server_ended_ms", fromStart(recompute?.at("ended_unix_us"))],
+    ["frame_encode_ms", wrote?.number("encode_ms") ?? null],
+    ["frame_write_ms", wrote?.number("write_ms") ?? null],
+    ["written_ms", fromStart(wrote?.at("wrote_unix_us"))],
+    ["arrived_ms", fromStart(arrivals.get(frameKey(one.frame.socket, one.frame.index)))],
+    ["parsed_ms", fromStart(firstMark(record, `dispatch:live-snapshot:${one.sub}`))],
+  ];
+};
+const timesByName = new Map(snapshots.map((one) => [one.name, new Map(timesOf(one))]));
+const timeOf = (name: string, key: string) => timesByName.get(name)?.get(key) ?? null;
+
+// The narrowed read alone (the ruling's item 4), once the narrowed cards have drawn: the list route's read
+// of the narrowed delivery view's query and window, which answers the view's body through the same
+// read (readProjectEvalList), with pg_stat_statements reset before it, so the statements it counts
+// are the read's own; and whether the server's log shows the hub's narrowed read running before
+// the paint's database time was read (whole, part or none of it; unknown without its line).
+const narrowed = snapshots.find((one) => one.name === "narrowed.delivery");
+let narrowedReadDbMs: number | null = null;
+let narrowedInPaint = "none";
+if (chosen.narrowed) {
+  const narrowedView =
+    narrowed?.view ?? [...live.views.values()].find((one) => classOf(one) === "narrowed");
+  if (narrowedView !== undefined && atNarrowed !== null) {
+    const range = (narrowedView.window ?? {}) as { preset?: number; from?: string; to?: string };
+    const to = range.to ?? new Date().toISOString();
+    const from =
+      range.from ?? new Date(Date.parse(to) - (range.preset ?? 84) * 86_400_000).toISOString();
+    const routeQuery = queryOf(narrowedView);
+    routeQuery.set("from", from);
+    routeQuery.set("to", to);
+    await resetStatements(db);
+    const answer = await context.request.get(
+      `${base}/api/v1/projects/${encodeURIComponent(project)}/evals?${routeQuery}`,
+      {}
+    );
+    const alone = await counted(db);
+    if (answer.status() === 200) narrowedReadDbMs = total(own(alone));
+    else
+      mark(
+        `paint case=${which}: the narrowed read again answered ${answer.status()}, so its database time is none`
+      );
+  }
+  const line = narrowed === undefined ? undefined : recomputeOf(narrowed.view);
+  const began = line?.at("began_unix_us") ?? null;
+  const ended = line?.at("ended_unix_us") ?? null;
+  narrowedInPaint =
+    began === null || ended === null || paintedAt === 0
+      ? "unknown"
+      : ended <= paintedAt
+        ? "whole"
+        : began >= paintedAt
+          ? "none"
+          : "part";
+}
+const firstPaintReadsDbMs =
+  !chosen.narrowed || narrowedInPaint === "none"
+    ? dbMs
+    : narrowedReadDbMs === null || narrowedInPaint === "unknown"
+      ? null
+      : dbMs - narrowedReadDbMs;
+
 const apiRequests = requests.filter(
   (one) => paintedAt > 0 && one.at <= paintedAt && new URL(one.url).pathname.startsWith("/api/")
 );
@@ -329,6 +483,7 @@ result(
 );
 result(
   `tab paint case=${which} rate=${rate} db_ms=${ms(dbMs)} budget_db_ms=${chosen.budgetDbMs} db_ms_everything_in_flight=${ms(total(atPaint))} ` +
+    `first_paint_reads_db_ms=${ms(firstPaintReadsDbMs)} narrowed_read_db_ms=${ms(narrowedReadDbMs)} narrowed_read_in_paint=${narrowedInPaint} ` +
     `statements=${own(atPaint).length} catalogued_statements_set_aside=${atPaint.length - own(atPaint).length} ` +
     `api_requests=${apiRequests.length} eval_detail_reads=${detailReads.length}`
 );
@@ -339,20 +494,65 @@ for (const one of own(atPaint)
     `paint case=${which} statement ms=${ms(one.ms)} calls=${one.calls} ${one.query.replace(/\s+/g, " ").slice(0, 220)}`
   );
 }
+
+// The split (the ruling's item 1): each view of the first payload, then each section and CI job list.
+const split = [
+  `first_paint_ms=${ms(firstPaint)}`,
+  `server_log=${serverLog !== undefined}`,
+  `server_lines=${logged.length}`,
+];
+for (const one of snapshots) {
+  if (one.name.startsWith("narrowed.")) continue;
+  for (const [key, value] of timesByName.get(one.name) ?? [])
+    split.push(`${one.name}.${key}=${ms(value)}`);
+  split.push(
+    `${one.name}.raw_bytes=${one.frame.text.length}`,
+    `${one.name}.gzip_bytes=${gzipBytes(one.frame.text)}`
+  );
+}
+for (const [id, presented] of sectionTimes) {
+  const committed = fromStart(firstMark(record, `dispatch:evals-section:${id}`));
+  split.push(
+    `section.${id}.committed_ms=${ms(committed)}`,
+    `section.${id}.presented_ms=${ms(presented)}`
+  );
+}
+for (const [id, presented] of listTimes) {
+  const committed = fromStart(firstMark(record, `dispatch:evals-job-list:${id}`));
+  split.push(
+    `job_list.${id}.committed_ms=${ms(committed)}`,
+    `job_list.${id}.presented_ms=${ms(presented)}`
+  );
+}
+result(`tab paint split case=${which} rate=${rate} ${split.join(" ")}`);
+
 let narrowedAt: number | null = null;
 if (chosen.narrowed) {
   narrowedAt = since(record.narrowing.narrowed?.painted);
   const cardsAt = since(record.sections.cards?.painted);
-  const after = (from: number | null) =>
-    narrowedAt === null || from === null ? null : narrowedAt - from;
+  const minus = (a: number | null, b: number | null) => (a === null || b === null ? null : a - b);
   const throughNarrowed = atNarrowed === null ? null : total(own(atNarrowed));
+  const name = "narrowed.delivery";
+  const subscribed = timeOf(name, "subscribed_ms");
+  const serverDb = ["head_ms", "snapshot_ms", "freshness_ms"]
+    .map((key) => timeOf(name, key))
+    .reduce<number | null>((sum, one) => (sum === null || one === null ? null : sum + one), 0);
   // A negative delay is a narrowed view that landed before that paint: the cards then drew their
   // narrowed values before the last section of the first paint.
   result(
     `tab paint case=${which} rate=${rate} narrowed_cards_ms=${ms(narrowedAt)} budget_narrowed_ms=${BUDGET_NARROWED_MS} ` +
-      `narrowed_after_first_paint_ms=${ms(after(firstPaint))} narrowed_after_cards_painted_ms=${ms(after(cardsAt))} ` +
+      `narrowed_after_first_paint_ms=${ms(minus(narrowedAt, firstPaint))} narrowed_after_cards_painted_ms=${ms(minus(narrowedAt, cardsAt))} ` +
       `loading_mark_seen=${record.narrowing.loading !== undefined} db_ms_through_narrowed=${ms(throughNarrowed)} ` +
-      `db_ms_after_first_paint_through_narrowed=${ms(throughNarrowed === null ? null : throughNarrowed - dbMs)}`
+      `db_ms_after_first_paint_through_narrowed=${ms(throughNarrowed === null ? null : throughNarrowed - dbMs)} ` +
+      `narrowed_subscribed_ms=${ms(subscribed)} ` +
+      `narrowed_subscribed_after_delivery_arrived_ms=${ms(minus(subscribed, timeOf("evals.delivery", "arrived_ms")))} ` +
+      `narrowed_subscribed_after_delivery_parsed_ms=${ms(minus(subscribed, timeOf("evals.delivery", "parsed_ms")))} ` +
+      `narrowed_server_began_ms=${ms(timeOf(name, "server_began_ms"))} ` +
+      `narrowed_server_ms=${ms(minus(timeOf(name, "server_ended_ms"), timeOf(name, "server_began_ms")))} ` +
+      `narrowed_server_db_ms=${ms(serverDb)} narrowed_fold_ms=${ms(timeOf(name, "fold_ms"))} ` +
+      `narrowed_encode_ms=${ms(timeOf(name, "encode_ms"))} narrowed_arrived_ms=${ms(timeOf(name, "arrived_ms"))} ` +
+      `narrowed_parsed_ms=${ms(timeOf(name, "parsed_ms"))} narrowed_read_db_ms=${ms(narrowedReadDbMs)} ` +
+      `narrowed_read_in_paint=${narrowedInPaint}`
   );
 }
 

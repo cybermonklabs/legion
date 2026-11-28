@@ -1005,6 +1005,17 @@ A descriptor that is not a listening TCP socket, or a setting that names another
 `DISPATCH_SERVER_URL` is not derived from the socket.
 Either way the server logs the address it serves on once it serves, as `dispatch: listening addr=<host:port>`.
 
+### Logging
+
+The server and its subcommands log to stderr, one `key=value` line each (`log/slog`'s text form), at `info` and above.
+`DISPATCH_LOG_LEVEL` sets the least severe line logged: `debug`, `info`, `warn` or `error`; unset or empty is `info`, and any other value refuses startup naming the variable.
+`debug` adds the lines that time a write's way to an open page, each with the moments it names in Unix microseconds (`*_unix_us`) and the time each step took in milliseconds (`*_ms`):
+`dispatch: the eval day-row refresher read a page of changes` for each page of the refresher that reads the change log (the change positions it read, when it read them and when its day rows committed),
+`dispatch: delivery live hub read changes` for each read of the change log the live hub makes (the positions read and how many views they marked),
+`dispatch: delivery live hub timed a recompute` for each recompute (the view, how it stood marked, when it was due, and its read, fold and encode),
+and `dispatch: live socket wrote a frame` for each snapshot and delta a socket writes (its sub and position, and how long its encode and its compressed write took).
+The Evals tab's browser measurement (`evalbench/run.sh tab`) runs the server at `debug` and reads them.
+
 ### Profiling
 
 Set `DISPATCH_PPROF_PORT` to a port to serve the Go profiler (`net/http/pprof`) on `127.0.0.1:<port>`, on a mux of its own, apart from the server's routes.

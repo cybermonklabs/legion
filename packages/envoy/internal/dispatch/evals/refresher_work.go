@@ -216,6 +216,68 @@ type refresh struct {
 	batched   *gapBatch
 	walkBuilt int
 	report    refreshed
+	// trace is the page's debug line while one is logged (pageTimes), nil otherwise: page sets it
+	// anew for each page that reads the change log, and writeNamed and the page's commit record on
+	// it when the day rows were written and committed.
+	trace *pageTimes
+}
+
+// pageTimes is when the steps of one page of a pass happened, which its debug line states
+// (logPage): the change log's positions it read after and through, how many changes it read and
+// when the read answered; when its first write of the delivery and CI rows and its first of the
+// Legion rows, each a transaction of its own (writeNamed), began, folded and committed
+// (dayWriteTimes), zero for none; and how many span writes its commit held, which commit their
+// day rows with its cursors, and when that commit ended.
+type pageTimes struct {
+	after, through   int64
+	changes          int
+	read             time.Time
+	delivery, legion dayWriteTimes
+	spans            int
+	committed        time.Time
+}
+
+// dayWrite is where a write of walk's day rows records its times (writeDays): on the page's trace,
+// where there is one, for its first write of the delivery or the Legion rows; nil otherwise.
+func (r *refresh) dayWrite(walk string) *dayWriteTimes {
+	if r.trace == nil {
+		return nil
+	}
+	switch {
+	case walk == walkDelivery && r.trace.delivery.began.IsZero():
+		return &r.trace.delivery
+	case walk == walkLegion && r.trace.legion.began.IsZero():
+		return &r.trace.legion
+	}
+	return nil
+}
+
+// logPage writes the page's debug line: the positions of the change log it read, how many changes
+// it read, and when the pass began, its read answered, its first write of each family's day rows
+// began, folded and committed, its commit, which holds its span writes if any, ended, and the page
+// ended, each moment in Unix microseconds, 0 for none.
+func (r *refresh) logPage() {
+	trace := r.trace
+	r.trace = nil
+	if trace == nil {
+		return
+	}
+	slog.Debug("dispatch: the eval day-row refresher read a page of changes",
+		"after", trace.after, "through", trace.through, "changes", trace.changes,
+		"pass_began_unix_us", unixMicros(r.report.parts.began), "read_unix_us", unixMicros(trace.read),
+		"delivery_began_unix_us", unixMicros(trace.delivery.began), "delivery_folded_unix_us", unixMicros(trace.delivery.folded),
+		"delivery_committed_unix_us", unixMicros(trace.delivery.committed),
+		"legion_began_unix_us", unixMicros(trace.legion.began), "legion_folded_unix_us", unixMicros(trace.legion.folded),
+		"legion_committed_unix_us", unixMicros(trace.legion.committed),
+		"spans", trace.spans, "page_committed_unix_us", unixMicros(trace.committed), "ended_unix_us", time.Now().UnixMicro())
+}
+
+// unixMicros is a moment as a debug line states it: Unix microseconds, 0 for the zero time.
+func unixMicros(at time.Time) int64 {
+	if at.IsZero() {
+		return 0
+	}
+	return at.UnixMicro()
 }
 
 // load reads the projects and the delivery settings and seeds the projects the pass owes a seed
@@ -562,6 +624,9 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 			}
 			full = len(changes) == limit
 			parts.changes += len(changes)
+			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+				r.trace = &pageTimes{after: after.Seq, through: moved.changes.Seq, changes: len(changes), read: time.Now()}
+			}
 		}
 		parts.mark(partChanges)
 		events, err := r.store.readRefresherEvents(ctx, cursors.events, safe, limit)
@@ -611,6 +676,9 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work, rebuilds); err != nil {
 		return false, err
 	}
+	if r.trace != nil {
+		r.trace.spans, r.trace.committed = len(rebuilds), time.Now()
+	}
 	parts.mark(partCommit)
 	if afterPublish {
 		if err := r.applyFailures(ctx, work); err != nil {
@@ -624,16 +692,18 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		return false, err
 	}
 	parts.mark(partOwed)
+	r.logPage()
 	return full, nil
 }
 
 // beginPage starts a page: its delivery reads, the unowned-p0 rows it wrote, and its reads of the
 // repositories whose rows are kept per deploy repository and of the serving records begin empty
-// (refresh's rule on why they hold for one page).
+// (refresh's rule on why they hold for one page), and so does its trace (pageTimes).
 func (r *refresh) beginPage() {
 	r.reads, r.done, r.unowned = map[time.Time]deliveryRead{}, map[builtDay]bool{}, map[string]bool{}
 	r.deployRepos = nil
 	r.serving = nil
+	r.trace = nil
 }
 
 // walkOf is the walk that builds project's days of family: the one delivery walk of every
@@ -1457,7 +1527,7 @@ func (r *refresh) walkWrite(ctx context.Context, family dayFamily, key walkKey, 
 	}
 	if err := r.store.writeDays(ctx, family, days, r.build, false, func(tx pgx.Tx) error {
 		return r.recordWalkIn(ctx, tx, key, day.AddDate(0, 0, 1))
-	}); err != nil {
+	}, nil); err != nil {
 		return err
 	}
 	for _, one := range days {

@@ -725,14 +725,24 @@ func parseEvalRepos(query url.Values) ([]string, error) {
 
 // evalListRequest is one read of the eval list: what every eval read reads of its query, the kind
 // it keeps, "" for every kind, what it narrows the evals that count pull requests by, nil for
-// nothing (parseEvalNarrowing), and projectsIn, which reads in the answer's snapshot the projects
+// nothing (parseEvalNarrowing), projectsIn, which reads in the answer's snapshot the projects
 // it reads, in order: the project route's project, found (loadProject), and the cross-project
-// read's (evalProjectsIn).
+// read's (evalProjectsIn), and times, where the read records how long its steps took, nil for a
+// read that times nothing.
 type evalListRequest struct {
 	evalReadQuery
 	kind       string
 	narrowing  *evalNarrowing
 	projectsIn func(ctx context.Context, tx pgx.Tx) ([]string, error)
+	times      *evalReadTimes
+}
+
+// evalReadTimes is how long the steps of one list read took (readProjectEvalList): its one
+// snapshot's reads, from the transaction's begin to its commit (readEvalList), the fold of the
+// values they read, and the read of the project's delivery freshness after it, none for another
+// kind. The live hub's debug line of an evals view's recompute states them (recomputeTrace).
+type evalReadTimes struct {
+	snapshot, fold, freshness time.Duration
 }
 
 // parseEvalListQuery reads the list read's query, every key but `project`, which only the
@@ -757,7 +767,7 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	answer, _, err := s.readProjectEvalList(r.Context(), r.URL.Query(), r.PathValue("key"), time.Now().UTC())
+	answer, _, err := s.readProjectEvalList(r.Context(), r.URL.Query(), r.PathValue("key"), time.Now().UTC(), nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -771,8 +781,9 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 // (loadProject), and, for its delivery evals (kind=delivery), the freshness of its deploy sources
 // (projectDeliveryFreshness). The live hub's evals view reads its body through this too, so the
 // two answer one query alike, and takes the narrowing the read narrowed by (nil for none), which
-// names the issues and sessions an event can move it by.
-func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, *evalNarrowing, error) {
+// names the issues and sessions an event can move it by. Where times is not nil, the read records
+// how long its steps took there (evalReadTimes).
+func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time, times *evalReadTimes) (evalListResponse, *evalNarrowing, error) {
 	request, err := parseEvalListQuery(query, evalListQueryKeys)
 	if err != nil {
 		return evalListResponse{}, nil, err
@@ -783,13 +794,21 @@ func (s *server) readProjectEvalList(ctx context.Context, query url.Values, proj
 		}
 		return []string{project}, nil
 	}
+	request.times = times
 	answer, err := s.readEvalList(ctx, request, now)
 	if err != nil {
 		return evalListResponse{}, nil, err
 	}
 	if request.kind == evals.KindDelivery {
+		var began time.Time
+		if times != nil {
+			began = time.Now()
+		}
 		if answer.DeliveryFreshness, err = s.projectDeliveryFreshness(ctx, project); err != nil {
 			return evalListResponse{}, nil, err
+		}
+		if times != nil {
+			times.freshness = time.Since(began)
 		}
 	}
 	return answer, request.narrowing, nil
@@ -909,8 +928,13 @@ func evalProjectsIn(ctx context.Context, tx pgx.Tx, named []string) ([]string, e
 // answers, sends it as one delta of the whole new state, never as an eval's old window figures
 // beside its new days, nor the new deploy repository's rows as the old production rule built
 // them. The transaction holds ctx's connection mark, so a read of the pool made under it is
-// refused (store.ErrNestedAcquire).
+// refused (store.ErrNestedAcquire). Where request.times is not nil, the read records there how
+// long the snapshot took, from its begin to its commit, and the fold after it (evalReadTimes).
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
+	var began time.Time
+	if request.times != nil {
+		began = time.Now()
+	}
 	tx, err := s.registry().BeginSnapshot(ctx)
 	if err != nil {
 		return evalListResponse{}, fmt.Errorf("begin the read of the eval list: %w", err)
@@ -935,6 +959,11 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 	if err := tx.Commit(ctx); err != nil {
 		return evalListResponse{}, fmt.Errorf("end the read of the evals of %v: %w", projects, err)
 	}
+	var committed time.Time
+	if request.times != nil {
+		committed = time.Now()
+		request.times.snapshot = committed.Sub(began)
+	}
 	items, freshness := values.items()
 	answer := evalListResponse{
 		Items: make([]evalListItem, len(items)), Total: page.Total, Limit: request.limit, Offset: request.offset,
@@ -942,6 +971,9 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 	}
 	for index, item := range items {
 		answer.Items[index] = evalListItem{ID: item.Definition.EvalID, DeclaredCharts: page.Items[index].DeclaredCharts, evalItem: item}
+	}
+	if request.times != nil {
+		request.times.fold = time.Since(committed)
 	}
 	return answer, nil
 }
