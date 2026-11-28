@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -28,6 +29,12 @@ const introspectTimeout = 5 * time.Second
 // maxIntrospectionBytes caps the answer read from the broker. The answer is a dozen short fields,
 // so anything larger is not the broker's own and is refused rather than held.
 const maxIntrospectionBytes = 64 << 10
+
+// maxRetryAfter caps the wait a broker's 503 asks for (RetryAfter), as the broker's token client
+// caps it (internal/cipherclient, maxRetryAfter), so no answer's large value, the broker's or a
+// proxy's before it, holds a caller back for longer than a minute. The broker asks for the
+// spacing of its reads of a key set that failed, 5 s by default.
+const maxRetryAfter = time.Minute
 
 // Project scopes an Introspection's Projects is read under: the broker's own wire names, carried
 // here so a reader of a Caller this package decides reads one package (internal/dispatch/api).
@@ -205,7 +212,7 @@ func notHeldUntilOf(answer Introspection) time.Time {
 // the account token Dispatch could not read, a transport failure, a status the broker does not
 // answer a sound request with, a body that does not decode — is ErrBrokerUnreachable, never a
 // refusal: a caller told its token was refused would discard a token that may be perfectly live,
-// while 503 asks it to come back.
+// while 503 asks it to come back. A 503 that names a wait carries it (RetryAfter).
 func (v *Verifier) introspect(ctx context.Context, token string) (Introspection, error) {
 	account, err := v.account.Read()
 	if err != nil {
@@ -235,8 +242,17 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	if response.StatusCode != http.StatusOK {
 		// A 429 is the broker's own account-class bucket, a 401 or 403 Dispatch's own account
 		// token, a 5xx the broker failing: none of them says anything about the token presented,
-		// so none of them refuses it.
-		return Introspection{}, fmt.Errorf("%w: the broker answered %d", ErrBrokerUnreachable, response.StatusCode)
+		// so none of them refuses it. The broker answers 503 ISSUER_UNAVAILABLE, asking for a wait,
+		// when it could not check Dispatch's own account token because the key set of that
+		// token's issuer could not be read, and the wait goes to whoever mounts this check, which
+		// answers its own caller no sooner.
+		unreachable := fmt.Errorf("%w: the broker answered %d", ErrBrokerUnreachable, response.StatusCode)
+		if response.StatusCode == http.StatusServiceUnavailable {
+			if wait, _ := serverwait.Read(response.Header, time.Now()); wait > 0 {
+				return Introspection{}, &serverwait.Waited{Err: unreachable, Wait: min(wait, maxRetryAfter)}
+			}
+		}
+		return Introspection{}, unreachable
 	}
 	var answer struct {
 		Introspection
@@ -264,3 +280,11 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	answer.Person = fold.Login(answer.Person)
 	return answer.Introspection, nil
 }
+
+// RetryAfter is the wait err carries anywhere in its chain (serverwait.WaitIn): the Retry-After of
+// the broker's 503 to an introspection (serverwait.Read), read as at most maxRetryAfter. Whoever
+// mounts this check answers its own caller 503 with a Retry-After no shorter (Dispatch's
+// brokerTokenActor, the listener's refuseBrokerToken). ok is false for an error that carries none:
+// every other ErrBrokerUnreachable, a 503 that named no wait or a wait of zero among them, which
+// each keeps answering as it did before the broker named one.
+func RetryAfter(err error) (time.Duration, bool) { return serverwait.WaitIn(err) }

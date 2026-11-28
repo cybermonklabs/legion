@@ -3,14 +3,17 @@
 // The trade of a person's sign-in for a placeholder of Cipher's proxy (`proxyPlaceholder`): the
 // one exchange that asks for no access token, whose answer is a placeholder the broker's proxy
 // swaps a token of its own for, and how the session reaches that proxy. The client reads that
-// answer strictly and never takes anything else for a placeholder.
+// answer strictly and never takes anything else for a placeholder. A 503 with `Retry-After`, the
+// broker's own answer through a key set that cannot be read (`keySetOutage`), is waited out on
+// the client's injected clock, so no row sleeps.
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
-import { BrokerTokenClient } from "../token-client";
-import { BrokerTradeFailedError } from "../token-errors";
+import { BrokerTokenClient, type BrokerTokenClientOptions } from "../token-client";
+import { BrokerRefusedError, BrokerTradeFailedError, isFinalRefusal } from "../token-errors";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   FORM_REQUESTED_TOKEN_TYPE,
@@ -19,7 +22,7 @@ import {
   SUBJECT_TOKEN_TYPE_PERSON,
   TOKEN_TYPE_PROXY_PLACEHOLDER,
 } from "../wire";
-import { refusalOf, stubBroker } from "./stub";
+import { keySetOutage, refusalOf, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const PLACEHOLDER = `agent-secrets-placeholder-approve-${"A".repeat(32)}`;
@@ -62,8 +65,12 @@ function placeholderAnswer(
 }
 
 /** A person's client of the broker at `url`: their identity token as the subject, the machine's as
- *  the actor, under `session`. */
-async function personClient(url: string, session = "ada-box-1"): Promise<BrokerTokenClient> {
+ *  the actor, under `session`, on the clock and the waits of `seams` where a row gives them. */
+async function personClient(
+  url: string,
+  session = "ada-box-1",
+  seams: Pick<BrokerTokenClientOptions, "now" | "sleep"> = {}
+): Promise<BrokerTokenClient> {
   return new BrokerTokenClient({
     brokerUrl: url,
     key: await newDpopKey(),
@@ -71,6 +78,7 @@ async function personClient(url: string, session = "ada-box-1"): Promise<BrokerT
     actor: fixed(fixtureSecret("machine"), SUBJECT_TOKEN_TYPE_GOOGLE),
     session,
     log: () => {},
+    ...seams,
   });
 }
 
@@ -176,6 +184,116 @@ test("a broker's refusal of the placeholder trade is thrown as the trade's refus
     );
     expect(refusal).not.toBeNull();
     expect(String(refusal)).toContain("invalid_request");
+  } finally {
+    broker.stop();
+  }
+});
+
+/** The broker's answer to a trade whose subject or actor token it could not check, because the key
+ *  set of that token's issuer could not be read: 503 with `Retry-After: 5`, as its real server
+ *  wrote it. */
+const KEY_SET_OUTAGE = await keySetOutage();
+
+/** A clock a row moves, starting where these rows' calls start. */
+const OUTAGE_START = 1_700_000_000_000;
+
+/** Waits that pass at once, each moving `clock` by its length, kept in `waits`. */
+function passingWaits(clock: { now: number }, waits: number[]): BrokerTokenClientOptions["sleep"] {
+  return async (ms: number) => {
+    waits.push(ms);
+    clock.now += ms;
+  };
+}
+
+/** Fails unless `error` is the broker's outage through a key set that cannot be read as a call
+ *  that stopped trying answers it: never a refusal, and in words that name the outage, the
+ *  status and how long the call tried. */
+function expectOutage(error: Error | null): void {
+  expect(error).toBeInstanceOf(BrokerTradeFailedError);
+  expect(error).not.toBeInstanceOf(BrokerRefusedError);
+  expect(isFinalRefusal(error)).toBe(false);
+  expect((error as BrokerTradeFailedError).retryAfterMs).toBe(5_000);
+  for (const words of [
+    `could not check a scripted ${SUBJECT_TOKEN_TYPE_PERSON}, because its issuer's key set could not be read`,
+    "HTTP 503 temporarily_unavailable",
+    "; tried for ",
+  ]) {
+    expect(error?.message).toContain(words);
+  }
+}
+
+test("Retry-After: a placeholder answered 503 asking 5 s is traded again after 5 s", async () => {
+  const clock = { now: OUTAGE_START };
+  const arrivals: number[] = [];
+  const broker = stubBroker((_trade, count) => {
+    arrivals.push(clock.now);
+    return count === 1 ? KEY_SET_OUTAGE : { body: placeholderAnswer() };
+  });
+  const waits: number[] = [];
+  try {
+    const client = await personClient(broker.url, "ada-box-1", {
+      now: () => clock.now,
+      sleep: passingWaits(clock, waits),
+    });
+    expect((await client.proxyPlaceholder()).placeholder).toBe(PLACEHOLDER);
+    expect(waits).toEqual([5_000]);
+    expect(arrivals).toEqual([OUTAGE_START, OUTAGE_START + 5_000]);
+  } finally {
+    broker.stop();
+  }
+});
+
+test("Retry-After: with no signal, a broker that answers 503 every time fails within 2 minutes naming the outage", async () => {
+  const clock = { now: OUTAGE_START };
+  const arrivals: number[] = [];
+  const broker = stubBroker(() => {
+    arrivals.push(clock.now);
+    return KEY_SET_OUTAGE;
+  });
+  const waits: number[] = [];
+  try {
+    const client = await personClient(broker.url, "ada-box-1", {
+      now: () => clock.now,
+      sleep: passingWaits(clock, waits),
+    });
+    const error = await refusalOf(() => client.proxyPlaceholder());
+    expectOutage(error);
+    expect(error?.message).toContain("a call with no signal tries for");
+    expect(clock.now - OUTAGE_START).toBeLessThanOrEqual(120_000);
+    // A trade 5 s after each 503, the wait each asked for, until no 5 s is left inside the
+    // 2 minutes.
+    expect(arrivals).toEqual(Array.from({ length: 24 }, (_, n) => OUTAGE_START + n * 5_000));
+    expect(waits.every((ms) => ms === 5_000)).toBe(true);
+  } finally {
+    broker.stop();
+  }
+});
+
+test("Retry-After: with a signal, the wait ends when the signal does", async () => {
+  const clock = { now: OUTAGE_START };
+  const broker = stubBroker(() => KEY_SET_OUTAGE);
+  // The wait holds until the call's own signal ends it, moving no clock.
+  const waits: number[] = [];
+  const held = (ms: number, signal?: AbortSignal): Promise<void> => {
+    waits.push(ms);
+    const { promise, resolve } = Promise.withResolvers<void>();
+    signal?.addEventListener("abort", () => resolve(), { once: true });
+    return promise;
+  };
+  try {
+    const client = await personClient(broker.url, "ada-box-1", {
+      now: () => clock.now,
+      sleep: held,
+    });
+    const life = new AbortController();
+    const call = refusalOf(() => client.proxyPlaceholder(life.signal));
+    await until("the call waiting out the 503's Retry-After", () => waits.length === 1);
+    expect(waits).toEqual([5_000]);
+    life.abort();
+    const error = await call;
+    expectOutage(error);
+    expect(error?.message).toContain("until the call's signal ended");
+    expect(broker.trades).toHaveLength(1);
   } finally {
     broker.stop();
   }

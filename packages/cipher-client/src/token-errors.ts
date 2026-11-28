@@ -211,14 +211,23 @@ export class TradeUnansweredError extends Error {
  * holding a control character, a device code no poll could reach). Its message names the broker as
  * `urlForText` names it and what failed: the identity traded or the login, and the failure by its
  * class (`errorClass`); the field of the answer this machine will not use; or the numbers in it
- * that were checked finite, printed as digits. It holds nothing else a peer wrote, so a caller
- * prints it whole, and it keeps no cause, since the library's error can hold the answer it read.
+ * that were checked finite, printed as digits. A 5xx whose answer names the broker's
+ * `ISSUER_UNAVAILABLE` is named as that outage instead: the broker could not check the identity's
+ * token, because the key set of its issuer could not be read (`brokerRefusal`). It holds nothing
+ * else a peer wrote, so a caller prints it whole, and it keeps no cause, since the library's error
+ * can hold the answer it read. It is never a refusal, so never final ({@link isFinalRefusal}).
  * The class says nothing of whether asking again cures it: a trade's loop tries again
  * (`BrokerTokenClient`), and {@link DEVICE_LOGIN_COMMAND} prints it and stops; a device code no
  * poll could reach says in its message that asking again meets the same answer.
  */
 export class BrokerTradeFailedError extends Error {
-  constructor(message: string) {
+  /** `retryAfterMs` is the wait a 503 asked for with `Retry-After`, read as at most a minute
+   *  (`MAX_RETRY_AFTER_MS`, `broker-request.ts`), and 0 for every other failure: the token client
+   *  sends no trade before that wait has passed. */
+  constructor(
+    message: string,
+    readonly retryAfterMs = 0
+  ) {
     super(message);
     this.name = "BrokerTradeFailedError";
   }

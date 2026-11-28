@@ -334,6 +334,14 @@ refused `ALREADY_ENROLLED` — and records what the broker said in `<out>/enroll
 every later `agent-secrets` call in that directory reads out to the caller. A run that succeeds
 removes it.
 
+A broker that cannot check the pod's token, because the key set of the token's issuer cannot be
+read, refuses nothing: it answers 503 with `Retry-After`. `enroll --pod` waits that wait out and
+asks again, on its login, its enrolment and the renewal of an enrollment its key already holds,
+reading a wait above 60 s as 60 s, for at most two minutes from its start across all three; it then
+exits 1 with a line naming the outage and how long it tried, which it records in
+`<out>/enrollment.error` where a key is there, as it records a refusal. `renew` waits the larger of
+its own backoff (2 s, doubling to 10 s) and that wait before its next renewal.
+
 A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person acts for that person, and
 names its Dispatch projects as that person's session does: `enroll --pod` sends the list
 `AGENT_SECRETS_PROJECTS` holds, or `--projects` over it. The broker takes the list only when

@@ -318,8 +318,9 @@ Each refusal is its own code and none repeats the token:
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
 it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, the project scope `none` or a narrowed one in any shape but a read-only token's, or the scope `approve` in any shape but an approve-only token's; `ciphertoken.ErrNotASession` holds the whole list)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (the introspection bucket of this caller address, `auth.ForwardedAddress` under `DISPATCH_TRUSTED_PROXY_RANGES` (above), is empty;
-nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
-— a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
+nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker gave no answer on the token, so the token was never judged
+— a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one;
+where the broker answered `503` with `Retry-After`, as it does while it cannot read the key set of the issuer of Dispatch's own account token, the answer carries that wait, rounded up to whole seconds, and otherwise none).
 The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
@@ -883,7 +884,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
   The issuer's discovery document is read in the background from boot, on the service-account issuer's schedule (above), and an issuer that cannot be reached refuses nothing:
   until the document has been read, `/auth/start` and the callback answer `503 SIGNIN_UNAVAILABLE`, and the rest of Dispatch serves.
-  A callback whose code exchange the issuer's token endpoint answers `5xx`, `408` or `429`, whatever OAuth error its body names, answers with a body cut off before it arrives whole, or does not answer, is `503 SIGNIN_UNAVAILABLE` too: that closed set is the issuer down.
+  A callback whose code exchange the issuer's token endpoint answers `5xx`, `408` or `429`, whatever OAuth error its body names, answers with a body cut off before it arrives whole, or does not answer, or whose ID token cannot be checked because the issuer's key set cannot be read, is `503 SIGNIN_UNAVAILABLE` too: that closed set is the issuer down.
   Every other answer is the endpoint answering, and the sign-in fails `502`: a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, and a `3xx`.
   A sign-in in flight (its state, its nonce, the page it returns to and when it lapses, ten minutes after it started) travels in the browser's `dispatch_oauth_state` cookie, signed under a key derived from the current signing key for that purpose alone, and no process keeps it:
   a sign-in one process started completes on whichever process the issuer's redirect reaches, given the same `DISPATCH_SERVER_URL` and `DISPATCH_SERVED_ORIGINS` on every process:
@@ -5522,7 +5523,7 @@ Each item below names a path with its method and identity, then its purpose.
   At a former address's host, at any port, it answers the `404` a path no route serves answers.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
   `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
-  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
+  `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer, or when the issuer's key set cannot be read to check the ID token;
   `502` for every other answer of the token endpoint (a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, or a `3xx`) and every other failure of the sign-in;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 

@@ -135,10 +135,16 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	if err := provider.Claims(&discovery); err != nil {
 		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", redact.URL(issuer), issuerError(issuer, err))
 	}
-	if discovery.JWKSURI == "" {
+	return keysAt(issuer, discovery.JWKSURI)
+}
+
+// keysAt is the key source for jwksURI, the key set issuer's discovery document names, refusing a
+// document that names none: NewKeys and the code flow's discovery read keys this way.
+func keysAt(issuer, jwksURI string) (*Keys, error) {
+	if jwksURI == "" {
 		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", redact.URL(issuer))
 	}
-	return NewKeysAt(discovery.JWKSURI), nil
+	return NewKeysAt(jwksURI), nil
 }
 
 // issuerError is err, a failure to read issuer's discovery document, as an error prints it: err
@@ -189,10 +195,59 @@ func NewKeysAt(jwksURI string) *Keys {
 // one failed within MinRefresh) is ErrKeySet, not ErrNoKey: no verdict on that key has been
 // reached yet.
 //
-// Every error wraps ErrNoKey, ErrAmbiguousKey or ErrKeySet. The text names the key id asked for,
-// which is a public identifier, shortened so an oversized one cannot flood a log, and no other
-// part of the token.
+// Every error wraps ErrNoKey, ErrAmbiguousKey or ErrKeySet. One that wraps ErrKeySet also carries
+// k's FailureSpacing, how long the failure answers before the set is read again, which RetryAfter
+// reads. The text names the key id asked for, which is a public identifier, shortened so an
+// oversized one cannot flood a log, and no other part of the token.
 func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
+	key, err := k.key(ctx, kid, alg)
+	if errors.Is(err, ErrKeySet) {
+		return nil, &keySetFailure{err: err, wait: k.FailureSpacing}
+	}
+	return key, err
+}
+
+// keySetFailure is an error Key returns that wraps ErrKeySet, with the FailureSpacing of the Keys
+// whose read failed: the one source of how long a caller that answers the outage tells its own
+// caller to wait (RetryAfter).
+type keySetFailure struct {
+	err  error
+	wait time.Duration
+}
+
+// Error is the failure's own text; the wait adds nothing to it.
+func (f *keySetFailure) Error() string { return f.err.Error() }
+
+// Unwrap is the failure the wait was put on, so the error still matches ErrKeySet.
+func (f *keySetFailure) Unwrap() error { return f.err }
+
+// RetryAfter is the wait err carries anywhere in its chain: the FailureSpacing of the key set whose
+// read failed, which Key puts on every error it returns that wraps ErrKeySet and a Verifier's
+// ErrIssuerUnavailable keeps (classify wraps the key source's error). It is how long that key set
+// answers with its failure before it reads the issuer again, so a server that answers the outage
+// sends it as its Retry-After. ok is false for an error that carries none: every other failure,
+// and an ErrIssuerUnavailable no key-set read caused, such as a discovery failure or a token
+// endpoint that could not answer.
+func RetryAfter(err error) (time.Duration, bool) {
+	var failure *keySetFailure
+	if !errors.As(err, &failure) {
+		return 0, false
+	}
+	return failure.wait, true
+}
+
+// RetryAfterOrDefault is the wait err carries (RetryAfter), or DefaultKeysFailureSpacing for an
+// err that carries none: the wait a server that answers an unreadable issuer sends as its
+// Retry-After.
+func RetryAfterOrDefault(err error) time.Duration {
+	if wait, ok := RetryAfter(err); ok {
+		return wait
+	}
+	return DefaultKeysFailureSpacing
+}
+
+// key is Key's answer, before Key puts the wait on a key-set failure.
+func (k *Keys) key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
 	set, fetched := k.state()
 	stale := !fetched.IsZero() && time.Since(fetched) >= k.Lifetime
 	if stale && time.Since(fetched) < k.Lifetime+k.MinRefresh {

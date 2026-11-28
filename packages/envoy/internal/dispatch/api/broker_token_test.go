@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -893,6 +894,39 @@ func TestBrokerTokenRefusalsEachHaveTheirOwnCode(t *testing.T) {
 		if response.Code != http.StatusServiceUnavailable || refusal.Code != "BROKER_UNAVAILABLE" {
 			t.Fatalf("status=%d refusal=%+v, want 503 BROKER_UNAVAILABLE", response.Code, refusal)
 		}
+	})
+}
+
+// TestABrokerTokenTheBrokerCouldNotCheckIsAnswered503WithItsRetryAfter: the broker answers an
+// introspection 503 asking for a wait when it could not check Dispatch's own account token
+// because the key set of that token's issuer could not be read. Dispatch answers 503
+// BROKER_UNAVAILABLE asking for that wait, so its caller does not send again sooner than the
+// broker asked; a broker that answers nothing names no wait, and the 503 carries no Retry-After,
+// as it did before. The stub replays the broker's own answer, captured from its server
+// (unreadablekeysettest).
+func TestABrokerTokenTheBrokerCouldNotCheckIsAnswered503WithItsRetryAfter(t *testing.T) {
+	t.Parallel()
+	const presented = "a-token-the-broker-could-not-check-its-caller-for"
+	unavailable := func(t *testing.T, rig *brokerTokenRig, retryAfter string) {
+		t.Helper()
+		response := rig.serve(newBrokerCaller(t).presenting(t, http.MethodGet, "/api/v1/whoami", presented, nil))
+		refusal := decodeBody[refusalAnswer](t, response)
+		if response.Code != http.StatusServiceUnavailable || refusal.Code != "BROKER_UNAVAILABLE" || response.Header().Get("Retry-After") != retryAfter {
+			t.Fatalf("status=%d refusal=%+v Retry-After=%q, want 503 BROKER_UNAVAILABLE with Retry-After %q",
+				response.Code, refusal, response.Header().Get("Retry-After"), retryAfter)
+		}
+	}
+	t.Run("the broker's 503 asking 5 s", func(t *testing.T) {
+		outage := unreadablekeysettest.Read(t).JSONRoute
+		outage.RetryAfter = "5"
+		rig := newBrokerTokenRig(t)
+		rig.broker.Answers(presented, outage.Write)
+		unavailable(t, rig, "5")
+	})
+	t.Run("the broker unreachable", func(t *testing.T) {
+		// The verifier asks a broker at a port the test holds and nothing listens on.
+		refused := "http://" + testport.Refused(t)
+		unavailable(t, newBrokerTokenRig(t, func(o *ciphertoken.Options) { o.BrokerURL = refused }), "")
 	})
 }
 

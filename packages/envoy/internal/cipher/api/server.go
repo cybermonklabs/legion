@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -399,7 +400,10 @@ const (
 
 // authenticate proves who r comes from, as route's authentication requires, or writes the
 // refusal. A bad or missing credential is a 401; a store that cannot answer is a 503 naming it,
-// never mistaken for a bad credential. A route a ServiceAccount token authenticates — one a
+// never mistaken for a bad credential; and an identity token whose check reached no verdict,
+// because its issuer's key set could not be read, is no bad credential either: 503
+// ISSUER_UNAVAILABLE with Retry-After (refuseIssuerUnavailable), issuer_unavailable on the NATS
+// writer hold's routes. A route a ServiceAccount token authenticates — one a
 // listed caller's token does (accountAuth), one a service's own login token does (serviceAuth)
 // and one an edge listener's token does (edgeListenerAuth) — first spends its source address's
 // bucket (DefaultAccountLimit), a refusal being 429 RATE_LIMITED with Retry-After, so a flood of
@@ -716,7 +720,9 @@ func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (cal
 // (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
 // token includes one naming no verified account, since the email claim is what names the caller
 // — and one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied
-// token is spendable for at most an hour. Each is a 401, and no refusal repeats the token.
+// token is spendable for at most an hour. Each is a 401, and no refusal repeats the token. A token
+// whose check reached no verdict because its issuer's key set could not be read is no refusal: it
+// is 503 ISSUER_UNAVAILABLE with Retry-After (refuseIssuerUnavailable), whichever kind it is.
 func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (account string, google, ok bool) {
 	if s.deps.AccountTokens == nil && s.deps.GoogleAccountTokens == nil {
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKENS_OFF", "this broker trusts no token issuer for its API callers, so no caller authenticates with an identity token")
@@ -751,6 +757,9 @@ func (s *server) liveIdentityToken(w http.ResponseWriter, err error, issuedAt, e
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
 		return false
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		refuseIssuerUnavailable(w, "verify the caller's identity token", err)
+		return false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
 		return false
@@ -772,7 +781,9 @@ func (s *server) liveIdentityToken(w http.ResponseWriter, err error, issuedAt, e
 // on a copied token, and the same list. An account the list does not name is 403
 // ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
 // trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
-// authenticate no one. No refusal repeats the token.
+// authenticate no one. No refusal repeats the token. A token whose check reached no verdict
+// because the issuer's key set could not be read is no refusal: 503 ISSUER_UNAVAILABLE with
+// Retry-After (refuseIssuerUnavailable).
 //
 // A verified account that BROKER_POD_OPERATORS maps to a person (machine.ServiceAccount.Person)
 // is 403 PERSON_ACCOUNT, and the refusal names the account. A mapped account is a person's
@@ -792,6 +803,9 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		return caller{}, false
 	case errors.Is(err, machine.ErrAccountNotListed):
 		writeError(w, http.StatusForbidden, "ACCOUNT_NOT_LISTED", "this ServiceAccount is not in BROKER_SERVICE_LOGINS")
+		return caller{}, false
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		refuseIssuerUnavailable(w, "verify the caller's ServiceAccount token", err)
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
@@ -959,6 +973,29 @@ func logUnavailable(op string, err error, attrs ...any) {
 // line.
 func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
+}
+
+// refuseIssuerUnavailable answers a token check that reached no verdict because the key set of
+// the token's issuer could not be read (oidc.ErrIssuerUnavailable): 503 ISSUER_UNAVAILABLE, with
+// the ERROR line every 503 writes and Retry-After (noteIssuerUnavailable). It is no refusal of the
+// token, which may be sound: the caller sends it again once the wait has passed. op names the
+// check in that line.
+func refuseIssuerUnavailable(w http.ResponseWriter, op string, err error) {
+	noteIssuerUnavailable(w, op, err)
+	writeError(w, http.StatusServiceUnavailable, "ISSUER_UNAVAILABLE",
+		"the broker could not check the token, because its issuer's key set could not be read: send it again after Retry-After")
+}
+
+// noteIssuerUnavailable is the part of an answer to err, a token check that reached no verdict
+// because the issuer's key set could not be read, that every route writes before its own body
+// (refuseIssuerUnavailable's, the NATS writer hold's): the ERROR line of op (logUnavailable), and
+// Retry-After, the key set's FailureSpacing that err carries or oidc.DefaultKeysFailureSpacing
+// for one that carries none (oidc.RetryAfterOrDefault), in whole seconds rounded up and at
+// least 1 (ratelimit.RetryAfterSeconds). The set reads the issuer again no sooner than that, so a
+// caller asking sooner is answered the same failure.
+func noteIssuerUnavailable(w http.ResponseWriter, op string, err error) {
+	logUnavailable(op, err)
+	w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(oidc.RetryAfterOrDefault(err))))
 }
 
 // writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether

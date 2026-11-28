@@ -4,7 +4,9 @@
 //
 // The fake broker `enroll --pod` is driven against: it takes the token login, the enrollment and
 // a renewal, and records each, so a test can say exactly what the pod sent and in which order.
-// It verifies nothing — the real broker's own tests do that — and holds no key.
+// It verifies nothing — the real broker's own tests do that — and holds no key. A test can have
+// it answer a route the broker's own 503 first (podBrokerOutages), and stamp each call with the
+// clock the code under test waits on (podBrokerClock).
 package main
 
 import (
@@ -15,31 +17,80 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 )
 
-// podCall is one request the fake broker took: its path, the Proof header it carried, and its
-// JSON body as strings.
+// podCall is one request the fake broker took: its path, the Proof header it carried, its JSON
+// body as strings, and the moment it came on the broker's clock (podBrokerClock).
 type podCall struct {
 	path  string
 	proof string
 	body  map[string]string
+	at    time.Time
+}
+
+// podBrokerOutage is a route the fake broker answers with answer, the broker's own 503 through a
+// key set it could not read (unreadablekeysettest), to its first times calls, or to every call
+// where times is 0, before it answers the route as it does otherwise.
+type podBrokerOutage struct {
+	path   string
+	answer unreadablekeysettest.Answer
+	times  int
+}
+
+// podBrokerOption changes how servePodBroker answers.
+type podBrokerOption func(*podBrokerConfig)
+
+type podBrokerConfig struct {
+	now     func() time.Time
+	outages map[string]podBrokerOutage
+}
+
+// podBrokerClock stamps each call the broker records (podCall.at) with now's moment, the clock the
+// code under test waits on; the wall clock's otherwise.
+func podBrokerClock(now func() time.Time) podBrokerOption {
+	return func(c *podBrokerConfig) { c.now = now }
+}
+
+// podBrokerOutages has the broker answer each outage's route with its answer first.
+func podBrokerOutages(outages ...podBrokerOutage) podBrokerOption {
+	return func(c *podBrokerConfig) {
+		for _, outage := range outages {
+			c.outages[outage.path] = outage
+		}
+	}
 }
 
 // servePodBroker is a broker that takes the token login, the enrollment and a renewal, recording
 // each. It answers a thumbprint it has already enrolled 200 with the same enrollment id and,
 // like the real broker, without extending its lease, so a re-run has to renew.
-func servePodBroker(t *testing.T, enrollmentID string) (*httptest.Server, func() []podCall) {
+func servePodBroker(t *testing.T, enrollmentID string, options ...podBrokerOption) (*httptest.Server, func() []podCall) {
 	t.Helper()
+	config := podBrokerConfig{now: time.Now, outages: map[string]podBrokerOutage{}}
+	for _, option := range options {
+		option(&config)
+	}
 	var mu sync.Mutex
 	var calls []podCall
 	enrolled := map[string]bool{}
+	outageAnswers := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		body := map[string]string{}
 		_ = json.Unmarshal(raw, &body)
 		mu.Lock()
-		calls = append(calls, podCall{path: r.URL.Path, proof: r.Header.Get("Proof"), body: body})
+		calls = append(calls, podCall{path: r.URL.Path, proof: r.Header.Get("Proof"), body: body, at: config.now()})
+		outage, down := config.outages[r.URL.Path]
+		down = down && (outage.times == 0 || outageAnswers[r.URL.Path] < outage.times)
+		if down {
+			outageAnswers[r.URL.Path]++
+		}
 		mu.Unlock()
+		if down {
+			outage.answer.Write(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/launcher-credentials/token":

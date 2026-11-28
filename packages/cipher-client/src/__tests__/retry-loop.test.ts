@@ -10,7 +10,9 @@
 // row's waits (`until`) move that clock a millisecond at each turn of the event loop, so a row
 // whose broker leaves a trade unanswered sees it run out after `SILENT_ATTEMPT_MS` of turns, and
 // every other row gives a trade the client's own 30 s, so no machine is slow enough to turn a
-// trade the broker answered into one it did not. Real time bounds a wait only to name a hang.
+// trade the broker answered into one it did not. Real time bounds a wait only to name a hang. The
+// rows whose broker answers 503 with `Retry-After` replay its own answer through a key set that
+// cannot be read (`keySetOutage`).
 
 import { afterEach, expect, jest, test } from "bun:test";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
@@ -25,7 +27,7 @@ import {
   TradeUnansweredError,
 } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { accepted } from "./stub";
+import { accepted, asking, keySetOutage, type StubAnswer } from "./stub";
 
 /** The session name a pod of these rows trades under. */
 const SESSION = "implementer-g1";
@@ -57,7 +59,11 @@ const READY = { waitForReady: true } as const;
 const APPROVER_UNREACHABLE =
   "The authorization server is currently unable to handle the request due to a temporary overloading or maintenance of the server. Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again.";
 
-/** What the broker does with one trade. */
+/** The broker's answer to a trade whose subject token it could not check, because the key set of
+ *  the token's issuer could not be read: 503 with `Retry-After: 5`, as its real server wrote it. */
+const KEY_SET_OUTAGE = await keySetOutage();
+
+/** What the broker does with one trade: one of these, or an answer of its own it sends whole. */
 type Answer =
   | "granted"
   | "pending"
@@ -65,10 +71,14 @@ type Answer =
   | "dispatch away"
   | "refused"
   | "connect refused"
-  | "silent";
+  | "silent"
+  | StubAnswer;
 
 /** The broker's answer, as the client's fetch returns or throws it. */
 async function respond(answer: Answer, signal: AbortSignal | null | undefined): Promise<Response> {
+  if (typeof answer === "object") {
+    return Response.json(answer.body, { status: answer.status ?? 200, headers: answer.headers });
+  }
   switch (answer) {
     case "granted":
       return Response.json(accepted(fixtureSecret("granted"), 600));
@@ -102,6 +112,8 @@ interface Rig {
   readonly clock: { now: number };
   readonly waits: number[];
   readonly lines: string[];
+  /** The row's clock as each trade reached the broker, in order. */
+  readonly arrivals: number[];
   trades(): number;
   /** Lets the first held wait pass, moving the clock by its length. */
   advance(): void;
@@ -118,6 +130,7 @@ async function rig(
   const clock = { now: 1_700_000_000_000 };
   const waits: number[] = [];
   const lines: string[] = [];
+  const arrivals: number[] = [];
   const held: (() => void)[] = [];
   let trades = 0;
   let left = budget;
@@ -148,6 +161,7 @@ async function rig(
     log: (line: string) => lines.push(line),
     fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
       trades += 1;
+      arrivals.push(clock.now);
       return await respond(answer(trades, clock.now), init?.signal);
     }) as typeof fetch,
   });
@@ -156,6 +170,7 @@ async function rig(
     clock,
     waits,
     lines,
+    arrivals,
     trades: () => trades,
     advance: () => held.shift()?.(),
   };
@@ -205,6 +220,49 @@ interface Row {
   readonly budget: number;
   readonly attemptMs?: number;
   readonly drive: (rig: Rig) => Promise<void>;
+}
+
+/**
+ * The rows of a renewal the broker answers `outage`, a 503 with `Retry-After`, and then grants:
+ * the loop trades again `waitMs` later, the larger of its own 15 s step and that wait read as at
+ * most 60 s, and through that wait the live token in hand answers every caller, the one waiting on
+ * the renewal and one that comes during the wait, with no trade.
+ */
+function waitsOut(outage: StubAnswer, waitMs: number): Row {
+  return {
+    answer: (n) => (n === 2 ? outage : "granted"),
+    budget: 0,
+    drive: async ({ client, clock, waits, lines, arrivals, trades, advance }) => {
+      const first = await client.token();
+      // Inside the 5-minute window ahead of the token's 600 s: a caller that waits for ready
+      // starts the renewal, and the broker answers it 503.
+      clock.now += 400_000;
+      const waiting = client.token(new AbortController().signal, READY);
+      await until(() => waits.length === 1, "at the wait after the 503");
+      expect(await outcome(waiting)).toBe(first);
+      expect(await outcome(client.token())).toBe(first);
+      expect(trades()).toBe(2);
+      expect(waits).toEqual([waitMs]);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(
+        "could not check a pod's projected service-account token, because its issuer's key set could not be read: HTTP 503 temporarily_unavailable"
+      );
+      expect(lines[0]).toContain(`trading again in ${waitMs / 1000} s`);
+      advance();
+      await until(() => trades() === 3, "at the trade after the wait");
+      expect((arrivals[2] as number) - (arrivals[1] as number)).toBe(waitMs);
+      // The renewal lands: once the first token has lapsed, a caller that waits for ready takes
+      // the renewal's, from the trade still out or from the hand once it has landed.
+      clock.now = first.expiresAt.getTime();
+      const renewed = await settledWith(
+        client.token(new AbortController().signal, READY),
+        "the renewed token"
+      );
+      expect((renewed as BrokerToken).accessToken).toStartWith("granted-");
+      expect(renewed).not.toBe(first);
+      expect(trades()).toBe(3);
+    },
+  };
 }
 
 const ROWS: [string, Row][] = [
@@ -513,6 +571,18 @@ const ROWS: [string, Row][] = [
         client.close();
       },
     },
+  ],
+  [
+    "Retry-After: a trade answered 503 asking 45 s trades again no sooner than 45 s",
+    waitsOut(asking(KEY_SET_OUTAGE, "45"), 45_000),
+  ],
+  [
+    "Retry-After: a trade answered 503 asking 5 s trades at its own 15 s step",
+    waitsOut(KEY_SET_OUTAGE, 15_000),
+  ],
+  [
+    "Retry-After: a trade answered 503 asking 90 s waits 60 s",
+    waitsOut(asking(KEY_SET_OUTAGE, "90"), 60_000),
   ],
 ];
 

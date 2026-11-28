@@ -34,8 +34,11 @@ type introspectionResponse = oauthwire.Introspection
 // session and launcher credential whose token it is, so an operator looks at that row and not at
 // the database. A live token whose person Dispatch holds is answered active and held; one whose
 // person's hold the gate cannot tell is 503 HOLD_UNCHECKABLE, naming the person and why in fixed
-// words, with the gate's own error in the log alone. Dispatch answers either 503 as
-// BROKER_UNAVAILABLE, and the Envoy listener answers it with a 503.
+// words, with the gate's own error in the log alone. A caller's own token whose issuer's key set
+// could not be read is answered before this runs, by authenticate: 503 ISSUER_UNAVAILABLE with
+// Retry-After, the key set's spacing of its reads (refuseIssuerUnavailable), since the check
+// reached no verdict on that token. Dispatch answers each of these 503s as BROKER_UNAVAILABLE, and
+// the Envoy listener answers it with a 503.
 //
 // It spends no bucket of its own: authenticate has already spent its source address's bucket
 // (DefaultAccountLimit), the one every accountAuth route shares, before the caller's token was

@@ -126,9 +126,12 @@ and goes through. Logout ends Dispatch's session only, not the issuer's.
 
 Dispatch does not need the issuer to start. It reads the issuer's settings in the background,
 retrying until the issuer answers, and until then a sign-in answers `503 SIGNIN_UNAVAILABLE` while
-agents, and people whose hour has not lapsed, are served. A sign-in started on one server completes
-on whichever server the issuer sends the browser back to, since what it needs travels in a signed
-cookie, as long as every server has the same `DISPATCH_SERVER_URL` and `DISPATCH_SERVED_ORIGINS`.
+agents, and people whose hour has not lapsed, are served. A sign-in whose ID token Dispatch cannot
+check, because the issuer's key set cannot be read, answers `503 SIGNIN_UNAVAILABLE` too, never a
+refusal, and the person's next sign-in after the keys can be read again goes through. A sign-in
+started on one server completes on whichever server the issuer sends the browser back to, since
+what it needs travels in a signed cookie, as long as every server has the same
+`DISPATCH_SERVER_URL` and `DISPATCH_SERVED_ORIGINS`.
 
 A person is their email address, so an address that passes from one account to another is one
 person to Dispatch. With Google directly, Dispatch also records the Google account (its `sub`,

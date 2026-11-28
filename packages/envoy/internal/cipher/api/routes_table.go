@@ -284,7 +284,9 @@ func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, appro
 // (NATSHold.OperatorToken), held to the hour the auth service holds every service's token to, and
 // must name the operator entry's account; anything else, every other entry's token and a
 // person's broker token among them, is 403 not_operator. A person's broker token is also every
-// session that person's agents run, so it cannot single out one operator. Every route of the
+// session that person's agents run, so it cannot single out one operator. A token whose check
+// reached no verdict because its issuer's key set could not be read is no refusal: 503
+// issuer_unavailable with Retry-After (operatorCaller). Every route of the
 // class spends its source address's bucket first, the one the account class spends
 // (authenticate), so a flood of forged tokens costs no verification. The handler is given the
 // operator's account, which every row it writes names as its writer.

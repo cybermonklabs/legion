@@ -1933,10 +1933,18 @@ type brokerCall struct {
 }
 
 // send sends one request to the broker, reads its answer and logs both halves as the live run's
-// transcript. The answer is handed back as the bytes the broker sent, because what a route's
-// answer has to be is its caller's to hold it to: JSON for most of them, and RFC 7009's empty
-// body for a revocation that worked.
+// transcript, the answer's Retry-After beside its status when it carries one. The answer is handed
+// back as the bytes the broker sent, because what a route's answer has to be is its caller's to
+// hold it to: JSON for most of them, and RFC 7009's empty body for a revocation that worked.
 func (l *liveBroker) send(t *testing.T, client *http.Client, call brokerCall) (int, []byte) {
+	t.Helper()
+	status, _, answer := l.sendWithHeader(t, client, call)
+	return status, answer
+}
+
+// sendWithHeader is send answering the headers of the broker's answer too, for a caller that
+// holds the answer to one of them, such as the Retry-After of a 503.
+func (l *liveBroker) sendWithHeader(t *testing.T, client *http.Client, call brokerCall) (int, http.Header, []byte) {
 	t.Helper()
 	request, err := http.NewRequest(call.method, l.base+call.path, strings.NewReader(call.body))
 	if err != nil {
@@ -1957,17 +1965,18 @@ func (l *liveBroker) send(t *testing.T, client *http.Client, call brokerCall) (i
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("> %s %s %s\n< %d %s", call.method, call.path, call.shown, response.StatusCode, shownAnswer(answer))
-	return response.StatusCode, answer
+	status := strconv.Itoa(response.StatusCode)
+	if after := response.Header.Get("Retry-After"); after != "" {
+		status += " (Retry-After: " + after + ")"
+	}
+	t.Logf("> %s %s %s\n< %s %s", call.method, call.path, call.shown, status, shownAnswer(answer))
+	return response.StatusCode, response.Header, answer
 }
 
 // post sends one form to the broker and answers the status and the JSON body it gave.
 func (l *liveBroker) post(t *testing.T, client *http.Client, path string, form url.Values, bearer string) (int, map[string]any) {
 	t.Helper()
-	status, answer := l.send(t, client, brokerCall{
-		method: http.MethodPost, path: path, contentType: formContentType,
-		body: form.Encode(), bearer: bearer, shown: shownForm(form),
-	})
+	status, answer := l.send(t, client, formCall(path, form, bearer))
 	var body map[string]any
 	if err := json.Unmarshal(answer, &body); err != nil {
 		t.Fatalf("POST %s answered %d %s, which is not JSON: %v", path, status, answer, err)
@@ -1975,9 +1984,30 @@ func (l *liveBroker) post(t *testing.T, client *http.Client, path string, form u
 	return status, body
 }
 
+// formCall is the brokerCall that posts form to path, every credential in it named in the
+// transcript rather than repeated.
+func formCall(path string, form url.Values, bearer string) brokerCall {
+	return brokerCall{
+		method: http.MethodPost, path: path, contentType: formContentType,
+		body: form.Encode(), bearer: bearer, shown: shownForm(form),
+	}
+}
+
 // postJSON sends one JSON body to the broker, with no DPoP proof, every credential in the body
 // named in the transcript rather than repeated.
 func (l *liveBroker) postJSON(t *testing.T, path string, fields map[string]any, bearer string) (int, map[string]any) {
+	t.Helper()
+	status, answer := l.send(t, l.plain, jsonCall(t, path, fields, bearer))
+	var body map[string]any
+	if err := json.Unmarshal(answer, &body); err != nil {
+		t.Fatalf("POST %s answered %d %s, which is not JSON: %v", path, status, answer, err)
+	}
+	return status, body
+}
+
+// jsonCall is the brokerCall that posts fields to path as one JSON body, every credential in it
+// named in the transcript rather than repeated.
+func jsonCall(t *testing.T, path string, fields map[string]any, bearer string) brokerCall {
 	t.Helper()
 	encoded, err := json.Marshal(fields)
 	if err != nil {
@@ -1991,15 +2021,10 @@ func (l *liveBroker) postJSON(t *testing.T, path string, fields map[string]any, 
 		}
 		shown[name] = value
 	}
-	status, answer := l.send(t, l.plain, brokerCall{
+	return brokerCall{
 		method: http.MethodPost, path: path, contentType: "application/json",
 		body: string(encoded), bearer: bearer, shown: fmt.Sprint(shown),
-	})
-	var body map[string]any
-	if err := json.Unmarshal(answer, &body); err != nil {
-		t.Fatalf("POST %s answered %d %s, which is not JSON: %v", path, status, answer, err)
 	}
-	return status, body
 }
 
 // formContentType is what an OAuth request's form body is sent as (RFC 6749 Section 3.2).

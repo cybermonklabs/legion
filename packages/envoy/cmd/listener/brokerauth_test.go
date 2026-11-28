@@ -505,6 +505,39 @@ func TestAPIAuthAnswers503WhenTheBrokerCannotBeReached(t *testing.T) {
 	assertBrokerRejectionLog(t, logged.String(), "unavailable", token, "")
 }
 
+// TestAPIAuthAnswersTheBrokersRetryAfterWhenItCouldNotCheckAToken: the broker answers an
+// introspection 503 asking for a wait when it could not check the listener's own account token
+// because the key set of that token's issuer could not be read. The listener answers its caller
+// 503 asking for that wait, so the caller does not send again sooner than the broker asked; a 503
+// that names no wait is answered Retry-After: 1, as a broker that answers nothing is. The stub
+// replays the broker's own answer, captured from its server (unreadablekeysettest).
+func TestAPIAuthAnswersTheBrokersRetryAfterWhenItCouldNotCheckAToken(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct{ name, brokerRetryAfter, retryAfter string }{
+		{"the broker's 503 asking 5 s", "5", "5"},
+		{"the broker's 503 naming no wait", "", "1"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			broker := ciphertokentest.NewStubBroker(t)
+			caller := ciphertokentest.NewCaller(t)
+			const presented = "access-token-the-broker-could-not-check-its-caller-for"
+			broker.Answers(presented, keySetOutage(t, row.brokerRetryAfter).Write)
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+
+			recorder := httptest.NewRecorder()
+			var logged bytes.Buffer
+			apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, broker), logger: logging.NewWithWriter("test-machine", &logged)}, next).
+				ServeHTTP(recorder, brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", presented, `{}`))
+
+			if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != row.retryAfter {
+				t.Fatalf("status = %d, Retry-After %q, want 503 with Retry-After %q; body = %s",
+					recorder.Code, recorder.Header().Get("Retry-After"), row.retryAfter, recorder.Body.String())
+			}
+			assertBrokerRejectionLog(t, logged.String(), "unavailable", presented, "")
+		})
+	}
+}
+
 // A spent-proof store that did not answer is not a refusal of the caller's token either: the
 // listener could not run its own half of the check, so nothing was decided about the token. It
 // is the same 503 with the same Retry-After the broker's silence gets, and for the same reason

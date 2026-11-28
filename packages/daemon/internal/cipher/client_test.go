@@ -1,5 +1,7 @@
 package cipher
 
+//ci:reads packages/envoy/internal/cipher/api/testdata/unreadable-key-set-answers.json keySetOutage reads the broker's answer through an unreadable key set from ../../../envoy/internal/cipher/api/testdata for the RetryAfter tests' stand-ins
+
 import (
 	"bytes"
 	"context"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -73,6 +76,9 @@ type fakeBroker struct {
 	enrollAnswers []enrollAnswer
 	enrollSeq     int
 	enrollReqs    []enrollRequest
+	// outages, when set, answer the next enrollment-route requests, in order, ahead of
+	// enrollAnswers: the broker's answer through a key set it cannot read (keySetOutage).
+	outages []keySetAnswer
 }
 
 type tokenLogin struct {
@@ -196,6 +202,13 @@ func (b *fakeBroker) handleEnrollmentRoute(w http.ResponseWriter, r *http.Reques
 	}
 	b.mu.Lock()
 	b.enrollReqs = append(b.enrollReqs, req)
+	if len(b.outages) > 0 {
+		outage := b.outages[0]
+		b.outages = b.outages[1:]
+		b.mu.Unlock()
+		outage.write(w)
+		return
+	}
 	answer := enrollAnswer{status: http.StatusCreated, body: `{"enrollment_id":"enr-1","lease_expires_at":"2026-09-26T12:15:00Z"}`}
 	if len(b.enrollAnswers) > 0 {
 		idx := min(b.enrollSeq, len(b.enrollAnswers)-1)
@@ -227,6 +240,13 @@ func (b *fakeBroker) lastEnrollRequest() enrollRequest {
 		return enrollRequest{}
 	}
 	return b.enrollReqs[len(b.enrollReqs)-1]
+}
+
+// enrollCount is how many enrollment-route requests the broker has received.
+func (b *fakeBroker) enrollCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.enrollReqs)
 }
 
 // withLoginRetry sets the wait after a failed login, and the most it doubles to, for one test.
@@ -290,6 +310,80 @@ var podEnrollment = PodEnrollment{
 
 // lockedLog is a log a test reads while the login loop writes it.
 type lockedLog = testlog.Buffer
+
+// keySetAnswersFile is the secrets broker's own answers to a token check that reached no verdict
+// because the key set of the token's issuer could not be read, from this package's directory,
+// where go test runs its tests: envoy's internal/cipher/api writes it from the broker's real HTTP
+// server (TestTheUnreadableKeySetAnswersAreTheFixture), and fails in every other run where that
+// server answers otherwise.
+const keySetAnswersFile = "../../../envoy/internal/cipher/api/testdata/unreadable-key-set-answers.json"
+
+// keySetAnswer is one answer of that file as a stand-in replays it: the request that drew it, its
+// status, its Retry-After and Content-Type headers, and its body.
+type keySetAnswer struct {
+	Request     string          `json:"request"`
+	Status      int             `json:"status"`
+	RetryAfter  string          `json:"retry_after"`
+	ContentType string          `json:"content_type"`
+	Body        json.RawMessage `json:"body"`
+}
+
+// keySetOutage is a JSON route's answer through a key set that cannot be read, the shape every
+// route this client calls answers in (the file's json_route): 503,
+// {"code":"ISSUER_UNAVAILABLE","error":...} and Retry-After 5, the default spacing of a failing
+// key set's reads, which a row about another wait replaces (asking). A stand-in replays it rather
+// than a body written here, so the client reads what the broker sends. Its body is the file's
+// with the white space between its JSON tokens taken out, as the broker writes it.
+func keySetOutage(t *testing.T) keySetAnswer {
+	t.Helper()
+	raw, err := os.ReadFile(keySetAnswersFile)
+	if err != nil {
+		t.Fatalf("read the broker's answers through an unreadable key set: %v", err)
+	}
+	var answers struct {
+		JSONRoute keySetAnswer `json:"json_route"`
+	}
+	if err := json.Unmarshal(raw, &answers); err != nil {
+		t.Fatalf("decode %s: %v", keySetAnswersFile, err)
+	}
+	answer := answers.JSONRoute
+	var body bytes.Buffer
+	if err := json.Compact(&body, answer.Body); err != nil {
+		t.Fatalf("%s's json_route holds no JSON body: %v", keySetAnswersFile, err)
+	}
+	answer.Body = body.Bytes()
+	if answer.Status != http.StatusServiceUnavailable || answer.RetryAfter != "5" {
+		t.Fatalf("the broker's JSON route answer through an unreadable key set is %d with Retry-After %q; these rows read it as 503 asking for 5 s", answer.Status, answer.RetryAfter)
+	}
+	return answer
+}
+
+// asking is a asking for a wait of seconds in place of its own; "" asks for none.
+func (a keySetAnswer) asking(seconds string) keySetAnswer {
+	a.RetryAfter = seconds
+	return a
+}
+
+// write answers w with a as the broker sent it: its Content-Type, its Retry-After where it names
+// one, its status and its body.
+func (a keySetAnswer) write(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", a.ContentType)
+	if a.RetryAfter != "" {
+		w.Header().Set("Retry-After", a.RetryAfter)
+	}
+	w.WriteHeader(a.Status)
+	_, _ = w.Write(a.Body)
+}
+
+// outageStart is when the client's fake clock starts in each test of a 503's Retry-After.
+var outageStart = time.Date(2026, 11, 28, 4, 0, 0, 0, time.UTC)
+
+// isKeySetOutage reports whether err is the broker's 503 ISSUER_UNAVAILABLE (keySetOutage) as the
+// client answers it, and no refusal a retry cannot change.
+func isKeySetOutage(err error) bool {
+	var api *APIError
+	return errors.As(err, &api) && api.Status == http.StatusServiceUnavailable && api.Code == "ISSUER_UNAVAILABLE" && !IsPermanent(err)
+}
 
 // TestLoginPostsTheTokenAndAKeyItThenSignsWith pins the token login: Login reads the token file and
 // posts its token beside a request object naming legion-daemon, signed by a fresh key, to
@@ -1096,4 +1190,88 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatal(err)
 	}
 	return string(raw)
+}
+
+// TestAPodEnrolmentWaitsOutA503sRetryAfter: the broker answers a pod enrolment, and the renewal of
+// a live one, 503 with Retry-After when it cannot check the pod's token because the key set of the
+// token's issuer could not be read, and the token may well be sound once that wait has passed. The
+// 503 is no refusal, so supervise retries the enrolment at a later observation and keeps the pod's
+// identity (supervise.PermanentError reads Permanent). And no enrolment goes to the broker before
+// the wait has passed: one under a context that ends first, here a 5 s bound as the machine's RPC
+// bound is, sends nothing and answers the outage at once, which is no refusal either; one whose
+// context leaves the wait waits for it on the client's clock and then sends. Each 503 is the
+// broker's own answer (keySetOutage), asking 30 s.
+func TestAPodEnrolmentWaitsOutA503sRetryAfter(t *testing.T) {
+	const wait = 30 * time.Second
+	created := enrollAnswer{status: http.StatusCreated, body: `{"enrollment_id":"enr-1","lease_expires_at":"2026-09-26T12:15:00Z"}`}
+	live := enrollAnswer{status: http.StatusOK, body: `{"enrollment_id":"enr-1","lease_expires_at":"2026-09-26T12:20:00Z"}`}
+	outage := keySetOutage(t).asking("30")
+	for _, row := range []struct {
+		name string
+		// before is what the broker answers ahead of the 503: nothing ahead of the pod's first
+		// enrolment, the enrolment itself ahead of the renewal of a live one. after is its answer
+		// once the wait has passed.
+		before []enrollAnswer
+		after  enrollAnswer
+	}{
+		{name: "enrolment", after: created},
+		{name: "renewal", before: []enrollAnswer{created}, after: live},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			broker, c := newIssuedClient(t)
+			clock := clocktest.New(outageStart)
+			c.clock = clock
+			broker.enrollAnswers = append(slices.Clone(row.before), row.after)
+			for range row.before {
+				if _, err := c.Enroll(context.Background(), podEnrollment); err != nil {
+					t.Fatalf("the enrolment ahead of the outage: %v", err)
+				}
+			}
+			broker.mu.Lock()
+			broker.outages = []keySetAnswer{outage}
+			broker.mu.Unlock()
+
+			if _, err := c.Enroll(context.Background(), podEnrollment); !isKeySetOutage(err) {
+				t.Fatalf("the %s the broker answered 503 = %v, want its outage, ISSUER_UNAVAILABLE, not permanent", row.name, err)
+			}
+			sent := broker.enrollCount()
+
+			rpc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err := c.Enroll(rpc, podEnrollment)
+			ended := rpc.Err()
+			cancel()
+			var notBefore *notBeforeError
+			if !errors.As(err, &notBefore) || !isKeySetOutage(err) || ended != nil {
+				t.Fatalf("the %s under a 5 s context within the 30 s wait = %v (its context: %v), want the outage answered at once, not permanent", row.name, err, ended)
+			}
+			if n := broker.enrollCount(); n != sent {
+				t.Fatalf("the %s under a 5 s context within the 30 s wait sent %d requests, want none", row.name, n-sent)
+			}
+
+			type answer struct {
+				enrollment Enrollment
+				err        error
+			}
+			answered := make(chan answer, 1)
+			go func() {
+				enrollment, err := c.Enroll(context.Background(), podEnrollment)
+				answered <- answer{enrollment, err}
+			}()
+			armed := clock.AwaitArmed(t, "the "+row.name+"'s wait for the broker's Retry-After", 1)
+			if want := outageStart.Add(wait); !armed[0].Equal(want) {
+				t.Fatalf("the %s waits until %s, want %s, 30 s after the 503", row.name, armed[0], want)
+			}
+			if n := broker.enrollCount(); n != sent {
+				t.Fatalf("the %s sent %d requests before the wait had passed, want none", row.name, n-sent)
+			}
+			clock.Advance(wait)
+			got := <-answered
+			if got.err != nil || got.enrollment.ID != "enr-1" {
+				t.Fatalf("the %s once the wait had passed = %+v, %v; want enr-1", row.name, got.enrollment, got.err)
+			}
+			if n := broker.enrollCount(); n != sent+1 {
+				t.Fatalf("the %s once the wait had passed sent %d requests, want one", row.name, n-sent)
+			}
+		})
+	}
 }

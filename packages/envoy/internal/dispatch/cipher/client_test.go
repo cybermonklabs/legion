@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/testport"
 )
@@ -31,6 +32,18 @@ type capturedRequest struct {
 // given status and body.
 func serveCapturing(t *testing.T, status int, response string) (*httptest.Server, *capturedRequest) {
 	t.Helper()
+	return serveCapturingAnswer(t, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	})
+}
+
+// serveCapturingAnswer is serveCapturing answering with what write writes: its status, its
+// headers and its body, such as the broker's own answer a test replays
+// (unreadablekeysettest.Answer.Write).
+func serveCapturingAnswer(t *testing.T, write func(http.ResponseWriter)) (*httptest.Server, *capturedRequest) {
+	t.Helper()
 	captured := &capturedRequest{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -41,9 +54,7 @@ func serveCapturing(t *testing.T, status int, response string) (*httptest.Server
 		captured.Path = r.URL.RequestURI()
 		captured.Auth = r.Header.Get("Authorization")
 		captured.Body = body
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(response))
+		write(w)
 	}))
 	return server, captured
 }
@@ -235,6 +246,29 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 	}
 	if string(brokerErr.Body) != "not json at all" {
 		t.Fatalf("Body = %s, want the raw bytes preserved", brokerErr.Body)
+	}
+}
+
+// TestABrokerAnswerKeepsItsRetryAfter: the broker answers 503 ISSUER_UNAVAILABLE, asking for a
+// wait, when it could not check Dispatch's own account token because the key set of that token's
+// issuer could not be read. The *Error keeps that wait beside the status, the code and the body,
+// for the routes to forward with them. The stand-in replays the broker's own answer, captured
+// from its server (unreadablekeysettest).
+func TestABrokerAnswerKeepsItsRetryAfter(t *testing.T) {
+	outage := unreadablekeysettest.Read(t).JSONRoute
+	outage.RetryAfter = "5"
+	server, _ := serveCapturingAnswer(t, outage.Write)
+	defer server.Close()
+
+	_, err := New(server.URL, tokenFile(t, "account-token")).Pending(context.Background(), "sjawhar")
+	var brokerErr *Error
+	if !errors.As(err, &brokerErr) {
+		t.Fatalf("err = %v (%T), want *Error", err, err)
+	}
+	if brokerErr.Status != http.StatusServiceUnavailable || brokerErr.Code != "ISSUER_UNAVAILABLE" || brokerErr.RetryAfter != 5*time.Second ||
+		string(brokerErr.Body) != string(outage.Body) {
+		t.Fatalf("Error = %d %q RetryAfter %s %s, want 503 ISSUER_UNAVAILABLE RetryAfter 5s and the broker's body %s",
+			brokerErr.Status, brokerErr.Code, brokerErr.RetryAfter, brokerErr.Body, outage.Body)
 	}
 }
 

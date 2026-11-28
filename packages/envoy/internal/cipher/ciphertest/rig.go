@@ -75,6 +75,16 @@ const ExchangeAudience = "legion-broker-exchange"
 // both, and nothing here reaches the real one.
 const githubAudience = "legion-broker-github"
 
+// GoogleMachineAudience and GooglePersonAudience are what a machine's own Google identity token
+// and a person's must carry at the token exchange of a provider WithGoogleIssuer builds
+// (BROKER_GOOGLE_OIDC_AUDIENCE and BROKER_SIGNIN_DEVICE_AUDIENCE): two audiences of the one
+// issuer, so neither token is spendable where the other is. Tests read them to mint the two
+// tokens of a person's sign-in trade.
+const (
+	GoogleMachineAudience = "https://broker.example/machines"
+	GooglePersonAudience  = "https://broker.example/signin"
+)
+
 // APIAccount is the ServiceAccount every Rig's BROKER_API_ACCOUNTS names, as the caller
 // "dispatch": the identity its UI helper presents on the routes Dispatch's server calls.
 const APIAccount = "system:serviceaccount:example-ns:example-dispatch"
@@ -283,6 +293,21 @@ type providerConfig struct {
 	// unless WithoutDispatchSignIn (dispatch_signin.go), and every other caller of
 	// NewOAuthProvider leaves it off, as a broker started with the setting unset does.
 	dispatchSignIn bool
+	// google is WithGoogleIssuer's issuer; nil configures no Google issuer, as a broker with
+	// BROKER_GOOGLE_OIDC_AUDIENCE unset has none.
+	google *oidctest.Issuer
+}
+
+// WithGoogleIssuer gives the provider's token exchange google as its Google issuer, as a broker
+// with BROKER_GOOGLE_OIDC_AUDIENCE and BROKER_SIGNIN_DEVICE_AUDIENCE set has one: a key set of
+// its own over google, a machine's identity token taken for GoogleMachineAudience and a person's
+// for GooglePersonAudience, and beside them the two writers oauth.ExchangeConfig requires of such
+// a broker, the machine's launcher credential (enroll.Service.MachineCredentials) and the
+// person's sign-in (enroll.PersonSignIns), each writing in the exchange's own transaction, as the
+// oauth package's person fixture wires them. The exchange's entries stay the rig's, which list no
+// machine.
+func WithGoogleIssuer(google *oidctest.Issuer) ProviderOption {
+	return func(c *providerConfig) { c.google = google }
 }
 
 // WithLease sets the enrollment lease the broker grants, an hour by default, for a test whose
@@ -645,7 +670,8 @@ const DeviceLifetime = 15 * time.Minute
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
 // ExchangeAudience, and a workflow run's, for githubAudience — and lists the four accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
-// one, a daemon's fixed session, a second project's, and an unlisted one to be refused as.
+// one, a daemon's fixed session, a second project's, and an unlisted one to be refused as. Given
+// WithGoogleIssuer, it takes a machine's and a person's Google identity tokens too.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, opts ...ProviderOption) *oauth.Provider {
 	t.Helper()
 	var config providerConfig
@@ -676,6 +702,16 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		Projects:   config.projectAccess,
 		Hold:       config.hold,
+	}
+	if config.google != nil {
+		googleKeys, err := oidc.NewKeys(context.Background(), config.google.URL())
+		if err != nil {
+			t.Fatalf("oidc.NewKeys of the Google issuer: %v", err)
+		}
+		exchangeConfig.Google = oauth.IssuerConfig{Issuer: config.google.URL(), Audience: GoogleMachineAudience, Keys: googleKeys}
+		exchangeConfig.MachineCredentials = (&enroll.Service{Store: st}).MachineCredentials()
+		exchangeConfig.PersonAudience = GooglePersonAudience
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns(true)
 	}
 	provider, err := oauth.New(oauth.Config{
 		Secret: secret, DeviceLifetime: DeviceLifetime, AccessLifetime: accessLifetime,
@@ -1002,6 +1038,17 @@ func (r *Rig) MintWorkflowToken(t *testing.T, repository, workflow, ref, runID s
 // line and redeploying the broker does.
 func (r *Rig) DropServiceLogin(account string) {
 	delete(r.serviceLogins, account)
+}
+
+// FailPodKeys makes the key set of this Rig's pod issuer, the issuer every token it mints is
+// signed under, answer status in place of the set, as oidctest.Issuer.FailKeys does; a status of 0
+// serves the set again. While it fails, every token the broker checks against that set (a
+// service's token login, a pod's enrolment and its renewal, a listed caller's token, a token
+// exchange's subject) reaches no verdict, and the broker answers 503 ISSUER_UNAVAILABLE with
+// Retry-After. The broker reads a failed set again only once the FailureSpacing of its last failed
+// read has passed (oidc.DefaultKeysFailureSpacing, 5 s), so a set served again answers from then.
+func (r *Rig) FailPodKeys(status int) {
+	r.podIssuer.FailKeys(status)
 }
 
 // SetPodOperator changes account's entry in this Rig's BROKER_POD_OPERATORS, as an operator

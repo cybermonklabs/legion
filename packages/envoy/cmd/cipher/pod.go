@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -193,7 +194,7 @@ func cmdEnrollPod(service, tokenFile, out string, projects podProjects, stdout, 
 		return 1
 	}
 	defer unlock()
-	return enrolPod(service, tokenFile, out, projects, base, prefix, stdout, stderr)
+	return enrolPod(clock.Real(), service, tokenFile, out, projects, base, prefix, stdout, stderr)
 }
 
 // enrolPod is cmdEnrollPod's work, with the directory made and the lock held.
@@ -207,14 +208,22 @@ func cmdEnrollPod(service, tokenFile, out string, projects podProjects, stdout, 
 // ALREADY_ENROLLED), so the marker is what makes keeping it safe. A box's launcher writes the
 // same file for the same reason.
 //
+// The broker answers 503 with Retry-After, refusing nothing, when it could not check the pod's
+// token because the key set of the token's issuer could not be read. The login, the enrolment and
+// the renewal of an enrollment the key already holds each wait such a wait out on clk and ask
+// again, within one budget for the whole run (podOutages); past it, the run exits 1 with a line
+// naming the outage and how long it tried (podOutage), recorded beside the key as a refusal is.
+// clk is clock.Real() but in a test.
+//
 // No line here names the key directory or the token file by its path but the renewal command
 // printed on success: it is a command to paste, and both paths were just used (the token file
 // read and its token accepted, the directory holding the key.pem the broker enrolled), so it
 // names the paths the run used, as the GCP forms' retry commands name the credentials file that
 // signed them in. Every other line names them by their flags (outDir, outKeyFile,
 // --pod-token-file).
-func enrolPod(service, tokenFile, out string, projects podProjects, base cipheraddr.Address, prefix string, stdout, stderr io.Writer) int {
+func enrolPod(clk podClock, service, tokenFile, out string, projects podProjects, base cipheraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
+	outages := podOutages{clock: clk, started: clk.Now()}
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
 	// that has not reached enrollSessionKey yet leaves no key of its own, but an earlier run's
 	// is enough: the test is the file, not how far this run got. Each caller returns 1 itself,
@@ -243,17 +252,28 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 		refuse(fmt.Sprintf("%s --pod: generate the login key: %v", prefix, err))
 		return 1
 	}
-	// The identifier names this pod in the signed request object; the broker names the credential
-	// it issues from the token's own subject, never from this.
-	request, err := record.Sign(launcherKey, base.Raw(), []record.AuthorizationDetail{
-		{Type: "launcher_credential", Identifier: identity.PodUID, Service: service},
-	}, "", "", nil, time.Now())
-	if err != nil {
-		refuse(fmt.Sprintf("%s --pod: sign the login request: %v", prefix, err))
+	c := newClient(base)
+	// Each try of the login signs its request object anew, on the wall clock the broker reads it
+	// by: the broker takes one issued within its skew of now, which a wait can outlast. The
+	// identifier names this pod in the signed request object; the broker names the credential it
+	// issues from the token's own subject, never from this.
+	var credentialID string
+	var signErr error
+	err = outages.call(func() error {
+		request, err := record.Sign(launcherKey, base.Raw(), []record.AuthorizationDetail{
+			{Type: "launcher_credential", Identifier: identity.PodUID, Service: service},
+		}, "", "", nil, time.Now())
+		if err != nil {
+			signErr = err
+			return err
+		}
+		credentialID, err = c.TokenLogin(ctx, token, request)
+		return err
+	})
+	if signErr != nil {
+		refuse(fmt.Sprintf("%s --pod: sign the login request: %v", prefix, signErr))
 		return 1
 	}
-	c := newClient(base)
-	credentialID, err := c.TokenLogin(ctx, token, request)
 	if err != nil {
 		refuse(podRefusal(prefix, "log in", identity, base, err))
 		return 1
@@ -268,7 +288,13 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 		refuse(fmt.Sprintf("%s --pod: thumbprint: %v", prefix, err))
 		return 1
 	}
-	enrollmentID, alreadyLive, err := c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token, projects.keys)
+	launcher := &podLauncherSigner{key: launcherKey, credentialID: credentialID}
+	var enrollmentID string
+	var alreadyLive bool
+	err = outages.call(func() (err error) {
+		enrollmentID, alreadyLive, err = c.CreatePodEnrollment(ctx, launcher, identity.runtimeID(), thumbprint, token, projects.keys)
+		return err
+	})
 	if err != nil {
 		refuse(podRefusal(prefix, "enrol", identity, base, err) + projects.refusal(err))
 		return 1
@@ -276,7 +302,11 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 	if alreadyLive {
 		// The broker gave back the enrollment this key already holds without extending its
 		// lease, so a pod that only ever re-runs enroll would let that lease lapse.
-		if _, err := c.RenewEnrollment(ctx, &fileSigner{key: key, enrollmentID: enrollmentID}, enrollmentID, token); err != nil {
+		session := &fileSigner{key: key, enrollmentID: enrollmentID}
+		if err := outages.call(func() error {
+			_, err := c.RenewEnrollment(ctx, session, enrollmentID, token)
+			return err
+		}); err != nil {
 			refuse(podRefusal(prefix, "renew the lease of the enrollment it already holds", identity, base, err))
 			return 1
 		}
@@ -311,14 +341,84 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 // podRefusal is the one stderr line a refused login or enrolment prints: what was refused, which
 // pod the token names, the HTTP status, the broker's code and message - the status and Message
 // alone where the answer's text is withheld (apiError.withheld) - and the broker it asked. It
-// never prints the token.
+// never prints the token. An outage the run waited out for the whole of its budget is no refusal,
+// and prints as what it is (podOutage): what the broker could not do, its answer as a refusal's
+// words print it, and how long the run tried.
 func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Address, err error) string {
+	var outage *podOutage
+	if errors.As(err, &outage) {
+		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %v; asked %s", prefix, identity, what, outage, brokerSource(base))
+	}
 	var refused *apiError
 	if errors.As(err, &refused) {
 		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, refusalWords(refused), brokerSource(base))
 	}
 	return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s", prefix, identity, what, refusalText(brokerSource(base), err))
 }
+
+// podOutageBudget is how long one enroll --pod waits out the broker's outages, its token login's,
+// its enrolment's and its renewal's together: a wait a 503 asks for (apiError.RetryAfter) is begun
+// only where it ends inside the budget from the run's start (podOutages.call), so a pod's start
+// learns of an outage within two minutes, as every client of the broker's token routes does.
+const podOutageBudget = 2 * time.Minute
+
+// podClock is the part of clock.Clock enroll --pod's waits read: when the run began, and each
+// wait. It is clock.Real() but in a test, which hands it a clocktest.Fake.
+type podClock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+// podOutages is one enroll --pod's waits of the broker's outages, each on clock and all of them
+// inside podOutageBudget from started.
+type podOutages struct {
+	clock   podClock
+	started time.Time
+}
+
+// call is attempt's answer once each outage it met is waited out. While attempt answers a 503
+// that asks for a wait (apiError.RetryAfter), call waits that wait and calls attempt again, for as
+// long as the wait ends inside the run's budget; a wait that would end at or past it is not begun,
+// and the answer is the outage (podOutage), saying how long the run tried. Every other answer is
+// attempt's own, a 503 that asks for no wait among them.
+func (o podOutages) call(attempt func() error) error {
+	end := o.started.Add(podOutageBudget)
+	for {
+		err := attempt()
+		var refused *apiError
+		if !errors.As(err, &refused) || refused.RetryAfter <= 0 {
+			return err
+		}
+		now := o.clock.Now()
+		if !now.Add(refused.RetryAfter).Before(end) {
+			return &podOutage{answer: refused, tried: now.Sub(o.started)}
+		}
+		<-o.clock.After(refused.RetryAfter)
+	}
+}
+
+// podOutage is enroll --pod's answer when the broker's outage outlasted the run's budget: answer,
+// the broker's last 503, and how long the run had tried by then. It is never a refusal: the broker
+// decided nothing about the pod, and a later run may well enrol it.
+type podOutage struct {
+	answer *apiError
+	tried  time.Duration
+}
+
+// Error names what the broker could not do - check the pod's token, because its issuer's key set
+// could not be read, where the answer's code says so, and serve the call otherwise - in words of
+// this client's own, which print whatever the address, then the answer as refusalWords prints it,
+// how long the run tried, and the wait that would have run past the budget.
+func (e *podOutage) Error() string {
+	cause := "the broker could not serve the call"
+	if e.answer.Code == issuerUnavailable {
+		cause = "the broker could not check the pod's token, because its issuer's key set could not be read"
+	}
+	return fmt.Sprintf("%s (%s); tried for %s, and the wait of %s the broker asked for runs past the %s enroll --pod waits out an outage for",
+		cause, refusalWords(e.answer), e.tried.Round(time.Second), e.answer.RetryAfter, podOutageBudget)
+}
+
+func (e *podOutage) Unwrap() error { return e.answer }
 
 // refusalWords is a refusal of the broker's as every line of a renewer or an enrolment prints it:
 // the HTTP status, the broker's code and message - the status and Message alone where the answer's

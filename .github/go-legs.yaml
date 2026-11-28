@@ -261,6 +261,7 @@ packages/envoy:
       - internal/cipher/wire
       - internal/ciphertoken/ciphertokentest
       - internal/holdrecord/holdrecordtest
+      - internal/cipher/api/unreadablekeysettest
     # Dispatch's commands and the lighter half of its packages.
     3:
       - internal/dispatch/legion                # 617 s (run 46059758378, its read-rule seeds beside each other)

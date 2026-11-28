@@ -90,9 +90,9 @@ type CodeFlow struct {
 }
 
 // codeFlowIssuer is what a code flow reads from its issuer's discovery document: the verifier of
-// the ID tokens it issues to the client, the client's endpoints there with the way the client
-// authenticates at its token endpoint, and the revocation_endpoint the document names, empty when
-// it names none.
+// the ID tokens it issues to the client, which reads the issuer's keys at the jwks_uri the
+// document names, the client's endpoints there with the way the client authenticates at its token
+// endpoint, and the revocation_endpoint the document names, empty when it names none.
 type codeFlowIssuer struct {
 	verifier      *Verifier
 	config        oauth2.Config
@@ -123,13 +123,16 @@ func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.
 }
 
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no
-// authorization_endpoint or token_endpoint offers no sign-in, and fails discovery. One that names
-// no revocation_endpoint is accepted, and Revoke fails against it. One whose revocation_endpoint
-// is not a string, a null included (endpointString), or whose
-// token_endpoint_auth_methods_supported is not an array of strings (authMethods), fails discovery.
-// The config every grant starts from, the code exchanges', Refresh's and CheckClient's,
-// authenticates as tokenAuthStyle says. Its errors name the issuer through redact.URL and a
-// failure as issuerError prints it.
+// authorization_endpoint or token_endpoint offers no sign-in, and fails discovery, as does one
+// that names no jwks_uri, since no ID token it issues could be checked. One that names no
+// revocation_endpoint is accepted, and Revoke fails against it. One whose revocation_endpoint is
+// not a string, a null included (endpointString), or whose token_endpoint_auth_methods_supported
+// is not an array of strings (authMethods), fails discovery. The ID tokens are checked against
+// the key set at jwks_uri through a Keys of the flow's own, as every other verifier of this
+// package checks its tokens, so a key set that cannot be read is ErrIssuerUnavailable carrying the
+// key set's wait (RetryAfter), never a signature failure. The config every grant starts from, the
+// code exchanges', Refresh's and CheckClient's, authenticates as tokenAuthStyle says. Its errors
+// name the issuer through redact.URL and a failure as issuerError prints it.
 func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string) (*codeFlowIssuer, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
@@ -140,15 +143,20 @@ func discoverCodeFlow(ctx context.Context, issuer, clientID, clientSecret string
 		return nil, fmt.Errorf("oidc: issuer %s names no authorization_endpoint or token_endpoint in its discovery document, so it offers no sign-in", redact.URL(issuer))
 	}
 	var metadata struct {
+		JWKSURI            string         `json:"jwks_uri"`
 		RevocationEndpoint endpointString `json:"revocation_endpoint"`
 		TokenAuthMethods   authMethods    `json:"token_endpoint_auth_methods_supported"`
 	}
 	if err := provider.Claims(&metadata); err != nil {
-		return nil, fmt.Errorf("oidc: read issuer %s's revocation_endpoint and token_endpoint_auth_methods_supported: %w", redact.URL(issuer), issuerError(issuer, err))
+		return nil, fmt.Errorf("oidc: read issuer %s's jwks_uri, revocation_endpoint and token_endpoint_auth_methods_supported: %w", redact.URL(issuer), issuerError(issuer, err))
+	}
+	keys, err := keysAt(issuer, metadata.JWKSURI)
+	if err != nil {
+		return nil, err
 	}
 	endpoint.AuthStyle = tokenAuthStyle(metadata.TokenAuthMethods)
 	return &codeFlowIssuer{
-		verifier: newVerifier(provider, issuer, clientID),
+		verifier: newWithKeys(issuer, []string{clientID}, keys),
 		config: oauth2.Config{
 			ClientID:     clientID,
 			ClientSecret: clientSecret,
@@ -284,8 +292,9 @@ const MaxCallbackCode = 2048
 // token and refresh token. The ID token must carry nonce, the value the sign-in that sent the
 // browser to AuthURL bound it to; one carrying another, and a caller naming no nonce, fail with
 // ErrNonce. An issuer that returns no refresh token is refused, since this mode renews the
-// sign-in with one. It fails with ErrIssuerUnavailable while the issuer is not discovered, and
-// when its token endpoint cannot answer the exchange (exchange).
+// sign-in with one. It fails with ErrIssuerUnavailable while the issuer is not discovered, when
+// its token endpoint cannot answer the exchange (exchange), and when the issuer's key set cannot
+// be read to check the ID token, an error that carries the key set's wait (RetryAfter).
 func (f *CodeFlow) Exchange(ctx context.Context, redirectURL, code, nonce string) (Session, error) {
 	session, err := f.exchange(ctx, redirectURL, code, nonce)
 	if err != nil {
@@ -411,7 +420,9 @@ func redirectTo(redirectURL string) []oauth2.AuthCodeOption {
 // the flow has a hosted domain). The ID token must carry signIn's nonce, and fails with ErrNonce
 // when it carries another. A refresh token the issuer returns anyway is dropped, never returned:
 // an online sign-in keeps none. It fails with ErrIssuerUnavailable while the issuer is not
-// discovered, and when its token endpoint cannot answer the exchange (exchange).
+// discovered, when its token endpoint cannot answer the exchange (exchange), and when the issuer's
+// key set cannot be read to check the ID token, an error that carries the key set's wait
+// (RetryAfter).
 func (f *CodeFlow) OnlineExchange(ctx context.Context, redirectURL, code string, signIn OnlineSignIn) (Claims, error) {
 	if signIn.Nonce == "" || signIn.Verifier == "" {
 		return Claims{}, errors.New("oidc: an online sign-in needs its nonce and PKCE verifier")

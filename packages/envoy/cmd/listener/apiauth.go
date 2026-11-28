@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -222,12 +223,12 @@ func identityRefusal(err error, reason string) error {
 // refuseIdentityToken answers an identity token this listener did not admit. A token the verifier
 // reached no verdict on, because the issuer's discovery or key set could not be read
 // (oidc.ErrIssuerUnavailable), is the 503 with Retry-After: 1 a broker token the broker could not
-// check gets (refuseBrokerToken): the listener could not run the check, which is its own failure
-// rather than the token's. A 401 would tell Dispatch's client its account token was refused, and
-// that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
-// listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
-// no takeover copies them for the role's next holder. Every other outcome is the 401 every other
-// refused credential gets here.
+// be asked about gets (refuseBrokerToken): the listener could not run the check, which is its own
+// failure rather than the token's. A 401 would tell Dispatch's client its account token was
+// refused, and that client makes a refused call again on the shared token with no role mark
+// (cmd/dispatch's listener client), so an issuer outage would send Dispatch's role-route messages
+// unmarked, where no takeover copies them for the role's next holder. Every other outcome is the
+// 401 every other refused credential gets here.
 func refuseIdentityToken(w http.ResponseWriter, err error) {
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		w.Header().Set("Retry-After", "1")
@@ -537,14 +538,17 @@ func (a listenerAPIAuth) readEdgeCaller(w http.ResponseWriter, r *http.Request) 
 //
 // Three of the outcomes are not refusals of the caller and are not answered as one. A broker
 // that gave no answer is a 503, for the reason Dispatch answers one: a caller told its token was
-// refused would discard a token that may be perfectly live, where a 503 asks it to come back. A
-// spent-proof store that did not answer is the same 503: the listener could not run the check,
-// which is its own failure rather than the token's, and a client does not retry a 401, so a NATS
-// fault of a few seconds would otherwise fail every send a live token makes. A source address
-// with no introspection left in its bucket is the 429 that bucket exists to write, carrying the
-// wait it must come back after; nothing of it reached the broker. Every other outcome is the
-// same 401 and the same body every other refused credential gets here, so the answer tells an
-// unauthenticated caller nothing about which credentials this listener takes.
+// refused would discard a token that may be perfectly live, where a 503 asks it to come back. Its
+// Retry-After is the wait the broker's own 503 named (ciphertoken.RetryAfter), as the broker
+// answers when it could not check this listener's own account token because the key set of that
+// token's issuer could not be read, rounded up to whole seconds, and 1 where the broker named
+// none. A spent-proof store that did not answer is the same 503: the listener could not run the
+// check, which is its own failure rather than the token's, and a client does not retry a 401, so
+// a NATS fault of a few seconds would otherwise fail every send a live token makes. A source
+// address with no introspection left in its bucket is the 429 that bucket exists to write,
+// carrying the wait it must come back after; nothing of it reached the broker. Every other
+// outcome is the same 401 and the same body every other refused credential gets here, so the
+// answer tells an unauthenticated caller nothing about which credentials this listener takes.
 //
 // None of the 503s here comes after the proof is spent, so a retry of the same request with the
 // same proof, the one Google's load balancer sends after a 503, is judged afresh: the broker is
@@ -562,7 +566,11 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
 	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
-		w.Header().Set("Retry-After", "1")
+		retryAfter := 1
+		if wait, named := ciphertoken.RetryAfter(err); named {
+			retryAfter = ratelimit.RetryAfterSeconds(wait)
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
 	case errors.Is(err, ciphertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))

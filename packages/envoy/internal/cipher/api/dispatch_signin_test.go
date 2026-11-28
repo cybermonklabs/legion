@@ -30,6 +30,12 @@ import (
 // routeParameter is a wildcard of a route's pattern, which a call of the route names a value of.
 var routeParameter = regexp.MustCompile(`\{[^}]+\}`)
 
+// concretePath is pattern with each of its wildcards (routeParameter) filled with a fresh UUID, an
+// id no row names.
+func concretePath(pattern string) string {
+	return routeParameter.ReplaceAllStringFunc(pattern, func(string) string { return uuid.NewString() })
+}
+
 // signInOff is the description of every refusal of a step of a Dispatch sign-in on a broker that
 // serves none (oauth.DispatchSignInOff).
 const signInOff = "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off"
@@ -234,10 +240,10 @@ func countRows(t *testing.T, rig *ciphertest.Rig, from string, args ...any) int 
 
 // launcherRouteCall calls the launcher route pattern names under credential with a launcher proof
 // the machine's key signs (launcherCall), each of the pattern's wildcards filled with a fresh UUID
-// and an empty JSON object as the body of a POST.
+// (concretePath) and an empty JSON object as the body of a POST.
 func launcherRouteCall(t *testing.T, rig *ciphertest.Rig, machine *deviceMachine, credential, method, pattern string) (int, []byte) {
 	t.Helper()
-	path := routeParameter.ReplaceAllStringFunc(pattern, func(string) string { return uuid.NewString() })
+	path := concretePath(pattern)
 	var body any
 	if method == http.MethodPost {
 		body = map[string]any{}

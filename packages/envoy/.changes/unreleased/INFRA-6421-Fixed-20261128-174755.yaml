@@ -1,0 +1,29 @@
+kind: Fixed
+body: |-
+  The secrets broker no longer refuses a token it could not check because the key set of the
+  token's issuer could not be read. Each route that checks a token against a key set answers
+  `503` with `Retry-After`, the 5 seconds before the broker reads a failed key set again: the
+  JSON routes with the code `ISSUER_UNAVAILABLE`, the NATS writer hold's routes with
+  `issuer_unavailable`, the token exchange with `temporarily_unavailable` and the code
+  `ISSUER_UNAVAILABLE`, and the approval page's sign-in with its "Sign-in unavailable" page.
+  Before, it refused the token (`401 ACCOUNT_TOKEN_INVALID`, `401 POD_TOKEN_INVALID`,
+  `401 TOKEN_INVALID`, `403 POD_IDENTITY_MISMATCH`, `400 invalid_request`, `403 not_operator` or
+  "Sign-in refused"), and its clients dropped a credential that may have been sound. A token login
+  answered so spends no address request. The sign-in's code flow, the broker's and Dispatch's,
+  reads the ID token's keys through the same key-set cache as every other check, so Dispatch's
+  `/auth/callback` answers such a failure `503 SIGNIN_UNAVAILABLE`, not `502`. The clients wait
+  the outage out: `internal/cipherclient` and `agent-secrets` (`enroll --pod`, `renew` and the
+  trade of `login`) send no request to the route before the wait has passed, read a wait above 60
+  seconds as 60, and one call with no deadline of its own tries for at most 2 minutes, then fails
+  naming the outage, never a refusal. Dispatch's broker-token check answers
+  `503 BROKER_UNAVAILABLE` with the broker's `Retry-After`, Dispatch's credential pages relay the
+  broker's `503` with it, the listener answers a `Retry-After` no shorter than the broker's, and
+  the edge listener's repository refresh skips a project until the wait has passed, while its
+  `503 repositories_unknown` to a registration carries the wait. The broker also refuses to start
+  with a cluster audience setting (`BROKER_K8S_OIDC_AUDIENCE`, `BROKER_EXCHANGE_K8S_AUDIENCE`,
+  `BROKER_NATS_K8S_AUDIENCE` or `BROKER_POD_REGISTRATION_AUDIENCE`) equal to
+  `BROKER_K8S_OIDC_ISSUER`, a trailing `/` on either aside, naming both settings, since the
+  Kubernetes API server takes a token whose audience is its issuer.
+time: 2026-11-28T17:47:55Z
+custom:
+    Issue: INFRA-6421

@@ -32,11 +32,14 @@ import (
 // for every caller together by the edge's shared device bucket (DefaultEdgeDeviceLimit); the
 // approval still needs the user code each login shows its own machine. A token login whose token
 // verified and that the broker then could not complete (5xx, such as one the database was away
-// for) spends neither bucket: the Legion daemon retries such a login every few seconds through a
-// database outage, and the broker decided nothing about its request, so there is nothing to slow,
-// while a refused credential (any 4xx) still spends every bucket it reached, since the limit
-// exists to slow guessing, and a token that does not verify always keeps its address's request,
-// since that bucket guards the verifier's fetches of the issuer's keys. A daemon behind an address
+// for) spends neither bucket, and one whose token check reached no verdict because the issuer's
+// key set could not be read (503 ISSUER_UNAVAILABLE) spends no address request, the one bucket it
+// reached: the Legion daemon retries such a login through the outage, and the broker decided
+// nothing about its request, so there is nothing to slow, while a refused credential (any 4xx)
+// still spends every bucket it reached, since the limit exists to slow guessing, and a token the
+// check refuses always keeps its address's request, since that bucket guards the verifier's
+// fetches of the issuer's keys; a key set that cannot be read is read at most once per its
+// FailureSpacing however many tokens arrive (oidc.Keys). A daemon behind an address
 // others share is held to that address's bucket too: BROKER_TRUSTED_PROXY_HEADER keys the bucket
 // on the caller's own address behind a proxy, and the daemon renews its credential halfway through
 // its life, which carries it through brief contention for that bucket, not through a caller that
@@ -465,8 +468,10 @@ func edgeAddressKey(addr netip.Addr) string {
 // refuseAddress writes 429 RATE_LIMITED and reports refused when r's source address has no request
 // left in its bucket: POST /v1/launcher-credentials/token's first limit, spent before the token is
 // verified. Otherwise it answers giveBack, which returns the request to the bucket at the time it
-// is called: tokenLogin calls it only for a login whose token verified and that the broker then
-// could not complete (5xx); a token that does not verify always keeps the request it spent.
+// is called: tokenLogin calls it only for a login the broker could not complete (5xx), whether
+// its token verified or its token check reached no verdict because the issuer's key set could
+// not be read (503 ISSUER_UNAVAILABLE); a token the check refuses always keeps the request it
+// spent.
 func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) (giveBack func(), refused bool) {
 	giveBackAt, ok := l.perAddress.TakeAt(l.address(r), time.Now())
 	if ok {

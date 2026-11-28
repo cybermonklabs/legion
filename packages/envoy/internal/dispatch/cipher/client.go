@@ -39,10 +39,17 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // defaultTimeout is the window every broker call gets, matching envoy.Client's default.
 const defaultTimeout = 5 * time.Second
+
+// maxRetryAfter caps the wait a broker's 503 asks for (Error.RetryAfter), as the broker's token
+// client caps it (internal/cipherclient, maxRetryAfter), so no answer's large value, the broker's
+// or a proxy's before it, holds a page back for longer than a minute. The broker asks for the
+// spacing of its reads of a key set that failed, 5 s by default.
+const maxRetryAfter = time.Minute
 
 // Client relays Dispatch's UI calls to the broker, authenticating each one with the projected
 // ServiceAccount token Account reads. A nil *Client (the broker URL is unconfigured) means the
@@ -102,6 +109,12 @@ type Error struct {
 	Status int
 	Code   string
 	Body   json.RawMessage
+	// RetryAfter is the wait a 503's Retry-After names (serverwait.Read), read as at most
+	// maxRetryAfter, and zero for every other answer and for a 503 that names none. The broker
+	// answers 503 ISSUER_UNAVAILABLE, asking for a wait, when it could not check Dispatch's own
+	// account token because the key set of that token's issuer could not be read; the routes
+	// forward the wait with the status and the body (internal/dispatch/api, relayBrokerResponse).
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {
@@ -146,6 +159,10 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		brokerErr := &Error{Status: response.StatusCode, Body: responseBody}
+		if response.StatusCode == http.StatusServiceUnavailable {
+			wait, _ := serverwait.Read(response.Header, time.Now())
+			brokerErr.RetryAfter = min(wait, maxRetryAfter)
+		}
 		var decoded struct {
 			Code string `json:"code"`
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // createEnrollmentBody is POST /v1/enrollments's body (the shared broker contract's
@@ -177,6 +178,9 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 		return
 	case errors.Is(err, enroll.ErrPodTokenExpired):
 		writeError(w, http.StatusForbidden, "POD_TOKEN_EXPIRED", err.Error())
+		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		refuseIssuerUnavailable(w, "verify the pod's token", err)
 		return
 	case errors.Is(err, enroll.ErrPodIdentity):
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())
@@ -461,6 +465,9 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		return
 	case errors.Is(err, enroll.ErrPodTokenExpired):
 		writeError(w, http.StatusForbidden, "POD_TOKEN_EXPIRED", err.Error())
+		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		refuseIssuerUnavailable(w, "verify the pod's token on its renewal", err)
 		return
 	case errors.Is(err, enroll.ErrPodIdentity):
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())

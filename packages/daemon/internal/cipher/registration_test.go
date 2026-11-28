@@ -17,10 +17,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 )
 
 // registrationBroker is POST /v1/oauth/exchange/pod-sessions as the broker serves it: it records
-// each write's credential headers and body, and answers the next of answers, or once they run out
+// each write's credential headers and body, and answers the next of outages (the broker's answer
+// through a key set it cannot read, keySetOutage), then the next of answers, or once both run out
 // a registration of pod (the pod uid the broker reads from the token every write presents) that
 // lasts a day, bound to the thumbprint the write sent — or to bound, where a test sets it, as a
 // broker that kept another binding answers — at the generation the write sent, or at newer, where
@@ -33,6 +36,7 @@ type registrationBroker struct {
 	mu      sync.Mutex
 	newer   int64
 	answers []enrollAnswer
+	outages []keySetAnswer
 	writes  []registrationWrite
 }
 
@@ -61,6 +65,15 @@ func (b *registrationBroker) handle(w http.ResponseWriter, r *http.Request) {
 		b.t.Errorf("the registration's body %q is not JSON: %v", raw, err)
 	}
 	b.mu.Lock()
+	if len(b.outages) > 0 {
+		outage := b.outages[0]
+		b.outages = b.outages[1:]
+		write.status = outage.Status
+		b.writes = append(b.writes, write)
+		b.mu.Unlock()
+		outage.write(w)
+		return
+	}
 	thumbprint := write.body["thumbprint"]
 	if b.bound != "" {
 		thumbprint = b.bound
@@ -648,14 +661,71 @@ func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *test
 	}
 }
 
+// TestAPodSessionRegistrationWaitsOutA503sRetryAfter: the broker answers a pod-session
+// registration 503 with Retry-After when it cannot check the daemon's bearer or the pod's token
+// because the key set of the token's issuer could not be read, and the tokens may well be sound
+// once that wait has passed. The renewal reads the 503 as a write a retry can change, and schedules
+// the next write after the larger of its backoff (15 s after a first failure) and the wait the
+// answer asked for, read as at most a minute; that write, once the wait has passed on the client's
+// clock, is sent and taken, and the renewal goes on to its next renewal. Each 503 is the broker's
+// own answer (keySetOutage), asking the row's wait.
+func TestAPodSessionRegistrationWaitsOutA503sRetryAfter(t *testing.T) {
+	const (
+		pod     = "pod-uid-11"
+		session = "ses_outage"
+	)
+	for _, row := range []struct {
+		name, retryAfter string
+		// wait is what the renewal waits after the 503 before its next write.
+		wait time.Duration
+	}{
+		{"45 s", "45", 45 * time.Second},
+		{"5 s at the 15 s backoff", "5", 15 * time.Second},
+		{"90 s", "90", time.Minute},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			broker, server := newRegistrationBroker(t, pod)
+			broker.outages = []keySetAnswer{keySetOutage(t).asking(row.retryAfter)}
+			clock := clocktest.New(outageStart)
+			c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), clock: clock}
+			timers := &manualTimers{}
+			stop, err := c.KeepPodSession(context.Background(), PodSessionRenewal{
+				PodUID: pod, Session: session, Thumbprint: testThumbprint, Bound: time.Second, After: timers.after,
+				Token: func(context.Context) (string, error) { return testPodToken, nil },
+			})
+			defer stop()
+			if !isKeySetOutage(err) {
+				t.Fatalf("the first write of %s, answered 503 asking %s s, = %v; want the broker's outage, not permanent", session, row.retryAfter, err)
+			}
+			if got, want := timers.scheduled(), []time.Duration{row.wait}; !slices.Equal(got, want) {
+				t.Fatalf("after a 503 asking %s s the renewal of %s scheduled %v, want %v", row.retryAfter, session, got, want)
+			}
+			clock.Advance(row.wait)
+			if !timers.fire() {
+				t.Fatalf("the renewal of %s scheduled no write after the 503", session)
+			}
+			writes := broker.received()
+			if len(writes) != 2 || writes[1].status != http.StatusOK {
+				t.Fatalf("the broker received %d writes of %s, want the one it answered 503 and then the one it took once the wait had passed: %v", len(writes), session, writes)
+			}
+			if got, want := timers.scheduled(), []time.Duration{row.wait, RegistrationRenewal}; !slices.Equal(got, want) {
+				t.Fatalf("the renewal of %s waited %v, want %v: the wait after the 503, then the renewal after the write", session, got, want)
+			}
+		})
+	}
+}
+
 // releaseBroker is POST /v1/oauth/exchange/pod-sessions/release answering every call with status
-// and body, and recording each call's credential headers and raw body.
+// and body, but the next calls with the next of outages (the broker's answer through a key set it
+// cannot read, keySetOutage) where a test sets them, and recording each call's credential headers
+// and raw body.
 type releaseBroker struct {
 	status int
 	body   string
 
-	mu    sync.Mutex
-	calls []releaseCall
+	mu      sync.Mutex
+	calls   []releaseCall
+	outages []keySetAnswer
 }
 
 // releaseCall is one release the broker received.
@@ -672,7 +742,15 @@ func newReleaseBroker(t *testing.T, status int, body string) (*releaseBroker, *h
 		b.calls = append(b.calls, releaseCall{
 			authorization: r.Header.Get("Authorization"), proof: r.Header.Get("Proof"), contentType: r.Header.Get("Content-Type"), body: string(raw),
 		})
+		var outage *keySetAnswer
+		if len(b.outages) > 0 {
+			outage, b.outages = &b.outages[0], b.outages[1:]
+		}
 		b.mu.Unlock()
+		if outage != nil {
+			outage.write(w)
+			return
+		}
 		w.WriteHeader(b.status)
 		_, _ = w.Write([]byte(b.body))
 	})
@@ -791,6 +869,58 @@ func TestAReleasePastTheBrokersBoundsIsNotSent(t *testing.T) {
 			}
 			if sent != 0 {
 				t.Fatalf("the release of %s was sent %d times, want never", c.name, sent)
+			}
+		})
+	}
+}
+
+// TestAPodSessionReleaseWaitsOutA503sRetryAfter: the broker answers a release 503 with Retry-After
+// when it cannot check the daemon's bearer because the key set of its issuer could not be read,
+// and the bearer may well be sound once that wait has passed. Neither that answer nor a release
+// within its wait is a refusal a retry cannot change, so supervise reads each as unanswered and
+// keeps the names held (releaseSessions); a release within the wait under a context that ends
+// before the wait does, as each of supervise's attempts inside its one RPC bound may, sends
+// nothing. Once the wait has passed on the client's clock, the release is sent and the broker's
+// 200 releases the names. The 503 is the broker's own answer (keySetOutage), asking its 5 s.
+func TestAPodSessionReleaseWaitsOutA503sRetryAfter(t *testing.T) {
+	names := []string{"ses_a", "ses_b"}
+	for _, row := range []struct {
+		name string
+		// passed is how far the client's clock moves after the 503, before the release.
+		passed time.Duration
+		// sent is whether the release is sent, which then ends with the broker's 200.
+		sent bool
+	}{
+		{"within the wait", 2 * time.Second, false},
+		{"after the wait", 5 * time.Second, true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			broker, server := newReleaseBroker(t, http.StatusOK, `{"sessions":2,"released":2}`)
+			broker.outages = []keySetAnswer{keySetOutage(t)}
+			clock := clocktest.New(outageStart)
+			client := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), clock: clock}
+			if err := client.ReleasePodSessions(context.Background(), names); !isKeySetOutage(err) {
+				t.Fatalf("the release the broker answered 503 = %v, want its outage, ISSUER_UNAVAILABLE, not permanent", err)
+			}
+			clock.Advance(row.passed)
+			// A second, shorter than the 3 s left of the wait within it.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := client.ReleasePodSessions(ctx, names)
+			ended := ctx.Err()
+			calls := len(broker.received())
+			if !row.sent {
+				var notBefore *notBeforeError
+				if !errors.As(err, &notBefore) || !isKeySetOutage(err) || ended != nil {
+					t.Fatalf("a release %s after the 503 asking 5 s = %v (its context: %v), want the outage answered at once, not permanent", row.passed, err, ended)
+				}
+				if calls != 1 {
+					t.Fatalf("a release %s after the 503 asking 5 s was sent %d times, want never", row.passed, calls-1)
+				}
+				return
+			}
+			if err != nil || calls != 2 {
+				t.Fatalf("a release once the 5 s wait had passed = %v after %d calls, want it sent once more and the names released", err, calls)
 			}
 		})
 	}

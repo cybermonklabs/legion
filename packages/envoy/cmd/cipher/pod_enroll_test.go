@@ -18,13 +18,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestEnrolAPodFromItsProjectedToken: the whole of a pod's enrollment. It logs in with the token
@@ -34,7 +38,7 @@ import (
 // directory it reuses key.pem, so the enrollment the broker holds live for that key is the one it
 // gets back, and it renews that lease.
 func TestEnrolAPodFromItsProjectedToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:42).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:46).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	broker, calls := servePodBroker(t, "enrollment-of-the-pod")
@@ -190,7 +194,7 @@ func TestEnrolAPodFromItsProjectedToken(t *testing.T) {
 // missing or which two flags cannot be given together. With neither mode the refusal names both,
 // so a pod that forgot --pod is told the mode exists.
 func TestPodUsageRefusals(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:216).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:220).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
 	broker, calls := servePodBroker(t, "never-reached")
 	for _, tc := range []struct {
@@ -236,7 +240,7 @@ func TestPodUsageRefusals(t *testing.T) {
 // exits 1 naming the file by its flag, --pod-token-file, and not by its path, and asks the broker
 // nothing — a blank file is never sent as a token.
 func TestAPodTokenFileThatCannotBeReadIsNamed(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:245).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:249).
 	missing := filepath.Join(t.TempDir(), "absent")
 	blank := writePodToken(t, "")
 	for name, path := range map[string]string{"a missing file": missing, "an empty file": blank} {
@@ -263,7 +267,7 @@ func TestAPodTokenFileThatCannotBeReadIsNamed(t *testing.T) {
 // refusal says so before anything is asked of the broker, rather than arriving as a 403 the
 // operator has to decode.
 func TestAPodTokenBoundToNoPodIsNamed(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:269).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:273).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, ""))
 	broker, calls := servePodBroker(t, "never-reached")
 	t.Setenv("AGENT_SECRETS_URL", broker.URL)
@@ -284,7 +288,7 @@ func TestAPodTokenBoundToNoPodIsNamed(t *testing.T) {
 // TestNotAJWTInThePodTokenFileIsNamed: a file holding something that is not a JWT at all is named
 // as such, not sent to the broker to be refused there.
 func TestNotAJWTInThePodTokenFileIsNamed(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:290).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:294).
 	tokenFile := writePodToken(t, "not-a-jwt")
 	broker, calls := servePodBroker(t, "never-reached")
 	t.Setenv("AGENT_SECRETS_URL", broker.URL)
@@ -305,7 +309,7 @@ func TestNotAJWTInThePodTokenFileIsNamed(t *testing.T) {
 // token itself. POD_SELF_ENROLL_ONLY is what a login bound to another pod, or to none, is
 // answered.
 func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:320).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:324).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -337,7 +341,7 @@ func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
 // status, and none of what the answerer wrote - the words, which repeat that credential, or the
 // code - since whoever answers at that address can fill any of them with it.
 func TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:353).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:357).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	var words string
@@ -374,7 +378,7 @@ func TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *te
 // into enrollment.error beside the key, and a later `agent-secrets` call says what the broker
 // said. A re-run that succeeds takes that file away again.
 func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:404); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:408); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	out := t.TempDir()
@@ -452,7 +456,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 // on one directory must leave one key, one enrollment id, and must not have made four logins
 // race: each run either made the enrollment or got that same one back.
 func TestTwoRunsOnOneDirectoryTakeTurns(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:459).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:463).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
 	broker, calls := servePodBroker(t, "enrollment-of-the-pod")
 	out := filepath.Join(t.TempDir(), "keys")
@@ -496,5 +500,167 @@ func TestTwoRunsOnOneDirectoryTakeTurns(t *testing.T) {
 	}
 	if len(thumbprints) != 1 {
 		t.Fatalf("the runs enrolled %d keys, want one: the lock did not serialize them", len(thumbprints))
+	}
+}
+
+// TestEnrollPodWaitsOutA503sRetryAfter: the broker answers 503 with Retry-After, refusing
+// nothing, when it could not check the pod's token because its issuer's key set could not be read,
+// and enroll --pod waits that wait out and asks again: on its token login ("login"), on its
+// enrolment ("enrolment") and on the renewal of an enrollment its key already holds ("renewal"),
+// each answered here with the broker's own 503 (unreadablekeysettest) with its Retry-After alone
+// changed per row. The run waits on a fake clock (enrolPod's podClock), which the test moves to
+// the end of each wait once the run has armed it, so a row reads each wait the run made and the
+// moment of each call on that clock: the call asked again comes no sooner than the wait after the
+// first, signed anew, and the run then enrols. "90 s" reads a wait above a minute as a minute.
+// "bounded": every wait of the run is inside one budget of two minutes from its start, so a login
+// answered 503 twice and then an enrolment answered 503 every time end the run within the two
+// minutes, at the last wait that fits, exit 1, with a line on stderr and in enrollment.error
+// beside the key that names the outage and how long the run tried, and reads as no refusal.
+func TestEnrollPodWaitsOutA503sRetryAfter(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in its rows).
+	const enrollmentID = "enrollment-of-the-pod"
+	const login, enrolment, renewal = "/v1/launcher-credentials/token", "/v1/enrollments", "/v1/enrollments/" + enrollmentID + "/renew"
+	fixture := unreadablekeysettest.Read(t).JSONRoute
+	start := time.Date(2026, time.November, 28, 12, 0, 0, 0, time.UTC)
+	token := fakePodToken(t, testPodAccount, testPodUID)
+	for _, row := range []struct {
+		name   string
+		outage podBrokerOutage
+		// enrolled is a key that already holds its live enrollment, which a first run makes, so
+		// the broker answers the run's enrolment 200 and the run renews that enrollment.
+		enrolled bool
+		wait     time.Duration
+	}{
+		{"login", podBrokerOutage{login, fixture.Asking("5"), 1}, false, 5 * time.Second},
+		{"enrolment", podBrokerOutage{enrolment, fixture.Asking("5"), 1}, false, 5 * time.Second},
+		{"renewal", podBrokerOutage{renewal, fixture.Asking("5"), 1}, true, 5 * time.Second},
+		{"90 s", podBrokerOutage{login, fixture.Asking("90"), 1}, false, time.Minute},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := clocktest.New(start)
+			broker, calls := servePodBroker(t, enrollmentID, podBrokerClock(fake.Now), podBrokerOutages(row.outage))
+			t.Setenv("AGENT_SECRETS_URL", broker.URL)
+			tokenFile := writePodToken(t, token)
+			out := t.TempDir()
+			if row.enrolled {
+				if code, _, stderr, waits := enrolPodOnFakeClock(t, fake, tokenFile, out); code != 0 || len(waits) != 0 {
+					t.Fatalf("the first run = exit %d after waits %v, stderr %q; want it to enrol the key at once", code, waits, stderr)
+				}
+			}
+			earlier := len(calls())
+			code, stdout, stderr, waits := enrolPodOnFakeClock(t, fake, tokenFile, out)
+			if code != 0 || strings.TrimSpace(stdout) != enrollmentID {
+				t.Fatalf("enroll --pod through a 503 asking %s = exit %d, stdout %q, stderr %q; want the enrollment id", row.outage.answer.RetryAfter, code, stdout, stderr)
+			}
+			if !slices.Equal(waits, []time.Duration{row.wait}) {
+				t.Fatalf("the run waited %v on its clock through a 503 asking %s s, want %v", waits, row.outage.answer.RetryAfter, []time.Duration{row.wait})
+			}
+			var asked []podCall
+			for _, call := range calls()[earlier:] {
+				if call.path == row.outage.path {
+					asked = append(asked, call)
+				}
+			}
+			if len(asked) != 2 {
+				t.Fatalf("the run asked %s %d times, want twice: the 503, then once its wait had passed", row.outage.path, len(asked))
+			}
+			if gap := asked[1].at.Sub(asked[0].at); gap < row.wait {
+				t.Fatalf("the run asked %s again %s after the 503 on its clock, want no sooner than %s", row.outage.path, gap, row.wait)
+			}
+			// A login's request object and a proof each carry their moment, which the broker
+			// takes only within its skew of now: the second try signs its own.
+			if asked[1].body["request"] == asked[0].body["request"] && asked[1].proof == asked[0].proof {
+				t.Fatalf("the run sent %s again with the first try's signed request object and proof", row.outage.path)
+			}
+			if id, err := readTrimmed(filepath.Join(out, enrollmentFile)); err != nil || id != enrollmentID {
+				t.Fatalf("the enrollment file = %q (%v), want the enrollment id", id, err)
+			}
+		})
+	}
+	t.Run("bounded", func(t *testing.T) {
+		fake := clocktest.New(start)
+		broker, calls := servePodBroker(t, enrollmentID, podBrokerClock(fake.Now),
+			podBrokerOutages(podBrokerOutage{login, fixture.Asking("5"), 2}, podBrokerOutage{enrolment, fixture.Asking("5"), 0}))
+		t.Setenv("AGENT_SECRETS_URL", broker.URL)
+		out := t.TempDir()
+		code, stdout, stderr, waits := enrolPodOnFakeClock(t, fake, writePodToken(t, token), out)
+		if code != 1 || stdout != "" {
+			t.Fatalf("enroll --pod through a broker answering 503 every time = exit %d, stdout %q, stderr %q; want exit 1 and no enrollment id", code, stdout, stderr)
+		}
+		// The logins at 0 s and 5 s and the enrolments from 10 s on are each asked again 5 s on,
+		// and the enrolment at 115 s is the last: a wait of 5 s from there ends at the budget.
+		tried := fake.Now().Sub(start)
+		if tried != podOutageBudget-5*time.Second || len(waits) != 23 {
+			t.Fatalf("the run waited %v and ended %s after it began on its clock, want 23 waits of 5 s, ending 5 s short of the %s budget", waits, tried, podOutageBudget)
+		}
+		logins, enrolments := 0, 0
+		for _, call := range calls() {
+			switch call.path {
+			case login:
+				logins++
+			case enrolment:
+				enrolments++
+			}
+		}
+		if logins != 3 || enrolments != 22 {
+			t.Fatalf("the broker was asked %d logins and %d enrolments, want 3 and 22, all in the one budget", logins, enrolments)
+		}
+		recorded, err := os.ReadFile(filepath.Join(out, enrollmentErrorFile))
+		if err != nil {
+			t.Fatalf("read %s: %v", enrollmentErrorFile, err)
+		}
+		if strings.TrimSpace(string(recorded)) != strings.TrimSpace(stderr) {
+			t.Fatalf("%s holds %q, want the line stderr printed, %q", enrollmentErrorFile, recorded, stderr)
+		}
+		for _, words := range []string{
+			"could not enrol: the broker could not check the pod's token, because its issuer's key set could not be read",
+			"HTTP 503 ISSUER_UNAVAILABLE",
+			"tried for 1m55s, and the wait of 5s the broker asked for runs past the 2m0s",
+		} {
+			if !strings.Contains(stderr, words) {
+				t.Errorf("stderr %q does not say %q", stderr, words)
+			}
+		}
+		if strings.Contains(strings.ToLower(stderr), "refus") {
+			t.Errorf("stderr %q reads as a refusal of the pod, which the broker never made", stderr)
+		}
+		if exists(filepath.Join(out, enrollmentFile)) {
+			t.Fatal("the run wrote an enrollment file though the broker enrolled nothing")
+		}
+	})
+}
+
+// enrolPodOnFakeClock runs enrolPod for tokenFile into out on fake, and moves fake to the end of
+// each wait the run arms on it once the run has armed it, until the run exits. It answers the
+// run's exit code, stdout and stderr, and each wait the run made, in order.
+func enrolPodOnFakeClock(t *testing.T, fake *clocktest.Fake, tokenFile, out string) (code int, stdout, stderr string, waits []time.Duration) {
+	t.Helper()
+	var runOut, runErr bytes.Buffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- enrolPod(fake, testPodService, tokenFile, out, podProjects{}, brokerBaseURL(), "agent-secrets enroll", &runOut, &runErr)
+	}()
+	type step struct {
+		exited bool
+		code   int
+		until  time.Time
+	}
+	for {
+		next := testwait.Until(t, "enroll --pod to arm a wait on its clock or to exit", func() (step, bool) {
+			select {
+			case code := <-exited:
+				return step{exited: true, code: code}, true
+			default:
+			}
+			if armed := fake.Armed(); len(armed) > 0 {
+				return step{until: armed[0]}, true
+			}
+			return step{}, false
+		})
+		if next.exited {
+			return next.code, runOut.String(), runErr.String(), waits
+		}
+		waits = append(waits, next.until.Sub(fake.Now()))
+		fake.Set(next.until)
 	}
 }

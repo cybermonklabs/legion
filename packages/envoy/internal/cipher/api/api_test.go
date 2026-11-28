@@ -74,6 +74,13 @@ type testServer struct {
 	Secrets   *memory.Store
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
+	// keys is podIssuer's key set, which the server's own verifiers read: the listed callers' and
+	// the edge listeners' tokens (AccountTokens), a service's token (the token login and the
+	// serviceAuth class), a pod's token (the enrollment, its renewal, and the registration at either
+	// audience). The token exchange reads a set of its own (ciphertest.NewOAuthProvider). Nothing
+	// reads it before the server's first check, so a test sets its FailureSpacing before it sends
+	// anything.
+	keys *oidc.Keys
 	// machine is the broker's requests.Machine, which reads a record as the approval page does.
 	machine *requests.Machine
 	// uiToken is dispatchAccount's own projected token, the credential the routes Dispatch's
@@ -130,8 +137,10 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 }
 
 // newProfiledTestServer is newTestServerWith whose deployment's profiles file is file, or that has
-// none for "", as the broker's BROKER_PROFILES_FILE is set or not.
-func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *testServer {
+// none for "", as the broker's BROKER_PROFILES_FILE is set or not. providerOptions configure the
+// OAuth provider it builds (ciphertest.NewOAuthProvider), for a test that needs one wired
+// otherwise, such as one whose token exchange has a Google issuer.
+func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps), providerOptions ...ciphertest.ProviderOption) *testServer {
 	t.Helper()
 	st := storetest.Open(t)
 
@@ -199,7 +208,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Policy)
-	provider := ciphertest.NewOAuthProvider(t, st, issuer)
+	provider := ciphertest.NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -222,7 +231,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	adjust(&deps)
 	api.Register(mux, deps)
 
-	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions, handler: handler}
+	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, keys: keys, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions, handler: handler}
 	ts.uiToken = ts.accountToken(t, dispatchAccount, "", time.Hour)
 	return ts
 }

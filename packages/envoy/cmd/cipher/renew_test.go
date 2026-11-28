@@ -9,11 +9,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -79,7 +81,7 @@ func renewalSession(t *testing.T, broker string) (*client, Signer, string, strin
 // refusal are steps, not wall-clock delays. ENROLLMENT_NOT_LIVE exits exitRenewRefused so the
 // worker shim can stop instead of restarting a renewer whose enrollment has ended.
 func TestRenewSendsThePodsCurrentToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:69); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("first-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -143,7 +145,7 @@ func TestRenewSendsThePodsCurrentToken(t *testing.T) {
 // TestRenewWithoutAPodTokenFileSendsNoBody: a box renewal posts no body, and a refusal outside the
 // terminal set (here an iat-skewed PROOF_INVALID) reaches the retry wait rather than exit 76.
 func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:69); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	var mu sync.Mutex
 	var bodies [][]byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +187,7 @@ func TestRenewWithoutAPodTokenFileSendsNoBody(t *testing.T) {
 // handler's and its proof check's wording), since that broker has no ENROLLMENT_NOT_LIVE to send.
 // The injected wait fails the test, so a terminal code that regresses to a retry fails at once.
 func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:69); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	for _, tc := range []struct {
 		code, message string
 		status        int
@@ -224,7 +226,7 @@ func TestRenewStopsOnlyForTerminalBrokerCodes(t *testing.T) {
 // the file holds next, and PROOF_INVALID that does not say "not live" (clock skew, key, URL) can
 // clear on its own.
 func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:69); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	for _, tc := range []struct {
 		code, message string
 		status        int
@@ -279,7 +281,7 @@ func TestRenewRetriesEveryOtherRefusal(t *testing.T) {
 // bodyless renewal, at startup or after a successful renewal, and the refusal is an ERROR naming
 // the enrollment, since the broker hears nothing and the lease lapses.
 func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at renew_test.go:292); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:858); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at renew_test.go:294); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:858); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -323,7 +325,7 @@ func TestRenewRefusesAnUnreadableOrBlankPodTokenFile(t *testing.T) {
 // is a local transient error and starts the retry wait, printed as an ERROR naming the enrollment;
 // it never makes a second, bodyless request.
 func TestRenewNeverSendsABlankLaterToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:67); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (main.renewalSession, t.Setenv at renew_test.go:69); it signals the test process or changes its signal handling (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.renewalSession, main.sessionContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("first-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -395,5 +397,76 @@ func TestRenewHelpNamesTheTerminalSet(t *testing.T) {
 	}
 	if strings.Contains(summary, "POD_IDENTITY_MISMATCH") {
 		t.Errorf("renew help %q names POD_IDENTITY_MISMATCH, which retries", summary)
+	}
+}
+
+// TestRenewWaitsOutA503sRetryAfter: a renewal the broker answers 503 with Retry-After, its answer
+// when it could not check the pod's token because the issuer's key set could not be read, is tried
+// again after the larger of renew's own backoff (2 s, doubling to 10 s) and that wait, a wait
+// above a minute read as a minute. Each answer is the broker's own (unreadablekeysettest) with its
+// Retry-After alone changed per row, and each of the loop's waits is a step of the test
+// (steppedWaits), which reads how long the loop asked it to be. "5 s at 2 s": the first retry
+// waits the 5 s over the 2 s backoff. "5 s at 10 s": the backoff passes the 5 s at its third
+// step, 8 s, and the fourth waits the backoff's 10 s. "90 s": 60 s. "a front door's 503": a 503
+// that is not the broker's ISSUER_UNAVAILABLE, such as a front door's with no broker behind it,
+// keeps the 2 s backoff whatever wait it names, the schedule the broker's lease bound walks.
+func TestRenewWaitsOutA503sRetryAfter(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in renewalSession).
+	fixture := unreadablekeysettest.Read(t).JSONRoute
+	for _, row := range []struct {
+		name       string
+		retryAfter string
+		frontDoor  bool
+		want       []time.Duration
+	}{
+		{"5 s at 2 s", "5", false, []time.Duration{5 * time.Second}},
+		{"5 s at 10 s", "5", false, []time.Duration{5 * time.Second, 5 * time.Second, 8 * time.Second, 10 * time.Second}},
+		{"90 s", "90", false, []time.Duration{time.Minute}},
+		{"a front door's 503", "30", true, []time.Duration{2 * time.Second}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			tokenFile := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenFile, []byte("a-pod-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			answer := fixture.Asking(row.retryAfter)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if row.frontDoor {
+					w.Header().Set("Retry-After", row.retryAfter)
+					http.Error(w, "no healthy upstream", http.StatusServiceUnavailable)
+					return
+				}
+				answer.Write(w)
+			}))
+			defer srv.Close()
+			client, signer, enrollmentID, _ := renewalSession(t, srv.URL)
+			waits, stepped := steppedWaits(1)
+			asked := make(chan time.Duration, len(row.want))
+			after := func(d time.Duration) <-chan time.Time {
+				asked <- d
+				return stepped(d)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan int, 1)
+			go func() {
+				result <- renewLoop(ctx, client, signer, enrollmentID, tokenFile, io.Discard, after)
+			}()
+			var got []time.Duration
+			for i := range row.want {
+				wait := awaitRetry(t, waits, result, "a 503 asking "+row.retryAfter+" s")
+				got = append(got, <-asked)
+				if i < len(row.want)-1 {
+					wait <- time.Now()
+				}
+			}
+			if !slices.Equal(got, row.want) {
+				t.Fatalf("renew waited %v after renewals answered 503 asking %s s, want %v", got, row.retryAfter, row.want)
+			}
+			cancel()
+			if code := receive(t, result, "renew loop exit after cancellation"); code != 0 {
+				t.Fatalf("renew loop exit after cancellation = %d, want 0", code)
+			}
+		})
 	}
 }

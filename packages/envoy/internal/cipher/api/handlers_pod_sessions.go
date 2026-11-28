@@ -89,7 +89,9 @@ type podSessionResponse struct {
 // token that registers it and does nothing else. A token either verifier accepts names the pod.
 // Any other is answered the verdict of the verifier whose audience it carries: an expired token
 // of either audience is 401 POD_TOKEN_EXPIRED, which a registrar retries, and every other, one of
-// neither audience included, 401 POD_TOKEN_INVALID.
+// neither audience included, 401 POD_TOKEN_INVALID. A token whose check reached no verdict,
+// because the issuer's key set could not be read, is no refusal: 503 ISSUER_UNAVAILABLE with
+// Retry-After (refuseIssuerUnavailable).
 //
 // The caller must then be listed for the pod's account: an entry of BROKER_POD_REGISTRARS
 // (Deps.PodRegistrars) pairs the account it logs in as with the account the verified token
@@ -159,6 +161,9 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_EXPIRED", "the pod's ServiceAccount token has expired")
+		return
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		refuseIssuerUnavailable(w, "verify the pod's ServiceAccount token", err)
 		return
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "POD_TOKEN_INVALID", "the pod's ServiceAccount token does not verify")

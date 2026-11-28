@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 type client struct {
@@ -103,16 +104,36 @@ func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 // client prints such an answer (internal/cipherclient). The one line that names a code whatever
 // the address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this
 // client matched it against.
+//
+// RetryAfter is the wait a 503's Retry-After names (serverwait.Read), read as at most
+// maxRetryAfter, and zero for every other answer and for a 503 that names none. The broker answers
+// 503 ISSUER_UNAVAILABLE, refusing nothing, when it could not check the token a call carries
+// because the key set of the token's issuer could not be read, and asks for the spacing of its
+// reads of that set: enroll --pod waits it out (podOutages), and renew waits at least it before its
+// next renewal (renewLoop). It is a span this client reads and prints itself, which no credential
+// the address carries can fill, so it is read whatever the address.
 type apiError struct {
-	Status   int
-	Code     string
-	Message  string
-	AnswerID string
-	said     *string
+	Status     int
+	Code       string
+	Message    string
+	AnswerID   string
+	RetryAfter time.Duration
+	said       *string
 	// withheld is whether the answer came from an address that is not clean, so that none of
 	// its text prints: the decision doStatus made, read by Error and podRefusal.
 	withheld bool
 }
+
+// maxRetryAfter caps the wait a 503's Retry-After asks for (apiError.RetryAfter), as the broker's
+// token client caps it (internal/cipherclient, maxRetryAfter), so no answer's large value, the
+// broker's or a proxy's before it, holds a call back for longer than a minute. The broker asks for
+// the spacing of its reads of a key set that failed, 5 s by default.
+const maxRetryAfter = time.Minute
+
+// issuerUnavailable is the code the broker answers 503 with when it could not check the token a
+// call carries because the key set of the token's issuer could not be read
+// (internal/cipher/api, refuseIssuerUnavailable).
+const issuerUnavailable = "ISSUER_UNAVAILABLE"
 
 // Error is the broker's message and code, and the answer id to quote when it named one; where
 // the answer's text is withheld, the status and Message alone. The code is the broker's, so it
@@ -227,15 +248,22 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		if envelope.AnswerID == "" {
 			envelope.AnswerID = resp.Header.Get(answerIDHeader)
 		}
+		var retryAfter time.Duration
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			if wait, named := serverwait.Read(resp.Header, time.Now()); named {
+				retryAfter = min(wait, maxRetryAfter)
+			}
+		}
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
 		return resp.StatusCode, nil, &apiError{
-			Status:   resp.StatusCode,
-			Code:     envelope.Code,
-			Message:  c.baseURL.Words(envelope.Error),
-			AnswerID: c.baseURL.Words(envelope.AnswerID),
-			said:     &envelope.Error,
-			withheld: !c.baseURL.Clean(),
+			Status:     resp.StatusCode,
+			Code:       envelope.Code,
+			Message:    c.baseURL.Words(envelope.Error),
+			AnswerID:   c.baseURL.Words(envelope.AnswerID),
+			RetryAfter: retryAfter,
+			said:       &envelope.Error,
+			withheld:   !c.baseURL.Clean(),
 		}
 	}
 	return resp.StatusCode, data, nil

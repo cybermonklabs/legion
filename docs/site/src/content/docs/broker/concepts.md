@@ -578,7 +578,8 @@ The broker's rate
 limiter caps how often anyone can start a machine login, per source address and per named person,
 and how often anyone can try a token login: per source address before the token is verified, and
 per account once it is. A token login the broker could not complete (a 5xx, such as while its
-database is away) spends neither.
+database is away, or the `503 ISSUER_UNAVAILABLE` of a token it could not check because the key
+set of the token's issuer could not be read) spends neither.
 
 ## Owner and tier: who may have which secret
 

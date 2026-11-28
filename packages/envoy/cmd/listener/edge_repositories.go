@@ -7,7 +7,10 @@ package main
 // edgeRepositoryRefresh for each project it serves, and fails closed on any answer that is not a
 // whole list: a registration it cannot read for is 503 repositories_unknown, and while no answer
 // of a session's projects is younger than edgeRepositoryAnswerLife that session is relayed no
-// GitHub frame (project_scope.go, session_relay.go).
+// GitHub frame (project_scope.go, session_relay.go). A 503 that names a wait, the broker's answer
+// when it could not check the listener's own account token because the key set of that token's
+// issuer could not be read, holds the project's refresh back until the wait has passed, and a
+// registration refused on it is told the wait.
 //
 // The list is the whole of what it knows of a repository. It reads no repository mapping of its
 // own, and no project of a repository is ever derived here: a repository is a project's only
@@ -31,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 const (
@@ -59,6 +63,11 @@ const (
 	// edgeRepositoryErrorExcerpt bounds how much of a refused answer's body the log line about it
 	// quotes.
 	edgeRepositoryErrorExcerpt = 512
+	// edgeRepositoryMaxRetryAfter caps the wait a broker's 503 asks for (read), as the broker's
+	// token client caps it (internal/cipherclient, maxRetryAfter), so no answer's large value, the
+	// broker's or a proxy's before it, holds a project's refresh back for longer than a minute.
+	// The broker asks for the spacing of its reads of a key set that failed, 5 s by default.
+	edgeRepositoryMaxRetryAfter = time.Minute
 )
 
 // The reasons envoy_edge_github_withheld_total counts a GitHub frame under.
@@ -73,7 +82,9 @@ const (
 
 // errRepositoriesUnknown is a read of a project's repositories that gave no whole answer: the
 // broker's refusal or 503, a transport failure, a body that does not decode, or the listener's
-// own account unread. It is never a list, so nothing is admitted on it.
+// own account unread. It is never a list, so nothing is admitted on it. A 503 that named a wait
+// carries it in a serverwait.Waited, read as at most edgeRepositoryMaxRetryAfter (read), which a
+// registration refused on it is answered no sooner than (answerRepositoryOutage).
 var errRepositoriesUnknown = errors.New("the repositories of the project's issues could not be read")
 
 // repositoryAnswer is one project's answer and when it was read.
@@ -96,6 +107,10 @@ type edgeRepositories struct {
 
 	mu      sync.Mutex
 	answers map[string]repositoryAnswer
+	// notBefore is, for each project whose last read the broker answered 503 naming a wait, the
+	// moment that wait ends (read): refresh reads the project no sooner. A good read of the
+	// project clears it.
+	notBefore map[string]time.Time
 	// unread counts, for each served project whose refresh reads have failed since its last good
 	// one, the reads that failed (noteRefresh), so a run of them is logged when it starts and when
 	// it ends rather than at every refresh.
@@ -123,6 +138,7 @@ func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects
 		withheld:  withheld,
 		logger:    logger,
 		answers:   map[string]repositoryAnswer{},
+		notBefore: map[string]time.Time{},
 	}
 }
 
@@ -138,7 +154,10 @@ func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
 // one. Every other outcome is errRepositoriesUnknown, naming what went wrong, for the log alone:
-// what a client is told is the listener's own sentence (edgeTopicHold.answerRepositoryOutage).
+// what a client is told is the listener's own sentence (edgeTopicHold.answerRepositoryOutage). A
+// 503 that names a wait carries it (serverwait.Waited), and the project's refresh waits it out
+// (notBefore); a registration's read asks the broker whatever wait stands, since it serves a
+// request and tells that request the wait.
 func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, error) {
 	bearer, err := e.account.Read()
 	if err != nil {
@@ -161,7 +180,17 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 		return nil, fmt.Errorf("%w: read the broker's answer: %w", errRepositoriesUnknown, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, excerpt(body))
+		unknown := fmt.Errorf("%w: the broker answered %d: %s", errRepositoriesUnknown, response.StatusCode, excerpt(body))
+		if response.StatusCode == http.StatusServiceUnavailable {
+			if wait, _ := serverwait.Read(response.Header, e.now()); wait > 0 {
+				wait = min(wait, edgeRepositoryMaxRetryAfter)
+				e.mu.Lock()
+				e.notBefore[project] = e.now().Add(wait)
+				e.mu.Unlock()
+				return nil, &serverwait.Waited{Err: unknown, Wait: wait}
+			}
+		}
+		return nil, unknown
 	}
 	if len(body) > edgeRepositoryBodyLimit {
 		return nil, fmt.Errorf("%w: the broker's answer is longer than %d bytes", errRepositoriesUnknown, edgeRepositoryBodyLimit)
@@ -183,6 +212,7 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	}
 	e.mu.Lock()
 	e.answers[project] = repositoryAnswer{repositories: *answer.Repositories, readAt: e.now()}
+	delete(e.notBefore, project)
 	e.mu.Unlock()
 	// A good read ends the project's run of failed refresh reads, whoever made it: a
 	// registration's read keeps an answer as a refresh's does (noteRefresh).
@@ -204,15 +234,28 @@ func (e *edgeRepositories) readFresh(ctx context.Context, projects []string) ([]
 	return repositories, nil
 }
 
-// refresh reads the answer of every project the edge serves again. A read that fails keeps the
-// last answer, which ages out at edgeRepositoryAnswerLife, and a run of failed reads of a project
-// is logged when it starts and when a good read of the project, a refresh's or a registration's,
-// ends it (noteRefresh).
+// refresh reads the answer of every project the edge serves again, but for a project whose last
+// read the broker answered 503 naming a wait that has not yet passed (notBefore): that project is
+// read at the first refresh after the wait, so a wait shorter than edgeRepositoryRefresh costs no
+// read sooner than the refresh's own step, and a longer one, at most edgeRepositoryMaxRetryAfter,
+// skips each refresh before it. A read that fails, or a project not read, keeps the last answer,
+// which ages out at edgeRepositoryAnswerLife, and a run of failed reads of a project is logged
+// when it starts and when a good read of the project, a refresh's or a registration's, ends it
+// (noteRefresh).
 func (e *edgeRepositories) refresh(ctx context.Context) {
-	_, errs := e.readEach(ctx, e.projects)
+	now := e.now()
+	e.mu.Lock()
+	due := make([]string, 0, len(e.projects))
+	for _, project := range e.projects {
+		if until, waiting := e.notBefore[project]; !waiting || !now.Before(until) {
+			due = append(due, project)
+		}
+	}
+	e.mu.Unlock()
+	_, errs := e.readEach(ctx, due)
 	for i, err := range errs {
 		if err != nil {
-			e.noteRefresh(e.projects[i], err)
+			e.noteRefresh(due[i], err)
 		}
 	}
 }

@@ -390,23 +390,35 @@ func googleEdgeServer(t *testing.T, services string) (ts *testServer, dispatch *
 	t.Helper()
 	google := oidctest.New(t)
 	key := google.PublishKey(t, "google-key")
+	ts, dispatch = googleEdgeServerOf(t, google, services)
+	return ts, dispatch, func(account string) string { return googleIdentityToken(t, google, key, account) }
+}
+
+// googleEdgeServerOf is googleEdgeServer taking google's tokens, for a test that publishes, fails
+// or signs with google's keys itself.
+func googleEdgeServerOf(t *testing.T, google *oidctest.Issuer, services string) (*testServer, *projectaccesstest.Server) {
+	t.Helper()
 	verifier, err := oidc.New(context.Background(), google.URL(), machineAudience)
 	if err != nil {
 		t.Fatal(err)
 	}
 	edges := edgeListeners(t, services)
-	dispatch = repositoriesDispatch(t)
-	ts = newTestServerWith(t, func(d *api.Deps) {
+	dispatch := repositoriesDispatch(t)
+	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.GoogleAccountTokens = api.GoogleTokens{Verifier: verifier}
 		d.EdgeListeners = edges
 		d.ProjectRepositories = projectrepos.New(dispatch.URL, dispatch.Account, nil)
 	})
-	googleToken = func(account string) string {
-		now := time.Now()
-		claims := google.Claims(account, machineAudience)
-		claims["email"], claims["email_verified"] = account, true
-		claims["iat"], claims["nbf"], claims["exp"] = now.Add(-5*time.Second).Unix(), now.Add(-5*time.Second).Unix(), now.Add(time.Hour).Unix()
-		return google.Mint(t, key, claims)
-	}
-	return ts, dispatch, googleToken
+	return ts, dispatch
+}
+
+// googleIdentityToken is google's live identity token for account at machineAudience, with a
+// verified email, signed by key.
+func googleIdentityToken(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, account string) string {
+	t.Helper()
+	now := time.Now()
+	claims := google.Claims(account, machineAudience)
+	claims["email"], claims["email_verified"] = account, true
+	claims["iat"], claims["nbf"], claims["exp"] = now.Add(-5*time.Second).Unix(), now.Add(-5*time.Second).Unix(), now.Add(time.Hour).Unix()
+	return google.Mint(t, key, claims)
 }

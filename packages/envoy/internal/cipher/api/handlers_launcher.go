@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // launcherLoginKey is the per-login bucket a person's machine login spends on the broker's own
@@ -44,21 +45,26 @@ type tokenLoginResponse struct {
 // the token is verified (refuseAddress), so no flood of tokens, forged or real, costs the broker a
 // verification (and a fetch of the issuer's keys) past that bucket; a verified account then spends a
 // bucket of its own too (refuseAccount). The pair is the device-code route's, address then login.
-// A login whose token verified and that the broker then could not complete (5xx, such as one the
-// database was away for) gives back what it spent of both: the Legion daemon retries such a login
-// every few seconds through a database outage, and the broker decided nothing about its request,
-// so there is nothing to slow, and spent, those retries would leave the daemon's first login after
-// the outage refused 429. A refused credential (any 4xx) keeps what it spent, since the limits
-// exist to slow guessing, and a token that does not verify always keeps its address's request,
-// whatever it is answered, since that bucket is what guards the verifier's fetches of the issuer's
-// keys.
+// A login the broker could not complete (5xx) gives back what it spent: one whose token verified
+// and that the broker then could not complete (such as one the database was away for) gives back
+// both buckets, and one whose token check reached no verdict, because the issuer's key set could
+// not be read (503 ISSUER_UNAVAILABLE, with Retry-After), gives back its address's request, the one
+// it had spent. The Legion daemon retries such a login through the outage, and the broker decided
+// nothing about its request, so there is nothing to slow, and spent, those retries would leave the
+// daemon's first login after the outage refused 429. A key set that cannot be read is read at most
+// once per its FailureSpacing however many tokens arrive (oidc.Keys), so the request given back
+// costs the issuer no fetch the bucket would have spared it. A refused credential (any 4xx) keeps
+// what it spent, since the limits exist to slow guessing, and a token the check refuses keeps its
+// address's request whatever else is down, the database included, since that bucket is what guards
+// the verifier's fetches of the issuer's keys.
 // A token that has expired is 401 TOKEN_EXPIRED, one that does not verify 401 TOKEN_INVALID, one
 // that lives longer than an hour from its issue 401 TOKEN_TOO_LONG_LIVED, one whose account
 // BROKER_SERVICE_LOGINS does not name for the requested service 403 ACCOUNT_NOT_LISTED, a request
 // object that does not verify or repeats a jti 400 REQUEST_INVALID, a key another live credential
 // holds 409 KEY_HOLDS_LIVE_CREDENTIAL, a key a live read token is bound to 409
 // KEY_BINDS_READ_TOKEN, and a broker that trusts no Kubernetes token issuer answers 404
-// TOKEN_LOGIN_OFF.
+// TOKEN_LOGIN_OFF. A token whose check reached no verdict because the issuer's key set could not
+// be read is no refusal: 503 ISSUER_UNAVAILABLE, with Retry-After.
 func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 	// The route takes no credential of the broker's, but the login is the token it carries: a
 	// refusal before that token verifies is the authentication's, and after it the service's.
@@ -75,7 +81,9 @@ func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 	login := s.deps.MachineLogin
 	account, err := login.VerifyServiceToken(r.Context(), body.Token)
 	if err != nil {
-		writeTokenLoginRefusal(w, err)
+		if writeTokenLoginRefusal(w, err) {
+			giveBackAddress()
+		}
 		return
 	}
 	recorder.NoteCaller(answer.CallerService, serviceIdentity(account))
@@ -95,11 +103,16 @@ func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeTokenLoginRefusal answers a token login's refusal with the code tokenLogin documents, and
-// reports couldNotComplete when it answered 500: a refusal that is none of the documented ones,
-// such as the database being away, which decided nothing about the token. tokenLogin gives back
-// what the login spent of its buckets on that report only once the token has verified.
+// reports couldNotComplete when it answered 5xx, which decided nothing about the token: 503
+// ISSUER_UNAVAILABLE for a token whose check reached no verdict because the issuer's key set could
+// not be read (refuseIssuerUnavailable), and 500 for a refusal that is none of the documented
+// ones, such as the database being away. tokenLogin gives back what the login spent of its
+// buckets on that report.
 func writeTokenLoginRefusal(w http.ResponseWriter, err error) (couldNotComplete bool) {
 	switch {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		refuseIssuerUnavailable(w, "verify the token login's ServiceAccount token", err)
+		return true
 	case errors.Is(err, machine.ErrTokenLoginsOff):
 		writeError(w, http.StatusNotFound, "TOKEN_LOGIN_OFF", err.Error())
 	case errors.Is(err, machine.ErrTokenExpired):
