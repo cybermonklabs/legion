@@ -1,8 +1,9 @@
 // The one listing of a KV bucket's keys, beside its test: every key the bucket's stream holds a
-// message on (KeyValue.StoredKeys), and the value of each such key that holds one, read from the
-// stream's leader (KeyValue.HeldEntries). A key another client writes again while the list is read
-// is still listed, where nats.go's Keys and the jetstream watcher's first delivery can leave it
-// out, so a read that must see the whole bucket reads through here.
+// message on (KeyValue.StoredKeys), and the value of each such key that holds one, taken from one
+// watch of the keys and read from the stream's leader for a key the watch left out
+// (KeyValue.HeldEntries). A key another client writes again while the list is read is still
+// listed, where nats.go's Keys and the jetstream watcher's first delivery can leave it out, so a
+// read that must see the whole bucket reads through here.
 
 package bus
 
@@ -17,7 +18,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
-	"golang.org/x/sync/errgroup"
 )
 
 // ErrIncompleteKeyList is a page of a bucket's keys that cannot be a page of one sorted list: a
@@ -40,43 +40,54 @@ type subjectsPage struct {
 	Cluster *jetstream.ClusterInfo `json:"cluster,omitempty"`
 }
 
-// heldReadsAtOnce is how many listed keys HeldEntries reads from the stream's leader at one time:
-// enough that a long list (HeldEntries says why a list is long) waits about a sixteenth of the
-// round trips a read of one key after another would, all within the caller's bound, and few
-// enough that one read never has more than sixteen requests waiting on the leader.
-const heldReadsAtOnce = 16
-
-// HeldEntries reads every key under the KV key pattern keys that holds a value, with that value:
-// it reads the stream's state (ReadStreamState), which it answers, lists the keys the stream holds
-// a message on through that state's last sequence (StoredKeys), and reads each listed key from the
-// stream's leader (GetFromLeader), so each value is the one the leader holds when the key is read,
-// that state's or a later one. A key that read answers nats.ErrKeyNotFound for, one whose newest
-// message is a delete or a purge marker or one the leader no longer holds, is left out. The
-// entries come in the list's order.
+// HeldEntries reads every key under the KV key pattern keys that holds a value, with that value
+// and its revision, in the order the keys are listed. It reads the stream's state
+// (ReadStreamState), which it answers, and lists the keys the stream holds a message on through
+// that state's last sequence (StoredKeys), a list that names each key whose newest message is a
+// delete or a purge marker too. It then opens one watch of the same pattern (WatchKeys) that
+// delivers the markers as well as the values, and reads its first delivery up to the nil entry
+// that ends it, keeping the last entry delivered for each key (newestWatched). The watch is opened
+// after the list is read, so each entry it delivers is the message its key held at that state's
+// last sequence or one written since.
 //
-// The listed keys are read at once, at most heldReadsAtOnce at a time, each answer kept at its
-// key's place in the list: the list names every key whose newest message is a marker too, and
-// cistore.Writer.VerifyRequests lists the verify requests every five seconds within RecordWait
-// while every request answered in the bucket's last seven days still leaves its marker, so a read
-// of one key after another would make one round trip to the leader per such key, in sequence.
+// Each listed key is answered from the watch where it can be, in the list's order
+// (heldInListOrder). A key the watch delivered as a put is answered with that entry's value and
+// revision, and one it delivered as a marker is left out, neither with a read of its own. A key
+// the watch did not deliver is read from the stream's leader (GetFromLeader), which answers the
+// value the leader holds when it is read, and a key that read answers nats.ErrKeyNotFound for, one
+// whose newest message is a marker or one the leader no longer holds, is left out. A key the watch
+// delivered that the list does not name, one first written after the list's sequence, is not
+// answered: the list is the bucket as of that sequence (StoredKeys).
 //
-// It exists for a read that must see every key the bucket holds. A key another client writes
-// again while the read runs is still listed here, where nats.go's Keys and the jetstream watcher's
-// first delivery can leave it out: each reads a consumer that delivers the newest message each key
-// held when the consumer was created, a key written again while that runs can lose that message
-// before it is delivered, and its new one can then come after the first delivery has ended. A
-// probe left such a key out of 1,958 of 16,451 reads of Keys and 1,438 of 14,231 of the watcher,
-// and the stream's subject list named every key in 41,352 of 41,352 (INFRA-6356). The witness of
-// cireconcile's tests and cistore.Writer.VerifyRequests read the bucket through it.
+// The values come from the watch because the list names every key whose newest message is a
+// marker, and a read of each listed key from the leader costs a round trip per marker.
+// cistore.Writer.VerifyRequests lists the verify requests through here every five seconds within
+// RecordWait, 4 s, while every request answered in the bucket's last seven days still leaves its
+// marker. With 25,000 such markers one watch listed the live requests in 0.3 s, where a read of
+// each listed key from the leader, sixteen at a time, took 1.8 to 1.95 s at 10,000 and did not end
+// within RecordWait at 20,000 (dispatch://INFRA-6356/comment/294ab3e8-7eec-47ef-ac08-a5a3673d09d1).
+// So a key whose newest message is a marker costs no read of its own, however many the bucket
+// holds, and the leader is read only for the keys the watch left out, one after another.
 //
-// Every listed key is read, so a key this build cannot read (RefusesRead) ends the read with
-// GetFromLeader's refusal, as any error but nats.ErrKeyNotFound does: the answer holds every key
-// holding a value, or it is an error. A key's read that fails stops none of the others, and the
-// error answered is that of the first failed key in the list's order, the one a read of one key
-// after another would end at.
+// The keys come from the list and not from the watch, for a read that must see every key the
+// bucket holds. A key another client writes again while the read runs is still listed here, where
+// nats.go's Keys and the jetstream watcher's first delivery can leave it out: each reads a
+// consumer that delivers the newest message each key held when the consumer was created, a key
+// written again while that runs can lose that message before it is delivered, and its new one can
+// then come after the first delivery has ended. A probe left such a key out of 1,958 of 16,451
+// reads of Keys and 1,438 of 14,231 of the watcher, and the stream's subject list named every key
+// in 41,352 of 41,352 (INFRA-6356). Such a key is listed, left out of the watch's first delivery,
+// and read from the leader. The witness of cireconcile's tests and cistore.Writer.VerifyRequests
+// read the bucket through it.
 //
-// ctx bounds the whole read, the stream's state, every page of the list and every key's read
-// included. A ctx carrying no deadline is bounded by RequestTimeout, as GetFromLeader is.
+// The answer holds every listed key holding a value, or it is an error. A watch whose updates
+// close before its nil entry, because ctx ended or its subscription did, ends the read with an
+// error naming the bucket. A key the watch left out that this build cannot read (RefusesRead) ends
+// the read with GetFromLeader's refusal, as any error of that read but nats.ErrKeyNotFound does. A
+// list that names no key answers no entry and opens no watch.
+//
+// ctx bounds the whole read, the stream's state, every page of the list, the watch and every key's
+// read included. A ctx carrying no deadline is bounded by RequestTimeout, as GetFromLeader is.
 func (kv KeyValue) HeldEntries(ctx context.Context, keys string) (StreamState, []nats.KeyValueEntry, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -91,28 +102,88 @@ func (kv KeyValue) HeldEntries(ctx context.Context, keys string) (StreamState, [
 	if err != nil {
 		return StreamState{}, nil, err
 	}
-	read := make([]nats.KeyValueEntry, len(listed))
-	failed := make([]error, len(listed))
-	var reading errgroup.Group
-	reading.SetLimit(heldReadsAtOnce)
-	for index, key := range listed {
-		reading.Go(func() error {
-			read[index], failed[index] = kv.GetFromLeader(ctx, key)
-			return nil
-		})
+	if len(listed) == 0 {
+		return state, nil, nil
 	}
-	_ = reading.Wait()
-	entries := make([]nats.KeyValueEntry, 0, len(listed))
-	for index, entry := range read {
-		if errors.Is(failed[index], nats.ErrKeyNotFound) {
+	watched, err := kv.newestWatched(ctx, keys)
+	if err != nil {
+		return StreamState{}, nil, err
+	}
+	entries, err := heldInListOrder(listed, watched, func(key string) (nats.KeyValueEntry, error) {
+		return kv.GetFromLeader(ctx, key)
+	})
+	if err != nil {
+		return StreamState{}, nil, err
+	}
+	return state, entries, nil
+}
+
+// newestWatched is the last entry one watch of the KV key pattern keys delivers for each key in
+// its first delivery, delete and purge markers included, for HeldEntries: the watch (WatchKeys,
+// with no IgnoreDeletes) delivers the newest message each key holds when its consumer is created,
+// and nats.go ends that delivery with a nil entry. Once the nil entry comes, the watch is stopped
+// and read until it closes (DrainWatcher), as ReadHistory leaves its own. A watch whose updates
+// close before the nil entry, because ctx ended or its subscription did, is an error naming the
+// bucket, as ReadHistory answers one, rather than a delivery that may lack keys HeldEntries would
+// then read from the leader one by one.
+func (kv KeyValue) newestWatched(ctx context.Context, keys string) (map[string]jetstream.KeyValueEntry, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watcher, err := kv.WatchKeys(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	watched := make(map[string]jetstream.KeyValueEntry)
+	for entry := range watcher.Updates() {
+		if entry != nil {
+			watched[entry.Key()] = entry
 			continue
 		}
-		if failed[index] != nil {
-			return StreamState{}, nil, failed[index]
+		_ = watcher.Stop()
+		go DrainWatcher(watcher)
+		return watched, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("watch the keys %s of KV bucket %s: %w", keys, kv.Bucket(), err)
+	}
+	return nil, fmt.Errorf("watch the keys %s of KV bucket %s: the watch ended after %d keys, before it had delivered them all", keys, kv.Bucket(), len(watched))
+}
+
+// watchedPut is a put the watch of HeldEntries delivered, as the nats.KeyValueEntry HeldEntries
+// answers: the two interfaces differ only in the package of the operation's type, and only a put
+// is answered (heldInListOrder).
+type watchedPut struct {
+	jetstream.KeyValueEntry
+}
+
+func (e watchedPut) Operation() nats.KeyValueOp { return nats.KeyValuePut }
+
+// heldInListOrder is HeldEntries' answer from listed, the keys StoredKeys listed, and watched, the
+// last entry the watch delivered for each key it delivered (newestWatched): each listed key that
+// holds a value, in the list's order. A put the watch delivered is taken from it and a marker it
+// delivered is left out, neither read; a key it did not deliver is read (read, GetFromLeader for
+// HeldEntries) and left out where that read answers nats.ErrKeyNotFound, and any other error of a
+// read ends the answer with that error. A key watched holds that listed does not name is not
+// answered.
+func heldInListOrder(listed []string, watched map[string]jetstream.KeyValueEntry, read func(key string) (nats.KeyValueEntry, error)) ([]nats.KeyValueEntry, error) {
+	var entries []nats.KeyValueEntry
+	for _, key := range listed {
+		if entry, ok := watched[key]; ok {
+			if entry.Operation() == jetstream.KeyValuePut {
+				entries = append(entries, watchedPut{entry})
+			}
+			continue
+		}
+		entry, err := read(key)
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		entries = append(entries, entry)
 	}
-	return state, entries, nil
+	return entries, nil
 }
 
 // StoredKeys lists every key under the KV key pattern keys (">" for the whole bucket, or a pattern
@@ -123,11 +194,13 @@ func (kv KeyValue) HeldEntries(ctx context.Context, keys string) (StreamState, [
 // The server counts the messages it stores on each subject from its per-subject index
 // (nats-server v2.15.1 jetstream_api.go:2206-2245, filestore.go:5093-5106, memstore.go:1002-1024),
 // and a delete or purge marker is a message, so a key whose newest message is a marker is listed
-// like any other. A caller that wants only the keys holding a value reads each listed key
-// (HeldEntries, through GetFromLeader, which answers a marker as nats.ErrKeyNotFound). A key
-// written again while the list is read is listed too: the store counts the new message on the
-// key's subject before it removes the one that message replaces (memstore.go:322-331,
-// filestore.go:5427-5485), so no read of the index finds the key without a message.
+// like any other. A caller that wants only the keys holding a value reads them through
+// HeldEntries, which takes each listed key's value from one watch that delivers the markers too
+// and reads from the stream's leader only a listed key the watch left out (GetFromLeader, which
+// answers a marker as nats.ErrKeyNotFound). A key written again while the list is read is listed
+// too: the store counts the new message on the key's subject before it removes the one that
+// message replaces (memstore.go:322-331, filestore.go:5427-5485), so no read of the index finds
+// the key without a message.
 //
 // Which copy of the stream answers is nats-server's: its leader, but also one of its members while
 // the stream has no leader, or a new member while a stream of one replica scales up
@@ -164,12 +237,12 @@ func (kv KeyValue) HeldEntries(ctx context.Context, keys string) (StreamState, [
 // That list holds every key that held a record at through and still holds one, whose subject is in
 // every store from through on: each range of subjects is read from the store of the page that
 // reaches past it. A key added after through, or removed after it, can be listed or not: the list
-// is the bucket as of through, and a caller that reads each listed key (HeldEntries) finds a key
-// the leader no longer holds answered as no record (GetFromLeader). No write fails a list, so a
-// bucket of any size that is written to steadily is listed in one pass. A list makes one request
-// per page, and one more for each step back. A page costs each subject's length and 5 bytes more:
-// 3,701,041 bytes for a page of 100,000 subjects of 32 characters, measured against nats-server
-// v2.15.1 in pull request #5181.
+// is the bucket as of through, so HeldEntries answers no key the list does not name, and leaves
+// out a listed key its watch does not deliver and the leader no longer holds (GetFromLeader
+// answers it as no record). No write fails a list, so a bucket of any size that is written to
+// steadily is listed in one pass. A list makes one request per page, and one more for each step
+// back. A page costs each subject's length and 5 bytes more: 3,701,041 bytes for a page of
+// 100,000 subjects of 32 characters, measured against nats-server v2.15.1 in pull request #5181.
 //
 // ctx bounds the whole list, every page included. A ctx carrying no deadline is bounded by
 // RequestTimeout, as every other read of a bucket's stream through this handle is. The request is

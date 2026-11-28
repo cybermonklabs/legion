@@ -2,10 +2,13 @@ package cireconcile
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -308,6 +312,136 @@ func TestVerifyRequestsListsARequestWrittenAgainDuringTheRead(t *testing.T) {
 			}
 		}
 	})
+}
+
+// VerifyRequests reads no answered request from the stream's leader. An answered request leaves a
+// delete marker in the bucket until the bucket's TTL (dropRequest deletes it), the list of keys
+// VerifyRequests reads names each such key, and the watch it takes the values from delivers each
+// as a marker, so a pass costs no leader read per request answered in the bucket's last seven days
+// (INFRA-6356). A leader read is a stream message get of the CI bucket's stream, which the
+// connection the reconciler's writer reads through (openWriter) receives too, since NATS hands a
+// connection the messages it publishes; the requests are counted once a sentinel published on that
+// connection after VerifyRequests answered has come back, as one connection's messages reach it in
+// the order the server took them, so none is still on its way. A VerifyRequests that reads each
+// listed key from the leader, as 8fdced00's did, reads all 200.
+func TestVerifyRequestsReadsNoAnsweredRequestFromTheLeader(t *testing.T) {
+	t.Parallel()
+	h := newVerifyHarness(t, reviewerAppID)
+	const answered, live = 200, 3
+	// request is the key, the value and the head of the verify request of the i-th head of a
+	// repository no other request names, the value as the listener writes it (cistore's
+	// verifyRequest).
+	request := func(i int) (string, []byte, contracts.CIHead) {
+		head := contracts.CIHead{Owner: "acme", Repo: "widgets", Number: strconv.Itoa(i + 1), SHA: fmt.Sprintf("%040x", i+1)}
+		value, err := json.Marshal(map[string]any{"kind": "verify", "owner": head.Owner, "repo": head.Repo, "number": head.Number, "sha": head.SHA, "generation": 1})
+		if err != nil {
+			t.Fatalf("encode the verify request of %+v: %v", head, err)
+		}
+		return "verify." + cistore.Key(head.Owner, head.Repo, head.Number, head.SHA), value, head
+	}
+	// The answered requests are written with no round trip each, through the harness's JetStream
+	// context: each request's value published on its key's subject, then a message with no body
+	// carrying KV-Operation: DEL on the same subject. These store exactly the messages h.ci.Put and
+	// h.ci.Delete store (nats.go v1.55.0 kv.go:700-721, 814-855), so each marker is the delete
+	// marker dropRequest's Delete leaves, whose LastRevision adds only the
+	// Nats-Expected-Last-Subject-Sequence fence to its publish. The server takes one connection's
+	// publishes in the order they were sent, so each key's marker is stored after its put.
+	js := h.bus.JS()
+	subject := func(key string) string { return "$KV." + bus.CIStateBucket + "." + key }
+	answeredKeys := make(map[string]bool, answered)
+	futures := make([]nats.PubAckFuture, 0, 2*answered)
+	for i := range answered {
+		key, value, _ := request(i)
+		put, err := js.PublishAsync(subject(key), value)
+		if err != nil {
+			t.Fatalf("publish the verify request %s: %v", key, err)
+		}
+		marker := nats.NewMsg(subject(key))
+		marker.Header.Set("KV-Operation", "DEL")
+		answer, err := js.PublishMsgAsync(marker)
+		if err != nil {
+			t.Fatalf("publish the answer of the verify request %s: %v", key, err)
+		}
+		futures = append(futures, put, answer)
+		answeredKeys[key] = true
+	}
+	testwait.Receive(t, "the stream's acknowledgements of the answered requests' messages", js.PublishAsyncComplete())
+	for _, future := range futures {
+		select {
+		case err := <-future.Err():
+			t.Fatalf("the stream refused the message on %s (%v): %v", future.Msg().Subject, future.Msg().Header, err)
+		default:
+		}
+	}
+	var want []string
+	for i := range live {
+		key, value, head := request(answered + i)
+		if _, err := h.ci.Put(key, value); err != nil {
+			t.Fatalf("write the verify request %s: %v", key, err)
+		}
+		want = append(want, fmt.Sprintf("%+v", head))
+	}
+	writer, err := h.reconciler.Open()
+	if err != nil {
+		t.Fatalf("open a writer: %v", err)
+	}
+	// Both subscriptions are made on the connection the writer reads through, so the server takes
+	// them ahead of every request VerifyRequests sends on it.
+	conn := h.bus.Conn
+	leaderReads, err := conn.SubscribeSync("$JS.API.STREAM.MSG.GET.KV_" + bus.CIStateBucket)
+	if err != nil {
+		t.Fatalf("subscribe to the stream message gets of the CI bucket: %v", err)
+	}
+	t.Cleanup(func() { _ = leaderReads.Unsubscribe() })
+	sentinels := make(chan *nats.Msg, 1)
+	sentinel, err := conn.ChanSubscribe(nats.NewInbox(), sentinels)
+	if err != nil {
+		t.Fatalf("subscribe to the sentinel: %v", err)
+	}
+	t.Cleanup(func() { _ = sentinel.Unsubscribe() })
+
+	requests, err := writer.VerifyRequests(h.ctx)
+	if err != nil {
+		t.Fatalf("VerifyRequests: %v", err)
+	}
+	if err := conn.Publish(sentinel.Subject, nil); err != nil {
+		t.Fatalf("publish the sentinel: %v", err)
+	}
+	testwait.Receive(t, "the sentinel published once VerifyRequests answered", sentinels)
+	pending, _, err := leaderReads.Pending()
+	if err != nil {
+		t.Fatalf("count the stream message gets: %v", err)
+	}
+	var read []string
+	for range pending {
+		// Each is held already (Pending), so the read takes it at once.
+		request, err := leaderReads.NextMsg(0)
+		if err != nil {
+			t.Fatalf("read a stream message get the subscription holds: %v", err)
+		}
+		var body struct {
+			LastBySubj string `json:"last_by_subj"`
+		}
+		if err := json.Unmarshal(request.Data, &body); err != nil {
+			t.Fatalf("decode the stream message get %s: %v", request.Data, err)
+		}
+		if key := strings.TrimPrefix(body.LastBySubj, "$KV."+bus.CIStateBucket+"."); answeredKeys[key] {
+			read = append(read, key)
+		}
+	}
+	if len(read) != 0 {
+		t.Errorf("VerifyRequests read %d of the %d answered requests from the stream's leader, among them %v; want none, since its watch delivers each one's marker",
+			len(read), answered, read[:min(len(read), 3)])
+	}
+	var listed []string
+	for _, request := range requests {
+		listed = append(listed, fmt.Sprintf("%+v", request.Head))
+	}
+	slices.Sort(listed)
+	slices.Sort(want)
+	if !slices.Equal(listed, want) {
+		t.Fatalf("VerifyRequests listed %v, want the %d live requests %v alone", listed, live, want)
+	}
 }
 
 // A verify read whose write of what GitHub answered fails writes no answer: the record holds no

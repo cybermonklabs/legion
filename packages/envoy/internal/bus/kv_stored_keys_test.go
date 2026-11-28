@@ -10,8 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -19,7 +21,7 @@ import (
 
 // StoredKeys lists every key the bucket's stream holds a message on: a key holding a value, one
 // past the length Get refuses (testnats.LegacyKeys' unreadable key), and a key whose newest message
-// is a delete or a purge marker, which a caller then reads (GetFromLeader). A pattern naming part
+// is a delete or a purge marker, which HeldEntries then leaves out. A pattern naming part
 // of the bucket lists the keys under it alone. A list asked through a sequence the stream has not
 // stored is refused, since the copy that answered could lack a key that held a record there.
 func TestStoredKeysListsEveryKeyTheStreamHoldsAMessageOn(t *testing.T) {
@@ -188,16 +190,13 @@ func TestHeldEntriesLeavesOutAKeyWhoseNewestMessageIsAMarker(t *testing.T) {
 	}
 }
 
-// HeldEntries reads more listed keys than it reads at once (heldReadsAtOnce) and still answers
-// each key that holds a value, with its revision and value, in the list's order, and leaves out
-// each key whose newest message is a delete marker, spread through the list.
-func TestHeldEntriesAnswersEveryHeldKeyInTheListsOrderPastTheReadsAtOnce(t *testing.T) {
+// HeldEntries answers each of forty listed keys that holds a value, with its revision and value,
+// in the list's order, and leaves out each key whose newest message is a delete marker, spread
+// through the list.
+func TestHeldEntriesAnswersEveryHeldKeyInTheListsOrder(t *testing.T) {
 	t.Parallel()
 	const bucket = "kv_held_entries_many"
 	const put, deleted = 40, 10
-	if put <= heldReadsAtOnce {
-		t.Fatalf("%d keys are no more than the %d HeldEntries reads at once", put, heldReadsAtOnce)
-	}
 	_, kv := leaderReadBucket(t, bucket)
 	ctx := testwait.Context(t)
 	revisions := make(map[string]uint64, put)
@@ -243,6 +242,228 @@ func TestHeldEntriesAnswersEveryHeldKeyInTheListsOrderPastTheReadsAtOnce(t *test
 		t.Fatalf("HeldEntries = %v, want the %d keys still held, each at the revision it was put at, in the list's order %v", got, put-deleted, want)
 	}
 }
+
+// HeldEntries takes each key its watch delivers from that watch, a key holding a value with the
+// watch's entry and a key whose newest message is a delete or a purge marker left out, and reads
+// neither from the stream's leader. A leader read is the stream message get GetFromLeader sends
+// (TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet), which the handle's own
+// connection receives too, since NATS hands a connection the messages it publishes; the requests
+// are counted once a sentinel published after HeldEntries answered has come back
+// (leaderReadsBefore), so none is still on its way. A HeldEntries that reads each listed key from
+// the leader, as 8fdced00's did, sends six here.
+func TestHeldEntriesReadsNoKeyFromTheLeaderThatItsWatchDelivered(t *testing.T) {
+	t.Parallel()
+	const bucket = "kv_held_entries_watched"
+	_, kv := leaderReadBucket(t, bucket)
+	ctx := testwait.Context(t)
+	held := []string{"held.a", "held.b", "held.c"}
+	revisions := make(map[string]uint64, len(held))
+	for _, key := range append([]string{"deleted.a", "deleted.b", "purged"}, held...) {
+		revision, err := kv.Put(key, []byte(key))
+		if err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+		revisions[key] = revision
+	}
+	for _, key := range []string{"deleted.a", "deleted.b"} {
+		if err := kv.Delete(key); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+	}
+	if err := kv.Purge("purged"); err != nil {
+		t.Fatalf("purge purged: %v", err)
+	}
+	// The subscription is made on the connection the handle reads through, so the server takes it
+	// ahead of every request HeldEntries sends on it.
+	conn := kv.Conn()
+	leaderReads, err := conn.SubscribeSync(jsAPI("STREAM.MSG.GET", "KV_"+bucket))
+	if err != nil {
+		t.Fatalf("subscribe to the stream message gets: %v", err)
+	}
+	t.Cleanup(func() { _ = leaderReads.Unsubscribe() })
+
+	_, entries, err := kv.HeldEntries(ctx, ">")
+	if err != nil {
+		t.Fatalf("HeldEntries: %v", err)
+	}
+	if read := leaderReadsBefore(t, conn, leaderReads, bucket); len(read) != 0 {
+		t.Errorf("HeldEntries sent %d stream message gets, of the keys %v; want none, since its watch delivered every key", len(read), read)
+	}
+	var got, want []string
+	for _, entry := range entries {
+		got = append(got, fmt.Sprintf("%s@%d=%s (%v)", entry.Key(), entry.Revision(), entry.Value(), entry.Operation()))
+	}
+	for _, key := range held {
+		want = append(want, fmt.Sprintf("%s@%d=%s (%v)", key, revisions[key], key, nats.KeyValuePut))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("HeldEntries = %v, want %v: each key holding a value, a put at the revision it was put at, and no marker's key", got, want)
+	}
+}
+
+// leaderReadsBefore is the key each stream message get that leaderReads, a subscription on conn,
+// holds names (its last_by_subj, under the bucket's prefix), counted only once a sentinel published
+// on conn after the read under test answered has come back to it. The server hands one connection
+// the messages it publishes in the order it took them, and nats.go files each with its
+// subscription as it reads it, so every request conn sent before the sentinel is held by then and
+// none is still on its way, with no wait on a clock.
+func leaderReadsBefore(t *testing.T, conn *nats.Conn, leaderReads *nats.Subscription, bucket string) []string {
+	t.Helper()
+	sentinels := make(chan *nats.Msg, 1)
+	sentinel, err := conn.ChanSubscribe(nats.NewInbox(), sentinels)
+	if err != nil {
+		t.Fatalf("subscribe to the sentinel: %v", err)
+	}
+	defer func() { _ = sentinel.Unsubscribe() }()
+	if err := conn.Publish(sentinel.Subject, nil); err != nil {
+		t.Fatalf("publish the sentinel: %v", err)
+	}
+	testwait.Receive(t, "the sentinel published once the read answered", sentinels)
+	pending, _, err := leaderReads.Pending()
+	if err != nil {
+		t.Fatalf("count the stream message gets: %v", err)
+	}
+	keys := make([]string, 0, pending)
+	for range pending {
+		// Each is held already (Pending), so the read takes it at once.
+		request, err := leaderReads.NextMsg(0)
+		if err != nil {
+			t.Fatalf("read a stream message get the subscription holds: %v", err)
+		}
+		var body struct {
+			LastBySubj string `json:"last_by_subj"`
+		}
+		if err := json.Unmarshal(request.Data, &body); err != nil {
+			t.Fatalf("decode the stream message get %s: %v", request.Data, err)
+		}
+		keys = append(keys, strings.TrimPrefix(body.LastBySubj, subjectsPrefix(bucket)))
+	}
+	return keys
+}
+
+// HeldEntries' answer from its list and its watch (heldInListOrder) holds each listed key that
+// holds a value, in the list's order: a put the watch delivered is taken from it and a marker it
+// delivered is left out, neither read; a key it did not deliver is read, a put answered and
+// nats.ErrKeyNotFound left out; any other error of a read ends the answer with that error; and a
+// key the watch delivered that the list does not name is not answered. The read records the keys
+// it is asked for, which are exactly the listed keys the watch left out, up to the first that
+// fails. No server is needed: the watch and the leader are given.
+func TestHeldEntriesReadsOnlyTheListedKeysItsWatchLeftOut(t *testing.T) {
+	t.Parallel()
+	errRead := errors.New("the leader did not answer")
+	put := func(key string, revision uint64) watchedEntry {
+		return watchedEntry{key: key, value: "w-" + key, revision: revision, op: jetstream.KeyValuePut}
+	}
+	for _, row := range []struct {
+		name    string
+		listed  []string
+		watched []watchedEntry
+		reads   map[string]error
+		want    []string
+		wantErr error
+		read    []string
+	}{
+		{
+			name:    "a put the watch delivered is taken without a read",
+			listed:  []string{"a"},
+			watched: []watchedEntry{put("a", 3)},
+			want:    []string{"a@3=w-a"},
+		},
+		{
+			name:    "a delete and a purge marker the watch delivered are left out without a read",
+			listed:  []string{"deleted", "purged"},
+			watched: []watchedEntry{{key: "deleted", revision: 4, op: jetstream.KeyValueDelete}, {key: "purged", revision: 5, op: jetstream.KeyValuePurge}},
+		},
+		{
+			name:   "a listed key the watch did not deliver is read, a put answered and a key not found left out",
+			listed: []string{"read", "gone"},
+			reads:  map[string]error{"read": nil, "gone": nats.ErrKeyNotFound},
+			want:   []string{"read@100=r-read"},
+			read:   []string{"read", "gone"},
+		},
+		{
+			name:    "another error of a read ends the read with that error",
+			listed:  []string{"a", "broken", "after"},
+			watched: []watchedEntry{put("a", 3)},
+			reads:   map[string]error{"broken": errRead, "after": nil},
+			wantErr: errRead,
+			read:    []string{"broken"},
+		},
+		{
+			name:    "the answer keeps the list's order, whichever way each key was answered",
+			listed:  []string{"d", "b", "c", "a"},
+			watched: []watchedEntry{put("a", 7), put("c", 8)},
+			reads:   map[string]error{"b": nil, "d": nil},
+			want:    []string{"d@100=r-d", "b@100=r-b", "c@8=w-c", "a@7=w-a"},
+			read:    []string{"d", "b"},
+		},
+		{
+			name:    "a key the watch delivered that the list does not name is not answered",
+			listed:  []string{"a"},
+			watched: []watchedEntry{put("a", 3), put("later", 9)},
+			want:    []string{"a@3=w-a"},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			watched := make(map[string]jetstream.KeyValueEntry, len(row.watched))
+			for _, entry := range row.watched {
+				watched[entry.key] = entry
+			}
+			var read []string
+			entries, err := heldInListOrder(row.listed, watched, func(key string) (nats.KeyValueEntry, error) {
+				read = append(read, key)
+				failed, scripted := row.reads[key]
+				if !scripted {
+					return nil, fmt.Errorf("no read of %s is scripted", key)
+				}
+				if failed != nil {
+					return nil, failed
+				}
+				return leaderEntry{key: key, value: []byte("r-" + key), revision: 100, op: nats.KeyValuePut}, nil
+			})
+			if !slices.Equal(read, row.read) {
+				t.Errorf("heldInListOrder read %v, want %v: only the listed keys the watch left out", read, row.read)
+			}
+			if row.wantErr != nil {
+				if !errors.Is(err, row.wantErr) || entries != nil {
+					t.Fatalf("heldInListOrder = %v, %v; want no entries and %v", entries, err, row.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("heldInListOrder: %v", err)
+			}
+			var got []string
+			for _, entry := range entries {
+				if entry.Operation() != nats.KeyValuePut {
+					t.Errorf("heldInListOrder answered %s as %v, want a put", entry.Key(), entry.Operation())
+				}
+				got = append(got, fmt.Sprintf("%s@%d=%s", entry.Key(), entry.Revision(), entry.Value()))
+			}
+			if !slices.Equal(got, row.want) {
+				t.Fatalf("heldInListOrder = %v, want %v", got, row.want)
+			}
+		})
+	}
+}
+
+// watchedEntry is an entry a watch delivers, as heldInListOrder takes it: a key, its value, the
+// revision it is stored at and whether it is a put or a marker.
+type watchedEntry struct {
+	key      string
+	value    string
+	revision uint64
+	op       jetstream.KeyValueOp
+}
+
+func (e watchedEntry) Bucket() string                  { return "held" }
+func (e watchedEntry) Key() string                     { return e.key }
+func (e watchedEntry) Value() []byte                   { return []byte(e.value) }
+func (e watchedEntry) Revision() uint64                { return e.revision }
+func (e watchedEntry) Created() time.Time              { return time.Time{} }
+func (e watchedEntry) Delta() uint64                   { return 0 }
+func (e watchedEntry) Operation() jetstream.KeyValueOp { return e.op }
 
 // captureBucket and captureKeys are the bucket TestCaptureStreamInfoAnswers creates and the keys it
 // puts in it before it captures the two STREAM.INFO answers TestStoredKeysTakesThePageOfTheLeaderAlone
