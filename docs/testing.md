@@ -267,42 +267,6 @@ itself, whose tests import its sources by relative path.
   default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
   with nothing proved, since CI runs it without `-v`.
 
-- A Go test of `packages/daemon` that asks whether a stop of a command's process group reached a
-  child the command left in that group by the run's return, and where the stop found the
-  command's output pipe, starts the child as a `testkernel.Child` (`ChildCommand` and `Args`, or
-  `Start` in a command's own script that goes on past the child's start) and reads it with
-  `After`, never from the child's `SigPnd` or `ShdPnd` in `/proc/<pid>/status`: the build
-  cluster's gVisor has neither line, and a signal the shell has taken but whose trap has not yet
-  run is pending in neither. The child writes a beat, the time since boot, at each turn of its
-  loop, so a beat past the run's return and one more after it show that no SIGTERM was sent by
-  then; its SIGTERM trap writes one byte to the pipe and records whether the write met EPIPE, and
-  when the trap ran. A stop that found the pipe open (`InWait`) came inside `Wait`, and a row that
-  knows the earliest moment its budget could pass fails one whose trap ran before it
-  (`judgeable` in `packages/daemon/internal/workspace/errwaitdelay_test.go`). A run the child cannot
-  judge is one the budget's own stop reached, so the row leaves it unjudged only where the command
-  ran its first act (its start mark) and the runner reported its budget's stop, and nothing else,
-  no sooner than the budget after the call; a runner that never started the command, or answered
-  anything else, fails as main's form failed it. The rows that do this are
-  `TestRunNeverStopsTheCommandsGroupAfterItsOwnExitWhenAChildInTheGroupHoldsItsOutput` in
-  `packages/daemon/internal/capabilities/image_test.go`,
-  `TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildInItsGroupHoldingItsPipePastIt` in
-  `packages/daemon/internal/daemon/bootgate_test.go`, and the two in-group rows of
-  `errwaitdelay_test.go`.
-
-- A Go test of `packages/daemon` that forgives a run because a stop found its stand-in still
-  running first reads whether the machine or the code under test kept the stand-in running, from
-  the stand-in's own record (`testkernel.Hold`). The stand-in writes its `/proc/<pid>/schedstat`
-  line just before its first act (`HoldStart`) and again first thing in its SIGTERM trap
-  (`HoldTrap`), each beside the time since boot, and forks nothing between the two. Over that span
-  it ran, waited for a CPU, or slept. A loaded machine holds it as run-queue wait; a sleep of
-  `HeldBound` or more past what the two moments can be off by is the code's hold, such as an output
-  pipe it left full and unread, and fails the row (`Hold.Held`). A command keeps these records as a
-  `testkernel.Leader` (`Begin` first, `Wrote` after its last write to its output pipes, read with
-  `HeldBeforeItWrote`): past its last write it starts a child and waits for it, where it sleeps on
-  its own, so a hold there is not read. gVisor keeps no schedstat, so there the span is unknown and
-  nothing is held. The rows that do this are `TestCheckOverlaysKeepsCheckingAfterATimeout` in
-  `packages/daemon/internal/capabilities/overlays_test.go` and the four in-group rows above.
-
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
