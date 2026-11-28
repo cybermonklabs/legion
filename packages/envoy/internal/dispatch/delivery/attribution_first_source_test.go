@@ -312,11 +312,18 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 
 // TestALaterCommitTrailerCorrectsAnEarlierOne: two commits each carry a `Dispatch:` trailer, the
 // first naming one issue of this repository and a later one naming another, and nothing else
-// names an issue. The later trailer is the correction, as in a pull request whose agent fixed a
-// wrong trailer in a new commit, so it should win. The trailer keys rank in commit order
-// (dispatchTrailer), so the earlier, wrong trailer wins instead: this test is red until a person
-// decides how a later trailer ranks against an earlier one, which no approved rule says yet.
+// names an issue. It asserts that the later trailer, the correction, wins. The trailer keys rank in
+// commit order (dispatchTrailer), so today the earlier trailer wins and this test fails on purpose.
+//
+// It is skipped because a person has been asked which trailer should win, and for no other
+// reason: dispatch://INFRA-3992/ask/b6abcd28-d92a-4568-9b90-a4c2a579d755. His answer removes the
+// skip either way. If the earlier trailer should win, this test is deleted and the code stands as
+// it is; if the later one should, the skip is removed in the change that makes the test pass.
 func TestALaterCommitTrailerCorrectsAnEarlierOne(t *testing.T) {
+	t.Skip("asserts that a later commit's Dispatch trailer outranks an earlier one's, which fails " +
+		"today on purpose: the earlier one wins. Skipped only while a person decides which should " +
+		"win (dispatch://INFRA-3992/ask/b6abcd28-d92a-4568-9b90-a4c2a579d755); his answer deletes " +
+		"this test or unskips it with the change that makes it pass")
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	wrong := seedGadgetsIssue(t, ctx, pool, 48)
