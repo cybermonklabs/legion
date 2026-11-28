@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // newestEventFillMigration is the migration that fills each issue's newest-event pair
@@ -25,12 +26,13 @@ const newestEventFillMigration = "20261125144002_issues_last_event_at_backfill.u
 // Three issues, each with one event and a null pair, are written by COPY. A second transaction
 // takes the row of the middle one `for no key update`, as a request's write does. The fill then
 // runs as its migration file holds it (migrationFiles), on a connection of its own, and the test
-// reads, through the pool, where that backend is until it ends (pg_stat_activity and
-// pg_blocking_pids, as storetest.CountLockWaits reads them; that package imports this one): a
-// fill that waits behind the second transaction fails the test. Once the fill has ended, with the
-// row still held, the held issue's pair is null and the other two hold the pair of their event of
-// last_seq. Then the second transaction appends an event to the held issue as this release's
-// QueueAppendWithLogins writes one, and commits, and the issue's pair is that event's.
+// reads, through the pool, where that backend is until it ends (an ungranted request in pg_locks,
+// lockwaittest.Waiting, and pg_blocking_pids, as storetest.CountLockWaits reads them; that package
+// imports this one): a fill that waits behind the second transaction fails the test. Once the fill
+// has ended, with the row still held, the held issue's pair is null and the other two hold the pair
+// of their event of last_seq. Then the second transaction appends an event to the held issue as
+// this release's QueueAppendWithLogins writes one, and commits, and the issue's pair is that
+// event's.
 //
 // That append is a copy, written by hand here, of the `update issues` of QueueAppendWithLogins
 // (events/broker.go), which package store cannot call: events imports store. So this test cannot
@@ -106,7 +108,7 @@ func TestTheNewestEventFillNeverWaitsOnAHeldIssueRow(t *testing.T) {
 		}
 		var behind bool
 		if err := store.Pool.QueryRow(ctx, `
-			select coalesce(bool_or(wait_event_type = 'Lock' and $2 = any(pg_blocking_pids(pid))), false)
+			select coalesce(bool_or(`+lockwaittest.Waiting+` and $2 = any(pg_blocking_pids(pid))), false)
 			from pg_stat_activity where pid = $1
 		`, fillerPID, holderPID).Scan(&behind); err != nil {
 			t.Fatalf("read where the fill waits: %v", err)

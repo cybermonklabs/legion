@@ -90,7 +90,7 @@ func newKeyedCensusContext(t *testing.T) *AppContext {
 	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
-		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:         identity.HeaderIdentity{People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
 	}))

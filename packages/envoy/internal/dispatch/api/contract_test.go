@@ -40,7 +40,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -50,10 +51,11 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
+// contractOther is a second allowed Dispatch login, neither any record's approver nor any
+// enrollment's operator.
 const (
 	contractApprover = "sami@example.com"
-	// contractOther is a second allowed Dispatch login, neither any record's approver nor any
-	// enrollment's operator.
+
 	contractOther = "mallory@example.com"
 	// contractDispatchAccount is the ServiceAccount the broker's BROKER_API_ACCOUNTS names as the
 	// caller "dispatch": the identity Dispatch's own server presents on the broker's routes.
@@ -87,7 +89,7 @@ func newContractRig(t *testing.T) *contractRig {
 	t.Helper()
 	brokerStore := brokerstoretest.Open(t)
 
-	local := secrets.NewLocal(
+	local := memory.New(
 		policytest.Secret("DEEL_API_KEY", contractApprover, policy.TierHuman, "deel-v1"),
 		// contractApprover's own sessions get it without asking.
 		policytest.Secret("AUTO_TOKEN", contractApprover, policy.TierAgent, "auto-v1"),
@@ -112,7 +114,7 @@ func newContractRig(t *testing.T) *contractRig {
 	}
 	enr.Chain = enroll.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute)
 	reqMachine := &requests.Machine{
-		Store: brokerStore, Policy: cur, Secrets: policytest.Store(local),
+		Store: brokerStore, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
@@ -136,7 +138,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Enroll:        enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix,
 		// People sign in to the broker's approval page at the same local issuer, which stands in for
 		// every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),

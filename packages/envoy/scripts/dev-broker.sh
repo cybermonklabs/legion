@@ -4,8 +4,8 @@
 # The local dev surface a human can drive without AWS, Dispatch or a cluster. Boots Postgres
 # (the dispatch-pg container, through dev-postgres.sh), builds the
 # broker, its three clients (agent-secrets, agent-secrets-helper and agent-secrets-devrelay),
-# dev-oidc-issuer and dev-airlock-stands, writes a fake secrets file standing in for Secrets
-# Manager (DEMO_READ_TOKEN,
+# dev-oidc-issuer and dev-airlock-stands, writes a memory secrets file the broker reads as its
+# store (BROKER_SECRETS_STORE=memory; DEMO_READ_TOKEN,
 # tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking,
 # DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
 # owner=SERVICE tier=agent, which every pod session of that registered service gets without
@@ -190,18 +190,24 @@
 #
 # DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME, set together, make the broker's store
 # Google Cloud Secret Manager (BROKER_SECRETS_STORE=gcp-secret-manager) under that secrets prefix
-# (projects/<project number>/secrets/<id prefix>) and that agent-secrets key, with an empty fake
-# secrets file: GET /v1/settings then describes that store, so `agent-secrets secret` forms run
-# against the real Secret Manager under whatever Google credential their own caller chose, while
-# the broker itself serves none of the demo secrets below, which are under the AWS prefix. Unset,
-# the stack is the AWS-shaped one above. One set without the other is a usage error (exit 2).
+# (projects/<project number>/secrets/<id prefix>) and that agent-secrets key, with no memory
+# secrets file. The broker then reads the real Secret Manager under Application Default
+# Credentials, which need the roles the operate page's Google Cloud Secret Manager row lists
+# (docs/site/src/content/docs/broker/operate.md, "What it depends on"): with no application-default
+# login, or without secretmanager.secrets.list on the project, it does not boot. It serves that
+# prefix's secrets, owner=shared ones among them, to this stack's sessions, which dev-oidc-issuer
+# signs in with no page, so point it at a scratch project that holds nothing anyone needs kept.
+# GET /v1/settings describes that store, so `agent-secrets secret` forms run against the real
+# Secret Manager under whatever Google credential their own caller chose. None of the demo secrets
+# below is served, since they are the memory store's. Unset, the stack is the memory one above.
+# One set without the other is a usage error (exit 2).
 #
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
 # that server through psql, which is given the URL without its password and the password in
 # PGPASSWORD (scripts/lib/pg-url.sh), and without it, it starts the dispatch-pg container through
-# dev-postgres.sh, which needs Docker. It builds the fake secrets file and the profiles file with
-# jq -n and reads the stand's report and the broker's JSON log with jq, so a box without jq fails
-# once Postgres is up and the six builds have run.
+# dev-postgres.sh, which needs Docker. It builds the memory secrets file and the profiles file
+# with jq -n and reads the stand's report and the broker's JSON log with jq, so a box without jq
+# fails once Postgres is up and the six builds have run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -252,21 +258,20 @@ fi
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-secrets-dev.XXXXXX")"
 BIN_DIR="$WORK_DIR/bin"
 BROKER_BIN="$BIN_DIR/broker"
-FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
-# The namespace and the agent-secrets key the fake secrets sit under; the key is an example ARN in
-# AWS's documentation account, and nothing here calls AWS. DEV_BROKER_GCP_* replaces both with a
-# Secret Manager prefix and a Cloud KMS key name, and the store with Secret Manager (the header).
-SECRETS_STORE=""
+MEMORY_SECRETS_FILE="$WORK_DIR/memory-secrets.json"
+# The namespace the demo secrets sit under, and the store the broker reads them from: the memory
+# store over that file. DEV_BROKER_GCP_* replaces both with a Secret Manager prefix and a Cloud
+# KMS key name, and the store with Secret Manager (the header).
+SECRETS_STORE="memory"
 SECRETS_PREFIX="example/agent-secrets/"
-SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 SECRETS_KMS_KEY_NAME=""
-STORE_LINE="the fake secrets file below, in Secrets Manager's shape (BROKER_SECRETS_STORE unset: aws-secrets-manager)"
+STORE_LINE="the memory secrets file below (BROKER_SECRETS_STORE=memory)"
 if [ -n "${DEV_BROKER_GCP_PREFIX:-}" ]; then
   SECRETS_STORE="gcp-secret-manager"
   SECRETS_PREFIX="$DEV_BROKER_GCP_PREFIX"
-  SECRETS_KMS_KEY_ARN=""
   SECRETS_KMS_KEY_NAME="$DEV_BROKER_GCP_KMS_KEY_NAME"
-  STORE_LINE="gcp-secret-manager under $SECRETS_PREFIX, key $SECRETS_KMS_KEY_NAME; the fake secrets file is empty, so the broker serves none of the demo secrets below"
+  MEMORY_SECRETS_FILE=""
+  STORE_LINE="gcp-secret-manager under $SECRETS_PREFIX, key $SECRETS_KMS_KEY_NAME, read under Application Default Credentials; this stack's sessions are served that prefix's real secrets, so point it at a scratch project (the demo secrets below are not served)"
 fi
 BROKER_LOG="$WORK_DIR/broker.log"
 OPERATOR_FILE="$WORK_DIR/operator"
@@ -275,6 +280,12 @@ OPERATOR_FILE="$WORK_DIR/operator"
 PROFILES_FILE="$WORK_DIR/profiles.json"
 PROXY_FRONT_JSON="$WORK_DIR/proxy-front.json"
 PROXY_FRONT_LOG="$WORK_DIR/proxy-front.log"
+# The front the broker's own API sits behind under DEV_BROKER_GCP_*, bound before the broker and
+# pointed at its port once it logs it: with a real store the broker refuses a BROKER_PUBLIC_URL
+# of port 0, which is what the memory stack uses.
+API_FRONT_JSON="$WORK_DIR/api-front.json"
+API_FRONT_LOG="$WORK_DIR/api-front.log"
+API_BACKENDS="$WORK_DIR/api-backends"
 PROXY_BACKENDS="$WORK_DIR/proxy-backends"
 # The stand-in GitHub, its files and the accounts it answers as installations of the App. The
 # three are one account for a check that narrows a token to a repository of it, and the pair
@@ -384,14 +395,15 @@ BROKER_PID=""
 ISSUER_PID=""
 STANDS_PID=""
 PROXY_FRONT_PID=""
+API_FRONT_PID=""
 # Set once this run's own create database succeeded: a run whose create failed (the name taken by
 # another run) must never drop that other run's database.
 CREATED_DB=false
 cleanup() {
-  # The broker first, then the front before its proxy, the issuer whose keys it reads and the
-  # stand-in GitHub it mints at.
+  # The broker first, then the fronts before its API and its proxy, the issuer whose keys it
+  # reads and the stand-in GitHub it mints at.
   local pid
-  for pid in "$BROKER_PID" "$PROXY_FRONT_PID" "$ISSUER_PID" "$STANDS_PID"; do
+  for pid in "$BROKER_PID" "$API_FRONT_PID" "$PROXY_FRONT_PID" "$ISSUER_PID" "$STANDS_PID"; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -534,7 +546,7 @@ GITHUB_COMMIT_SHA="$(stand .github_commit_sha)"
 CA_CERT_FILE="$(stand .ca_cert_file)"
 CA_KEY_FILE="$(stand .ca_key_file)"
 
-# --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, two
+# --- The memory store's file: one agent-tier secret its owner's sessions get without asking, two
 # human-tier secrets its owner approves, one of them a github-app secret, one agent-tier secret
 # the registered service owns, which every pod session of that service gets without asking and
 # no person's session sees, and the three other github-app secrets, which that same service owns
@@ -542,38 +554,36 @@ CA_KEY_FILE="$(stand .ca_key_file)"
 # behind the kind of that name (the header). The service-owned ones
 # are what BROKER_SERVICES makes servable: a secret owned by a service the deployment never
 # registered is refused owner-tag-malformed by the policy and reaches nobody. Written with jq, so
-# the App's PEM is escaped once and correctly. Under DEV_BROKER_GCP_* the file is empty: the demo
-# secrets sit under the AWS prefix, which the GCP store's policy would refuse. ---
-if [ -n "$SECRETS_STORE" ]; then
-  printf '{"secrets": []}\n' >"$FAKE_SECRETS_FILE"
-else
+# the App's PEM is escaped once and correctly. Under DEV_BROKER_GCP_* no file is written: the
+# demo secrets sit under the memory store's prefix, which the GCP store's policy would refuse. ---
+if [ -n "$MEMORY_SECRETS_FILE" ]; then
   jq -n \
-    --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
+    --arg prefix "$SECRETS_PREFIX" \
     --arg approver "$APPROVER_LOGIN" --arg service "$SERVICE" \
     --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
     --arg owner "$GITHUB_OWNER" --arg casepair "$GITHUB_CASE_OWNER" --arg kind "$GITHUB_KIND" \
     '{secrets: [
-       {name: ($prefix + "demo-read-token"), kms_key_id: $kms,
+       {name: ($prefix + "demo-read-token"),
         tags: {owner: $approver, tier: "agent"}, value: "demo-read-token-value"},
-       {name: ($prefix + "demo-api-key"), kms_key_id: $kms,
+       {name: ($prefix + "demo-api-key"),
         tags: {owner: $approver, tier: "human"}, value: "demo-api-key-value"},
-       {name: ($prefix + "demo-service-token"), kms_key_id: $kms,
+       {name: ($prefix + "demo-service-token"),
         tags: {owner: $service, tier: "agent"}, value: "demo-service-token-value"},
-       {name: ($prefix + "demo-github-app"), kms_key_id: $kms,
+       {name: ($prefix + "demo-github-app"),
         tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
         value: ({app_id: $appid, private_key: $appkey} | tojson)},
-       {name: ($prefix + "demo-github-app-proxied"), kms_key_id: $kms,
+       {name: ($prefix + "demo-github-app-proxied"),
         tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner, proxy: $kind},
         value: ({app_id: $appid, private_key: $appkey} | tojson)},
-       {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
+       {name: ($prefix + "demo-github-app-case-pair"),
         tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $casepair},
         value: ({app_id: $appid, private_key: $appkey} | tojson)},
-       {name: ($prefix + "demo-github-app-human"), kms_key_id: $kms,
+       {name: ($prefix + "demo-github-app-human"),
         tags: {owner: $approver, tier: "human", type: "github-app", "github-owners": $owner},
         value: ({app_id: $appid, private_key: $appkey} | tojson)}
-     ]}' >"$FAKE_SECRETS_FILE"
+     ]}' >"$MEMORY_SECRETS_FILE"
+  chmod 600 "$MEMORY_SECRETS_FILE"
 fi
-chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 
 # --- The profiles file (the header): the github kind, the github-tls stand's name for GET and
@@ -585,9 +595,9 @@ echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 # every mint: DEMO_GITHUB_APP's write set leaves out what the stand's own map does not hold (issues,
 # workflows, statuses at write), so even a stack driven with no DEV_BROKER_GITHUB_PERMISSIONS
 # names a cut in its release. Under DEV_BROKER_GCP_* the file declares no kind and names no
-# profile, as the fake store holds no secret: the demo github-app secrets are not there for a
-# profile to name. ---
-if [ -n "$SECRETS_STORE" ]; then
+# profile, as the store holds no secret of this stack's: the demo github-app secrets are not there
+# for a profile to name. ---
+if [ -z "$MEMORY_SECRETS_FILE" ]; then
   printf '{"profiles": []}\n' >"$PROFILES_FILE"
 else
   jq -n \
@@ -691,6 +701,21 @@ echo "dev-broker: starting the proxy's front..." >&2
 PROXY_FRONT_PID=$!
 await "the proxy's front" 30 "$PROXY_FRONT_LOG" 'front listening addr=' "$PROXY_FRONT_PID"
 PROXY_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
+# Under DEV_BROKER_GCP_* the broker's store is a real one, so its start is a production start:
+# a BROKER_PUBLIC_URL of port 0 and the airlock's test settings are refused with any store but
+# the memory one. A second front, bound here as the proxy's is and pointed at the broker's own
+# port once the broker logs it, gives that start a public URL with a real port.
+API_FRONT_URL=""
+if [ "$SECRETS_STORE" != "memory" ]; then
+  : >"$API_FRONT_LOG"
+  : >"$API_BACKENDS"
+  "$STANDS_BIN" front --listen 127.0.0.1:0 --backends-file "$API_BACKENDS" \
+    >"$API_FRONT_JSON" 2> >(trap '' TERM INT; exec tee -a "$API_FRONT_LOG" >&2) &
+  API_FRONT_PID=$!
+  await "the broker's front" 30 "$API_FRONT_LOG" 'front listening addr=' "$API_FRONT_PID"
+  API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
+  PUBLIC_URL="$API_FRONT_URL"
+fi
 # Where the proxy finds the github-tls stand, and that it may dial it there although it is a
 # loopback address, when the stands bound it on port 443 (the header); empty is neither.
 GITHUB_RESOLVE=""
@@ -698,6 +723,16 @@ GITHUB_DIAL_ALLOW=""
 if [ -n "${DEV_BROKER_PROXIED_GITHUB_IP:-}" ]; then
   GITHUB_RESOLVE="$GITHUB_PROXIED_HOST=$DEV_BROKER_PROXIED_GITHUB_IP"
   GITHUB_DIAL_ALLOW="$GITHUB_PROXIED_HOST:443"
+fi
+# The airlock's test settings are a local run's, which a start on a real store may not set; with
+# one, the stands' GitHub and CA are left out, and no profile of such a run names a proxy block.
+TEST_GITHUB_URL="$GITHUB_URL"
+TEST_CA_FILE="$CA_CERT_FILE"
+if [ "$SECRETS_STORE" != "memory" ]; then
+  TEST_GITHUB_URL=""
+  TEST_CA_FILE=""
+  GITHUB_RESOLVE=""
+  GITHUB_DIAL_ALLOW=""
 fi
 
 # --- Start the broker: BROKER_LISTEN_ADDR/BROKER_PUBLIC_URL of port 0 (above); its own log names
@@ -720,9 +755,8 @@ BROKER_PUBLIC_URL="$PUBLIC_URL" \
 BROKER_MACHINE_LOGIN_URL="http://127.0.0.1/credentials/machine" \
 BROKER_SECRETS_STORE="$SECRETS_STORE" \
 BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
-BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
 BROKER_SECRETS_KMS_KEY_NAME="$SECRETS_KMS_KEY_NAME" \
-BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
+BROKER_MEMORY_SECRETS_FILE="$MEMORY_SECRETS_FILE" \
 BROKER_DRAIN_SECONDS=0 \
 BROKER_LISTEN_ADDR="$LISTEN_ADDR" \
 BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
@@ -743,13 +777,13 @@ BROKER_EXCHANGE_GITHUB_AUDIENCE="$WORKFLOW_AUDIENCE" \
 BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
 BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
 BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
-BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
+BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$TEST_GITHUB_URL" \
 BROKER_PROFILES_FILE="$PROFILES_FILE" \
 BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 BROKER_AIRLOCK_PROXY_URL="$PROXY_URL" \
 BROKER_AIRLOCK_CA_CERT_FILE="$CA_CERT_FILE" \
 BROKER_AIRLOCK_CA_KEY_FILE="$CA_KEY_FILE" \
-BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE="$CA_CERT_FILE" \
+BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE="$TEST_CA_FILE" \
 BROKER_AIRLOCK_TEST_RESOLVE="$GITHUB_RESOLVE" \
 BROKER_AIRLOCK_TEST_DIAL_ALLOW="$GITHUB_DIAL_ALLOW" \
 KUBERNETES_SERVICE_HOST='' \
@@ -795,6 +829,13 @@ fi
 BOUND_ADDR="$LOGGED_ADDR"
 PUBLIC_URL="http://${BOUND_ADDR}"
 LISTEN_ADDR="$BOUND_ADDR"
+# With a real store the broker sits behind the front bound above, whose address it was started
+# with: the front now learns the port the broker bound, and the clients are given the front's
+# URL, which is the broker's own public URL.
+if [ -n "$API_FRONT_URL" ]; then
+  printf '%s\n' "$BOUND_ADDR" >"$API_BACKENDS"
+  PUBLIC_URL="$API_FRONT_URL"
+fi
 # The metrics port, bound by the same boot after the API's and logged just after it.
 if ! await_logged_addr 'broker metrics listening'; then
   echo "dev-broker: broker never logged its metrics address within 15s" >&2
@@ -901,7 +942,7 @@ dev-broker: ready.
 
   binaries:            $BIN_DIR  (broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper, agent-secrets-devrelay)
   secret store:        $STORE_LINE
-  fake secrets file:   $FAKE_SECRETS_FILE  (each secret's tags and value, for confirming a released grant)
+  memory secrets file: ${MEMORY_SECRETS_FILE:-none  (the store is $SECRETS_STORE)}  (each secret's tags and value, for confirming a released grant)
   approver login:      $APPROVER_LOGIN (whom the issuer signs in to approve a secret, and whom devrelay names deciding a machine login)
   database:            $DISPLAY_URL  (this instance's own; created and dropped by this script)
   metrics:             $METRICS_URL  (GET: the broker's Prometheus metrics, on a port of its own, BROKER_METRICS_LISTEN_ADDR)

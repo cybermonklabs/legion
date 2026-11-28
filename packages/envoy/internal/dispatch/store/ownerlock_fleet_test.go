@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -861,7 +862,7 @@ func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, b
 		var waiting int
 		var backends string
 		if err := s.Pool.QueryRow(context.Background(), `
-			select count(*) filter (where wait_event_type = 'Lock'),
+			select count(*) filter (where `+lockwaittest.Waiting+`),
 				coalesce(string_agg(format('%s %s (wait %s/%s)', pid, state, wait_event_type, wait_event), '; ' order by pid), 'none')
 			from pg_stat_activity
 			where datname = current_database() and query like '%= any($1' || '::%order by%for %'`).Scan(&waiting, &backends); err != nil {

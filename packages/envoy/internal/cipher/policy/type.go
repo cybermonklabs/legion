@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // LegacyTypeTag is read for one release when TagType is absent. Writers use TagType.
@@ -28,7 +28,7 @@ const LegacyTypeTagMessage = "agent secret uses legacy classifier tag; retag it 
 // across loads and rereads, so each secret is reported once per process.
 var legacyTypesLogged sync.Map
 
-func listingType(ls secrets.Listing) string {
+func listingType(ls secretstore.Listing) string {
 	if _, present := ls.Tags[TagType]; !present {
 		if _, legacy := ls.Tags[LegacyTypeTag]; legacy {
 			if _, logged := legacyTypesLogged.LoadOrStore(ls.ID, struct{}{}); !logged {

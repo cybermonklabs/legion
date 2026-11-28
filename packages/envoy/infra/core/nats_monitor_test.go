@@ -14,6 +14,7 @@ import (
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,7 +23,7 @@ import (
 func runStartScript(t *testing.T, script string) {
 	t.Helper()
 	bin := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "nats-server"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	require.NoError(t, testexec.WriteFile(filepath.Join(bin, "nats-server"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
 	cmd := exec.Command("sh", "-c", script)
 	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	out, err := cmd.CombinedOutput()

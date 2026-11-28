@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/envoy/infra/gcp"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // tailnetJoined is the script the golden writes to /etc/envoy/tailnet-joined, run here by /bin/sh
@@ -74,9 +75,9 @@ func newJoinedHarness(t *testing.T) *joinedHarness {
 		marker: filepath.Join(t.TempDir(), "tailnet-joined"),
 		key:    filepath.Join(t.TempDir(), "tailnet-auth-key"),
 	}
-	require.NoError(t, os.WriteFile(h.script, []byte(fileOf(t, doc, "/etc/envoy/tailnet-joined")), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(h.bin, "docker"), []byte(dockerStub), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(h.bin, "sleep"), []byte(sleepStub), 0o700))
+	require.NoError(t, testexec.WriteFile(h.script, []byte(fileOf(t, doc, "/etc/envoy/tailnet-joined")), 0o700))
+	require.NoError(t, testexec.WriteFile(filepath.Join(h.bin, "docker"), []byte(dockerStub), 0o700))
+	require.NoError(t, testexec.WriteFile(filepath.Join(h.bin, "sleep"), []byte(sleepStub), 0o700))
 	require.NoError(t, os.WriteFile(h.key, []byte(authKey), 0o600))
 	return h
 }
