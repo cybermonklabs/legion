@@ -156,6 +156,18 @@ func runSplit(repo gitRepo, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "dispatch-route-adopt split: -rev and -out are both required, and nothing else")
 		return 1
 	}
+	// git show answers a full-length id this checkout does not hold as it answers a file the
+	// commit lacks, so the split would name whichever file it read first as missing. The commit
+	// is checked before anything is read.
+	held, err := repo.holdsCommit(*rev)
+	if err != nil {
+		fmt.Fprintln(stderr, "dispatch-route-adopt split:", err)
+		return 1
+	}
+	if !held {
+		fmt.Fprintf(stderr, "dispatch-route-adopt split: %s names no commit this checkout holds, so nothing is split and nothing is written\n", *rev)
+		return 1
+	}
 	files, err := splitOldLayout(gitTree{repo: repo, rev: *rev})
 	if err == nil {
 		err = writeFiles(*out, files)

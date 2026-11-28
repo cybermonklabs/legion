@@ -273,6 +273,41 @@ func TestTheAdoptStepRemovesARouteTheBranchRemoved(t *testing.T) {
 	}
 }
 
+// When the move's own branch, which holds the route files, merges a main that still holds the old
+// table, main is the side that added or changed each route the step writes, and the report says
+// so. It once named the branch whichever side held the old layout, so here it said the branch
+// added the route main added. Main adds one route and changes another after the move branched.
+func TestTheReportNamesTheRevisionThatAddedARouteWhenTheBranchHoldsTheRouteFiles(t *testing.T) {
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	const limits = "The bounds a write is held to"
+	repo.addRouteOn("main-adds", base, "a")
+	repo.write(tableFile, strings.Replace(repo.read(tableFile), limits, "Main's bounds a write is held to", 1))
+	mainAdds := repo.commit("main changes the limits route")
+	repo.moveMain()
+	repo.git("checkout", "-q", "-b", "the-move", "main")
+	repo.git("branch", "-f", "main", mainAdds)
+	report, err := repo.adoptMain()
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	added, _ := routeFileName("GET", "/api/v1/adopt-test-a")
+	changed, _ := routeFileName("GET", "/api/v1/limits")
+	var out bytes.Buffer
+	report.print(&out)
+	if !slices.Equal(report.written, []string{added}) || !slices.Equal(report.updated, []string{changed}) {
+		t.Fatalf("the step wrote %v and updated %v, want %s and %s:\n%s", report.written, report.updated, added, changed, out.String())
+	}
+	for _, line := range []string{
+		"wrote the route main added: " + apiDir + "/" + added,
+		"wrote main's change to a route the branch left as the merge base had it: " + apiDir + "/" + changed,
+	} {
+		if !strings.Contains(out.String(), line) {
+			t.Fatalf("the report does not say %q:\n%s", line, out.String())
+		}
+	}
+}
+
 // The step makes the merge itself and refuses a tree it did not start, so a second run over its
 // own output cannot happen: the tree is mid-merge, and the refusal names `git merge --abort` and
 // what that costs. The conflict it left is git's, so git refuses the commit until the person
@@ -742,6 +777,41 @@ func TestTheSplitterIsDeterministic(t *testing.T) {
 		if !bytes.Equal(content, second[name]) {
 			t.Errorf("%s: two splits of one table differ", name)
 		}
+	}
+}
+
+// A commit the checkout does not hold is answered as a missing commit, before the split reads any
+// file. git show answers a full-length id it does not hold as it answers a file the commit lacks
+// ("does not exist in"), so the split said routes_table.go did not exist at a commit it had never
+// found. The rows are a commit another checkout holds and forty zeros, which name no object.
+func TestTheSplitOfACommitTheCheckoutDoesNotHoldSaysTheCommitIsMissing(t *testing.T) {
+	repo := newScratchRepo(t)
+	other := newScratchRepo(t)
+	other.write("elsewhere.go", "package api\n\n// A file only the other checkout holds.\n")
+	elsewhere := other.commit("a commit only the other checkout holds")
+	found, err := findRepo(repo.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ why, rev string }{
+		{"a commit another checkout holds", elsewhere},
+		{"forty zeros", strings.Repeat("0", 40)},
+	} {
+		t.Run(row.why, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "routes")
+			var stdout, stderr bytes.Buffer
+			code := runSplit(found, []string{"-rev", row.rev, "-out", out}, &stdout, &stderr)
+			says := stderr.String()
+			if code != 1 || !strings.Contains(says, row.rev+" names no commit this checkout holds") {
+				t.Fatalf("the split exited %d saying %q, want 1 and that %s names no commit this checkout holds", code, says, row.rev)
+			}
+			if strings.Contains(says, tableFile) || strings.Contains(says, "does not exist") {
+				t.Fatalf("the split blames a file for a missing commit: %q", says)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatalf("the split made %s for a commit it could not read: %v", out, err)
+			}
+		})
 	}
 }
 

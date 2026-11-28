@@ -28,17 +28,21 @@ var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScop
 // adoptReport is what one run did and what it leaves for the person.
 type adoptReport struct {
 	newSide, oldSide, base string
+	// oldName and newName are oldSide and newSide without their commits, as the report's lines
+	// name the side that added, changed or removed a route: "the branch" and the revision merged,
+	// either of which can be the side that holds the old layout.
+	oldName, newName string
 
 	written, updated, merged, removed []string
 	fixtureRemoved                    bool
 
 	// conflicted are route files the three-way merge left markers in.
 	conflicted []string
-	// decide are routes main and the branch each changed in a way no merge settles: one side
-	// removed the route the other changed.
+	// decide are routes the two sides each changed in a way no merge settles: one side removed
+	// the route the other changed.
 	decide []string
-	// carry are the branch's edits to routes_table.go and routes_shapes.go outside the moved
-	// entries, each a diff of that file's shared code from the merge base to the branch.
+	// carry are the old-layout side's edits to routes_table.go and routes_shapes.go outside the
+	// moved entries, each a diff of that file's shared code from the merge base to that side.
 	carry []string
 	// unmerged are the paths git still holds in conflict once the run is done.
 	unmerged []string
@@ -57,10 +61,10 @@ func (r *adoptReport) print(w io.Writer) {
 		what  string
 		names []string
 	}{
-		{"wrote the route the branch added", r.written},
-		{"wrote the branch's change to a route main left as the merge base had it", r.updated},
-		{"merged the branch's change into main's changed route", r.merged},
-		{"removed the route the branch removed", r.removed},
+		{"wrote the route " + r.oldName + " added", r.written},
+		{"wrote " + r.oldName + "'s change to a route " + r.newName + " left as the merge base had it", r.updated},
+		{"merged " + r.oldName + "'s change into " + r.newName + "'s changed route", r.merged},
+		{"removed the route " + r.oldName + " removed", r.removed},
 	} {
 		for _, name := range list.names {
 			fmt.Fprintf(w, "  %s: %s\n", list.what, path.Join(apiDir, name))
@@ -135,10 +139,12 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		return nil, fmt.Errorf("the branch and %s both hold the route files already: there is nothing to adopt, and nothing is merged", into)
 	case hereOld:
 		report.oldSide, report.newSide = "the branch "+here[:12], into+" "+there[:12]
+		report.oldName, report.newName = "the branch", into
 		oldRev, newRev = here, there
 		hereSide, thereSide = report.oldSide, report.newSide
 	default:
 		report.oldSide, report.newSide = into+" "+there[:12], "the branch "+here[:12]
+		report.oldName, report.newName = into, "the branch"
 		oldRev, newRev = there, here
 		hereSide, thereSide = report.newSide, report.oldSide
 	}
@@ -150,7 +156,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	if baseOld, err := hasOldLayout(gitTree{repo, base}); err != nil {
 		return nil, fmt.Errorf("read the merge base's %s: %w", tableFile, err)
 	} else if !baseOld {
-		return nil, fmt.Errorf("the merge base %s holds the route files already, so the branch's table is no old layout this can split, and nothing is merged", base)
+		return nil, fmt.Errorf("the merge base %s holds the route files already, so %s's table is no old layout this can split, and nothing is merged", base, report.oldName)
 	}
 	baseFiles, err := splitOldLayout(gitTree{repo, base})
 	if err != nil {
@@ -225,13 +231,13 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 				report.removed = append(report.removed, name)
 				remove = append(remove, name)
 			default:
-				report.decide = append(report.decide, fmt.Sprintf("the branch removes the route of %s, which main has changed since the merge base: delete it or keep main's", path.Join(apiDir, name)))
+				report.decide = append(report.decide, fmt.Sprintf("%s removes the route of %s, which %s has changed since the merge base: delete it or keep %s's", report.oldName, path.Join(apiDir, name), report.newName, report.newName))
 			}
 			continue
 		default: // the branch changed it
 			switch {
 			case !inTree:
-				report.decide = append(report.decide, fmt.Sprintf("main removed the route of %s, which the branch changes: the branch's version is not written", path.Join(apiDir, name)))
+				report.decide = append(report.decide, fmt.Sprintf("%s removed the route of %s, which %s changes: %s's version is not written", report.newName, path.Join(apiDir, name), report.oldName, report.oldName))
 				continue
 			case bytes.Equal(current, baseContent):
 				report.updated = append(report.updated, name)
@@ -249,7 +255,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 			return nil, err
 		}
 		writes = append(writes, routeWrite{name: name, content: content})
-		carried, err := sharedCodeChange(repo, name, gitTree{repo, base}, gitTree{repo, oldRev})
+		carried, err := sharedCodeChange(repo, name, gitTree{repo, base}, gitTree{repo, oldRev}, report.oldName)
 		if err != nil {
 			return nil, err
 		}
@@ -317,10 +323,11 @@ func writeTheMerge(repo gitRepo, writes []routeWrite, remove []string) error {
 	return repo.stage(stage, remove)
 }
 
-// sharedCodeChange is the branch's change to one old-layout file outside the entries the route
-// files took over - the rows of routes() and the side maps' entries - as a diff from the merge
-// base, and empty where the branch changed nothing else of it.
-func sharedCodeChange(repo gitRepo, name string, base, branch tree) (string, error) {
+// sharedCodeChange is the old-layout side's change to one old-layout file outside the entries the
+// route files took over - the rows of routes() and the side maps' entries - as a diff from the
+// merge base, and empty where that side changed nothing else of it. side is how the report names
+// that side: the branch, or the revision merged.
+func sharedCodeChange(repo gitRepo, name string, base, branch tree, side string) (string, error) {
 	baseContent, err := base.read(name)
 	if err != nil {
 		return "", err
@@ -338,7 +345,7 @@ func sharedCodeChange(repo gitRepo, name string, base, branch tree) (string, err
 	}
 	branchShared, err := sharedCode(name, branchContent)
 	if err != nil {
-		return "", fmt.Errorf("read the branch's %s: %w", name, err)
+		return "", fmt.Errorf("read %s's %s: %w", side, name, err)
 	}
 	if baseShared == branchShared {
 		return "", nil
@@ -347,8 +354,8 @@ func sharedCodeChange(repo gitRepo, name string, base, branch tree) (string, err
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("carry by hand the branch's edit to %s outside the moved entries (the moved entries are cut out, as …):\n%s",
-		path.Join(apiDir, name), diff), nil
+	return fmt.Sprintf("carry by hand %s's edit to %s outside the moved entries (the moved entries are cut out, as …):\n%s",
+		side, path.Join(apiDir, name), diff), nil
 }
 
 // sharedCode is an old-layout file with every moved entry cut out: the elements of the side maps
