@@ -11,6 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
 	Handler:     (*server).listArtifactComments,
 	ID:          &idRoute{Kind: "artifact", NotFound: "ARTIFACT_NOT_FOUND"},
-	Read:        readEntry{Writes: readWritesNothing},
-	Shape:       routeShape{Status: http.StatusOK, Response: []shapedComment{}},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfCommentListAtACut},
+	Shape:       routeShape{Status: http.StatusOK, Response: []shapedComment{}, Params: asOfQuery{}},
 })

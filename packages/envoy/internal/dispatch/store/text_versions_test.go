@@ -440,8 +440,21 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 		t.Fatalf("write an event the fill has not written: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into search_text_versions_fill (id, event_id, reach, rules) values (1, 0, $1, 1)`, reach); err != nil {
+		insert into search_text_versions_fill (id, event_id, reach, rules) values (1, 0, $1, $2)`, reach, TextVersionsRules-1); err != nil {
 		t.Fatalf("store the fill's cursor and reach: %v", err)
+	}
+
+	// A cursor row that earlier rules wrote lacks the rows of the events those rules passed, so it
+	// has reached no time, even a cut at its stored reach, until the fill reads them again.
+	refusal = nil
+	if _, err := store.TextVersionsAt(ctx, reach); !errors.As(err, &refusal) || refusal.Reached {
+		t.Fatalf("TextVersionsAt at the reach of a row of rules %d = %v, want a refusal that has reached nothing", TextVersionsRules-1, err)
+	}
+	if _, reached, err := store.TextVersionsReach(ctx); err != nil || reached {
+		t.Fatalf("TextVersionsReach of a row of rules %d = reached %v, %v; want nothing reached", TextVersionsRules-1, reached, err)
+	}
+	if _, err := store.Pool.Exec(ctx, `update search_text_versions_fill set rules = $1`, TextVersionsRules); err != nil {
+		t.Fatalf("record the rules the relation needs: %v", err)
 	}
 
 	_, err := store.TextVersionsAt(ctx, past)
