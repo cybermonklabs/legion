@@ -672,6 +672,8 @@ So before you start the older daemon, remove `<state_dir>/bin/jj`. Before you ru
 `legion controller start`, remove the `bin/jj` of its state directory too.
 
 No leak guard runs in a pane's `git` or `jj`.
+In a pod, the worker image's pre-push hook clears with no check a push that can only write to a
+local path, and runs the leak guard over every other push.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
 `/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
 a shared box has no such boundary: the daemon, its panes and the operator are one Unix user, so a

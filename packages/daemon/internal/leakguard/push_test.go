@@ -2,7 +2,11 @@ package leakguard
 
 import (
 	"cmp"
+	"errors"
+	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -1031,15 +1035,22 @@ func TestAPushReadsWhatItsRemoteFetchedFromAnotherRepository(t *testing.T) {
 
 // A push from a shallow repository whose commits run down to a commit with no parent there is
 // refused at once, naming that commit and the fetch that ends the boundary, rather than read. A
-// shallow commit's parents are not in the repository, so the walk from a remote-tracking ref stops
-// at it, and the destination's own commits beneath it read as the push's: a scan of history the
-// destination has published, which refuses the push over a commit the destination already holds.
-// The repository here is a clone of the destination's main two commits deep, and its branch
-// merges a base branch fetched three deep, which reaches main's commits beneath origin/main's
-// boundary through the base's fork point. That fork point has an author a rule refuses. A branch
-// on origin/main alone, from the same clone, reads its own commit and passes, so a shallow clone
-// pushes as before; and once `git fetch --unshallow origin` has run, the merge's push reads the
-// base's commits, the merge and its own commit, none of main's, and passes.
+// shallow commit's parents are not in the repository, so the walk stops at it, and where nothing
+// the destination is taken to hold reaches it, the destination's own commits beneath it read as
+// the push's: a scan of history the destination has published, which refuses the push over a
+// commit the destination already holds. The repository here is a clone of the destination's main
+// two commits deep, and its branch merges a base branch fetched three deep from a seed of the
+// test's own. The destination holds main alone, and the base forks from main's m3, whose author a
+// rule refuses, through s1, a commit of the seed's own, so the shallow commit three deep on the
+// base's side is s1, which the destination does not hold. It has to be one the destination lacks:
+// the destination is read for what it holds (destinationHolds), and a commit it holds stops the
+// walk before any shallow commit beneath it, so a base that forked from m3 directly, its shallow
+// commit m3, would read nothing past the boundary at all (R10 of dispatch://INFRA-3524's spec,
+// under its plan's decision 18). A branch on origin/main alone, from the same clone, reads its own
+// commit and passes, so a shallow clone pushes as before; and once a `git fetch --unshallow` from
+// the seed, which holds s1's history, has run, the merge's push reads s1, the base's commits, the
+// merge and its own commit, none of main's, and passes. The refusal names `git fetch --unshallow
+// origin` as before, though the destination cannot deepen a commit it does not hold.
 //
 // The fetch the refusal names is from the push's own destination: the remote a push names, even
 // one whose refs the guard does not hold (here because a remote named origin/extra can file refs
@@ -1065,14 +1076,17 @@ func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 		fixture.With(env...).Run(repo, "git", "commit", "--quiet", "-m", message)
 		return fixture.Run(repo, "git", "rev-parse", "HEAD")
 	}
-	// The destination: main is m1 to m7, and base forks from m3 and merges m7 back in.
+	// The seed: main is m1 to m7, and base forks from m3 through s1, a commit of the seed's own,
+	// then b1, and merges m7 back in. The destination holds main alone.
 	write(t, seed, "main.md", "1\n")
 	commit(t, seed, "m1")
 	write(t, seed, "main.md", "1\n2\n")
 	commit(t, seed, "m2")
 	write(t, seed, "main.md", "1\n2\n3\n")
-	fork := commit(t, seed, "m3", "GIT_AUTHOR_EMAIL=builder@"+leakguardtest.RulesHost)
+	commit(t, seed, "m3", "GIT_AUTHOR_EMAIL=builder@"+leakguardtest.RulesHost)
 	fixture.Run(seed, "git", "checkout", "--quiet", "-b", "base")
+	write(t, seed, "seed.md", "a line the seed alone holds\n")
+	s1 := commit(t, seed, "s1")
 	write(t, seed, "base.md", "a line of the base branch\n")
 	b1 := commit(t, seed, "b1")
 	fixture.Run(seed, "git", "checkout", "--quiet", "main")
@@ -1083,13 +1097,14 @@ func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 	fixture.Run(seed, "git", "checkout", "--quiet", "base")
 	fixture.Run(seed, "git", "merge", "--quiet", "--no-ff", "-m", "b2 merges main", "main")
 	b2 := fixture.Run(seed, "git", "rev-parse", "HEAD")
-	fixture.Run(seed, "git", "push", "--quiet", remote, "main", "base")
+	fixture.Run(seed, "git", "push", "--quiet", remote, "main")
 
-	// The clone holds main two deep, and the base three deep at FETCH_HEAD, on no tracking ref, as
-	// a fetch of one branch of a clone of another leaves it. Three deep from b2 is m3 on the
-	// base's side and m6 on main's: both are shallow commits, and m4 and m5 are not here.
+	// The clone holds main two deep, and the seed's base three deep at FETCH_HEAD, on no tracking
+	// ref, as a fetch of a branch of another repository leaves it. Three deep from b2 is s1 on the
+	// base's side and m6 on main's: both are shallow commits, m4 and m5 are not here, and the
+	// destination does not hold s1.
 	fixture.Run(root, "git", "clone", "--quiet", "--depth=2", "--branch=main", "file://"+remote, clone)
-	fixture.Run(clone, "git", "fetch", "--quiet", "--depth=3", "origin", "base")
+	fixture.Run(clone, "git", "fetch", "--quiet", "--depth=3", "file://"+seed, "base")
 	if shallow := fixture.Run(clone, "git", "rev-parse", "--is-shallow-repository"); shallow != "true" {
 		t.Fatalf("the clone's --is-shallow-repository is %q, want true", shallow)
 	}
@@ -1120,7 +1135,7 @@ func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 
 	err := guard.Push(bound(t), request("refs/heads/work", own))
 	failed := setupFailure(t, err)
-	for _, want := range []string{short(fork), "shallow", "`git fetch --unshallow origin`"} {
+	for _, want := range []string{short(s1), "shallow", "`git fetch --unshallow origin`"} {
 		if !strings.Contains(failed.Error(), want) {
 			t.Errorf("the setup failure %q does not say %q", failed.Error(), want)
 		}
@@ -1146,17 +1161,440 @@ func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 	}
 	fixture.Run(clone, "git", "config", "--remove-section", "remote.origin/extra")
 
-	fixture.Run(clone, "git", "fetch", "--quiet", "--unshallow", "origin")
+	// The destination cannot deepen s1, which it does not hold, and the seed can.
+	fixture.Run(clone, "git", "fetch", "--quiet", "--unshallow", "file://"+seed, "base")
 	read := readCommits(t, guard, request("refs/heads/work", own))
-	want := []string{short(b1), short(b2), short(merge), short(own)}
+	want := []string{short(s1), short(b1), short(b2), short(merge), short(own)}
 	slices.Sort(read)
 	slices.Sort(want)
 	if !slices.Equal(read, want) {
-		t.Errorf("after the unshallow, the push reads %q, want the base's commits, the merge and its own, %q", read, want)
+		t.Errorf("after the unshallow, the push reads %q, want s1, the base's commits, the merge and its own, %q", read, want)
 	}
 	if err := guard.Push(bound(t), request("refs/heads/work", own)); err != nil {
 		t.Errorf("the push after the unshallow: %v", err)
 	}
+}
+
+// commitFiles writes files into repo's working tree, each path to its content, a directory a path
+// names made where it is not there, commits the working tree with message, and answers the commit.
+func commitFiles(t *testing.T, fixture fixturegit.Runner, repo string, files map[string]string, message string) string {
+	t.Helper()
+	for name, content := range files {
+		path := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+	return fixture.Run(repo, "git", "rev-parse", "HEAD")
+}
+
+// pushOf is a repository whose base, a commit of README.md alone, a destination holds on its
+// main, and head, the commit on base that writes the files added, each path to its content, which
+// the push adds. It answers too the URL the push is made to, the destination's path: a bare
+// repository of the test's own, which a push by path wrote base to, so the repository has no
+// remote and no remote-tracking ref. The destination names no repository on github.com, so the
+// guard scans the push without reading a visibility (Guard.scanThrough), and its path is a URL
+// the reads of what the destination holds reach under the test's GIT_ALLOW_PROTOCOL=file.
+func pushOf(t *testing.T, added map[string]string) (repo, base, head, destination string) {
+	t.Helper()
+	home, root := t.TempDir(), t.TempDir()
+	repo, destination = filepath.Join(root, "repo"), filepath.Join(t.TempDir(), "destination.git")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	fixture.Run(root, fixturegit.InitBare(destination, "main")...)
+	base = commitFiles(t, fixture, repo, map[string]string{"README.md": "one\n"}, "the commit the destination holds")
+	fixture.Run(repo, "git", "push", "--quiet", destination, base+":refs/heads/main")
+	head = commitFiles(t, fixture, repo, added, "the commit the push adds")
+	return repo, base, head, destination
+}
+
+// mainPush is the push of head to main, where the destination holds base, to remote at url.
+func mainPush(repo, base, head, remote, url string) PushRequest {
+	return PushRequest{
+		Dir:     repo,
+		Remote:  remote,
+		URL:     url,
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
+	}
+}
+
+// v0Negotiation is what git 2.47.3 printed on standard error, exit 255, for `git -c
+// protocol.version=0 fetch --negotiate-only --negotiation-tip=<sha> file://<bare>`: a fetch
+// negotiation needs protocol v2, and a destination served on v0 or v1 makes git answer so.
+var v0Negotiation = []string{"warning: --negotiate-only requires protocol v2", "fatal: the remote end hung up unexpectedly"}
+
+// A new branch's first push is judged on what it adds to the destination, not on the
+// destination's own history: its range is bounded by what the destination itself says it holds,
+// its advertised refs and a fetch negotiation from the branch's commit (R10 of
+// dispatch://INFRA-3524's spec). Each case pushes, through Guard.Push under the fixture rule file,
+// a new branch work of a clone to a local bare destination whose main holds a commit of a seed's
+// that adds a line the rules refuse, and the branch's own commit adds none. The push passes in
+// four cases: the clone's remote-tracking refs are current (current); they are stale, since the
+// clone took the destination's main with `git fetch <url> main`, which files no tracking ref, and
+// branched from FETCH_HEAD (stale); the clone took the destination's main at T0 so, the
+// destination then moved to a T1 the clone does not hold, and the branch starts from T0, so the
+// advertised refs name nothing the clone holds and the negotiation finds T0 (moved); and the push
+// names by URL a destination no remote of the clone names, the clone's origin being the seed
+// (by URL).
+//
+// In the fifth case the clone's origin named a second bare repository while a push to it filed
+// refs/remotes/origin/rehearsal at a commit that adds the refused line, and `git remote set-url`
+// then named the destination, which does not hold that commit: the push of a branch on it is
+// refused over it, since where the negotiation answers, no tracking ref bounds the range. In the
+// sixth, the clone's configuration holds url.<an empty bare repository>.insteadOf the
+// destination's URL, which the clone's own `git ls-remote` follows: the guard makes neither read,
+// since the reads, which run with the push's configuration, would apply that rewrite to the URL
+// the push's rewrites already led it to (readsReachItsRepository), and the push is judged as it
+// was before the reads, refused over the destination's commit that adds the refused line, which
+// no tracking ref holds; a stand-in git first on the guard's PATH logs each read it runs
+// (readsLogged), and the log stays empty. In the seventh the clone's configuration sets
+// protocol.version=0, which the reads carry as the push's own gits do, so the negotiation fails as
+// against a destination served on protocol v0 (v0Negotiation), as the row first checks that git
+// in the clone answers. The destination moved to a T1 the clone does not hold, the branch starts
+// from the clone's older main, at which its origin/main stands, and the push passes as it did
+// before the reads, bounded by that tracking ref with the advertised commits beside it. In the
+// eighth both reads fail, the destination a git:// URL on 127.0.0.1 nothing listens on, which the
+// clone's origin names and whose tracking ref holds the destination's main: the push is judged as
+// it was before the reads, bounded by the tracking refs, with the same text.
+//
+// In the ninth the push can write somewhere other than the hook's URL, once for each way the guard
+// tells so (writesOnlyToItsURL): the wrapper's mark for `--receive-pack` in the guard's
+// environment; a remote.origin.receivepack key naming the git-receive-pack of a second bare
+// repository; a remote.origin.vcs key; an origin URL `ext::git %s <destination>`, which holds `::`
+// and which the guard's GIT_ALLOW_PROTOCOL lets through; and a GIT_EXEC_PATH that is a symbolic
+// link to git's own exec path, another path to ownExecPath, under which every git the guard runs
+// works as under git's own. The destination holds a commit that adds the refused line, which the
+// clone took with `git fetch <url> main`, as in the stale case, so that no tracking ref holds it,
+// and the branch starts from it. The two reads would answer for the destination, which holds that
+// commit, and pass the push; the guard makes neither, the tracking refs bound the range as they
+// did before the reads, and the push is refused over that commit, as it was before them. In every
+// case but the fifth, the sixth and the ninth, a second commit of the branch that adds the
+// refused line, which the destination does not hold, is refused, alone.
+func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
+	const class = leakguardtest.RulesHostClass
+	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
+	// rig is one case's destination: a bare repository whose main seed, a work tree of the rig's
+	// own, moves, and root, the case's directory, which the clone is made in.
+	type rig struct {
+		fixture                 fixturegit.Runner
+		root, destination, seed string
+	}
+	// move commits files on the seed's main, pushes it to the destination's main, and answers
+	// the commit.
+	move := func(t *testing.T, r rig, files map[string]string, message string) string {
+		t.Helper()
+		commit := commitFiles(t, r.fixture, r.seed, files, message)
+		r.fixture.Run(r.seed, "git", "push", "--quiet", r.destination, "main")
+		return commit
+	}
+	// held moves the destination's main to a commit that adds the refused line, and answers it.
+	held := func(t *testing.T, r rig) string {
+		t.Helper()
+		return move(t, r, map[string]string{"held.md": refused}, "a commit of the destination's that adds the refused line")
+	}
+	// later moves the destination's main to a commit of no interest, and answers it.
+	later := func(t *testing.T, r rig) string {
+		t.Helper()
+		return move(t, r, map[string]string{"later.md": "a later line\n"}, "a later commit of the destination's")
+	}
+	// cloned is a clone of the repository at from, whose origin names from.
+	cloned := func(t *testing.T, r rig, from string) string {
+		t.Helper()
+		repo := filepath.Join(r.root, "repo")
+		r.fixture.Run(r.root, "git", "clone", "--quiet", from, repo)
+		return repo
+	}
+	// fetched is the destination's main, fetched into repo by the destination's URL, which files
+	// it at FETCH_HEAD and at no remote-tracking ref.
+	fetched := func(t *testing.T, r rig, repo string) string {
+		t.Helper()
+		r.fixture.Run(repo, "git", "fetch", "--quiet", r.destination, "main")
+		return r.fixture.Run(repo, "git", "rev-parse", "FETCH_HEAD")
+	}
+	// trackedMain is the commit the clone's origin/main is at.
+	trackedMain := func(r rig, repo string) string {
+		return r.fixture.Run(repo, "git", "rev-parse", "refs/remotes/origin/main")
+	}
+	// unheld is the clone of the ninth case and the commit its branch starts at: a commit of the
+	// destination's that adds the refused line, fetched by the destination's URL after the clone
+	// was made, so that it is at FETCH_HEAD and at no remote-tracking ref.
+	unheld := func(t *testing.T, r rig) (repo, start string) {
+		t.Helper()
+		repo = cloned(t, r, r.destination)
+		held(t, r)
+		return repo, fetched(t, r, repo)
+	}
+	// elsewhere is a second bare repository of the case's own, where a receive-pack of the
+	// push's own choosing would write.
+	elsewhere := func(t *testing.T, r rig) string {
+		t.Helper()
+		second := filepath.Join(r.root, "elsewhere.git")
+		r.fixture.Run(r.root, fixturegit.InitBare(second, "main")...)
+		return second
+	}
+	// heldRefused is the report of the sixth case and of the ninth: the destination's commit that
+	// adds the refused line, which no tracking ref holds, read as before the reads.
+	heldRefused := []string{"held.md: " + class}
+	for _, tc := range []struct {
+		name string
+		// build makes the case's clone, and answers it, the commit its new branch starts at, and
+		// the remote and the URL git hands the hook for the push.
+		build func(t *testing.T, r rig) (repo, start, remote, url string)
+		// env is what the guard's environment holds beyond guardWith's, nil for nothing.
+		env func(t *testing.T) []string
+		// want is the report of the push of the branch's own commit, nil where it passes.
+		want []string
+		// second is whether a second commit of the branch, which adds the refused line, is
+		// pushed too, and refused alone.
+		second bool
+		// unread is whether the guard must make neither read of the destination: a stand-in git
+		// first on the guard's PATH logs each read it runs (readsLogged), and the log must stay
+		// empty.
+		unread bool
+	}{
+		{
+			name: "current",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				held(t, r)
+				repo := cloned(t, r, r.destination)
+				return repo, trackedMain(r, repo), "origin", r.destination
+			},
+			second: true,
+		},
+		{
+			name: "stale",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo := cloned(t, r, r.destination)
+				held(t, r)
+				return repo, fetched(t, r, repo), "origin", r.destination
+			},
+			second: true,
+		},
+		{
+			name: "moved",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo := cloned(t, r, r.destination)
+				held(t, r)
+				start := fetched(t, r, repo)
+				later(t, r)
+				return repo, start, "origin", r.destination
+			},
+			second: true,
+		},
+		{
+			name: "by URL",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				held(t, r)
+				repo := cloned(t, r, r.seed)
+				return repo, trackedMain(r, repo), r.destination, r.destination
+			},
+			second: true,
+		},
+		{
+			name: "a tracking ref names a commit the destination does not hold",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				held(t, r)
+				repo := cloned(t, r, r.destination)
+				rehearsal := filepath.Join(r.root, "rehearsal.git")
+				r.fixture.Run(r.root, fixturegit.InitBare(rehearsal, "main")...)
+				rehearsed := commitFiles(t, r.fixture, repo, map[string]string{"rehearsed.md": refused}, "a commit the destination does not hold")
+				r.fixture.Run(repo, "git", "remote", "set-url", "origin", rehearsal)
+				r.fixture.Run(repo, "git", "push", "--quiet", "origin", "HEAD:refs/heads/rehearsal")
+				r.fixture.Run(repo, "git", "remote", "set-url", "origin", r.destination)
+				if filed := r.fixture.Run(repo, "git", "rev-parse", "refs/remotes/origin/rehearsal"); filed != rehearsed {
+					t.Fatalf("refs/remotes/origin/rehearsal is at %s, want the rehearsed commit %s: the case would prove nothing", filed, rehearsed)
+				}
+				return repo, rehearsed, "origin", r.destination
+			},
+			want: []string{"rehearsed.md: " + class},
+		},
+		{
+			name: "an insteadOf of the clone",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo := cloned(t, r, r.destination)
+				held(t, r)
+				start := fetched(t, r, repo)
+				later(t, r)
+				empty := filepath.Join(r.root, "empty.git")
+				r.fixture.Run(r.root, fixturegit.InitBare(empty, "main")...)
+				r.fixture.Run(repo, "git", "config", "url."+empty+".insteadOf", r.destination)
+				if listed := r.fixture.Run(repo, "git", "ls-remote", r.destination); listed != "" {
+					t.Fatalf("git ls-remote of %s in the clone lists %q, want the empty repository's nothing: the case would prove nothing", r.destination, listed)
+				}
+				return repo, start, "origin", r.destination
+			},
+			want:   heldRefused,
+			unread: true,
+		},
+		{
+			name: "protocol v0",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				held(t, r)
+				repo := cloned(t, r, r.destination)
+				start := trackedMain(r, repo)
+				later(t, r)
+				r.fixture.Run(repo, "git", "config", "protocol.version", "0")
+				out, err := r.fixture.Try(repo, "git", "fetch", "--negotiate-only", "--negotiation-tip="+start, r.destination)
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 255 || out != strings.Join(v0Negotiation, "\n")+"\n" {
+					t.Fatalf("the negotiation in the clone under its protocol.version=0 answered %q (%v), want %q and exit 255: the case would prove nothing", out, err, v0Negotiation)
+				}
+				return repo, start, "origin", r.destination
+			},
+			second: true,
+		},
+		{
+			name: "both reads fail",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				held(t, r)
+				repo := cloned(t, r, r.destination)
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				url := fmt.Sprintf("git://%s/destination.git", listener.Addr())
+				if err := listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+				r.fixture.Run(repo, "git", "remote", "set-url", "origin", url)
+				return repo, trackedMain(r, repo), "origin", url
+			},
+			// git:// is let through, so the reads fail on a port nothing listens on rather than
+			// on the transport.
+			env:    func(*testing.T) []string { return []string{"GIT_ALLOW_PROTOCOL=file:git"} },
+			second: true,
+		},
+		{
+			name: "a push that can write elsewhere: the wrapper's mark",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				return repo, start, "origin", r.destination
+			},
+			env:  func(*testing.T) []string { return []string{PushNamesReceivePackVar + "=1"} },
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: remote.origin.receivepack",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				r.fixture.Run(repo, "git", "config", "remote.origin.receivepack", "git-receive-pack "+shQuote(elsewhere(t, r))+" #")
+				return repo, start, "origin", r.destination
+			},
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: remote.origin.vcs",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				r.fixture.Run(repo, "git", "config", "remote.origin.vcs", "invented")
+				return repo, start, "origin", r.destination
+			},
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: a URL with ::",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				url := "ext::git %s " + r.destination
+				r.fixture.Run(repo, "git", "remote", "set-url", "origin", url)
+				return repo, start, "origin", url
+			},
+			// ext is let through, so that the reads, were they made, would answer for the
+			// destination.
+			env:  func(*testing.T) []string { return []string{"GIT_ALLOW_PROTOCOL=file:ext"} },
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: a GIT_EXEC_PATH that is not git's own",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				return repo, start, "origin", r.destination
+			},
+			env: func(t *testing.T) []string {
+				own := fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), "git", "--exec-path")
+				link := filepath.Join(t.TempDir(), "git-core")
+				if err := os.Symlink(own, link); err != nil {
+					t.Fatal(err)
+				}
+				return []string{"GIT_EXEC_PATH=" + link}
+			},
+			want: heldRefused,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			r := rig{
+				fixture:     fixturegit.Isolated(t, t.TempDir()),
+				root:        root,
+				destination: filepath.Join(root, "destination.git"),
+				seed:        filepath.Join(root, "seed"),
+			}
+			r.fixture.Run(root, fixturegit.InitBare(r.destination, "main")...)
+			r.fixture.Run(root, fixturegit.InitWorkTree(r.seed, "main")...)
+			move(t, r, map[string]string{"README.md": "one\n"}, "the destination's first commit")
+			repo, start, remote, url := tc.build(t, r)
+			r.fixture.Run(repo, "git", "checkout", "--quiet", "-b", "work", start)
+			var env []string
+			if tc.env != nil {
+				env = tc.env(t)
+			}
+			var reads string
+			if tc.unread {
+				var path string
+				path, reads = readsLogged(t)
+				env = append(env, path)
+			}
+			push := func(t *testing.T, head string) error {
+				t.Helper()
+				guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, env...)
+				return guard.Push(bound(t), PushRequest{
+					Dir:     repo,
+					Remote:  remote,
+					URL:     url,
+					Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: head, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
+				})
+			}
+			own := commitFiles(t, r.fixture, repo, map[string]string{"work.md": "a line of the branch's own\n"}, "the branch's own commit")
+			if err := push(t, own); tc.want == nil {
+				if err != nil {
+					t.Errorf("the push of the branch's own commit, which adds no refused line: %v", err)
+				}
+			} else {
+				reports(t, refusal(t, err).Lines, tc.want...)
+			}
+			if tc.unread {
+				if n := countLines(t, reads); n != 0 {
+					t.Errorf("the guard made %d reads of what the destination holds, want none", n)
+				}
+			}
+			if !tc.second {
+				return
+			}
+			named := commitFiles(t, r.fixture, repo, map[string]string{"work.md": "a line of the branch's own\n" + refused}, "a second commit of the branch's own")
+			reports(t, refusal(t, push(t, named)).Lines, "work.md: "+class)
+		})
+	}
+}
+
+// readsLogged is a stand-in git for the guard's PATH, written to a directory of the test's own,
+// that appends a line to reads, a file of the test's own, for each read of what a push's
+// destination holds it is asked to run, an ls-remote or a fetch --negotiate-only, and runs the
+// real git for every call. It answers the PATH entry that puts it first.
+func readsLogged(t *testing.T) (path, reads string) {
+	t.Helper()
+	bin := t.TempDir()
+	reads = filepath.Join(t.TempDir(), "reads")
+	writeProgram(t, bin, "git", `case " $* " in
+*" ls-remote "* | *" --negotiate-only "*) printf '%s\n' "$*" >> `+shQuote(reads)+` ;;
+esac
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+	return pathWith(bin), reads
 }
 
 // ParseUpdates reads git's own pre-push lines, which is how a `legion leak-check` standing in for

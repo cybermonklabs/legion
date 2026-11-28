@@ -10,13 +10,14 @@ import (
 	"github.com/sjawhar/envoy/testexec"
 )
 
-// A pod's PATH leads with /opt/legion/bin, whose git runs Legion's leak guard on every push and
-// whose jj refuses a push whose git is any other, so a test's push to a local bare repository
-// under its own empty home is refused in a pod and passes on CI. Guard takes every directory whose
-// git is the image's git wrapper off the process's PATH, and Live gives that PATH back to a live
-// proof. A directory holding a link to the wrapper goes too; a test's own copy of the wrapper,
-// which is no link, stays, and so does every other entry, in order, behind the directory of the
-// real git Guard puts first (realTools), which the copies here run.
+// A pod's PATH leads with /opt/legion/bin, whose git's pre-push hook clears with no check a push
+// that can only write to a path on this machine and runs Legion's leak guard over every other
+// push, whose jj refuses a push whose git is any other, and whose gh runs `legion gh`: a test in a
+// pod would meet that jj and that gh, and a test on CI would meet neither. Guard takes every
+// directory whose git is the image's git wrapper off the process's PATH, and Live gives that PATH
+// back to a live proof. A directory holding a link to the wrapper goes too; a test's own copy of
+// the wrapper, which is no link, stays, and so does every other entry, in order, behind the
+// directory of the real git Guard puts first (realTools), which the copies here run.
 func TestGuardTakesLegionsWrapperDirectoriesOffPath(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {

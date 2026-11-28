@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # The live proof that the published worker image's own `git` and `jj` refuse a push that names
-# something private, and that nothing else is changed: one Kubernetes Job on the image digest the
-# caller names, driving the image's wrappers, its `legion leak-check` and the gitleaks engine
-# linked into that binary over the private-name rule file named in
-# `LEGION_PRIVATE_NAME_RULES_FILE`, the variable through which a daemon hands each launch the
-# deployment's rule file; the binary carries no rule file of its own. It is check k1 of
-# dispatch://INFRA-1527 and, for the four setup failures at k1's own call sites, part of k7;
-# the tester runs it before the merge and the production check runs it again after the rollout, so
-# this recipe is the one all three read. It is two files: this harness, which renders the Job and
-# reads its verdict, and `leak-guard-image-probe.sh` beside it, the text the Job runs inside the
-# image. A Job holds no checkout, so the harness writes that text into the Job's command itself;
-# neither file is run or changed without the other.
+# something private, clear a push that can only write to a local path, and change nothing else:
+# one Kubernetes Job on the image digest the caller names, driving the image's wrappers, its
+# `legion leak-check` and the gitleaks engine linked into that binary over the private-name rule
+# file named in `LEGION_PRIVATE_NAME_RULES_FILE`, the variable through which a daemon hands each
+# launch the deployment's rule file; the binary carries no rule file of its own. It is check k1 of
+# dispatch://INFRA-1527, part of k7 for the four setup failures at k1's own call sites, and check
+# c5 of dispatch://INFRA-3524 for the push that can only write to a local path; the tester runs it
+# before the merge and the production check runs it again after the rollout, so this recipe is the
+# one all of them read. It is two files: this harness, which renders the Job and reads its verdict,
+# and `leak-guard-image-probe.sh` beside it, the text the Job runs inside the image. A Job holds no
+# checkout, so the harness writes that text into the Job's command itself; neither file is run or
+# changed without the other.
 #
 # The Job holds no Kubernetes credential and runs no launcher, so it is given neither the private
 # shared public leak check, which the daemon reads and pushes to a pod's launcher, nor the
@@ -22,24 +23,28 @@
 # host, which is why one rule is enough here. The real shared check and the deployment's real rule
 # file are driven after the rollout, in a real pod, to whose launch the daemon hands both.
 #
-# What the Job drives, inside the image, against a bare scratch repository on its `emptyDir`:
+# What the Job drives, inside the image, against bare scratch repositories on its `emptyDir`. The
+# hook clears a push that can only write to a local path, so every case that a guard is to read
+# pushes to its repository through a `git daemon` the probe starts inside the Job, on 127.0.0.1, at
+# a URL with a host (`git://127.0.0.1:<port>/<case>/origin.git`), and `git ls-remote` reads that
+# URL before and after every push. Two cases push to a bare repository by its path, on purpose:
+# `local-path` and `jj-push-author-from-trailer`.
 #
 #   - k1's five cases, with the Job's rule file named — a commit whose message carries the
 #     refusable host, one whose author identity carries it, one whose only hit is an added line of
 #     a tracked file, one whose only hit is the branch name, and a clean one — under `git push`
 #     and under `jj git push` in each shape jj's own help enumerates: bare, `--all`, `--change`,
-#     `--named` and `--deleted`, the last a ref change with no commit. `git ls-remote` is read
-#     before and after every push, and the added-line case and the branch-name case are reported
-#     as checks of their own, because a wrapper that passed only commit messages and identities
-#     would refuse the other three and still let through the one push this repository was
-#     measured leaking. Each refusal must name the record and the class, and on the head's image
-#     also the text the rule matched and the line of the record it stands on.
+#     `--named` and `--deleted`, the last a ref change with no commit. The added-line case and the
+#     branch-name case are reported as checks of their own, because a wrapper that passed only
+#     commit messages and identities would refuse the other three and still let through the one
+#     push this repository was measured leaking. Each refusal must name the record, the class, the
+#     text the rule matched and the line of the record it stands on.
 #
 #   - No rule file named, as in a pod whose daemon hands it none: the added-line case under
 #     `git push` and under each jj shape that sends a commit, and the branch-name case under
-#     `--deleted`. The head's guard then runs no private-name rule, so each push lands, and no
-#     command prints a `LEAK CHECK` line: the daemon says once, at its boot, that no rule file is
-#     named, and nothing says it again on each write.
+#     `--deleted`. The guard then runs no private-name rule, so each push lands, and no command
+#     prints a `LEAK CHECK` line: the daemon says once, at its boot, that no rule file is named,
+#     and nothing says it again on each write.
 #
 #   - k7's four setup failures at those same call sites, each on the clean case, so the only
 #     reason to refuse is the failure itself: the shared-check stand-in removed, so no check
@@ -48,47 +53,68 @@
 #     TOML. Each must refuse every one of `git push` and `jj git push` as a setup failure
 #     (`LEAK CHECK SETUP ERROR`) and name the failure it met.
 #
+#   - `local-path`: the added-line case, from a repository whose every remote is a local bare
+#     repository, pushed to that repository by its path with `git push` and with
+#     `jj git push --bookmark`, with the Job's rule file named and no shared check. The head's hook
+#     clears a push that can only write to a local path, so on the head's image each lands and
+#     prints no `LEAK CHECK` line. This is the one case the control refuses (below).
+#
 #   - the push step of `legion jj`, as the case `jj-push-author-from-trailer`, in a repository of
-#     its own, on the head's image alone: one identity makes a commit with `jj new`, the
-#     implementer's identity describes it with `jj commit -m` and a `Legion-Role: implementer`
-#     trailer, and `jj git push --bookmark` sends it with LEGION_ROLE_IDENTITIES set for that push
-#     alone. The remote commit's author must be the implementer's identity, which the step sets.
-#     The control is the base branch's image from before the rule-file change, which holds the
-#     push step or not according to when it was built, so a verdict there would prove nothing.
+#     its own whose one remote is a local bare repository: one identity makes a commit with
+#     `jj new`, the implementer's identity describes it with `jj commit -m` and a
+#     `Legion-Role: implementer` trailer, and `jj git push --bookmark` sends it with
+#     LEGION_ROLE_IDENTITIES set for that push alone and no shared check or rule file named. The
+#     remote commit's author must be the implementer's identity, which the step sets, and the push
+#     must print the step's `legion jj: implementer: ` line and no `LEAK CHECK` line: the head's
+#     hook clears the push, and the control's guard finds nothing to say of it.
 #
 #   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
-#     on the head's image alone, which jj would upload through that git, with no wrapper and so no
-#     pre-push hook: the image's jj wrapper refuses it before the upload starts, with exit 2 and its
-#     `LEAK CHECK SETUP ERROR` line saying `git.executable-path is /usr/bin/git`, and the remote is
-#     unchanged.
+#     which jj would upload through that git, with no wrapper and so no pre-push hook: the image's
+#     jj wrapper refuses it before the upload starts, with exit 2 and its `LEAK CHECK SETUP ERROR`
+#     line saying `git.executable-path is /usr/bin/git`, and the remote is unchanged.
 #
 #   - On each arm, a negative control in the same Job: a `jj git push` of the message case with
 #     /opt/legion/bin taken off PATH, so jj is the real /usr/local/bin/jj and the git it runs the
 #     real /usr/bin/git, with no wrapper and no hook. The probe expects it to land on the scratch
 #     remote, which shows it tells a push the guard checked from one the guard never saw.
 #
-# The negative control is the base branch's published image from before the `legion` binary
-# stopped carrying a rule file of its own, driven by the same Job with the same probe. Pass it as
-# `--control`. It carries the same wrappers and hook, and its `legion` runs the rules embedded in
-# it, which refuse the refusable host whatever file is named, and reads no
-# `LEGION_PRIVATE_NAME_RULES_FILE`. So the two arms part where the change does: with no rule file
-# named, the head lands the refusable push and the control refuses it; with the Job's file named,
-# both refuse, the head naming what matched and the control its class alone; and with a missing or
-# an unparseable file named, the head refuses as a setup failure and the control lands the clean
-# push. Every other check, the shared check's two failures among them, holds on both. An image
-# built after the change is no control: it does what the head does, and the control's checks fail
-# on it. A run with no `--control` proves only the head: it shows what the head's image does, and
-# nothing about whether the cases would have gone otherwise without the change.
+# The control is main's published image of the base the change merges onto
+# (`git merge-base <head> origin/main`), driven by the same Job with the same probe. A base need not
+# have an image of its own: main's images come from release.yaml's `worker_image` job, which runs
+# only on a push to main that changes a file release.yaml's `paths` names, so a merge that changed
+# none has none. Pass as `--control`, by digest, main's image of the newest commit at or below the
+# base that has one, where no commit after it up to the base changes a file the image build reads:
+# a file that .github/workflows/ci.yaml's `worker_image` filter matches, which
+# .github/ci-gates/worker-image.py declares. That image was built from the base's own image
+# inputs. Its digest is in that commit's `Release Packages` run (.github/workflows/release.yaml),
+# whose `worker_image / build` job logs it as `pushing manifest for
+# ghcr.io/cybermonklabs/legion-worker:sha-<the first 12 hex of the commit>@sha256:<digest>`:
+# `gh run list --workflow release.yaml --commit <commit>` names the run, and
+# `gh run view <run> --log` prints the line. The control carries the wrappers and the hook, and
+# its `legion` runs the rule file the Job names, as the head's does, but its hook reads every
+# push. So every case gets the head's verdict on it but `local-path`, which its rules refuse,
+# naming the record, the class, what matched and its line.
+# That case is the change: a control that lands it was built with the change, and a head that
+# refuses it was built without it. The harness tells the probe which arm it drives by the probe's
+# one argument, `head` or `control`, which it writes as the last argument of the Job's command
+# (render_manifest), and the probe expects `local-path` to land on `head` and to be refused on
+# `control`. A run with no `--control` proves only the head: it shows what the head's image does,
+# and nothing about whether `local-path` would have gone otherwise without the change.
 #
 # Inputs, all of them required unless marked:
 #
-#   --image <ref>@sha256:<64 hex>    the image to prove, by digest, never by tag. The digest is in
-#                                    the `Record digest` step of the `Worker Image` run of the
-#                                    commit under test (docs/kubernetes.md, "Pin by digest, never
-#                                    by tag"). Also the first positional argument.
-#   --control <ref>@sha256:<64 hex>  optional: the base branch's image from before the change,
-#                                    driven as the negative control. Also the second positional
-#                                    argument.
+#   --image <ref>@sha256:<64 hex>    the image to prove, by digest, never by tag. For a pull
+#                                    request's head the digest is in the `Record digest` step of
+#                                    the `worker-image / build` job of the CI run of that head,
+#                                    which .github/workflows/ci.yaml calls worker-image.yaml for
+#                                    (docs/kubernetes.md, "Pin by digest, never by tag"). Also the
+#                                    first positional argument.
+#   --control <ref>@sha256:<64 hex>  optional: main's image of the base the change merges onto, by
+#                                    digest, driven as the negative control: the image of the
+#                                    newest commit at or below the base that has one, where no
+#                                    commit after it up to the base changes a file the image
+#                                    build reads, read from that commit's `Release Packages` run
+#                                    (above, "The control"). Also the second positional argument.
 #   --node-selector <key=value>[,…]  the deployment's compute class, which docs/kubernetes.md
 #                                    requires a workload to select by `nodeSelector`. Its value is
 #                                    in the deployment's own declaration, which this public
@@ -109,16 +135,14 @@
 #
 # Exit statuses:
 #
-#   0  every check of every arm held: on the head's image the four refusable cases were refused
-#      under the Job's rule file, each naming its class and what matched, the clean case landed,
-#      the refusable push landed with no rule file named and no command printed a `LEAK CHECK`
-#      line, all four setup failures refused under both commands, the gerrit upload was refused,
-#      the remote commit of `jj-push-author-from-trailer` had the implementer's identity as its
-#      author, and the push outside the guard landed; on the control's image, if one was given,
-#      the refusable cases were refused under the Job's file and under none, each naming its
-#      class alone, the clean case landed under the Job's file and under a missing or an
-#      unparseable one, both shared-check failures refused under both commands, and the push
-#      outside the guard landed.
+#   0  every check of every arm held: on each arm's image the four refusable cases were refused
+#      under the Job's rule file, each naming its class, what matched and its line, the clean case
+#      landed, the refusable push landed with no rule file named and no command printed a
+#      `LEAK CHECK` line, all four setup failures refused under both commands, the gerrit upload
+#      was refused, the remote commit of `jj-push-author-from-trailer` had the implementer's
+#      identity as its author and its push printed no `LEAK CHECK` line, and the push outside the
+#      guard landed; and `local-path` landed with no `LEAK CHECK` line on the head's image and, if
+#      a control was given, was refused by the rules on the control's.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
@@ -133,7 +157,7 @@
 #
 #   log=$(mktemp "${TMPDIR:-/tmp}/leak-guard.XXXXXX")
 #   flock "$log" setsid -f bash scripts/e2e/leak-guard-image-job.sh \
-#     --image <head digest> --node-selector <key=value> \
+#     --image <head digest> --control <base digest> --node-selector <key=value> \
 #     > "$log" 2>&1 < /dev/null
 #   flock "$log" cat "$log"     # waits for the run to end, then prints everything it printed
 #
@@ -141,11 +165,11 @@
 # gVisor, the deployment's compute class by `nodeSelector`, a largest container asking four
 # processors, `activeDeadlineSeconds` on the Job and on its pod template, `ttlSecondsAfterFinished`
 # on the Job, no service account and no projected token, and one `emptyDir` and nothing else. It
-# carries no Service and no reachability label, because nothing reaches it: it is read by its log,
-# which is what that rule is for ("a workload that asks to be reachable"). Its security context is
-# the worker container's, as dispatch://INFRA-257's solutions page prescribes for a Job on this
-# image: uid, gid and fsGroup 1000, no privilege escalation, every capability dropped and the
-# RuntimeDefault seccomp profile.
+# carries no Service and no reachability label, because nothing reaches it: its git daemon listens
+# on 127.0.0.1 alone, inside the pod, and it is read by its log, which is what that rule is for
+# ("a workload that asks to be reachable"). Its security context is the worker container's, as
+# dispatch://INFRA-257's solutions page prescribes for a Job on this image: uid, gid and fsGroup
+# 1000, no privilege escalation, every capability dropped and the RuntimeDefault seccomp profile.
 set -euo pipefail
 
 # How long the Job may run, how long it is kept after it ends, and how long this script waits. The
@@ -178,12 +202,16 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
                                            [--dry-run]
 
   --image         the worker image to prove, by digest; the first positional argument too.
-  --control       the base branch's image from before the change, driven as the negative control:
-                  its legion runs the rules embedded in it and reads no rule file, so it refuses
-                  the refusable push with no file named and lands the clean push with a missing or
-                  unparseable one; the second positional argument too. A run without it proves
-                  only the head: it says nothing about whether the cases would have gone otherwise
-                  without the change.
+  --control       main's image of the base the change merges onto, by digest: the image of the
+                  newest commit at or below the base that has one, where no commit after it
+                  changes a file of the worker_image filter (.github/ci-gates/worker-image.py),
+                  whose digest that commit's Release Packages run logs in its `worker_image /
+                  build` job (`pushing manifest for <image>:sha-<12 hex>@sha256:<digest>`). It is
+                  driven as the negative control: every case gets the head's verdict on it but
+                  local-path, a refusable push to a local bare repository, which the head's hook
+                  clears and the control's rules refuse; the second positional argument too. A run
+                  without it proves only the head: it says nothing about whether local-path would
+                  have gone otherwise without the change.
   --node-selector the deployment's compute class, which the namespace's admission requires. Read
                   it from the deployment's own declaration; this public repository carries no
                   value of it. LEAK_GUARD_NODE_SELECTOR sets it too.
@@ -238,7 +266,7 @@ digest_shape='^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$'
 [[ $image =~ $digest_shape ]] || refuse "the image $image is not a digest reference <ref>@sha256:<64 hex>"
 if [ -n "$control" ]; then
   [[ $control =~ $digest_shape ]] || refuse "the control $control is not a digest reference <ref>@sha256:<64 hex>"
-  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is the base branch's image from before the change"
+  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is main's image of the base the change merges onto"
 fi
 [ -n "$node_selector" ] || refuse "no --node-selector: the namespace's admission requires the deployment's compute class, which is in the deployment's own declaration"
 case "$prefix" in
@@ -324,10 +352,11 @@ trap 'exit 129' HUP
 # ---------------------------------------------------------------------------------------------
 # The probe. It runs inside the image, as the Job's one container, and decides its own verdict:
 # every check prints `CHECK <name>: got [x] want [y]`, and the last line is `JOB-RESULT pass` or
-# `JOB-RESULT fail`. Its one argument is the arm — `head` for the image under test, whose guard
-# runs the rule file the Job names and no rule of its own, `control` for the base branch's image,
-# whose `legion` runs the rules embedded in it whatever file is named — so one probe serves both
-# and the expectations are stated once.
+# `JOB-RESULT fail`. Its one argument is the arm, `head` for the image under test and `control` for
+# main's image at the base, which render_manifest writes as the last argument of the Job's
+# command: both images run the rule file the Job names, and the arm tells the probe whether
+# `local-path` must land (head) or be refused (control), so one probe serves both and the
+# expectations are stated once.
 #
 # Read the probe's own verdict and never the Job's phase: a Job reports `Succeeded` when its
 # container exited 0 and nothing more (skills/legion-worker/references/tools.md).

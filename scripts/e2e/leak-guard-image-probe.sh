@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # The probe of scripts/e2e/leak-guard-image-job.sh, run inside the worker image by a Kubernetes
-# Job. One argument: the arm — `head` for the image under test, whose guard runs the private-name
-# rule file LEGION_PRIVATE_NAME_RULES_FILE names and no rule of its own, `control` for the base
-# branch's published image, built before that change, which carries the same wrappers and runs the
-# rule file embedded in its `legion` whatever that variable names — so one probe serves both and
-# the expectations are stated once. Either arm ends with its own negative control, a push the guard
-# never sees, which must land. Every check prints `CHECK <name>: got [x] want [y]`, and the
-# last line is `JOB-RESULT pass` or `JOB-RESULT fail`, which is the verdict the harness reads; a
-# Job's own phase says only that the container exited 0 (skills/legion-worker/references/tools.md).
+# Job. One argument: the arm, which the harness passes as the last argument of the Job's command —
+# `head` for the image under test, `control` for main's published image at the base commit the
+# change merges onto. Both images carry the wrappers and the hook, and the `legion` of each runs
+# the private-name rule file LEGION_PRIVATE_NAME_RULES_FILE names and no rule of its own, so one
+# probe serves both and the expectations are stated once: every case gets the same verdict on both
+# arms but `local-path`, a refusable push to a local bare repository from a repository whose every
+# remote is one, which the head's hook clears, so it lands, and the control's guard refuses. The
+# arm is how the probe knows which of the two that case must do. Every other case pushes to a
+# `git daemon` the Job serves on 127.0.0.1, a destination with a host, so none of them lands only
+# because the head's hook cleared a push to a local path, but `jj-push-author-from-trailer`,
+# whose push to a local bare repository must land on both arms. Either arm ends with its own
+# negative control, a push the guard never sees, which must land. Every check prints
+# `CHECK <name>: got [x] want [y]`, and the last line is `JOB-RESULT pass` or `JOB-RESULT fail`,
+# which is the verdict the harness reads; a Job's own phase says only that the container exited 0
+# (skills/legion-worker/references/tools.md).
 #
 # It is no proof of its own and nothing runs it from a checkout: a Job holds no checkout, so the
 # harness beside this file reads this text in and writes it into the Job's command, which is the
@@ -26,25 +33,19 @@ case "$arm" in
 esac
 
 scratch=/scratch
+# Every case's repositories, one directory each, and what the git daemon serves.
+runs=$scratch/runs
 
 # The host every refusable case carries. It is of the shape a Tailscale MagicDNS name takes and is
 # built here from two pieces, so no line of this file carries such a name whole: the words are
-# invented and name no machine and no tailnet, and they are not the reserved `example-tailnet`
-# name, which the rules embedded in the control's `legion` pass and which would prove nothing.
+# invented and name no machine and no tailnet.
 tailnet_label=mossy-lantern
 magicdns_suffix=ts.net
 refusable_host="quill-badger.${tailnet_label}.${magicdns_suffix}"
 # The class a refusal has to name, or the push was refused for some other reason and the case
-# proved nothing. Each arm's rules call the host by a class of their own: the head's are the rule
-# file this Job writes and names (below), whose one rule is rule_class, and the control's are the
-# rules embedded in its `legion`, which call it embedded_class.
+# proved nothing: the description of the one rule of the rule file this Job writes (below), which
+# both arms' guards run.
 rule_class='names the invented tailnet host of this probe'
-embedded_class='names a Tailscale MagicDNS host'
-if [ "$arm" = head ]; then
-  refusal_class=$rule_class
-else
-  refusal_class=$embedded_class
-fi
 
 clean_domain=example.invalid
 clean_line='a line of the probe that names nothing'
@@ -108,8 +109,8 @@ legion version || echo "legion version: exit $?"
 echo
 echo "== the wrappers the image puts first on PATH"
 # On both arms' images the two wrappers lead PATH with the real binaries behind them, and the
-# pre-push hook is root's in a directory no role can write: the base branch's image carries them
-# too, so the arms part only where the rules their `legion` runs part, which is the change.
+# pre-push hook is root's in a directory no role can write: main's image at the base carries them
+# too, so the arms part only where this change parts them.
 check "the git on PATH" "$(command -v git || echo 'no git at all')" /opt/legion/bin/git
 check "the jj on PATH" "$(command -v jj || echo 'no jj at all')" /opt/legion/bin/jj
 check "the pre-push hook" "$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push 2> /dev/null || echo 'no hook')" '0:0 755'
@@ -132,9 +133,60 @@ export GIT_AUTHOR_NAME='Probe Clean'
 export GIT_AUTHOR_EMAIL="probe@$clean_domain"
 export GIT_COMMITTER_NAME='Probe Clean'
 export GIT_COMMITTER_EMAIL="probe@$clean_domain"
-must mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$scratch/runs" "$scratch/empty"
+must mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TMPDIR" "$runs" "$scratch/empty"
 : > "$GIT_CONFIG_GLOBAL"
 echo "HOME=$HOME XDG_CONFIG_HOME=$XDG_CONFIG_HOME TMPDIR=$TMPDIR"
+
+echo
+echo "== the git daemon every guarded case pushes to"
+# On the head's image the hook clears a push that can only write to a local path, so every case
+# that a guard is to read pushes to a destination with a host: this daemon, which serves each bare
+# repository under the runs directory on 127.0.0.1, inside the Job and nowhere else. A case's
+# runs/<case dir>/origin.git is git://127.0.0.1:<port>/<case dir>/origin.git, for `git push` as
+# the URL and for each jj shape as origin's URL, and `git ls-remote` reads it there before and
+# after each push. The daemon is the real git, so no wrapper and no hook stands between a push and
+# the repository it lands in. Its port is the first from 9418 on that nothing in the Job's own
+# network namespace accepts a connection at, and it is stopped by its process id when the probe
+# exits, however it exits.
+daemon_log=$scratch/git-daemon.log
+daemon_pid=""
+daemon_port=""
+stop_daemon() {
+  [ -n "$daemon_pid" ] || return 0
+  kill -TERM -- "-$daemon_pid" 2> /dev/null || kill -TERM "$daemon_pid" 2> /dev/null
+  wait "$daemon_pid" 2> /dev/null
+  daemon_pid=""
+}
+trap stop_daemon EXIT
+for port in $(seq 9418 9427); do
+  if ! (exec 3<> "/dev/tcp/127.0.0.1/$port") 2> /dev/null; then
+    daemon_port=$port
+    break
+  fi
+done
+[ -n "$daemon_port" ] || die "every port from 9418 to 9427 on 127.0.0.1 accepts a connection already, so no git daemon of this Job's can listen there"
+daemon_url=git://127.0.0.1:$daemon_port
+must "$real_git" init -q --bare "$runs/daemon-answers.git"
+# setsid makes the daemon the leader of a process group of its own, so the stop reaches the
+# receive-pack and upload-pack processes it forks too.
+setsid "$real_git" daemon --export-all --enable=receive-pack --informative-errors --reuseaddr \
+  --listen=127.0.0.1 --port="$daemon_port" --base-path="$runs" > "$daemon_log" 2>&1 < /dev/null &
+daemon_pid=$!
+daemon_answered=no
+for _ in $(seq 1 60); do
+  # A daemon that exited could not listen, and an answer then is some other program's.
+  kill -0 "$daemon_pid" 2> /dev/null || break
+  if "$real_git" ls-remote "$daemon_url/daemon-answers.git" > /dev/null 2>&1; then
+    daemon_answered=yes
+    break
+  fi
+  sleep 1
+done
+if [ "$daemon_answered" != yes ] || ! kill -0 "$daemon_pid" 2> /dev/null; then
+  sed 's/^/      git daemon | /' "$daemon_log"
+  die "the git daemon of this Job did not answer a git ls-remote at $daemon_url within 60 s"
+fi
+echo "the git daemon: pid $daemon_pid, serving $runs at $daemon_url"
 
 echo
 echo "== the stand-in shared public leak check this Job writes for itself"
@@ -168,12 +220,13 @@ echo "the internal-error stand-in: $internal_error"
 echo
 echo "== the private-name rule files this Job writes for itself"
 # A Job runs no launcher, so no daemon hands it the deployment's rule file, as one hands it to each
-# role's launch. This Job writes one of its own instead, which k1's cases name in
-# LEGION_PRIVATE_NAME_RULES_FILE: one rule, for the invented host above and no other. Its pattern
-# is the host with each full stop a one-character class, so it matches the host's own text and no
-# line of this file carries the host whole. Its description, rule_class, holds no colon, because a
-# report line parts the record, the class and what matched with colons. The two other paths are
-# the rule file's two setup failures: a path at which no file is, and a file that is no TOML.
+# role's launch. This Job writes one of its own instead, which k1's cases and the local-path case
+# name in LEGION_PRIVATE_NAME_RULES_FILE: one rule, for the invented host above and no other. Its
+# pattern is the host with each full stop a one-character class, so it matches the host's own text
+# and no line of this file carries the host whole. Its description, rule_class, holds no colon,
+# because a report line parts the record, the class and what matched with colons. The two other
+# paths are the rule file's two setup failures: a path at which no file is, and a file that is no
+# TOML.
 rules_var=LEGION_PRIVATE_NAME_RULES_FILE
 rules_dir=$scratch/rules
 must mkdir -p "$rules_dir"
@@ -206,7 +259,7 @@ help=$scratch/jj-git-push-help.txt
 must jj git push --help > "$help" 2>&1
 listed=$(grep -oE '^[[:space:]]+(-[a-zA-Z], )?--[a-z][a-z-]*' "$help" | grep -oE -- '--[a-z][a-z-]*' | sort -u)
 echo "jj git push lists: $(echo "$listed" | tr '\n' ' ')"
-for shape in --all --change --named --deleted --dry-run; do
+for shape in --all --change --named --deleted --bookmark --dry-run; do
   case $'\n'"$listed"$'\n' in
     *$'\n'"$shape"$'\n'*) ;;
     *) die "jj git push no longer lists $shape, which this harness drives" ;;
@@ -217,12 +270,12 @@ done
 if ! grep -q 'templates.git_push_bookmark' "$help"; then
   die "jj git push no longer names templates.git_push_bookmark, which this harness sets to drive the branch-name case under --change"
 fi
-echo "driven here: the bare shape, --all, --change, --named, --deleted"
+echo "driven here: the bare shape, --all, --change, --named, --deleted, and --bookmark for the local-path case"
 # The other options that select what a push sends are named rather than silently left out, and
-# they are read out of the same help: each selects updates the five driven shapes already carry
+# they are read out of the same help: each selects updates the shapes driven here already carry
 # to the same wrapper, so the wrapper sees nothing new in them.
 undriven=""
-for shape in --bookmark --revision --tag --tracked; do
+for shape in --revision --tag --tracked; do
   case $'\n'"$listed"$'\n' in
     *$'\n'"$shape"$'\n'*) undriven="$undriven $shape" ;;
   esac
@@ -238,21 +291,21 @@ branch_of() {
   esac
 }
 
-# fragment_of <case> is the part of the report line a refusal must carry on either arm: the record,
-# then the class this arm's rules call the host by. The records are the guard's own
+# fragment_of <case> is the part of the report line a refusal must carry: the record, then the
+# class of the Job's rule. The records are the guard's own
 # (packages/daemon/internal/leakguard/push.go), so the added-line case and the branch-name case
 # are told apart here rather than being read as one refusal.
 fragment_of() {
   case "$1" in
-    message) printf 'message: %s' "$refusal_class" ;;
-    author) printf 'author: %s' "$refusal_class" ;;
-    line) printf 'probe.txt: %s' "$refusal_class" ;;
-    branch) printf 'the ref name: %s' "$refusal_class" ;;
+    message) printf 'message: %s' "$rule_class" ;;
+    author) printf 'author: %s' "$rule_class" ;;
+    line) printf 'probe.txt: %s' "$rule_class" ;;
+    branch) printf 'the ref name: %s' "$rule_class" ;;
     *) printf '' ;;
   esac
 }
 
-# match_line_of <case> is the whole report line the head's refusal must carry: the record, the
+# match_line_of <case> is the whole report line a refusal by the rules must carry: the record, the
 # class of the Job's rule, the text it matched and the line of the record that text stands on, as
 # the guard writes one (`<record>: <class>: matched "<match>" on line <n>: "<line>"`, RuleSet.scan
 # in packages/daemon/internal/leakguard/rules.go). Each of these lines is printable ASCII with no
@@ -342,8 +395,8 @@ jj_case_commit() { # jj_case_commit <workspace> <case> [parent revision]
   must jj -R "$1" new
 }
 
-# A jj repository with the remote added and nothing else.
-jj_init() { # jj_init <workspace> <bare>
+# A jj repository with origin added at the URL given and nothing else.
+jj_init() { # jj_init <workspace> <url>
   must jj git init "$1"
   must jj -R "$1" git remote add origin "$2"
 }
@@ -355,9 +408,9 @@ jj_base() { # jj_base <workspace>
   must jj -R "$1" describe -m 'probe: the base commit, which names nothing'
 }
 
-# A remote that already holds the bookmark, with the real git, so the bare and --deleted shapes
-# have a tracked bookmark to move and to delete. Seeding is not a write under test: it is how the
-# state those two shapes need comes to exist at all.
+# A remote that already holds the bookmark, pushed to by its path with the real git, so the bare
+# and --deleted shapes have a tracked bookmark to move and to delete. Seeding is not a write under
+# test: it is how the state those two shapes need comes to exist at all.
 seed_remote_bookmark() { # seed_remote_bookmark <bare> <branch> <seed dir>
   git_base "$3"
   must "$real_git" -C "$3" push -q "$1" "HEAD:refs/heads/$2"
@@ -376,13 +429,14 @@ push_bookmark_config() { # push_bookmark_config <branch>
   printf 'templates.git_push_bookmark=%s' "'\"$1\"'"
 }
 
-push_in_shape() { # push_in_shape <shape> <workspace> <bare> <branch>
+push_in_shape() { # push_in_shape <shape> <workspace> <url> <branch>
   case "$1" in
     git) env "${push_env[@]}" git -C "$2" push "$3" "HEAD:refs/heads/$4" ;;
     jj-bare) env "${push_env[@]}" jj -R "$2" git push --remote origin ;;
     jj-all) env "${push_env[@]}" jj -R "$2" git push --remote origin --all ;;
     jj-change) env "${push_env[@]}" jj -R "$2" git push --remote origin --change @- --config "$(push_bookmark_config "$4")" ;;
     jj-named) env "${push_env[@]}" jj -R "$2" git push --remote origin --named "$4=@-" ;;
+    jj-bookmark) env "${push_env[@]}" jj -R "$2" git push --remote origin --bookmark "$4" ;;
     jj-deleted) env "${push_env[@]}" jj -R "$2" git push --remote origin --deleted ;;
     jj-gerrit) env "${push_env[@]}" jj -R "$2" gerrit upload --remote origin --remote-branch main -r @- --config "git.executable-path=$real_git" ;;
     jj-unwrapped) env "${push_env[@]}" PATH="$unwrapped_path" jj -R "$2" git push --remote origin --named "$4=@-" ;;
@@ -408,12 +462,15 @@ jj_dry_run() { # jj_dry_run <shape> <workspace> <branch>
     jj-all) jj -R "$2" git push --remote origin --all --dry-run 2>&1 ;;
     jj-change) jj -R "$2" git push --remote origin --change @- --config "$(push_bookmark_config "$3")" --dry-run 2>&1 ;;
     jj-named) jj -R "$2" git push --remote origin --named "$3=@-" --dry-run 2>&1 ;;
+    jj-bookmark) jj -R "$2" git push --remote origin --bookmark "$3" --dry-run 2>&1 ;;
     jj-deleted) jj -R "$2" git push --remote origin --deleted --dry-run 2>&1 ;;
   esac
 }
 
 # One case: build it, read the remote, push it, read the remote again, and say whether what
-# happened is what this arm calls for. Each variant is k1's environment with one thing changed:
+# happened is what the case calls for. Every variant but local-path pushes to the case's bare
+# repository through the git daemon, so the guard reads the push on either arm. Each variant is
+# k1's environment with one thing changed:
 #
 #   variant=clears            k1: the stand-in clears and the Job's rule file is named, so the
 #                             private-name rules decide.
@@ -422,13 +479,21 @@ jj_dry_run() { # jj_dry_run <shape> <workspace> <branch>
 #   variant=internal-error    k7: the shared check exits 2.
 #   variant=rules-missing     k7: the rule file named is not there.
 #   variant=rules-unparseable k7: the rule file named is no TOML.
+#   variant=local-path        the Job's rule file is named and no shared check, and the push goes
+#                             to the bare repository by its path, from a repository whose every
+#                             remote is that path.
 run_case() { # run_case <shape> <case> <variant>
   local shape=$1 kase=$2 variant=$3
   local id="$shape/$kase/$variant"
-  local dir=$scratch/runs/$shape-$kase-$variant
+  local name=$shape-$kase-$variant
+  local dir=$runs/$name
   local bare=$dir/origin.git workspace=$dir/work seed=$dir/seed
+  local url=$daemon_url/$name/origin.git
   local branch
   branch=$(branch_of "$kase")
+  if [ "$variant" = local-path ]; then
+    url=$bare
+  fi
 
   must mkdir -p "$dir"
   must "$real_git" init -q --bare "$bare"
@@ -437,12 +502,17 @@ run_case() { # run_case <shape> <case> <variant>
     git)
       git_base "$workspace"
       git_case_commit "$workspace" "$kase"
+      # git pushes to the URL itself. The local-path case's repository has origin at the bare
+      # repository's path as well, so it has a remote and every remote it has is a local path.
+      if [ "$variant" = local-path ]; then
+        must "$real_git" -C "$workspace" remote add origin "$bare"
+      fi
       ;;
-    jj-all | jj-change | jj-named)
-      jj_init "$workspace" "$bare"
+    jj-all | jj-change | jj-named | jj-bookmark)
+      jj_init "$workspace" "$url"
       jj_base "$workspace"
       jj_case_commit "$workspace" "$kase"
-      if [ "$shape" = jj-all ]; then
+      if [ "$shape" = jj-all ] || [ "$shape" = jj-bookmark ]; then
         must jj -R "$workspace" bookmark set "$branch" -r @-
       fi
       ;;
@@ -450,7 +520,7 @@ run_case() { # run_case <shape> <case> <variant>
       # The bare shape pushes tracking bookmarks alone, so the remote holds this one already,
       # the case's commit is made on top of it, and the push moves the bookmark on to it.
       seed_remote_bookmark "$bare" "$branch" "$seed"
-      jj_init "$workspace" "$bare"
+      jj_init "$workspace" "$url"
       must jj -R "$workspace" git fetch --remote origin
       must jj -R "$workspace" bookmark track "$branch@origin"
       jj_case_commit "$workspace" "$kase" "$branch"
@@ -459,7 +529,7 @@ run_case() { # run_case <shape> <case> <variant>
     jj-deleted)
       # A ref change with no commit: the remote holds the bookmark and the push deletes it.
       seed_remote_bookmark "$bare" "$branch" "$seed"
-      jj_init "$workspace" "$bare"
+      jj_init "$workspace" "$url"
       must jj -R "$workspace" git fetch --remote origin
       must jj -R "$workspace" bookmark track "$branch@origin"
       must jj -R "$workspace" bookmark delete "$branch"
@@ -479,40 +549,43 @@ run_case() { # run_case <shape> <case> <variant>
     internal-error) push_env=("PUBLIC_LEAK_CHECK=$internal_error" "$rules_var=$rule_file") ;;
     rules-missing) push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$missing_rule_file") ;;
     rules-unparseable) push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$unparseable_rule_file") ;;
+    # No shared check is named and the Job names no checker, so a guard that reads this push skips
+    # the shared check and the rule file alone decides: no stand-in stands between the push and
+    # its verdict.
+    local-path) push_env=(-u PUBLIC_LEAK_CHECK "$rules_var=$rule_file") ;;
     *) die "no such variant: $variant" ;;
   esac
 
   echo
-  echo "---- $id (branch $branch)"
+  echo "---- $id (branch $branch, remote $url)"
   if [ "$shape" != git ]; then
     printf '%s\n' "$(jj_dry_run "$shape" "$workspace" "$branch")" | sed 's/^/      jj --dry-run | /'
   fi
 
   local before after out status
-  before=$(remote_state "$bare")
-  out=$(push_in_shape "$shape" "$workspace" "$bare" "$branch" 2>&1)
+  before=$(remote_state "$url")
+  out=$(push_in_shape "$shape" "$workspace" "$url" "$branch" 2>&1)
   status=$?
-  after=$(remote_state "$bare")
+  after=$(remote_state "$url")
   show_push "$out" "$status" "$before" "$after"
 
   local status_word remote_word
   if [ "$status" -eq 0 ]; then status_word=zero; else status_word=non-zero; fi
   if [ "$before" = "$after" ]; then remote_word=unchanged; else remote_word=changed; fi
 
-  # What this arm calls for. On either arm, where the private-name rules run, every case but the
-  # clean one is refused; and under either of the shared check's failures the clean one is refused
-  # too, since a check that did not run has cleared nothing. The arms part where the change does:
-  #
-  #   - no rule file named: the head runs no private-name rule, so the refusable push lands, and
-  #     the rules embedded in the control's `legion` refuse it;
-  #   - the Job's rule file named: both refuse, the head naming its rule's class and what that rule
-  #     matched, the control naming its own class alone;
-  #   - a rule file named that cannot be used: the head refuses the push as a setup failure, and
-  #     the control, which reads no such variable, lands the clean push.
+  # What the case calls for. Both arms' guards run the rule file the push names and no rule of
+  # their own, so they agree on every variant but one. Where the private-name rules run, every
+  # case but the clean one is refused, naming the record, the rule's class, what it matched and
+  # the line it stands on; with no rule file named the refusable push lands; and under each of the
+  # four setup failures the clean one is refused too, since a check that did not run, or rules
+  # that could not be read, have cleared nothing. The arms part on local-path alone, which is the
+  # change: the head's hook clears a push that can only write to a local path, so it lands, and
+  # main's guard reads it as it reads any push, so its rules refuse it.
   local want=land
-  case "$arm/$variant" in
-    */clears | control/no-rules) [ "$kase" = clean ] || want=refuse-rules ;;
-    */no-check | */internal-error | head/rules-missing | head/rules-unparseable) want=refuse-setup ;;
+  case "$variant" in
+    clears) [ "$kase" = clean ] || want=refuse-rules ;;
+    no-check | internal-error | rules-missing | rules-unparseable) want=refuse-setup ;;
+    local-path) [ "$arm" = head ] || want=refuse-rules ;;
   esac
 
   case "$want" in
@@ -521,11 +594,7 @@ run_case() { # run_case <shape> <case> <variant>
       check "$id the remote" "$remote_word" unchanged
       check "$id names the refusal" "$(says "$out" 'LEAK CHECK: refusing')" yes
       check "$id names the record and the class" "$(says "$out" "$(fragment_of "$kase")")" yes
-      if [ "$arm" = head ]; then
-        check "$id names what matched and its line" "$(says "$out" "$(match_line_of "$kase")")" yes
-      else
-        check "$id names the class alone" "$(says "$out" 'matched "')" no
-      fi
+      check "$id names what matched and its line" "$(says "$out" "$(match_line_of "$kase")")" yes
       ;;
     refuse-setup)
       check "$id the push" "$status_word" non-zero
@@ -544,18 +613,20 @@ run_case() { # run_case <shape> <case> <variant>
       ;;
   esac
 
-  # With no rule file named the head's guard runs the shared check alone and says nothing of it:
-  # the daemon's boot says once, in its own log, that no rule file is named, and a line on each
-  # command would break a script that reads what the command prints. So the head's push prints no
-  # `LEAK CHECK` line at all. The control refuses this push, so its output holds the refusal.
-  if [ "$variant" = no-rules ] && [ "$arm" = head ]; then
+  # Two kinds of push that land print no `LEAK CHECK` line at all. With no rule file named the
+  # guard runs the shared check alone and says nothing of the rules it did not run: the daemon's
+  # boot says once, in its own log, that no rule file is named, and a line on each command would
+  # break a script that reads what the command prints. And a push the head's hook clears runs no
+  # check, so it prints what git or jj prints and nothing of the guard's.
+  if [ "$variant" = no-rules ] || { [ "$variant" = local-path ] && [ "$arm" = head ]; }; then
     check "$id prints no LEAK CHECK line" "$(says "$out" 'LEAK CHECK')" no
   fi
 }
 
 echo
 echo "======== k1: the five cases, under git push and under each jj shape"
-echo "Each push names the Job's own rule file in $rules_var, and the stand-in shared check clears."
+echo "Each push names the Job's own rule file in $rules_var, the stand-in shared check clears, and"
+echo "the push goes to the git daemon."
 for shape in git jj-bare jj-all jj-change jj-named; do
   for kase in message author line branch clean; do
     run_case "$shape" "$kase" clears
@@ -573,11 +644,11 @@ done
 
 echo
 echo "======== no rule file named: a refusable push, under git push and under each jj shape"
-echo "$rules_var is unset, as in a pod whose daemon hands it no rule file. The head's guard"
-echo "then runs no private-name rule: the push lands, and no command prints a LEAK CHECK line,"
-echo "since the daemon says once at boot that no rule file is named. The control's legion runs the"
-echo "rules embedded in it, which refuse the push. The added-line case is driven under every shape"
-echo "that sends a commit, and the branch-name case under --deleted, which sends none."
+echo "$rules_var is unset, as in a pod whose daemon hands it no rule file. Neither arm's"
+echo "guard then runs a private-name rule: the push lands, and no command prints a LEAK CHECK line,"
+echo "since the daemon says once at boot that no rule file is named. The added-line case is driven"
+echo "under every shape that sends a commit, and the branch-name case under --deleted, which sends"
+echo "none."
 for shape in git jj-bare jj-all jj-change jj-named; do
   run_case "$shape" line no-rules
 done
@@ -588,26 +659,33 @@ echo "======== k7: the four setup failures, at k1's own call sites"
 echo "Two are the shared check's: none resolves, and the one that resolves exits 2 for an internal"
 echo "error. Two are the rule file's: $rules_var names a path at which no file"
 echo "is, or a file that is no TOML. Each is driven under git push and under every jj shape, on the"
-echo "clean case, so the only reason to refuse is the failure itself. The control's legion reads no"
-echo "such variable and runs the rules embedded in it, so under the rule file's two it lands the"
-echo "clean push, and refuses under the shared check's two as the head does."
+echo "clean case, so the only reason to refuse is the failure itself, and both arms refuse each."
 for variant in no-check internal-error rules-missing rules-unparseable; do
   for shape in git jj-bare jj-all jj-change jj-named jj-deleted; do
     run_case "$shape" clean "$variant"
   done
 done
 
+echo
+echo "======== local-path: a refusable push that can only write to a local path"
+echo "The line case, from a repository whose every remote is a local bare repository, to that"
+echo "repository by its path, under git push and under jj git push --bookmark, with $rules_var naming"
+echo "the Job's rule file and no shared check named. On the head's image the hook clears a push that"
+echo "can only write to a local path, so each lands and prints no LEAK CHECK line. Main's image at"
+echo "the base reads it as it reads any push, and its rules refuse it."
+for shape in git jj-bookmark; do
+  run_case "$shape" line local-path
+done
+
 # A push outside the git push shapes above, one case at a time: the message case, built as the
-# jj shapes build it, and pushed by the shape named here.
+# jj shapes build it, and pushed by the shape named here to the git daemon.
 #
 #   jj-gerrit     a `jj gerrit upload` that names its git on the command line,
 #                 `--config git.executable-path=/usr/bin/git`. jj uploads through that git, which
-#                 has no wrapper and so no pre-push hook, so on the head's image the jj wrapper
-#                 refuses the upload before it starts: exit 2, its `LEAK CHECK SETUP ERROR` line
-#                 saying `git.executable-path is /usr/bin/git`, and the remote unchanged. It runs
-#                 on the head's arm alone: the control is the base branch's image from before
-#                 the rule-file change, which holds the jj wrapper's gerrit check or not
-#                 according to when it was built, so a verdict there would prove nothing.
+#                 has no wrapper and so no pre-push hook, so the jj wrapper refuses the upload
+#                 before it starts: exit 2, its `LEAK CHECK SETUP ERROR` line saying
+#                 `git.executable-path is /usr/bin/git`, and the remote unchanged. Main's image at
+#                 the base carries the same refusal, so it runs on both arms.
 #   jj-unwrapped  the negative control: a `jj git push --named` with /opt/legion/bin taken off
 #                 PATH, so jj is the real /usr/local/bin/jj and the git it runs the real
 #                 /usr/bin/git, with no wrapper and no hook. It lands on either arm, which shows
@@ -622,20 +700,21 @@ done
 run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
   local shape=$1
   local id="$shape/message/clears"
-  local dir=$scratch/runs/$shape-message-clears
-  local bare=$dir/origin.git workspace=$dir/work
+  local name=$shape-message-clears
+  local dir=$runs/$name
+  local bare=$dir/origin.git workspace=$dir/work url=$daemon_url/$name/origin.git
   local branch ref before after out status
   branch=$(branch_of message)
 
   must mkdir -p "$dir"
   must "$real_git" init -q --bare "$bare"
-  jj_init "$workspace" "$bare"
+  jj_init "$workspace" "$url"
   jj_base "$workspace"
   jj_case_commit "$workspace" message
 
   echo
-  echo "---- $id (branch $branch)"
-  before=$(remote_state "$bare")
+  echo "---- $id (branch $branch, remote $url)"
+  before=$(remote_state "$url")
   case "$shape" in
     jj-gerrit) ref=refs/for/main ;;
     jj-unwrapped)
@@ -646,12 +725,12 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
       ;;
     *) die "no such shape: $shape" ;;
   esac
-  # The Job's rule file is named, as for k1's cases, so the message case is one the head's guard
+  # The Job's rule file is named, as for k1's cases, so the message case is one either arm's guard
   # would refuse: the push outside the guard then lands only because no guard saw it.
   push_env=("PUBLIC_LEAK_CHECK=$clears" "$rules_var=$rule_file")
-  out=$(push_in_shape "$shape" "$workspace" "$bare" "$branch" 2>&1)
+  out=$(push_in_shape "$shape" "$workspace" "$url" "$branch" 2>&1)
   status=$?
-  after=$(remote_state "$bare")
+  after=$(remote_state "$url")
   show_push "$out" "$status" "$before" "$after"
 
   local remote_word=changed
@@ -670,69 +749,65 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
 
 echo
 echo "======== jj-push-author-from-trailer: the push step, in a repository of its own"
-# On the head's image the jj wrapper hands each `jj git push` to `legion jj --real`, whose push
-# step sets the author of each commit the push sends from that commit's first Legion-Role trailer,
-# where its rules let it: the identity that LEGION_ROLE_IDENTITIES gives that role
-# (packages/daemon/cmd/legion/jj.go). No push above sets that table, so the step runs for none of
-# them. This case sets the table for its one push alone. One identity makes the commit with
-# `jj new`, and the implementer's identity describes it with `jj commit -m`, which leaves the
-# author as it was. On the head's image the step makes the implementer's identity the author
-# before the push. The table names the first identity too, as the tester's, so the step must take
-# the identity of the role the trailer names. It runs on the head's arm alone, as the gerrit
-# upload does: the control is the base branch's image from before the rule-file change, which
-# holds the push step or not according to when it was built, so a verdict there would prove
-# nothing.
-if [ "$arm" = head ]; then
-  author_id=jj-push-author-from-trailer
-  author_dir=$scratch/runs/$author_id
-  author_bare=$author_dir/origin.git
-  author_work=$author_dir/work
-  author_branch=probe-author-from-trailer
-  maker_name='Probe Maker'
-  maker_email="maker@$clean_domain"
-  implementer_name='Probe Implementer'
-  implementer_email="implementer@$clean_domain"
-  role_identities=$(printf '{"implementer":{"name":"%s","email":"%s"},"tester":{"name":"%s","email":"%s"}}' \
-    "$implementer_name" "$implementer_email" "$maker_name" "$maker_email")
-  must mkdir -p "$author_dir"
-  must "$real_git" init -q --bare "$author_bare"
-  jj_init "$author_work" "$author_bare"
-  jj_base "$author_work"
-  must env JJ_USER="$maker_name" JJ_EMAIL="$maker_email" jj -R "$author_work" new
-  printf '%s\n' 'a line the implementer wrote' >> "$author_work/probe.txt"
-  must env JJ_USER="$implementer_name" JJ_EMAIL="$implementer_email" jj -R "$author_work" commit \
-    -m "$(printf 'probe: a commit the implementer described\n\nLegion-Role: implementer')"
-  must jj -R "$author_work" bookmark set "$author_branch" -r @-
+# The jj wrapper hands each `jj git push` to `legion jj --real`, whose push step sets the author of
+# each commit the push sends from that commit's first Legion-Role trailer, where its rules let it:
+# the identity that LEGION_ROLE_IDENTITIES gives that role (packages/daemon/cmd/legion/jj.go). No
+# push above sets that table, so the step runs for none of them. This case sets the table for its
+# one push alone. One identity makes the commit with `jj new`, and the implementer's identity
+# describes it with `jj commit -m`, which leaves the author as it was. The step makes the
+# implementer's identity the author before the push. The table names the first identity too, as
+# the tester's, so the step must take the identity of the role the trailer names.
+#
+# The push goes to a local bare repository on purpose, from a repository whose one remote is that
+# repository, and names no shared check and no rule file. On the head's image the hook clears it,
+# so it prints the step's own lines and what jj prints, and no `LEAK CHECK` line. Main's image at
+# the base reads it and finds nothing to say: no shared check resolves and the Job names no
+# checker, and no rule file is named. So it lands on both arms with the same output, and the case
+# that tells the two apart is local-path.
+author_id=jj-push-author-from-trailer
+author_dir=$runs/$author_id
+author_bare=$author_dir/origin.git
+author_work=$author_dir/work
+author_branch=probe-author-from-trailer
+maker_name='Probe Maker'
+maker_email="maker@$clean_domain"
+implementer_name='Probe Implementer'
+implementer_email="implementer@$clean_domain"
+role_identities=$(printf '{"implementer":{"name":"%s","email":"%s"},"tester":{"name":"%s","email":"%s"}}' \
+  "$implementer_name" "$implementer_email" "$maker_name" "$maker_email")
+must mkdir -p "$author_dir"
+must "$real_git" init -q --bare "$author_bare"
+jj_init "$author_work" "$author_bare"
+jj_base "$author_work"
+must env JJ_USER="$maker_name" JJ_EMAIL="$maker_email" jj -R "$author_work" new
+printf '%s\n' 'a line the implementer wrote' >> "$author_work/probe.txt"
+must env JJ_USER="$implementer_name" JJ_EMAIL="$implementer_email" jj -R "$author_work" commit \
+  -m "$(printf 'probe: a commit the implementer described\n\nLegion-Role: implementer')"
+must jj -R "$author_work" bookmark set "$author_branch" -r @-
 
-  echo
-  echo "---- $author_id (branch $author_branch)"
-  # The author the push starts from, read with the real jj so the wrapper is not in the path of
-  # its own observation. A commit whose author is not the first identity here proves nothing.
-  author_before=$(/usr/local/bin/jj -R "$author_work" --ignore-working-copy log --no-graph -r @- \
-    -T 'author.name() ++ " <" ++ author.email() ++ ">"')
-  check "$author_id the author before the push" "$author_before" "$maker_name <$maker_email>"
-  author_out=$(env "PUBLIC_LEAK_CHECK=$clears" "LEGION_ROLE_IDENTITIES=$role_identities" \
-    jj -R "$author_work" git push --remote origin --bookmark "$author_branch" 2>&1)
-  author_status=$?
-  printf '%s\n' "$author_out" | sed 's/^/      push | /'
-  echo "      push exited $author_status"
-  author_after=$("$real_git" --git-dir "$author_bare" log -1 --format='%an <%ae>' "refs/heads/$author_branch" 2> /dev/null || echo 'no commit')
-  echo "      the remote commit's author: $author_after"
-  if [ "$author_status" -eq 0 ]; then author_status_word=zero; else author_status_word=non-zero; fi
-  check "$author_id the push" "$author_status_word" zero
-  check "$author_id the remote commit's author" "$author_after" "$implementer_name <$implementer_email>"
-  check "$author_id names the rewrite" "$(says "$author_out" 'legion jj: implementer: ')" yes
-else
-  echo "jj-push-author-from-trailer is the head's case alone; see the comment above it"
-fi
+echo
+echo "---- $author_id (branch $author_branch, remote $author_bare)"
+# The author the push starts from, read with the real jj so the wrapper is not in the path of its
+# own observation. A commit whose author is not the first identity here proves nothing.
+author_before=$(/usr/local/bin/jj -R "$author_work" --ignore-working-copy log --no-graph -r @- \
+  -T 'author.name() ++ " <" ++ author.email() ++ ">"')
+check "$author_id the author before the push" "$author_before" "$maker_name <$maker_email>"
+author_out=$(env "LEGION_ROLE_IDENTITIES=$role_identities" \
+  jj -R "$author_work" git push --remote origin --bookmark "$author_branch" 2>&1)
+author_status=$?
+printf '%s\n' "$author_out" | sed 's/^/      push | /'
+echo "      push exited $author_status"
+author_after=$("$real_git" --git-dir "$author_bare" log -1 --format='%an <%ae>' "refs/heads/$author_branch" 2> /dev/null || echo 'no commit')
+echo "      the remote commit's author: $author_after"
+if [ "$author_status" -eq 0 ]; then author_status_word=zero; else author_status_word=non-zero; fi
+check "$author_id the push" "$author_status_word" zero
+check "$author_id the remote commit's author" "$author_after" "$implementer_name <$implementer_email>"
+check "$author_id names the rewrite" "$(says "$author_out" 'legion jj: implementer: ')" yes
+check "$author_id prints no LEAK CHECK line" "$(says "$author_out" 'LEAK CHECK')" no
 
 echo
 echo "======== the gerrit upload, and the negative control: a push the guard never sees"
-if [ "$arm" = head ]; then
-  run_outside_case jj-gerrit
-else
-  echo "the gerrit upload is the head's case alone; see run_outside_case"
-fi
+run_outside_case jj-gerrit
 run_outside_case jj-unwrapped
 
 echo

@@ -669,6 +669,126 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	}
 }
 
+// Every read of the guard that parses a child's output reads its answer from standard output alone,
+// so diagnostic lines the program writes on standard error (such as GH_DEBUG=api or GIT_TRACE=1)
+// cannot change the answer. The five reads below, verifyServed
+// (TestTheServedChecksHelpIsReadFromItsStandardOutputAlone), and Guard.ownExecPath (local.go),
+// which parses `git --exec-path` through Guard.run with its standard error apart and which no row
+// holds, are the reads of this package that parse another program's answer through Guard.run or
+// Guard.git. The reads of what a push's destination holds (Guard.advertised and
+// Guard.negotiated, through Guard.gitFed and Guard.heldRead) keep git's standard error apart the
+// same way, and held_test.go holds them. Guard.lsRemote reads only git's exit status and parses
+// no output.
+//
+// The fixtures under testdata/gh-rest-read/ were captured on 2026-11-27 with gh 2.98.0:
+//
+//   - debug: GH_DEBUG=api NO_COLOR=1 CLICOLOR_FORCE=0 GH_HOST=github.com "$LEGION_GH_PATH" api
+//     --hostname github.com repos/cybermonklabs/legion --include --jq .visibility
+//     >debug.stdout 2>debug.stderr, with the `> Authorization:` line deleted from debug.stderr.
+//   - not-found: NO_COLOR=1 CLICOLOR_FORCE=0 GH_HOST=github.com "$LEGION_GH_PATH" api
+//     --hostname github.com repos/invented-org/invented-repo --include --jq .visibility (exit 1).
+//   - transport: env -u NO_PROXY -u no_proxy HTTPS_PROXY=http://127.0.0.1:9 NO_COLOR=1
+//     CLICOLOR_FORCE=0 GH_HOST=github.com "$LEGION_GH_PATH" api --hostname github.com
+//     repos/cybermonklabs/legion --include --jq .visibility (exit 1; NO_PROXY='*' in the pod would
+//     otherwise skip the proxy).
+//   - unserved-owner: PUBLIC_LEAK_CHECK_VISIBILITY_READ=invented-org/invented-repo NO_COLOR=1
+//     CLICOLOR_FORCE=0 GH_HOST=github.com gh api --hostname github.com
+//     repos/invented-org/invented-repo --include --jq .visibility through the pod's gh (legion gh)
+//     with LEGION_GH_OWNERS_DIR=/var/run/legion/gh (exit 2).
+func TestEveryReadOfTheGuardAnswersFromItsStandardOutputAlone(t *testing.T) {
+	const slug = "invented-org/invented-repo"
+	standIn := func(t *testing.T, name, script string, env ...string) *Guard {
+		t.Helper()
+		dir := t.TempDir()
+		writeProgram(t, dir, name, script)
+		guard := New(Options{Env: append(append(fixtureenv.Isolated(t.TempDir()), env...), pathWith(dir))})
+		guard.curl = filepath.Join(dir, "curl")
+		return guard
+	}
+	diagnostics := printsToStderr(
+		"* Request at 2026-11-27 19:18:13.000000000 +0000 UTC",
+		"* Request to https://api.github.com/graphql",
+		"> POST /graphql HTTP/1.1",
+		"> Host: api.github.com",
+		"> Accept: */*",
+		"* trace: built-in: git rev-parse HEAD",
+		"* trace: run_command: git-credential-helper",
+		"> Content-Type: application/json; charset=utf-8",
+		"> User-Agent: GitHub CLI 2.98.0",
+		"* Request took 12.3ms",
+	)
+	commit := strings.Repeat("a", 40)
+	for _, row := range []struct {
+		name, program, stdout, stderr string
+		env                           []string
+		read                          func(g *Guard) (string, error)
+	}{
+		{
+			name:    "the gh REST read",
+			program: "gh",
+			stdout:  "cat " + shQuote(capturedRead(t, "debug", "stdout")) + "\n",
+			stderr:  "cat " + shQuote(capturedRead(t, "debug", "stderr")) + " >&2\n",
+			read: func(g *Guard) (string, error) {
+				v, err := g.ghVisibility(bound(t), slug)
+				return string(v), err
+			},
+		},
+		{
+			name:    "the GraphQL read",
+			program: "gh",
+			stdout:  printsResponse("HTTP/2.0 200 OK", []string{"content-type: application/json; charset=utf-8"}, answerBody(slug, "PUBLIC")),
+			stderr:  diagnostics,
+			read: func(g *Guard) (string, error) {
+				v, err := g.graphQLVisibility(bound(t), slug)
+				return string(v), err
+			},
+		},
+		{
+			name:    "the curl read",
+			program: "curl",
+			stdout:  printsResponse("HTTP/2 200", []string{"content-type: application/json; charset=utf-8", "x-ratelimit-remaining: 4999"}, `{"full_name":"`+slug+`","visibility":"public"}`),
+			stderr:  diagnostics,
+			env:     []string{"GH_TOKEN=" + theToken},
+			read: func(g *Guard) (string, error) {
+				v, err := g.curlVisibility(bound(t), slug)
+				return string(v), err
+			},
+		},
+		{
+			name:    "the token read",
+			program: "gh",
+			stdout:  "printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s\\n' " + shQuote(theToken) + "\n",
+			stderr:  diagnostics,
+			read: func(g *Guard) (string, error) {
+				return g.ghToken(bound(t), slug)
+			},
+		},
+		{
+			name:    "a git read of a push's records",
+			program: "git",
+			stdout:  "printf '%s\\n' " + shQuote(commit) + "\n",
+			stderr:  diagnostics,
+			read: func(g *Guard) (string, error) {
+				return g.git(bound(t), t.TempDir(), "rev-parse", "HEAD")
+			},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			want, err := row.read(standIn(t, row.program, row.stdout, row.env...))
+			if err != nil {
+				t.Fatalf("without stderr: %v", err)
+			}
+			got, err := row.read(standIn(t, row.program, row.stdout+row.stderr, row.env...))
+			if err != nil {
+				t.Fatalf("with stderr: %v", err)
+			}
+			if got != want {
+				t.Fatalf("with stderr answered %q, want %q (same as without stderr)", got, want)
+			}
+		})
+	}
+}
+
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 // The bound is what was left of the caller's deadline when the child started (Guard.run), so the

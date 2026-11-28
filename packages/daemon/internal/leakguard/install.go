@@ -423,29 +423,36 @@ func unpackServed(body []byte, dir string) (int, error) {
 // token, gh directory and private directory. That is accepted because whoever can move a tag of
 // the check already runs code in every role on every write that role makes (plan D10).
 //
-// What is read is what it printed, never its status. Measured at leak-check-v15: `--help` prints
-// the launcher's own usage header — the line naming the shapes this package calls, `check-public-text`
-// and `gh-guard` — and exits 1; a copy whose python file did not land beside the launcher prints
-// `LEAK CHECK ERROR: … is missing, so the check could not start` and exits 2, as does one whose
-// /usr/bin/python3 will not start. So an install that cannot name its own shapes is a failed
-// install, and a check that answers nothing at all is the same failure: this pod would otherwise
-// run with a PUBLIC_LEAK_CHECK that refuses every write it is asked about.
+// What is read is what it printed on standard output, never its status and never its standard
+// error, where a trace of the launcher or of its python can name both shapes for a check that
+// answered nothing. Measured at leak-check-v15: `--help` prints the launcher's own usage header —
+// the line naming the shapes this package calls, `check-public-text` and `gh-guard` — and exits
+// 1; a copy whose python file did not land beside the launcher prints `LEAK CHECK ERROR: … is
+// missing, so the check could not start` and exits 2, as does one whose /usr/bin/python3 will not
+// start. Measured on 2026-11-27, `--help` of each tag a deployment pins (leak-check-v15,
+// leak-check-v21, leak-check-v33) printed its usage, both shapes in one line, on standard output
+// and nothing on standard error. So an install that cannot name its own shapes on standard output
+// is a failed install, and a check that answers nothing at all is the same failure: this pod
+// would otherwise run with a PUBLIC_LEAK_CHECK that refuses every write it is asked about. A
+// failure quotes what the check said on standard error first, where a check says why it could not
+// start, and then what it said on standard output.
 func verifyServed(ctx context.Context, start procgroup.Starter, check, parent string) error {
 	cmd := exec.CommandContext(ctx, check, "--help")
 	procgroup.Configure(cmd)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + parent, "TMPDIR=" + parent}
 	cmd.Dir = parent
-	var printed strings.Builder
-	cmd.Stdout, cmd.Stderr = &printed, &printed
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := procgroup.Err(procgroup.Run(cmd, start))
+	said := stderr.String() + "\n" + stdout.String()
 	// A context that ended killed the run itself, so its end, not the kill, is the cause.
-	if err := cmp.Or(ctx.Err(), procgroup.Said(runErr, printed.String())); err != nil {
+	if err := cmp.Or(ctx.Err(), procgroup.Said(runErr, said)); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
 	}
-	answer := printed.String()
+	answer := stdout.String()
 	for _, shape := range []string{"check-public-text", "gh-guard"} {
 		if !strings.Contains(answer, shape) {
-			return fmt.Errorf("the served check did not answer: its --help names no %s shape: %s", shape, firstLine(answer))
+			return fmt.Errorf("the served check did not answer: its --help names no %s shape: %s", shape, firstLine(said))
 		}
 	}
 	return nil

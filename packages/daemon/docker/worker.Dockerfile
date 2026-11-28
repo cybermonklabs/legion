@@ -1652,16 +1652,16 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # git in a pod is Legion's wrapper, first on the image PATH. It changes a commit and a push and runs
 # every other command unchanged with the real git at /usr/bin/git. A commit goes to `legion git`,
 # which adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. A push
-# runs with `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken
-# out, so git's own pre-push hook runs the leak guard over the update lines git computed and a
+# runs with `-c core.hooksPath=/opt/legion/githooks` in front and every spelling git reads as
+# `--no-verify` taken out, so git's own pre-push hook gets the update lines git computed and a
 # role can neither edit that hook nor skip it. The `-c` outranks the runtime's
 # core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the wrapper
 # above as jj's git.executable-path on every command line, and again as the line's last layer
-# after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
-# the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
+# after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what makes
+# the pre-push hook below run for it. Before a `jj git push` or `jj gerrit upload`, aliases and the
 # default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
 # and refuses a push whose configuration names another git, rather than pushing unchecked. It
 # hands a `jj git push` to `legion jj --real /usr/local/bin/jj`, whose push step sets the author of
@@ -1671,7 +1671,9 @@ COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
 # it hands git's remote, URL and update lines to `legion leak-check pre-push` and holds no rule of
-# its own (packages/daemon/docker/githooks/pre-push, packages/daemon/internal/leakguard).
+# its own (packages/daemon/docker/githooks/pre-push, packages/daemon/internal/leakguard). That
+# command clears with no check a push that can only write to a path on this machine, and runs the
+# leak guard over every other push.
 COPY --chmod=0755 packages/daemon/docker/githooks/pre-push /opt/legion/githooks/pre-push
 # The pin of the shared public leak check, re-declared here so the runtime stage can read the
 # global ARG above, and exported as a variable of the image: every process the image runs finds

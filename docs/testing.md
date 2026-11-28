@@ -192,14 +192,10 @@ itself, whose tests import its sources by relative path.
   set in a `beforeAll` and cleared in the matching `afterAll`, as `setNatsConnectForTests` and
   `resetNatsConnectForTests` in `packages/pi-envoy/extensions/envoy.ts` are.
 
-- A suite that runs jj or git takes its isolation from `versionControlEnvironment`
-  (`@legion/test-fixtures/version-control-environment`): a home of the suite's own with a jj
-  configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`,
-  `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as. So neither the
-  developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a
-  result. A suite whose code under test starts jj with the process's own environment puts those
-  names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next
-  file finds its own again.
+- A suite that runs jj or git takes its isolation from `versionControlEnvironment` (`@legion/test-fixtures/version-control-environment`): a home of the suite's own with a jj configuration file in it, no git configuration at all (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), no credential prompt, and the identity jj commits as.
+  So neither the developer's `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result.
+  In an issue pod the `git` first on `PATH` is Legion's wrapper, whose pre-push hook clears a push that can only write to a local path, such as a row's push to a bare repository under its own directory, so the fixture carries no shared leak check and a suite whose rows push only to such a path names none.
+  A suite whose code under test starts jj with the process's own environment puts those names on `process.env` itself, and hands `versionControlNames` to `restoreEnvironment` so the next file finds its own again.
 
 - Take a port from the kernel: bind port 0, read back the port the listener reports, and hold that
   listener from the moment it binds, so nothing else on the machine can take the port between the
@@ -1454,7 +1450,9 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Guard unsets every `LEGION_*`, `GIT_*`, `JJ_*`, `GH_*` and `GITHUB_*` variable, `SSH_AUTH_SOCK` and `SSH_ASKPASS`, and the three names that place an Oh My Pi session (`OMP_SESSION_SQL_DSN_FILE`, `OMP_SESSION_STORAGE` and `OMP_SESSION_SQL_DSN`, which carries the same URL by value), keeping the tests' own inputs (`LEGION_TEST_*`, `LEGION_E2E*`, `GITHUB_ACTIONS`, and the names the package passes), and sets `GIT_ALLOW_PROTOCOL=file`, which a repository's own `protocol.<name>.allow` cannot override.
   The session store a pod names holds the conversation of every agent of the deployment, so a test that opened it would read and write what those agents are reading and writing.
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
-  Guard also takes off the process's `PATH` every directory whose `git` is the image's git wrapper (`/opt/legion/bin/git`, or a link to it), which leads a pod's `PATH`: that git puts Legion's leak guard in front of every push, and that jj refuses a push whose git is any other, so a fixture's push to a local bare repository under the test's empty home was refused in a pod and passed on CI, whose `PATH` holds no such directory.
+  Guard also takes off the process's `PATH` every directory whose `git` is the image's git wrapper (`/opt/legion/bin/git`, or a link to it), which leads a pod's `PATH` and is on no `PATH` of CI.
+  That directory's jj refuses a push whose git is any other, and its gh runs `legion gh`, so in a pod a fixture would meet that jj and that gh, and on CI it meets neither.
+  Its git's pre-push hook clears with no check a push that can only write to a local path, and runs Legion's leak guard over every other push.
   It is the process's `PATH` that matters, because `exec.Command` and `exec.LookPath` look a bare name up on it whatever `PATH` the command's `Env` holds.
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.

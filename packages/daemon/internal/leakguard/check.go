@@ -353,7 +353,9 @@ func found(path, source string) (string, error) {
 // its bound ran out instead of answering. GIT_TERMINAL_PROMPT=0 refuses git's own prompt, and the
 // two askpass programs point at one that exits without an answer, which both git and ssh read as
 // "no credential". SSH_ASKPASS_REQUIRE=force is what makes ssh use its askpass where it has a
-// terminal of its own.
+// terminal of its own. The reads of what a push's destination holds keep the rest of the push's
+// environment, and these names are what keeps them from prompting for a credential
+// (Guard.heldRead).
 func promptsNothing(noAnswer string) []string {
 	return []string{
 		"GIT_TERMINAL_PROMPT=0",
@@ -405,19 +407,26 @@ type child struct {
 	// which Guard.env splits once. It is made from the whole base because what one entry may keep
 	// can depend on another, as ALL_PROXY does on what HTTPS_PROXY names (TokenChildKeeps). The
 	// guard's own names and env go on top either way. Nil keeps the whole base, which is what
-	// every child keeps but the visibility read made with no credential (Guard.lsRemote) and the
-	// read through curl (Guard.CurlGet).
+	// every child keeps but the visibility read made with no credential (Guard.lsRemote), which
+	// keeps what lsRemoteInherits allows, the read through curl (Guard.CurlGet), and the read of
+	// git's own exec path (Guard.ownExecPath), which keeps all of the base but GIT_EXEC_PATH
+	// (withoutExecPath). The gits of the two reads of what a push's destination holds keep the
+	// whole base, and must, since they connect as the push connects and read the clone under the
+	// hook's GIT_DIR (Guard.heldRead, Guard.gitFed).
 	inherit func(base []string) func(name, value string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
 	files []*os.File
 	// stderr, where it is not nil, takes the child's standard error apart from the standard
-	// output run answers, which the GraphQL visibility read needs to read gh's body alone
-	// (Guard.graphQLVisibility), the read through curl to read curl's answer alone
-	// (Guard.CurlGet), the token read to quote gh's error without its output
-	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
-	// content (Guard.git). Nil answers the two together.
+	// output run answers, so that what a read parses is the child's answer alone and a program's
+	// own diagnostics (GH_DEBUG, GIT_TRACE) cannot change it: the REST and GraphQL visibility
+	// reads read gh's answer alone (Guard.ghVisibility, Guard.graphQLVisibility), the read through
+	// curl curl's answer alone (Guard.CurlGet), the token read quotes gh's error without its output
+	// (Guard.ghToken), a git read of a push's records quotes git's error without the push's content
+	// (Guard.git), the read of git's own exec path reads git's answer alone (Guard.ownExecPath),
+	// and the two reads of what a push's destination holds read git's list of its refs and of the
+	// commits it holds alone (Guard.advertised, Guard.negotiated). Nil answers the two together.
 	stderr io.Writer
 }
 

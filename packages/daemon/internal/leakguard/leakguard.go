@@ -103,9 +103,12 @@ type Options struct {
 	OnVisibility func(VisibilitySource)
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, and the git commands a push's records are read with. Nil means this process's own
-	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)
-	// and the read through curl (Guard.CurlGet), which keep only the entries lsRemoteInherits and
-	// TokenChildKeeps allow. The guard adds to it the names that make a credential prompt fail closed
+	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
+	// which keeps only the entries lsRemoteInherits allows, the read through curl (Guard.CurlGet),
+	// which keeps only those TokenChildKeeps allows, and the read of git's own exec path
+	// (Guard.ownExecPath), which keeps all of it but GIT_EXEC_PATH (withoutExecPath). The two reads
+	// of what a push's destination holds keep all of it, so that they connect as the push connects
+	// (Guard.heldRead). The guard adds to it the names that make a credential prompt fail closed
 	// (promptsNothing) and RunByRealGhVar blanked, and each child's own names on top of those. It
 	// is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
@@ -358,10 +361,17 @@ func (g *Guard) scanThrough(ctx context.Context, what, slug string) (bool, error
 
 // value is the value of key in env, as exec reads it: the last entry of that name wins.
 func value(env []string, key string) string {
+	v, _ := lookup(env, key)
+	return v
+}
+
+// lookup is value and whether env sets key at all: an entry with an empty value sets it, which
+// value cannot tell from none.
+func lookup(env []string, key string) (string, bool) {
 	for _, entry := range slices.Backward(env) {
 		if name, v, ok := strings.Cut(entry, "="); ok && name == key {
-			return v
+			return v, true
 		}
 	}
-	return ""
+	return "", false
 }

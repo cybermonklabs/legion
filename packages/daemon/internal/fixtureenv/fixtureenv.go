@@ -3,11 +3,11 @@
 // configuration, its GitHub credential and the deployment's own session store, and whose PATH
 // leads with Legion's own git and jj wrappers; a test that inherited them could read or push the
 // pod's own work, read and write the conversation of every agent of the deployment, or have its
-// own push refused by the pod's leak guard. Guard takes them out of a test process's own
-// environment, so every command it starts and everything it runs in-process inherits none, and
-// puts the git and jj a machine's own wrappers of them run first on the process's PATH, so a
-// command under a home of the test's meets no wrapper that needs another; Isolated hands one
-// command none of the variables and a home of the test's.
+// own jj push refused by the pod's jj wrapper, which refuses a push whose git is any other. Guard
+// takes them out of a test process's own environment, so every command it starts and everything
+// it runs in-process inherits none, and puts the git and jj a machine's own wrappers of them run
+// first on the process's PATH, so a command under a home of the test's meets no wrapper that
+// needs another; Isolated hands one command none of the variables and a home of the test's.
 package fixtureenv
 
 import (
@@ -67,12 +67,13 @@ var imageGit = workerbin.ImageGit
 
 // withoutImageWrappers is path without each entry whose git is the image's git wrapper
 // (imageGit), by the rule workerbin reads that wrapper by: the same file (os.SameFile), so an entry
-// holding a link to it goes too. A pod's PATH leads with one such entry, /opt/legion/bin, whose
-// git puts Legion's leak guard in front of every push, whose jj refuses a push whose git is any
-// other, and whose gh runs `legion gh`. A test's own push to a local bare repository runs there
-// under the test's empty home, where the guard finds no shared check, and is refused in a pod and
-// not on CI, whose PATH holds no such entry. Every other entry stays, as written and in order, a
-// test's own copy of a wrapper included, since a copy is not the same file.
+// holding a link to it goes too. A pod's PATH leads with one such entry, /opt/legion/bin. Its
+// git's pre-push hook clears with no check a push that can only write to a path on this machine
+// and runs Legion's leak guard over every other push, its jj refuses a push whose git is any
+// other, and its gh runs `legion gh`, so a test in a pod would meet that jj and that gh, and a
+// test on CI, whose PATH holds no such entry, would meet neither. Every other entry stays, as
+// written and in order, a test's own copy of a wrapper included, since a copy is not the same
+// file.
 func withoutImageWrappers(path string) string {
 	image, err := os.Stat(imageGit)
 	if err != nil {

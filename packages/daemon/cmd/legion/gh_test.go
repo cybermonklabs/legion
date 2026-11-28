@@ -491,10 +491,11 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	}
 
 	// The shared check's own read of slug, made by a stand-in check of the hook of a push the real
-	// gh makes. The push names a local path, so the hook's guard reads no visibility of its own and
-	// the check's read is where every start comes from. The `legion gh` that answers the read finds
-	// no visibility, since the real gh its read reaches leads back, and answers exit 1, which the
-	// check records with what that `legion gh` said.
+	// gh makes. The push names the host URL, since the hook clears a push to a local path and the
+	// stand-in would never run (hostURL), and the host URL names no GitHub repository, so the hook's
+	// guard reads no visibility of its own and the check's read is where every start comes from.
+	// The `legion gh` that answers the read finds no visibility, since the real gh its read reaches
+	// leads back, and answers exit 1, which the check records with what that `legion gh` said.
 	for _, token := range []bool{false, true} {
 		name := "a shim that runs the wrapper: the shared check's own read in the hook of a push the real gh makes"
 		if token {
@@ -514,7 +515,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 			if token {
 				env["GH_TOKEN"] = "ghs_caller"
 			}
-			code, printed := legionLeakCheckPrePush(t, pushDir, env, pushLine, pushDir+".git")
+			code, printed := legionLeakCheckPrePush(t, pushDir, env, pushLine, hostURL)
 			if code != leakguard.StatusClean || printed != "" {
 				t.Errorf("legion leak-check pre-push = exit %d, stderr %q; want exit 0 and nothing printed", code, printed)
 			}

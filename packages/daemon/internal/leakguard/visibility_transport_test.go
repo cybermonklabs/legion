@@ -747,10 +747,11 @@ func TestTransportFailureWithNoTimeLeftForCurlRefuses(t *testing.T) {
 	}
 }
 
-// ghTransportFailure names the failure in gh's own line, with the repository as it was written.
+// ghTransportFailure names the failure in gh's own line on standard error, with the repository as
+// it was written.
 func TestTransportFailureSaysGhsLine(t *testing.T) {
 	line := `Get "https://api.github.com/repos/` + theRepo + `": net/http: TLS handshake timeout`
-	unreached := ghTransportFailure(1, line+"\n", theRepo)
+	unreached := ghTransportFailure(1, "", line+"\n", theRepo)
 	if unreached == nil {
 		t.Fatal("gh's TLS handshake timeout is no transport failure")
 	}

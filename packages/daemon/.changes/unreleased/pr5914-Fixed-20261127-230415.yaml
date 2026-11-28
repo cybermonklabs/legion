@@ -1,0 +1,58 @@
+kind: Fixed
+body: |-
+    A pod's pre-push hook now clears with no check a push that can only write to a local path, such
+    as a test's push to a bare repository on the pod's disk, which the leak guard refused in a pod
+    while CI, which has no such hook, passed it. Such a push has a local path (`/`, `./`, `../` or
+    `file:///`, with no `::`) as its URL and as every URL of every remote of the repository, no
+    receive-pack program of its own, git's own `GIT_EXEC_PATH`, and only inputs the leak guard
+    knows: every `GIT_` name of the hook's environment is in a list the guard holds, and every key
+    of the repository's configuration under `remote.` is a `remote.<name>.<variable>` key with a
+    name that is not empty and a variable in a second list. The two lists leave out
+    `remote.<name>.vcs`, `remote.<name>.receivepack`, `GIT_CONFIG` and every name or key the guard
+    has not been shown to need, and a key with no name, such as `remote.pushDefault`, or with an
+    empty one, such as `remote..receivepack`, which git applies to the remote named `.receivepack`,
+    keeps the push guarded too. The guard reads that configuration as the push reads it, with no
+    `GIT_CONFIG`, which only `git config` reads. The leak guard still checks every other push.
+
+    The pod's git wrapper now takes `--no-veri` and `--no-verif` out of a push, as it takes
+    `--no-verify`: git reads all three as `--no-verify`, so the two shorter spellings skipped the
+    hook. The wrapper also exports `LEGION_PUSH_NAMES_RECEIVE_PACK=1` for a push that names its own
+    receive-pack program with a prefix of `--receive-pack` or `--exec`, and the hook clears no push
+    that carries it.
+
+    The leak guard now reads the answer of its `gh` visibility read from `gh`'s standard output
+    alone, and a failure `gh` reports from its standard error, so the lines `gh` writes on standard
+    error, such as its `GH_DEBUG=api` output, no longer turn a push's check into a setup failure.
+    Its `gh` reads also run with `GH_DEBUG` cleared.
+
+    The first push of a new branch is now judged on the commits its destination does not hold, as
+    the destination itself says: `git ls-remote` of the push's URL and a fetch negotiation with it,
+    which fetches nothing. Before, a stale or missing remote-tracking ref made the guard read, and
+    refuse the push over, commits the destination already held. Both reads run in the push's own
+    repository, with its configuration and its environment, so they connect the way the push
+    does, and they use no credential helper and no prompt; what the push's transport sends without
+    either, such as a `.netrc` credential, an `http.extraHeader` or a user and password in the
+    URL, goes with them to the push's own server alone. The negotiation runs with git's
+    `consecutive` algorithm and no bundle URI, whatever `fetch.negotiationAlgorithm`,
+    `feature.experimental` or `fetch.bundleURI` the configuration sets, so it names the newest of
+    the branch's commits that the destination holds and downloads nothing. The guard makes neither
+    read where the reads might not reach the repository the push writes to, and such a push keeps
+    the remote-tracking refs as its bound. It makes them only for a URL whose transport git serves
+    itself, `https://`, `http://`, `git://`, `file://` or a local path, and so none for a push over
+    ssh (`ssh://`, `git+ssh://`, `ssh+git://` or the scp-like `host:path`), which goes through an
+    `ssh` program, the one `core.sshCommand`, `GIT_SSH_COMMAND` or `GIT_SSH` names or else the
+    first `ssh` on `PATH`, and none for any other `<scheme>://`, which git serves through a
+    `git-remote-<scheme>` found on `PATH`: such a program sees whether it serves a read or the
+    push, and can send the two to different repositories. Within those URLs, it makes none for a
+    push that names its own receive-pack program, its own transport (`remote.<name>.vcs`, a URL
+    with `::`) or an exec path that is not git's own; a push with a `GIT_` name or a `remote.` key
+    that the guard does not know; a push that names a program or a proxy between git and the
+    server (`core.gitProxy`, `GIT_PROXY_COMMAND`, `http.proxy`, `http.<url>.proxy`,
+    `remote.<name>.proxy`, `remote.<name>.proxyAuthMethod`, or the proxy variables `http_proxy`,
+    `https_proxy`, `HTTPS_PROXY`, `all_proxy` and `ALL_PROXY`); a push whose URL a
+    `url.<base>.insteadOf` of its configuration would rewrite; and a push whose URL is also the
+    name of one of the repository's remotes, in its configuration or in a legacy `remotes` or
+    `branches` file, since `git ls-remote` and `git fetch` read such a URL as that remote.
+time: 2026-11-27T23:04:15.885120039Z
+custom:
+    Issue: pr5914

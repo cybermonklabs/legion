@@ -65,6 +65,8 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   Cure an unpushed commit that lacks a line by describing it again in the pane's shell;
   where that adds no issue line and `LEGION_ISSUE_TRAILER` is set, add the line `Dispatch: $LEGION_ISSUE_TRAILER` yourself.
 
+- A role or a subagent never goes around the pod's `git` or `jj` wrapper, by a symlink, a `PATH` change or a direct `/usr/bin/git`: a push the hook refuses is a finding for its architect.
+
 - A repository you clone under `$LEGION_WORKSPACE` is stamped with this issue's key: clone one you will push elsewhere outside it.
 
 - A planner whose issue moved back from implementing starts on the remote tip: `jj -R "$LEGION_WORKSPACE" new legion/<KEY>@origin`.
