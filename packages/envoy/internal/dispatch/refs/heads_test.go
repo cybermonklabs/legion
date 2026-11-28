@@ -67,6 +67,7 @@ func TestEveryHeadCutOfDispatchTextIsListed(t *testing.T) {
 		"api/results_ci.go ciObserved":            "a CI run's output, a check result's observed text drawn as the characters it is",
 		"api/results_ci.go ciUnreadDetail":        "the server's own words on a CI read it could not make, quoting GitHub's error",
 		"api/status_change.go claimedSessionName": "a session id a request's body named, which the comment Dispatch signs quotes as an inline code span, so every reader draws it as its characters and reads no reference in it",
+		"docs/edits.go boundedReadBack":           "a document edit's read-back, the edits route's written field: the markdown the writer just wrote, which the dispatch command prints back to that writer as its characters and no page draws",
 		"embed/embed.go boundBatch":               "the input of an embedding, which no person reads",
 		"itemblocks/windows.go windowText":        "the text of an embedding window, which no person reads",
 		"outbox/publisher.go payloadSummary":      "an envelope's one-line summary, which an agent's notification carries",

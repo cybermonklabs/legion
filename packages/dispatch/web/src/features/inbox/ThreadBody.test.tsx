@@ -106,6 +106,8 @@ function commentRow(overrides: Partial<MyReplyThreadRow> = {}): MyReplyThreadRow
     unread: true,
     unread_count: 1,
     version: 1,
+    priority_from: null,
+    resolved_priority: null,
     ...overrides,
   };
 }

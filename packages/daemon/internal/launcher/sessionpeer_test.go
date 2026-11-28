@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -115,7 +116,7 @@ func newPeerRig(t *testing.T) *peerRig {
 	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(file, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(file, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "omp")
@@ -422,7 +423,7 @@ func roleExecutable(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	copied := filepath.Join(dir, "launcher.test")
-	if err := os.WriteFile(copied, body, 0o755); err != nil {
+	if err := testexec.WriteFile(copied, body, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	previous := launcherExecutable

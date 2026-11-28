@@ -1,0 +1,29 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 46040978654,
+    "name": "Release Envoy Listener",
+    "path": ".github/workflows/release-envoy-listener.yaml",
+    "event": "push",
+    "head_branch": "main",
+    "head_sha": "b45ed05c4f8599f408bb67f225778922c4c64e33",
+    "status": "completed",
+    "conclusion": "cancelled",
+    "run_attempt": 1,
+    "run_started_at": "2026-11-27T17:19:57Z",
+    "updated_at": "2026-11-27T17:28:57Z",
+    "html_url": "https://github.com/example-org/example-repo/actions/runs/46040978654",
+    "pull_requests": [],
+    "head_repository": {
+      "full_name": "example-org/example-repo"
+    }
+  },
+  "repository": {
+    "name": "example-repo",
+    "full_name": "example-org/example-repo",
+    "default_branch": "main",
+    "owner": {
+      "login": "example-org"
+    }
+  }
+}
