@@ -111,49 +111,69 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
 
-// heldSettleDelay is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of the row below, longer than
-// the row runs: the edit's own settlement timer never fires, so the settlement the document
-// service runs at shutdown is the only one that can commit the document, and no step of the row
-// races that timer. At the service's own two seconds, the edit's timer can fire before the test
-// takes the issue's lock and settle the document before the signal, leaving nothing owed at
-// shutdown.
-const heldSettleDelay = time.Minute
+// inFlightSettleDelay is the settle delay (DISPATCH_TEST_SETTLE_DELAY) of the row below. It is
+// longer than the row's steps from the edit to taking the issue's lock, so the edit's own timer
+// fires behind that lock, and the row waits for the timer's settlement to queue there before it
+// signals: Shutdown then finds that settlement in flight rather than an armed timer it can stop.
+// At the service's own two seconds the timer could fire before the row took the lock and settle
+// the document before the signal, leaving nothing owed at shutdown.
+const inFlightSettleDelay = 4 * time.Second
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
-// queued behind another writer's lock on the issue. The document service starts once that share
-// ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
-// on the same lock: Shutdown's settlement queues behind the title change, and the lock is released
-// once it is there, or two seconds after the document service started, which is ample for it to
-// read what is owed. The drain is quickHTTPDrain and the settle delay heldSettleDelay.
+// queued behind another writer's lock on the issue for the 3 s drain (quickHTTPDrain). The edit's
+// own settlement timer fires four seconds in (inFlightSettleDelay), and its settlement waits behind
+// the same lock before the signal. The document service starts once the drain's share ends and
+// finds that timer already fired, so it has no timer to stop: it runs its own settlement of the
+// document beside the timer's, joins the timer's, and reports the document settled. The lock is
+// released once Shutdown's settlement is queued behind it too, or two seconds after the document
+// service started, which is ample for it to read what is owed; a release before that read could
+// let the timer's settlement commit first.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the test must take the issue's lock before the edit's timer fires, four seconds
+	// after the edit, and load could stretch the steps between past that.
 	database := storetest.Open(t)
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		SettleDelay: heldSettleDelay,
+		SettleDelay: inFlightSettleDelay,
 		Env:         map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
 	})
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	process.editOwingSettlement(t, database, artifactID)
+	edited := time.Now()
 
 	holder := lockIssue(t, database, key)
 	go func() {
 		// Its answer is not this test's.
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
-	// A count of waiters could pass with the title change still on its way: watch the title
-	// change's own backend.
+	// The edit's settlement queues behind the same lock four seconds in, so a count of waiters
+	// could pass with the title change still on its way: watch the title change's own backend.
 	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
+	// The title change is one waiter and the settlement the edit's timer starts is the second. The
+	// wait ends ten seconds past the moment the timer is due rather than at the test binary's
+	// deadline, so a timer that does not fire then fails the row here instead of being waited out.
+	queued := 0
+	if !testwait.Holds(time.Until(edited.Add(inFlightSettleDelay+10*time.Second)), 10*time.Millisecond, func() bool {
+		count, err := storetest.LockWaiters(context.Background(), holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued = count
+		return count >= 2
+	}) {
+		t.Fatalf("the edit's settlement timer never queued its settlement behind the issue lock (%d waiting on it %v after the edit):\n%s",
+			queued, time.Since(edited), process.Output.String())
+	}
+	t.Logf("the edit's settlement queued behind the issue lock %v after the edit, with %d waiting on it", time.Since(edited), queued)
 
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
 	// A reading, not a wait for a fact: the lock is released once Shutdown's settlement queues
-	// behind the title change (two waiters) or two seconds after the document service started, as
-	// the comment above says, and the count is only logged; the settled document below is the
-	// verdict.
+	// behind it too (three waiters) or two seconds after the document service started, as the
+	// comment above says, and the count is only logged; the settled document below is the verdict.
 	waiting := 0
 	testwait.Holds(2*time.Second, 10*time.Millisecond, func() bool {
 		count, err := storetest.LockWaiters(context.Background(), holder)
@@ -161,7 +181,7 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 			t.Fatal(err)
 		}
 		waiting = count
-		return count >= 2
+		return count >= 3
 	})
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
