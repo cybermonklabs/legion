@@ -3,11 +3,12 @@ package policy_test
 // This file is the merge-base half of c-private-secrets' R9 check: a grid of secrets and
 // requesters, and each cell's Set.Evaluate answer as legion main 545b2116 gave it, before the
 // dispatch-project tag existed. testdata/evaluate-merge-base.json was written once, at the merge
-// base. This file reads the memory store, which the merge base does not hold, so the golden is
-// written again from main's copy of it (b0fe15172cee's), which reads the merge base's own fake
-// store, put in the package's directory there, internal/broker/policy, with the two names #4144
-// renamed from kind to type spelled as the merge base spells them (same values), from the root of
-// a checkout:
+// base. This file reads the memory store and arnSourced, neither of which the merge base holds, so
+// it does not compile there and writes no golden. The golden is written again from its copy at
+// b0fe15172cee, which reads the merge base's own fake store and has the writer, put in the
+// package's directory there, internal/broker/policy, with the two names renamed from kind to type
+// after the merge base spelled as the merge base spells them (same values), from the root of a
+// checkout:
 //
 //	git worktree add <tmp>/d-golden 545b2116
 //	git show b0fe15172cee:packages/envoy/internal/cipher/policy/basegrid_test.go | sed -e 's#envoy/internal/cipher/#envoy/internal/broker/#' -e 's/policy\.TypeGitHubApp/policy.KindGitHubApp/g; s/policytest\.TypeSecret/policytest.KindSecret/g' > <tmp>/d-golden/packages/envoy/internal/broker/policy/basegrid_test.go
@@ -15,25 +16,22 @@ package policy_test
 //	cp <tmp>/d-golden/packages/envoy/internal/broker/policy/testdata/evaluate-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //	git worktree remove <tmp>/d-golden
 //
-// The cells and their names are unchanged by the rename. Never regenerate
-// the golden at a later commit: a golden written by the code it checks compares that code with
-// itself and proves nothing. A change that means to move an answer of this grid is a change to
-// R9, which the golden exists to catch.
+// A change to the grid is made in a copy that compiles at 545b2116, and the golden written again
+// from it there. The cells and their names are unchanged by the rename. Never regenerate the golden
+// at a later commit: a golden written by the code it checks compares that code with itself and
+// proves nothing. A change that means to move an answer of this grid is a change to R9, which the
+// golden exists to catch.
 
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
-
-var writeGolden = flag.Bool("write-golden", false, "write testdata/evaluate-merge-base.json; run only at the merge base, as basegrid_test.go's head comment says")
 
 const (
 	// mergeBaseGolden is the grid's answers as the merge base gave them.
@@ -162,28 +160,13 @@ func compareWithMergeBase(t *testing.T, answers map[string]gridAnswer) {
 
 // TestAPrivateProjectSecretBaseGridIsRecorded is the grid with no project tag anywhere: every cell
 // must answer as the merge base answered it, so a deployment with no project private reads each
-// secret as it does today (R9). With -write-golden it writes the golden instead, which the head
-// comment allows at the merge base alone.
+// secret as it does today (R9). The golden is written at the merge base alone, as the head
+// comment says, by the copy of this file its recipe names.
 func TestAPrivateProjectSecretBaseGridIsRecorded(t *testing.T) {
 	store, names := gridSecrets(nil)
 	set, err := policytest.Loader(arnSourced{store}, gridService).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	answers := gridAnswers(set, names, nil)
-	if *writeGolden {
-		raw, err := json.MarshalIndent(answers, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.MkdirAll(filepath.Dir(mergeBaseGolden), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(mergeBaseGolden, append(raw, '\n'), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("wrote %d cells to %s", len(answers), mergeBaseGolden)
-		return
-	}
-	compareWithMergeBase(t, answers)
+	compareWithMergeBase(t, gridAnswers(set, names, nil))
 }

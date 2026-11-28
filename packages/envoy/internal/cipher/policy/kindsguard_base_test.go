@@ -6,12 +6,13 @@ package policy_test
 // broker before the kinds answers for each. That broker is the merge base of the kinds, commit
 // 233828e4aeb: it reads neither proxy tag, so it serves the bare twin, a secret meant for Cipher's
 // proxy alone, as its value. testdata/kinds-guard-merge-base.json was written once, at the merge
-// base. This file reads the memory store, which the merge base does not hold, so the golden is
-// written again from main's copy of it (b0fe15172cee's), which reads the merge base's own fake
-// store, from the root of a checkout:
+// base. This file reads the memory store, which the merge base does not hold: its store is the fake
+// AWS one, secrets.Local holding secrets.LocalSecret, built by secrets.NewLocal, which its
+// policytest.Secret answers and its policytest.Loader takes. So the recipe puts this file there
+// with the memory store's import and names spelled as that store's, from the root of a checkout:
 //
 //	git archive 233828e4aeb packages/envoy | tar -x -C <tmp>
-//	git show b0fe15172cee:packages/envoy/internal/cipher/policy/kindsguard_base_test.go > <tmp>/packages/envoy/internal/cipher/policy/kindsguard_base_test.go
+//	sed -e 's#envoy/internal/cipher/secretstore/memory#envoy/internal/cipher/secrets#' -e 's/memory\.Secret/secrets.LocalSecret/g; s/memory\.New/secrets.NewLocal/g; s/\*memory\.Store/*secrets.Local/g' packages/envoy/internal/cipher/policy/kindsguard_base_test.go > <tmp>/packages/envoy/internal/cipher/policy/kindsguard_base_test.go
 //	go test -C <tmp>/packages/envoy ./internal/cipher/policy -run TestTheKindsGuardBaseAnswersAreRecorded -count=1 -v -args -write-kinds-guard-golden
 //	cp <tmp>/packages/envoy/internal/cipher/policy/testdata/kinds-guard-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //
