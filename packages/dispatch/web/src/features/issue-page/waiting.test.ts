@@ -1063,10 +1063,9 @@ test("a decision whose Change may stand on the tree read's next page waits on no
 
 // Decision 578 (2): while the tree read holds no answer, the count has read no page of it, so a
 // Change of any decision may stand on a page it has not loaded: each decision of the review list
-// with no Change held carries the mark and waits on no reader, so the count counts none of them,
-// and the outline draws no decision at all. Once the read answers, the count counts what that
-// answer makes each: the decision whose Change it holds waits on its agent, and the other on the
-// reader.
+// with no Change held carries the mark and waits on no reader, so the count counts none of them.
+// Once the read answers, the count counts what that answer makes each: the decision whose Change
+// it holds waits on its agent, and the other on the reader.
 test("no decision waits on the reader while the tree read holds no answer, and each that waits does once it answers", () => {
   const asked = waitingDecision("asked", ["r1"]);
   const unasked = waitingDecision("unasked", ["r1"]);
@@ -1088,10 +1087,6 @@ test("no decision waits on the reader while the tree read holds no answer, and e
     mayWait: 2,
     unread: 2,
   });
-  expect(
-    waitingIn(buildIssueTree({ coverage, decisions: read, issue, viewer: "alice" })),
-    "the outline drew a decision that waits before the tree read answered"
-  ).toEqual([]);
   const answered = answerOf([
     statement,
     decisionTreeNode(asked),

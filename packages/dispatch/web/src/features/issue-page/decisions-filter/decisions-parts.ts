@@ -10,7 +10,7 @@ import { isDecisionEntry, personDecisionAsk } from "../../issue/decision-entries
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
-import { type ChangeComment, inReviewList } from "../decision-review";
+import { type ChangeComment, inReviewList, waitsOnReader } from "../decision-review";
 import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
 import { type DecisionState, isReader } from "../page-words";
 import { deciderOf } from "../tree-drafts";
@@ -102,11 +102,6 @@ export type DecisionsPart = (typeof DECISIONS_PART_ORDER)[number];
 export interface ShapedStatement {
   /** The statement's node id. */
   readonly id: string;
-  /** The statement, whose one line a row projects from its words, as R1 cuts a row's
-   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. Absent while the tree
-   *  holds no node for it - it stands on a page of the outline read not read yet - where the
-   *  coverage read says it is a statement (decision 579). */
-  readonly node?: TreeNode;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
   /** Its address, by which the page names it (`DecisionsFilterBody.tsx`'s `statementNames`). */
@@ -186,6 +181,13 @@ export interface DecisionEntry extends EntryBase {
   readonly standing?: DecisionState;
 }
 
+/** One decision of the review list. */
+export interface ReviewEntry extends DecisionEntry {
+  /** Whether it waits on the reader (`waitsOnReader`): not while the outline marks it as one
+   *  whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`). */
+  readonly waits: boolean;
+}
+
 /** A node the address names that is neither an ask nor a decision, drawn as a row of its own
  *  kind by its words. */
 export interface NamedEntry extends EntryBase {
@@ -202,7 +204,7 @@ export interface DecisionsParts {
   readonly named: readonly NamedEntry[];
   readonly open_questions: readonly AskEntry[];
   readonly others: readonly DecisionsEntry[];
-  readonly review: readonly DecisionEntry[];
+  readonly review: readonly ReviewEntry[];
   readonly yours: readonly DecisionsEntry[];
 }
 
@@ -241,14 +243,25 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
 }
 
 /**
- * The decisions of the review list that wait on the reader: each but those the outline marks as
- * one whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`), which
- * stand in the list drawn with that mark and wait on no reader until that page is read
- * (decision 563 (4)), as the header's count leaves them out (`waiting.ts`). What the list's
- * heading counts, and what the header's count walks (`waitingOrder`).
+ * The decisions of the review list that a press of the header's count goes to where nothing waits
+ * (`waitingOrder` empty), in the list's order: each the outline marks as one whose Change may
+ * stand on a comment page not read yet (`TreeNode.changeUnread`), which may wait on the reader
+ * once that page is read, and which the "+" of the count counts (`waiting.ts`' `mayWait`).
  */
-export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly DecisionEntry[] {
-  return parts.review.filter((entry) => entry.node.changeUnread !== true);
+export function mayWaitOrder(parts: Pick<DecisionsParts, "review">): readonly string[] {
+  return parts.review.filter((entry) => !entry.waits).map((entry) => entry.node.id);
+}
+
+/**
+ * The decisions of the review list that wait on the reader (`waitsOnReader`): each but those the
+ * outline marks as one whose Change may stand on a comment page not read yet
+ * (`TreeNode.changeUnread`), which stand in the list drawn with that mark and wait on no reader
+ * until that page is read (decision 563 (4)), as the header's count leaves them out
+ * (`waiting.ts`). What the list's heading counts, and what the header's count walks
+ * (`waitingOrder`).
+ */
+export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly ReviewEntry[] {
+  return parts.review.filter((entry) => entry.waits);
 }
 
 /**
@@ -309,12 +322,17 @@ export function decisionsParts({
   // or, where the tree holds no node for it - it stands on a page of the outline read not read
   // yet - a statement of the coverage read, as the header's count reads it (`waiting.ts`), so the
   // decision stands where it will once that page lands (decision 579).
-  const isStatement = (reference: string): boolean => {
-    const held = placed.get(nodeIdOf(reference) ?? "")?.node;
-    return held === undefined ? isCoverageStatement(reference) : held.type === "requirement";
+  const statementAt = (reference: string): TiedStatement | undefined => {
+    const resolved = nodeIdOf(reference);
+    const node = placed.get(resolved ?? "")?.node;
+    if (node === undefined ? !isCoverageStatement(reference) : node.type !== "requirement") {
+      return undefined;
+    }
+    return { id: resolved ?? reference, node };
   };
+  const isStatement = (reference: string): boolean => statementAt(reference) !== undefined;
   const open: AskEntry[] = [];
-  const review: DecisionEntry[] = [];
+  const review: ReviewEntry[] = [];
   const yours: DecisionsEntry[] = [];
   const others: DecisionsEntry[] = [];
   const agents: DecisionEntry[] = [];
@@ -335,7 +353,7 @@ export function decisionsParts({
       // A person's decision is the answered ask itself (`personDecisionAsk`): its `shaped` ties
       // are the statements the person's decision shaped, each once.
       const shaped = (personal.get(askId) ?? []).flatMap((row) => row.shaped ?? []);
-      const shapes = shapesOf({ shaped }, nodeIdOf, placed, isCoverageStatement);
+      const shapes = shapesOf({ shaped }, statementAt);
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
@@ -377,7 +395,7 @@ export function decisionsParts({
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }
-    const shapes = shapesOf(row, nodeIdOf, placed, isCoverageStatement);
+    const shapes = shapesOf(row, statementAt);
     const asked = row.replaced ? undefined : changes?.get(row.ref);
     const standing = standingOf(row, asked !== undefined);
     const keptBy: Actor | undefined =
@@ -417,7 +435,10 @@ export function decisionsParts({
       // decisions of whoever asked, by the time they did.
       decidedBy(asked.author).push({ ...entry, ...timeOf(asked.created_at) });
     } else if (inReviewList(row, isStatement)) {
-      review.push(entry);
+      review.push({
+        ...entry,
+        waits: waitsOnReader(row, isStatement, false, node.changeUnread === true),
+      });
     } else if (shapes.length === 0) {
       agents.push(entry);
     } else {
@@ -448,6 +469,14 @@ export function decisionsParts({
 interface Placement {
   readonly node: TreeNode;
   readonly parent?: ParentLine;
+}
+
+/** The statement of this issue a tie names, where the tie counts (`decisionsParts`'
+ *  `statementAt`): by the id the tree resolves its address to, else by that address, with its
+ *  node where the tree holds one. */
+interface TiedStatement {
+  readonly id: string;
+  readonly node?: TreeNode;
 }
 
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
@@ -511,28 +540,22 @@ function standingOf(
   return row.kept === null ? undefined : "kept";
 }
 
-/** The statements of this issue `row`'s ties name, each once, in the ties' own order, each with
- *  its node where the tree holds one: a tie counts where its far end is a requirement node of the
- *  tree or, where the tree holds no node for it, a statement of the coverage read
- *  (`isCoverageStatement`), as `decisionsParts`' `isStatement` counts a tie. */
+/** The statements of this issue `row`'s ties name, each once, in the ties' own order: each tie
+ *  whose far end `statementAt` answers (`decisionsParts`' own), by the address and the place in
+ *  the conversation of its node where the tree holds one, else by the tie's own address. */
 function shapesOf(
   row: Pick<ReadEntry, "shaped">,
-  nodeIdOf: (reference: string) => string | undefined,
-  placed: ReadonlyMap<string, Placement>,
-  isCoverageStatement: (reference: string) => boolean
+  statementAt: (reference: string) => TiedStatement | undefined
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.shaped ?? []) {
     const reference = link.to.ref;
     if (reference === undefined) continue;
-    const resolved = nodeIdOf(reference);
-    const node = placed.get(resolved ?? "")?.node;
-    if (node === undefined ? !isCoverageStatement(reference) : node.type !== "requirement")
-      continue;
-    const id = resolved ?? reference;
+    const statement = statementAt(reference);
+    if (statement === undefined) continue;
+    const { id, node } = statement;
     shapes.set(id, {
       id,
-      ...(node === undefined ? {} : { node }),
       ...pathOf(node ?? { reference }),
       reference: node?.reference ?? reference,
       stale: link.stale || shapes.get(id)?.stale === true,

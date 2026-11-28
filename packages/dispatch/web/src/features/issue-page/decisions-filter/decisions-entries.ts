@@ -113,6 +113,11 @@ type DecisionsRead = "issue-decisions" | "asks";
  *  entries there are hold their answers, which of them stands refused, which runs now and how
  *  many times each has failed, and how to ask one again. */
 interface DecisionsEntries {
+  /** Whether the view draws its entries: once the decisions read, the asks and the coverage read
+   *  each hold an answer or stand refused, so each entry is first drawn in its final part. Until
+   *  then `parts` holds none. A press of the header's count is taken at the first render where
+   *  this holds and the tree the entries are drawn from is held (`DecisionsFilterBody.tsx`). */
+  readonly entriesHeld: boolean;
   /** How many times each of the decisions read and the asks has failed, by its word (TanStack
    *  Query's `errorUpdateCount`). It keys the alert of a refused read's line (`FailedReadLine`'s
    *  `failure`), so each new failure is said again, and a run that ends with none, cancelled or
@@ -351,7 +356,7 @@ export function useDecisionsEntries({
     (decisions === undefined && !decisionsRefused)
       ? undefined
       : restating;
-  return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
+  return { entriesHeld, failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 
 /**

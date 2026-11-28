@@ -60,6 +60,7 @@ import {
   DECISIONS_PART_ORDER,
   type DecisionsEntry,
   type DecisionsPart,
+  mayWaitOrder,
   type NamedEntry,
   reviewWaiting,
   waitingOrder,
@@ -206,13 +207,15 @@ export function DecisionsFilterBody({
   view: TreeNode;
   /** The press of the header's count of what waits on the reader that turned this filter on
    *  (`waiting.ts`'s `waitingPressOf`): each press puts the focus on the next thing that waits,
-   *  in the filter's order (R13, the tester's F12). */
+   *  in the filter's order (R13, the tester's F12), or where nothing waits on the next decision
+   *  that may wait once its page is read. The slot hands it over only once the reads the tree is
+   *  built from have settled (`slots/view-decisions.tsx`), so a press is taken once, at the first
+   *  render where the entries and the tree they are drawn from are held, and never later. */
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, treePending, view }
-  );
+  const { entriesHeld, failures, parts, readsHeld, retry, retrying, unreadable, writeUps } =
+    useDecisionsEntries({ issue, reader, root, treePending, view });
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
@@ -430,22 +433,32 @@ export function DecisionsFilterBody({
 
   // The header's count of what waits on the reader puts the focus on a thing that waits, in
   // this filter's order: each open question whose turn is the reader's, then each decision of
-  // the review list (R13). Each press goes to the next of them after the one the last press
-  // went to, and round to the first again, so a reader works down what waits with the one
-  // control (the tester's F12). The reads that hold it may still be out when the press lands,
-  // so the press is taken once the list holds something that waits.
+  // the review list that waits (R13). Each press goes to the next of them after the one the last
+  // press went to, and round to the first again, so a reader works down what waits with the one
+  // control (the tester's F12). The count may show only decisions that may wait, its "+" with
+  // nothing before it: where nothing waits, a press goes the same way through the decisions of
+  // the review list that carry the mark of a Change on a page not read yet, which the "+" counts
+  // (`mayWaitOrder`), and where there is none of those either it goes nowhere. The reads that
+  // hold the entries and the tree read they are drawn from may still be out when the press
+  // lands, so it waits for them: the slot hands it over once the tree's reads have settled
+  // (`slots/view-decisions.tsx`), and it is taken in the first render that holds the entries too
+  // (`entriesHeld`), wherever it lands then, or nowhere. It is never taken later: a press that
+  // waited for something to wait would move the focus long after, whatever the reader had done
+  // since.
   const pressed = useRef<number | undefined>(undefined);
   const went = useRef<string | undefined>(undefined);
   const waiting = useMemo(() => waitingOrder(parts), [parts]);
+  const waitingInReview = useMemo(() => reviewWaiting(parts).length, [parts]);
   useEffect(() => {
-    if (waitingPress === undefined || waitingPress === pressed.current) return;
-    if (waiting.length === 0) return;
+    if (waitingPress === undefined || waitingPress === pressed.current || !entriesHeld) return;
     pressed.current = waitingPress;
-    const next = waiting[(waiting.indexOf(went.current ?? "") + 1) % waiting.length];
+    const order = waiting.length > 0 ? waiting : mayWaitOrder(parts);
+    if (order.length === 0) return;
+    const next = order[(order.indexOf(went.current ?? "") + 1) % order.length];
     if (next === undefined) return;
     went.current = next;
     goTo(next);
-  }, [goTo, waiting, waitingPress]);
+  }, [entriesHeld, goTo, parts, waiting, waitingPress]);
 
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is
@@ -928,7 +941,7 @@ export function DecisionsFilterBody({
                   data-decisions-count=""
                   {...authorText}
                 >
-                  {part === "review" ? reviewWaiting(parts).length : entries.length}
+                  {part === "review" ? waitingInReview : entries.length}
                 </span>
               </div>
               {entries.filter(isShown).map((entry) => rowFor(entry, part))}

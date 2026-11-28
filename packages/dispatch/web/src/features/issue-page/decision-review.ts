@@ -169,9 +169,10 @@ export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"
  * requirement the coverage read holds: a caller passes `coverageStatements(issue, coverage)`
  * (`tree-drafts.ts`), not the rows' `isStatement` (`issue-tree.ts`).
  *
- * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
- * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
- * the list.
+ * It is the one rule that decides the list. The list holds a decision whose Change may stand on a
+ * page the tree read has not loaded (`tree-drafts.ts`' `changeUnread`, the mark its state
+ * carries), which waits on no reader until that page is read, so whether an entry of the list
+ * waits on the reader is `waitsOnReader`'s to say.
  */
 export function inReviewList(
   decision: Pick<DecisionEntry, "shaped" | "waiting_review">,
@@ -185,6 +186,24 @@ export function inReviewList(
       (link) => link.to.ref !== undefined && isCoverageStatement(link.to.ref)
     )
   );
+}
+
+/**
+ * Whether `decision` waits on the reader: it is an entry of the review list (`inReviewList`, with
+ * `isCoverageStatement` and `changed` as there), and it carries no mark of a Change on a page the
+ * tree read has not loaded (`unread`, `tree-drafts.ts`' `changeUnread`). It is the one rule that
+ * every reader of what waits reads, so none can disagree with another: the node's own `waiting`
+ * (`tree-drafts.ts`' `addDecisions`, `tree-read/tree-nodes.ts`' `draftDecision`), the header's
+ * count (`waiting.ts`) and the count of the Decisions view's review list
+ * (`decisions-filter/decisions-parts.ts`' `reviewWaiting`).
+ */
+export function waitsOnReader(
+  decision: Pick<DecisionEntry, "shaped" | "waiting_review">,
+  isCoverageStatement: (reference: string) => boolean,
+  changed: boolean,
+  unread: boolean
+): boolean {
+  return !unread && inReviewList(decision, isCoverageStatement, changed);
 }
 
 /** A decision's own words and its own reading (`decisionContent`). */

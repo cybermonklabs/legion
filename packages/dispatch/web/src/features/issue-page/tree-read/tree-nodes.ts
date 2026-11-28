@@ -30,10 +30,10 @@ import {
   decisionNodes,
   deletedPostIds,
   firstOfEachId,
-  inReviewList,
   parentsIn,
   type TreeComment,
   treeComments,
+  waitsOnReader,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import {
@@ -51,6 +51,7 @@ import {
   askState,
   blank,
   blockNodeId,
+  blockReadId,
   checkStanding,
   type Draft,
   deciderOf,
@@ -380,11 +381,12 @@ const NO_ASK_IDS: ReadonlyMap<string, string> = new Map();
  * (`block_id`):
  *
  * - **A node of another issue** - the read marks it with that issue (`issue`) - is the read's id,
- *   which holds its issue, even where its `document` names a document: a block id is unique
- *   inside one document alone, and every plan names its tasks `t1`, `t2`, so two issues under
- *   this one can each hold a `t1`; and a child's documents carry its parent's slugs, so the
- *   outline's `<slug>#b-<block id>` would name a block of this issue. The Plan view finds a task
- *   one of them needs by that same id (`plan-filter/plan-order.ts`' `neededId`).
+ *   which holds its issue, even where its `document` names a document, there the id of its block
+ *   in that issue's document (`blockReadId`): a block id is unique inside one document alone,
+ *   and every plan names its tasks `t1`, `t2`, so two issues under this one can each hold a
+ *   `t1`; and a child's documents carry its parent's slugs, so the outline's
+ *   `<slug>#b-<block id>` would name a block of this issue. The Plan view finds a task one of
+ *   them needs by that same id (`plan-filter/plan-order.ts`' `neededId`).
  * - **The issue itself** is its key, which is the outline's root.
  * - **A typed block of one of this issue's documents** is the outline's `blockNodeId` of the
  *   slug its `document` names and its block id.
@@ -398,8 +400,12 @@ export function treeIdOfNode(
   key: string,
   askIds: ReadonlyMap<string, string> = NO_ASK_IDS
 ): string {
-  if (isForeign(node, key)) return node.id;
   const blockId = blockIdOfNode(node);
+  if (isForeign(node, key)) {
+    return node.document === undefined
+      ? node.id
+      : blockReadId(node.issue, node.document.slug, blockId);
+  }
   // The issue the read is of is the outline's root, the parent of every top-level node.
   if (node.supertag === "issue" && (node.id === key || node.parent === null)) return key;
   if (node.document !== undefined) return blockNodeId(node.document.slug, blockId);
@@ -422,7 +428,7 @@ export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: strin
 
 /** `treeIdOfNode` for the issue `reads` names, each ask by the block the asks read names it was
  *  indexed from (`askNodeId`). */
-function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
+export function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
   const slugs = new Map(
     (reads.issue.artifacts ?? []).map((artifact) => [artifact.id, artifact.slug])
   );
@@ -669,7 +675,7 @@ function draftResult(
  * node's `decision` names no decider; none where the read holds no entry or the entry names
  * nobody. A person's Change the read hangs under it says it waits on its agent
  * (`decisionNodeChanges`), and it waits on the reader by the outline's review list rule
- * (`inReviewList`), where a link ties it to a statement the coverage read holds. Where the
+ * (`waitsOnReader`), where a link ties it to a statement the coverage read holds. Where the
  * answer names a next page or an older comment page that may hold its Change, its state says so
  * (`markChangeUnread`), and it waits on no reader until that page is read (`changeUnread`).
  *
@@ -709,10 +715,11 @@ function draftDecision(
   markChangeUnread(draft, decision, changed, answer);
   draft.waiting =
     context.viewer !== undefined &&
-    inReviewList(
+    waitsOnReader(
       { shaped: links, waiting_review: decision.waiting_review === true },
       (reference) => context.kept.requirements.has(context.nodeIdOf(reference) ?? ""),
-      changed || draft.changeUnread === true
+      changed,
+      draft.changeUnread === true
     );
   return draft;
 }

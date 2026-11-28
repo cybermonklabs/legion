@@ -2235,7 +2235,7 @@ test("a list that holds only the foot, opened by a link inside the app with its 
 // and puts the focus on a thing that waits, in the filter's order: each open question whose
 // turn is the reader's, then each decision of the review list. Each press goes to the next
 // of them and round to the first again. A press that lands before the reads are in is taken
-// once the list holds something that waits.
+// once they are.
 test("each press of the count of what waits goes to the next thing that waits", async () => {
   const whole = wholeIssue();
   const view = renderBody(whole, { waitingPress: 1 });
@@ -2263,16 +2263,51 @@ test("each press of the count of what waits goes to the next thing that waits", 
   noQuestion.unmount();
 
   // A press that lands before the decisions read is in is taken once it is.
-  const early = renderBody({ children: [statement("s1"), decisionNode("first")] });
-  early.again({ waitingPress: 2 });
-  expect(focusedRow(early)).toBeUndefined();
+  const decisionsOut = spyOn(api, "getIssueDecisions").mockReturnValue(
+    Promise.withResolvers<IssueDecisions>().promise
+  );
+  try {
+    const early = renderBody({ children: [statement("s1"), decisionNode("first")], made: null });
+    early.again({ waitingPress: 2 });
+    expect(focusedRow(early)).toBeUndefined();
+    await act(async () =>
+      early.client.setQueryData(
+        ["decisions", KEY],
+        decisionsRead([decision("first", { links: [shaped(specRef("s1"))] })])
+      )
+    );
+    await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
+  } finally {
+    decisionsOut.mockRestore();
+  }
+});
+
+// A press of the count is taken in the first render that holds the list's entries, and never
+// later. One that lands where nothing waits and no decision may wait goes nowhere, and a decision
+// that comes to wait after it, as a later read brings it, does not take the focus: the press is
+// over by then, whatever the reader has done since.
+test("a press of the count on a list that holds nothing is taken, and moves nothing later", async () => {
+  const view = renderBody({ children: [statement("s1")] }, { waitingPress: 1 });
+  expect(view.getByText(EMPTY_LINE)).toBeTruthy();
+  await act(() => nextFrame());
+  expect(focusedRow(view), "the press went to a row of a list that holds none").toBeUndefined();
+  // A decision tied to the statement comes to wait: the decisions read holds it, and then the
+  // tree draws it, so it stands in the review list as it is first drawn. Drawn before its row in
+  // the decisions read, it would stand in the foot first, whose control takes the focus of a list
+  // that holds only the foot and hands it to the first row drawn.
   await act(async () =>
-    early.client.setQueryData(
+    view.client.setQueryData(
       ["decisions", KEY],
       decisionsRead([decision("first", { links: [shaped(specRef("s1"))] })])
     )
   );
-  await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
+  view.again({ children: [statement("s1"), decisionNode("first")], waitingPress: 1 });
+  await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
+  await act(() => nextFrame());
+  expect(
+    focusedRow(view),
+    "the press that went nowhere took the focus to the decision that came to wait"
+  ).toBeUndefined();
 });
 
 // The tester's F6: a Change sent on a decision is a comment anchored to its words. The send names

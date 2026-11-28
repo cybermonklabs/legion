@@ -1551,3 +1551,177 @@ test("an approval request marked on the Spec view's address draws the view, with
     "0"
   );
 });
+
+/** Statements of the spec a read of the Spec view made again brings, as an event's new statement
+ *  does: one while a press's page is out, and one after it. */
+const ADDED_STATEMENT = "r3";
+const LATE_STATEMENT = "r4";
+
+/** The Spec view's row of the spec's statement `id`. */
+function specRow(id: string): string {
+  return `[data-spec-body] ${nodeRowSelectorOf(blockNodeId(SPEC_SLUG, id))}`;
+}
+
+/** A page of the Spec view's read for `verifiedIssue`: the spec's `statements`, each at its
+ *  position among the spec's blocks and as the view's query took it, naming `cursor` as its next
+ *  page, with one node left past it where it names one. */
+function specPage(statements: readonly (readonly [string, number])[], cursor: string | null) {
+  return pagedAnswer(
+    treeOf(
+      statements.map(([id, position]) =>
+        treeNode(id, "requirement", KEY, {
+          ...inDocument(SPEC_DOCUMENT, position),
+          role: "query",
+          text: `The page draws ${id}.`,
+        })
+      )
+    ),
+    cursor,
+    cursor === null ? undefined : 1
+  );
+}
+
+/** Draws the Spec view of `verifiedIssue` on `client`, with its first statement's row holding the
+ *  stage's first focus, and answers the control after the view's last row once it is drawn. */
+async function drawnSpecPress(client: QueryClient) {
+  const view = drawStage("", { client, issue: verifiedIssue(), preset: "spec" });
+  await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view");
+  const more = await waitFor(() => {
+    const found = view.container.querySelector<HTMLButtonElement>("[data-tree-more] button");
+    expect(found, "the Spec view drew no control for its next page").not.toBeNull();
+    return found as HTMLButtonElement;
+  });
+  return { more, view };
+}
+
+/** Reads the Spec view again from its first page, as an event of the issue does. */
+async function readSpecAgain(client: QueryClient): Promise<void> {
+  await act(async () => {
+    await client.refetchQueries({ exact: true, queryKey: viewQuery(KEY, "spec").queryKey });
+  });
+}
+
+// R15: a press of the control after a view's last row puts the focus on the first row of the page
+// it merges, and on no other row. A row a read of the view made again draws while the page is out
+// is not the page's, and takes no focus. The page refused, the landing ends: a row a later read
+// draws takes none either, and the control stays for another press, whose page merges and lands
+// on its own first row.
+test("a press of a view's next page leaves the focus where it is as a read of the view made again draws a new row, while the page is out and once it is refused, and a press whose page merges lands on its first row", async () => {
+  answerVerificationReads();
+  let first = specPage([[STATEMENT, 0]], "page-2");
+  let next = Promise.withResolvers<TreeAnswer>();
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    if (query.view !== "spec") return treeOf(verifiedTree(), SERVES);
+    return query.cursor === undefined ? first : next.promise;
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { more, view } = await drawnSpecPress(client);
+  await act(async () => more.click());
+  await waitFor(() =>
+    expect(read.mock.calls.some(([, query]) => query?.cursor === "page-2")).toBe(true)
+  );
+
+  first = specPage(
+    [
+      [STATEMENT, 0],
+      [ADDED_STATEMENT, 2],
+    ],
+    "page-2"
+  );
+  await readSpecAgain(client);
+  await waitFor(() =>
+    expect(view.container.querySelector(specRow(ADDED_STATEMENT))).not.toBeNull()
+  );
+  await waitInAct(30);
+  expect(focusedRow(), "the press out gave the focus to a row that is no row of its page").toBe(
+    blockNodeId(SPEC_SLUG, STATEMENT)
+  );
+
+  await act(async () => next.reject(REFUSED));
+  await waitInAct(30);
+  expect(
+    view.container.querySelector("[data-tree-more] button"),
+    "the control went with the refused page"
+  ).not.toBeNull();
+  first = specPage(
+    [
+      [STATEMENT, 0],
+      [ADDED_STATEMENT, 2],
+      [LATE_STATEMENT, 3],
+    ],
+    "page-2"
+  );
+  await readSpecAgain(client);
+  await waitFor(() => expect(view.container.querySelector(specRow(LATE_STATEMENT))).not.toBeNull());
+  await waitInAct(30);
+  expect(focusedRow(), "the refused press gave the focus to the row drawn after it").toBe(
+    blockNodeId(SPEC_SLUG, STATEMENT)
+  );
+
+  next = Promise.withResolvers<TreeAnswer>();
+  next.resolve(specPage([[SECOND_STATEMENT, 1]], null));
+  await act(async () =>
+    view.container.querySelector<HTMLButtonElement>("[data-tree-more] button")?.click()
+  );
+  await waitFor(() => expect(focusedRow()).toBe(blockNodeId(SPEC_SLUG, SECOND_STATEMENT)));
+});
+
+// R15: a page that lands once the view's answer has moved on - read again from its first page,
+// naming another next page - is not merged (`readNextTreePage`), and the press that asked for it
+// lands nowhere: a row a later read of the view draws takes no focus. The page the answer then
+// names merges, and its press lands on its own first row.
+test("a press of a view's next page whose page lands once the answer has moved on leaves the focus where it is as a later read of the view draws a new row, and a press whose page merges lands on its first row", async () => {
+  answerVerificationReads();
+  let first = specPage([[STATEMENT, 0]], "page-2");
+  const out = Promise.withResolvers<TreeAnswer>();
+  const pages: Readonly<Record<string, () => Promise<TreeAnswer>>> = {
+    "page-2": () => out.promise,
+    "page-3": async () => specPage([[SECOND_STATEMENT, 1]], null),
+  };
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    if (query.view !== "spec") return treeOf(verifiedTree(), SERVES);
+    const page = query.cursor === undefined ? undefined : pages[query.cursor];
+    return page === undefined ? first : page();
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { more, view } = await drawnSpecPress(client);
+  await act(async () => more.click());
+  await waitFor(() =>
+    expect(read.mock.calls.some(([, query]) => query?.cursor === "page-2")).toBe(true)
+  );
+
+  // The read made again names another next page, and draws no new row.
+  first = specPage([[STATEMENT, 0]], "page-3");
+  await readSpecAgain(client);
+  await waitFor(() =>
+    expect(client.getQueryData<TreeAnswer>(viewQuery(KEY, "spec").queryKey)?.cursor).toBe("page-3")
+  );
+  await act(async () => out.resolve(specPage([[SECOND_STATEMENT, 1]], null)));
+  await waitInAct(30);
+  expect(
+    view.container.querySelector(specRow(SECOND_STATEMENT)),
+    "the page that landed late was merged"
+  ).toBeNull();
+
+  first = specPage(
+    [
+      [STATEMENT, 0],
+      [ADDED_STATEMENT, 2],
+    ],
+    "page-3"
+  );
+  await readSpecAgain(client);
+  await waitFor(() =>
+    expect(view.container.querySelector(specRow(ADDED_STATEMENT))).not.toBeNull()
+  );
+  await waitInAct(30);
+  expect(
+    focusedRow(),
+    "the press whose page merged nothing gave the focus to the row drawn after it"
+  ).toBe(blockNodeId(SPEC_SLUG, STATEMENT));
+
+  await act(async () =>
+    view.container.querySelector<HTMLButtonElement>("[data-tree-more] button")?.click()
+  );
+  await waitFor(() => expect(focusedRow()).toBe(blockNodeId(SPEC_SLUG, SECOND_STATEMENT)));
+});

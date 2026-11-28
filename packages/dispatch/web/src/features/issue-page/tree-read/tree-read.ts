@@ -23,6 +23,8 @@ import type { Query as RouteQuery } from "../../../api/paths";
 import {
   CONVERSATION_KINDS,
   conversationTreeKey,
+  issueAskThreadsQuery,
+  issueQuery,
   issueTreeKey,
   TREE_FILTERS,
   type TreeFilter,
@@ -49,8 +51,10 @@ import {
   compareCommentPositions,
   mergeCommentPage,
   mergeTreePages,
+  nodeIdsIn,
   nodesRemaining,
   type TreeBlock,
+  treeIdOfNode,
 } from "./tree-nodes";
 
 /**
@@ -666,8 +670,9 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
  *  (`OlderComments.remain`), and how to read the next page of them. */
 export interface OlderComments {
   /** Reads the next older page into the outline read's answer (`readOlderComments`): one
-   *  request however often it is asked while that page is out. */
-  readonly read: () => Promise<void>;
+   *  request however often it is asked while that page is out, answering the ids the tree draws
+   *  the nodes of the page it merged by, and undefined where it merged none. */
+  readonly read: () => Promise<ReadonlySet<string> | undefined>;
   /** Whether older comments remain: the read's answer names where the next older page starts
    *  (`comments_before`). */
   readonly remain: boolean;
@@ -688,7 +693,7 @@ export function useOlderComments(issue: IssueDetails): OlderComments {
   const read = useCallback(
     () =>
       outline === undefined
-        ? Promise.resolve()
+        ? Promise.resolve(undefined)
         : readOlderComments(queryClient, issue.key, outline),
     [issue.key, outline, queryClient]
   );
@@ -697,15 +702,19 @@ export function useOlderComments(issue: IssueDetails): OlderComments {
 
 /** The older comment pages out, by client, each by its query and the position it reads from
  *  (`readOlderComments`). */
-const commentPagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
+const commentPagesOut = new WeakMap<
+  QueryClient,
+  Map<string, Promise<ReadonlySet<string> | undefined>>
+>();
 
-/** Starts a page read only if that client has no matching read out. */
-function joinedPage(
-  pagesOut: WeakMap<QueryClient, Map<string, Promise<void>>>,
+/** Starts a page read only if that client has no matching read out; a press that joins one gets
+ *  its answer. */
+function joinedPage<Answer>(
+  pagesOut: WeakMap<QueryClient, Map<string, Promise<Answer>>>,
   client: QueryClient,
   page: string,
-  readPage: () => Promise<void>
-): Promise<void> {
+  readPage: () => Promise<Answer>
+): Promise<Answer> {
   let pages = pagesOut.get(client);
   if (pages === undefined) {
     pages = new Map();
@@ -742,17 +751,20 @@ function writeKeepingStale(
  * the answer by `setQueryData`, which the tree's subscription takes as no write of the issue: it
  * reacts to a read, an invalidation, a reset and a refusal (`subscribeTreeFreshness`). A query an
  * event or a write had marked stale stays marked, so the read it owes is still made. A refused
- * page leaves the answer as it was, and the press may be made again.
+ * page leaves the answer as it was, and the press may be made again. It answers the ids the
+ * page's tree draws the nodes the merged page brought by (`nodesBrought`), and undefined where it
+ * merged no page: where it read nothing, and where the page it read landed once the answer had
+ * moved on.
  */
 export function readOlderComments(
   queryClient: QueryClient,
   key: string,
   outline: Outline
-): Promise<void> {
+): Promise<ReadonlySet<string> | undefined> {
   const { queryKey } = outlineQuery(key, outline);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const before = held === undefined ? undefined : olderCommentsBefore(held);
-  if (before === undefined) return Promise.resolve();
+  if (before === undefined) return Promise.resolve(undefined);
   return joinedPage(commentPagesOut, queryClient, `${hashKey(queryKey)} ${before}`, () =>
     api
       .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
@@ -763,6 +775,7 @@ export function readOlderComments(
         const merged = mergeCommentPage(now, older);
         commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
         writeKeepingStale(queryClient, query, queryKey, merged);
+        return nodesBrought(queryClient, key, now, older);
       })
   );
 }
@@ -789,7 +802,10 @@ function pagedQuery(
 
 /** The next pages out, by client, each by its query and the cursor it reads
  *  (`readNextTreePage`). */
-const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
+const treePagesOut = new WeakMap<
+  QueryClient,
+  Map<string, Promise<ReadonlySet<string> | undefined>>
+>();
 
 /**
  * Reads the page after the last one `read`'s answer of issue `key` holds (R15): one request with
@@ -808,18 +824,20 @@ const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
  * (`treePagesOf`), so a read made again reads as far (`readTree`). A query an event or a write had
  * marked stale stays marked, so the read it owes is still made. A refused page leaves the answer
  * as it was, and the press may be made again. A view read at a `version` (`viewQuery`) reads its
- * next page at that version too, under its own key.
+ * next page at that version too, under its own key. It answers the ids the page's tree draws the
+ * nodes the merged page brought by (`nodesBrought`), and undefined where it merged no page: where
+ * it read nothing, and where the page it read landed once the answer had moved on.
  */
 export function readNextTreePage(
   queryClient: QueryClient,
   key: string,
   read: PagedRead,
   version?: number
-): Promise<void> {
+): Promise<ReadonlySet<string> | undefined> {
   const { query, queryKey } = pagedQuery(key, read, version);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const cursor = held === undefined ? undefined : nextTreeCursor(held);
-  if (cursor === undefined) return Promise.resolve();
+  if (cursor === undefined) return Promise.resolve(undefined);
   return joinedPage(treePagesOut, queryClient, `${hashKey(queryKey)} ${cursor}`, () =>
     api.getIssueTree(key, { ...query, cursor }).then((answered) => {
       const now = queryClient.getQueryData<TreeAnswer>(queryKey);
@@ -834,17 +852,46 @@ export function readNextTreePage(
         walked: (walk?.walked ?? now.nodes?.length ?? 0) + (answered.nodes?.length ?? 0),
       });
       writeKeepingStale(queryClient, cached, queryKey, mergeTreePages([now, answered]));
+      return nodesBrought(queryClient, key, now, answered);
     })
   );
+}
+
+/**
+ * The ids the page draws the rows of the nodes `page` brought by, `page` being a next page merged
+ * into `held`: each node of it whose id `held` draws no node by, since a node the page repeats - a
+ * parent or a context node the answer held already, or the block of an ask it held, whose row is
+ * drawn by that block - is no node it brought. Each is the id its rows are
+ * drawn by, from the issue read and the asks read the page holds, which the tree is built from
+ * (`tree-nodes.ts`' `nodeIdsIn`): a decision and a statement by its block in its document, an ask
+ * by the block the asks read names it was indexed from. Where the page holds no issue read, each
+ * is read off the node alone (`treeIdOfNode`). It sends no read. An older comment page merged
+ * into `held` (`readOlderComments`) brings its nodes by the same rule.
+ */
+function nodesBrought(
+  queryClient: QueryClient,
+  key: string,
+  held: TreeAnswer,
+  page: TreeAnswer
+): ReadonlySet<string> {
+  const issue = queryClient.getQueryData(issueQuery(key).queryKey);
+  const asks = queryClient.getQueryData(issueAskThreadsQuery(key).queryKey);
+  const idOf =
+    issue === undefined
+      ? (node: TreeAnswerNode) => treeIdOfNode(node, key)
+      : nodeIdsIn({ asks, issue });
+  const had = new Set((held.nodes ?? []).map(idOf));
+  return new Set((page.nodes ?? []).filter((node) => !had.has(idOf(node))).map(idOf));
 }
 
 /** The next page of a read whose answer names one (`cursor`, R15): how many nodes the read holds
  *  after the pages read (`left`, the answer's `remaining`, undefined where it gives none), and
  *  how to read it (`readNextTreePage`), one request however often it is asked while that page is
- *  out. */
+ *  out, answering the ids the tree draws the nodes of the page it merged by, and undefined where
+ *  it merged none. */
 export interface NextTreePage {
   readonly left: number | undefined;
-  readonly read: () => Promise<void>;
+  readonly read: () => Promise<ReadonlySet<string> | undefined>;
 }
 
 /** The next page of the outline read the page holds (`OutlineChoice`), for the control after the
@@ -876,7 +923,8 @@ function useNextPage(
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
   const left = answer === undefined ? undefined : nodesRemaining(answer);
   const readNext = useCallback(
-    () => (read === undefined ? Promise.resolve() : readNextTreePage(queryClient, key, read)),
+    () =>
+      read === undefined ? Promise.resolve(undefined) : readNextTreePage(queryClient, key, read),
     [key, queryClient, read]
   );
   return useMemo(
@@ -898,16 +946,49 @@ export interface PagesReading {
 }
 
 /**
+ * Reads a read's pages one at a time (R15) while `wanted`: `page` names the page its answer names
+ * to read next, by what that page reads from, undefined where none is left, and `readPage` reads
+ * it, by the path every reader of that page takes, so a press, another reader, or this one asking
+ * for a page that is out joins it, and each page is read once (`joinedPage`). Each page merged
+ * draws the page again, and the caller says again whether it still wants one and which page is
+ * next, so the reading ends with the page that brings what it wants, or once no page is left. It
+ * asks for no page before `mayStart`, and is reading meanwhile. A page refused stops the reading
+ * at that page, and the hook answers it refused for as long as the answer names that page as its
+ * next: that is no last page, so what waits on the reading waits on it as on a page out, and the
+ * controls that read that page again stay as its Retry; once a read of it answers, the reading
+ * goes on. Answers whether it is still reading, and whether it stands refused.
+ */
+function useReadPages(
+  page: string | undefined,
+  readPage: () => Promise<unknown>,
+  wanted: boolean,
+  mayStart: boolean
+): PagesReading {
+  // The page that was refused, past which nothing is read.
+  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
+  const named = wanted && page !== undefined;
+  const refused = named && page === refusedAt;
+  const reading = named && !refused;
+  useEffect(() => {
+    if (!reading || !mayStart) return;
+    readPage().catch(() => setRefusedAt(page));
+  }, [mayStart, page, readPage, reading]);
+  return { reading, refused };
+}
+
+/** The read of no page, for a reading that names none (`useReadPages`). */
+const noPage = (): Promise<undefined> => Promise.resolve(undefined);
+
+/**
  * Reads the next pages of the outline read the page holds, or of `outline`'s read where one is
- * given, one at a time, while `wanted`: an address, a chip or a key names a node no page read yet
- * holds (R15). Each page merged draws the tree again, and the caller says again whether it holds
- * the node, so the reading ends with the page that brings it, or with the last page. Answers
- * whether it is still reading, which the address's landing waits on as it waits on the reads the
- * tree is built from: once the node is drawn it lands on it, and once no page is left it falls
- * back as it does today. A page refused stops the reading at its cursor, and the hook answers it
- * refused for as long as the read names that page as its next: that is no last page, so the
- * address's landing waits on it as on a page out, and the control after the outline's last row,
- * which reads that page again, stays as its Retry; once that page answers, the reading goes on.
+ * given, one at a time by the cursor its answer names (`readNextTreePage`), while `wanted`: an
+ * address, a chip or a key names a node no page read yet holds (R15). The caller says again at
+ * each page merged whether the tree holds the node, so the reading ends with the page that brings
+ * it, or with the last page (`useReadPages`). Answers whether it is still reading, which the
+ * address's landing waits on as it waits on the reads the tree is built from: once the node is
+ * drawn it lands on it, and once no page is left it falls back as it does today. A page refused
+ * stops the reading at its cursor, and the address's landing waits on it as on a page out, while
+ * the control after the outline's last row, which reads that page again, stays as its Retry.
  * `outline`'s read, where it is given, is watched and never sent here: the caller sends it.
  */
 export function useReadUntilHeld(
@@ -915,7 +996,6 @@ export function useReadUntilHeld(
   wanted: boolean,
   outline?: Outline
 ): PagesReading {
-  const queryClient = useQueryClient();
   const choice = useOutlineChoice();
   const read = outline ?? choice.outline;
   const answer = useQuery(
@@ -924,16 +1004,8 @@ export function useReadUntilHeld(
       : { ...outlineQuery(issue.key, outline), enabled: false }
   ).data;
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
-  // The cursor whose page was refused, past which nothing is read for the address.
-  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
-  const named = wanted && read !== undefined && cursor !== undefined;
-  const refused = named && cursor === refusedAt;
-  const reading = named && !refused;
-  useEffect(() => {
-    if (!reading || read === undefined || cursor === undefined) return;
-    readNextTreePage(queryClient, issue.key, read).catch(() => setRefusedAt(cursor));
-  }, [cursor, issue.key, queryClient, read, reading]);
-  return { reading, refused };
+  const next = useNextPage(issue.key, read, answer);
+  return useReadPages(cursor, next?.read ?? noPage, wanted && next !== undefined, true);
 }
 
 /**
@@ -946,20 +1018,17 @@ export function useReadUntilHeld(
  * names once neither Conversation's read nor Graph's holds it (`slots/body.tsx`). It reads the
  * next pages first, while the answer names one (`cursor`), each by `readNextTreePage`, the path
  * an address's reading takes (`useReadUntilHeld`), and then the older comment pages, while it
- * names one (`comments_before`), each by `readOlderComments`, the page the controls read. So a
- * press, another reader, or this one asking for a page that is out joins it. Each page merged
- * draws the page again, and the caller says again whether it still wants one, so the reading ends
- * with the page that brings what it named, or once the answer names neither page. It asks for no
+ * names one (`comments_before`), each by `readOlderComments`, the page the controls read. The
+ * reading ends with the page that brings what it named, or once the answer names neither page
+ * (`useReadPages`). It asks for no
  * page before the stage has drawn its view's first drawing from its reads (`useTellViewDrawn`):
  * the view's first row, or where it draws none, what it draws in their place. A frame the page
  * draws before that - the header's, with the answer held - starts nothing, so a load reads no page
  * past its first (decision 538), and no view's first drawing waits on a page read here (decisions
- * 563 (4) and 578 (2)). A page refused stops the reading at that page, and
- * the hook answers it refused for as long as the answer names that page as its next, as
- * `useReadUntilHeld` answers a refused cursor: the control after the outline's last row, and the
- * controls above the outline and at the foot of the Contents list, read it again, and once it
- * answers the reading goes on. Answers whether it is still reading, which the address's landing
- * waits on as on the next pages.
+ * 563 (4) and 578 (2)). A page refused stops the reading at that page: the control after the
+ * outline's last row, and the controls above the outline and at the foot of the Contents list,
+ * read it again. Answers whether it is still reading, which the address's landing waits on as on
+ * the next pages.
  */
 export function useReadUnloadedPages(
   issue: IssueDetails,
@@ -980,20 +1049,16 @@ export function useReadUnloadedPages(
       : before === undefined
         ? undefined
         : `before ${before}`;
-  // The page that was refused, past which nothing is read.
-  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
   const named =
     outline !== undefined && answer !== undefined && page !== undefined && wants(answer);
   const drawn = useViewDrawn(issue.key, named);
-  const refused = named && page === refusedAt;
-  const reading = named && !refused;
   const next = cursor !== undefined;
-  useEffect(() => {
-    if (!reading || !drawn || outline === undefined || page === undefined) return;
+  const readPage = useCallback(() => {
+    if (outline === undefined) return Promise.resolve(undefined);
     const read = next ? readNextTreePage : readOlderComments;
-    read(queryClient, issue.key, outline).catch(() => setRefusedAt(page));
-  }, [drawn, issue.key, next, outline, page, queryClient, reading]);
-  return { reading, refused };
+    return read(queryClient, issue.key, outline);
+  }, [issue.key, next, outline, queryClient]);
+  return useReadPages(page, readPage, named, drawn);
 }
 
 /** The issues whose page's stage has drawn its view's first drawing, by client: how many stages

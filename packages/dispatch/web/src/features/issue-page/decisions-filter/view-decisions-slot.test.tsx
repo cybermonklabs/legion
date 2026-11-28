@@ -760,6 +760,23 @@ function answerOlderChange(page: Promise<TreeAnswer>): () => number {
   return () => tree.mock.calls.filter(([, query]) => query?.comments_before !== undefined).length;
 }
 
+/** The row the Decisions view draws of the decision of block `block`; throws where it draws none. */
+function decisionRow(view: RenderResult, block: string): HTMLElement {
+  const row = view.container.querySelector<HTMLElement>(
+    `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
+  );
+  if (row === null) throw new Error(`the view drew no row for ${block}`);
+  return row;
+}
+
+/** The decisions of the older-Change cases, `newer` then `older`, whose rows the Decisions view
+ *  draws with the outline's mark ("+" after the state). */
+function markedDecisions(view: RenderResult): string[] {
+  return ["newer", "older"].filter(
+    (block) => decisionRow(view, block).querySelector("[data-change-unread]")?.textContent === "+"
+  );
+}
+
 // Decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z (choice (b)): a decision whose
 // Change may stand on a comment page Conversation's read has not loaded stays in the review list,
 // drawn with the outline's mark ("+" after its state), and the list's count leaves it out until
@@ -770,10 +787,6 @@ test("a decision whose Change stands on an older comment page stays in the revie
   const page = Promise.withResolvers<TreeAnswer>();
   const pagesSent = answerOlderChange(page.promise);
   const view = drawStage("");
-  const rowOf = (block: string) =>
-    view.container.querySelector<HTMLElement>(
-      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
-    );
   const review = () => view.container.querySelector<HTMLElement>('[data-decisions-part="review"]');
   const reviewRows = () =>
     [...(review()?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])].map(
@@ -782,7 +795,7 @@ test("a decision whose Change stands on an older comment page stays in the revie
   const reviewCount = () => review()?.querySelector("[data-decisions-count]")?.textContent;
   await waitFor(() =>
     expect(
-      rowOf("older")?.querySelector("[data-change-unread]")?.textContent,
+      decisionRow(view, "older").querySelector("[data-change-unread]")?.textContent,
       `the decision is not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
     ).toBe("+")
   );
@@ -795,12 +808,18 @@ test("a decision whose Change stands on an older comment page stays in the revie
   ).toBe("1");
   await act(async () => page.resolve(OLDER_PAGE));
   await waitFor(() =>
-    expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
-      "change_requested"
-    )
+    expect(
+      decisionRow(view, "older").dataset.nodeState,
+      "the decision does not carry its Change"
+    ).toBe("change_requested")
   );
-  expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(OLDER_CHANGE.body);
-  expect(rowOf("older")?.querySelector("[data-change-unread]"), "the mark stayed").toBeNull();
+  expect(decisionRow(view, "older").querySelector("[data-change-words]")?.textContent).toBe(
+    OLDER_CHANGE.body
+  );
+  expect(
+    decisionRow(view, "older").querySelector("[data-change-unread]"),
+    "the mark stayed"
+  ).toBeNull();
   expect(reviewRows(), "the review list once the Change is held").toEqual([
     decisionNode("newer").id,
   ]);
@@ -868,14 +887,6 @@ test("a decision whose Change stands on the next page of Conversation's read sta
   const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
   const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
   const view = drawStage("");
-  const rowOf = (block: string) =>
-    view.container.querySelector<HTMLElement>(
-      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
-    );
-  const marked = () =>
-    ["newer", "older"].filter(
-      (block) => rowOf(block)?.querySelector("[data-change-unread]")?.textContent === "+"
-    );
   const review = () => view.container.querySelector<HTMLElement>('[data-decisions-part="review"]');
   const reviewRows = () =>
     [...(review()?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])].map(
@@ -884,7 +895,7 @@ test("a decision whose Change stands on the next page of Conversation's read sta
   const reviewCount = () => review()?.querySelector("[data-decisions-count]")?.textContent;
   await waitFor(() =>
     expect(
-      marked(),
+      markedDecisions(view),
       `the decisions are not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
     ).toEqual(["newer", "older"])
   );
@@ -899,17 +910,121 @@ test("a decision whose Change stands on the next page of Conversation's read sta
   await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"]));
   await act(async () => next.resolve(NEXT_PAGE));
   await waitFor(() =>
-    expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
-      "change_requested"
-    )
+    expect(
+      decisionRow(view, "older").dataset.nodeState,
+      "the decision does not carry its Change"
+    ).toBe("change_requested")
   );
-  expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(OLDER_CHANGE.body);
-  expect(marked(), "the mark stayed").toEqual([]);
+  expect(decisionRow(view, "older").querySelector("[data-change-words]")?.textContent).toBe(
+    OLDER_CHANGE.body
+  );
+  expect(markedDecisions(view), "the mark stayed").toEqual([]);
   expect(reviewRows(), "the review list once the next page is read").toEqual([
     decisionNode("newer").id,
   ]);
   expect(reviewCount()).toBe("1");
   expect(pagesSent(), "the next page was read other than once").toEqual(["cursor page-2"]);
+});
+
+// A press of the header's count that shows only decisions that may wait, its "+" with nothing
+// before it: while Conversation's read names a next page, every decision of the review list
+// carries the outline's mark, so nothing waits. The reader is on the second decision, the stage
+// having put them on the first. The press is taken as the view holds its entries, and takes them
+// to the first marked decision of the list at once, while that page is out. Once it is taken
+// nothing moves the focus: the reader goes back to the other decision, the next page answers with
+// no Change for either, so each mark clears and both come to wait, and the focus stays where the
+// reader put it.
+test("a press of a count that only may wait goes to the first marked decision at once, and a mark that clears later moves nothing", async () => {
+  const next = Promise.withResolvers<TreeAnswer>();
+  const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
+  const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
+  const held: { navigate?: NavigateFunction } = {};
+  const view = drawStage("", { held });
+  await waitFor(() =>
+    expect(
+      markedDecisions(view),
+      `the decisions are not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
+    ).toEqual(["newer", "older"])
+  );
+  await waitFor(() => expect(focusedRow(), "the stage put the focus on no row").toBeDefined());
+  await act(async () => decisionRow(view, "older").focus());
+  // The count's press, as the header makes it: the view's address, with the press in its entry.
+  await act(async () =>
+    held.navigate?.(presetPath(KEY, "decisions"), { replace: true, state: { waitingPress: 1 } })
+  );
+  await waitFor(() =>
+    expect(
+      focusedRow(),
+      "the press did not go to the first marked decision while the next page was out"
+    ).toBe(decisionNode("newer").id)
+  );
+  expect(markedDecisions(view), "a mark cleared before the next page answered").toEqual([
+    "newer",
+    "older",
+  ]);
+  await act(async () => decisionRow(view, "older").focus());
+  await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"]));
+  await act(async () => next.resolve(treeAnswer([])));
+  await waitFor(() =>
+    expect(markedDecisions(view), "a mark stayed once the next page answered").toEqual([])
+  );
+  await waitInAct(20);
+  expect(focusedRow(), "a mark that cleared moved the focus").toBe(decisionNode("older").id);
+});
+
+// A press of the count that lands while the reads the entries come from - the decisions, the
+// asks and the coverage - are held and the tree read they are drawn from is still out, as on a
+// first open of the view from the header, is not spent on a list that draws no decision yet: the
+// view hands it over once the tree's reads have settled. Until then nothing takes the focus from
+// the count the reader pressed, and once the tree read answers with a decision that waits, the
+// press goes to it.
+test("a press of the count while the tree read is out waits for that read, then goes to the decision that waits", async () => {
+  const tree = Promise.withResolvers<TreeAnswer>();
+  spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([NEWER_DECISION]));
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) =>
+    query.view === undefined ? tree.promise : Promise.withResolvers<never>().promise
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const held: { navigate?: NavigateFunction } = {};
+  // The header's count the reader pressed, which keeps the focus while nothing takes it.
+  const count = document.createElement("button");
+  document.body.append(count);
+  try {
+    drawStage("", { client, held });
+    const entryReads = [
+      issueDecisionsQuery(KEY, true),
+      issueAskThreadsQuery(KEY),
+      issueCoverageQuery(KEY),
+    ];
+    await waitFor(() =>
+      expect(
+        entryReads.map((read) => client.getQueryData(read.queryKey) !== undefined),
+        "a read the entries come from has not answered"
+      ).toEqual([true, true, true])
+    );
+    count.focus();
+    await act(async () =>
+      held.navigate?.(presetPath(KEY, "decisions"), { replace: true, state: { waitingPress: 1 } })
+    );
+    await waitInAct(20);
+    expect(document.activeElement, "the focus left the count while the tree read was out").toBe(
+      count
+    );
+    await act(async () =>
+      tree.resolve({
+        ...treeOf([STATEMENT_NODE, ...DECISION_NODES.slice(1)]),
+        comments_before: null,
+      })
+    );
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        "the press did not go to the decision that waits once the tree read answered"
+      ).toBe(decisionNode("newer").id)
+    );
+  } finally {
+    count.remove();
+  }
 });
 
 // Decision 574 (B) under decision 538: the page reads the next pages first, by the path an

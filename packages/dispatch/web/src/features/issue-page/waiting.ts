@@ -5,6 +5,7 @@ import {
   deletedPostIds,
   inReviewList,
   treeComments,
+  waitsOnReader,
 } from "./decision-review";
 import { changeUnread } from "./tree-drafts";
 import type { TreeAnswer } from "./tree-read/tree-read";
@@ -106,26 +107,34 @@ export function waitingOnReader(
     )
   );
   // A person's decision never waits for review (`waiting_review`), so only an agent's counts.
-  const listed =
-    viewer === undefined
-      ? []
-      : (decisions?.entries ?? []).filter((decision) =>
-          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
-        );
-  const reviewing = listed.filter((decision) => !unread.has(decision.ref)).length;
+  const entries = viewer === undefined ? [] : (decisions?.entries ?? []);
+  const reviewing = entries.filter((decision) =>
+    waitsOnReader(
+      decision,
+      isCoverageStatement,
+      changed.has(decision.ref),
+      unread.has(decision.ref)
+    )
+  ).length;
+  const mayWait = entries.filter(
+    (decision) =>
+      unread.has(decision.ref) &&
+      inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
+  ).length;
   return {
     approvals,
     asks,
     decisions: reviewing,
-    mayWait: listed.length - reviewing,
+    mayWait,
     total: asks + reviewing + approvals.length,
     unread: unread.size,
   };
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put
- *  the focus on what waits once it has drawn it: one press, told apart from the next by
- *  `waitingPress`, so each press goes on to the next item that waits. */
+ *  the focus on what waits, or where nothing does on a decision that may wait (`mayWait`), in the
+ *  first render that holds its entries and the tree they are drawn from, and never later: one
+ *  press, told apart from the next by `waitingPress`, so each press goes on to the next item. */
 export interface WaitingPress {
   readonly waitingPress: number;
 }

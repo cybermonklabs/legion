@@ -70,15 +70,18 @@ import {
 } from "../refs/reference-names";
 import { parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { plainWrite, writesOf } from "../writes/write-store";
 import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import * as issueTreeModel from "./issue-tree";
+import { waitInAct } from "./outline-fixtures";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { presetView } from "./presets";
 import { nameOf, Publisher, publishedNames } from "./projection-fixture";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { focusedRow } from "./slots/stage-fixtures";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
 import {
@@ -1701,6 +1704,419 @@ test("the more control says the page's remaining count", async () => {
       )
     ).toEqual([undefined, "page-2", "page-3"]);
     view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** A comment the read's next page brings, past the first page's comment. */
+const LATER: Comment = {
+  ...comment,
+  body: "A later turn of the conversation.",
+  created_at: "2026-11-06T00:00:00Z",
+  id: "comment-2",
+};
+
+/** A comment a read of the first page made again brings, as an event's new comment does. */
+const ADDED: Comment = {
+  ...comment,
+  body: "A comment written while the reader reads.",
+  created_at: "2026-11-07T00:00:00Z",
+  id: "comment-added",
+};
+
+/** An older comment than the first page's, which the older comment page brings. */
+const OLDER: Comment = {
+  ...comment,
+  body: "An older turn of the conversation.",
+  created_at: "2026-11-04T00:00:00Z",
+  id: "comment-older",
+};
+
+/** The read's first page with the issue's task and `comments`, naming `cursor` as its next page. */
+function firstPage(comments: readonly Comment[], cursor: string | null): TreeAnswer {
+  return pagedAnswer(treeAnswer(comments), cursor, cursor === null ? undefined : 1);
+}
+
+/** A page of the read past the first, or an older comment page: `comments` alone, naming no page
+ *  after it. */
+function laterPage(comments: readonly Comment[]): TreeAnswer {
+  return {
+    ...pagedAnswer(fixtureAnswer(comments.map((one) => commentNode(one, KEY))), null),
+    comments_before: null,
+  };
+}
+
+/** Draws the page's body around the hook with the issue's keys on, as the page has them (`k` on
+ *  the first row presses the control above it), and answers the node id of the outline's first
+ *  row once the outline's first focus has landed on it, and how to take the body off the page. */
+async function drawnForPress(
+  client: QueryClient
+): Promise<{ readonly held: string; readonly unmount: () => void }> {
+  const view = renderHook(
+    () => {
+      useKeymapScope("issue");
+      return useIssueTree(issue);
+    },
+    { wrapper: bodyWrapper(client) }
+  );
+  const held = await waitFor(() => {
+    const first = document.body.querySelector<HTMLElement>('[role="tree"] [data-node-row]');
+    expect(first, "the outline drew no row").not.toBeNull();
+    expect(document.activeElement, "the outline's first focus is not on its first row").toBe(first);
+    return first?.dataset.nodeId ?? "";
+  });
+  return { held, unmount: view.unmount };
+}
+
+/** Reads Conversation's read again from its first page, as an event of the issue does. */
+async function readOutlineAgain(client: QueryClient): Promise<void> {
+  await act(async () => {
+    await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
+  });
+}
+
+/** The cursor each read of the tree route asked for, in the order they were sent. */
+function cursorsAsked(): (string | undefined)[] {
+  return (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.map(
+    ([, query]) => query?.cursor
+  );
+}
+
+// R15: a press of the control after the outline's last row claims the focus for the first row of
+// the page it reads, and for no other row. Its page refused, the claim ends with the refusal: a
+// row a later read draws - a comment an event brings - takes no focus, and the control stays for
+// another press, whose page merges and lands on its own first row.
+test("a More press whose next page is refused leaves the focus where it is as a read made again draws a new comment, and a press whose page merges lands on its first row", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let first = firstPage([comment], "page-2");
+  let next = async (): Promise<TreeAnswer> => {
+    throw new Error("the next page was refused");
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? first : next()
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const { held, unmount } = await drawnForPress(client);
+    await waitFor(() => expect(moreControl()).not.toBeNull());
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(cursorsAsked()).toEqual([undefined, "page-2"]));
+    await waitInAct(30);
+    expect(moreControl(), "the control went with the refused page").not.toBeNull();
+
+    first = firstPage([comment, ADDED], "page-2");
+    await readOutlineAgain(client);
+    await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
+    await waitInAct(30);
+    expect(focusedRow(), "the refused press gave the focus to the comment drawn after it").toBe(
+      held
+    );
+
+    next = async () => laterPage([LATER]);
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(focusedRow()).toBe(LATER.id));
+    unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: a page that lands once the answer has moved on - read again from its first page, naming
+// another next page - is not merged (`readNextTreePage`), and the press that asked for it lands
+// nowhere: a comment a later read draws takes no focus. The page the answer then names merges, and
+// its press lands on its own first row.
+test("a More press whose page lands once the answer has moved on leaves the focus where it is as a later read draws a new comment, and a press whose page merges lands on its first row", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let first = firstPage([comment], "page-2");
+  const out = Promise.withResolvers<TreeAnswer>();
+  const pages: Readonly<Record<string, Promise<TreeAnswer>>> = {
+    "page-2": out.promise,
+    "page-3": Promise.resolve(laterPage([LATER])),
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? first : (pages[query.cursor] ?? first)
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const { held, unmount } = await drawnForPress(client);
+    await waitFor(() => expect(moreControl()).not.toBeNull());
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(cursorsAsked()).toEqual([undefined, "page-2"]));
+
+    // The read made again names another next page, and draws no new row.
+    first = firstPage([comment], "page-3");
+    await readOutlineAgain(client);
+    await waitFor(() =>
+      expect(client.getQueryData<TreeAnswer>(conversationTreeKey(KEY))?.cursor).toBe("page-3")
+    );
+    await act(async () => out.resolve(laterPage([LATER])));
+    await waitInAct(30);
+    expect(outlineRowOf(LATER.id), "the page that landed late was merged").toBeNull();
+
+    first = firstPage([comment, ADDED], "page-3");
+    await readOutlineAgain(client);
+    await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
+    await waitInAct(30);
+    expect(
+      focusedRow(),
+      "the press whose page merged nothing gave the focus to the comment drawn after it"
+    ).toBe(held);
+
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(focusedRow()).toBe(LATER.id));
+    unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: while a press's page is out, no row is that page's: a comment a read made again draws then
+// takes no focus. Once the page merges, the focus goes to its own first row.
+test("a More press leaves the focus where it is as a read made again draws a new comment while its page is out, and lands on that page's first row once it merges", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let first = firstPage([comment], "page-2");
+  const out = Promise.withResolvers<TreeAnswer>();
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? first : out.promise
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const { held, unmount } = await drawnForPress(client);
+    await waitFor(() => expect(moreControl()).not.toBeNull());
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(cursorsAsked()).toEqual([undefined, "page-2"]));
+
+    first = firstPage([comment, ADDED], "page-2");
+    await readOutlineAgain(client);
+    await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
+    await waitInAct(30);
+    expect(
+      focusedRow(),
+      "the press out gave the focus to a comment that is no row of its page"
+    ).toBe(held);
+
+    await act(async () => out.resolve(laterPage([LATER])));
+    await waitFor(() => expect(focusedRow()).toBe(LATER.id));
+    unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: a press lands on the first row its page adds. The outline draws an ask by the block it was
+// asked on, so an ask the first page holds is drawn already when the next page brings that block.
+// The block is no new row of that page, and the focus does not go back up to the ask: it lands on
+// the first row the page adds (T's tester, round 22: on a copy of INFRA-1196, the third More press
+// in Graph put the focus on the outline's first row, a question the load drew, 85,000 px above the
+// page's first new row).
+test("a More press whose page brings the block of an ask drawn already lands on the page's first new row, not on the ask", async () => {
+  const asked = {
+    anchor: null,
+    answer: null,
+    artifact_id: plan.id,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    block_artifact: { id: plan.id, primary: false, slug: PLAN },
+    block_id: "q1",
+    created_at: "2026-11-05T00:30:00Z",
+    edited_at: null,
+    id: "ask-1",
+    issue_key: KEY,
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    options: null,
+    question: "Which way does the page ship?",
+    state: "open",
+    urgency: "normal",
+  } satisfies IssueAskRow;
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { asks: [asked] });
+  const askNode = answerNode(asked.id, "ask", { text: asked.question });
+  const askBlock = answerNode("q1", "ask", {
+    document: { artifact_id: plan.id, position: 1, slug: PLAN },
+    text: asked.question,
+  });
+  const first = pagedAnswer(treeAnswer([comment], { nodes: [askNode] }), "page-2", 2);
+  const next: TreeAnswer = {
+    ...pagedAnswer(fixtureAnswer([askBlock, commentNode(LATER, KEY)]), null),
+    comments_before: null,
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.cursor === undefined ? first : next
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The page holds the issue read, as `IssuePage` reads it before it draws the outline.
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
+  try {
+    const { unmount } = await drawnForPress(client);
+    await waitFor(() => expect(outlineRowOf(`${PLAN}#b-q1`), "the ask drew no row").not.toBeNull());
+    await waitFor(() => expect(moreControl()).not.toBeNull());
+    await act(async () => {
+      moreControl()?.click();
+    });
+    await waitFor(() => expect(outlineRowOf(LATER.id)).not.toBeNull());
+    await waitInAct(30);
+    expect(
+      focusedRow(),
+      "the press gave the focus to the ask the first page drew, not to its page's first new row"
+    ).toBe(LATER.id);
+    unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: `k` on the outline's first row presses the control above it, which reads the next older
+// comment page and claims the focus for that page's first row. Its page refused, the claim ends
+// with the refusal: a comment a later read draws takes no focus, and the control stays for another
+// press, whose page merges and lands on its own first row.
+test("the older comments' key press whose page is refused leaves the focus where it is as a read made again draws a new comment, and a press whose page merges lands on its first row", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const before = `2026-11-05T01:00:00.000000Z,${comment.id}`;
+  let first: TreeAnswer = { ...firstPage([comment], null), comments_before: before };
+  let older = async (): Promise<TreeAnswer> => {
+    throw new Error("the older comment page was refused");
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.comments_before === undefined ? first : older()
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const { held, unmount } = await drawnForPress(client);
+    await waitFor(() =>
+      expect(document.body.querySelector("[data-older-comments] button")).not.toBeNull()
+    );
+    // `k` on the first row, which holds the focus, as the reader presses it.
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "k" })
+      );
+    });
+    await waitFor(() => expect(treeReadsSent()["kind comments"]).toBe(1));
+    await waitInAct(30);
+    expect(
+      document.body.querySelector("[data-older-comments] button"),
+      "the control went with the refused page"
+    ).not.toBeNull();
+
+    first = { ...firstPage([comment, ADDED], null), comments_before: before };
+    await readOutlineAgain(client);
+    await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
+    await waitInAct(30);
+    expect(focusedRow(), "the refused press gave the focus to the comment drawn after it").toBe(
+      held
+    );
+
+    older = async () => laterPage([OLDER]);
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "k" })
+      );
+    });
+    await waitFor(() => expect(focusedRow()).toBe(OLDER.id));
+    expect(treeReadsSent()["kind comments"]).toBe(2);
+    unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// R15: the older comments' key press lands on the first row its page adds, as a More press does.
+// The outline draws an ask by the block it was asked on, so an ask the first page holds is drawn
+// already when the older page brings that block. The block is no new row of that page, and the
+// focus does not go up to the ask, which was asked before the older comment was written and so
+// stands above it in the conversation: it lands on the older comment's row.
+test("the older comments' key press whose page brings the block of an ask drawn already lands on the page's first new row, not on the ask", async () => {
+  const asked = {
+    anchor: null,
+    answer: null,
+    artifact_id: plan.id,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    block_artifact: { id: plan.id, primary: false, slug: PLAN },
+    block_id: "q1",
+    created_at: "2026-11-03T00:00:00Z",
+    edited_at: null,
+    id: "ask-1",
+    issue_key: KEY,
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    options: null,
+    question: "Which way does the page ship?",
+    state: "open",
+    urgency: "normal",
+  } satisfies IssueAskRow;
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs), { asks: [asked] });
+  const askNode = answerNode(asked.id, "ask", { made_at: asked.created_at, text: asked.question });
+  const askBlock = answerNode("q1", "ask", {
+    document: { artifact_id: plan.id, position: 1, slug: PLAN },
+    text: asked.question,
+  });
+  // The first page in the read's order: under the issue its asks and comments by when each was
+  // made, then the rest.
+  const first: TreeAnswer = {
+    ...pagedAnswer(
+      fixtureAnswer([
+        answerNode(KEY, "issue", { parent: null }),
+        askNode,
+        commentNode(comment, KEY),
+        task,
+      ]),
+      null
+    ),
+    comments_before: `2026-11-05T01:00:00.000000Z,${comment.id}`,
+  };
+  const older: TreeAnswer = {
+    ...pagedAnswer(fixtureAnswer([askBlock, commentNode(OLDER, KEY)]), null),
+    comments_before: null,
+  };
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) =>
+    query?.comments_before === undefined ? first : older
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The page holds the issue read, as `IssuePage` reads it before it draws the outline.
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
+  try {
+    const { unmount } = await drawnForPress(client);
+    await waitFor(() => expect(outlineRowOf(`${PLAN}#b-q1`), "the ask drew no row").not.toBeNull());
+    await waitFor(() =>
+      expect(document.body.querySelector("[data-older-comments] button")).not.toBeNull()
+    );
+    // `k` on the first row, which holds the focus, as the reader presses it.
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "k" })
+      );
+    });
+    await waitFor(() => expect(outlineRowOf(OLDER.id)).not.toBeNull());
+    await waitInAct(30);
+    expect(
+      focusedRow(),
+      "the press gave the focus to the ask the first page drew, not to its page's first new row"
+    ).toBe(OLDER.id);
+    unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
     client.clear();
