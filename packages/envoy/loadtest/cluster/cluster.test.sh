@@ -1028,8 +1028,10 @@ EOF
 # or timer_now() the test replaced reads its bound on it, so a bound of minutes costs the test no
 # real second.
 #
-# FAKE_SLEEP_GATE=FILE holds a sleep of FAKE_SLEEP_GATE_SECONDS (default 60, the daemons' period)
-# until FILE exists, and then lets it go as the rules above say. A daemon removes its own pidfile
+# FAKE_SLEEP_GATE=FILE holds the caller's Nth nap of FAKE_SLEEP_GATE_SECONDS (default 60) and
+# every later nap of that length until FILE exists. FAKE_SLEEP_GATE_FROM gives N (default 1).
+# Only that caller's records of that length in naps.log count, including the nap just recorded.
+# A nap past the gate follows the rules above. A daemon removes its own pidfile
 # when it stops, and with FAKE_FAST_SLEEP's fast periods it stops as soon as the last command of
 # its run has ended -- before the case that ran that command reads the pidfile, or after, as the
 # box schedules them. A command run with the gate leaves its daemons in their first period, alive
@@ -1042,14 +1044,19 @@ EOF
 # is gone. So the first such sleep is the fast one FAKE_FAST_SLEEP makes it, and the next naps
 # until the case sends its signal, however long a loaded box takes to send it.
 #
-# Every call, fast or real, of any length, is also a line "CALLER SECONDS" in naps.log, CALLER being
-# the pid of the shell that napped: how many naps one shell has taken, whatever their length (naps_by).
+# Every call, fast or real, of any length, is also a line "CALLER SECONDS" in naps.log. CALLER is
+# the pid of the shell that napped, so naps_by can count that shell's naps of every length. The
+# two disk watcher stop cases use their own caller pids to add "CALLER check WHAT" lines.
 real_sleep=$(PATH=$real_path command -v sleep)
 cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
 [ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s %s\n' "\$PPID" "\$*" >>"\$FAKE_DIR/naps.log"
 if [ "\$*" = "\${FAKE_SLEEP_GATE_SECONDS:-60}" ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
-  until [ -e "\$FAKE_SLEEP_GATE" ] || [ ! -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
+  gate_from=\${FAKE_SLEEP_GATE_FROM:-1}
+  if [ "\$gate_from" -eq 1 ] ||
+    { gate_naps=\$(grep -xcF -- "\$PPID \$*" "\$FAKE_DIR/naps.log" 2>/dev/null) && [ "\$gate_naps" -ge "\$gate_from" ]; }; then
+    until [ -e "\$FAKE_SLEEP_GATE" ] || [ ! -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
+  fi
 fi
 if [ "\$*" = "\${FAKE_SLEEP_HOLD:-}" ] && grep -qxF -- "\$*" "\$FAKE_DIR/sleep.log" 2>/dev/null; then
   while [ -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
@@ -1130,7 +1137,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_HOLD \
   FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_RUNNER_EXEC_FAIL_AT_START \
-  FAKE_SLEEP_GATE FAKE_SLEEP_GATE_SECONDS FAKE_SLEEP_HOLD \
+  FAKE_SLEEP_GATE FAKE_SLEEP_GATE_SECONDS FAKE_SLEEP_GATE_FROM FAKE_SLEEP_HOLD \
   FAKE_IDENTITY_ANSWER FAKE_LISTENER_NO_PRINCIPAL FAKE_MINT_TOKEN FAKE_LOADGEN_NO_MINT FAKE_DAEMON_START_NAPS
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
@@ -4438,6 +4445,147 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go"
 pass "each poll of the disk watcher and of the runner-job wait reads the lock once and kills by that one answer, a wait keeps polling until the job it stopped records an exit status and SIGKILLs one that ignored the TERM, and a TERM that lands while the watcher acts is taken, with pg_disk_watch_stop killing a watcher that outlasts its bound and saying so"
+
+# These cases hold the watcher alive until the stop records the nap during which it should leave.
+# The watcher leaves during the first nap in the early case and the third 1 s nap in the long case.
+# The gate keeps that nap from ending until a second helper sees that Bash has reaped the watcher.
+# The stop's next liveness check therefore sees the watcher gone, even on a loaded runner.
+start_stop_poll_watcher() {
+  local stop_pid=$1 nap_limit=$2 one_second_limit=$3
+  mkdir -- "$watch_fixture"
+  (
+    trap ': >"$watch_fixture/got-term"' TERM
+    printf '%s\n' "$BASHPID" >"$watch_fixture/ready"
+    while [ -d "$FAKE_DIR" ] && [ ! -e "$watch_fixture/cancel" ]; do
+      if [ -f "$watch_fixture/got-term" ] &&
+        awk -v pid="$stop_pid" -v naps="$nap_limit" -v coarse="$one_second_limit" '
+          $1 == pid && NF >= 2 && $2 != "check" { ++total; if ($2 == "1") ++ones }
+          END { exit !(total >= naps || ones >= coarse) }
+        ' "$FAKE_DIR/naps.log" 2>/dev/null; then
+        : >"$watch_fixture/left"
+        exit 0
+      fi
+      "$real_sleep" 0.01
+    done
+  ) &
+  watcher=$!
+  (
+    while [ -d "$FAKE_DIR" ] && [ ! -e "$watch_fixture/cancel" ]; do
+      if [ ! -e "/proc/$watcher" ]; then
+        : >"$FAKE_SLEEP_GATE"
+        exit 0
+      fi
+      "$real_sleep" 0.01
+    done
+  ) &
+  gate_opener=$!
+  stop_guard=""
+  # A failed assertion can leave the watcher waiting for a nap the stop never took.
+  trap 'stop_watchdog_end; : >"$watch_fixture/cancel"; wait "$watcher" "$gate_opener" 2>/dev/null || true' EXIT
+  until [ -s "$watch_fixture/ready" ] || [ ! -e "/proc/$watcher" ]; do "$real_sleep" 0.01; done
+  [ -s "$watch_fixture/ready" ] || fail "the stand-in disk watcher exited before it was ready to take TERM"
+}
+
+# The trace keeps the stop's clock real and puts each reading before the nap it precedes.
+# shellcheck disable=SC2317 # timer_now runs where cluster.sh's waits call it, by name
+keep_stop_poll_trace() {
+  term_second=""
+  : >"$FAKE_DIR/naps.log"
+  timer_now() {
+    NOW=$EPOCHSECONDS
+    term_second=${term_second:-$NOW}
+    printf '%s check %s\n' "$BASHPID" "$*" >>"$FAKE_DIR/naps.log"
+  }
+}
+
+stop_poll_trace() {
+  awk -v pid="$1" '$1 == pid' "$FAKE_DIR/naps.log"
+}
+
+expected_stop_poll_trace() {
+  local fine_naps=$1 coarse_naps=$2 i deadline=$((${term_second:-0} + PG_DISK_STOP_SECONDS))
+  printf '%s check stop %s term\n' "$stop_pid" "$stop_name"
+  for ((i = 0; i < fine_naps + coarse_naps; ++i)); do
+    printf '%s check stop %s poll deadline=%s\n' "$stop_pid" "$stop_name" "$deadline"
+    if ((i < fine_naps)); then
+      printf '%s 0.05\n' "$stop_pid"
+    else
+      printf '%s 1\n' "$stop_pid"
+    fi
+  done
+}
+
+assert_stop_poll_watcher_left() {
+  [ ! -f "$fake/stop-late" ] ||
+    fail "pg_disk_watch_stop did not return at the CI step's deadline"
+  [ -f "$watch_fixture/got-term" ] && [ -f "$watch_fixture/left" ] ||
+    fail "the stand-in disk watcher did not take TERM and leave on its own"
+  [ -z "$watcher_present" ] ||
+    fail "the stand-in disk watcher's /proc/$watcher still existed when pg_disk_watch_stop returned"
+  ! grep -qF 'so it was killed' "$tmp/out" ||
+    fail "pg_disk_watch_stop said it killed a stand-in disk watcher that should have left on its own"
+}
+
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  keep_stop_poll_trace
+  stop_pid=$BASHPID
+  PG_DISK_WATCHER=""
+  pg_disk_watch_stop >"$tmp/out" 2>&1
+  trace=$(stop_poll_trace "$stop_pid")
+  [ -z "$trace" ] || fail "pg_disk_watch_stop checked its timer or napped with no watcher:
+$trace"
+
+  watch_fixture=$fake/stop-early
+  export FAKE_SLEEP_GATE=$watch_fixture/gate FAKE_SLEEP_GATE_SECONDS=0.05
+  start_stop_poll_watcher "$stop_pid" 1 3
+  stop_name=pgearly
+  PG_DISK_WATCHER=$watcher PG_DISK_WATCH_STEP=$stop_name
+  stop_watchdog "$watcher"
+  started=$EPOCHREALTIME
+  pg_disk_watch_stop >"$tmp/out" 2>&1
+  ended=$EPOCHREALTIME
+  watcher_present=""
+  [ ! -e "/proc/$watcher" ] || watcher_present=1
+  stop_watchdog_end
+  stop_guard=""
+
+  elapsed=$(awk -v start="$started" -v end="$ended" 'BEGIN { printf "%.6f", end - start }')
+  printf 'pg_disk_watch_stop returned in %s s\n' "$elapsed"
+  trace=$(stop_poll_trace "$stop_pid")
+  { [ "$trace" = "$(expected_stop_poll_trace 1 0)" ] && awk -v s="$elapsed" 'BEGIN { exit !(s < 1) }'; } ||
+    fail "pg_disk_watch_stop did not return within 1 s with exactly one check and one 0.05 s nap after TERM. It returned in $elapsed s. Trace:
+$trace"
+  assert_stop_poll_watcher_left
+)
+pass "pg_disk_watch_stop returns at its first check after the watcher it signalled leaves, taking one nap of 0.05 s, and at once when no watcher runs"
+
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  keep_stop_poll_trace
+  stop_pid=$BASHPID
+  watch_fixture=$fake/stop-long
+  export FAKE_FAST_SLEEP=1 FAKE_SLEEP_GATE=$watch_fixture/gate FAKE_SLEEP_GATE_SECONDS=1 FAKE_SLEEP_GATE_FROM=3
+  # The watcher also leaves after 41 naps so a stop that never takes a 1 s nap fails by its trace.
+  start_stop_poll_watcher "$stop_pid" 41 3
+  stop_name=pglong
+  PG_DISK_WATCHER=$watcher PG_DISK_WATCH_STEP=$stop_name
+  stop_watchdog "$watcher"
+  pg_disk_watch_stop >"$tmp/out" 2>&1
+  watcher_present=""
+  [ ! -e "/proc/$watcher" ] || watcher_present=1
+  stop_watchdog_end
+  stop_guard=""
+
+  trace=$(stop_poll_trace "$stop_pid")
+  [ "$trace" = "$(expected_stop_poll_trace 20 3)" ] ||
+    fail "pg_disk_watch_stop did not take 20 naps of 0.05 s and three of 1 s, with one check before each nap and none after. Trace:
+$trace"
+  assert_stop_poll_watcher_left
+)
+pass "pg_disk_watch_stop checks every 0.05 s for its first 20 checks and every second after, and waits for a watcher that takes longer than a second to leave, killing nothing"
 
 # (ee) A runner pod no exec reaches bounds the wait, so the step ends and stops holding the lock.
 # Past its deadline the wait stops the job and then polls that job's .rc for the exit status the
