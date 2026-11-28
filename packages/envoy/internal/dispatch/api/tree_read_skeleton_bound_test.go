@@ -19,7 +19,8 @@ package api
 // from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
 // database on, which loads pg_stat_statements (shared_preload_libraries=pg_stat_statements,
 // pg_stat_statements.track=all): the database time it prints is read there, and the check's median
-// stage (packages/dispatch/e2e/acceptance/tree-read-db-medians.sh) judges it over three Jobs.
+// stage (packages/dispatch/e2e/acceptance/tree-read-db-medians.sh) judges it over three Jobs
+// against the medians recorded in testdata/tree-read-bound-recorded.json.
 
 import (
 	"bytes"
@@ -64,8 +65,9 @@ import (
 )
 
 // skeletonBoundMS is R8's bound on the p90 of the first page of each read of the tree route, on
-// every issue and for every filter. The bound on database time, at most twice the old page's
-// median, is the median stage's (packages/dispatch/e2e/acceptance/tree-read-db-medians.sh), over
+// every issue and for every filter. The bound on database time, a new median at most twice the
+// median recorded in testdata/tree-read-bound-recorded.json or, under a recorded 2 ms, at most 1 ms
+// above it, is the median stage's (packages/dispatch/e2e/acceptance/tree-read-db-medians.sh), over
 // the three Jobs' lines, and no one run judges it.
 const skeletonBoundMS = 200.0
 
@@ -1644,7 +1646,8 @@ func requireSmallPages(t *testing.T) {
 //
 // It prints, for each issue and each read of skeletonFilters, `c-tree-read-bound: database time per
 // reading: fixture=<label> read=<filter> old=<ms> new=<ms>`, which the median stage judges over three
-// Jobs (tree-read-db-medians.sh). It fails where a read's p90 is above skeletonBoundMS, and where a
+// Jobs against the medians recorded in testdata/tree-read-bound-recorded.json
+// (tree-read-db-medians.sh). It fails where a read's p90 is above skeletonBoundMS, and where a
 // statement of a loader the read with no view sends runs more than once per reading of it or is not
 // in pg_stat_statements, and it records each count, page and bound it reads otherwise and goes on.
 func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
