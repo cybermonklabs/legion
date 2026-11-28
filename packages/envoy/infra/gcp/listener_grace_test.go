@@ -26,9 +26,9 @@ const listenerDurableBindDeadlineSeconds = 135.0
 // would be the other way to hold them equal, and it is the wrong one: naming
 // clusteredHubListenerGraceSeconds in gcp:Dispatch's code would couple the Dispatch listener to
 // the hub's name, and a reader of either pod would have to look the other component up. This
-// test holds them equal instead. It reads the app pod too, which keeps its own 35 s, coupled to
-// stopGrace in packages/envoy/cmd/dispatch/shutdown.go, so a change that moves every grace at
-// once fails here.
+// test holds them equal instead. It reads the app pod too, which keeps its own 35 s by default
+// (terminationGracePeriodSeconds unset), coupled to stopGrace in
+// packages/envoy/cmd/dispatch/shutdown.go, so a change that moves every grace at once fails here.
 func TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace(t *testing.T) {
 	hub := runClusteredHub(t, clusteredArgs())
 	dispatch, err := runDispatch(t, dispatchArgs(), true)

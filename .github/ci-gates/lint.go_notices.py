@@ -2,7 +2,8 @@
 GATE = gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
     (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
     (NOTICES, f"{NOTICES_LOOPS} runs it once per release target"),
-    (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
+    (f"{SCRIPTS}/release-push.sh", f"{NOTICES_LOOPS} runs its legion-targets for the legion loop"),
+    (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads its envoy list, and release-push.sh's legion-targets its legion list"),
     (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
     (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
 ))

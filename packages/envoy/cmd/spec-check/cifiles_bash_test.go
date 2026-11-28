@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -291,7 +292,7 @@ func firstArguments(t *testing.T, bash string, scripts []string) [][]string {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(bin, "spec-check"), []byte("#!/bin/sh\nprintf '%s\\0' \"$1\" >&3\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "spec-check"), []byte("#!/bin/sh\nprintf '%s\\0' \"$1\" >&3\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	driver := filepath.Join(dir, "driver.sh")

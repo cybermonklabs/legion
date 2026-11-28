@@ -96,7 +96,9 @@ func (s *Service) roomHeld(room string) bool {
 
 // publishedLossTimeout bounds what recordPublishedLoss reads: the other processes' flush, a
 // catch-up of this process's room, or a load of the stored document. The write's writer slot is
-// held until it returns.
+// held until it returns. It runs on the service's clock (Deps.Clock): the real clock in
+// production, and in a test a fake the test moves, so a check the test holds ends only where it
+// moves it.
 const publishedLossTimeout = 10 * time.Second
 
 // recordPublishedLoss judges, once the write is committed and published, which of the write's
@@ -133,7 +135,7 @@ func (s *Service) recordPublishedLoss(write *liveWrite) {
 		write.lost, write.lostVerdict = nil, true
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), publishedLossTimeout)
+	ctx, cancel := s.clock.WithTimeout(context.Background(), publishedLossTimeout)
 	defer cancel()
 	rooms, err := s.store.Pool.Rooms()
 	if err != nil {

@@ -1,16 +1,21 @@
 package auth
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 )
 
 const (
@@ -124,11 +129,11 @@ func splitAtEachSpace(s string) []string {
 // matches nothing, and the empty bearer matches no value, since none is empty. The HTTP API and
 // the document websocket both authenticate the shared token through it.
 //
-// A bearer matching a value after the first is logged with the request's rightmost
-// X-Forwarded-For address (the hop the load balancer appended; the connection's own address when
-// there is none), its User-Agent and its path, once per address and User-Agent every
-// previousTokenLogWindow, so a rotation can see whether the value on its way out is still in use.
-// The line names the value's position and never a token.
+// A bearer matching a value after the first is logged with the request's caller address
+// (ForwardedAddress: the one the middleware around the router resolved under the trusted proxy
+// ranges, which the access log and the broker's bucket key on too), its User-Agent and its path,
+// once per address and User-Agent every previousTokenLogWindow, so a rotation can see whether the
+// value on its way out is still in use. The line names the value's position and never a token.
 func MatchesSharedAgentToken(r *http.Request, token string, tokens *SharedAgentTokens) bool {
 	if tokens == nil {
 		return false
@@ -197,22 +202,97 @@ func clipCallerField(field string) string {
 	return strings.ToValidUTF8(field[:previousTokenCallerBytes], "")
 }
 
-// ForwardedAddress is the rightmost X-Forwarded-For entry, the address the load balancer in front
-// of Dispatch saw, or the connection's own address without its port when the header names none.
-// The access log names a request's address with it too (accesslog.Handler).
+// ForwardedAddress is the caller's address as Dispatch keys it: the access log's address
+// (accesslog.Handler), the previous-token line's, and the per-address bucket the secrets broker's
+// token check keys on (cmd/dispatch's brokerTokenVerifier). Nothing admits a caller by it.
+//
+// A request the middleware around the router resolved carries its answer (WithForwardedAddress),
+// and ForwardedAddress answers it: ResolveForwardedAddress's reading under the trusted proxy
+// ranges (DISPATCH_TRUSTED_PROXY_RANGES), so every reader of the address on one request reads the
+// one answer. A request that carries none, one no router served, is read as
+// ResolveForwardedAddress reads it with no range configured: the rightmost X-Forwarded-For entry,
+// the address the load balancer in front of Dispatch saw, or the connection's own address without
+// its port when the header names none, the reading the access log and the broker's bucket have
+// always had.
 func ForwardedAddress(r *http.Request) string {
+	if address, resolved := r.Context().Value(forwardedAddressKey{}).(string); resolved {
+		return address
+	}
+	// With no range configured no peer is a trusted proxy's, so the reading refuses nothing.
+	address, _ := ResolveForwardedAddress(r, nil)
+	return address
+}
+
+// ResolveForwardedAddress is the caller's address as Dispatch keys it once the proxies
+// DISPATCH_TRUSTED_PROXY_RANGES names (configured) are trusted, which the one middleware around
+// the router resolves for each request and hands its readers (WithForwardedAddress), and the error
+// that refuses a request whose X-Forwarded-For such a proxy could not have written.
+//
+// A peer in configured, such as an internal Application Load Balancer's proxy-only subnet, appends
+// to X-Forwarded-For as Google's balancers do: the client it saw, then its forwarding rule's
+// address, the same for every caller. So it is read as the listener's edge reads Google's
+// balancer, by netaddr.ForwardedClient: the second-to-last entry of the one line, an IPv4 address
+// or the /64 an IPv6 one is in, never an entry to its left, which the caller wrote.
+// ForwardedClient's error (other than one line, fewer than two entries, or a second-to-last entry
+// that is no IP address) is the answer then, since no such proxy wrote that header, and reading
+// anything from it would let the caller pick its key.
+//
+// A peer in no range keeps the rule Dispatch has always read: the rightmost entry, or the
+// connection's own address when the header names none. That entry is text a caller that reaches
+// Dispatch directly writes itself, so a forged line of two entries never makes the one it wrote
+// second from the right its key, and its header is never refused.
+func ResolveForwardedAddress(r *http.Request, configured []netip.Prefix) (string, error) {
+	peer := peerAddress(r)
 	forwarded := r.Header.Values("X-Forwarded-For")
+	if inRanges(peer, configured) {
+		return netaddr.ForwardedClient(forwarded)
+	}
 	if len(forwarded) > 0 {
 		last := forwarded[len(forwarded)-1]
 		if comma := strings.LastIndexByte(last, ','); comma >= 0 {
 			last = last[comma+1:]
 		}
 		if address := strings.TrimSpace(last); address != "" {
-			return address
+			return address, nil
 		}
 	}
+	return peer, nil
+}
+
+// forwardedAddressKey is the context key the address the middleware around the router resolved
+// for a request's caller is carried under (WithForwardedAddress).
+type forwardedAddressKey struct{}
+
+// WithForwardedAddress is ctx carrying address, the caller's address ResolveForwardedAddress
+// answered for the request ctx is of, which ForwardedAddress then answers. The middleware around
+// the router sets it once, where it refuses a request ResolveForwardedAddress reads no address
+// from, so the address that decides the refusal is the one every reader keys on: the access log,
+// the previous-token line and the broker token check's bucket.
+func WithForwardedAddress(ctx context.Context, address string) context.Context {
+	return context.WithValue(ctx, forwardedAddressKey{}, address)
+}
+
+// peerAddress is the connection's own address without its port, or RemoteAddr as it stands when
+// it holds no port.
+func peerAddress(r *http.Request) string {
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// inRanges reports whether address, an IP address written as text, is in one of ranges, read as
+// netaddr.Canonical reads it: an IPv4 address written as IPv6 is the IPv4 address it holds, and a
+// zone is dropped, either of which netip.Prefix.Contains would otherwise find in no IPv4 range.
+// Text that is no IP address is in none.
+func inRanges(address string, ranges []netip.Prefix) bool {
+	if len(ranges) == 0 {
+		return false
+	}
+	addr, err := netip.ParseAddr(address)
+	if err != nil {
+		return false
+	}
+	addr = netaddr.Canonical(addr)
+	return slices.ContainsFunc(ranges, func(prefix netip.Prefix) bool { return prefix.Contains(addr) })
 }

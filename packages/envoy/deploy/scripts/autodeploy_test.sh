@@ -1,5 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Run it as `autodeploy_test.sh <group>`; `autodeploy_test.sh --groups` lists the groups, one a
+# line, in the order their cases stand in this file and autodeploy_test_env.sh. Each group runs
+# alone, from a fresh fixture, as its own CI pool entry, so no group reads what another left. Each
+# case prints a `PASS:` line, and each group ends with a line of its own, once the bound of every
+# database client container its cases ran is checked.
+group_names=(env-spellings-1 env-spellings-2 env-reads env-writer-1 env-writer-2 rollback-1 rollback-2
+  schema-key url-refused-1 url-refused-2 url-accepted)
+if (($# == 1)) && [[ "$1" == --groups ]]; then
+  printf '%s\n' "${group_names[@]}"
+  exit 0
+fi
+group=
+if (($# == 1)); then
+  for listed in "${group_names[@]}"; do
+    [[ "$1" != "$listed" ]] || group=$1
+  done
+fi
+if [[ -z "$group" ]]; then
+  {
+    if (($# == 1)); then
+      printf 'autodeploy_test: %s is no group of this test\n' "$1"
+    else
+      printf 'autodeploy_test: given %s arguments, where it takes one group\n' "$#"
+    fi
+    printf 'Run one group as autodeploy_test.sh <group>, <group> one of these (--groups prints them):\n'
+    printf '  %s\n' "${group_names[@]}"
+    printf 'and every group, from packages/envoy, as:\n'
+    printf '  %s\n' "bash -c 'gs=\$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in \$gs; do bash deploy/scripts/autodeploy_test.sh \"\$g\" || exit 1; done'"
+  } >&2
+  exit 2
+fi
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
@@ -18,6 +49,45 @@ mkdir -p "$compose" "$backups" "$bin" "$tools"
 real_docker=$(command -v docker || true)
 [[ -n "$real_docker" ]] || { printf 'autodeploy_test: docker is not on PATH; this test reads the resolution of docker compose config\n' >&2; exit 1; }
 "$real_docker" compose version >&2 || { printf 'autodeploy_test: docker compose version failed with %s; this test needs Docker Compose\n' "$real_docker" >&2; exit 1; }
+# Each `docker compose` start runs the docker CLI and then its Compose plugin, and the cases make
+# about 235 Compose reads. The INFRA-6360 probe (CI run 46134562966, job 140947658045) ran each read
+# the cases make three ways on the runner: `docker compose`, the plugin straight (`docker-compose
+# <args>`, without the leading `compose`), and the plugin straight with DOCKER_HOST on a socket
+# nothing listens on. For each read but one, all three printed the same standard output, standard
+# error and exit status, byte for byte. The one is compose_resolves' `config --environment`, which
+# prints Compose's whole environment: there the docker CLI's own DOCKER_CLI_PLUGIN_* lines (a new
+# socket name each run), its `_` and the DOCKER_HOST line differ, and the line it reads does not.
+# A read through the CLI took 0.066 s of wall time at the median, the plugin straight 0.035 s, and
+# with no daemon 0.029 s: Compose asks the daemon for /_ping and /info before each command, and with
+# nothing on DOCKER_HOST that ask fails at once, which Compose's config reads do not need. So the
+# test takes the first docker-compose in the docker CLI's default plugin directories (its config
+# directory's cli-plugins, then the four system directories); it must answer the version
+# `docker compose` answers, or the fixture fails by name. docker_direct below is a `docker` that
+# runs it straight, with that DOCKER_HOST, for `compose ...`, and the docker CLI for anything else:
+# run_deployer hands it to the fake docker as the real binary, and compose_resolves calls it.
+# Production still calls Compose through the docker CLI. A run without the plugin fails here, by
+# name: it never skips.
+plugin_dirs=("${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins" /usr/local/lib/docker/cli-plugins
+  /usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins)
+compose_plugin=
+for plugin_dir in "${plugin_dirs[@]}"; do
+  if [[ -f "$plugin_dir/docker-compose" && -x "$plugin_dir/docker-compose" ]]; then
+    compose_plugin="$plugin_dir/docker-compose"
+    break
+  fi
+done
+[[ -n "$compose_plugin" ]] || { printf 'autodeploy_test: no executable docker-compose in %s; this test runs the config reads on the Compose plugin straight\n' "${plugin_dirs[*]}" >&2; exit 1; }
+compose_version=$("$real_docker" compose version --short) || true
+plugin_version=$("$compose_plugin" version --short) || true
+[[ -n "$plugin_version" && "$plugin_version" == "$compose_version" ]] || { printf 'autodeploy_test: the Compose plugin %s answers version --short with "%s", and %s compose with "%s"; this test needs the plugin docker compose runs\n' "$compose_plugin" "$plugin_version" "$real_docker" "$compose_version" >&2; exit 1; }
+docker_direct="$root/docker-direct"
+cat >"$docker_direct" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == compose ]] || exec "$real_docker" "\$@"
+shift
+DOCKER_HOST="unix://$root/no-daemon.sock" exec "$compose_plugin" "\$@"
+EOF
+chmod +x "$docker_direct"
 cp "$(dirname "$0")/../compose/dispatch.compose.yml" "$compose/dispatch.compose.yml"
 # Compose takes the shell's value of a setting over the .env's: only a row that means to set one does.
 unset ENVOY_ACCOUNT_GOOGLE_AUDIENCE ENVOY_ACCOUNT_TOKEN_FILE DISPATCH_SERVER_URL DATABASE_URL \
@@ -413,13 +483,16 @@ PATH="$bin:$PATH" python3 -c 'import sys' ||
 run_deployer() {
   PATH="$bin:$PATH" AUTODEPLOY_TEST_LOG="$log" AUTODEPLOY_TEST_ARGV="$argv" AUTODEPLOY_TEST_SCHEMA="$schema" \
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
-    AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$real_docker}" \
+    AUTODEPLOY_TEST_REAL_DOCKER="${test_real_docker-$docker_direct}" \
     BACKUPS="${test_backups-$backups}" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \
     "$(dirname "$0")/autodeploy.sh" "$@" 2>&"${test_stderr_fd:-1}"
 }
 deploy_once() {
   run_deployer --once
 }
+# fail prints the deployer's output a case captured last, and a group can fail before any case has
+# captured one.
+output=
 fail() {
   printf '%s\n' "$1" >&2
   printf -- '--- deployer output:\n%s\n--- compose:\n%s\n--- argv:\n%s\n' "$output" "$(<"$log")" "$(<"$argv")" >&2
@@ -432,6 +505,8 @@ no_secret() {
     fail "$1: a password or psql's stderr reached the output or a process's arguments"
   fi
 }
+# A value with a byte outside printable ASCII shows as LC_ALL=C printf %q prints it; LC_ALL stays.
+shown() ( LC_ALL=C; if [[ "$1" == *[![:print:]]* ]]; then printf %q "$1"; else printf %s "$1"; fi )
 # Every database client container runs under pg_client's timeout, so each one records its bound.
 # Each try of the schema read (a psql run) gets at least one second: pg_client reads 0 as
 # unbounded. The pre-deploy backup (pg_dump) asks pg_client for no bound (0), and this check
@@ -461,330 +536,52 @@ schema_value() {
 # The .env scenarios: how the deployer reads and writes compose/.env, in a file of their own.
 # shellcheck source=SCRIPTDIR/autodeploy_test_env.sh
 . "$(dirname "$0")/autodeploy_test_env.sh"
-# A deploy that fails its origin check with the schema where it was stops the candidate, confirms
-# it stopped, reads the schema, and rolls back. Every database client gets the URL without its
-# password and the password as PGPASSWORD.
-fresh_env
-if output=$(deploy_once); then
-  fail 'deployer did not fail after the origin check rejected the deployment'
-fi
-no_secret 'the rollback'
-if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer did not restore the previous image tag after the origin check failed'
-fi
-if ! compgen -G "$backups/pre-new-image-*.dump" >/dev/null; then
-  fail 'deployer did not write the pre-deploy database backup'
-fi
-if [[ $(<"$log") != *" pull "*$'\n'*" up "*$'\n'*" stop dispatch"$'\n'*" ps "*$'\n'*" up "* ]] || [[ $(wc -l <"$log") -ne 5 ]]; then
-  fail 'deployer did not pull, deploy, stop, confirm the stop, and roll back after the origin check failed'
-fi
-if [[ "$output" != *"rolling back to old-image"* ]]; then
-  fail 'deployer did not report the redirect-uri rollback'
-fi
-if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
-  fail 'deployer did not record the set of migrations old-image runs against'
-fi
-if [[ $(grep -c "^pg_dump -Fc $url_without_password\$" "$argv") -ne 1 ]] ||
-  [[ $(grep -c "$psql_run" "$argv") -ne 2 ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 2 ]] ||
-  [[ $(grep -cF "$schema_read" "$argv") -ne 2 ]]; then
-  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, each run the try for the runner key and then the read'
-fi
-# Each client container runs under an init that passes on a signal, so `timeout` ends it.
-if [[ $(grep -c '^docker run ' "$argv") -ne 3 || $(grep -c '^docker run --init ' "$argv") -ne 3 ]]; then
-  fail 'deployer ran a database client container without --init, which a timeout could not stop'
-fi
 
-# A new image that serves with its NATS connection failing (`nats` false) fails the health check
-# and is rolled back, as when Dispatch exited at boot without NATS; one with NATS turned off
-# (`nats` null) passes it and goes on to the origin check.
-fresh_env
-if output=$(AUTODEPLOY_TEST_CANDIDATE_NATS=false deploy_once); then
-  fail 'deployer kept an image whose NATS connection failed'
-fi
-if [[ "$output" != *"did not answer 200 with NATS connected"*"rolling back to old-image"* ]] ||
-  [[ "$output" == *"OAuth redirect_uri"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer did not roll back an image whose /healthz reported nats false'
-fi
-fresh_env
-if output=$(AUTODEPLOY_TEST_CANDIDATE_NATS=null deploy_once); then
-  fail 'deployer did not fail after the origin check rejected the deployment with NATS turned off'
-fi
-if [[ "$output" != *"OAuth redirect_uri"*"rolling back to old-image"* ]] || [[ "$output" == *"NATS connected"* ]]; then
-  fail 'deployer did not pass the health check of an image with NATS turned off (nats null)'
-fi
-
-# A deploy whose image moved the schema before it failed refuses to start the previous image
-# against that schema: it stops the new one, names both versions, and fails.
-fresh_env
-if output=$(AUTODEPLOY_TEST_MIGRATE_TO=113 deploy_once); then
-  fail 'deployer did not fail after a deploy that moved the schema failed its origin check'
-fi
-no_secret 'the refusal'
-if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applied)"*"113 (113 applied)"*"forward recovery is required"* ]]; then
-  fail 'deployer did not refuse the rollback naming both schema versions'
-fi
-if [[ $(grep -c ' up ' "$log") -ne 1 || $(grep -c ' stop dispatch' "$log") -ne 1 ]]; then
-  fail 'deployer did not deploy once and stop the new image once, without rolling back'
-fi
-if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer persisted the failed image tag after refusing its rollback'
-fi
-
-# The next pass retries the same image. The schema is already at 113 before it starts, and the
-# rollback is still refused: old-image runs against 112, as recorded on the first attempt.
-: >"$log"
-if output=$(deploy_once); then
-  fail 'deployer did not fail on the retry of an image whose rollback it refused'
-fi
-no_secret 'the retry'
-if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applied)"*"113 (113 applied)"* ]] || [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
-  fail 'deployer rolled back to old-image against schema 113 on the retry'
-fi
-
-# A migration the failed image held open commits only as the image stops. The deployer reads the
-# schema after the stop, so it sees 113 and refuses; a read before the stop would see 112.
-fresh_env
-if output=$(AUTODEPLOY_TEST_MIGRATE_ON_STOP=113 deploy_once); then
-  fail 'deployer did not fail when the failed image migrated as it stopped'
-fi
-no_secret 'the migration committing as the image stops'
-if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applied)"*"113 (113 applied)"* ]] || [[ $(grep -c ' up ' "$log") -ne 1 ]] ||
-  [[ $(schema_value) != 113-113-* ]]; then
-  fail 'deployer rolled back to old-image while the failed image held a migration open'
-fi
-
-# An out-of-order migration: the failed image applied a version below the highest one already
-# applied, a numbered migration under a timestamped one, so max(version) is where it was and only
-# the set changed. The deployer compares the set, so it refuses this rollback too.
-fresh_env
-printf '%s\n' 20260115123000 >>"$schema"
-if output=$(AUTODEPLOY_TEST_MIGRATE_TO=113 deploy_once); then
-  fail 'deployer did not fail after a deploy that applied an out-of-order migration failed its origin check'
-fi
-no_secret 'the out-of-order refusal'
-if [[ "$output" != *"refusing to roll back to old-image"*"schema 20260115123000 (113 applied)"*"20260115123000 (114 applied)"*"forward recovery is required"* ]]; then
-  fail 'deployer did not refuse the rollback after a migration applied below the highest one left max(version) where it was'
-fi
-if [[ $(grep -c ' up ' "$log") -ne 1 || $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer started old-image against a schema holding a migration old-image never ran'
-fi
-
-# A compose/.env the deployer before this one wrote records <tag>:<max(version)>, with no set
-# behind it. While that tag is still deployed it is compared the old way, so a retry in flight
-# across the upgrade keeps the safety it started with: a schema whose max has moved refuses, and
-# the record is left as it is.
-fresh_env
-printf 'ENVOY_IMAGE_SCHEMA=old-image:112\n' >>"$compose/.env"
-if output=$(AUTODEPLOY_TEST_MIGRATE_TO=113 deploy_once); then
-  fail 'deployer did not fail on an old-form record after a deploy that moved the schema failed'
-fi
-no_secret 'the old-form record'
-if [[ "$output" != *"refusing to roll back to old-image"*"schema 112"*"113 (113 applied)"*"forward recovery is required"* ]] ||
-  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:112"* ]]; then
-  fail 'deployer did not refuse the rollback against an old-form ENVOY_IMAGE_SCHEMA record, or rewrote it'
-fi
-# The same record with the schema where old-image left it rolls back.
-fresh_env
-printf 'ENVOY_IMAGE_SCHEMA=old-image:112\n' >>"$compose/.env"
-if output=$(deploy_once); then
-  fail 'deployer did not fail after the origin check rejected the deployment on an old-form record'
-fi
-no_secret 'the old-form record with the schema unmoved'
-if [[ "$output" != *"rolling back to old-image"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer did not roll back on an old-form record with the schema where old-image left it'
-fi
-
-# A stop that fails, or that leaves the candidate running, proves nothing about the schema.
-for stop in AUTODEPLOY_TEST_STOP_FAIL AUTODEPLOY_TEST_STOP_LEAVES_RUNNING; do
-  fresh_env
-  if output=$(export "$stop=1" && deploy_once); then
-    fail "deployer did not fail when $stop"
-  fi
-  no_secret "the refused stop ($stop)"
-  if [[ "$output" != *"refusing to roll back to old-image"* ]] || [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
-    fail "deployer rolled back without a confirmed stop ($stop)"
-  fi
+arguments_refused() {
+# autodeploy_test.sh run with no group, or with a name that is no group, exits 2 before its setup,
+# so a CI pool entry that lost its group fails at once, and its refusal names every group that
+# --groups prints. Each of the two runs has a TMPDIR of its own under $root, which stays empty, and
+# first on its PATH a stand-in mktemp in a directory of its own, which leaves a marker under $root,
+# outside that TMPDIR, and exits 1. A refusal moved below the setup's `root=$(mktemp -d)` would
+# leave that TMPDIR empty all the same, since the setup's EXIT trap deletes what mktemp made; the
+# stand-in's marker stays, and its exit fails the setup with status 1.
+bash "$0" --groups >"$root/groups" || fail "autodeploy_test.sh --groups exited $?, not 0"
+printf '%s\n' "${group_names[@]}" | cmp -s - "$root/groups" ||
+  fail "autodeploy_test.sh --groups printed $(<"$root/groups"), not the list of groups"
+for refused in '' no-such-group; do
+  tmp="$root/tmpdir${refused:+-$refused}"
+  stand_in="$root/mktemp-bin${refused:+-$refused}"
+  marker="$root/mktemp-ran${refused:+-$refused}"
+  mkdir "$tmp" "$stand_in"
+  printf '#!/usr/bin/env bash\n: >%q\nexit 1\n' "$marker" >"$stand_in/mktemp"
+  chmod +x "$stand_in/mktemp"
+  status=0
+  output=$(PATH="$stand_in:$PATH" TMPDIR="$tmp" bash "$0" ${refused:+"$refused"} 2>&1 >/dev/null) || status=$?
+  ((status == 2)) || fail "autodeploy_test.sh ${refused:-with no group} exited $status, not 2"
+  while IFS= read -r listed; do
+    [[ "$output" == *"$listed"* ]] || fail "autodeploy_test.sh ${refused:-with no group} did not name the group $listed"
+  done <"$root/groups"
+  [[ ! -e "$marker" ]] || fail "autodeploy_test.sh ${refused:-with no group} ran mktemp before it refused"
+  [[ -z "$(find "$tmp" -mindepth 1)" ]] ||
+    fail "autodeploy_test.sh ${refused:-with no group} made $(find "$tmp" -mindepth 1) in its TMPDIR before it refused"
 done
+printf 'PASS: %s\n' 'autodeploy_test.sh with no group, or with an unknown one, exits 2 before its setup, naming every group that --groups prints'
+}
 
-# A schema version it cannot read after the stop is no proof the schema stayed: it refuses.
-fresh_env
-if output=$(AUTODEPLOY_TEST_SCHEMA_UNREADABLE_AFTER_UP=1 deploy_once); then
-  fail 'deployer did not fail when it could not read the schema version after a failed deploy'
-fi
-no_secret 'the unreadable schema'
-if [[ "$output" != *"could not read the schema version"*"status 2"*"refusing to roll back to old-image"* ]] ||
-  [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
-  fail 'deployer rolled back without knowing the schema version'
-fi
-
-# A schema version it cannot read before a deploy stops the deploy before anything changes.
-fresh_env
-if output=$(AUTODEPLOY_TEST_SCHEMA_UNREADABLE=1 deploy_once); then
-  fail 'deployer deployed without reading the schema version first'
-fi
-no_secret 'the unreadable schema before the deploy'
-if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]] || [[ -s "$log" ]]; then
-  fail 'deployer did not stop before deploying when the schema version was unreadable'
-fi
-
-# A key another session holds does not make the read wait on it: a blocking wait deadlocks against
-# a migration runner building an index concurrently under that key, so the read tries the key,
-# reads nothing while it is held, and tries again. Here the key is held against the first two
-# tries; the third takes it, and the deploy runs as it does with a free key.
-fresh_env
-printf '2\n' >"$schema.key"
-if output=$(deploy_once); then
-  fail 'deployer did not fail after the origin check rejected the deployment behind a held key'
-fi
-no_secret 'the held migration key'
-# While the key is held the read must not run at all, not merely be dropped from the answer: the
-# fake fails such a read, as the server can, and under ON_ERROR_STOP=1 psql's non-zero status
-# would end the deployer's read rather than its poll. So of the four runs only the two granted
-# the key read anything: the third try, which took it, and the one after the stop.
-if [[ $(grep -cF "$schema_read" "$argv") -ne 2 ]] || [[ "$output" == *"could not read the schema version"* ]]; then
-  fail 'deployer read the applied set while another session held the migration key, so a failing read ended its poll'
-fi
-if [[ $(<"$schema.key") -ne 0 ]]; then
-  fail 'deployer did not try the held migration key more than once'
-fi
-# Four psql runs, each trying the key: it refused the first two, the third took it and read the
-# set, and one more after the stop. An f answer taken for the applied set would record 0 versions
-# and refuse the rollback.
-if [[ $(grep -c "$psql_run" "$argv") -ne 4 ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 4 ]] ||
-  [[ "$output" != *"rolling back to old-image"* ]] ||
-  [[ "$output" == *"refusing to roll back"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
-  fail 'deployer did not poll the held migration key and deploy once it came free'
-fi
-# Nothing in the run waits on the key inside the database, in a statement run or in an argument.
-if grep -qF 'select pg_advisory_lock(' "$argv"; then
-  fail 'deployer waited on the migration key in a blocking statement, which deadlocks the migration runner'
-fi
-
-# A key no session ever lets go of, as a pod killed mid-CREATE INDEX CONCURRENTLY leaves behind:
-# the backend goes on building the index, and holds the key for minutes. The deployer tries the
-# key a second apart for its whole deadline, never reads behind it, and then refuses: a schema
-# version it cannot read is no ground to deploy on. (The deployer's waits are the fake sleep
-# above, which returns at once, so its 60 tries take no time here.)
-fresh_env
-printf 'always\n' >"$schema.key"
-if output=$(deploy_once); then
-  fail 'deployer deployed without reading the schema version behind a key no session released'
-fi
-no_secret 'the migration key held past the deadline'
-# The whole poll, not a first try taken for an answer: 60 tries, one per psql run, and no read in
-# any of them. A deployer that gave up on the first refusal would try once.
-if [[ $(grep -cF "$schema_try" "$argv") -ne 60 ]] || [[ $(grep -c "$psql_run" "$argv") -ne 60 ]]; then
-  fail 'deployer did not poll the migration key through its deadline before giving up'
-fi
-if grep -qF "$schema_read" "$argv"; then
-  fail 'deployer read the applied set while another session held the migration key'
-fi
-if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]]; then
-  fail 'deployer did not report the unreadable schema version behind the held key and stop'
-fi
-# Nothing of the deploy ran: no pg_dump, which is how the pre-deploy backup is taken, and no
-# compose, so the previous image still serves. ($backups holds the dumps of the cases above, so
-# what this reads is the argument log of this run, which fresh_env emptied.)
-if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
-  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer deployed, or backed up for a deploy, behind a migration key it could not take'
-fi
-
-# What ends that poll is the deadline, and the count of tries is only the bound behind it, for a
-# run whose sleep returns early. With a real second between two tries the deadline comes first: a
-# three-second deadline holds three or four tries, nowhere near the sixty the counter allows. A
-# poll that had lost its deadline would run all sixty here, over a minute, and the count below is
-# what says which of the two bounds ended this one.
-# Each try is bounded by what the deadline leaves, never by a fresh minute of its own: a try that
-# started a second before the deadline would otherwise end a minute past it, while the script's
-# comments and store.go promise a read that ends inside the deadline. The timeout stand-in
-# recorded the bound every client container was given, so the same run reads those bounds back:
-# both are facts of one poll, and each run of it waits out its three real seconds.
-fresh_env
-printf 'always\n' >"$schema.key"
-if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
-  fail 'deployer deployed behind a key no session released under a three-second deadline'
-fi
-no_secret 'the poll its deadline ended'
-tries=$(grep -cF "$schema_try" "$argv" || true)
-if ((tries < 2 || tries >= 10)); then
-  fail "deployer made $tries tries for the migration key under a three-second deadline, a real second apart: the count of tries ended its poll, not the deadline"
-fi
-if grep -qF "$schema_read" "$argv"; then
-  fail 'deployer read the applied set while another session held the migration key'
-fi
-if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]] || [[ -s "$log" ]]; then
-  fail 'deployer did not report the unreadable schema version and stop once its deadline had passed'
-fi
-bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
-if [[ -z "$bounds" ]]; then
-  fail 'no container run of the schema read recorded the bound it was given'
-fi
-if [[ $(printf '%s\n' "$bounds" | wc -l) -ne $(grep -cF "$schema_try" "$argv") ]]; then
-  fail 'the bounds recorded are not one for each try for the migration key'
-fi
-while IFS= read -r bound; do
-  if ((bound < 1 || bound > 3)); then
-    fail "a try for the migration key was given $bound seconds under a three-second deadline: 0 is unbounded to pg_client, and anything past the deadline is a fresh timeout that outlives it"
-  fi
-done <<<"$bounds"
-# And the default deadline is what it was for an operator: against a free key the first try still
-# gets the whole minute, and no try gets more.
-fresh_env
-if output=$(deploy_once); then
-  fail 'deployer did not fail after the origin check rejected the deployment it read the schema for'
-fi
-first=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk 'NR == 1 {print $2}' || true)
-if ((first < 1 || first > 60)); then
-  fail "the first try for the migration key was given $first seconds, not the minute the default deadline leaves it"
-fi
-
-# A try reads the clock once, and its deadline test and its bound both use that one reading. A
-# clock can reach the deadline between two reads. A try that read it twice would then pass the
-# test and get a bound of 0, which pg_client reads as unbounded. Here the deployer's clock moves
-# one second each time one of its commands reads SECONDS. Bash runs the file in BASH_ENV before
-# the deployer's script. That file unsets SECONDS, so SECONDS is a plain variable, and its DEBUG
-# trap sets SECONDS before each command that reads it. Under a four-second deadline the three
-# tries read seconds 1, 2 and 3, and get 3, 2 and 1 seconds. Second 4 ends the poll. A try that
-# read the clock twice would pass the test at second 3 and then read second 4 for its bound.
-cat >"$root/clock.sh" <<'EOF'
-unset BASH_ENV SECONDS
-autodeploy_test_clock=0
-set -o functrace
-trap '[[ "$BASH_COMMAND" != *SECONDS* ]] || SECONDS=$((autodeploy_test_clock++))' DEBUG
-EOF
-fresh_env
-printf 'always\n' >"$schema.key"
-if output=$(SCHEMA_READ_DEADLINE=4 BASH_ENV="$root/clock.sh" deploy_once); then
-  fail 'deployer deployed behind a key no session released under a four-second deadline'
-fi
-no_secret 'the clock that moves at each read'
-bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
-if [[ -z "$bounds" ]]; then
-  fail 'no container run of the schema read recorded the bound it was given'
-fi
-while IFS= read -r bound; do
-  if ((bound < 1)); then
-    fail "a try for the migration key was given $bound seconds: the clock reached the deadline between the deadline test and the bound, and pg_client reads 0 as unbounded"
-  fi
-done <<<"$bounds"
-if [[ "${bounds//$'\n'/ }" != '3 2 1' ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 3 ]]; then
-  fail "the tries for the migration key were given ${bounds//$'\n'/ } seconds, not 3 2 1: each try gets what the deadline leaves at its own clock reading, and second 4 ends the poll"
-fi
-if grep -qF "$schema_read" "$argv"; then
-  fail 'deployer read the applied set while another session held the migration key'
-fi
-if [[ "$output" != *"could not read the schema version (status 1); not deploying new-image"* ]] || [[ -s "$log" ]]; then
-  fail 'deployer did not give up on the schema read (status 1) and stop once the moving clock reached the deadline'
-fi
-
+url_locale_control() {
+# CI's step 'Generate en_US.UTF-8 where the runner lacks it' runs the same test; the two must match.
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
 # [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
 # what it should refuse. The control needs that locale installed and widening the ranges.
 if ! LC_ALL=en_US.UTF-8 bash -c '[[ "ä" =~ ^[a-z]$ ]]' 2>/dev/null; then
   fail 'en_US.UTF-8 is not installed here (sudo locale-gen en_US.UTF-8), so the URL loops would not test the locale'
 fi
+}
 
+# url_refused_rows FIRST LAST runs the loop's cases FIRST to LAST, numbered as env_spelling_rows
+# numbers them: the loop's are 68 to 97, and two groups each run a part of them.
+url_refused_rows() {
+local first=$1 last=$2 row=67
 # The deployer accepts one URL shape and refuses every other before any client starts, so no
 # password in a refused URL can reach a process's arguments, and the refusal never prints the URL.
 # The cases cover each way out of the shape:
@@ -828,6 +625,8 @@ for case in \
   's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5²/dispatch' \
   's@cret-canary|postgres://dispatch:s%40cret-canary@db.test:5432/dis@patch' \
   'review-secret|host=db.test user=dispatch password=review-secret dbname=dispatch'; do
+  row=$((row + 1))
+  ((row >= first && row <= last)) || continue
   fresh_env "${case#*|}"
   if output=$(LC_ALL=en_US.UTF-8 test_password="${case%%|*}" deploy_once); then
     fail "deployer deployed with ${case#*|}"
@@ -837,8 +636,365 @@ for case in \
     [[ -s "$log" || -s "$argv" ]]; then
     fail "deployer did not refuse ${case#*|} before running anything, without printing it"
   fi
+  printf 'PASS: %s\n' "DATABASE_URL $(shown "${case#*|}") is refused before anything runs, and the refusal does not print it"
+done
+((row == 97)) || fail "url_refused_rows: the loop's cases are rows 68 to $row, and the url-refused groups run 68 to 97, so a case would run in no group"
+}
+
+# This file's groups: each is a function whose body is its cases as they stood at the top level,
+# unindented.
+group_rollback_1() {
+# A deploy that fails its origin check with the schema where it was stops the candidate, confirms
+# it stopped, reads the schema, and rolls back. Every database client gets the URL without its
+# password and the password as PGPASSWORD.
+fresh_env
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment'
+fi
+no_secret 'the rollback'
+if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer did not restore the previous image tag after the origin check failed'
+fi
+if ! compgen -G "$backups/pre-new-image-*.dump" >/dev/null; then
+  fail 'deployer did not write the pre-deploy database backup'
+fi
+if [[ $(<"$log") != *" pull "*$'\n'*" up "*$'\n'*" stop dispatch"$'\n'*" ps "*$'\n'*" up "* ]] || [[ $(wc -l <"$log") -ne 5 ]]; then
+  fail 'deployer did not pull, deploy, stop, confirm the stop, and roll back after the origin check failed'
+fi
+if [[ "$output" != *"rolling back to old-image"* ]]; then
+  fail 'deployer did not report the redirect-uri rollback'
+fi
+if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
+  fail 'deployer did not record the set of migrations old-image runs against'
+fi
+if [[ $(grep -c "^pg_dump -Fc $url_without_password\$" "$argv") -ne 1 ]] ||
+  [[ $(grep -c "$psql_run" "$argv") -ne 2 ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 2 ]] ||
+  [[ $(grep -cF "$schema_read" "$argv") -ne 2 ]]; then
+  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, each run the try for the runner key and then the read'
+fi
+# Each client container runs under an init that passes on a signal, so `timeout` ends it.
+if [[ $(grep -c '^docker run ' "$argv") -ne 3 || $(grep -c '^docker run --init ' "$argv") -ne 3 ]]; then
+  fail 'deployer ran a database client container without --init, which a timeout could not stop'
+fi
+printf 'PASS: %s\n' 'a deploy that fails its origin check stops the candidate, confirms the stop, reads the schema, backs up once and rolls back, with no password in any output or argument'
+
+# A new image that serves with its NATS connection failing (`nats` false) fails the health check
+# and is rolled back, as when Dispatch exited at boot without NATS; one with NATS turned off
+# (`nats` null) passes it and goes on to the origin check.
+fresh_env
+if output=$(AUTODEPLOY_TEST_CANDIDATE_NATS=false deploy_once); then
+  fail 'deployer kept an image whose NATS connection failed'
+fi
+if [[ "$output" != *"did not answer 200 with NATS connected"*"rolling back to old-image"* ]] ||
+  [[ "$output" == *"OAuth redirect_uri"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer did not roll back an image whose /healthz reported nats false'
+fi
+printf 'PASS: %s\n' 'an image whose NATS connection fails (nats false) fails the health check and is rolled back'
+fresh_env
+if output=$(AUTODEPLOY_TEST_CANDIDATE_NATS=null deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment with NATS turned off'
+fi
+if [[ "$output" != *"OAuth redirect_uri"*"rolling back to old-image"* ]] || [[ "$output" == *"NATS connected"* ]]; then
+  fail 'deployer did not pass the health check of an image with NATS turned off (nats null)'
+fi
+printf 'PASS: %s\n' 'an image with NATS turned off (nats null) passes the health check and goes on to the origin check'
+
+# A deploy whose image moved the schema before it failed refuses to start the previous image
+# against that schema: it stops the new one, names both versions, and fails.
+fresh_env
+if output=$(AUTODEPLOY_TEST_MIGRATE_TO=113 deploy_once); then
+  fail 'deployer did not fail after a deploy that moved the schema failed its origin check'
+fi
+no_secret 'the refusal'
+if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applied)"*"113 (113 applied)"*"forward recovery is required"* ]]; then
+  fail 'deployer did not refuse the rollback naming both schema versions'
+fi
+if [[ $(grep -c ' up ' "$log") -ne 1 || $(grep -c ' stop dispatch' "$log") -ne 1 ]]; then
+  fail 'deployer did not deploy once and stop the new image once, without rolling back'
+fi
+if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer persisted the failed image tag after refusing its rollback'
+fi
+printf 'PASS: %s\n' 'a failed deploy that moved the schema refuses the rollback, naming both schema versions, and stops the new image once'
+
+# The next pass retries the same image. The schema is already at 113 before it starts, and the
+# rollback is still refused: old-image runs against 112, as recorded on the first attempt.
+: >"$log"
+if output=$(deploy_once); then
+  fail 'deployer did not fail on the retry of an image whose rollback it refused'
+fi
+no_secret 'the retry'
+if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applied)"*"113 (113 applied)"* ]] || [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
+  fail 'deployer rolled back to old-image against schema 113 on the retry'
+fi
+printf 'PASS: %s\n' 'the retry of an image whose rollback was refused is refused again against schema 113'
+}
+
+group_rollback_2() {
+# A migration the failed image held open commits only as the image stops. The deployer reads the
+# schema after the stop, so it sees 113 and refuses; a read before the stop would see 112.
+fresh_env
+if output=$(AUTODEPLOY_TEST_MIGRATE_ON_STOP=113 deploy_once); then
+  fail 'deployer did not fail when the failed image migrated as it stopped'
+fi
+no_secret 'the migration committing as the image stops'
+if [[ "$output" != *"refusing to roll back to old-image"*"schema 112 (112 applied)"*"113 (113 applied)"* ]] || [[ $(grep -c ' up ' "$log") -ne 1 ]] ||
+  [[ $(schema_value) != 113-113-* ]]; then
+  fail 'deployer rolled back to old-image while the failed image held a migration open'
+fi
+printf 'PASS: %s\n' 'a migration that commits as the failed image stops is read after the stop, and the rollback is refused'
+
+# An out-of-order migration: the failed image applied a version below the highest one already
+# applied, a numbered migration under a timestamped one, so max(version) is where it was and only
+# the set changed. The deployer compares the set, so it refuses this rollback too.
+fresh_env
+printf '%s\n' 20260115123000 >>"$schema"
+if output=$(AUTODEPLOY_TEST_MIGRATE_TO=113 deploy_once); then
+  fail 'deployer did not fail after a deploy that applied an out-of-order migration failed its origin check'
+fi
+no_secret 'the out-of-order refusal'
+if [[ "$output" != *"refusing to roll back to old-image"*"schema 20260115123000 (113 applied)"*"20260115123000 (114 applied)"*"forward recovery is required"* ]]; then
+  fail 'deployer did not refuse the rollback after a migration applied below the highest one left max(version) where it was'
+fi
+if [[ $(grep -c ' up ' "$log") -ne 1 || $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer started old-image against a schema holding a migration old-image never ran'
+fi
+printf 'PASS: %s\n' 'an out-of-order migration that leaves max(version) where it was still refuses the rollback'
+
+# A compose/.env the deployer before this one wrote records <tag>:<max(version)>, with no set
+# behind it. While that tag is still deployed it is compared the old way, so a retry in flight
+# across the upgrade keeps the safety it started with: a schema whose max has moved refuses, and
+# the record is left as it is.
+fresh_env
+printf 'ENVOY_IMAGE_SCHEMA=old-image:112\n' >>"$compose/.env"
+if output=$(AUTODEPLOY_TEST_MIGRATE_TO=113 deploy_once); then
+  fail 'deployer did not fail on an old-form record after a deploy that moved the schema failed'
+fi
+no_secret 'the old-form record'
+if [[ "$output" != *"refusing to roll back to old-image"*"schema 112"*"113 (113 applied)"*"forward recovery is required"* ]] ||
+  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:112"* ]]; then
+  fail 'deployer did not refuse the rollback against an old-form ENVOY_IMAGE_SCHEMA record, or rewrote it'
+fi
+printf 'PASS: %s\n' 'an old-form schema record whose max moved refuses the rollback and is left as it is'
+# The same record with the schema where old-image left it rolls back.
+fresh_env
+printf 'ENVOY_IMAGE_SCHEMA=old-image:112\n' >>"$compose/.env"
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment on an old-form record'
+fi
+no_secret 'the old-form record with the schema unmoved'
+if [[ "$output" != *"rolling back to old-image"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer did not roll back on an old-form record with the schema where old-image left it'
+fi
+printf 'PASS: %s\n' 'an old-form schema record with the schema where old-image left it rolls back'
+
+# A stop that fails, or that leaves the candidate running, proves nothing about the schema.
+for stop in AUTODEPLOY_TEST_STOP_FAIL AUTODEPLOY_TEST_STOP_LEAVES_RUNNING; do
+  fresh_env
+  if output=$(export "$stop=1" && deploy_once); then
+    fail "deployer did not fail when $stop"
+  fi
+  no_secret "the refused stop ($stop)"
+  if [[ "$output" != *"refusing to roll back to old-image"* ]] || [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
+    fail "deployer rolled back without a confirmed stop ($stop)"
+  fi
+  printf 'PASS: %s\n' "a stop that does not confirm the candidate stopped refuses the rollback ($stop)"
 done
 
+# A schema version it cannot read after the stop is no proof the schema stayed: it refuses.
+fresh_env
+if output=$(AUTODEPLOY_TEST_SCHEMA_UNREADABLE_AFTER_UP=1 deploy_once); then
+  fail 'deployer did not fail when it could not read the schema version after a failed deploy'
+fi
+no_secret 'the unreadable schema'
+if [[ "$output" != *"could not read the schema version"*"status 2"*"refusing to roll back to old-image"* ]] ||
+  [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
+  fail 'deployer rolled back without knowing the schema version'
+fi
+printf 'PASS: %s\n' 'a schema version unreadable after a failed deploy refuses the rollback'
+
+# A schema version it cannot read before a deploy stops the deploy before anything changes.
+fresh_env
+if output=$(AUTODEPLOY_TEST_SCHEMA_UNREADABLE=1 deploy_once); then
+  fail 'deployer deployed without reading the schema version first'
+fi
+no_secret 'the unreadable schema before the deploy'
+if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]] || [[ -s "$log" ]]; then
+  fail 'deployer did not stop before deploying when the schema version was unreadable'
+fi
+printf 'PASS: %s\n' 'a schema version unreadable before a deploy stops it before anything changes'
+}
+
+group_schema_key() {
+# A key another session holds does not make the read wait on it: a blocking wait deadlocks against
+# a migration runner building an index concurrently under that key, so the read tries the key,
+# reads nothing while it is held, and tries again. Here the key is held against the first two
+# tries; the third takes it, and the deploy runs as it does with a free key.
+fresh_env
+printf '2\n' >"$schema.key"
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment behind a held key'
+fi
+no_secret 'the held migration key'
+# While the key is held the read must not run at all, not merely be dropped from the answer: the
+# fake fails such a read, as the server can, and under ON_ERROR_STOP=1 psql's non-zero status
+# would end the deployer's read rather than its poll. So of the four runs only the two granted
+# the key read anything: the third try, which took it, and the one after the stop.
+if [[ $(grep -cF "$schema_read" "$argv") -ne 2 ]] || [[ "$output" == *"could not read the schema version"* ]]; then
+  fail 'deployer read the applied set while another session held the migration key, so a failing read ended its poll'
+fi
+if [[ $(<"$schema.key") -ne 0 ]]; then
+  fail 'deployer did not try the held migration key more than once'
+fi
+# Four psql runs, each trying the key: it refused the first two, the third took it and read the
+# set, and one more after the stop. An f answer taken for the applied set would record 0 versions
+# and refuse the rollback.
+if [[ $(grep -c "$psql_run" "$argv") -ne 4 ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 4 ]] ||
+  [[ "$output" != *"rolling back to old-image"* ]] ||
+  [[ "$output" == *"refusing to roll back"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
+  fail 'deployer did not poll the held migration key and deploy once it came free'
+fi
+# Nothing in the run waits on the key inside the database, in a statement run or in an argument.
+if grep -qF 'select pg_advisory_lock(' "$argv"; then
+  fail 'deployer waited on the migration key in a blocking statement, which deadlocks the migration runner'
+fi
+printf 'PASS: %s\n' 'a migration key held against two tries is tried again, never read behind, and taken on the third try'
+
+# A key no session ever lets go of, as a pod killed mid-CREATE INDEX CONCURRENTLY leaves behind:
+# the backend goes on building the index, and holds the key for minutes. The deployer tries the
+# key a second apart for its whole deadline, never reads behind it, and then refuses: a schema
+# version it cannot read is no ground to deploy on. (The deployer's waits are the fake sleep
+# above, which returns at once, so its 60 tries take no time here.)
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(deploy_once); then
+  fail 'deployer deployed without reading the schema version behind a key no session released'
+fi
+no_secret 'the migration key held past the deadline'
+# The whole poll, not a first try taken for an answer: 60 tries, one per psql run, and no read in
+# any of them. A deployer that gave up on the first refusal would try once.
+if [[ $(grep -cF "$schema_try" "$argv") -ne 60 ]] || [[ $(grep -c "$psql_run" "$argv") -ne 60 ]]; then
+  fail 'deployer did not poll the migration key through its deadline before giving up'
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]]; then
+  fail 'deployer did not report the unreadable schema version behind the held key and stop'
+fi
+# Nothing of the deploy ran: no pg_dump, which is how the pre-deploy backup is taken, and no
+# compose, so the previous image still serves. ($backups holds the dumps of the cases above, so
+# what this reads is the argument log of this run, which fresh_env emptied.)
+if [[ -s "$log" ]] || grep -q '^pg_dump ' "$argv" ||
+  [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
+  fail 'deployer deployed, or backed up for a deploy, behind a migration key it could not take'
+fi
+printf 'PASS: %s\n' 'a migration key no session lets go of is tried 60 times, never read behind, and the deploy is refused before anything runs'
+
+# What ends that poll is the deadline, and the count of tries is only the bound behind it, for a
+# run whose sleep returns early. With a real second between two tries the deadline comes first: a
+# three-second deadline holds three or four tries, nowhere near the sixty the counter allows. A
+# poll that had lost its deadline would run all sixty here, over a minute, and the count below is
+# what says which of the two bounds ended this one.
+# Each try is bounded by what the deadline leaves, never by a fresh minute of its own: a try that
+# started a second before the deadline would otherwise end a minute past it, while the script's
+# comments and store.go promise a read that ends inside the deadline. The timeout stand-in
+# recorded the bound every client container was given, so the same run reads those bounds back:
+# both are facts of one poll, and each run of it waits out its three real seconds.
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(SCHEMA_READ_DEADLINE=3 AUTODEPLOY_TEST_SLEEP_REAL=1 deploy_once); then
+  fail 'deployer deployed behind a key no session released under a three-second deadline'
+fi
+no_secret 'the poll its deadline ended'
+tries=$(grep -cF "$schema_try" "$argv" || true)
+if ((tries < 2 || tries >= 10)); then
+  fail "deployer made $tries tries for the migration key under a three-second deadline, a real second apart: the count of tries ended its poll, not the deadline"
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version"*"not deploying new-image"* ]] || [[ -s "$log" ]]; then
+  fail 'deployer did not report the unreadable schema version and stop once its deadline had passed'
+fi
+bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
+if [[ -z "$bounds" ]]; then
+  fail 'no container run of the schema read recorded the bound it was given'
+fi
+if [[ $(printf '%s\n' "$bounds" | wc -l) -ne $(grep -cF "$schema_try" "$argv") ]]; then
+  fail 'the bounds recorded are not one for each try for the migration key'
+fi
+while IFS= read -r bound; do
+  if ((bound < 1 || bound > 3)); then
+    fail "a try for the migration key was given $bound seconds under a three-second deadline: 0 is unbounded to pg_client, and anything past the deadline is a fresh timeout that outlives it"
+  fi
+done <<<"$bounds"
+printf 'PASS: %s\n' 'under a three-second deadline with a real second between tries, the deadline ends the poll and each try is bounded by what the deadline leaves'
+# And the default deadline is what it was for an operator: against a free key the first try still
+# gets the whole minute, and no try gets more.
+fresh_env
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment it read the schema for'
+fi
+first=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk 'NR == 1 {print $2}' || true)
+if ((first < 1 || first > 60)); then
+  fail "the first try for the migration key was given $first seconds, not the minute the default deadline leaves it"
+fi
+printf 'PASS: %s\n' 'against a free key the first try gets at most the minute the default deadline leaves'
+
+# A try reads the clock once, and its deadline test and its bound both use that one reading. A
+# clock can reach the deadline between two reads. A try that read it twice would then pass the
+# test and get a bound of 0, which pg_client reads as unbounded. Here the deployer's clock moves
+# one second each time one of its commands reads SECONDS. Bash runs the file in BASH_ENV before
+# the deployer's script. That file unsets SECONDS, so SECONDS is a plain variable, and its DEBUG
+# trap sets SECONDS before each command that reads it. Under a four-second deadline the three
+# tries read seconds 1, 2 and 3, and get 3, 2 and 1 seconds. Second 4 ends the poll. A try that
+# read the clock twice would pass the test at second 3 and then read second 4 for its bound.
+cat >"$root/clock.sh" <<'EOF'
+unset BASH_ENV SECONDS
+autodeploy_test_clock=0
+set -o functrace
+trap '[[ "$BASH_COMMAND" != *SECONDS* ]] || SECONDS=$((autodeploy_test_clock++))' DEBUG
+EOF
+fresh_env
+printf 'always\n' >"$schema.key"
+if output=$(SCHEMA_READ_DEADLINE=4 BASH_ENV="$root/clock.sh" deploy_once); then
+  fail 'deployer deployed behind a key no session released under a four-second deadline'
+fi
+no_secret 'the clock that moves at each read'
+bounds=$(grep -o '^timeout [0-9]* docker run ' "$argv" | awk '{print $2}' || true)
+if [[ -z "$bounds" ]]; then
+  fail 'no container run of the schema read recorded the bound it was given'
+fi
+while IFS= read -r bound; do
+  if ((bound < 1)); then
+    fail "a try for the migration key was given $bound seconds: the clock reached the deadline between the deadline test and the bound, and pg_client reads 0 as unbounded"
+  fi
+done <<<"$bounds"
+if [[ "${bounds//$'\n'/ }" != '3 2 1' ]] || [[ $(grep -cF "$schema_try" "$argv") -ne 3 ]]; then
+  fail "the tries for the migration key were given ${bounds//$'\n'/ } seconds, not 3 2 1: each try gets what the deadline leaves at its own clock reading, and second 4 ends the poll"
+fi
+if grep -qF "$schema_read" "$argv"; then
+  fail 'deployer read the applied set while another session held the migration key'
+fi
+if [[ "$output" != *"could not read the schema version (status 1); not deploying new-image"* ]] || [[ -s "$log" ]]; then
+  fail 'deployer did not give up on the schema read (status 1) and stop once the moving clock reached the deadline'
+fi
+printf 'PASS: %s\n' 'a try reads the clock once: under a four-second deadline the tries get 3, 2 and 1 seconds'
+}
+
+group_url_refused_1() {
+url_locale_control
+url_refused_rows 68 81
+}
+
+group_url_refused_2() {
+url_locale_control
+url_refused_rows 82 97
+}
+
+group_url_accepted() {
+url_locale_control
 # The accepted shape splits as intended: each allowed query key, the highest port, a URL with no
 # port, escapes that decode to reserved characters or to multi-byte UTF-8, and a URL with no
 # password at all. The clients get the URL without its password as their last argument, the
@@ -860,6 +1016,7 @@ for case in \
     { [[ -n "$case_password" ]] && grep -qF -- "$case_password" "$argv"; }; then
     fail "deployer did not hand the clients $case_client_url, with the password as PGPASSWORD alone"
   fi
+  printf 'PASS: %s\n' "DATABASE_URL $case_url reaches the origin check, and each client gets $case_client_url with the password as PGPASSWORD alone"
 done
 
 # Compose prints a value's `$` doubled in `config --format json`; the deployer halves it back. An
@@ -871,6 +1028,7 @@ with_line DISPATCH_SERVER_URL 'DISPATCH_SERVER_URL=http://browser.test:8766/x$$y
 output=$(deploy_once) || true
 [[ "$output" == *"expected 'http://browser.test:8766/x\$y/auth/callback'"* ]] ||
   fail 'deployer did not read a $ in DISPATCH_SERVER_URL as Compose gives it to the container'
+printf 'PASS: %s\n' "a \$\$ in DISPATCH_SERVER_URL is read as one \$, as Compose gives it to the container"
 
 # A failed pull changes nothing: the previous image still serves, so there is nothing to stop or
 # restart, and the next pass tries the pull again.
@@ -887,5 +1045,23 @@ fi
 if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer persisted the failed image tag after a pull failure'
 fi
+printf 'PASS: %s\n' 'a failed pull changes nothing, and the next --once pass tries the pull again'
+}
+
+# Each group runs as the function group_ and its name with each - as _. A group_ function the list
+# at the top does not name would never run, and a group the list names with no function would run
+# no case: either fails here, by name.
+listed_functions=' '
+for listed in "${group_names[@]}"; do
+  declare -F "group_${listed//-/_}" >/dev/null ||
+    fail "autodeploy_test: the group $listed has no function group_${listed//-/_}, so it would run no case"
+  listed_functions+="group_${listed//-/_} "
+done
+for defined in $(compgen -A function group_); do
+  [[ "$listed_functions" == *" $defined "* ]] ||
+    fail "autodeploy_test: the function $defined is no group the list at the top of autodeploy_test.sh names, so no run calls it"
+done
+# The group the argument names, called as a plain command, so set -e holds inside it.
+"group_${group//-/_}"
 clients_bounded
-printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential and pull-retry cases: PASS'
+printf 'PASS: %s: every database client container its cases ran had a bound of at least one second\n' "$group"

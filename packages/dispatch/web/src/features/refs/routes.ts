@@ -11,6 +11,7 @@ import {
 import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
+import { dispatchOrigins } from "../../api/origins";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { addressPath } from "../../lib/page-address";
@@ -24,6 +25,7 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
+import { countReferenceRead } from "./reference-reads";
 import { pageInBound, routeInBound } from "./target-id";
 
 export type IssueRoute =
@@ -688,20 +690,23 @@ export function routeProjectOf(pathname: string): string | undefined {
   );
 }
 
-/** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as
- * the server's `text.Extract` reads it: a composer's text, and a URL an author left as text in a
- * rendered body (`collectReferenceAnchors`); undefined for an external link or a dashboard path
- * that is not an issue/document reference (`pageRoutes`). A `#b-<block id>` fragment names the
- * page's block while text cites it (`pageInBound`), else the page; a reference past the bounds
- * names nothing (`parseDispatchReference`). */
+/** The reference a `dispatch://` URL or a dashboard path of any origin of this Dispatch
+ * (`dispatchOrigins`) names as text cites it, as the server's `text.Extract` reads it: a
+ * composer's text, and a URL an author left as text in a rendered body
+ * (`collectReferenceAnchors`); undefined for an external link or a dashboard path that is not an
+ * issue/document reference (`pageRoutes`). A `#b-<block id>` fragment names the page's block
+ * while text cites it (`pageInBound`), else the page; a reference past the bounds names nothing
+ * (`parseDispatchReference`). Each call is counted with the length of `href`
+ * (`countReferenceRead`), which its steps read a fixed number of times over. */
 export function referenceRouteFromHref(
   href: string,
-  appOrigin: string = window.location.origin
+  appOrigins: readonly string[] = dispatchOrigins()
 ): DispatchReferenceRoute | undefined {
+  countReferenceRead("referenceRouteFromHref", href.length);
   if (href.startsWith("dispatch://")) {
     return parseDispatchReference(href);
   }
-  const routes = pageRoutes(href, appOrigin);
+  const routes = pageRoutes(href, appOrigins);
   return routes === undefined ? undefined : pageInBound(routes.page, routes.block);
 }
 
@@ -710,17 +715,18 @@ export function referenceRouteFromHref(
  * bounds text is held to decide only what text cites (`referenceRouteFromHref`). */
 export function nodeRouteFromHref(
   href: string,
-  appOrigin: string = window.location.origin
+  appOrigins: readonly string[] = dispatchOrigins()
 ): DispatchReferenceRoute | undefined {
   if (href.startsWith("dispatch://")) {
     return parseNodeReference(href);
   }
-  const routes = pageRoutes(href, appOrigin);
+  const routes = pageRoutes(href, appOrigins);
   return routes?.block ?? routes?.page;
 }
 
-/** What a same-origin dashboard path names, as the server's `text` reads the page: `page`, and
- * `block`, the block of it its `#b-<block id>` fragment names, of any length. A path holding a
+/** What a dashboard path of any of `appOrigins` names, as the server's `text` reads the page:
+ * `page`, and `block`, the block of it its `#b-<block id>` fragment names, of any length. A path
+ * that names no origin is read against the first of `appOrigins`, the page's own. A path holding a
  * control character, naming a slug Dispatch never gives a document, or that is no issue/document
  * reference names nothing. A document page carrying `?comment=`/`?ask=` names that item whatever
  * its fragment, at any version of the document: the dashboard writes a document block's fragment
@@ -731,18 +737,18 @@ export function nodeRouteFromHref(
  * written only in `dispatch://` references; any other fragment leaves the page. */
 function pageRoutes(
   href: string,
-  appOrigin: string
+  appOrigins: readonly string[]
 ): { page: DispatchReferenceRoute; block: DispatchReferenceRoute | undefined } | undefined {
   if (hasControlCharacter(href)) {
     return undefined;
   }
   let url: URL;
   try {
-    url = new URL(href, appOrigin);
+    url = new URL(href, appOrigins[0]);
   } catch {
     return undefined;
   }
-  if (url.origin !== appOrigin) {
+  if (!appOrigins.includes(url.origin)) {
     return undefined;
   }
   const route =

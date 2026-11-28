@@ -147,7 +147,9 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 // issue's implementer's phases row is left unwritten, as a daemon that minted no assignment for that
 // phase would leave it, which is why its completion is not held to one (api/handoff.go: either side
 // empty is nothing to compare); the tester's assignment is minted live, by the start that
-// completion makes.
+// completion makes. A session holds the issue's architect role on the Envoy stand-in, with no
+// architect claim this daemon supervises, so the stand-in, which refuses a publish to a role no
+// session holds (conflictLive's bootLogged), takes the architect's notices.
 func (r *conflictNoTakeoverLive) seed() {
 	t := r.t
 	t.Helper()
@@ -175,7 +177,12 @@ func (r *conflictNoTakeoverLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.control, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.control, err)
 	}
-	r.note("seeded: %s implementing on pull request #%d at %s, base %s requiring [%s], its implementer mid-launch serving run 1; and the control %s in testing on pull request #%d at %s, onto the same base, with %s passed there",
+	// An architect session holds the issue's architect role topic, as one does in production. The
+	// daemon supervises no architect claim here, and a notice needs none: its publish compares no
+	// holder the listener names to a claim's session, which only a held message does (the daemon's
+	// deliverHeld).
+	r.notices.holds(string(r.token(claim.RoleArchitect)), "ses_architect")
+	r.note("seeded: %s implementing on pull request #%d at %s, base %s requiring [%s], its implementer mid-launch serving run 1, and session ses_architect holding its architect's role on the Envoy stand-in; and the control %s in testing on pull request #%d at %s, onto the same base, with %s passed there",
 		r.key, r.number, conflictFirstHead, conflictBase, conflictRequiredCheck, r.control, r.controlNumber,
 		conflictControlHead, conflictRequiredCheck)
 }
@@ -214,16 +221,17 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 // pull request on that base (workflow's basePush, mergeStateOwed: the issue stands in testing),
 // and this read of the issue's head is its first conflicting one: the daemon records it, queues its
 // second read a minute on (record.ConflictConfirm), logs it and acts on nothing. No role of the
-// issue is sent anything on its role topic, the architect's included, and neither the tester's
-// connection nor the implementer's is sent anything at all; the issue stays in testing, the
-// tester's claim stays working on the delivery it confirmed, and nothing is suspended.
+// issue is sent anything on its role topic, the architect's included, taken or refused, and
+// neither the tester's connection nor the implementer's is sent anything at all; the issue stays
+// in testing, the tester's claim stays working on the delivery it confirmed, and nothing is
+// suspended.
 func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 	t := r.t
 	if before := r.d.claim(r.test.token); before.State != string(supervise.StateWorking) {
 		t.Fatalf("the tester is %s before the conflict, want working: the proof turns on a turn that is running", before.State)
 	}
 	r.published(r.key)
-	r.heard, r.suspends = r.heardOn(r.key), len(r.rt.CallsOf("Suspend"))
+	r.heard, r.refused, r.suspends = r.heardOn(r.key), r.refusalsOn(r.key), len(r.rt.CallsOf("Suspend"))
 	r.github.conflicts(true)
 	r.publishBasePush()
 	r.note("drove a push onto %s while the tester's turn runs, after which GitHub answers %s conflicting with it; %s's ruleset requires %s, which has no run on %s",
@@ -241,10 +249,13 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 	if heard := r.heardOn(r.key); !maps.Equal(heard, r.heard) {
 		t.Fatalf("the role topics of %s took %v messages after the first read, want %v as before it: a first read sends nothing", r.key, heard, r.heard)
 	}
+	if refused := r.refusalsOn(r.key); !maps.Equal(refused, r.refused) {
+		t.Fatalf("the role topics of %s refused %v publishes after the first read, want %v as before it: a first read sends nothing", r.key, refused, r.refused)
+	}
 	if rows := outboxRowsOfKind(t, r.st.Pool(), r.key, record.OutboxKindMergeForward); rows != 0 {
 		t.Fatalf("the outbox holds %d merge-forward messages of %s after the first read, want none", rows, r.key)
 	}
-	r.note("read back: no role topic of %s took a message, the architect's included, and the outbox holds no merge-forward message of it", r.key)
+	r.note("read back: no role topic of %s took a message or refused one, the architect's included, and the outbox holds no merge-forward message of it", r.key)
 	r.heldOn("the first read")
 }
 
@@ -254,9 +265,10 @@ func (r *conflictNoTakeoverLive) firstReadSendsNothing() {
 // no checks on while it conflicts (record.ConflictCheckNotGreen). The issue stays in testing. The
 // implementer is asked, on its own role topic, to merge the base forward (record.MergeForwardAsk),
 // the tester is told, on its own, to hold while the merge runs (MergeForwardHold), and the
-// architect is told once, in a checks-red notice naming testing, the phase the issue stays in. The
-// tester's connection is sent nothing at all — no abort, no prompt — its claim stays working on the
-// delivery it confirmed in step 1, and nothing is suspended. Nothing repeats once it is sent.
+// architect is told once, in a checks-red notice naming testing, the phase the issue stays in; no
+// role topic refuses a publish. The tester's connection is sent nothing at all — no abort, no
+// prompt — its claim stays working on the delivery it confirmed in step 1, and nothing is
+// suspended. Nothing repeats once it is sent.
 func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	t := r.t
 	bound := testwait.Bounded(t, conflictSecondReadBound, time.Second)
@@ -305,7 +317,10 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 	if heard := r.heardOn(r.key); !maps.Equal(heard, want) {
 		t.Fatalf("the role topics of %s took %v messages, want %v: the ask, the hold and the notice once each", r.key, heard, want)
 	}
-	r.note("read back: nothing more reached any role topic of %s", r.key)
+	if refused := r.refusalsOn(r.key); !maps.Equal(refused, r.refused) {
+		t.Fatalf("the role topics of %s refused %v publishes, want %v as before the first read: the daemon sent nothing to a role nobody holds", r.key, refused, r.refused)
+	}
+	r.note("read back: nothing more reached any role topic of %s, and none refused a publish", r.key)
 	if got := r.issue(r.key); got.Phase != phase.Testing {
 		t.Fatalf("%s is in %s after the confirmed conflict, want testing: a conflict moves no issue", r.key, got.Phase)
 	}
@@ -367,8 +382,8 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 // with the base, and the control's next step is no merge, so its conflict needs no merge yet
 // (classify.ConflictNeedsMerge answers none): the daemon logs the conflict with the checks the base
 // requires and those green on the head, and sends nothing. No role topic of the control takes a
-// message, its architect's included, the outbox holds no merge-forward message of it, and it stays
-// in testing.
+// message or refuses one, its architect's included, the outbox holds no merge-forward message of
+// it, and it stays in testing.
 func (r *conflictNoTakeoverLive) passedControlGetsNothing() {
 	t := r.t
 	confirmed := r.awaitLogged(conflictNoMergeLine, r.control, testwait.Bounded(t, conflictSecondReadBound, time.Second))
@@ -383,6 +398,11 @@ func (r *conflictNoTakeoverLive) passedControlGetsNothing() {
 			t.Fatalf("the %s's role topic of %s took %d messages, want none: a conflict that needs no merge is told to nobody", role, r.control, heard)
 		}
 	}
+	for role, refused := range r.refusalsOn(r.control) {
+		if refused != 0 {
+			t.Fatalf("the %s's role topic of %s refused %d publishes, want none: a conflict that needs no merge sends nobody anything", role, r.control, refused)
+		}
+	}
 	if asked := r.loggedFor(conflictAskedLine, r.control); len(asked) != 0 {
 		t.Fatalf("the daemon logged %q for %s, want no merge forward asked of a conflict that needs none", asked[0].Message, r.control)
 	}
@@ -392,7 +412,7 @@ func (r *conflictNoTakeoverLive) passedControlGetsNothing() {
 	if got := r.issue(r.control); got.Phase != phase.Testing {
 		t.Fatalf("%s is in %s after its confirmed conflict, want testing", r.control, got.Phase)
 	}
-	r.note("read back over %s: no role topic of %s took a message, the architect's included, the daemon asked no merge forward of it, the outbox holds no merge-forward message of it, and it is still in testing",
+	r.note("read back over %s: no role topic of %s took a message or refused one, the architect's included, the daemon asked no merge forward of it, the outbox holds no merge-forward message of it, and it is still in testing",
 		liveSettle, r.control)
 }
 

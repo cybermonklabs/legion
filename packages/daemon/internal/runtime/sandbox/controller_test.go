@@ -432,6 +432,92 @@ func TestAChangedSlackChannelListMakesOnlyTheControllerStale(t *testing.T) {
 	}
 }
 
+// The project's watched workflows are recorded with the controller's addresses under the name
+// `watched_workflows`, which is no variable: the controller reads the list from its
+// registration's answer alone. A daemon restarted with another list re-adopts the controller as
+// StaleAddress, naming the list it was launched with and the one it would be handed now, so the
+// supervisor relaunches it into its session and its new registration answers the new list. The
+// record holds the list in one order, the entries by owner, repository and file and each entry's
+// events sorted, so the same list written in another order moves nothing. A record a daemon
+// before the list wrote holds no such name: it moves nothing while the project watches none, so an
+// upgrade relaunches no controller for a list it does not need, and is moved once the project
+// watches one. The list is the controller's alone: an issue pod's role under the same two daemons
+// moved nothing in any row, and is re-adopted as it is.
+func TestAChangedWatchedWorkflowsListMakesOnlyTheControllerStale(t *testing.T) {
+	t.Parallel()
+	watched := func(list ...WatchedWorkflow) func(*Options) {
+		return func(o *Options) { o.ControllerWatchedWorkflows = list }
+	}
+	entry := func(repository, file string, events ...string) WatchedWorkflow {
+		return WatchedWorkflow{Repository: ghrepo.MustParse(repository), File: file, Events: events}
+	}
+	listA := []WatchedWorkflow{entry("acme/widgets", "x.yaml", "schedule", "push"), entry("acme/gadgets", "y.yml", "schedule")}
+	listAReordered := []WatchedWorkflow{entry("acme/gadgets", "y.yml", "schedule"), entry("acme/widgets", "x.yaml", "push", "schedule")}
+	listB := []WatchedWorkflow{entry("acme/widgets", "x.yaml", "schedule")}
+	const recordedA = "acme/gadgets/y.yml@schedule acme/widgets/x.yaml@push,schedule"
+	for _, tc := range []struct {
+		row string
+		// launched is the list the controller was launched with, and beforeTheList whether its
+		// record is then written as a daemon before the list wrote it, with no watched_workflows.
+		launched      []WatchedWorkflow
+		beforeTheList bool
+		// handed is the list the restarted daemon hands, and stale what the controller's
+		// StaleAddress names, "" for a controller re-adopted Alive.
+		handed []WatchedWorkflow
+		stale  string
+	}{
+		{row: "a record from before the list, and none handed now", beforeTheList: true},
+		{row: "a record from before the list, and one entry handed now", beforeTheList: true, handed: listB,
+			stale: "watched_workflows (unrecorded), now acme/widgets/x.yaml@schedule"},
+		{row: "list A, and list A handed in another order", launched: listA, handed: listAReordered},
+		{row: "list A, and list B handed", launched: listA, handed: listB,
+			stale: "watched_workflows " + recordedA + ", now acme/widgets/x.yaml@schedule"},
+		{row: "list A, and none handed", launched: listA,
+			stale: "watched_workflows " + recordedA + ", now (none)"},
+	} {
+		t.Run(tc.row, func(t *testing.T) {
+			t.Parallel()
+			g := newRig(t, nil, withOptions(watched(tc.launched...)))
+			loc := g.spawn(controllerSpec(t))
+			issue := g.spawn(workerSpec(t))
+			if tc.beforeTheList {
+				rewriteRecord(t, g, loc, func(record map[string]any) {
+					addresses, _ := record["addresses"].([]any)
+					kept := slices.DeleteFunc(slices.Clone(addresses), func(address any) bool {
+						held, _ := address.(map[string]any)
+						return held["variable"] == "watched_workflows"
+					})
+					if len(kept) == len(addresses) {
+						t.Fatalf("the controller's record %v holds no watched_workflows, so this row proves nothing", record)
+					}
+					record["addresses"] = kept
+				})
+			}
+			r2 := secondRuntime(t, g, watched(tc.handed...))()
+			g.connectRunning(controllerToken, loc.Sandbox.Generation)
+			g.connectRunning(workerToken, issue.Sandbox.Generation)
+			g.eventually("both launchers to report their children to the restarted daemon", func() bool {
+				controller, connected := r2.launchers.state(controllerToken, loc.Sandbox.PodUID)
+				worker, workerConnected := r2.launchers.state(workerToken, issue.Sandbox.PodUID)
+				return connected && controller.Child != nil && workerConnected && worker.Child != nil
+			})
+			observed := map[runtime.Locator]runtime.Observation{}
+			for _, obs := range readopt(t, g.ctx, r2, loc, issue) {
+				observed[obs.Locator] = obs
+			}
+			switch obs := observed[loc]; {
+			case tc.stale == "" && obs.Kind != runtime.Alive:
+				t.Errorf("the controller is re-adopted as %s (%s), want Alive", obs.Kind, obs.Detail)
+			case tc.stale != "" && (obs.Kind != runtime.StaleAddress || !strings.Contains(obs.Detail, tc.stale)):
+				t.Errorf("the controller is re-adopted as %s (%s), want StaleAddress naming %q", obs.Kind, obs.Detail, tc.stale)
+			}
+			if worker := observed[issue]; worker.Kind != runtime.Alive {
+				t.Errorf("the issue pod's role, whose addresses did not move, is re-adopted as %s (%s), want Alive", worker.Kind, worker.Detail)
+			}
+		})
+	}
+}
+
 // The controller's Sandbox is its claim's alone, so its Release deletes it, with its Secrets and
 // volume through their owner references. Releasing a workflow claim still leaves its issue pod to
 // the tree's cleanup (TestReleaseNeverDeletesTheIssueSandbox).

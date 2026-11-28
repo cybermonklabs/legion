@@ -66,6 +66,8 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 		}
 	}
 	t.Logf("every login of this binary's admin pool held 900 s from %s", time.Now().UTC().Format(time.RFC3339))
+	// The stage of the row's subject, not a wait for a fact: only wall time between the pool's first
+	// connection and this one tells a bound taken as a connection is made from one fixed at the first.
 	time.Sleep(wait)
 	shared.admin.Reset()
 	began := time.Now()
@@ -74,6 +76,9 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 		_, err := shared.admin.Exec(ctx, "select 1")
 		answered <- err
 	}()
+	// A hang guard, not the bound this row proves: the connect's own timeout ends at the connect end,
+	// whole seconds rounded down, so up to a second before it, and a shared wait gives up at that end
+	// itself; correct code reaches this timer, testwait.Margin/2 past the end, only by stalling.
 	giveUp := time.NewTimer(time.Until(end.Add(testwait.Margin / 2)))
 	defer giveUp.Stop()
 	select {
@@ -88,7 +93,8 @@ func TestALaterAdminConnectionEndsByTheConnectEnd(t *testing.T) {
 		}
 		// The bound is whole seconds, rounded down (testdb.TimeoutUntil), so the timeout comes up
 		// to a second before the end; a timeout well before it is a bound that ended for another
-		// reason, as a shorter connect_timeout would.
+		// reason, as a shorter connect_timeout would. A reading of the clock that load cannot fail:
+		// a loaded machine times out later, with less left.
 		if left > 5*time.Second {
 			t.Fatalf("the late admin connection timed out %s before the connect end; want it to time out at that end", left.Round(time.Second))
 		}

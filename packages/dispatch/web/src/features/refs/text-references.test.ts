@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { DISPATCH_TEXT_REFERENCES, isIdPrefix } from "@legion/contracts";
 
+import { referenceReads, referenceReadsSince } from "./reference-reads";
 import { referenceHref } from "./routes";
 import { readTextReferences } from "./text-references";
 
 const origin = "https://dispatch.test";
+const origins = [origin];
 
 /** The references a reading names, in order of first appearance, as a row's `refs` lists them. */
 function cited(body: string, facts: Parameters<typeof readTextReferences>[1]): string[] {
@@ -48,7 +50,7 @@ test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin,
       cited(body, {
         issues: row.issues,
         items: row.items,
-        origin: server,
+        origins: [server],
         questions: row.questions,
       })
     ).toEqual([...row.refs]);
@@ -66,7 +68,7 @@ test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin,
       citedInCode(body, {
         issues: row.issues,
         items: row.items,
-        origin: server,
+        origins: [server],
         questions: row.questions,
       })
     ).toEqual([...(row.inCode ?? [])]);
@@ -78,7 +80,7 @@ test.each(DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.origin ?? origin,
 test("each occurrence of a reference is marked where it stands", () => {
   const { references } = readTextReferences(
     "Run `dispatch://role/reviewer` and ask dispatch://role/reviewer about it.",
-    { origin }
+    { origins }
   );
 
   expect(references.map((found) => found.inCode)).toEqual([true, false]);
@@ -89,7 +91,7 @@ test("each occurrence of a reference is marked where it stands", () => {
 test("a reading answers what it would have to ask before it has asked anything", () => {
   const { needs, references } = readTextReferences(
     "Both CORE-1 and ACME-12 are blocked; CORE-1 again, see #q2 and dispatch://CORE-1/ask/2a7f1c90.",
-    { origin }
+    { origins }
   );
 
   expect(needs).toEqual({
@@ -108,7 +110,7 @@ test("a reading answers what it would have to ask before it has asked anything",
 });
 
 test("a text with nothing to resolve asks nothing", () => {
-  const { needs, references } = readTextReferences("Tied to dispatch://CORE-1 here.", { origin });
+  const { needs, references } = readTextReferences("Tied to dispatch://CORE-1 here.", { origins });
 
   expect(needs).toEqual({ keys: [], prefixes: [], questions: false });
   expect(references.map((found) => found.reference)).toEqual(["dispatch://CORE-1"]);
@@ -119,7 +121,7 @@ test("a text with nothing to resolve asks nothing", () => {
 // (`draft-pills.tsx`). A project's own page is no node a text can name, so a pasted URL of it
 // cites nothing and gets no pill: of a project's pages, only its documents are references.
 test("Composer ignores a pasted project page URL because only documents are references", () => {
-  expect(cited(`${origin}/projects/CORE`, { origin })).toEqual([]);
+  expect(cited(`${origin}/projects/CORE`, { origins })).toEqual([]);
 });
 
 // A project's document is a reference whether the draft pastes its page's URL or writes its
@@ -129,7 +131,7 @@ test("Composer preserves a project document reference with its document page hre
     `${origin}/projects/CORE/documents/design-notes`,
     "dispatch://CORE/artifact/design-notes",
   ]) {
-    const { references } = readTextReferences(body, { origin });
+    const { references } = readTextReferences(body, { origins });
     expect(
       references.map(({ reference, route }) => ({
         href: route === undefined ? undefined : referenceHref(route),
@@ -186,10 +188,65 @@ test.each([
   ["parentheses then a letter", `dispatch://CORE-1${")".repeat(1 << 16)}x`, []],
 ] as const)("a reference trailed by %s is read in one pass", (_name, body, refs) => {
   const start = performance.now();
-  const found = cited(body, { origin });
+  const found = cited(body, { origins });
   // These four rows read 0.08 s, 0.06 s, 0.04 s and 0.00 s idle on a 2-core pod, and 0.14 s,
   // 0.13 s, 0.10 s and 0.00 s loaded; the budget is 12 times the slowest loaded reading, so no
   // loaded pod can fail it by being slow.
   expect(performance.now() - start).toBeLessThan(BACKTRACKING_BUDGET_MS);
   expect(found).toEqual([...refs]);
+});
+
+// A reading hands each span of a body to `referenceRouteFromHref` once, so it costs one pass over
+// the body's spans whatever they hold, counted rather than timed (`reference-reads.ts`). The
+// spans here take its longest way: a `dispatch://` reference to an ask's part pinned to a revision
+// (the fragment read apart, the reference before it parsed again), and a 65,536-character id that
+// parses as far as the extra segment after it. A caller that handed it the body, or the rest of
+// it, for every span reads about the square of the body.
+test("a body of many references hands each span to referenceRouteFromHref once", () => {
+  const count = 4096;
+  const pinned = Array.from(
+    { length: count },
+    (_, index) => `dispatch://CORE-1/ask/q${index}#b-q${index}@v1`
+  );
+  const long = `dispatch://CORE-1/ask/${"a".repeat(1 << 16)}/x`;
+  const body = `${pinned.join(" ")} ${long}`;
+  const before = referenceReads();
+  const found = cited(body, { origins });
+  const read = referenceReadsSince(before);
+  expect(found).toEqual(pinned);
+  expect(read.referenceRouteFromHref.calls).toBe(count + 1);
+  expect(read.referenceRouteFromHref.characters).toBe(body.length - count);
+});
+
+// A reading hands each address it finds to `readAddress` as the author wrote it and, when it
+// ends in `_` or `-`, once more without them (`trimmedMention`), and `readAddress` hands it to
+// `referenceRouteFromHref` once: two passes over the addresses of a body at most, counted rather
+// than timed (`reference-reads.ts`). The last address holds a 65,536-character run of `-`
+// before a letter, the text `trimmedMention`'s end-anchored `/[_-]+$/` tried from every position
+// of the run (1.7 s for a run of 32,768 in a 2-CPU pod, four times that for each doubling); its
+// walk back reads only the letter that stops it. The pattern read nothing the count could see,
+// so that version fails the call count below. A reader that handed the body to `readAddress`
+// again for each address reads about the square of it.
+test("a reading hands each address to readAddress at most twice and trims its tail walking back", () => {
+  const trailed = `${origin}/issues/CORE-1?x=${"-".repeat(64)}`;
+  const long = `${origin}/issues/CORE-2?x=${"-".repeat(1 << 16)}y`;
+  const count = 1024;
+  const body = `${Array.from({ length: count }, () => trailed).join(" ")} ${long}`;
+  const before = referenceReads();
+  const { references } = readTextReferences(body, { origins });
+  const read = referenceReadsSince(before);
+  expect(references.map((found) => [found.reference, found.named])).toEqual([
+    ...Array.from({ length: count }, () => ["dispatch://CORE-1", trailed.length - 64]),
+    ["dispatch://CORE-2", undefined],
+  ]);
+  // Each trailed address is read as written and without its run of `-`; the long one, which
+  // ends in a letter, only as written.
+  expect(read.readAddress.calls).toBe(2 * count + 1);
+  expect(read.readAddress.characters).toBeLessThanOrEqual(2 * body.length);
+  expect(read.referenceRouteFromHref.calls).toBe(2 * count + 1);
+  expect(read.referenceRouteFromHref.characters).toBeLessThanOrEqual(2 * body.length);
+  // The walk back reads each trailed address's run and the `=` that stops it, and the long
+  // address's last letter.
+  expect(read.trimmedMention.calls).toBe(count + 1);
+  expect(read.trimmedMention.characters).toBe(count * 65 + 1);
 });

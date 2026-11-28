@@ -36,7 +36,9 @@ test("dispatch://<KEY>/dashboard and the tab's page read in text as no reference
   // `text.issueTabReferences` hold none), so neither cites anything here.
   expect(parseDispatchReference("dispatch://ACME-1/dashboard")).toBeUndefined();
   expect(
-    referenceRouteFromHref("https://dispatch.test/issues/ACME-1/dashboard", "https://dispatch.test")
+    referenceRouteFromHref("https://dispatch.test/issues/ACME-1/dashboard", [
+      "https://dispatch.test",
+    ])
   ).toBeUndefined();
 });
 

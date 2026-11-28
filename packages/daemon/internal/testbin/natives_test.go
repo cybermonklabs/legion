@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // standIn writes, as omp under dir, a script that embeds the natives list lines (in the format the
@@ -20,7 +22,7 @@ func standIn(t *testing.T, dir string, list []string, body string) string {
 	for _, line := range list {
 		script += "# " + line + "\n"
 	}
-	if err := os.WriteFile(omp, []byte(script+body), 0o755); err != nil {
+	if err := testexec.WriteFile(omp, []byte(script+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return omp
@@ -100,7 +102,7 @@ func TestANativesHomeOnAnotherFilesystemSymlinksTheCachedFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(cached), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cached, []byte("native"), 0o500); err != nil {
+	if err := testexec.WriteFile(cached, []byte("native"), 0o500); err != nil {
 		t.Fatal(err)
 	}
 	failing := func(errno syscall.Errno) func(string, string) error {
