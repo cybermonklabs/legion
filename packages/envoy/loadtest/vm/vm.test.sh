@@ -154,9 +154,10 @@
 # other. A part is a run of whole groups in this file's order, a group being the cases from one
 # top-level reset_fake or restore_up to the next, and its function part_<name> holds them; no part
 # reads anything another part made, only the shared setup. `vm.test.sh --parts` prints the parts,
-# one a line; no argument, or a name that is no part, exits 2 before the setup. This loop runs every
-# part, each alone, and fails when any part fails (in a subshell or a script, since it exits), which
-# is what CI's fourteen pool entries do (.github/workflows/ci-job-envoy-go-checks.yaml):
+# one a line; no argument, or a name that is no part, exits 2 before the setup. Each name `--parts`
+# prints has exactly one step in .github/workflows/ci-job-envoy-go-checks.yaml, and a change that
+# adds a part adds its step there. This loop runs every part, each alone, and fails when any part
+# fails (in a subshell or a script, since it exits), which is what those fourteen steps do:
 #
 #   rc=0; for p in $(bash loadtest/vm/vm.test.sh --parts); do bash loadtest/vm/vm.test.sh "$p" || rc=1; done; exit "$rc"
 #
@@ -1484,9 +1485,10 @@ part_check_reset() {
 # differ by more -- a time, a mktemp name, how many times up asked for the stub's certificate --
 # that one thing is a placeholder or left out and the rest of the file is still compared. The one
 # difference restore_up makes by design, the stub embedder it ends, is asserted rather than
-# compared: no stub-port, an empty pid file and no stub of the copy running. And an up that wrote
-# anywhere under $tmp but the trees restore_up puts back would leave there what no restore puts
-# back, so the case lists those paths before the copy's up and again after the fresh one.
+# compared: no stub-port and an empty pid file, while restore_up itself proves the stub ended by
+# its pid. And an up that wrote anywhere under $tmp but the trees restore_up puts back would leave
+# there what no restore puts back, so the case lists those paths before the copy's up and again
+# after the fresh one.
 
 # up_manifest: every path under $fake, $tmp/root and $remote, relative to $tmp, with its type and
 # its octal mode, in the C locale's order, each regular file followed by its bytes, every line of
@@ -1554,8 +1556,6 @@ restore_up
 [ ! -e "$fake/stub-port" ] || fail "a restored up names a stub embedder in $fake/stub-port: $(cat "$fake/stub-port")"
 [ -f "$remote/work/stub-embed.pid" ] && [ ! -s "$remote/work/stub-embed.pid" ] ||
   fail "a restored up holds no empty $remote/work/stub-embed.pid, so a later down or second up would TERM the pid it names"
-left=$(pgrep -af -- "$remote/app/loadgen stub-embed" | tr '\n' ';' || true)
-[ -z "$left" ] || fail "the stub embedder of the copy restore_up made runs after a restore: $left"
 up_manifest >"$tmp/manifest-restored"
 reset_fake
 run_vm up --config "$config"

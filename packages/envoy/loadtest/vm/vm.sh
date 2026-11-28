@@ -483,7 +483,7 @@ parse() {
     esac
   done
   [ -n "${OPT[config]:-}" ] || die "$CMD: --config is required: name the deployment's JSON file (there is no default; the deployment is dispatch://INFRA-1051's, and nothing of it is named in this script)"
-  [[ $TUNNEL_SECONDS =~ ^[1-9][0-9]*$ ]] || die "$CMD: LOADTEST_VM_TUNNEL_SECONDS is '$TUNNEL_SECONDS', not a whole number of seconds above 0"
+  [[ $TUNNEL_SECONDS =~ ^[1-9][0-9]{0,17}$ ]] || die "$CMD: LOADTEST_VM_TUNNEL_SECONDS is '$TUNNEL_SECONDS', not a whole number of seconds above 0"
   CONFIG=$(abs_file --config "${OPT[config]}")
   jq -e . "$CONFIG" >/dev/null 2>&1 || die "$CMD: --config $CONFIG is not readable JSON"
   cfg_load
