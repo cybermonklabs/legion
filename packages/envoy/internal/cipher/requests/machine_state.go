@@ -292,14 +292,14 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secretstore.Reader
 	PendingTTL time.Duration
-	// SecretsPrefix and SecondPrefix are the prefixes every source of the store begins with under
-	// BROKER_SECRETS_PREFIX and under BROKER_SECRETS_SECOND_PREFIX, as the store answers them
-	// (secretstore.Config.SourcePrefixes), SecondPrefix "" for none: the two the one rule of a
-	// grant's frozen source reads (sourceRule). With SecondPrefix set, a source frozen under it
-	// counts as the source the policy serves under SecretsPrefix for the same name and type, so a
-	// store move ends no grant; a release still reads the policy's source alone (readSource).
-	// Nothing else here reads either.
-	SecretsPrefix, SecondPrefix string
+	// SourcePrefix and SecondSourcePrefix are the prefixes every source of the store begins with
+	// under BROKER_SECRETS_PREFIX and under BROKER_SECRETS_SECOND_PREFIX, as the store answers them
+	// (secretstore.Config.SourcePrefixes), SecondSourcePrefix "" for none: the two the one rule of
+	// a grant's frozen source reads (sourceRule). With SecondSourcePrefix set, a source frozen
+	// under it counts as the source the policy serves under SourcePrefix for the same name and
+	// type, so a store move ends no grant; a release still reads the policy's source alone
+	// (readSource). Nothing else here reads either.
+	SourcePrefix, SecondSourcePrefix string
 	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
 	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).
 	Audience string

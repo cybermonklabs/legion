@@ -1559,7 +1559,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 	sourcePrefix, secondSourcePrefix := cfg.Secrets.SourcePrefixes()
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
-		SecretsPrefix: sourcePrefix, SecondPrefix: secondSourcePrefix,
+		SourcePrefix: sourcePrefix, SecondSourcePrefix: secondSourcePrefix,
 		Audience: cfg.PublicURL, EdgeAudience: cfg.EdgeURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,

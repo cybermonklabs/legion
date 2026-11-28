@@ -108,7 +108,7 @@ func TestSourceCountsThroughTheSecondPrefix(t *testing.T) {
 			t.Errorf("stillAllowed(%s frozen at %s, second prefix %q) = %v; want errSourceMoved, which ends the grant", row.name, row.frozen, row.rule.second, err)
 		}
 
-		m := &Machine{SecretsPrefix: row.rule.prefix, SecondPrefix: row.rule.second}
+		m := &Machine{SourcePrefix: row.rule.prefix, SecondSourcePrefix: row.rule.second}
 		secretType, source, minted, err := m.readSource(requestedSecret{name: row.name, source: row.frozen}, set.Secrets[row.name])
 		wantType, wantSource, wantMinted, _ := policy.ParseTypeSource(set.Secrets[row.name].Source)
 		switch {

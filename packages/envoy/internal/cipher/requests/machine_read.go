@@ -579,14 +579,14 @@ func sourceMoved(name string) error {
 // Create's reuse of a live grant (stillAllowed), the re-check after a release's reads
 // (recheckStoredSources), and the release's read itself (readSource). prefix and second are the
 // prefixes every source of the store begins with under BROKER_SECRETS_PREFIX and under
-// BROKER_SECRETS_SECOND_PREFIX (Machine.SecretsPrefix and Machine.SecondPrefix, which the store
-// answers: secretstore.Config.SourcePrefixes); with second empty the rule counts equal sources
-// alone, which is every broker that does not set it.
+// BROKER_SECRETS_SECOND_PREFIX (Machine.SourcePrefix and Machine.SecondSourcePrefix, which the
+// store answers: secretstore.Config.SourcePrefixes); with second empty the rule counts equal
+// sources alone, which is every broker that does not set it.
 type sourceRule struct{ prefix, second string }
 
 // sourceRule is the rule this machine holds a frozen source to.
 func (m *Machine) sourceRule() sourceRule {
-	return sourceRule{prefix: m.SecretsPrefix, second: m.SecondPrefix}
+	return sourceRule{prefix: m.SourcePrefix, second: m.SecondSourcePrefix}
 }
 
 // counts reports whether frozen counts as served. Equal sources count. With a second prefix set,
