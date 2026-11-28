@@ -12,7 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // signRequestFor signs an agent_secret request object over names whose grant lasts lifetime
@@ -411,7 +411,7 @@ func TestAGrantWithNoTTLLastsUntilItsSessionEnds(t *testing.T) {
 
 // sessionDefault tags s default-grant=session, so a request naming no lifetime for it gets a grant
 // that lasts until its session ends.
-func sessionDefault(s secrets.LocalSecret) secrets.LocalSecret {
+func sessionDefault(s memory.Secret) memory.Secret {
 	s.Tags[policy.TagDefaultGrant] = policy.DefaultGrantSession
 	return s
 }

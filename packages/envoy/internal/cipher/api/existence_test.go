@@ -18,14 +18,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -163,7 +165,7 @@ func TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordI
 
 // refusedSecret is a secret the broker holds and refuses to serve, for its missing owner tag: a
 // third answer a reread could give, beside served and absent.
-func refusedSecret(name string) secrets.LocalSecret {
+func refusedSecret(name string) memory.Secret {
 	secret := policytest.Secret(name, testApprover, policy.TierAgent, "v1")
 	delete(secret.Tags, policy.TagOwner)
 	return secret
@@ -247,7 +249,7 @@ const heldFor = 5 * time.Second
 // a name and more to describe one it holds.
 func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 	t.Parallel()
-	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"))
+	local := memory.New(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"))
 	entered := make(chan string, 8)
 	release := make(chan struct{})
 	released := false
@@ -256,15 +258,14 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 			close(release)
 		}
 	})
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, policytest.HeldDescriber{SecretsManagerAPI: local, Entered: entered, Release: release})
+	loader := policytest.Loader(secretstoretest.Held{Store: local, Entered: entered, Release: release})
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	notified := make(chan string, 8)
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t),
 		RereadOverallLimit: &rereadsFreely,
 		NotifyReread:       func(_ context.Context, name string, _ []string) { notified <- name }})
 	// NEW_KEY is in the store only from now on, so only a reread can make the broker serve it.
@@ -318,14 +319,14 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 	}
 }
 
-// failingDescriber fails every DescribeSecret as a throttled Secrets Manager does.
-type failingDescriber struct{ secrets.SecretsManagerAPI }
+// failingDescriber fails every Describe as a throttled store does.
+type failingDescriber struct{ secretstore.Store }
 
-func (failingDescriber) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	return nil, &throttled{}
+func (failingDescriber) Describe(context.Context, string) (secretstore.Listing, error) {
+	return secretstore.Listing{}, &throttled{}
 }
 
-// throttled is the error Secrets Manager answers a caller past its rate with.
+// throttled is the error a store answers a caller past its rate with, in Secrets Manager's words.
 type throttled struct{}
 
 func (*throttled) Error() string {
@@ -337,15 +338,14 @@ func (*throttled) Error() string {
 // "broker: reread secret failed" that an operator's alert counts, naming the secret.
 func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	local := secrets.NewLocal()
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, failingDescriber{SecretsManagerAPI: local})
+	local := memory.New()
+	loader := policytest.Loader(failingDescriber{Store: local})
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t)})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
@@ -360,11 +360,10 @@ func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
 	}
 }
 
-// panickingDescriber panics on every DescribeSecret, as a store client with a defect of its own
-// would.
-type panickingDescriber struct{ secrets.SecretsManagerAPI }
+// panickingDescriber panics on every Describe, as a store client with a defect of its own would.
+type panickingDescriber struct{ secretstore.Store }
 
-func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+func (panickingDescriber) Describe(context.Context, string) (secretstore.Listing, error) {
 	panic("a store client's own defect")
 }
 
@@ -374,15 +373,14 @@ func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 // step and the panic in one ERROR line, and the broker goes on answering.
 func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	local := secrets.NewLocal()
-	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, panickingDescriber{SecretsManagerAPI: local})
+	local := memory.New()
+	loader := policytest.Loader(panickingDescriber{Store: local})
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t)})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
@@ -402,14 +400,14 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 
 func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
 	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	local := secrets.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
+	local := memory.New(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{
-		Policy:        policytest.Current(t, local),
-		SecretsStore:  secrets.StoreAWS,
-		SecretsPrefix: policytest.Prefix,
-		SecretsKMSKey: policytest.KeyARN,
-		NotifyReread:  func(context.Context, string, []string) { panic("a peer-notice defect") },
+		Policy:         policytest.Current(t, local),
+		SecretsStore:   aws.Name,
+		SecretsPrefix:  policytest.Prefix,
+		SettingsFields: awsSettings(t),
+		NotifyReread:   func(context.Context, string, []string) { panic("a peer-notice defect") },
 	})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
@@ -436,7 +434,7 @@ func TestSettingsStayOpenToACallerWithNoCredential(t *testing.T) {
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, open := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
 	settings := decode[map[string]any](t, open)
-	if status != http.StatusOK || settings["secrets_prefix"] != policytest.Prefix || settings["kms_key_arn"] != policytest.KeyARN ||
+	if status != http.StatusOK || settings["secrets_prefix"] != policytest.Prefix || settings["kms_key_arn"] != awsKeyARN ||
 		settings["aws_account_id"] == nil || settings["google_exchange_audience"] != "agent-secrets-vm" {
 		t.Fatalf("GET /v1/settings with no credential = %d %s; want 200 naming the prefix, the key, its account and the exchange audience", status, open)
 	}

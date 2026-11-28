@@ -39,15 +39,16 @@ const testProxyPool = "projects/example-project/locations/us-west1/caPools/proxy
 // a local run, and a profiles file declaring one bound kind.
 func localProxyEnv(t *testing.T, databaseURL string) []string {
 	t.Helper()
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return []string{
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_PROFILES_FILE=" + profilesFile(t, `{"kinds": [{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}], "profiles": []}`),
 		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",

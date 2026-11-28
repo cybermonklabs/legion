@@ -10,12 +10,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
-// retagDuringRead is a secrets.Reader that runs during once, after Values has checked its policy
+// retagDuringRead is a secretstore.Reader that runs during once, after Values has checked its policy
 // and before the store read it wraps answers, then reads the store as it stands after during.
 type retagDuringRead struct {
-	secrets.Reader
+	secretstore.Reader
 	once   *sync.Once
 	during func(ctx context.Context) error
 	err    *error

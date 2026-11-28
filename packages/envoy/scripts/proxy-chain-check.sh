@@ -221,7 +221,7 @@ shape() { printf 'len=%d sha256=%s' "${#1}" "$(digest "$1")"; }
 # (lib/check-stack.sh's stack_start), then the stored value the demo profile releases.
 start_stack() {
 	stack_start --one-broker
-	DEMO_VALUE="$(jq -r '.secrets[] | select(.name | endswith("airlock-demo-token")) | .value' "$AIRLOCK_FAKE_SECRETS_FILE")"
+	DEMO_VALUE="$(jq -r '.secrets[] | select(.name | endswith("airlock-demo-token")) | .value' "$AIRLOCK_MEMORY_SECRETS_FILE")"
 	echo "proxy-chain-check: the stack is up (broker pid ${BROKER_PIDS[0]}, work directory $AIRLOCK_DIR)" >&2
 }
 

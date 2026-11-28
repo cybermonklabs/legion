@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -69,11 +69,11 @@ func groupStands(t *testing.T) (iam, directory *httptest.Server) {
 func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	t.Parallel()
 	iam, directory := groupStands(t)
-	cfg := config.Config{SecretsPrefix: policytest.Prefix, DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
+	cfg := config.Config{Secrets: awsSecretsConfig(t, policytest.Prefix), DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
 
-	local := secrets.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
-	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), policy.Profiles{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
+	local := memory.New(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
+	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, local, policy.Profiles{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
 	if err != nil {
 		t.Fatalf("loadFirstPolicy: %v", err)
 	}

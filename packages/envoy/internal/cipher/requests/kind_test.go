@@ -16,12 +16,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // requestTypeSecret is a type secret of the fixture's operator holding a value its type's decoder
 // reads (policytest.TypeValue), which the policy serves.
-func requestTypeSecret(name, secretType, tier, maxGrant string) secrets.LocalSecret {
+func requestTypeSecret(name, secretType, tier, maxGrant string) memory.Secret {
 	secret := policytest.TypeSecret(name, fixtureOperator, tier, secretType, policytest.TypeValue(secretType))
 	if maxGrant != "" {
 		secret.Tags[policy.TagMaxGrant] = maxGrant
@@ -228,13 +229,13 @@ func TestDeletedTypeSecretStopsReleasing(t *testing.T) {
 // so the retag alone moves it.
 func TestTypeRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 	t.Parallel()
-	for name, replacement := range map[string]func(secrets.LocalSecret) secrets.LocalSecret{
-		"cleared": func(secret secrets.LocalSecret) secrets.LocalSecret {
+	for name, replacement := range map[string]func(memory.Secret) memory.Secret{
+		"cleared": func(secret memory.Secret) memory.Secret {
 			secret.Tags = maps.Clone(secret.Tags)
 			delete(secret.Tags, policy.TagType)
 			return secret
 		},
-		"changed": func(secret secrets.LocalSecret) secrets.LocalSecret {
+		"changed": func(secret memory.Secret) memory.Secret {
 			secret.Tags = maps.Clone(secret.Tags)
 			secret.Tags[policy.TagType] = policy.TypeAzureLogin
 			// The value the new type's decoder reads, so the policy serves the secret as that
