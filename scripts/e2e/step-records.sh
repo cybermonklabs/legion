@@ -27,6 +27,10 @@
 #   - a-write-that-names-another-session-is-refused: a step write sent with the agent's bearer
 #     and the actor ses_step_agent is refused 403 STEP_WRITER and leaves no record; control: the
 #     same body with the daemon's own credential and the actor legion-daemon:<PROJECT> is taken.
+# Each read of the runs also wants each step and the retro to print
+# `set stand-in/model answered stand-in/model=1(100%)`: each agent answers once a run. The merge
+# prints `set - answered unknown`, since its agent never registers and no read of its calls is
+# answered.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as

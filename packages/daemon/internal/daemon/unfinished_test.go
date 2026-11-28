@@ -272,20 +272,28 @@ func (r *stopsEarlierRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec)
 // dialShimUntilAcked dials as worker-shim does, again after a refused hello until one is acked,
 // and returns the acknowledged connection: a claim's stream slot is free again once the listener
 // has read its previous connection's close. It fails the test naming the boot token and the last
-// refusal once no hello is acked within 10 s (ackedShim).
+// refusal once no hello is acked within 10 s (ackedHello).
 func dialShimUntilAcked(t *testing.T, address, bootToken string) *shim {
 	t.Helper()
-	acked, err := ackedShim(t, address, bootToken)
+	return dialHelloUntilAcked(t, address, shimwire.Hello2{BootToken: bootToken})
+}
+
+// dialHelloUntilAcked dials the worker stream at address and sends hello, again after a refused
+// hello until one is acked, and returns the acknowledged connection (dialShimUntilAcked). It fails
+// the test naming the boot token and the last refusal (ackedHello).
+func dialHelloUntilAcked(t *testing.T, address string, hello shimwire.Hello2) *shim {
+	t.Helper()
+	acked, err := ackedHello(t, address, hello)
 	if err != nil {
-		t.Fatalf("no hello with %s was acked: %v", bootToken, err)
+		t.Fatalf("no hello with %s was acked: %v", hello.BootToken, err)
 	}
 	return acked
 }
 
-// ackedShim is dialShimUntilAcked's dialing, answering the shim's last refusal rather than failing
-// the test, for a caller that can say more of why the daemon refused the boot token than the
-// refusal does: the worker stream closes a refused hello with no frame, which reads here as an EOF.
-func ackedShim(t *testing.T, address, bootToken string) (*shim, error) {
+// ackedHello is dialHelloUntilAcked's dialing, answering the last refusal rather than failing the
+// test, for a caller that can say more of why the daemon refused the boot token than the refusal
+// does: the worker stream closes a refused hello with no frame, which reads here as an EOF.
+func ackedHello(t *testing.T, address string, hello shimwire.Hello2) (*shim, error) {
 	t.Helper()
 	var last error
 	var acked *shim
@@ -296,7 +304,7 @@ func ackedShim(t *testing.T, address, bootToken string) (*shim, error) {
 			return false
 		}
 		s := newTestShim(t, conn)
-		if err := s.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
+		if err := s.writer.WriteFrame(hello); err != nil {
 			conn.Close()
 			last = err
 			return false

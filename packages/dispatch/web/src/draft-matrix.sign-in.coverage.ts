@@ -81,7 +81,7 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers("AppShell | - | form | (!issueFrame && !fillsViewport) ? …", { reason: REASONS[4] }),
   ...answers(
-    "useKeyboardFit | - | form | if (!enabled || element === null || viewport == null) return …",
+    "useKeyboardFrame | - | form | if (!enabled || element === null || viewport == null) return …",
     { reason: REASONS[4] }
   ),
   ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[4] }),

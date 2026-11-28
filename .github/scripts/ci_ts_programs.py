@@ -65,7 +65,7 @@ PROGRAMS = [
     ("tooling_checks", "scripts/spec-review-eval",
      at("tooling-checks", "Typecheck the statement review evaluation (bunx tsc --noEmit -p scripts/spec-review-eval)", "test")),
     ("tooling_checks", "scripts/e2e/lib",
-     at("tooling-checks", "Typecheck the plan ratings read test (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
+     at("tooling-checks", "Typecheck the e2e scripts and their tests (bunx tsc --noEmit -p scripts/e2e/lib)", "test")),
 ]
 
 # The entries a step runs with Bun rather than typechecks: what such a step loads is the entry's

@@ -4,6 +4,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { chmod, readdir, readFile, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { stageSkills } from "@legion/pi-shared/test/skills-guard";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 const PACKAGE_ROOT = path.resolve(import.meta.dir, "..");
@@ -157,7 +158,7 @@ describe("the dispatch CLI the package ships", () => {
       expect(
         Bun.spawnSync(["tar", "xzf", tarball, "-C", unpacked, "--strip-components=1"]).exitCode
       ).toBe(0);
-    }, 120_000);
+    });
 
     afterAll(async () => {
       for (const [file, mode] of plantedModes) await chmod(file, mode);
@@ -175,6 +176,7 @@ describe("the dispatch CLI the package ships", () => {
       expect(await readdir(path.join(unpacked, "bin"))).toEqual(["dispatch"]);
       const help = Bun.spawnSync([path.join(unpacked, "bin/dispatch"), "--help"], {
         env: {
+          ...bunCacheOff,
           PATH: process.env.PATH ?? "",
           HOME: work,
           DISPATCH_HOST: "omp",
