@@ -332,22 +332,22 @@ type attributionColumns struct {
 // 25 is held to the pull request's repository.
 const attributionCandidateBound = 25
 
-// attributionCandidates is the issues a pull request's five sources name, best first: the
-// ranking is the file's, every candidate of a source before any of the next, and within a
-// source the order the keys were read in. The issues one place names together — the issues whose
-// link is the pull request's URL, or those whose link is the GitHub issue one citation names —
-// rank by key in byte order (`collate "C"`), and so do the statements that order the candidates
-// again, so two databases holding the same links rank them alike whatever order the links were
-// stored in: the first held candidate of the first source is the pull request's issue, and
-// ResolvedCandidates returns the whole ranked list. Each candidate says whether it is of that
-// first source (first_source): its rank is the best rank of the answer, read with a window over
-// the whole union (`min(s.rank) over ()`), which the bound never drops since it keeps the best
-// ranks. It is decided here, once, so every reader of the list picks within the same source. The
-// union's arms are written in that ranked order, so the text reads as the list at the top of this
-// file reads. The two link sources compare URLs lowercased on both sides: GitHub's owner and
-// repository names are case-insensitive, its answers spell them as their owners do
-// (`Acme/Widgets`), and Dispatch stores an issue's GitHub link lowercased (refs.ExternalRepo) or
-// as a person typed it (issue_external_links_url_lower serves the comparison).
+// attributionCandidates is the issues the first of a pull request's five sources that names an
+// issue names, best first: the ranking is the file's, every candidate of a source before any of
+// the next, and within a source the order the keys were read in. The issues one place names
+// together — the issues whose link is the pull request's URL, or those whose link is the GitHub
+// issue one citation names — rank by key in byte order (`collate "C"`), and so do the statements
+// that order the candidates again, so two databases holding the same links rank them alike
+// whatever order the links were stored in: the first held candidate is the pull request's issue,
+// and ResolvedCandidates returns the whole answer. Only that first source's candidates leave this
+// statement: its rank is the best rank of the union, read with a window over the whole union
+// (`min(u.rank) over ()`) before the bound, so the bound keeps the best-ranked of them. The source
+// is chosen here, once, so no reader of the answer can pick from a later source. The union's arms
+// are written in that ranked order, so the text reads as the list at the top of this file reads.
+// The two link sources compare URLs lowercased on both sides: GitHub's owner and repository names
+// are case-insensitive, its answers spell them as their owners do (`Acme/Widgets`), and Dispatch
+// stores an issue's GitHub link lowercased (refs.ExternalRepo) or as a person typed it
+// (issue_external_links_url_lower serves the comparison).
 //
 // Each link source compares a link with every spelling of the URL it looks for: the URL itself,
 // and the URL under the other name of each rename pair that names it (refs.URLSpellingsSQL). So
@@ -355,7 +355,8 @@ const attributionCandidateBound = 25
 // a link stored under the new name credits one Dispatch stored under the old name. The
 // comparison is `lower(l.url) = any(…)`, which issue_external_links_url_lower still serves.
 func attributionCandidates(renames refs.Renames, c attributionColumns) string {
-	return `select s.key, s.source, s.rank, s.n, s.rank = min(s.rank) over () as first_source from (
+	return `select s.key, s.source, s.rank, s.n from (
+	select u.key, u.source, u.rank, u.n, u.rank = min(u.rank) over () as first_source from (
 		select l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0 as n
 			from issue_external_links l where lower(l.url) = any(` + refs.URLSpellingsSQL(renames, c.URL) + `)
 		union all
@@ -377,7 +378,8 @@ func attributionCandidates(renames refs.Renames, c attributionColumns) string {
 		union all
 		select m.key, '` + string(sourceCommitMessage) + `', 6, m.n
 			from unnest(` + c.CommitKeys + `) with ordinality m(key, n) join issues i on i.key = m.key
-	) s order by s.rank, s.n, s.key collate "C" limit ` + strconv.Itoa(attributionCandidateBound)
+	) u
+	) s where s.first_source order by s.rank, s.n, s.key collate "C" limit ` + strconv.Itoa(attributionCandidateBound)
 }
 
 // attributionHeld is the condition a candidate of the first source passes to be the pull
@@ -424,19 +426,19 @@ const attributionSubjects = `subjects as (
 )`
 
 // attributionCandidatesQuery is the one statement that resolves a pull request's candidates from
-// stored inputs: every candidate the five sources name, best first, each marked whether it is of
-// the first source that names an issue and whether it is held to the pull request's own
-// repository. The repository rule is spliced in over the candidate keys the way
-// refs.IssueRepository splices it over one key, so one walk resolves them all together. `left
-// join issues`, not `join`: a candidate whose issue row has gone stays in the answer, unheld, so
-// a caller can name the candidates it passed over. NewAttributor builds the text once, rather
-// than each read: the concatenation is work a read would repeat for a statement that never
-// differs within a process, and pgx caches a prepared plan per statement text.
+// stored inputs: every candidate the first source that names an issue names, best first, each
+// marked whether it is held to the pull request's own repository. The repository rule is spliced
+// in over the candidate keys the way refs.IssueRepository splices it over one key, so one walk
+// resolves them all together. `left join issues`, not `join`: a candidate whose issue row has
+// gone stays in the answer, unheld, so a caller can name the candidates it passed over.
+// NewAttributor builds the text once, rather than each read: the concatenation is work a read
+// would repeat for a statement that never differs within a process, and pgx caches a prepared
+// plan per statement text.
 func attributionCandidatesQuery(renames refs.Renames) string {
 	return `with recursive candidates as (
 	` + attributionCandidates(renames, attributionOneColumns) + `
 ), ` + attributionSubjects + `, ` + refs.IssueRepoTerms + `
-select c.key, c.source, c.first_source, ` + attributionHeld(renames, attributionOneRepo) + ` as held
+select c.key, c.source, ` + attributionHeld(renames, attributionOneRepo) + ` as held
 from candidates c
 	left join issues i on i.key = c.key
 	` + refs.IssueRepoJoin + `
@@ -459,7 +461,7 @@ var attributionRowColumns = attributionColumns{
 // the same candidates alike.
 func attributionRowTerms(renames refs.Renames) string {
 	return `candidates as (
-			select src.repo as pr_repo, src.number as pr_number, f.key, f.rank, f.n, f.first_source
+			select src.repo as pr_repo, src.number as pr_number, f.key, f.rank, f.n
 			from batch src
 			left join lateral (` + attributionCandidates(renames, attributionRowColumns) + `) f on true
 		), ` + attributionSubjects + `, ` + refs.IssueRepoTerms
@@ -486,7 +488,7 @@ func attributionBatchQuery(renames refs.Renames) string {
 			from candidates c
 				left join issues i on i.key = c.key
 				` + refs.IssueRepoJoin + `
-			where c.first_source and ` + attributionHeld(renames, "c.pr_repo") + `
+			where ` + attributionHeld(renames, "c.pr_repo") + `
 		), picked as (
 			select distinct on (pr_repo, pr_number) pr_repo, pr_number, key
 			from held order by pr_repo, pr_number, rank, n, key collate "C"
@@ -515,9 +517,8 @@ func attributionBatchQuery(renames refs.Renames) string {
 // of, so a reader can hold the candidates to the defaults it reads by: for each candidate, in rank
 // order, its issue's project, the repository its own chain names (repo.owned of
 // refs.IssueRepoTerms) under its canonical name, whether that repository is the pull request's,
-// compared as attributionHeld compares them (both canonical, without case), whether the walk ran
-// out of depth, and whether the candidate is of the first source that names an issue, the one
-// source a pick is made in. A row whose five sources name nothing answers one row of no key, the
+// compared as attributionHeld compares them (both canonical, without case), and whether the walk
+// ran out of depth. A row whose five sources name nothing answers one row of no key, the
 // lateral's null row, so a reader can tell a row whose inputs name no issue from one whose inputs
 // are not stored, which answers no row. NewAttributor builds it once, for the batch's reason.
 func resolvedCandidatesQuery(renames refs.Renames) string {
@@ -533,7 +534,7 @@ func resolvedCandidatesQuery(renames refs.Renames) string {
 		), ` + attributionRowTerms(renames) + `
 		select c.pr_repo, c.pr_number, c.key, i.project_key, coalesce(` + owned + `, ''),
 			coalesce(lower(` + owned + `) = lower(` + refs.CanonicalRepoSQL(renames, "c.pr_repo") + `), false),
-			` + refs.IssueRepoTooDeep + `, coalesce(c.first_source, false)
+			` + refs.IssueRepoTooDeep + `
 		from candidates c
 			left join issues i on i.key = c.key
 			` + refs.IssueRepoJoin + `
@@ -578,23 +579,20 @@ func (a *Attributor) canonical(repo string) string {
 	return a.renames.Canonical(repo)
 }
 
-// attributionCandidate is one issue a pull request's sources name: the key, the source that
-// named it, whether that source is the first that names an issue (first_source of
-// attributionCandidates), and whether the issue resolves to the repository the pull request is
-// in. Only a held candidate of the first source may be the pull request's issue; the candidates
-// of that source above it are what a caller names when it reports what it passed over
-// (headAttribution).
+// attributionCandidate is one issue the first source that names an issue names: the key, the
+// source that named it, and whether it resolves to the repository the pull request is in. Only a
+// held candidate may be the pull request's issue; the unheld ones above it are what a caller names
+// when it reports what it passed over (headAttribution).
 type attributionCandidate struct {
 	key    string
 	source attributionSource
-	first  bool
 	held   bool
 }
 
-// resolveAttributionCandidates is every issue the stored inputs of the pull request at url, in
-// repo, name, best first, each marked of the first source or not and held or not: the whole
-// ranked list, so a caller that must skip a candidate can take the next rather than make a second
-// read.
+// resolveAttributionCandidates is every issue the first source that names an issue names, of the
+// stored inputs of the pull request at url, in repo, best first, each marked held or not: the
+// whole ranked list of that source, so a caller that must skip a candidate can take the next
+// rather than make a second read.
 func (a *Attributor) resolveAttributionCandidates(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) ([]attributionCandidate, error) {
 	rows, err := pool.Query(ctx, a.candidatesQuery,
 		url, inputs.TitleKeys, inputs.CitedIssues, inputs.BranchKeys, inputs.CommitKeys, repo,
@@ -606,7 +604,7 @@ func (a *Attributor) resolveAttributionCandidates(ctx context.Context, pool *sto
 	var candidates []attributionCandidate
 	for rows.Next() {
 		var candidate attributionCandidate
-		if err := rows.Scan(&candidate.key, &candidate.source, &candidate.first, &candidate.held); err != nil {
+		if err := rows.Scan(&candidate.key, &candidate.source, &candidate.held); err != nil {
 			return nil, fmt.Errorf("resolve the issue of %s: %w", url, err)
 		}
 		candidates = append(candidates, candidate)
@@ -619,7 +617,7 @@ func (a *Attributor) resolveAttributionCandidates(ctx context.Context, pool *sto
 
 // resolveStoredIssueKey is the issue a pull request's stored inputs name: the first candidate of
 // the first source that names an issue held to repo, the repository the pull request is in, and
-// nobody with the source "none" when that source names none (attributedCandidate). Its callers
+// nobody with the source "none" when that source names none (firstHeldCandidate). Its callers
 // hand over the repository they already hold — completePullRequest its repoFull,
 // readAttributionInputs its row's own repo.
 func (a *Attributor) resolveStoredIssueKey(ctx context.Context, pool *store.Pool, repo, url string, inputs AttributionInputs) (*string, attributionSource, error) {
@@ -627,33 +625,29 @@ func (a *Attributor) resolveStoredIssueKey(ctx context.Context, pool *store.Pool
 	if err != nil {
 		return nil, sourceNone, err
 	}
-	if i := attributedCandidate(candidates); i >= 0 {
+	if i := firstHeldCandidate(candidates); i >= 0 {
 		key := candidates[i].key
 		return &key, candidates[i].source, nil
 	}
 	return nil, sourceNone, nil
 }
 
-// attributedCandidate is the index of the pull request's issue in its ranked list, -1 when it has
-// none: the first candidate of the first source that names an issue that is held to the pull
-// request's own repository. A later source is never reached by a pick, since the first source's
-// candidates rank above every other. It is the pick made over one pull request's ranked list,
-// which both readers of that list share — resolveStoredIssueKey and headAttribution
-// (pull_request_heads.go), the second of which also needs the index to name what it passed over
-// — so the two cannot come to answer one list differently.
+// firstHeldCandidate is the index of the first candidate held to the pull request's own
+// repository, -1 when none is: the pick made over one pull request's ranked list, which both
+// readers of that list share — resolveStoredIssueKey and headAttribution
+// (pull_request_heads.go), the second of which also needs the index to name what it passed
+// over — so the two cannot come to answer one list differently. The list holds the first source
+// that names an issue alone (attributionCandidates), so a later source is never reached.
 //
 // The pick is made in two places, not one: a whole batch of stored rows is picked for in SQL
 // instead, by attributionBatchQuery's `distinct on (pr_repo, pr_number) … order by … rank, n, key`
-// over its `held` term, which keeps a row's first-source candidates that are held, since
-// resolving a batch row by row would pay for a repository walk per row (AttributePullRequests).
-// The two are one rule because they read one ranked list, one first source and one holding:
-// attributionCandidates ranks and marks the first source, attributionHeld holds,
-// attributionSubjects names the keys the walk resolves, and all three are spliced into both
-// statements.
-func attributedCandidate(candidates []attributionCandidate) int {
-	return slices.IndexFunc(candidates, func(candidate attributionCandidate) bool {
-		return candidate.first && candidate.held
-	})
+// over its `held` term, since resolving a batch row by row would pay for a repository walk per
+// row (AttributePullRequests). The two are one rule because they read one ranked list and one
+// holding: attributionCandidates ranks and keeps the first source that names an issue,
+// attributionHeld holds, attributionSubjects names the keys the walk resolves, and all three are
+// spliced into both statements.
+func firstHeldCandidate(candidates []attributionCandidate) int {
+	return slices.IndexFunc(candidates, func(candidate attributionCandidate) bool { return candidate.held })
 }
 
 // AttributionResolveBatch is how many stored rows one reconcile pass resolves again
@@ -694,23 +688,23 @@ type PullRequestKey struct {
 // repository the issue's own chain names (repo.owned of refs.IssueRepoTerms: itself or the
 // nearest ancestor of its project that names one), under its canonical name, "" where none does,
 // so the issue resolves to its project's default repository; whether that repository is the pull
-// request's, as attributionHeld compares them; whether the chain's walk ran out of depth, which
-// every reader of a resolved repository refuses; and whether the candidate is of the first source
-// that names an issue, the only source a pick takes an issue from (attributedCandidate).
+// request's, as attributionHeld compares them; and whether the chain's walk ran out of depth,
+// which every reader of a resolved repository refuses.
 type ResolvedCandidate struct {
-	Key, Project, Owned             string
-	OwnedHere, TooDeep, FirstSource bool
+	Key, Project, Owned string
+	OwnedHere, TooDeep  bool
 }
 
 // ResolvedCandidates reads through q, from the database alone, the ranked candidates of each of
 // pulls whose attribution inputs are stored (resolvedCandidatesQuery), by pull request: every
-// candidate its five sources name, best first, with what its holding is made of
-// (ResolvedCandidate). A pull request whose inputs name nothing has no candidate, and one whose
-// inputs are not stored, or that no row holds, is not in the answer. AttributePullRequests picks
-// an issue using the project's current default repository. ResolvedCandidates returns the
-// information a caller needs to make the pick against a different set of project defaults,
-// without rewriting stored attribution. One statement, whatever the number of pull requests:
-// one walk resolves every candidate's issue together, as the batch's does.
+// candidate the first of its sources that names an issue names, best first, with what its holding
+// is made of (ResolvedCandidate). A pull request whose inputs name no issue has no candidate, and
+// one whose inputs are not stored, or that no row holds, is not in the answer.
+// AttributePullRequests picks an issue using the project's current default repository.
+// ResolvedCandidates returns the information a caller needs to make the pick against a different
+// set of project defaults, without rewriting stored attribution. One statement, whatever the
+// number of pull requests: one walk resolves every candidate's issue together, as the batch's
+// does.
 func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []PullRequestKey) (map[PullRequestKey][]ResolvedCandidate, error) {
 	resolved := map[PullRequestKey][]ResolvedCandidate{}
 	if len(pulls) == 0 {
@@ -733,7 +727,7 @@ func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []
 		var pull PullRequestKey
 		var key, project *string
 		var candidate ResolvedCandidate
-		if err := rows.Scan(&pull.Repo, &pull.Number, &key, &project, &candidate.Owned, &candidate.OwnedHere, &candidate.TooDeep, &candidate.FirstSource); err != nil {
+		if err := rows.Scan(&pull.Repo, &pull.Number, &key, &project, &candidate.Owned, &candidate.OwnedHere, &candidate.TooDeep); err != nil {
 			return nil, fmt.Errorf("read the candidates of %d stored pull requests: %w", len(repos), err)
 		}
 		if key == nil {

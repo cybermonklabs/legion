@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"time"
 
@@ -1304,7 +1303,7 @@ type headAttributionResult struct {
 // headAttribution resolves the issue a pull request belongs to from what GitHub said about it,
 // through the same ranked candidates every other attribution reads
 // (resolveAttributionCandidates): of the first source that names an issue, the first candidate
-// whose issue resolves to the repository the pull request is in (attributedCandidate). It holds
+// whose issue resolves to the repository the pull request is in (firstHeldCandidate). It holds
 // the head to that repository too.
 //
 // Both holdings are what keep the results read honest. A pull request's title, body and branch
@@ -1346,15 +1345,11 @@ func (a *Attributor) headAttribution(ctx context.Context, logger *slog.Logger, p
 			"repo", facts.Repo, "head_repo", headRepo, "issue", candidates[0].key, "source", string(candidates[0].source))
 		return attributed, nil
 	}
-	// passedOver is every candidate of the first source ranked above the one taken, and every
-	// candidate of that source when none was held: the keys the log line below names. The
-	// candidates of later sources are never reached.
-	firstSource := slices.IndexFunc(candidates, func(candidate attributionCandidate) bool { return !candidate.first })
-	if firstSource < 0 {
-		firstSource = len(candidates)
-	}
-	passedOver := candidates[:firstSource]
-	if i := attributedCandidate(candidates); i >= 0 {
+	// passedOver is every candidate ranked above the one taken, and every candidate when none
+	// was held: the keys the log line below names. The candidates are the first source's alone
+	// (attributionCandidates), so a later source's are never named.
+	passedOver := candidates
+	if i := firstHeldCandidate(candidates); i >= 0 {
 		attributed.issueKey, attributed.source = &candidates[i].key, string(candidates[i].source)
 		passedOver = candidates[:i]
 	}
