@@ -2,10 +2,11 @@
 # packages/envoy/scripts/store-forms-check.test.sh
 #
 # Tests store-forms-check.sh with stand-ins first on PATH, so no stack starts: a dev-broker.sh that
-# prints a banner (or one without its exports), an agent-secrets that keeps its secrets in the
-# memory secrets file the banner's DEV_BROKER_DIR names and answers each form as the real one
-# does, `show --json` among them. Each control must fail as it states, beside a
-# run that must pass:
+# prints a banner (or one without its exports), a dev-airlock-stands whose enroll-pod enrolls the
+# session the rereads are signed with, and an agent-secrets that keeps its secrets in the memory
+# secrets file the banner's DEV_BROKER_DIR names and answers each form as the real one does, `show
+# --json` among them, answering a reread with what it serves only where it is signed. Each control
+# must fail as it states, beside a run that must pass:
 #
 #   1. every form answering as it should passes: `7 rows ran, 7 passed`, exit 0, and a write's PASS
 #      line says the broker answered its reread;
@@ -16,9 +17,10 @@
 #      show;
 #   5. set, retag, delete and restore that change nothing (STUB_NOOP=1) and print only the line of
 #      a reread the broker took: each of the four fails, `7 rows ran, 3 passed`, exit 1;
-#   6. writes that take effect while the broker only accepts each reread (STUB_ACCEPTED=1) pass on
-#      the store's read-back, and each of the five write rows says it saw an acceptance (HTTP 202),
-#      never an answer.
+#   6. writes that take effect while the broker only accepts each reread (STUB_ACCEPTED=1): each of
+#      the five write rows fails, naming the acceptance, `7 rows ran, 2 passed`, exit 1;
+#   7. a stack the session cannot be enrolled in (STUB_NO_ENROLL=1) runs no form: `0 rows ran`,
+#      exit 1.
 #
 # It prints a PASS: or FAIL: line per property and then `store-forms-check.test.sh: passed` or
 # `store-forms-check.test.sh: failed (<n> of <m>)`, and exits 0 or 1.
@@ -46,30 +48,51 @@ judge() { # <0 for a pass> <property> <what was seen>
 }
 
 mkdir -p "$WORK/bin"
-# The stand-in stack: its banner names a broker URL and DEV_BROKER_DIR, where the stand-in
-# agent-secrets keeps the memory secrets file, and then it waits to be stopped. STUB_NO_EXPORTS
-# prints the ready line alone.
+# The stand-in stack: its banner names a broker URL, DEV_BROKER_DIR, where the stand-in
+# agent-secrets keeps the memory secrets file and the registrar's and pod's token files lie, and
+# the service and pod uid a pod session enrolls under; then it waits to be stopped.
+# STUB_NO_EXPORTS prints the ready line alone.
 cat >"$WORK/bin/dev-broker.sh" <<'EOF'
 #!/usr/bin/env bash
 dir="$(mktemp -d)"
 echo '{"secrets": []}' >"$dir/memory-secrets.json"
+echo registrar >"$dir/registrar-token"
+echo pod >"$dir/pod-token"
 echo "dev-broker: ready."
 if [ -z "${STUB_NO_EXPORTS:-}" ]; then
   echo "  export AGENT_SECRETS_URL=http://127.0.0.1:9"
   echo "  export AGENT_SECRETS_APPROVER=ada@example.com"
   echo "  export DEV_BROKER_DIR=$dir"
+  echo "  export DEV_BROKER_SERVICE=legion-daemon"
+  echo "  export DEV_BROKER_POD_UID=00000000-0000-0000-0000-000000000001"
 fi
 trap 'exit 0' TERM
 while :; do sleep 0.1; done
 EOF
-# The stand-in agent-secrets: each form reads and writes the memory file as the memory store
-# would, under the slug of the name, and prints the real form's lines; `show --json` answers the
-# fields the check reads. STUB_FAIL names a form that exits 1. STUB_NOOP=1 makes set, retag,
-# delete and restore change nothing and print the line of a reread the broker took, which the
-# real CLI prints where the broker answers 202. STUB_ACCEPTED=1 makes every write take effect and
-# print that line in place of the broker's answer.
+# The stand-in dev-airlock-stands: enroll-pod answers an enrollment for the registrar's and pod's
+# token files the stack wrote, and STUB_NO_ENROLL=1 refuses it.
+cat >"$WORK/bin/dev-airlock-stands" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = enroll-pod ] || exit 2
+[ -z "${STUB_NO_ENROLL:-}" ] || { echo "enroll-pod: refused" >&2; exit 1; }
+grep -q -- "--token-file $DEV_BROKER_DIR/registrar-token" <<<"$*" && grep -q -- "--pod-token-file $DEV_BROKER_DIR/pod-token" <<<"$*" || exit 1
+echo '{"enrollment_id": "11111111-1111-1111-1111-111111111111"}'
+EOF
+# The stand-in agent-secrets: keygen writes a key into --out and prints its thumbprint; each form
+# reads and writes the memory file as the memory store would, under the slug of the name, and
+# prints the real form's lines; `show --json` answers the fields the check reads. As the broker
+# does, it answers a reread with what it serves only where the reread is signed, here a key
+# directory holding an enrollment, and otherwise prints the line of a reread the broker only
+# accepted (HTTP 202). STUB_FAIL names a form that exits 1. STUB_NOOP=1 makes set, retag, delete
+# and restore change nothing and print that 202 line. STUB_ACCEPTED=1 makes every write take
+# effect and print the 202 line although its reread is signed.
 cat >"$WORK/bin/agent-secrets" <<'EOF'
 #!/usr/bin/env bash
+if [ "$1" = keygen ]; then
+  touch "$3/key.pem"
+  echo stub-thumbprint
+  exit 0
+fi
 shift
 form="$1" name="$2"
 file="$DEV_BROKER_DIR/memory-secrets.json"
@@ -77,7 +100,11 @@ id="example/agent-secrets/$(echo "$name" | tr '[:upper:]_' '[:lower:]-')"
 held() { jq -e --arg id "$id" 'any(.secrets[]; .name == $id)' "$file" >/dev/null; }
 change() { jq --arg id "$id" "$1" "$file" >"$file.new" && mv "$file.new" "$file"; }
 answer() {
-  if [ -n "${STUB_ACCEPTED:-}" ]; then echo "broker: rereading $name from the memory store"; else echo "$1"; fi
+  if [ -z "${STUB_ACCEPTED:-}" ] && [ -s "${AGENT_SECRETS_KEY_DIR:-/nonexistent}/enrollment" ] && [ -f "$AGENT_SECRETS_KEY_DIR/key.pem" ]; then
+    echo "$1"
+  else
+    echo "broker: rereading $name from the memory store"
+  fi
 }
 if [ "${STUB_FAIL:-}" = "$form" ]; then echo "agent-secrets secret $form: failed" >&2; exit 1; fi
 if [ -n "${STUB_NOOP:-}" ]; then
@@ -108,7 +135,7 @@ delete) held || exit 1; change '.secrets |= map(if .name == $id then .deleted_at
 restore) held || exit 1; change '.secrets |= map(if .name == $id then del(.deleted_at) else . end)'; answer "broker: serving $name from the memory store" ;;
 esac
 EOF
-chmod +x "$WORK/bin/dev-broker.sh" "$WORK/bin/agent-secrets"
+chmod +x "$WORK/bin/dev-broker.sh" "$WORK/bin/dev-airlock-stands" "$WORK/bin/agent-secrets"
 
 # run NAME ENV... -- ARGS...: the check with the stand-ins, keeping its output and exit status.
 run() {
@@ -152,10 +179,15 @@ judge "$([ "$(cat "$WORK/noop.exit")" = 1 ] && grep -q '^PASS create: ' "$WORK/n
   "control 5: writes that change nothing fail their rows, though each prints a reread the broker took" "$(seen noop)"
 
 run accepted STUB_ACCEPTED=1 -- --store memory
-judge "$([ "$(cat "$WORK/accepted.exit")" = 0 ] && has accepted 'store-forms-check: 7 rows ran, 7 passed' &&
-  [ "$(grep -c '^PASS [a-z]*: the broker accepted its reread (HTTP 202), which says nothing of what it serves; the store holds the write$' "$WORK/accepted.out")" = 5 ] &&
-  ! grep -q 'the broker answered its reread' "$WORK/accepted.out" && echo 0 || echo 1)" \
-  "control 6: a broker that only accepts each reread passes on the store's read-back, and each write says it saw an acceptance, never an answer" "$(seen accepted)"
+judge "$([ "$(cat "$WORK/accepted.exit")" = 1 ] && has accepted 'PASS show' && has accepted 'PASS list' &&
+  [ "$(grep -c '^FAIL [a-z]*: the broker only accepted its reread (HTTP 202) and said nothing of what it serves' "$WORK/accepted.out")" = 5 ] &&
+  has accepted 'store-forms-check: 7 rows ran, 2 passed' && echo 0 || echo 1)" \
+  "control 6: a broker that only accepts each reread fails every write row, though each write takes effect in the store" "$(seen accepted)"
+
+run no-enroll STUB_NO_ENROLL=1 -- --store memory
+judge "$([ "$(cat "$WORK/no-enroll.exit")" = 1 ] && has no-enroll 'store-forms-check: 0 rows ran, 0 passed' &&
+  grep -q 'could not enroll the session' "$WORK/no-enroll.err" && echo 0 || echo 1)" \
+  "control 7: a stack the session cannot be enrolled in runs no form and fails" "$(seen no-enroll)"
 
 if [ "$FAILED" -ne 0 ]; then
   echo "store-forms-check.test.sh: failed ($FAILED of $((PASSED + FAILED)))"
