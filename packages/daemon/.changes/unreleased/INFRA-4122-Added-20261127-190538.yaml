@@ -22,12 +22,14 @@ body: |-
     `POST /legion/v1/controller/secret` answers `watchedWorkflows` too, `[]` for none, and `legion
     controller start` refuses an answer without it, asking to upgrade the daemon. Each launch
     form's controller prompt carries a `Watched workflows:` line naming each entry with its
-    events, and a project that watches none gets no line. `GET /legion/v1/state` never carries the
-    list, and no environment variable carries it. Under the sandbox runtime a daemon restarted
-    with another list relaunches its controller into its session, and a controller recorded by a
-    daemon before this release is relaunched only once the project names a list; under the tmux
-    runtime and under `legion controller start` the controller takes a changed list at its next
-    launch.
+    events and telling the controller to read
+    `skill://legion-controller/references/watched-workflows.md` at every start and on each
+    delivered run, and a project that watches none gets no line. `GET /legion/v1/state` never
+    carries the list, and no environment variable carries it. Under the sandbox runtime a daemon
+    restarted with another list relaunches its controller into its session, and a controller
+    recorded by a daemon before this release is relaunched only once the project names a list;
+    under the tmux runtime and under `legion controller start` the controller takes a changed list
+    at its next launch.
 time: 2026-11-27T19:05:38Z
 custom:
     Issue: INFRA-4122

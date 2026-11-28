@@ -1235,7 +1235,7 @@ func TestControllerStartNamesTheWatchedWorkflows(t *testing.T) {
 	const reach = "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	const line = "Watched workflows: `acme/widgets/x.yaml` (`schedule`, `push`), `acme/widgets/y.yml` (`schedule`): " +
 		"your session hears each one's completed runs on its repository's default branch, of the events named, " +
-		"while it holds the controller role (skill://legion-controller/references/watched-workflows.md)."
+		"while it holds the controller role. Read skill://legion-controller/references/watched-workflows.md at every start and on each delivered run."
 	for _, tc := range []struct {
 		name    string
 		watched []config.WatchedWorkflow

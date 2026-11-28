@@ -14,7 +14,9 @@ body: |-
   topic and Envoy's answer, at the first 503 it meets, and again at the next 503 after a refusal
   other than a 503 or after the controller comes back to it from another session that was told;
   the controller says once when Envoy takes the topic, also when a later claim's subscription of
-  that topic is the one that lands. A watched task made for a session that the pane has left
+  that topic is the one that lands, and that notice tells it to read that entry's newest
+  completed run of that event now, since a run that ended while the topic waited is not
+  delivered. A watched task made for a session that the pane has left
   tells nothing and asks for nothing more: it checks the pane's session before each notice, and
   no task starts for a claim whose session moved; the landed notice it owed is told by the next
   session's claim. A topic Envoy refuses for another reason is logged, told to the session,

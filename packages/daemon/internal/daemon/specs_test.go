@@ -517,7 +517,7 @@ func TestTheControllersLaunchNamesTheProjectsWatchedWorkflows(t *testing.T) {
 	const reach = "Design gate steps: none. Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository."
 	const line = "Watched workflows: `acme/widgets/x.yaml` (`schedule`, `push`), `Acme/Gadgets/nightly.yml` (`schedule`): " +
 		"your session hears each one's completed runs on its repository's default branch, of the events named, " +
-		"while it holds the controller role (skill://legion-controller/references/watched-workflows.md)."
+		"while it holds the controller role. Read skill://legion-controller/references/watched-workflows.md at every start and on each delivered run."
 	watched := []config.WatchedWorkflow{
 		{Repository: ghrepo.MustParse("acme/widgets"), File: "x.yaml", Events: []string{"schedule", "push"}},
 		{Repository: ghrepo.MustParse("Acme/Gadgets"), File: "nightly.yml", Events: []string{"schedule"}},

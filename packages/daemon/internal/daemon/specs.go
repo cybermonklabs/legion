@@ -841,9 +841,11 @@ func SlackChannelsFragment(channels []string) string {
 // plugin subscribes each entry's default-branch topic for each event itself, while the session
 // holds the controller role, so the model subscribes to nothing. It is the controller's system
 // prompt that names them, the one text a turn an Envoy card starts still reads after a compaction.
-// Both launch forms write it with this one function: the daemon's from the project's
-// configuration (controllerSpawnSpec), `legion controller start` from the controller secret's
-// answer. Which runs count, and what the controller does with one, is the skill's.
+// The line ends by telling the controller to read the skill's watched-workflows reference at every
+// start and on each delivered run: which runs count, and what the controller does with one, is
+// that reference's. Both launch forms write it with this one function: the daemon's from the
+// project's configuration (controllerSpawnSpec), `legion controller start` from the controller
+// secret's answer.
 func WatchedWorkflowsFragment(entries []api.WatchedWorkflow) string {
 	named := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -855,5 +857,5 @@ func WatchedWorkflowsFragment(entries []api.WatchedWorkflow) string {
 	}
 	return "Watched workflows: " + strings.Join(named, ", ") +
 		": your session hears each one's completed runs on its repository's default branch, of the events named, " +
-		"while it holds the controller role (skill://legion-controller/references/watched-workflows.md)."
+		"while it holds the controller role. Read skill://legion-controller/references/watched-workflows.md at every start and on each delivered run."
 }
