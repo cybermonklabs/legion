@@ -600,9 +600,11 @@ function DefaultAssigneeSelect({
 /** A pick of one person, the shared list's single pick (`MultiSelect`), whose text box narrows
  *  the people as the reader types; both pickers of this section are one. `onReach` fires the
  *  moment a reader points at, touches or focuses it, and `people` is the status of the people
- *  list's read, so the list says the people are loading while it is out and that they could not
- *  be loaded where it failed. A pick of the person it shows hands nothing on, as a `<select>`
- *  fires nothing for the value it holds. */
+ *  list's read. While the read is out, the options hold only the person shown, if any, and the
+ *  list says `Loading people…` only where no option is visible: with nobody shown, or once a
+ *  search hides the person shown. Where the read failed, the open list says `Could not load the
+ *  people list.` under its options (`MultiSelect`'s `error`). A pick of the person it shows
+ *  hands nothing on, as a `<select>` fires nothing for the value it holds. */
 function PersonSelect({
   className,
   disabled,
