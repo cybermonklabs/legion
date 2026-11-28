@@ -67,9 +67,6 @@ func (b *liveDispatch) approve(artifact string, approved, latest int) {
 	b.approvals.approve(artifact, approved, latest)
 }
 
-// approved is the GET body of artifact a test showed (approve), "" for none.
-func (b *liveDispatch) approved(artifact string) string { return b.approvals.body(artifact) }
-
 // shownApprovals is the approval a test shows Dispatch holding of each document, as Dispatch
 // answers GET /api/v1/artifacts/{id} with no hash-gate field: the answer the read before each
 // start the design gate holds (the outbox's designGateStandsInDispatch), and the gate seed, read.
@@ -96,6 +93,20 @@ func (s *shownApprovals) body(artifact string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bodies[artifact]
+}
+
+// serve answers req with the body of the document it reads where it is a GET of a document the
+// test showed (approve), as Dispatch answers GET /api/v1/artifacts/{id}, and says whether it did;
+// every other request is the caller's. A board serves it ahead of servedBootCall, whose answer for
+// a document is one nobody has asked to approve.
+func (s *shownApprovals) serve(w http.ResponseWriter, req *http.Request) bool {
+	shown := s.body(strings.TrimPrefix(req.URL.Path, "/api/v1/artifacts/"))
+	if req.Method != http.MethodGet || !strings.HasPrefix(req.URL.Path, "/api/v1/artifacts/") || shown == "" {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, shown)
+	return true
 }
 
 // liveDispatchIssue is one issue as the board holds it: its status, its parent ("" for none),
@@ -200,12 +211,8 @@ func (b *liveDispatch) handoff(key, word, session string) string {
 func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// A document's approval the test showed (approve), as Dispatch answers it with no hash-gate
 	// field: the read before each start the design gate holds (the outbox's
-	// designGateStandsInDispatch), the boot's gate seed and the catch-up read it. It goes ahead of
-	// servedBootCall, whose answer for a document is one nobody has asked to approve.
-	if shown := b.approved(strings.TrimPrefix(req.URL.Path, "/api/v1/artifacts/")); req.Method == http.MethodGet &&
-		strings.HasPrefix(req.URL.Path, "/api/v1/artifacts/") && shown != "" {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, shown)
+	// designGateStandsInDispatch), the boot's gate seed and the catch-up read it.
+	if b.approvals.serve(w, req) {
 		return
 	}
 	if servedBootCall(b.t, w, req, b.project) {

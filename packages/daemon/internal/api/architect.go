@@ -466,14 +466,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if fact.ApprovedVersion != 0 {
 		fact.ApprovedMark = review
 	}
-	if approval.DigestOwed != nil && !*approval.DigestOwed {
-		stands := approval.Stands()
-		fact.Verdict = &stands
-		fact.VerdictMark = record.EventMark{Seq: max(since, approval.Seq), At: readAt}
-		if approval.At.After(readAt) {
-			fact.VerdictMark.At = approval.At
-		}
-	}
+	fact.Verdict, fact.VerdictMark = intake.ReadVerdict(approval, max(since, approval.Seq), readAt)
 	// A basis is checked against everything Dispatch shows of it and of the root, and recorded with
 	// the registration, or the call is refused and records nothing. Every registration of the spec
 	// step records the view fact (R4): on a basis, the ancestor it rests on, which the basis check
@@ -497,8 +490,9 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	// version: a second registration at one version carries what Dispatch showed when it ran, so a
 	// retry of one read stays one fact while a new read — a review or a version since — is a new
 	// fact the handlers see. It names what the read found of Dispatch's hash gate as well
-	// (digestRead), so a read whose only change is the digest Dispatch filled since is a new fact,
-	// while a read of a Dispatch that sends no digest field keeps the id it always had. The
+	// (dispatch.Approval.DigestFound), so a read whose only change is the digest Dispatch filled
+	// since is a new fact, while a read of a Dispatch that sends no digest field keeps the id it
+	// always had. The
 	// ancestor's document is read too, and moves on no event of the root's, so the id names what
 	// was read of it: the basis document, its version and the request a pending basis waits on,
 	// and the ancestor the view fact names. A registration with no basis
@@ -513,7 +507,7 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 	if basisMoves, ok = s.stepBasisMoves(w, r, req.Issue, step); !ok {
 		return
 	}
-	id := fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since) + digestRead(approval)
+	id := fmt.Sprintf("gate:%s:%d:%s:%s:%d:%d", req.Issue, recorded.Generation, step, artifactID, req.Version, since) + approval.DigestFound()
 	if fact.Basis != nil {
 		id += fmt.Sprintf(":basis:%s:%d", fact.Basis.ArtifactID, fact.Basis.Version)
 		if fact.Basis.Pending != nil {
@@ -551,21 +545,6 @@ func (s *server) stepBasisMoves(w http.ResponseWriter, r *http.Request, issue st
 		return 0, false
 	}
 	return moves, true
-}
-
-// digestRead is what a read of Dispatch's approval found of its hash gate, as a register_gate
-// fact's id names it (gateRegister): whether Dispatch owes the latest version's digest and, where
-// it gave one, that digest (current_sha256), each where Dispatch sent it (R3 of
-// dispatch://INFRA-6065), and "" for a Dispatch that sends no digest_owed.
-func digestRead(approval dispatch.Approval) string {
-	if approval.DigestOwed == nil {
-		return ""
-	}
-	read := fmt.Sprintf(":digest-owed:%t", *approval.DigestOwed)
-	if approval.CurrentSHA256 != nil {
-		read += ":current:" + *approval.CurrentSHA256
-	}
-	return read
 }
 
 // deref is the string s points at, "" for nil.

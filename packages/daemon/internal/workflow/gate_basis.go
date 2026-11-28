@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -688,24 +689,7 @@ func ownDocumentEnded(root string, gate, updated record.DesignGate, fact intake.
 			approved, updated.LatestVersion, step, root, ended)
 	}
 	return fmt.Sprintf("Version %d of %s, the root's own document, is newer than version %d, which the step was registered at. %s %s",
-		updated.LatestVersion, own, rootVersionOf(gate), ended, stepClosed(root, step))
-}
-
-// rootVersionOf is the version of the root's own document gate's basis was registered at
-// (record.GateBasis.RootVersion), read on a basis written before the migration that added it as
-// classify.ApplyGateFact reads it: the latest version on a row in version mode, which no version of
-// its own document moved without ending the basis; on a row in hash mode the approved version of a
-// step open on the basis, and else the verdict's version, where the row entered hash mode.
-func rootVersionOf(gate record.DesignGate) int {
-	switch {
-	case gate.Basis != nil && gate.Basis.RootVersion > 0:
-		return gate.Basis.RootVersion
-	case gate.Verdict == nil:
-		return gate.LatestVersion
-	case gate.OnBasis() && gate.ApprovedVersion != nil:
-		return *gate.ApprovedVersion
-	}
-	return gate.Verdict.Version
+		updated.LatestVersion, own, classify.RegisteredRootVersion(gate), ended, stepClosed(root, step))
 }
 
 // basisArtifact applies an event of an ancestor's document to the steps of other roots that name
@@ -716,13 +700,13 @@ func rootVersionOf(gate record.DesignGate) int {
 // the event itself opens and ends nothing. A step that stands open on the ancestor's approval
 // changes on nothing done to that document (R3) but two acts: it passes on a person's changes
 // request on the version it rests on, made after that approval (tellBasisChanges), and stays open;
-// and it closes on Dispatch's verdict that the ancestor's approval no longer stands (basisEnded,
-// dispatch://INFRA-6065 R5), which endOpenBasis tells. A row of a step the deployment does not
-// gate holds nothing and takes no event, as artifactIgnored rules for a root's own document
-// (eachWaitingRoot). Every other step takes nothing from the event, and its root is not read: most
-// events on a basis document change nothing for a step that stands open on it, a version that
-// owes its digest (a prose edit of the ancestor's document) and a verdict that the approval stands
-// among them.
+// and it closes on Dispatch's verdict that the ancestor's approval no longer stands
+// (ancestorVerdictEndsBasis, dispatch://INFRA-6065 R5), which endOpenBasis tells. A row of a step
+// the deployment does not gate holds nothing and takes no event, as artifactIgnored rules for a
+// root's own document (eachWaitingRoot). Every other step takes nothing from the event, and its
+// root is not read: most events on a basis document change nothing for a step that stands open on
+// it, a version that owes its digest (a prose edit of the ancestor's document) and a verdict that
+// the approval stands among them.
 func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) error {
 	gates, err := e.store.GatesForBasisArtifact(ctx, tx, fact.ArtifactID)
 	if err != nil {
@@ -730,27 +714,27 @@ func (e *Engine) basisArtifact(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	}
 	changes := fact.Kind == intake.DispatchArtifactChangesRequested
 	gates = slices.DeleteFunc(gates, func(gate record.DesignGate) bool {
-		return !pendingBasisCue(gate, fact) && !BasisChangesRequest(gate, changes, fact.Version, fact.Actor, fact.Mark) && !basisEnded(gate, fact)
+		return !pendingBasisCue(gate, fact) && !BasisChangesRequest(gate, changes, fact.Version, fact.Actor, fact.Mark) && !ancestorVerdictEndsBasis(gate, fact)
 	})
 	return e.eachWaitingRoot(ctx, tx, gates, func(root record.Issue, gate record.DesignGate) error {
 		switch {
 		case pendingBasisCue(gate, fact):
 			return e.readBasisLater(ctx, tx, root, gate)
-		case basisEnded(gate, fact):
+		case ancestorVerdictEndsBasis(gate, fact):
 			return e.endOpenBasis(ctx, tx, root, gate, fact)
 		}
 		return e.tellBasisChanges(ctx, tx, root, gate, intake.BasisReview{Mark: fact.Mark, Actor: fact.Actor, Reason: fact.Reason})
 	})
 }
 
-// basisEnded says whether fact, an event or read of an ancestor's document, ends gate, a step that
-// stands open on that document (record.DesignGate.OnBasis), by Dispatch's verdict that the
-// ancestor's approval no longer stands (dispatch://INFRA-6065 R5): an artifact.digest of the basis
-// version or a later one whose approval_current is false, or a read of the document (the gate
-// seed's, readsVerdict) that owes no digest and shows the approval not standing
-// (dispatch.Approval.Stands). A verdict that the approval stands, a version that owes its digest,
-// and every fact of a Dispatch that gives no verdict end nothing.
-func basisEnded(gate record.DesignGate, fact intake.DispatchArtifact) bool {
+// ancestorVerdictEndsBasis says whether fact, an event or read of an ancestor's document, ends
+// gate, a step that stands open on that document (record.DesignGate.OnBasis), by Dispatch's
+// verdict that the ancestor's approval no longer stands (dispatch://INFRA-6065 R5): an
+// artifact.digest of the basis version or a later one whose approval_current is false, or a read
+// of the document (the gate seed's, readsVerdict) that owes no digest and shows the approval not
+// standing (dispatch.Approval.Stands). A verdict that the approval stands, a version that owes its
+// digest, and every fact of a Dispatch that gives no verdict end nothing.
+func ancestorVerdictEndsBasis(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 	if !gate.OnBasis() || fact.ArtifactID != gate.Basis.ArtifactID || fact.Verdict == nil || *fact.Verdict {
 		return false
 	}
@@ -764,10 +748,10 @@ func basisEnded(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 }
 
 // endOpenBasis closes gate, a step of root that stood open on an ancestor's approval, on fact,
-// Dispatch's verdict that the approval no longer stands (basisEnded): the step falls back to the
-// person's own approval it kept, or to none (record.CloseBasis), and is written as any gate is
-// (putGatePublished), which tells the tree the close. The root's architect is told the end as a
-// basis-ended notice that names the ancestor's document, the version and the verdict, and no
+// Dispatch's verdict that the approval no longer stands (ancestorVerdictEndsBasis): the step falls
+// back to the person's own approval it kept, or to none (record.CloseBasis), and is written as any
+// gate is (putGatePublished), which tells the tree the close. The root's architect is told the end
+// as a basis-ended notice that names the ancestor's document, the version and the verdict, and no
 // actor: the verdict is Dispatch's, no person's. The step still rests on the ancestor (RestsOn),
 // so the ancestor's architect is told nothing. A root out of the workflow, or whose tree lingers
 // (record.Stopped), has nobody to tell, so the end is only logged, as tellPendingEnded logs it.
@@ -898,7 +882,7 @@ func judgeBasisRead(gate record.DesignGate, read intake.BasisRead, accepted func
 	basis := *gate.Basis
 	document := documentOf(basis.Issue, gate.Step.OrSpec())
 	approval := read.Approval
-	if approval.DigestOwed != nil && *approval.DigestOwed {
+	if approval.OwesDigest() {
 		return basisVerdict{text: "Dispatch owes the digest of the ancestor's latest version, so its read neither opens nor ends the step waiting on it"}, nil
 	}
 	left := func() (string, error) {
@@ -962,7 +946,7 @@ func judgeBasisRead(gate record.DesignGate, read intake.BasisRead, accepted func
 // reads the close in that case alone and the verdict finds the close on every read that asks for
 // it.
 func RequestClosed(approval dispatch.Approval, version int, ask string) bool {
-	if approval.DigestOwed != nil && *approval.DigestOwed {
+	if approval.OwesDigest() {
 		return false
 	}
 	changes, _ := approval.ChangesRequestedLatest()
@@ -971,15 +955,13 @@ func RequestClosed(approval dispatch.Approval, version int, ask string) bool {
 }
 
 // approvesVersion says whether approval, Dispatch's approval of a document, approves version of
-// it, as the pending-basis judge reads it (judgeBasisRead, RequestClosed): from a Dispatch that
-// sends digest_owed, an approval of version that Dispatch reports standing (dispatch.Approval.Stands,
-// dispatch://INFRA-6065 R5), whatever the latest version; from one that sends none, an approval of
-// the latest version that is version, today's rule (dispatch.Approval.ApprovedLatest).
+// it, as the pending-basis judge reads it (judgeBasisRead, RequestClosed): an approval of version
+// that Dispatch reports standing (dispatch.Approval.Stands, dispatch://INFRA-6065 R5), which from
+// a Dispatch that sends digest_owed is whatever the latest version, and from one that sends none
+// an approval of the latest version, today's rule. Both callers pass a basis version, which is
+// never 0 (record.Store.PutGate and the pending-basis seed refuse one).
 func approvesVersion(approval dispatch.Approval, version int) bool {
-	if approval.DigestOwed != nil {
-		return approval.Stands() && approval.Version != nil && *approval.Version == version
-	}
-	return approval.ApprovedLatest() == version
+	return approval.Stands() && approval.Version != nil && *approval.Version == version
 }
 
 // readBasisLater queues the pending-basis seed of gate, a step of root that waits, closed, on an

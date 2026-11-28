@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -1011,10 +1012,21 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		if len(keys) == 0 {
 			return nil
 		}
-		issues, err := w.issuesWithRoots(ctx, tx, slices.Compact(keys))
+		// The keys' records, and their trees' roots' records, in one query where every key is a
+		// root of its own tree, as a gate's issue is, and in one more otherwise (record.ReadTreeRoots).
+		read, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, slices.Compact(keys))
 		if err != nil {
 			return err
 		}
+		issues := make(map[string]record.Issue, len(read))
+		for _, issue := range read {
+			issues[issue.Key] = issue
+		}
+		roots, err := record.ReadTreeRoots(ctx, tx, w.records, w.dispatchProject, read)
+		if err != nil {
+			return err
+		}
+		maps.Copy(issues, roots)
 		for _, gate := range pending {
 			issue, recorded := issues[gate.Issue]
 			if !recorded {
@@ -1054,37 +1066,6 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		w.log.Info("legion workflow boot queued a gate seed for each closed step of a gated document in a tree in the workflow", "steps", seeded)
 	}
 	return nil
-}
-
-// issuesWithRoots is the record of each of keys and of each of their trees' roots, by key, read
-// in one query where every key is a root of its own tree (as a gate's issue is) and in two
-// otherwise; a key with no record is left out.
-func (w *workflowRuntime) issuesWithRoots(ctx context.Context, tx pgx.Tx, keys []string) (map[string]record.Issue, error) {
-	read, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, keys)
-	if err != nil {
-		return nil, err
-	}
-	issues := make(map[string]record.Issue, len(read))
-	for _, issue := range read {
-		issues[issue.Key] = issue
-	}
-	var trees []string
-	for _, issue := range read {
-		if _, ok := issues[issue.Tree]; !ok && !slices.Contains(trees, issue.Tree) {
-			trees = append(trees, issue.Tree)
-		}
-	}
-	if len(trees) == 0 {
-		return issues, nil
-	}
-	roots, err := w.records.IssuesOf(ctx, tx, w.dispatchProject, trees)
-	if err != nil {
-		return nil, err
-	}
-	for _, root := range roots {
-		issues[root.Key] = root
-	}
-	return issues, nil
 }
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change that a release

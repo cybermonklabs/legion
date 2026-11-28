@@ -98,11 +98,12 @@ func hashGateFact(t *testing.T, name string, seq int64, change func(payload map[
 // assertVerdictAfterReviews holds a row to the rule the store's reader rests on (record's
 // digestAsWritten, which classify cannot call): no approval and no told changes request a row in
 // hash mode holds is marked after its verdict (record.EventMark.After), or the reader takes the row
-// for a move of a daemon from before the hash gate. A changes request the fact applied is recorded
-// as told first, as the workflow records it (applyArtifact, gateRegistered: RecordChangesTold).
-func assertVerdictAfterReviews(t *testing.T, gate record.DesignGate, fact GateFact, result GateFactResult) {
+// for a move of a daemon from before the hash gate. A changes request the fact applied (changed
+// says the fact changed the row) is recorded as told first, as the workflow records it
+// (applyArtifact, gateRegistered: RecordChangesTold).
+func assertVerdictAfterReviews(t *testing.T, gate record.DesignGate, fact GateFact, changed bool) {
 	t.Helper()
-	if fact.Kind == DesignGateChangesRequested && result.Changed {
+	if fact.Kind == DesignGateChangesRequested && changed {
 		gate = RecordChangesTold(gate, fact.Version, hashGateReviewText, fact.Mark)
 	}
 	if gate.Verdict == nil {
@@ -367,11 +368,13 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 			if open, owes, told := record.GateOpen(got.Gate), record.DigestOwed(got.Gate), record.ToldStanding(got.Gate); open != tc.open || owes != tc.owed || told != tc.told {
 				t.Errorf("the row after reads open %t, owed %t, told open %t; want %t, %t, %t", open, owes, told, tc.open, tc.owed, tc.told)
 			}
-			if got.SeedWanted != tc.seed || got.Settled != tc.settled || got.Changed != tc.changed {
+			// The fact changed the row when the row after is not the row before (sameDesignGate).
+			changed := !sameDesignGate(tc.before, got.Gate)
+			if got.SeedWanted != tc.seed || got.Settled != tc.settled || changed != tc.changed {
 				t.Errorf("the fact asks the gate seed %t, settles the row %t, changes it %t; want %t, %t, %t",
-					got.SeedWanted, got.Settled, got.Changed, tc.seed, tc.settled, tc.changed)
+					got.SeedWanted, got.Settled, changed, tc.seed, tc.settled, tc.changed)
 			}
-			assertVerdictAfterReviews(t, got.Gate, tc.fact, got)
+			assertVerdictAfterReviews(t, got.Gate, tc.fact, changed)
 			if tc.closedOpen != nil {
 				if closed := record.CloseBasis(got.Gate); closed.Basis != nil || record.GateOpen(closed) != *tc.closedOpen {
 					t.Errorf("the row after, its basis ended, = %s: reads open %t; want it with no basis, open %t",
@@ -411,10 +414,9 @@ func TestHashGateAppliesFactsInOrder(t *testing.T) {
 			t.Run(strings.TrimSuffix(filepath.Base(path), ".json"), func(t *testing.T) {
 				want := ApplyDesignGateEvent(before, fact.Kind, fact.Version, fact.Mark)
 				got := ApplyGateFact(before, fact)
-				if !reflect.DeepEqual(got, GateFactResult{Gate: want, Changed: !reflect.DeepEqual(before, want)}) {
+				if !reflect.DeepEqual(got, GateFactResult{Gate: want}) || sameDesignGate(before, got.Gate) != reflect.DeepEqual(before, want) {
 					t.Fatalf("%s %d with no digest field = %#v, want ApplyDesignGateEvent's %s", fact.Kind, fact.Version, got, describeGate(want))
 				}
-				assertVerdictAfterReviews(t, got.Gate, fact, got)
 			})
 		}
 		if replayed == 0 {

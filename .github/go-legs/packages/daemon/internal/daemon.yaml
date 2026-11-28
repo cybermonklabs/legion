@@ -1190,7 +1190,6 @@
   - TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch  # 15.7 s
   - TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch  # 8.8 s
   - TestAPersonsOwnTodoIssueOnARepositoryNoRecordNamesAsksGitHubNothing  # 0.2 s
-  - TestAPhaseNeverWaitsForDispatch  # 34.0 s
   - TestAPhaseTaskWaitsForASendInFlightOnAnotherClaimOfItsIssue  # 0.0 s
   - TestAPodStartsItsRolesOneLoadAtATime  # 1.0 s
   - TestAProductionCheckFollowsAPlan  # 29.1 s
@@ -1350,6 +1349,7 @@
   - TestNoCredentialMaterialReachesAPod  # 0.1 s
   - TestNoLaunchCarriesTheDaemonSeed  # 3.5 s
   - TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst  # 3.8 s
+  - TestNoPhaseButTheMergeWaitsForDispatch  # 34.0 s
   - TestOneStartRowDoesTheWholeStart  # 0.9 s
   - TestOpenIssueSuspensionInvariantKeepsTheExceptions  # 3.1 s
   - TestOpenSupervisionAdvertisesAdvertiseHostNotTheWildcardBind  # 1.1 s

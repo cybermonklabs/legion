@@ -433,6 +433,28 @@ type DispatchArtifact struct {
 
 func (f DispatchArtifact) namedIssue() (string, bool) { return f.Key, true }
 
+// IsRead says whether the fact is a read of Dispatch's approval (the gate seed's) rather than a
+// live event: a read carries Dispatch's latest version (Latest), and a live event none.
+func (f DispatchArtifact) IsRead() bool { return f.Latest > 0 }
+
+// ReadVerdict is the verdict a read of approval gives at its latest version, for the fact that
+// carries the read (api's gateRegister, the outbox's seedGateDocument): where Dispatch sends
+// digest_owed false, whether the approval stands (dispatch.Approval.Stands), marked at seq and at
+// readAt, the read's own time, raised to the latest review's time where Dispatch's clock runs
+// ahead, so no review the read shows is marked after the verdict. A read that owes the digest, and
+// one of a Dispatch that sends no digest_owed, give none: nil and the zero mark.
+func ReadVerdict(approval dispatch.Approval, seq int64, readAt time.Time) (*bool, record.EventMark) {
+	if approval.DigestOwed == nil || *approval.DigestOwed {
+		return nil, record.EventMark{}
+	}
+	stands := approval.Stands()
+	mark := record.EventMark{Seq: seq, At: readAt}
+	if approval.At.After(readAt) {
+		mark.At = approval.At
+	}
+	return &stands, mark
+}
+
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
 // in a person's name when their answer to a decision block was the whole change since the version
 // they approved, when a later version's text is the text of the version they approved, or when a

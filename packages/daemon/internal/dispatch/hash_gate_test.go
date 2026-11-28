@@ -63,10 +63,6 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 		owedApprovedDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	)
 	standing := hashGateFixture(t, "artifact.json")
-	clientRead, err := json.Marshal(approvedAtLatestBody)
-	if err != nil {
-		t.Fatalf("encode the read the client's tests serve: %v", err)
-	}
 	bodies := map[string][]byte{
 		"standing": standing,
 		"owed":     hashGateFixture(t, "artifact-owed.json"),
@@ -75,7 +71,7 @@ func TestHashGateApprovalReadsTheVerdict(t *testing.T) {
 			delete(approval, "digest_owed")
 			approval["version"] = approval["latest_version"]
 		}),
-		"client-version-mode": clientRead,
+		"client-version-mode": []byte(mustJSON(t, approvedAtLatestBody)),
 		"no-digest-owed": withApproval(t, standing, func(approval map[string]any) {
 			delete(approval, "digest_owed")
 		}),

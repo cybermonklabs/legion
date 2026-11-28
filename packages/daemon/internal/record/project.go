@@ -1063,8 +1063,22 @@ func (g TreeGate) Required() []DesignStep {
 // row at all is held too. It is the one rule for the question, which classify.DesignGatesOpen
 // reads it through.
 func (g TreeGate) Open() bool {
+	return g.openBy(GateOpen)
+}
+
+// ToldOpen is Open over the standing each row last told (ToldStanding) rather than over
+// GateOpen: every step the tree's work waits on has a row, and each reads open as told. The
+// readers that tell or say the tree's standing read it: the first opening's baseline (workflow's
+// putGateTold) and the architect's start (workflow's ArchitectStartTask).
+func (g TreeGate) ToldOpen() bool {
+	return g.openBy(ToldStanding)
+}
+
+// openBy is whether every required step has a row and open reads each of those rows open, the
+// rule of Open and ToldOpen.
+func (g TreeGate) openBy(open func(DesignGate) bool) bool {
 	for _, step := range g.Required() {
-		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
+		if row, registered := g.Rows[step]; !registered || !open(row) {
 			return false
 		}
 	}

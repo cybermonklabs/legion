@@ -17,6 +17,9 @@ func newsBasis() record.GateBasis {
 		RegisteredAt: time.Date(2026, 11, 22, 9, 0, 0, 0, time.UTC)}
 }
 
+// newsBasisSentence is what news of a version that stands open on newsBasis says of that basis.
+const newsBasisSentence = "The spec step stands open on an ancestor's approval: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 7."
+
 // basisGates is newsGates with the spec's version 5 standing open on an ancestor's approval
 // (record.OpenOnBasis): the root's architect registered it on a person's approval of version 7 of
 // LEGION-100's primary document (newsBasis), and no person approved version 5 of the root's own
@@ -47,12 +50,11 @@ func firstBasisGates() map[record.DesignStep]record.DesignGate {
 // reads as it always has.
 func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	t.Parallel()
-	const basis = "The spec step stands open on an ancestor's approval: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 7."
 	const noPerson = "No person approved version 5 of its spec document (artifact-spec)."
 	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
 		Steps: newsSteps, Gates: basisGates(), OpeningOwed: true, Items: []NewsChange{specChanges(4)}})
 	t.Logf("the holder's news:\n%s", holder)
-	for _, want := range []string{basis, noPerson, "every step the deployment gates now stands open. A merge the closed gate held is released. " + basis} {
+	for _, want := range []string{newsBasisSentence, noPerson, "every step the deployment gates now stands open. A merge the closed gate held is released. " + newsBasisSentence} {
 		if !strings.Contains(holder, want) {
 			t.Errorf("the holder's news of a version open on a basis does not say %q:\n%s", want, holder)
 		}
@@ -64,7 +66,7 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: basisGates(),
 		Items: []NewsChange{specChanges(4)}})
 	t.Logf("the summary:\n%s", summary)
-	for _, want := range []string{"A new version of the design of LEGION-208 stands approved on an ancestor's approval.", basis, noPerson} {
+	for _, want := range []string{"A new version of the design of LEGION-208 stands approved on an ancestor's approval.", newsBasisSentence, noPerson} {
 		if !strings.Contains(summary, want) {
 			t.Errorf("the summary of a version open on a basis does not say %q:\n%s", want, summary)
 		}
@@ -87,19 +89,18 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 // stands on.
 func TestNewsOfAFirstVersionOpenOnABasisSaysNoPersonApprovedIt(t *testing.T) {
 	t.Parallel()
-	const basis = "The spec step stands open on an ancestor's approval: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 7."
 	news := firstApprovalHolderNews()
 	news.Gates = firstBasisGates()
 	holder := RenderNews(news)
 	t.Logf("the holder's news:\n%s", holder)
-	if item, want := newsItem(t, holder, "The spec document (artifact-spec)"), "version 5, the first approved version; your phase took none before it. "+basis; !strings.Contains(item, want) {
+	if item, want := newsItem(t, holder, "The spec document (artifact-spec)"), "version 5, the first approved version; your phase took none before it. "+newsBasisSentence; !strings.Contains(item, want) {
 		t.Errorf("the holder's item of a first version open on a basis = %q, want it to say %q", item, want)
 	}
 
 	summary := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: firstBasisGates(),
 		Members: []NewsMember{{Issue: "LEGION-213", Phase: phase.Planning, State: NewsSentNow, Items: news.Items}}})
 	t.Logf("the summary:\n%s", summary)
-	if entry, want := newsItem(t, summary, "The spec document (artifact-spec)"), "version 5, the first approved version. "+basis; !strings.Contains(entry, want) {
+	if entry, want := newsItem(t, summary, "The spec document (artifact-spec)"), "version 5, the first approved version. "+newsBasisSentence; !strings.Contains(entry, want) {
 		t.Errorf("the summary's entry of a first version open on a basis = %q, want it to say %q", entry, want)
 	}
 	if line, want := newsLine(t, summary, "- LEGION-213, in planning:"), "owed version 5 of the spec document, the first approved version; its phase took none before it"; !strings.Contains(line, want) {

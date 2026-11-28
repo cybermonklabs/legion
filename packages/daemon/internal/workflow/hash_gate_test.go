@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -22,13 +23,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The actors of the facts below: the root's architect, who writes each version; Dispatch's fill,
-// which gives each verdict (artifact.digest); and the person who reviews.
-var (
-	hashArchitect = dispatch.Actor{Kind: "session", ID: "session-architect"}
-	hashFill      = dispatch.Actor{Kind: "system", ID: "digest-fill"}
-	hashPerson    = dispatch.Actor{Kind: "user", ID: "alice"}
-)
+// hashFill is Dispatch's fill, which gives each verdict (artifact.digest). The root's architect
+// writes each version of the facts below (askArchitect), and the person reviews (askPerson).
+var hashFill = dispatch.Actor{Kind: "system", ID: "digest-fill"}
 
 // hashMark is the mark mN of the plan's state table: sequence seq in the issue's Dispatch event
 // log, at the matching time tN.
@@ -74,21 +71,20 @@ func hashGateFact(t *testing.T, key, name string, seq int64, actor dispatch.Acto
 	return artifact
 }
 
-// versionOwed is artifact-version.json as version of document, an event of key at seq: a version
-// that owes its digest (digest_owed true).
-func versionOwed(t *testing.T, key, document string, version int, seq int64) intake.DispatchArtifact {
-	t.Helper()
-	return hashGateFact(t, key, "artifact-version.json", seq, hashArchitect, func(payload map[string]any) {
-		payload["artifact_id"], payload["version"] = document, map[string]any{"number": version}
-	})
-}
-
-// versionFilled is artifact-version-filled.json as version of document, an event of key at seq:
-// a version whose event says digest_owed false, which owes its digest all the same until the
+// The version event fixtures versionOf reads: owedVersion (artifact-version.json) is a version
+// that owes its digest (digest_owed true), and filledVersion (artifact-version-filled.json) one
+// whose event says digest_owed false, which owes its digest all the same until the
 // artifact.digest of it arrives (B10 of the plan of dispatch://INFRA-6065).
-func versionFilled(t *testing.T, key, document string, version int, seq int64) intake.DispatchArtifact {
+const (
+	owedVersion   = "artifact-version.json"
+	filledVersion = "artifact-version-filled.json"
+)
+
+// versionOf is the version event fixture file (owedVersion or filledVersion) as version of
+// document, an event of key at seq.
+func versionOf(t *testing.T, file, key, document string, version int, seq int64) intake.DispatchArtifact {
 	t.Helper()
-	return hashGateFact(t, key, "artifact-version-filled.json", seq, hashArchitect, func(payload map[string]any) {
+	return hashGateFact(t, key, file, seq, askArchitect, func(payload map[string]any) {
 		payload["artifact_id"], payload["version"] = document, map[string]any{"number": version}
 	})
 }
@@ -111,7 +107,7 @@ func digestOf(t *testing.T, key, document string, version int, seq int64, curren
 
 // hashReview is a person's review of kind of version of document, an event of key at seq.
 func hashReview(key, document string, kind intake.DispatchArtifactKind, version int, seq int64, reason string) intake.DispatchArtifact {
-	return intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: kind, Version: version, Mark: hashMark(seq), Actor: hashPerson, Reason: reason}
+	return intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: kind, Version: version, Mark: hashMark(seq), Actor: askPerson, Reason: reason}
 }
 
 // gateSeedRead is the gate seed's read of document of key as the outbox's seed builds it (W8 of
@@ -120,7 +116,7 @@ func hashReview(key, document string, kind intake.DispatchArtifactKind, version 
 // version (dispatch.Approval.Stands) at the read's own mark (read).
 func gateSeedRead(key, document string, version, latest int, review record.EventMark, owed, stands bool, read record.EventMark) intake.DispatchArtifact {
 	fact := intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: intake.DispatchArtifactApproved, Version: version, Mark: review,
-		Actor: hashPerson, Latest: latest, DigestOwed: new(owed), VerdictMark: read}
+		Actor: askPerson, Latest: latest, DigestOwed: new(owed), VerdictMark: read}
 	if !owed {
 		fact.Verdict = new(stands)
 	}
@@ -178,23 +174,20 @@ func onBasisAt(root, basisVersion int) record.DesignGate {
 		RestsOn: []string{basisAncestor}, EverOpened: true}
 }
 
-// pendingAt is LEGION-208's spec step waiting, closed, on ask-100, the request of version 4 of
-// LEGION-100's document, registered at version root of its own (rootVersion, 0 for a row written
-// before the column that records it).
-func pendingAt(latest, rootVersion int) record.DesignGate {
+// pendingAt is LEGION-208's spec step at version 3 waiting, closed, on ask-100, the request of
+// version 4 of LEGION-100's document, registered at version rootVersion of its own (0 for a row
+// written before the column that records it).
+func pendingAt(rootVersion int) record.DesignGate {
 	basis := pendingBasis()
 	basis.RegisteredAt, basis.RootVersion = basisEngineNow, rootVersion
-	return record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: latest, Basis: basis}
+	return record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 3, Basis: basis}
 }
 
 // assertHashGate holds issue's spec row to open (record.GateOpen), told (record.ToldStanding) and
 // the approved version (approved, 0 for none), and returns it.
 func assertHashGate(t *testing.T, pool *pgxpool.Pool, issue string, open, told bool, approved int) record.DesignGate {
 	t.Helper()
-	gate, ok := gatesOf(t, pool, issue)[record.DesignStepSpec]
-	if !ok {
-		t.Fatalf("%s holds no spec row", issue)
-	}
+	gate := gateState(t, pool, issue)
 	got := 0
 	if gate.ApprovedVersion != nil {
 		got = *gate.ApprovedVersion
@@ -341,18 +334,19 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 5)
 		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(5), ApprovedMark: hashMark(10), EverOpened: true})
 
-		apply("version-6", versionOwed(t, gatedRoot, gateDoc, 6, 20))
+		apply("version-6", versionOf(t, owedVersion, gatedRoot, gateDoc, 6, 20))
 		if gate := assertHashGate(t, pool, gatedRoot, false, true, 5); !record.DigestOwed(gate) {
 			t.Fatalf("the spec row = %+v, want version 6 owing its digest", gate)
 		}
-		if gates := gatesOf(t, pool, gatedRoot); engine.standingGateOpen(gates) || !engine.standingGateTold(gates) {
+		gates := gatesOf(t, pool, gatedRoot)
+		if _, held := classify.StandingGate(engine.cfg.Steps, gates); !held || !engine.standingGateTold(gates) {
 			t.Fatal("while the digest is owed, want the merger's start held and the tree's standing told open")
 		}
 		assertNothingSent(t, pool)
 
 		apply("digest-6", digestOf(t, gatedRoot, gateDoc, 6, 21, true, 5))
 		assertHashGate(t, pool, gatedRoot, true, true, 5)
-		if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+		if _, held := classify.StandingGate(engine.cfg.Steps, gatesOf(t, pool, gatedRoot)); held {
 			t.Fatal("once the digest reports the approval current, want the merger's start released")
 		}
 		assertNothingSent(t, pool)
@@ -366,7 +360,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 5)
 		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(5), ApprovedMark: hashMark(10), EverOpened: true})
 
-		apply("version-6", versionOwed(t, gatedRoot, gateDoc, 6, 20))
+		apply("version-6", versionOf(t, owedVersion, gatedRoot, gateDoc, 6, 20))
 		assertOutboxCount(t, pool, string(record.OutboxKindRoleMessage), 0)
 		apply("digest-6", digestOf(t, gatedRoot, gateDoc, 6, 21, false, 0))
 
@@ -391,18 +385,15 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			pool, apply := rig(t)
 			hashTree(t, pool, 5)
 			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(5), ApprovedMark: hashMark(10), EverOpened: true})
-			apply("version-6", versionOwed(t, gatedRoot, gateDoc, 6, 20))
+			apply("version-6", versionOf(t, owedVersion, gatedRoot, gateDoc, 6, 20))
 			apply("digest-6", digestOf(t, gatedRoot, gateDoc, 6, 21, false, 0))
 
-			apply("version-7", versionOwed(t, gatedRoot, gateDoc, 7, 30))
+			apply("version-7", versionOf(t, owedVersion, gatedRoot, gateDoc, 7, 30))
 			assertHashGate(t, pool, gatedRoot, false, false, 5)
 			apply("digest-7", digestOf(t, gatedRoot, gateDoc, 7, 31, true, 5))
 
 			assertHashGate(t, pool, gatedRoot, true, true, 5)
 			opened := openedWithVerdict(5, 7)
-			if !strings.Contains(opened, ", which Dispatch reports current for version 7,") {
-				t.Fatalf("opened message %q names no verdict", opened)
-			}
 			assertTreeTold(t, pool, toEveryone(gateMovedBody(record.DesignStepSpec, gateDoc, 6, false)),
 				[3]string{opened + " " + nothingChangedClause(5), opened + " " + treeNothingChangedClause(5), opened + " " + nothingChangedClause(5)})
 			approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
@@ -426,7 +417,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 
 			// Version 7 was written before the hand-back, and its event arrived late: the wait
 			// moves to it with no answer, as today's rule moves it.
-			apply("version-7", versionOwed(t, gatedRoot, gateDoc, 7, 24))
+			apply("version-7", versionOf(t, owedVersion, gatedRoot, gateDoc, 7, 24))
 			assertWait(t, pool, 7, "", "", 0)
 			apply("digest-7", digestOf(t, gatedRoot, gateDoc, 7, 31, true, 5))
 
@@ -459,12 +450,12 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 5)
 		seedGate(t, pool, editClosed(6, 21))
 
-		apply("approved-6", hashReview(gatedRoot, gateDoc, intake.DispatchArtifactApproved, 6, 40, ""))
+		apply("approved-6", stepApproval(gatedRoot, gateDoc, 6, hashMark(40)))
 
 		assertHashGate(t, pool, gatedRoot, true, true, 6)
 		approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
-		if len(approved) != 1 || approved[0].Version != 6 || approved[0].Actor != hashPerson.Name() {
-			t.Fatalf("design-approved notices = %+v, want one of version 6 by %s", approved, hashPerson.Name())
+		if len(approved) != 1 || approved[0].Version != 6 || approved[0].Actor != askPerson.Name() {
+			t.Fatalf("design-approved notices = %+v, want one of version 6 by %s", approved, askPerson.Name())
 		}
 		assertOutboxCount(t, pool, string(record.OutboxKindNotice), 1)
 		assertOutboxCount(t, pool, string(record.OutboxKindDesignChanges), 1)
@@ -504,7 +495,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 7)
 		seedGate(t, pool, openAt(7, 7, 40, 40))
 
-		apply("approved-6", hashReview(gatedRoot, gateDoc, intake.DispatchArtifactApproved, 6, 50, ""))
+		apply("approved-6", stepApproval(gatedRoot, gateDoc, 6, hashMark(50)))
 
 		if gate := assertHashGate(t, pool, gatedRoot, true, true, 7); gate.Verdict == nil || gate.Verdict.Mark != hashMark(40) {
 			t.Fatalf("the verdict = %+v, want it as it was", gate.Verdict)
@@ -526,7 +517,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 				hashWaitingRoot(t, pool, 5, 20)
 				seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(4), ApprovedMark: hashMark(5)})
 
-				apply("version-6", versionOwed(t, gatedRoot, gateDoc, 6, 30))
+				apply("version-6", versionOf(t, owedVersion, gatedRoot, gateDoc, 6, 30))
 				assertHashGate(t, pool, gatedRoot, false, false, 4)
 				assertWait(t, pool, 5, "", "", 0)
 
@@ -546,9 +537,9 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashWaitingRoot(t, pool, 5, 20)
 		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(4), ApprovedMark: hashMark(5)})
 
-		apply("version-6", versionOwed(t, gatedRoot, gateDoc, 6, 30))
+		apply("version-6", versionOf(t, owedVersion, gatedRoot, gateDoc, 6, 30))
 		assertWait(t, pool, 5, "", "", 0)
-		apply("approved-6", hashReview(gatedRoot, gateDoc, intake.DispatchArtifactApproved, 6, 31, ""))
+		apply("approved-6", stepApproval(gatedRoot, gateDoc, 6, hashMark(31)))
 
 		assertHashGate(t, pool, gatedRoot, true, true, 6)
 		assertWait(t, pool, 5, record.AnsweredByApproval, "version 6", 6)
@@ -562,7 +553,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashWaitingRoot(t, pool, 5, 20)
 		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(4), ApprovedMark: hashMark(5)})
 
-		apply("version-6", versionOwed(t, gatedRoot, gateDoc, 6, 15))
+		apply("version-6", versionOf(t, owedVersion, gatedRoot, gateDoc, 6, 15))
 		assertWait(t, pool, 6, "", "", 0)
 		apply("digest-6", digestOf(t, gatedRoot, gateDoc, 6, 31, false, 0))
 
@@ -595,7 +586,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 4)
 		seedGate(t, pool, onBasisAt(4, 3))
 
-		apply("ancestor-version-4", versionOwed(t, basisAncestor, basisDoc, 4, 30))
+		apply("ancestor-version-4", versionOf(t, owedVersion, basisAncestor, basisDoc, 4, 30))
 		apply("ancestor-digest-4", digestOf(t, basisAncestor, basisDoc, 4, 31, true, 3))
 
 		if gate := assertHashGate(t, pool, gatedRoot, true, true, 4); !gate.OnBasis() || gate.Verdict != nil {
@@ -658,7 +649,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 4)
 		seedGate(t, pool, onBasisAt(4, 4))
 
-		apply("version-4-replayed", versionFilled(t, gatedRoot, gateDoc, 4, 30))
+		apply("version-4-replayed", versionOf(t, filledVersion, gatedRoot, gateDoc, 4, 30))
 		if gate := assertHashGate(t, pool, gatedRoot, true, true, 4); !gate.OnBasis() || gate.Verdict == nil || record.DigestOwed(gate) {
 			t.Fatalf("the spec row = %+v (verdict %+v), want it on its basis in hash mode, owing no digest", gate, gate.Verdict)
 		}
@@ -690,7 +681,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		hashTree(t, pool, 3)
 		seedGate(t, pool, onBasisAt(3, 3))
 
-		apply("version-4", versionFilled(t, gatedRoot, gateDoc, 4, 30))
+		apply("version-4", versionOf(t, filledVersion, gatedRoot, gateDoc, 4, 30))
 		if gate := assertHashGate(t, pool, gatedRoot, false, true, 3); !gate.OnBasis() || !record.DigestOwed(gate) {
 			t.Fatalf("the spec row = %+v, want it on its basis while version 4 owes its digest", gate)
 		}
@@ -710,7 +701,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		t.Parallel()
 		pool, apply := rig(t)
 		hashTree(t, pool, 2)
-		pending := pendingAt(3, 3)
+		pending := pendingAt(3)
 		pending.ApprovedVersion, pending.ApprovedMark = new(2), hashMark(4)
 		pending.Verdict, pending.ToldOpen = &record.GateVerdict{Version: 2, Current: true, Mark: hashMark(5)}, new(false)
 		seedGate(t, pool, pending)
@@ -730,7 +721,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		t.Parallel()
 		pool, apply := rig(t)
 		hashTree(t, pool, 2)
-		pending := pendingAt(3, 3)
+		pending := pendingAt(3)
 		pending.ApprovedVersion, pending.ApprovedMark = new(2), hashMark(4)
 		pending.Verdict, pending.ToldOpen = &record.GateVerdict{Version: 2, Current: true, Mark: hashMark(5)}, new(false)
 		seedGate(t, pool, pending)
@@ -758,9 +749,9 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		t.Parallel()
 		pool, apply := rig(t)
 		hashTree(t, pool, 2)
-		seedGate(t, pool, pendingAt(3, 0))
+		seedGate(t, pool, pendingAt(0))
 
-		apply("version-4", versionOwed(t, gatedRoot, gateDoc, 4, 30))
+		apply("version-4", versionOf(t, owedVersion, gatedRoot, gateDoc, 4, 30))
 		if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); !gate.PendingOnBasis() {
 			t.Fatalf("the spec row = %+v, want it still waiting while version 4 owes its digest", gate)
 		}
@@ -835,7 +826,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 	// digest_owed).
 	standing := func(state string, owed *bool) dispatch.Approval {
 		approval := dispatch.Approval{IssueKey: basisAncestor, State: state, Version: new(4), LatestVersion: 5, DigestOwed: owed,
-			By: basisPerson, Seq: 60, At: hashMark(60).At}
+			By: askPerson, Seq: 60, At: hashMark(60).At}
 		if owed != nil && !*owed {
 			approval.CurrentSHA256 = new(strings.Repeat("a", 64))
 		}
@@ -852,11 +843,11 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 
 		gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
 		if !gate.OnBasis() || !record.GateOpen(gate) || !record.ToldStanding(gate) || gate.Basis.Version != 4 ||
-			gate.Basis.Approval != (record.EventMark{Seq: 60, At: hashMark(60).At}) || gate.Basis.Approver != basisPerson.Name() {
+			gate.Basis.Approval != (record.EventMark{Seq: 60, At: hashMark(60).At}) || gate.Basis.Approver != askPerson.Name() {
 			t.Fatalf("the spec step = %#v (basis %+v), want it open on the person's approval of version 4 at m60", gate, gate.Basis)
 		}
 		approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
-		if len(approved) != 1 || approved[0].Version != 4 || approved[0].Actor != basisPerson.Name() || approved[0].Ref != "dispatch://LEGION-100/spec" {
+		if len(approved) != 1 || approved[0].Version != 4 || approved[0].Actor != askPerson.Name() || approved[0].Ref != "dispatch://LEGION-100/spec" {
 			t.Fatalf("design-approved notices = %+v, want the one that names the basis", approved)
 		}
 		assertNoticeCount(t, pool, "basis-ended", 0)
@@ -933,8 +924,8 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
 		seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)
 
-		apply("spec-5", versionOwed(t, gatedRoot, gateDoc, 5, 30))
-		apply("criteria-3", versionOwed(t, gatedRoot, criteriaDoc, 3, 31))
+		apply("spec-5", versionOf(t, owedVersion, gatedRoot, gateDoc, 5, 30))
+		apply("criteria-3", versionOf(t, owedVersion, gatedRoot, criteriaDoc, 3, 31))
 		apply("criteria-digest-3", digestOf(t, gatedRoot, criteriaDoc, 3, 32, true, 2))
 
 		gates := gatesOf(t, pool, gatedRoot)
@@ -944,7 +935,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		if spec := gates[record.DesignStepSpec]; record.GateOpen(spec) || !record.ToldStanding(spec) || !record.DigestOwed(spec) {
 			t.Fatalf("the spec row = %+v, want it owing its digest, told open", spec)
 		}
-		if twoStepped.standingGateOpen(gates) || !twoStepped.standingGateTold(gates) {
+		if _, held := classify.StandingGate(twoStepped.cfg.Steps, gates); !held || !twoStepped.standingGateTold(gates) {
 			t.Fatal("want the merger's start held and the tree's standing told open while the spec's digest is owed")
 		}
 		assertNothingSent(t, pool)
@@ -985,10 +976,10 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		}
 		const standing = "its primary document is registered at version 7 and a person has approved it at version 5, which Dispatch reports current for version 7"
 		gate := record.TreeGate{Steps: steps, Rows: specGates(open)}
-		if said := gateStanding(gate); said != standing || !treeToldOpen(gate) {
-			t.Errorf("the architect's start says %q (open %t), want %q, open", said, treeToldOpen(gate), standing)
+		if said := gateStanding(gate); said != standing || !gate.ToldOpen() {
+			t.Errorf("the architect's start says %q (open %t), want %q, open", said, gate.ToldOpen(), standing)
 		}
-		if treeToldOpen(record.TreeGate{Steps: steps, Rows: specGates(editClosed(7, 31))}) {
+		if (record.TreeGate{Steps: steps, Rows: specGates(editClosed(7, 31))}).ToldOpen() {
 			t.Error("the architect's start reads a gate told closed as open")
 		}
 		pool := migratedPool(t)
@@ -1010,12 +1001,12 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 	t.Run("W20", func(t *testing.T) {
 		t.Parallel()
 		version := func(key, document string, number int, seq int64) intake.DispatchArtifact {
-			return intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: intake.DispatchArtifactVersion, Version: number, Mark: hashMark(seq), Actor: hashArchitect}
+			return intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: intake.DispatchArtifactVersion, Version: number, Mark: hashMark(seq), Actor: askArchitect}
 		}
 		openAtFive := record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 5, ApprovedVersion: new(5), ApprovedMark: hashMark(10), EverOpened: true}
 		inVersionMode := func(t *testing.T, pool *pgxpool.Pool, issue string) {
 			t.Helper()
-			if gate := gatesOf(t, pool, issue)[record.DesignStepSpec]; gate.Verdict != nil || gate.ToldOpen != nil {
+			if gate := gateState(t, pool, issue); gate.Verdict != nil || gate.ToldOpen != nil {
 				t.Fatalf("the spec row of %s = %+v, want it in version mode", issue, gate)
 			}
 		}
@@ -1046,7 +1037,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			pool, apply := rig(t)
 			hashTree(t, pool, 5)
 			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 6, ApprovedVersion: new(5), ApprovedMark: hashMark(10), EverOpened: true})
-			apply("approved-6", hashReview(gatedRoot, gateDoc, intake.DispatchArtifactApproved, 6, 40, ""))
+			apply("approved-6", stepApproval(gatedRoot, gateDoc, 6, hashMark(40)))
 			assertHashGate(t, pool, gatedRoot, true, true, 6)
 			inVersionMode(t, pool, gatedRoot)
 			assertNoticeCount(t, pool, "design-approved", 1)
@@ -1069,7 +1060,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			pool, apply := rig(t)
 			hashTree(t, pool, 7)
 			seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 7, ApprovedVersion: new(7), ApprovedMark: hashMark(40), EverOpened: true})
-			apply("approved-6", hashReview(gatedRoot, gateDoc, intake.DispatchArtifactApproved, 6, 50, ""))
+			apply("approved-6", stepApproval(gatedRoot, gateDoc, 6, hashMark(50)))
 			assertHashGate(t, pool, gatedRoot, true, true, 7)
 			inVersionMode(t, pool, gatedRoot)
 			assertNothingSent(t, pool)
@@ -1116,7 +1107,7 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			t.Parallel()
 			pool, apply := rig(t)
 			hashTree(t, pool, 2)
-			seedGate(t, pool, pendingAt(3, 0))
+			seedGate(t, pool, pendingAt(0))
 			apply("version-4", version(gatedRoot, gateDoc, 4, 30))
 			if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); gate.Basis != nil {
 				t.Fatalf("the spec row = %+v, want its wait ended at once", gate)
@@ -1130,11 +1121,11 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			t.Parallel()
 			pool, apply := carriedRig(t, record.DesignGate{Issue: "LEGION-209", ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(3),
 				ApprovedMark: hashMark(10), Carried: true})
-			apply("old-root-approved-4", hashReview(gatedRoot, gateDoc, intake.DispatchArtifactApproved, 4, 40, ""))
+			apply("old-root-approved-4", stepApproval(gatedRoot, gateDoc, 4, hashMark(40)))
 			assertHashGate(t, pool, "LEGION-209", true, true, 4)
 			inVersionMode(t, pool, "LEGION-209")
-			if opened := noticesOfKind(t, pool, "LEGION-209", "carried-gate-opened"); len(opened) != 1 || opened[0].Actor != hashPerson.Name() || opened[0].Version != 4 {
-				t.Fatalf("carried-gate-opened notices = %+v, want today's, by %s", opened, hashPerson.Name())
+			if opened := noticesOfKind(t, pool, "LEGION-209", "carried-gate-opened"); len(opened) != 1 || opened[0].Actor != askPerson.Name() || opened[0].Version != 4 {
+				t.Fatalf("carried-gate-opened notices = %+v, want today's, by %s", opened, askPerson.Name())
 			}
 		})
 		t.Run("W15", func(t *testing.T) {

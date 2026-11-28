@@ -45,19 +45,16 @@ type GateFact struct {
 // GateFactResult is the row after one fact (ApplyGateFact), and what the fact asks of its caller.
 type GateFactResult struct {
 	Gate record.DesignGate
-	// SeedWanted says the fact is a review of a version below the row's latest in hash mode: it
-	// gave no verdict and changed nothing, since only a read of Dispatch (the gate seed) can say
-	// whether that approval covers the latest version. The caller drops the review as stale
-	// (workflow's artifactIgnored) and queues the seed.
+	// SeedWanted says the fact is a review of a version below the row's latest in hash mode
+	// (SeedWanted, the function): it gave no verdict and changed nothing, since only a read of
+	// Dispatch (the gate seed) can say whether that approval covers the latest version. The caller
+	// drops the review as stale (workflow's artifactIgnored) and queues the seed.
 	SeedWanted bool
 	// Settled says the row owed its digest (record.DigestOwed) before the fact, or once the fact
 	// raised its latest version (a digest above it, a read of a newer one), and owes none after it:
 	// the effects the owed version deferred are due now, by today's rules, whatever the standing
 	// the row settled at. A return to version mode settles a row that owed its digest too.
 	Settled bool
-	// Changed says the row after differs from the row before: false for a stale fact, a fact the
-	// row already holds, and a review that asks for the seed.
-	Changed bool
 }
 
 // ApplyGateFact applies one fact of a gated document to its row, by R3 of dispatch://INFRA-6065
@@ -122,14 +119,13 @@ type GateFactResult struct {
 // approval of the root's own document ends the wait. Reviews keep today's basis rules.
 func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 	carriesDigest := fact.DigestOwed != nil || fact.Kind == DesignGateDigest
-	review := !fact.Read && (fact.Kind == DesignGateApproved || fact.Kind == DesignGateChangesRequested)
+	review := fact.review()
 	switch {
 	case gate.Verdict == nil && !carriesDigest:
-		after := ApplyDesignGateEvent(gate, fact.Kind, fact.Version, fact.Mark)
-		return GateFactResult{Gate: after, Changed: !sameDesignGate(gate, after)}
+		return GateFactResult{Gate: ApplyDesignGateEvent(gate, fact.Kind, fact.Version, fact.Mark)}
 	case gate.Verdict != nil && !carriesDigest && !review:
 		return versionModeAgain(gate, fact)
-	case gate.Verdict != nil && review && fact.Version < gate.LatestVersion:
+	case SeedWanted(gate, fact):
 		return GateFactResult{Gate: gate, SeedWanted: true}
 	}
 	before := gate
@@ -154,7 +150,8 @@ func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 		gate = basisEnded(prior, gate)
 	}
 	gate = pendingAnswered(prior, gate)
-	if !sameApprovedVersion(prior.ApprovedByPerson(), gate.ApprovedByPerson()) {
+	sameVersion := func(a, b record.PersonApproval) bool { return a.Version == b.Version }
+	if !samePointer(prior.ApprovedByPerson(), gate.ApprovedByPerson(), sameVersion) {
 		gate.ApprovedDigest = ""
 	}
 	var toldChanges record.EventMark
@@ -170,7 +167,22 @@ func ApplyGateFact(gate record.DesignGate, fact GateFact) GateFactResult {
 		told = record.GateOpen(gate)
 	}
 	gate.ToldOpen = toldOpen(prior.ToldOpen, told)
-	return GateFactResult{Gate: gate, Settled: settled, Changed: true}
+	return GateFactResult{Gate: gate, Settled: settled}
+}
+
+// SeedWanted says whether fact is a review of a version below the latest of gate, a row in hash
+// mode: such a review gives no verdict and changes nothing, and asks for the gate seed instead
+// (GateFactResult.SeedWanted), whose read of Dispatch says whether that approval covers the
+// latest version. ApplyGateFact and the workflow's drop of a stale review (applyArtifact) both
+// read it.
+func SeedWanted(gate record.DesignGate, fact GateFact) bool {
+	return gate.Verdict != nil && fact.review() && fact.Version < gate.LatestVersion
+}
+
+// review says whether fact is a live review, an approval or a changes request, rather than a read
+// of the review Dispatch shows.
+func (f GateFact) review() bool {
+	return !f.Read && (f.Kind == DesignGateApproved || f.Kind == DesignGateChangesRequested)
 }
 
 // versionModeAgain applies a fact that carries no digest field, and is no review, to a row in
@@ -190,7 +202,7 @@ func versionModeAgain(gate record.DesignGate, fact GateFact) GateFactResult {
 	if owed {
 		gate = basisEnded(prior, gate)
 	}
-	return GateFactResult{Gate: gate, Settled: owed, Changed: true}
+	return GateFactResult{Gate: gate, Settled: owed}
 }
 
 // enteredHashMode is a row in version mode as it enters hash mode, before the fact that entered
@@ -291,11 +303,11 @@ func changesRequestStands(gate record.DesignGate, version int) bool {
 }
 
 // basisEnded ends the basis of a row a fact settled at a version of the root's own document above
-// the one the basis was registered at (registeredRootVersion), as today's newer version ends it:
+// the one the basis was registered at (RegisteredRootVersion), as today's newer version ends it:
 // a step open on the basis falls back to the person's approval it kept, and a pending wait ends
 // closed. prior is the row before the fact, in hash mode.
 func basisEnded(prior, gate record.DesignGate) record.DesignGate {
-	if gate.Basis == nil || prior.Basis == nil || gate.LatestVersion <= registeredRootVersion(prior) {
+	if gate.Basis == nil || prior.Basis == nil || gate.LatestVersion <= RegisteredRootVersion(prior) {
 		return gate
 	}
 	return record.EndPendingBasis(record.CloseBasis(gate))
@@ -306,34 +318,30 @@ func basisEnded(prior, gate record.DesignGate) record.DesignGate {
 // stands, as a person's approval of the root's own document ends the wait. prior is the row before
 // the fact, in hash mode.
 func pendingAnswered(prior, gate record.DesignGate) record.DesignGate {
-	if gate.PendingOnBasis() && record.GateOpen(gate) && gate.Verdict.Version >= registeredRootVersion(prior) {
+	if gate.PendingOnBasis() && record.GateOpen(gate) && gate.Verdict.Version >= RegisteredRootVersion(prior) {
 		return record.EndPendingBasis(gate)
 	}
 	return gate
 }
 
-// registeredRootVersion is the version of the root's own document the basis of gate, a row in
-// hash mode, was registered at (record.GateBasis.RootVersion). A basis written before the
-// migration that added it records none: a step open on it was opened at that version
-// (ApprovedVersion, OpenOnBasis), and a pending step is read at its verdict's version before the
-// fact, which is where a version-mode row entered hash mode.
-func registeredRootVersion(gate record.DesignGate) int {
+// RegisteredRootVersion is the version of the root's own document the basis of gate was
+// registered at (record.GateBasis.RootVersion). A basis written before the migration that added it
+// records none: on a row in version mode it is the latest version, which no version of its own
+// document moved without ending the basis; on a row in hash mode a step open on it was opened at
+// that version (ApprovedVersion, OpenOnBasis), and a pending step is read at its verdict's version
+// before the fact, which is where a version-mode row entered hash mode. ApplyGateFact reads it of
+// a row in hash mode with a basis, and the workflow's telling of an end by the root's own document
+// of any row (ownDocumentEnded).
+func RegisteredRootVersion(gate record.DesignGate) int {
 	switch {
-	case gate.Basis.RootVersion > 0:
+	case gate.Basis != nil && gate.Basis.RootVersion > 0:
 		return gate.Basis.RootVersion
+	case gate.Verdict == nil:
+		return gate.LatestVersion
 	case gate.OnBasis() && gate.ApprovedVersion != nil:
 		return *gate.ApprovedVersion
 	}
 	return gate.Verdict.Version
-}
-
-// sameApprovedVersion says whether two of a row's person's approvals (ApprovedByPerson) are of one
-// version, or both none.
-func sameApprovedVersion(left, right *record.PersonApproval) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return left.Version == right.Version
 }
 
 // verdictAfterReviews gives the row's verdict the mark of each review the row holds, and of the

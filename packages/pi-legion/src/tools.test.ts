@@ -3529,16 +3529,8 @@ test("read_state's summary names the spec step's status word beside an approved 
       "LEGION-231": root("LEGION-231", "waiting"),
     },
   });
-  const { daemon } = recordingDaemon({ state });
-  const result = await controllerTool(daemon, []).execute(
-    "",
-    { op: "read_state" },
-    undefined,
-    undefined,
-    context("ses_controller")
-  );
-  const [block] = result.content;
-  const summary = block !== undefined && block.type === "text" ? block.text : "";
+  // The summary's text whole, so each gate line is read with the issue line before it.
+  const summary = (await summaryLinesOf(recordingDaemon({ state }).daemon)).join("\n");
 
   expect(summary).toContain(
     "\nLEGION-230 admitted in_progress\n  gate 8 approved, approved version 7\n"

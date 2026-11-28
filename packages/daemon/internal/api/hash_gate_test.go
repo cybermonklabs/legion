@@ -187,7 +187,10 @@ func TestHashGateRegistrationsTakeDispatchVerdict(t *testing.T) {
 		}
 		assertProcessedEvent(t, h, standingID)
 		gate := specGateOf(t, h)
-		if gate == nil || !record.GateOpen(*gate) || !record.ToldStanding(*gate) || gate.LatestVersion != 2 ||
+		if gate == nil {
+			t.Fatal("the record holds no spec step, want it open at version 2 on the approval of version 1 with the verdict true at 2")
+		}
+		if !record.GateOpen(*gate) || !record.ToldStanding(*gate) || gate.LatestVersion != 2 ||
 			gate.ApprovedVersion == nil || *gate.ApprovedVersion != 1 || gate.Verdict == nil || gate.Verdict.Version != 2 || !gate.Verdict.Current {
 			t.Fatalf("the spec step = %+v (verdict %+v), want it open at version 2 on the approval of version 1 with the verdict true at 2", gate, gate.Verdict)
 		}
@@ -275,8 +278,8 @@ func TestHashGateRegistrationsTakeDispatchVerdict(t *testing.T) {
 		want.ApprovedVersion, want.ApprovedMark, want.ReviewedBy = 3, record.EventMark{Seq: 8, At: basisApprovedAt}, basisAlice
 		want.DigestOwed, want.Verdict, want.VerdictMark = new(false), new(true), record.EventMark{Seq: seq}
 		want.ContentSHA256, want.CurrentSHA256 = standingSHA256, standingSHA256
-		if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(withoutReadTime(got[0].(intake.GateRegistered)), want) {
-			t.Fatalf("registration facts = %#v, want the person's approval of version 3 and no basis: %#v", got, want)
+		if got := onlyRegistration(t, facts.recorded()); !reflect.DeepEqual(withoutReadTime(got), want) {
+			t.Fatalf("registration fact = %#v, want the person's approval of version 3 and no basis: %#v", got, want)
 		}
 		assertProcessedEvent(t, h, fmt.Sprintf("gate:%s:0:spec:%s:4:%d:digest-owed:false:current:%s:view-of:%s", basisR, rSpec, seq, standingSHA256, basisP))
 	})

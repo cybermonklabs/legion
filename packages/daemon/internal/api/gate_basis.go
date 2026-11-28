@@ -179,7 +179,7 @@ func approvalShown(approval dispatch.Approval) string {
 			return fmt.Sprintf("an approval of its latest version %d by %s", version, by)
 		case approval.Stands():
 			return fmt.Sprintf("an approval of version %d by %s, which Dispatch reports current for its latest version %d", version, by, approval.LatestVersion)
-		case approval.DigestOwed != nil && *approval.DigestOwed:
+		case approval.OwesDigest():
 			return fmt.Sprintf("an approval of version %d by %s, which Dispatch does not report current for its latest version %d while it owes that version's digest",
 				version, by, approval.LatestVersion)
 		}

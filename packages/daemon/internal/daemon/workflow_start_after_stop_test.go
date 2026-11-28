@@ -55,12 +55,8 @@ func startedAgainDispatch(t *testing.T, project string) string {
 func startedAgainDispatchShowing(t *testing.T, project string, shown *shownApprovals) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body := shown.body(strings.TrimPrefix(r.URL.Path, "/api/v1/artifacts/"))
 		switch {
-		// Ahead of servedBootCall, whose answer for a document is one nobody has asked to approve.
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/artifacts/") && body != "":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, body)
+		case shown.serve(w, r):
 		case servedBootCall(t, w, r, project):
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			w.Header().Set("Content-Type", "application/json")

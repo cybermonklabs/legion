@@ -1,6 +1,6 @@
 package daemon
 
-//ci:reads packages/contracts/fixtures/hash-gate/** hashGateBody
+//ci:reads packages/contracts/fixtures/hash-gate/** hashGateFixture
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -40,15 +41,22 @@ const (
 // seedReviewer is who gave the review a read shows: the fixtures name nobody (approval.by).
 var seedReviewer = dispatch.Actor{Kind: "user", ID: "person@example.com"}
 
-// hashGateBody is the GET body of the hash-gate fixture name (packages/contracts/fixtures/
-// hash-gate, the wire contract of Dispatch's hash gate, R1 of dispatch://INFRA-6065), on the issue
-// key, with its approval changed by change: the fixtures hold id, name and approval alone.
-func hashGateBody(t *testing.T, name, key string, change func(approval map[string]any)) []byte {
+// hashGateFixture is the hash-gate fixture name as packages/contracts/fixtures/hash-gate holds
+// it, the wire contract of Dispatch's hash gate (R1 of dispatch://INFRA-6065).
+func hashGateFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "hash-gate", name))
 	if err != nil {
 		t.Fatalf("read the hash-gate fixture %s: %v", name, err)
 	}
+	return raw
+}
+
+// hashGateBody is the GET body of the hash-gate fixture name (hashGateFixture), on the issue key,
+// with its approval changed by change: the fixtures hold id, name and approval alone.
+func hashGateBody(t *testing.T, name, key string, change func(approval map[string]any)) []byte {
+	t.Helper()
+	raw := hashGateFixture(t, name)
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("decode the hash-gate fixture %s: %v", name, err)
@@ -174,8 +182,7 @@ func (r *seedRig) issue(key, status string) {
 	if record.OutOfWorkflow(status) {
 		at = phase.Admitted
 	}
-	putOutboxIssue(r.t, r.pool, r.records, record.Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: at, Generation: 1,
-		Status: status, DispatchStatus: status, Rank: key, HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+	putOutboxIssue(r.t, r.pool, r.records, bootIssue(key, key, status, at))
 }
 
 // put records gate.
@@ -235,22 +242,22 @@ func (r *seedRig) readFacts() []intake.DispatchArtifact {
 	return facts
 }
 
-// gateSeeds is every gate_seed row key holds, decoded.
-func (r *seedRig) gateSeeds(key string) []record.GateSeed {
-	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select payload from outbox where kind = $1 and issue = $2 order by id`, string(record.OutboxKindGateSeed), key)
+// gateSeedsOf is every gate_seed row the outbox holds for issue, oldest first, decoded.
+func gateSeedsOf(t *testing.T, pool *store.Pool, issue string) []record.GateSeed {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `select payload from outbox where kind = $1 and issue = $2 order by id`, string(record.OutboxKindGateSeed), issue)
 	if err != nil {
-		r.t.Fatalf("read the gate seeds of %s: %v", key, err)
+		t.Fatalf("read the gate seeds of %s: %v", issue, err)
 	}
 	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
 	if err != nil {
-		r.t.Fatalf("read the gate seeds of %s: %v", key, err)
+		t.Fatalf("read the gate seeds of %s: %v", issue, err)
 	}
-	var seeds []record.GateSeed
+	seeds := make([]record.GateSeed, 0, len(payloads))
 	for _, payload := range payloads {
 		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindGateSeed, Payload: payload})
 		if err != nil {
-			r.t.Fatalf("decode a gate seed of %s: %v", key, err)
+			t.Fatalf("decode a gate seed of %s: %v", issue, err)
 		}
 		seeds = append(seeds, decoded.(record.GateSeed))
 	}
@@ -276,10 +283,10 @@ func (r *seedRig) boot() {
 // does a row an older daemon moved after the boot's seed reads it. A read whose only change is the
 // digest Dispatch filled is a fact of its own, and so are the gate-above and pending-basis reads;
 // a read with no digest_owed puts the row back in version mode. A read that shows the approval
-// not standing at the version the seed was queued at gives the verdict false (the architect's
-// decision 1). The re-parent read names the latest version. A carried copy's read reaches the copy
-// as its old root's event does, and is never reset. The boot seeds every closed step in a tree in
-// the workflow once, and the boot catch-up replays an artifact.digest.
+// not standing at the version the seed was queued at gives the verdict false. The re-parent read
+// names the latest version. A carried copy's read reaches the copy as its old root's event does,
+// and is never reset. The boot seeds every closed step in a tree in the workflow once, and the
+// boot catch-up replays an artifact.digest.
 func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	t.Parallel()
 	reviewedAt := time.Date(2026, 11, 27, 11, 0, 0, 0, time.UTC)
@@ -293,6 +300,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 		{name: "the verdict's mark is raised to a review Dispatch marked after the read", at: reviewedAt.Add(-time.Minute), verdict: reviewedAt},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := newSeedRig(t)
 			r.clock = tc.at
 			r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 2})
@@ -303,7 +311,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 			want := intake.DispatchArtifact{Key: seedRoot, ArtifactID: seedDoc, Kind: intake.DispatchArtifactApproved, Version: 1, Latest: 2,
 				Mark: review, Actor: seedReviewer, DigestOwed: new(false), Verdict: new(true), VerdictMark: record.EventMark{At: tc.verdict},
 				ContentSHA256: fixtureDigest, CurrentSHA256: fixtureDigest}
-			if got := r.readFacts(); len(got) != 1 || !sameRead(got[0], want) {
+			if got := r.readFacts(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 				t.Fatalf("the seed's facts = %+v, want the one read %+v", got, want)
 			}
 			gate := r.gate(seedRoot)
@@ -315,6 +323,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	}
 
 	t.Run("a version-mode row whose older approval Dispatch reports standing opens and stays open", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		approved := record.EventMark{Seq: 10, At: reviewedAt}
 		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 8, ApprovedVersion: new(7), ApprovedMark: approved})
@@ -334,6 +343,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("a row an older daemon moved opens on the boot's seed", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		verdictMark := record.EventMark{Seq: 5, At: reviewedAt.Add(-time.Hour)}
 		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 8, ApprovedVersion: new(8),
@@ -348,7 +358,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 			t.Fatalf("the row the older daemon moved = %+v, want it in version mode, closed", gate)
 		}
 		r.boot()
-		seeds := r.gateSeeds(seedRoot)
+		seeds := gateSeedsOf(t, r.pool, seedRoot)
 		if want := (record.GateSeed{ArtifactID: seedDoc, Step: record.DesignStepSpec, Version: 8, Generation: 1}); len(seeds) != 1 || seeds[0] != want {
 			t.Fatalf("the boot's gate seeds = %+v, want %+v", seeds, want)
 		}
@@ -360,6 +370,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("a read that is owed, then the read that is filled, applies twice", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 1, ApprovedVersion: new(1),
 			ApprovedMark: record.EventMark{Seq: 12, At: reviewedAt}})
@@ -380,6 +391,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("a read with no digest_owed puts a hash-mode row in version mode", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		mark := record.EventMark{Seq: 20, At: reviewedAt}
 		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 6, ApprovedVersion: new(6),
@@ -397,6 +409,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("a read that shows the approval not standing at the version queued gives the verdict false", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 2, ApprovedVersion: new(2),
 			ApprovedMark: record.EventMark{Seq: 12, At: reviewedAt}})
@@ -404,8 +417,8 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 			t.Fatal("the version-mode row approved at its latest version 2 reads closed before the seed")
 		}
 		// Dispatch reports the approval of version 1 stale at its latest version 2, the version the
-		// seed was queued at, with no digest owed: a verdict, false, which today's early return
-		// would drop.
+		// seed was queued at, with no digest owed: a verdict, false, which seedGateDocument applies,
+		// since its early return at the version queued is for a read with no digest_owed alone.
 		r.client.answer(seedDoc, hashGateBody(t, "artifact.json", seedRoot, reviewed(12, reviewedAt, func(approval map[string]any) {
 			approval["state"] = "stale"
 			approval["current_sha256"] = strings.Repeat("c", 64)
@@ -418,6 +431,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("the gate-above read names what it found", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		// A gate above every version Dispatch holds: the seed was queued at its version 9.
 		r.put(record.DesignGate{Issue: seedRoot, Step: record.DesignStepSpec, ArtifactID: seedDoc, LatestVersion: 9})
@@ -448,6 +462,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("the pending-basis read names what it found", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		r.runner.handlers = []intake.Handler{r.recorded}
 		const ancestor, basisDoc = "LEGION-100", "artifact-100"
@@ -468,6 +483,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("the re-parent read names the latest version a person's approval stands for", func(t *testing.T) {
+		t.Parallel()
 		const parent, parentDoc = "LEGION-760", "artifact-760"
 		for _, tc := range []struct {
 			name   string
@@ -489,6 +505,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("a carried copy's read reaches the copy as its old root's event does", func(t *testing.T) {
+		t.Parallel()
 		const carriedCopy, oldRoot = "LEGION-751", "LEGION-752"
 		for _, tc := range []struct {
 			name   string
@@ -530,6 +547,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("the boot seeds every closed step in a tree in the workflow once", func(t *testing.T) {
+		t.Parallel()
 		r := newSeedRig(t)
 		const (
 			open, carried, pending, parked = "LEGION-753", "LEGION-754", "LEGION-755", "LEGION-756"
@@ -559,7 +577,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 			r.boot()
 			got := map[string][]record.GateSeed{}
 			for _, key := range []string{seedRoot, open, carried, pending, parked} {
-				if seeds := r.gateSeeds(key); len(seeds) > 0 {
+				if seeds := gateSeedsOf(t, r.pool, key); len(seeds) > 0 {
 					got[key] = seeds
 				}
 			}
@@ -570,6 +588,7 @@ func TestHashGateSeedTakesDispatchVerdict(t *testing.T) {
 	})
 
 	t.Run("the boot catch-up replays an artifact.digest of a root's document", func(t *testing.T) {
+		t.Parallel()
 		const root = "CAPTURE-100"
 		events := []json.RawMessage{
 			hashGateEvent(t, "artifact-version.json", root, 19),
@@ -612,10 +631,7 @@ func withIssue(gate record.DesignGate, issue string) record.DesignGate {
 // Dispatch's events route serves on key at seq, given by Dispatch's fill.
 func hashGateEvent(t *testing.T, name, key string, seq int64) json.RawMessage {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "hash-gate", name))
-	if err != nil {
-		t.Fatalf("read the hash-gate fixture %s: %v", name, err)
-	}
+	raw := hashGateFixture(t, name)
 	var event struct {
 		Type    string         `json:"type"`
 		Payload map[string]any `json:"payload"`
@@ -624,14 +640,4 @@ func hashGateEvent(t *testing.T, name, key string, seq int64) json.RawMessage {
 		t.Fatalf("decode the hash-gate fixture %s: %v", name, err)
 	}
 	return issueEvent(key, seq, event.Type, settler, event.Payload)
-}
-
-// sameRead says whether two reads are one: each field, the pointers by the value they point at.
-func sameRead(got, want intake.DispatchArtifact) bool {
-	same := func(a, b *bool) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
-	if !same(got.DigestOwed, want.DigestOwed) || !same(got.Verdict, want.Verdict) {
-		return false
-	}
-	got.DigestOwed, got.Verdict, want.DigestOwed, want.Verdict = nil, nil, nil, nil
-	return got == want
 }

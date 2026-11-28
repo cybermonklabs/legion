@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -356,7 +357,7 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // DigestOwed are Dispatch's hash-gate verdict on the latest version (R1 of dispatch://INFRA-6065):
 // the latest version's digest, nil while it is owed and from a Dispatch that sends none, and
 // whether Dispatch still owes that digest, nil from a Dispatch that sends no digest_owed, so an
-// absent field reads apart from false. Stands reads them.
+// absent field reads apart from false. Stands, OwesDigest and DigestFound read them.
 //
 // Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
 // finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
@@ -425,6 +426,30 @@ func (a Approval) Stands() bool {
 		return a.State == "approved" && !*a.DigestOwed
 	}
 	return a.ApprovedLatest() != 0
+}
+
+// OwesDigest says whether Dispatch sends digest_owed and still owes the digest of the latest
+// version, so its verdict on that version is still to come (R1 of dispatch://INFRA-6065). It is
+// false from a Dispatch that sends no digest_owed.
+func (a Approval) OwesDigest() bool {
+	return a.DigestOwed != nil && *a.DigestOwed
+}
+
+// DigestFound is what a read of the approval found of Dispatch's hash gate, as the id of the fact
+// that carries the read names it (api's gateRegister, the outbox's gate seed and pending-basis
+// seed): whether Dispatch owes the latest version's digest and, where it gave one, that digest
+// (current_sha256), each as Dispatch sent it (R3 of dispatch://INFRA-6065), so a later read whose
+// only change is the digest Dispatch filled since is a fact of its own. A read of a Dispatch that
+// sends no digest_owed finds "", and its fact keeps the id it always had.
+func (a Approval) DigestFound() string {
+	if a.DigestOwed == nil {
+		return ""
+	}
+	found := ":digest-owed:" + strconv.FormatBool(*a.DigestOwed)
+	if a.CurrentSHA256 != nil {
+		found += ":current:" + *a.CurrentSHA256
+	}
+	return found
 }
 
 // ChangesRequestedLatest is the version of the changes request Dispatch shows on its latest version

@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // hashGateVersion is the version of the migration this file tests, so the test can migrate
@@ -434,11 +433,7 @@ func TestHashGateMigrationAndWayBack(t *testing.T) {
 	})
 
 	t.Run("the way back", func(t *testing.T) {
-		block, err := migrations.WayBack(hashGateVersion)
-		if err != nil {
-			t.Fatalf("read the way back of the hash gate: %v", err)
-		}
-		must(t, block)
+		must(t, wayBackOf(t, hashGateVersion, "the hash gate"))
 		var left []string
 		if err := st.Pool().QueryRow(ctx, `select coalesce(array_agg(column_name::text order by column_name), '{}') from information_schema.columns
 			where table_schema = 'public' and table_name = 'design_gates' and column_name = any($1)`,

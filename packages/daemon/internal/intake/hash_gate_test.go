@@ -45,26 +45,6 @@ func hashGateEvent(t *testing.T, name string, seq int64, at string, actor dispat
 	return event
 }
 
-// withPayload is event with its payload changed by change: an event the fixtures hold but for the
-// fields change writes.
-func withPayload(t *testing.T, event []byte, change func(payload map[string]any)) []byte {
-	t.Helper()
-	var read map[string]any
-	if err := json.Unmarshal(event, &read); err != nil {
-		t.Fatalf("decode the event: %v", err)
-	}
-	payload, ok := read["payload"].(map[string]any)
-	if !ok {
-		t.Fatalf("the event %s has no payload object", event)
-	}
-	change(payload)
-	changed, err := json.Marshal(read)
-	if err != nil {
-		t.Fatalf("encode the event: %v", err)
-	}
-	return changed
-}
-
 // Intake decodes the hash-gate event fixtures, each in the envelope of its event (hashGateEvent):
 // an artifact.version reads digest_owed, true (artifact-version.json) or false
 // (artifact-version-filled.json), and its content_sha256, the digest of the version's text; an
@@ -72,10 +52,10 @@ func withPayload(t *testing.T, event []byte, change func(payload map[string]any)
 // (approval_current), the event's mark and actor and its digests, with approved_sha256
 // (artifact-digest.json) and without it (that digest with approval_current false and no
 // approved-version field, which the fixtures do not hold). Each decodes alike from the event log
-// (DecodeDispatchEvent) and from the Envoy envelope on its subject in the form the fixtures'
-// README names. The captured events of a Dispatch that sends no digest field decode with none
-// set, and a digest that names no artifact, no positive version or no verdict is refused, as the
-// other artifact events are.
+// (DecodeDispatchEvent) and from the Envoy envelope on its subject
+// (notifications.dispatch.issue.<PROJECT>.<KEY>.<type>). The captured events of a Dispatch that
+// sends no digest field decode with none set, and a digest that names no artifact, no positive
+// version or no verdict is refused, as the other artifact events are.
 func TestHashGateDecodesDigestEvents(t *testing.T) {
 	t.Parallel()
 	const (
@@ -97,10 +77,8 @@ func TestHashGateDecodesDigestEvents(t *testing.T) {
 	architect := dispatch.Actor{Kind: "session", ID: "session-architect"}
 	fill := dispatch.Actor{Kind: "system", ID: "digest-fill"}
 	digest := hashGateEvent(t, "artifact-digest.json", 41, "2026-11-27T18:00:01.5Z", fill)
-	notCurrent := withPayload(t, hashGateEvent(t, "artifact-digest.json", 44, "2026-11-27T18:20:01.5Z", fill), func(payload map[string]any) {
-		payload["approval_current"] = false
-		delete(payload, "approved_version")
-		delete(payload, "approved_sha256")
+	notCurrent := withPayloadFields(t, hashGateEvent(t, "artifact-digest.json", 44, "2026-11-27T18:20:01.5Z", fill), map[string]json.RawMessage{
+		"approval_current": json.RawMessage("false"), "approved_version": nil, "approved_sha256": nil,
 	})
 	for _, tc := range []struct {
 		name, eventType string
@@ -166,15 +144,16 @@ func TestHashGateDecodesDigestEvents(t *testing.T) {
 	t.Run("a digest Dispatch could not have sent is refused", func(t *testing.T) {
 		for _, refused := range []struct {
 			name, want string
-			change     func(payload map[string]any)
+			// set is written on the digest's payload, a nil value leaving the key out (withPayloadFields).
+			set map[string]json.RawMessage
 		}{
-			{"no artifact_id", "artifact_id", func(payload map[string]any) { delete(payload, "artifact_id") }},
-			{"version 0", "version", func(payload map[string]any) { payload["version"] = 0 }},
-			{"no version", "version", func(payload map[string]any) { delete(payload, "version") }},
-			{"no approval_current", "approval_current", func(payload map[string]any) { delete(payload, "approval_current") }},
-			{"a null approval_current", "approval_current", func(payload map[string]any) { payload["approval_current"] = nil }},
+			{"no artifact_id", "artifact_id", map[string]json.RawMessage{"artifact_id": nil}},
+			{"version 0", "version", map[string]json.RawMessage{"version": json.RawMessage("0")}},
+			{"no version", "version", map[string]json.RawMessage{"version": nil}},
+			{"no approval_current", "approval_current", map[string]json.RawMessage{"approval_current": nil}},
+			{"a null approval_current", "approval_current", map[string]json.RawMessage{"approval_current": json.RawMessage("null")}},
 		} {
-			fact, _, err := DecodeDispatchEvent("ACME", "ACME-7", withPayload(t, digest, refused.change))
+			fact, _, err := DecodeDispatchEvent("ACME", "ACME-7", withPayloadFields(t, digest, refused.set))
 			if err == nil || fact != nil || !strings.Contains(err.Error(), refused.want) {
 				t.Errorf("a digest with %s decoded to %#v, %v; want it refused, naming %s", refused.name, fact, err, refused.want)
 			}

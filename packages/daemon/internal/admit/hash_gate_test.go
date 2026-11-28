@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The re-admission reads the gate by Dispatch's verdict (dispatch://INFRA-6065, R5).
@@ -80,10 +79,7 @@ func TestHashGateReadmissionKeepsTheVerdict(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				ctx := context.Background()
 				pool := migratedPool(t)
-				engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-					Clock: func() time.Time { return fixedNow }, Steps: config.DesignGateRootIssues.Steps()}, nil)
-				admission := New(record.NewStore(), engine, 1, testProject, nil)
-				admission.now = func() time.Time { return fixedNow }
+				admission := newAdmissionWithGate(t, 1, config.DesignGateRootIssues, nil)
 				parkedRoot(t, pool)
 				seedGate(t, pool, tc.gate)
 				if got := storedGate(t, pool, "LEGION-ROOT"); !reflect.DeepEqual(got.Verdict, tc.gate.Verdict) {
@@ -108,9 +104,6 @@ func TestHashGateReadmissionKeepsTheVerdict(t *testing.T) {
 					approved, latest, err := record.NewStore().ReadmittedApproval(ctx, tx, "LEGION-ROOT")
 					if err != nil || approved != tc.approved || latest != tc.latest {
 						t.Fatalf("kept approval after the re-admission = %d, %d, %v; want %d, %d", approved, latest, err, tc.approved, tc.latest)
-					}
-					if approved != 0 && latest <= approved {
-						t.Fatalf("kept approval %d of %d names a latest version at or below the approved one", approved, latest)
 					}
 				})
 			})

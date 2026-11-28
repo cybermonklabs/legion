@@ -114,7 +114,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 // done and its seven records reach it, each ended. The control holds the outage real: while
 // Dispatch is stopped, the outbox holds the issue's step records unfinished and the read finds no
 // server.
-func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
+func TestNoPhaseButTheMergeWaitsForDispatch(t *testing.T) {
 	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()

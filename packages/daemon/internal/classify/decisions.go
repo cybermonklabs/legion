@@ -1946,11 +1946,28 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 // are counted on (workflow's gateRequestArtifact), the wait it records (waitSubject) and the step
 // its resume speaks of (stepInQuestion).
 func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignGate, bool) {
+	return standingGateBy(configured, gates, DesignGateOpen)
+}
+
+// StandingGateTold is StandingGate over the standing each row last told (record.ToldStanding)
+// rather than over DesignGateOpen: the two differ only while a row owes Dispatch's digest
+// (dispatch://INFRA-6065 R3), when the row reads closed to every reader that holds work on it, the
+// merger's start hold among them (the outbox's readGateSnapshot), and its told standing stays as
+// it was. Every reader that tells the tree's standing reads it (workflow's putGateTold), so a fill
+// window tells nobody, and a member is never told the gate opened while the hold still holds its
+// merger past that window, nor left untold when the hold lets it go.
+func StandingGateTold(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignGate, bool) {
+	return standingGateBy(configured, gates, record.ToldStanding)
+}
+
+// standingGateBy is the rule of StandingGate and StandingGateTold, with open the reader of each
+// row's standing.
+func standingGateBy(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate, open func(record.DesignGate) bool) (record.DesignGate, bool) {
 	if len(configured) == 0 {
 		return record.DesignGate{}, false
 	}
 	for _, step := range (record.TreeGate{Steps: configured, Rows: gates}).Required() {
-		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
+		if gate, ok := gates[step]; ok && !open(gate) {
 			return gate, true
 		}
 	}

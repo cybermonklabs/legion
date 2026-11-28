@@ -24,7 +24,7 @@ const (
 	// is not open.
 	ArchitectGateRowsLabel = "its design gate already stands part way"
 	// ArchitectGateOpenLabel is in the task of a root at admitted whose design gate is open, as
-	// the tree was last told it (treeToldOpen).
+	// the tree was last told it (record.TreeGate.ToldOpen).
 	ArchitectGateOpenLabel = "its design gate is open"
 	// ArchitectReadmittedLabel is in the task of a tree that ran at an earlier generation.
 	ArchitectReadmittedLabel = "ran at an earlier generation"
@@ -296,7 +296,7 @@ func ArchitectStartTask(start ArchitectStart) string {
 	switch {
 	case start.Root.Phase != phase.Admitted:
 		writeCarriedPhase(&task, start)
-	case treeToldOpen(start.Gate):
+	case start.Gate.ToldOpen():
 		writeGateOpen(&task, start)
 	case len(start.Gate.Rows) > 0:
 		writeGateStanding(&task, start)

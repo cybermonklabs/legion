@@ -580,7 +580,7 @@ func (m *newsModel) handover() {
 // clears what every issue of it took and its gate, and raises the root's generation alone. The
 // child keeps its generation and its phase, and its claims whatever they hold. The tree's
 // architect then registers the spec again at the version a person approved. A tree whose gate rows
-// went with the clear stands released until a row closes it (workflow's standingGateOpen), so that
+// went with the clear stands released until a row closes it (workflow's standingGateTold), so that
 // registration opens nothing and owes the run no opening. The registration writes the architect's
 // row at the version it registers, which the architect took at that opening (workflow's
 // putGateTold). Nothing says yet what the child's holder stood on: its row knows no version until

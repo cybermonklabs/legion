@@ -37,7 +37,7 @@ const (
 // Dispatch that sends the hash gate's fields: the approval of version 3, current for version 4.
 func startsStanding() dispatch.Approval {
 	return dispatch.Approval{IssueKey: startsRoot, State: "approved", Version: new(3), LatestVersion: 4, DigestOwed: new(false),
-		CurrentSHA256: new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")}
+		CurrentSHA256: new(fixtureDigest)}
 }
 
 // startsNotStanding is that approval once a version 5 is written whose digest Dispatch still owes:
@@ -158,9 +158,6 @@ func (r *startsRig) moves(key string, at phase.Phase, role claim.Role, from phas
 	r.t.Helper()
 	issue := *readIssue(r.t, r.pool, key)
 	issue.Phase = at
-	if at == phase.Merging {
-		issue.Status = "retro"
-	}
 	putOutboxIssue(r.t, r.pool, r.records, issue)
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: key, Role: role, Entry: 1, EntryFrom: from, EntryTask: "Work it.",
@@ -203,23 +200,7 @@ func (r *startsRig) spawns() int { return len(r.rt.CallsOf("Spawn")) }
 // seeds is every gate_seed row the root holds.
 func (r *startsRig) seeds() []record.GateSeed {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select payload from outbox where kind = $1 and issue = $2 order by id`, string(record.OutboxKindGateSeed), startsRoot)
-	if err != nil {
-		r.t.Fatalf("read the gate seeds of %s: %v", startsRoot, err)
-	}
-	payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
-	if err != nil {
-		r.t.Fatalf("read the gate seeds of %s: %v", startsRoot, err)
-	}
-	seeds := make([]record.GateSeed, 0, len(payloads))
-	for _, payload := range payloads {
-		decoded, err := record.DecodeOutboxPayload(record.OutboxRow{Kind: record.OutboxKindGateSeed, Payload: payload})
-		if err != nil {
-			r.t.Fatalf("decode a gate seed of %s: %v", startsRoot, err)
-		}
-		seeds = append(seeds, decoded.(record.GateSeed))
-	}
-	return seeds
+	return gateSeedsOf(r.t, r.pool, startsRoot)
 }
 
 // released creates role's claim on the root as an idle release left it, and records it where the
@@ -297,6 +278,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 	// kind was held or let through is told by acted.
 	for _, k := range kinds {
 		t.Run(k.name+" acts once Dispatch shows the approval standing", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, steps, startsGate())
 			err := k.run(r)
 			if err != nil && !errors.Is(err, wait.ErrWaiting) {
@@ -307,6 +289,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 			}
 		})
 		t.Run(k.name+" waits while the approval does not stand, and seeds the step once", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, steps, startsGate())
 			r.client.answers(startsNotStanding())
 			want := []record.GateSeed{{ArtifactID: startsDoc, Step: record.DesignStepSpec, Version: 4, Generation: 1}}
@@ -327,6 +310,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 			}
 		})
 		t.Run(k.name+" waits on a closed record with no read", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, steps, closedGate())
 			if err := k.run(r); !errors.Is(err, wait.ErrWaiting) {
 				t.Fatalf("the start = %v, want it held (wait.ErrWaiting)", err)
@@ -364,6 +348,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 		}, reason: "decode"},
 	} {
 		t.Run(tc.name+" holds a merger's start on its backoff", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, steps, startsGate())
 			handler := tc.handler
 			if handler == nil {
@@ -433,6 +418,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name+" is not read", func(t *testing.T) {
+			t.Parallel()
 			gate := tc.gate()
 			if !record.GateOpen(*gate) {
 				t.Fatalf("the case's gate %+v reads closed, want it open on the record", gate)
@@ -451,6 +437,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 	// A copy a daemon from before the carried column carried (Departure D3): Dispatch names its
 	// document on the old root, so the step is logged and passed over, neither held nor seeded.
 	t.Run("an unflagged carried copy is passed over", func(t *testing.T) {
+		t.Parallel()
 		r := newStartsRig(t, steps, startsGate())
 		old := startsNotStanding()
 		old.IssueKey = "LEGION-100"
@@ -477,6 +464,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 		{name: "closed", gate: closedGate(), held: true},
 	} {
 		t.Run("a merger's news-only start on a record "+tc.name+" reads the record alone", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, steps, tc.gate)
 			r.client.answers(startsNotStanding())
 			start := r.merger()
@@ -517,6 +505,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name+" reads nothing", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, steps, startsGate())
 			r.client.answers(startsNotStanding())
 			if err := r.execute(tc.key, tc.start(r)); err != nil {
@@ -528,6 +517,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 		})
 	}
 	t.Run("a held wake of another role reads nothing", func(t *testing.T) {
+		t.Parallel()
 		r := newStartsRig(t, steps, startsGate())
 		r.client.answers(startsNotStanding())
 		machine := r.released(claim.RoleImplementer)
@@ -550,6 +540,7 @@ func TestHashGateStartsConfirmWithDispatch(t *testing.T) {
 		{name: "a deployment that gates no step", steps: config.DesignGateOff.Steps(), gate: startsGate()},
 	} {
 		t.Run(tc.name+" reads nothing", func(t *testing.T) {
+			t.Parallel()
 			r := newStartsRig(t, tc.steps, tc.gate)
 			r.client.answers(startsNotStanding())
 			if err := r.execute(startsRoot, r.firstPhase(startsRoot)); err != nil {
