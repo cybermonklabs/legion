@@ -24,7 +24,7 @@ test("a reader takes the entries of its own kind and drops the rest", async () =
   const dir = await sessions(`${entry(KIND, 1)}\n${entry("other", 2)}\n${entry(KIND, 3)}\n`);
   expect(await transcriptEntries(dir, KIND, "alive")).toEqual([
     { customType: KIND, data: { n: 1, openMs: 7_004 } },
-    { customType: KIND, data: { n: 4, openMs: 7_004 } },
+    { customType: KIND, data: { n: 3, openMs: 7_004 } },
   ]);
 });
 
