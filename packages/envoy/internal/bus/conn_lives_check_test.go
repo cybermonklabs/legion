@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -43,7 +44,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
 
 	t.Run("one missed report", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
+		client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 		conn := client.Connection()
 		old := client.WindowUntil(nil).(*window)
 		if err := firstSend(t, old, "control: the old window's first send to pin the connection before the missed report"); err != nil {
@@ -59,22 +60,22 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	})
 
 	t.Run("a drop between life and connected reads", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
+		client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 		conn := client.Connection()
 		// The hook below holds a reconnect's handshake (Hold) until the pin has read its count; the
 		// attempt ends only when the row releases it, with a connect timeout of the test's own. The
 		// pin's own wait for a connection is on the client's window clock, a fake the row never moves
-		// (heldHandshakeClient), so it does not end inside the staged drop and reconnect, however long
-		// they take: only a pin ends it. The row's give-ups are the shared wait's: the first send runs
-		// inside it (firstSend), which names the pin should the loop never take a life it can pin, and
-		// each hook's wait (waitInHook) writes its give-up at once and hands it to hookFailed.
+		// (clocktest.Held), so it does not end inside the staged drop and reconnect, however long
+		// they take: only a pin ends it. The first send runs inside the shared wait (firstSend), which
+		// names the pin should the loop never take a life it can pin.
 		testnats.OwnConnectTimeout(t, conn)
 		w := client.WindowUntil(nil).(*window)
 		original := lifeOf(conn).current()
 		// The hooks run on the goroutine pinFirst's Bounded call starts, where no method of t may
-		// run: each waits through waitInHook and hands its first error to hookFailed, which the
-		// subtest reads once pinToSend has returned. The cleanup closes ended, so a hook still
-		// waiting when the subtest ends returns then rather than at the shared wait's end.
+		// run: each waits through waitInHook, which writes its give-up at once, and hands its first
+		// error to hookFailed, which the subtest reads once pinToSend has returned. The cleanup closes
+		// ended, so a hook still waiting when the subtest ends returns then rather than at the shared
+		// wait's end.
 		hookFailed := make(chan error, 1)
 		ended := make(chan struct{})
 		failed := func(err error) {
@@ -126,7 +127,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	})
 
 	t.Run("a clean reconnect", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
+		client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 		conn := client.Connection()
 		old := client.WindowUntil(nil).(*window)
 		if err := firstSend(t, old, "control: the old window's first send to pin the connection before the clean reconnect"); err != nil {
@@ -168,7 +169,7 @@ func TestAConnectionsCheckKeepsALifePinnedAfterItsRead(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
 
-	client, hold := heldHandshakeClient(t)
+	client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 	conn := client.Connection()
 	old := client.WindowUntil(nil).(*window)
 	if err := firstSend(t, old, "control: the old window's first send to pin the connection before the drop"); err != nil {

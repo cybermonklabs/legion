@@ -71,10 +71,8 @@ func (js *heldBucketReads) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.
 // before the test's read of it came back. The row starts holding the keeper's reads of a bucket at
 // the swap (keeperSwapping), waits there until a keeper pass is held in one, and releases that pass
 // only from inside a wait for passes that comes after the swap (keeperPassesWaiting). So a
-// holdKeeperUpdates with no wait (the independent tester's plant PL7), or with its wait before the
-// swap (PL15), returns while that pass is still held, and the row fails by name; no span decides
-// it. (The tester's forcing FP7 found the gap: each keeper read held 5 s, and the lowering's
-// replies frozen 40 s.)
+// holdKeeperUpdates with no wait, or with its wait before the swap, returns while that pass is
+// still held, and the row fails by name; no span decides it.
 func TestHoldKeeperUpdatesWaitsOutAKeeperPassBegunBeforeItsSwap(t *testing.T) {
 	const bucket = "envoy_keeper_held_pass"
 	cluster, _ := startClusterJetStream(t)

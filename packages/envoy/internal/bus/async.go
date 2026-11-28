@@ -17,7 +17,7 @@ import (
 )
 
 // publishAcknowledgementTimeout bounds each send of a publish window (Client.WindowUntil): its wait
-// for a connection, on the client's window clock (WithWindowClock), a JetStream send's
+// for a connection on the client's window clock (WithWindowClock), a JetStream send's
 // acknowledgement (the stream context's PublishAsyncTimeout), and a Request's answer when its
 // options set no timeout of their own. Publish takes publishBound instead.
 const publishAcknowledgementTimeout = 5 * time.Second
@@ -340,10 +340,7 @@ func (w *window) pinToSend() error {
 // first send's wait for a connection on (pinFirst): WithWindowClock's, and the real clock when that
 // set none. A probe's flush reads WithWindowClock's clock itself (window.probeFlush).
 func (c *Client) windowTime() clock.Clock {
-	if c.windowClock == nil {
-		return clock.Real()
-	}
-	return c.windowClock
+	return cmp.Or(c.windowClock, clock.Real())
 }
 
 // ConnLockWait is how long a caller that holds a lock of its own, or that something holding one
@@ -741,12 +738,12 @@ func (w *window) Probe(timeout time.Duration) error {
 }
 
 // probeFlush flushes the window's pinned connection within timeout, for Probe. With no window
-// clock, as in every deployment, it is nats.go's FlushTimeout, as at main: its timeout starts once
-// the flush holds nats.go's connection lock (v1.55.0 nats.go:6113-6118), so a reconnect's
-// handshake or a slow write that holds that lock for the whole timeout delays the probe rather
-// than failing it. On a window clock (WithWindowClock) the timeout is that clock's, shown to
-// nats.go (clock.WithShownTimeout), so a fake's ends only where the test moves the fake; it starts
-// before the flush waits for nats.go's lock.
+// clock, as in every deployment, it is nats.go's FlushTimeout: its timeout starts once the flush
+// holds nats.go's connection lock (v1.55.0 nats.go:6113-6118), so a reconnect's handshake or a slow
+// write that holds that lock for the whole timeout delays the probe rather than failing it. On a
+// window clock (WithWindowClock) the timeout is that clock's, shown to nats.go
+// (clock.WithShownTimeout), so a fake's ends only where the test moves the fake; it starts before
+// the flush waits for nats.go's lock.
 func (w *window) probeFlush(timeout time.Duration) error {
 	if w.client.windowClock == nil {
 		return w.conn.FlushTimeout(timeout)

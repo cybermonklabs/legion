@@ -78,9 +78,7 @@ func readStream(t *testing.T, js nats.JetStreamContext, stream string) *nats.Str
 }
 
 // closeClient is bustest.Close, which this package's tests cannot import (bustest imports the
-// bus): it closes client, as a test's cleanup does once the test is over. Close stops the client,
-// closes its connection and returns once its stream keeper has ended (awaitKeeper), which it waits
-// for on no context, so the call runs through the shared wait: a keeper that never ends fails the
+// bus): it closes client through the shared wait, so a stream keeper that never ends fails the
 // test naming the close rather than hanging the binary to its timeout.
 func closeClient(t testing.TB, client *Client) {
 	t.Helper()
@@ -142,33 +140,42 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	// The hook runs on the goroutine the default program's update is bounded on (Bounded), not on
-	// the test's, so it ends no test there: it keeps what the setting program's start answered and
-	// the stream that start left, and the row fails on them once the default program's start has
-	// returned.
-	var (
-		hooked     bool
-		setting    *Client
-		settingErr error
-		left       infoRead
-	)
+	// the test's, so it ends no test there: it closes hookBegan as it begins and hands what the
+	// setting program's start answered, and the stream that start left, over setting. A start
+	// whose step's guard passed returns with the hook still running, so once the default program's
+	// start has returned the row, if the hook began, waits for its answer, closes the client it
+	// made, and fails on it.
+	type settingStart struct {
+		client *Client
+		err    error
+		left   infoRead
+	}
+	hookBegan := make(chan struct{})
+	setting := make(chan settingStart, 1)
 	defaultStart := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		hooked = true
-		setting, settingErr = ConnectOwningStream(cluster.URLs(), WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
-		if settingErr == nil {
-			left = readOf(js, Stream)
+		close(hookBegan)
+		var started settingStart
+		started.client, started.err = ConnectOwningStream(cluster.URLs(), WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
+		if started.err == nil {
+			started.left = readOf(js, Stream)
 		}
+		setting <- started
 	}}
 	_, err := ensureStreamWithConfig(t.Context(), logs.logger, defaultStart, &defaults, capsAnUnsetStream, atStart)
-	if setting != nil {
-		t.Cleanup(func() { closeClient(t, setting) })
-	}
-	if hooked {
-		if settingErr != nil {
-			t.Fatalf("the setting program's start: %v", settingErr)
+	var settingClient *Client
+	select {
+	case <-hookBegan:
+		started := testwait.Receive(t, "the setting program's start, made inside the default program's update, to return", setting)
+		if settingClient = started.client; settingClient != nil {
+			t.Cleanup(func() { closeClient(t, settingClient) })
 		}
-		if left.err != nil || !keptAtSettings(id)(left.info) {
-			t.Fatalf("the setting program's start left the stream at %v, want three copies, the byte limit and the id", left)
+		if started.err != nil {
+			t.Fatalf("the setting program's start: %v", started.err)
 		}
+		if started.left.err != nil || !keptAtSettings(id)(started.left.info) {
+			t.Fatalf("the setting program's start left the stream at %v, want three copies, the byte limit and the id", started.left)
+		}
+	default:
 	}
 	if err != nil {
 		t.Fatalf("the default program's start: %v", err)
@@ -188,7 +195,7 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 			t.Fatalf("the default program's stale write: %v", stale)
 		}
 		t.Logf("the server left the stale write unanswered (%v): checking the end state only", stale)
-		keeperPasses(t, []*Client{setting}, 4)
+		keeperPasses(t, []*Client{settingClient}, 4)
 		awaitKept(t, js, Stream, "three copies, the byte limit and the id", keptAtSettings(id))
 		return
 	}
@@ -217,31 +224,38 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 	testnats.UpdateStream(t, js, lowered)
 
 	// The hook runs on the goroutine the keeper's update is bounded on (Bounded), not on the
-	// test's, so it ends no test there: it keeps what the newer release's start answered and the
-	// subjects it left, and the row fails on them once the keeper's pass has returned.
-	var (
-		hooked   bool
-		newerErr error
-		left     []string
-	)
+	// test's, so it ends no test there: it closes hookBegan as it begins and hands what the newer
+	// release's start answered, and the subjects it left, over newerStart. A pass whose step's
+	// guard passed returns with the hook still running, so once the keeper's pass has returned the
+	// row, if the hook began, waits for its answer and fails on it.
+	type newerStarted struct {
+		err  error
+		left []string
+	}
+	hookBegan := make(chan struct{})
+	newerStart := make(chan newerStarted, 1)
 	keeper := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		hooked = true
-		if _, newerErr = ensureStreamWithConfig(t.Context(), slog.Default(), js, &newer, capsAnUnsetStream, atStart); newerErr != nil {
-			return
+		close(hookBegan)
+		var started newerStarted
+		if _, started.err = ensureStreamWithConfig(t.Context(), slog.Default(), js, &newer, capsAnUnsetStream, atStart); started.err == nil {
+			var info *nats.StreamInfo
+			if info, started.err = js.StreamInfo(Stream); started.err == nil {
+				started.left = info.Config.Subjects
+			}
 		}
-		var info *nats.StreamInfo
-		if info, newerErr = js.StreamInfo(Stream); newerErr == nil {
-			left = info.Config.Subjects
-		}
+		newerStart <- started
 	}}
 	restored, err := keepStream(t.Context(), slog.Default(), keeper, &limited, capsAnUnsetStream)
-	if hooked {
-		if newerErr != nil {
-			t.Fatalf("the newer release's start: %v", newerErr)
+	select {
+	case <-hookBegan:
+		got := testwait.Receive(t, "the newer release's start, made inside the keeper's update, to return", newerStart)
+		if got.err != nil {
+			t.Fatalf("the newer release's start: %v", got.err)
 		}
-		if !slices.Contains(left, added) {
-			t.Fatalf("the newer release's start left the subjects %v, want %s among them", left, added)
+		if !slices.Contains(got.left, added) {
+			t.Fatalf("the newer release's start left the subjects %v, want %s among them", got.left, added)
 		}
+	default:
 	}
 	if want := []string{fmt.Sprintf("max_bytes -1 -> %d", keeperByteLimit)}; err != nil || !slices.Equal(restored, want) {
 		t.Fatalf("the limited program's keeper restored %v (%v), want %v", restored, err, want)

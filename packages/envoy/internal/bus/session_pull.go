@@ -4,6 +4,7 @@
 package bus
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -145,14 +146,10 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	conn := s.client.Connection()
-	pullClock := s.pullClock
-	if pullClock == nil {
-		pullClock = clock.Real()
-	}
 	p := &SessionPull{
 		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
 		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
-		clock: pullClock, wake: make(chan struct{}, 1),
+		clock: cmp.Or(s.pullClock, clock.Real()), wake: make(chan struct{}, 1),
 	}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err

@@ -372,12 +372,13 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 // A window with a deadline (WindowUntil) writes nothing at or past it. Its first send, made while
 // the client has no connection, waits for one only until the deadline, 200 ms on, and answers
 // ErrWindowDeadline then, though the window's wait for a connection is otherwise 5 s. The client's
-// windows run on a fake clock the row moves (WithWindowClock): the send's wait for a connection is
-// armed for the deadline, and moving the fake there ends it, where a wait armed for its 5 s would
-// not end and the row would fail at the shared wait's give-up naming the answer. The server starts
-// again only once that send has answered, so the connection cannot come back before the deadline.
-// The stream holds nothing it sent once the client is connected again. A window pinned to a live
-// connection answers a send past its deadline the same way, at once.
+// windows run on a fake clock the row moves (WithWindowClock). The row reads the send's wait for a
+// connection armed on it (AwaitArmed) and requires it armed for the deadline: a wait armed for its
+// 5 s is armed all the same, so AwaitArmed returns it at once and that check fails the row then.
+// The row then moves the fake to the deadline, which ends the wait. The server starts again only
+// once that send has answered, so the connection cannot come back before the deadline. The stream
+// holds nothing it sent once the client is connected again. A window pinned to a live connection
+// answers a send past its deadline the same way, at once.
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	windows := clocktest.New(time.Now())
 	server, _, client := requestClient(t, bus.WithWindowClock(windows))
@@ -414,13 +415,10 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 		connected := client.Connected()
 		return connected, connected
 	})
-	// A send the window had held until the connection came back would be written now, by the
-	// window's own goroutine: the client keeps no reconnect buffer (ReconnectBufSize -1), so no
-	// state the client or the server reports shows such a send, and a message sent after the
-	// reconnect is not ordered after it. Such a send waits for the connection in the client's wait
-	// for a reconnect, which the reconnect's event wakes, or, with that event queued behind a
-	// slower callback, its re-read of the connection's status every bus.ReconnectRecheck; the span
-	// runs past the latest such re-read, with half a second beyond it for the woken send's write.
+	// The span runs past the latest moment a send held until the reconnect is woken: the client's
+	// wait for a reconnect re-reads the connection's status every bus.ReconnectRecheck when the
+	// reconnect's event is queued behind a slower callback. Half a second beyond it is for the
+	// woken send's write.
 	testwait.Span(t, bus.ReconnectRecheck+500*time.Millisecond, "a send the window held until the reconnect would be written by the window's own goroutine once the connection is back, woken by the reconnect's event or, at the latest, by the wait's re-read of the connection every bus.ReconnectRecheck: the client keeps no reconnect buffer, so no state the client or the server reports shows it and a message sent after the reconnect is not ordered after it")
 	info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
 	if err != nil {
@@ -432,7 +430,12 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 
 	pinned := windows.Now().Add(time.Hour)
 	live := client.WindowUntil(func() time.Time { return pinned })
-	if err := answerOf(t, live.PublishAsync(item)); err != nil {
+	// This window's first send pins it, waiting for a connection on the window clock, which nothing
+	// moves now, so it too is made on a goroutine of its own and a pin that never comes fails the
+	// row naming it.
+	liveSent := make(chan (<-chan error), 1)
+	go func() { liveSent <- live.PublishAsync(item) }()
+	if err := answerOf(t, testwait.Receive(t, "the first send of a window with an hour to its deadline to pin the live connection", liveSent)); err != nil {
 		t.Fatalf("a send before the window's deadline answered %v, want nil", err)
 	}
 	pinned = windows.Now()

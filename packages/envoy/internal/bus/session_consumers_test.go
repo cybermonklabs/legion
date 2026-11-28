@@ -339,25 +339,17 @@ func requireAckWait(t *testing.T, consumers *SessionConsumers, sessionID string,
 	}
 }
 
-// requireNoMessage requires pull to hand over nothing for window (requireQuiet). A delivery still
-// to come there would be made on nats-server's own schedule, which no state the server reports
-// shows, and a message stored later is no marker for it: it orders only what the stream held
-// before it, not a redelivery or a second delivery of a message the pull already took.
-func requireNoMessage(t *testing.T, pull *SessionPull, window time.Duration) {
-	t.Helper()
-	requireQuiet(t, pull, window, "the consumer delivers on nats-server's own schedule, which no state the server reports shows, and a message stored later orders only what the stream held before it, not a redelivery or a second delivery of a message the pull already took")
-}
-
 // nextAnswer is what one Next of a pull answered.
 type nextAnswer struct {
 	msg SessionMessage
 	err error
 }
 
-// requireQuiet requires pull's Next to answer nothing for window, neither a message nor an error,
-// and to end once its context is cancelled after it: the span testwait.Quiet holds, for an absence
-// that why says no state the server reports and no later message reaches.
-func requireQuiet(t *testing.T, pull *SessionPull, window time.Duration, why string) {
+// nextUntilCancelled runs pull's Next on a goroutine of its own while during runs, handed the
+// channel the Next's answer comes in, then cancels the Next's context and waits for that answer. It
+// returns the message the Next was handed and true, or false when the Next answered the cancel; any
+// other answer fails the test.
+func nextUntilCancelled(t *testing.T, pull *SessionPull, during func(answered <-chan nextAnswer)) (SessionMessage, bool) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -366,10 +358,30 @@ func requireQuiet(t *testing.T, pull *SessionPull, window time.Duration, why str
 		msg, err := pull.Next(ctx)
 		answered <- nextAnswer{msg, err}
 	}()
-	testwait.Quiet(t, "the Next of consumer "+pull.name, answered, window, why)
+	during(answered)
 	cancel()
-	if got := testwait.Receive(t, "the quiet Next of consumer "+pull.name+" to end once its context was cancelled", answered); !errors.Is(got.err, context.Canceled) {
-		t.Fatalf("the Next of consumer %s answered %+v as its quiet span ended, want nothing until its context was cancelled", pull.name, got)
+	got := testwait.Receive(t, "the Next of consumer "+pull.name+" to end once its context was cancelled", answered)
+	switch {
+	case got.err == nil:
+		return got.msg, true
+	case !errors.Is(got.err, context.Canceled):
+		t.Fatalf("the Next of consumer %s answered %v, want nothing until its context was cancelled", pull.name, got.err)
+	}
+	return SessionMessage{}, false
+}
+
+// requireNoMessage requires pull's Next to answer nothing for window, neither a message nor an
+// error, and to end once its context is cancelled after it (nextUntilCancelled): the span
+// testwait.Quiet holds, whose why says why neither a state the server reports nor a later message
+// proves the absence.
+func requireNoMessage(t *testing.T, pull *SessionPull, window time.Duration) {
+	t.Helper()
+	msg, handed := nextUntilCancelled(t, pull, func(answered <-chan nextAnswer) {
+		t.Helper()
+		testwait.Quiet(t, "the Next of consumer "+pull.name, answered, window, "the consumer delivers on nats-server's own schedule, which no state the server reports shows, and a message stored later orders only what the stream held before it, not a redelivery or a second delivery of a message the pull already took")
+	})
+	if handed {
+		t.Fatalf("the Next of consumer %s was handed sequence %d (delivery %d) as its quiet span ended, want nothing until its context was cancelled", pull.name, msg.StreamSeq, msg.Delivered)
 	}
 }
 
@@ -940,10 +952,6 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 	}
 }
 
-// Serial: the server ends the pull's requests on its own wall clock (the pull's expiry, 1 s, and
-// its idle heartbeat, 400 ms), which parallel load pushed past what the row read (#5217). The
-// pull's stall now runs on the pull's clock, and the row has not been run in parallel since.
-//
 // A pull sends its next pull request once the server has delivered the last one's whole batch or
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
@@ -953,6 +961,7 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 // the second's is a fake the row moves one heartbeat at a time, each move only once the pull has
 // heard the server at that clock's present.
 func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
+	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_pull_requests"
@@ -1019,26 +1028,21 @@ func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
 				heard.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)), !heard.Before(now)
 		})
 	}
-	idle, stop := context.WithCancel(context.Background())
-	defer stop()
-	answered := make(chan nextAnswer, 1)
-	go func() {
-		msg, err := quiet.Next(idle)
-		answered <- nextAnswer{msg, err}
-	}()
-	for beat := range 4 {
-		heardAtPresent(fmt.Sprintf("the pull to hear the server at its clock's present before move %d", beat+1))
-		beats.Advance(consumers.pullHeartbeat)
-	}
-	heardAtPresent("the pull to hear the server at its clock's present after the last move")
-	select {
-	case got := <-answered:
-		t.Fatalf("the Next of consumer %s answered %+v across four heartbeats on its clock, want nothing", quiet.name, got)
-	default:
-	}
-	stop()
-	if got := testwait.Receive(t, "the idle Next of consumer "+quiet.name+" to end once its context was cancelled", answered); !errors.Is(got.err, context.Canceled) {
-		t.Fatalf("the Next of consumer %s answered %+v as it was cancelled, want nothing until then", quiet.name, got)
+	msg, handed := nextUntilCancelled(t, quiet, func(answered <-chan nextAnswer) {
+		t.Helper()
+		for beat := range 4 {
+			heardAtPresent(fmt.Sprintf("the pull to hear the server at its clock's present before move %d", beat+1))
+			beats.Advance(consumers.pullHeartbeat)
+		}
+		heardAtPresent("the pull to hear the server at its clock's present after the last move")
+		select {
+		case got := <-answered:
+			t.Fatalf("the Next of consumer %s answered %+v across four heartbeats on its clock, want nothing", quiet.name, got)
+		default:
+		}
+	})
+	if handed {
+		t.Fatalf("the Next of consumer %s was handed sequence %d as it was cancelled, want nothing until then", quiet.name, msg.StreamSeq)
 	}
 	last := publishStored(t, owner, agent, "after the heartbeats")
 	if msg := next(t, quiet); msg.StreamSeq != last {
@@ -1139,7 +1143,7 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 // fails the row. An attempt in which the machine held the test so long that a restart's latest
 // moment came an ack wait or more after the earliest moment of the one before, when the server
 // may lawfully have delivered the message again, decides nothing, and is made again on a session
-// of its own (keepInProgress).
+// of its own (keepInProgress), through the shared wait, whose give-up names the attempts.
 //
 // The consumer must carry the shortened ack wait the row sets (requireAckWait): on the default
 // SessionConsumerAckWait, the redelivery after InProgress stops would come a minute later, which
@@ -1147,13 +1151,16 @@ func TestEnsureAddsAFilterAtTheConsumersPosition(t *testing.T) {
 func TestInProgressExtendsTheAckWait(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	consumers.ackWait = 2 * time.Second
-	for attempt := 1; ; attempt++ {
-		undecided := keepInProgress(t, owner, consumers, fmt.Sprintf("ses_progress_%d", attempt))
+	attempts := 0
+	testwait.Until(t, "an attempt to keep a message in progress past its ack wait that decides", func() (string, bool) {
+		attempts++
+		undecided := keepInProgress(t, owner, consumers, fmt.Sprintf("ses_progress_%d", attempts))
 		if undecided == "" {
-			return
+			return fmt.Sprintf("attempt %d decided", attempts), true
 		}
-		t.Logf("attempt %d decided nothing: %s; trying again on a session of its own", attempt, undecided)
-	}
+		t.Logf("attempt %d decided nothing: %s; trying again on a session of its own", attempts, undecided)
+		return fmt.Sprintf("attempt %d decided nothing: %s", attempts, undecided), false
+	})
 }
 
 // keepInProgress is one attempt of TestInProgressExtendsTheAckWait on session's consumer: it takes
@@ -1207,20 +1214,11 @@ func keepInProgress(t *testing.T, owner *Client, consumers *SessionConsumers, se
 			return fmt.Sprintf("the server took an InProgress %s after its ack wait was last restarted at the earliest, the %s ack wait or more", took, consumers.ackWait)
 		}
 		restarted = sent
-		ctx, cancel := context.WithCancel(context.Background())
-		answered := make(chan nextAnswer, 1)
-		go func() {
-			got, err := pull.Next(ctx)
-			answered <- nextAnswer{got, err}
-		}()
-		testwait.Span(t, consumers.ackWait/4, "a delivery again comes once the message's ack wait passes on nats-server's own clock, which InProgress restarts; no state the server reports shows that wait, and a later message would be handed over ahead of a delivery again whatever InProgress did, so the row holds a span of a quarter of the ack wait after each InProgress")
-		cancel()
-		quiet := testwait.Receive(t, "the Next of consumer "+pull.name+" to end once its context was cancelled", answered)
-		switch {
-		case quiet.err == nil:
-			return judgeAgain(quiet.msg, time.Now())
-		case !errors.Is(quiet.err, context.Canceled):
-			t.Fatalf("the Next of consumer %s answered %v across a quarter of the ack wait, want nothing until its context was cancelled", pull.name, quiet.err)
+		if again, handed := nextUntilCancelled(t, pull, func(<-chan nextAnswer) {
+			t.Helper()
+			testwait.Span(t, consumers.ackWait/4, "a delivery again comes once the message's ack wait passes on nats-server's own clock, which InProgress restarts; no state the server reports shows that wait, and a later message would be handed over ahead of a delivery again whatever InProgress did, so the row holds a span of a quarter of the ack wait after each InProgress")
+		}); handed {
+			return judgeAgain(again, time.Now())
 		}
 	}
 	if last := next(t, pull); last.StreamSeq != seq || last.Delivered != 2 {

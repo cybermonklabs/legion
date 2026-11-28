@@ -274,7 +274,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
-		t.Cleanup(reconnecting.Close)
+		t.Cleanup(func() { bustest.Close(t, reconnecting) })
 		proxy.FreezeServerReplies()
 		answered := make(chan error, 1)
 		// No span of its own: an answer can come late on a loaded machine with nothing wrong.
@@ -319,7 +319,7 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		if err != nil {
 			t.Fatalf("connect through the reply gate: %v", err)
 		}
-		t.Cleanup(reconnecting.Close)
+		t.Cleanup(func() { bustest.Close(t, reconnecting) })
 		proxy.FreezeServerReplies()
 		answered := make(chan error, 1)
 		// No span of its own: an answer can come late on a loaded machine with nothing wrong.

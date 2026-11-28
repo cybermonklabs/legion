@@ -20,14 +20,17 @@ import (
 // heldHandshakeClient is a client of its own, owning the stream and connected with options, through
 // a handshake hold of its own (testnats.HandshakeHold) on the package's shared server. The hold is
 // released and the proxy restored before the client closes, since nats.go's Close waits for its
-// connection lock, which a held handshake or a held write holds. Its windows run on a fake the rows
-// never move (WithWindowClock, before options), so a first send's wait for a connection and a
-// Probe's flush are each ended by nothing but the answer the row waits for. A row makes the first
-// send of such a window through firstSend, so a pin that never comes fails the row naming it.
+// connection lock, which a held handshake or a held write holds. Its windows run on the real clock,
+// where a first send's wait for a connection ends at publishAcknowledgementTimeout, unless options
+// set a window clock. The rows of this file and of conn_lives_check_test.go pass
+// WithWindowClock(clocktest.Held()), a fake they never move, so a first send's wait for a connection
+// and a Probe's flush are each ended by nothing but the answer the row waits for; they make each
+// first send of such a window through firstSend, or on a goroutine of its own whose answer they
+// Receive, so a pin that never comes fails the row naming it.
 func heldHandshakeClient(t *testing.T, options ...ConnectOption) (*Client, *testnats.HandshakeHold) {
 	t.Helper()
 	hold := testnats.StartHandshakeHold(t, testnats.URL(t))
-	client, err := ConnectOwningStream([]string{hold.URL()}, append([]ConnectOption{WithWindowClock(clocktest.Held())}, options...)...)
+	client, err := ConnectOwningStream([]string{hold.URL()}, options...)
 	if err != nil {
 		t.Fatalf("connect through the handshake hold: %v", err)
 	}
@@ -37,11 +40,11 @@ func heldHandshakeClient(t *testing.T, options ...ConnectOption) (*Client, *test
 	return client, hold
 }
 
-// firstSend makes the first send (pinToSend) of w, a window of a heldHandshakeClient not yet
-// pinned, inside the shared wait, and returns what it answered. That send waits for a connection
-// on the held window clock, which nothing moves, so only a pin ends it: made on the test goroutine,
-// a pin loop that never pins would hang the test binary to Go's alarm, where here the wait gives up
-// naming what, the pin the row waits for.
+// firstSend makes the first send (pinToSend) of w, a window not yet pinned of a heldHandshakeClient
+// given WithWindowClock(clocktest.Held()), inside the shared wait, and returns what it answered.
+// That send waits for a connection on the held window clock, which nothing moves, so only a pin
+// ends it: made on the test goroutine, a pin loop that never pins would hang the test binary to
+// Go's alarm, where here the wait gives up naming what, the pin the row waits for.
 func firstSend(t *testing.T, w *window, what string) (err error) {
 	t.Helper()
 	testwait.Returns(t, what, func() { err = w.pinToSend() })
@@ -86,7 +89,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 	}
 
 	t.Run("pinned before the hold", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
+		client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 		w := client.WindowUntil(nil).(*window)
 		if err := firstSend(t, w, "control: the window's first send to pin the connection before the hold"); err != nil {
 			t.Fatalf("control: the window's first send could not pin the connection before the hold: %v", err)
@@ -103,7 +106,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 	})
 
 	t.Run("first send during the hold", func(t *testing.T) {
-		client, hold := heldHandshakeClient(t)
+		client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 		if err := firstSend(t, client.WindowUntil(nil).(*window), "control: a window's first send to pin the connection before the hold"); err != nil {
 			t.Fatalf("control: a window could not pin the connection before the hold: %v", err)
 		}
@@ -115,7 +118,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		w.connectionWaitEntered.Store(&count)
 		answers := make(chan error, 2)
 		// Each first send waits for a connection on the client's window clock, a fake nothing moves
-		// (heldHandshakeClient), so the minute never passes and only the hold's release ends the
+		// (clocktest.Held), so the minute never passes and only the hold's release ends the
 		// wait: a defect run fails on the row's own wait below, on the line that names the cause.
 		for range 2 {
 			go func() { answers <- w.pin(time.Minute) }()
@@ -182,7 +185,7 @@ func heardReconnects(client *Client) <-chan struct{} {
 // event since the pin for a loss refuses the new window once the client heard.
 func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	t.Parallel()
-	client, hold := heldHandshakeClient(t)
+	client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 	conn := client.Connection()
 	before := conn.Stats().Reconnects
 	old := client.WindowUntil(nil).(*window)
@@ -248,8 +251,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 }
 
 // Serial: its negative control reads nats.go's status within 100 ms of the wall clock on every
-// send, which parallel load pushed past (#5217). The Probe's 2 s budget runs on the window clock,
-// which the row never moves, so that budget is no wall-clock bound.
+// send, which parallel load pushed past (#5217).
 //
 // A window does not take a connection that stays connected for a lost one while a write holds
 // nats.go's connection lock: a slow socket holds it for as long as the write takes, and nothing
@@ -264,7 +266,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 // answer ErrUnavailable, which costs the outbox the publisher hold for a connection that never
 // dropped.
 func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
-	client, hold := heldHandshakeClient(t)
+	client, hold := heldHandshakeClient(t, WithWindowClock(clocktest.Held()))
 	w := client.WindowUntil(nil).(*window)
 	if err := firstSend(t, w, "control: the window's first send to pin the connection before the held write"); err != nil {
 		t.Fatalf("control: the window's first send could not pin the connection: %v", err)
@@ -280,7 +282,7 @@ func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
 	go func() { sent <- <-w.PublishAsync(item) }()
 	probed := make(chan error, 1)
 	go func() { probed <- w.Probe(2 * time.Second) }()
-	testwait.Span(t, 300*time.Millisecond, heldWriteWaitWhy)
+	testwait.Span(t, 300*time.Millisecond, "a send or a probe kept waiting for nats.go's connection lock leaves no state to read: neither the window nor nats.go counts the callers the lock holds back, the client does real NATS I/O, which synctest cannot hold, and no later action of the row is ordered behind a call the lock holds")
 	testnats.RequireLockHeld(t, conn)
 	select {
 	case err := <-sent:
@@ -296,9 +298,3 @@ func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
 		}
 	}
 }
-
-// heldWriteWaitWhy is why the held-write row holds a span before it reads that neither the send
-// nor the probe has answered.
-const heldWriteWaitWhy = "a send or a probe kept waiting for nats.go's connection lock leaves no state to read: " +
-	"neither the window nor nats.go counts the callers the lock holds back, the client does real NATS I/O, " +
-	"which synctest cannot hold, and no later action of the row is ordered behind a call the lock holds"
