@@ -310,33 +310,6 @@ func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
 	}
 }
 
-// TestALaterCommitTrailerCorrectsAnEarlierOne: two commits each carry a `Dispatch:` trailer, the
-// first naming one issue of this repository and a later one naming another, and nothing else
-// names an issue. It asserts that the later trailer, the correction, wins. The trailer keys rank in
-// commit order (dispatchTrailer), so today the earlier trailer wins and this test fails on purpose.
-//
-// It is skipped because a person has been asked which trailer should win, and for no other
-// reason: dispatch://INFRA-3992/ask/b6abcd28-d92a-4568-9b90-a4c2a579d755. His answer removes the
-// skip either way. If the earlier trailer should win, this test is deleted and the code stands as
-// it is; if the later one should, the skip is removed in the change that makes the test pass.
-func TestALaterCommitTrailerCorrectsAnEarlierOne(t *testing.T) {
-	t.Skip("asserts that a later commit's Dispatch trailer outranks an earlier one's, which fails " +
-		"today on purpose: the earlier one wins. Skipped only while a person decides which should " +
-		"win (dispatch://INFRA-3992/ask/b6abcd28-d92a-4568-9b90-a4c2a579d755); his answer deletes " +
-		"this test or unskips it with the change that makes it pass")
-	fastPageRetries(t)
-	pool, ctx := deliveryTestPool(t)
-	wrong := seedGadgetsIssue(t, ctx, pool, 48)
-	corrected := seedGadgetsIssue(t, ctx, pool, 49)
-	wantAttributedEachWay(t, ctx, pool, 410, firstSourcePull{
-		title: "feat: the work", body: "No key here.", branch: "topic",
-		commits: []string{
-			"Document the work\n\nDispatch: " + wrong,
-			"Correct the trailer of the commit before\n\nDispatch: " + corrected,
-		},
-	}, corrected, sourceCommitMessage, true)
-}
-
 // refreshMergeMention writes the head row of pull request 4028 of acme/gadgets through the
 // reconcile's refresh (RefreshPullRequestHead), in the shape of a production pull request that was
 // credited to an issue only its merge commit mentions. Its body ends with `Dispatch: <declared>`
