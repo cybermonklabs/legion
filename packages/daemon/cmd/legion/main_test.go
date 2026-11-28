@@ -78,11 +78,11 @@ const testJJWordBoundEnv = "LEGION_TEST_JJ_WORD_BOUND"
 const testJJArgMaxEnv = "LEGION_TEST_JJ_ARG_MAX"
 
 func TestMain(m *testing.M) {
-	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
-	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
-	// cleared before anything else, so the snapshot below records NATS_NKEY_SEED_FILE as absent
-	// (environment_test.go).
-	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE"} {
+	// An operator's NATS nkey seed, either seed's _FILE pointer, or the daemon's service token's
+	// file (NATS_DAEMON_SERVICE_TOKEN_FILE) reaches no test here and no run of this binary as
+	// `legion`: a test that means to hand one over sets it itself. They are cleared before anything
+	// else, so the snapshot below records NATS_NKEY_SEED_FILE as absent (environment_test.go).
+	for _, name := range []string{"NATS_NKEY_SEED", "NATS_NKEY_SEED_FILE", "NATS_DAEMON_NKEY_SEED", "NATS_DAEMON_NKEY_SEED_FILE", "NATS_DAEMON_SERVICE_TOKEN_FILE"} {
 		os.Unsetenv(name)
 	}
 	// No guard of this binary reads through the system's curl (leakguardtest.NoCurl); a run as

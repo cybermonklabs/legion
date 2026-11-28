@@ -44,7 +44,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
-	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -740,8 +739,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// listing misses (a move published while it is read) the consumer delivers. Both wait out
 		// an unreachable dependency on ctx, not the bounded boot budget just spent on everything
 		// before them, through the same bootprobe.Run mechanism the Apps' key proof uses, here
-		// with Attempts left at its unbounded zero. natsauth.Unreachable and dispatch.Unreachable each
-		// judge their own dependency; their own docs are the record of what each one waits on and
+		// with Attempts left at its unbounded zero. Each judges its own dependency, and package
+		// daemon derives neither decision itself: the NATS connect's is the resolved credential's
+		// own (plan.nats.credential, natsauth.Credential.WaitsOut), which waits out a NATS not
+		// reachable yet for every credential (natsauth.Unreachable) and, for the service token
+		// alone, a refusal of the NATS auth service too (natsauth.Refused), and the listing's is
+		// dispatch.Unreachable; their own docs are the record of what each one waits on and
 		// what it still refuses loud. reconcile's own Postgres transaction is judged by neither: a
 		// design choice, not an inability to tell its failures apart from NATS's or Dispatch's — the
 		// start judges a Postgres it cannot reach earlier, where it opens the store: it tries again
@@ -767,7 +770,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 				readinessAttempt(func(attempt context.Context) error {
 					return workflow.connect(attempt, cfg, plan.nats)
-				}, bootTimeout, natsauth.Unreachable))
+				}, bootTimeout, plan.nats.credential.WaitsOut))
 		}
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
