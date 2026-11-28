@@ -879,6 +879,27 @@ func TestAChangeWithNoPullRequestEndsWhenItsCheckPasses(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A check's reason of a next change resolves only when that check passes (D7), not when it merely
+// stops failing: a read of the change's generation that answers the check no result leaves the
+// change open. Resolved on any state but fail, the change ended with no pull request on a check
+// nobody had shown to pass, and if the same deciding result failed again later the result-id rule
+// recorded no new reason, so the issue waited with a failed check and no change.
+func TestAChangeDoesNotEndOnACheckWithNoResult(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+	firstStep(t, rig.pool, rig.engine, waitRoot)
+
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+
+	rig.stands(waitRoot, phase.Planning, "in_progress")
+	if got := rig.issue(waitRoot); got.NextChange != changeGeneration {
+		t.Fatalf("%s after a read with no result for its reason's check carries change %d, want change %d still open", waitRoot, got.NextChange, changeGeneration)
+	}
+}
+
 // A parent's next change held in awaiting_children (D10 holds it there while a child's change is
 // open) ends with no pull request when its check passes, as any change does, and the issue stands
 // in verifying with nothing of the hold left. endChange cleared the hold but left ChildrenWait set,
