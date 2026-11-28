@@ -1007,9 +1007,11 @@ type CatchUpGate struct {
 }
 
 // CatchUpBasis is the ancestor's approval a step stands open on, or the ancestor's open approval
-// request it waits on, as a catch-up names it (GateBasis): the ancestor, its document and
-// the version a person approved or is asked to approve; for an approval, who gave it and
-// Dispatch's time of it; for a request, its ask id.
+// request it waits on, as a catch-up names it (GateBasis): the ancestor, its document and a
+// version of it, which for an approval is the ancestor's latest version whose approval by a
+// person Dispatch reported standing when the root registered, and so names no version a person
+// approved (GateBasis.Version), and for a request the version it asks a person to approve; for an
+// approval, who gave it and Dispatch's time of it; for a request, its ask id.
 type CatchUpBasis struct {
 	Issue      string    `json:"issue"`
 	Artifact   string    `json:"artifact"`

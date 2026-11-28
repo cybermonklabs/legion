@@ -896,7 +896,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case gateOpen && !armed:
 		fmt.Fprintf(&task, " The design gate is open at version %d: %s, so act on it as on design-approved.",
 			gate.LatestVersion, DesignApprovedWake)
-	case onBasis && openedOnBasis && openedBy == basisApproval(*gate):
+	case onBasis && openedOnBasis && namesBasisApproval(openedBy, *gate):
 		fmt.Fprintf(&task, " The step stands open on that approval at version %d, and the design gate is open: %s, so act on it as on design-approved.",
 			gate.LatestVersion, DesignApprovedWake)
 	case onBasis:

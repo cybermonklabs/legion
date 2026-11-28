@@ -597,11 +597,11 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 			name, verdict string
 			fact          func(t *testing.T) intake.DispatchArtifact
 		}{
-			{"the ancestor's digest", "Dispatch's verdict on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is that the approval of version 4 no longer stands.",
+			{"the ancestor's digest", "Dispatch's verdict on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) is that the approval that stood for its version 4 no longer stands.",
 				func(t *testing.T) intake.DispatchArtifact {
 					return digestOf(t, basisAncestor, basisDoc, 4, 30, false, 0)
 				}},
-			{"a read of the ancestor's document", "Dispatch reports that the approval of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec) does not stand for its latest version 5.",
+			{"a read of the ancestor's document", "Dispatch reports that the approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) that stood for its version 4 does not stand for its latest version 5.",
 				func(*testing.T) intake.DispatchArtifact {
 					return gateSeedRead(basisAncestor, basisDoc, 4, 5, hashMark(20), false, false, hashMark(30))
 				}},

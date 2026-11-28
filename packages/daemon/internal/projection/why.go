@@ -478,8 +478,11 @@ func basisGateReason(root string, gate record.TreeGate) string {
 		case !registered:
 			words = append(words, fmt.Sprintf("No document of %s is registered for its %s step.", root, step))
 		case row.OnBasis():
-			words = append(words, fmt.Sprintf("The %s step of %s stands open on an ancestor's approval: a person approved version %d of the %s of %s.",
-				step, root, row.Basis.Version, step.Document(), row.Basis.Issue))
+			// The basis version is the ancestor's latest version Dispatch reported the person's
+			// approval standing for, which can be above the version the person approved
+			// (record.GateBasis.Version), so the sentence names it as that.
+			words = append(words, fmt.Sprintf("The %s step of %s stands open on an ancestor's approval: a person's approval of the %s of %s stands for its version %d.",
+				step, root, step.Document(), row.Basis.Issue, row.Basis.Version))
 		case row.PendingOnBasis():
 			words = append(words, fmt.Sprintf("The %s step of %s waits on the ancestor's approval request %s, which asks a person to approve version %d of the %s of %s.",
 				step, root, row.Basis.Pending.Ask, row.Basis.Version, step.Document(), row.Basis.Issue))

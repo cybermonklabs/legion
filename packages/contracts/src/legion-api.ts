@@ -507,8 +507,12 @@ const legionMergeWaitView = z.object({
   toldState: legionMergeState.optional(),
 });
 
-/** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
- * the gate is open exactly when it equals `currentVersion`. A spec step that stands open on an
+/** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one. With a
+ * Dispatch that sends no digest verdict the gate is open exactly when it equals `currentVersion`;
+ * with one that does, the gate can stand open with `approvedVersion` below `currentVersion`, where
+ * Dispatch reports that approval current for the current version (entry 20261128003114
+ * (hash-gate-verdict)), so a reader of whether the gate is open reads the step's `status` in
+ * `gatedSteps`, not these two numbers. A spec step that stands open on an
  * ancestor's approval (entry 20261125161152 (gate-basis)) holds the version its root registered there, which no person
  * approved: the step's entry in `gatedSteps` reads `open_on_basis` and names that approval, so a
  * reader that names a person's approval reads `gatedSteps`, not this. */
@@ -525,9 +529,13 @@ const legionDesignStep = z.enum(GATED_STEPS);
 
 /** `api.GatedStepBasis` — the ancestor's approval a step stands open on, or the ancestor's open
  * approval request it waits on (entry 20261125161152 (gate-basis)): the ancestor `issue`, its document's `artifactId`
- * and the `version` a person approved or is asked to approve; for an approval, `approver`, who
- * gave it as Dispatch names an actor (`user:<login>`), and `approvedAt`, Dispatch's time of it
- * where Dispatch gave one; for a request, its `askId`. */
+ * and a `version` of it. For an approval, `version` is the ancestor's latest version when the root
+ * registered, whose approval by a person Dispatch reported standing then: the version that person
+ * approved, or, with a Dispatch that sends a digest verdict, a later one Dispatch reported that
+ * approval current for (entry 20261128003114 (hash-gate-verdict)), so it names no version a person
+ * approved; `approver`, who gave the approval as Dispatch names an actor (`user:<login>`), and
+ * `approvedAt`, Dispatch's time of it where Dispatch gave one, ride beside it. For a request,
+ * `version` is the version the request asks a person to approve, beside its `askId`. */
 const legionGatedStepBasis = z.object({
   issue: issueKey,
   artifactId: nonEmptyString.optional(),
@@ -543,7 +551,10 @@ const legionGatedStepBasis = z.object({
  * `approvedVersion` is the version a person approved, null until one does. `status` is where the
  * step stands: `unregistered` (the deployment gates it and the issue holds no record of it, so it
  * holds the tree's work), `waiting` (registered, and no person has reviewed its current version),
- * `approved` (a person approved its current version, which lets the work past the step) or
+ * `approved` (a person's approval stands for its current version, which lets the work past the
+ * step: an approval of that version, or, with a Dispatch that sends a digest verdict, of an older
+ * version, its `approvedVersion` below `currentVersion`, that Dispatch reports current for it;
+ * entry 20261128003114 (hash-gate-verdict)) or
  * `changes_requested` (its reviewer asked for changes at its current version, with
  * `changesReason` the reason they gave; absent under every other status). Entry 20261125161152 (gate-basis) adds two
  * words and `basis` beside them: `open_on_basis`, a step its architect registered on a person's
@@ -553,7 +564,9 @@ const legionGatedStepBasis = z.object({
  * person's approval of that version opens, its `approvedVersion` being a person's approval of the
  * root's own earlier version, if any. `basis` is present under those two words alone. A daemon at
  * that contract serves a caller below it no `gatedSteps` on an issue any step of which reads either
- * word. */
+ * word. Each word is the standing the daemon last told the tree, so a step whose newer version
+ * owes Dispatch's digest keeps `approved` or `open_on_basis` until the digest settles it (entry
+ * 20261128003114 (hash-gate-verdict)). */
 const legionGatedStepView = z.object({
   step: legionDesignStep.optional(),
   artifactId: nonEmptyString.optional(),
@@ -2829,8 +2842,10 @@ export const LegionOperatorProjectP0BoundClearRequest = z.strictObject({
  * names `spec` and not `criteria`. A deployment that gates one step alone takes a request that
  * leaves it out, and one that gates several refuses it (`GATE_STEP_REQUIRED`). `basisArtifactId`,
  * `basisVersion` and `reason` name a basis (entry 20261125161152 (gate-basis)): the same step's document of an ancestor
- * on the issue's Dispatch `child_of` chain, the version of it a person approved or an open
- * approval request asks a person to approve, and the architect's reason, 1 to 1,000 characters
+ * on the issue's Dispatch `child_of` chain, at its latest version, where Dispatch reports a
+ * person's approval standing for it, whatever version the person approved (entry 20261128003114
+ * (hash-gate-verdict)), or where an open approval request asks a person to approve it, and the
+ * architect's reason, 1 to 1,000 characters
  * with no decision block, which the daemon posts on the issue. The three come together or not at
  * all (`BASIS_INCOMPLETE`), and the daemon checks the basis against what Dispatch shows before it
  * records anything, refusing one it cannot take with a code that names what Dispatch shows

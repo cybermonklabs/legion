@@ -391,7 +391,7 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 		fmt.Sprintf("- No person approved version %d of this document.", c.rootVersion),
 		fmt.Sprintf("- The ancestor is %s.", parent.Key),
 		fmt.Sprintf("- The primary document of %s for this step is dispatch://%s/spec (%s).", parent.Key, parent.Key, parent.PrimaryArtifactID),
-		fmt.Sprintf("- A person approved version %d of this document.", c.approval.Version),
+		fmt.Sprintf("- A person's approval of this document stands for its version %d.", c.approval.Version),
 		"- The person is user:smoke.",
 		"- Dispatch recorded this approval at " + c.approval.CreatedAt.UTC().Format(time.RFC3339) + ".",
 		fmt.Sprintf("  - %s@v%d", p2, c.approval.Version),
@@ -1087,7 +1087,8 @@ func TestBasisGateRefusals(t *testing.T) {
 	// tree's standing gate: the tree's roles are told it opened on the ancestor's approval, by a role
 	// message or by the task that carries the news a holder is owed (openingWordsTold), and nothing
 	// they are told says a person approved R's document.
-	opened := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person approved version %d of the primary document of %s", pv, parent.Key)
+	opened := fmt.Sprintf("The spec step stands open on an ancestor's approval: a person's approval of the primary document of %s (dispatch://%s/spec) stands for its version %d",
+		parent.Key, parent.Key, pv)
 	ownVersion := fmt.Sprintf("No person approved version %d of its spec document", rv)
 	roleMessages := r.roleMessages(root.Key)
 	if !r.openingWordsTold(root.Key, root.Key, opened, ownVersion) {

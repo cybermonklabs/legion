@@ -174,7 +174,7 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 		!strings.Contains(opened[0].Reason, "No person approved that version") {
 		t.Fatalf("design-approved notices = %#v, want one naming version 4 of LEGION-100's document as the basis", opened)
 	}
-	if bodies := messageBodies(t, pool); len(bodies) != 1 || !strings.HasPrefix(bodies[0], basisOpenedLine+"\n") || !strings.Contains(bodies[0], "A person approved version 4") {
+	if bodies := messageBodies(t, pool); len(bodies) != 1 || !strings.HasPrefix(bodies[0], basisOpenedLine+"\n") || !strings.Contains(bodies[0], "A person's approval of this document stands for its version 4.") {
 		t.Fatalf("Dispatch messages = %q, want the one that records the basis of version 4", bodies)
 	}
 	resting := noticesOfKind(t, pool, basisAncestor, "resting-root")

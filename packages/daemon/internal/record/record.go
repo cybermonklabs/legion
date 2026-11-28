@@ -2172,13 +2172,17 @@ type GateBasis struct {
 	// Issue is the ancestor, and ArtifactID its primary document.
 	Issue      string
 	ArtifactID string
-	// Version is the version of the ancestor's document a person approved, or, while pending, the
-	// version the open request asks a person to approve.
+	// Version is the ancestor's latest version when the root registered, whose approval by a
+	// person Dispatch reported standing for it (dispatch.Approval.Stands): the version that person
+	// approved, or, with a Dispatch that sends a digest verdict, a later version Dispatch reported
+	// that approval current for (dispatch://INFRA-6065, R5), so it names no version a person
+	// approved. While pending, it is the version the open request asks a person to approve.
 	Version int
-	// Approval is where Dispatch recorded the person's approval of Version in the ancestor's own
-	// event log, and Approver who gave it as Dispatch names an actor (`user:<login>`). Both are
-	// zero while the basis is pending. The mark is a place in another issue's log than the root's
-	// own reviews, so no rule compares the two (classify.LatestReview reads KeptPerson instead).
+	// Approval is where Dispatch recorded the person's approval that stands for Version in the
+	// ancestor's own event log, and Approver who gave it as Dispatch names an actor
+	// (`user:<login>`). Both are zero while the basis is pending. The mark is a place in another
+	// issue's log than the root's own reviews, so no rule compares the two (classify.LatestReview
+	// reads KeptPerson instead).
 	Approval EventMark
 	Approver string
 	// Serves is the ancestor's requirement references the root's checks serve, as the

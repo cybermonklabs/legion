@@ -99,7 +99,7 @@ const basisOpenedBody = "Design gate opened on an ancestor's approval.\n" +
 	"- No person approved version 4 of this document.\n" +
 	"- The ancestor is LEGION-100.\n" +
 	"- The primary document of LEGION-100 for this step is dispatch://LEGION-100/spec (artifact-100).\n" +
-	"- A person approved version 3 of this document.\n" +
+	"- A person's approval of this document stands for its version 3.\n" +
 	"- The person is user:alice.\n" +
 	"- Dispatch recorded this approval at 2026-09-22T10:00:00Z.\n" +
 	"- The checks of LEGION-208 serve these requirements of LEGION-100:\n" +

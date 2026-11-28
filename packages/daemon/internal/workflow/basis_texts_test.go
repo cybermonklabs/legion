@@ -18,13 +18,13 @@ import (
 // a person (resumeTask), and the start task of a re-admission (KeptDecisionsTask).
 
 // basisOpening is the part of an opening of LEGION-208's gate that names its spec step, at
-// version 4 of artifact-208, standing open on the person's approval of version 3 of LEGION-100's
-// primary document.
-const basisOpening = " The spec step stands open on an ancestor's approval: a person approved version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec). " +
+// version 4 of artifact-208, standing open on the person's approval that stands for version 3 of
+// LEGION-100's primary document.
+const basisOpening = " The spec step stands open on an ancestor's approval: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 3. " +
 	"No person approved version 4 of its spec document (artifact-208)."
 
 // An opening of the standing gate on an ancestor's approval names that approval: the ancestor, its
-// document and the version a person approved, and says that no person approved the root's version.
+// document and the version the approval stands for, and says that no person approved the root's version.
 // It begins with the words roles/merger.md quotes as the release of a merge: `The design gate of
 // <tree> opened: every step the deployment gates now stands open`, or, where a person's approval
 // of another step opens the gate while the spec step stands on a basis, the quote that names that
@@ -121,7 +121,7 @@ func TestTheResumeOfARootWaitingOnAPersonNamesWhatItsBasisDid(t *testing.T) {
 		{
 			name:  "a registration on an approved basis",
 			basis: approvedBasis(),
-			want: []string{"An ancestor's approval opened the spec step of LEGION-208 at version 4: a person approved version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec). No person approved your primary document at that version.",
+			want: []string{"An ancestor's approval opened the spec step of LEGION-208 at version 4: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 3. No person approved your primary document at that version.",
 				"The step stands open on that approval at version 4", DesignApprovedWake},
 			not: []string{"was approved", "is approved at version"},
 		},

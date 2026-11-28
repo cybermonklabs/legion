@@ -47,7 +47,7 @@ func firstBasisGates() map[record.DesignStep]record.DesignGate {
 // reads as it always has.
 func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	t.Parallel()
-	const basis = "The spec step stands open on an ancestor's approval: a person approved version 7 of"
+	const basis = "The spec step stands open on an ancestor's approval: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 7."
 	const noPerson = "No person approved version 5 of its spec document (artifact-spec)."
 	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
 		Steps: newsSteps, Gates: basisGates(), OpeningOwed: true, Items: []NewsChange{specChanges(4)}})
@@ -87,7 +87,7 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 // stands on.
 func TestNewsOfAFirstVersionOpenOnABasisSaysNoPersonApprovedIt(t *testing.T) {
 	t.Parallel()
-	const basis = "The spec step stands open on an ancestor's approval: a person approved version 7 of"
+	const basis = "The spec step stands open on an ancestor's approval: a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 7."
 	news := firstApprovalHolderNews()
 	news.Gates = firstBasisGates()
 	holder := RenderNews(news)

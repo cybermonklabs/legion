@@ -1739,11 +1739,26 @@ func basisSentence(gate record.DesignGate) string {
 }
 
 // basisApproval names the ancestor's approval gate stands open on (record.DesignGate.OnBasis): the
-// version a person approved and the ancestor's document for the step. It is the one wording of
-// that approval that the gate's messages and the resume task share, and it names a person's
-// approval of the ancestor's document only, never of the root's.
+// ancestor's document for the step, and the version Dispatch reported that person's approval
+// standing for when the root registered (record.GateBasis.Version). With a Dispatch that sends a
+// digest verdict that version can be above the one the person approved (dispatch://INFRA-6065,
+// R5), so the words name it as the version the approval stands for, never as one a person
+// approved, and are true in either mode. It is the one wording of that approval that the gate's
+// messages and the resume task share, and it names a person's approval of the ancestor's document
+// only, never of the root's. A wait's answered detail stores it (approvalDetail), and the resume
+// reads it back with the words a release before stored as well (namesBasisApproval).
 func basisApproval(gate record.DesignGate) string {
-	return fmt.Sprintf("a person approved version %d of %s", gate.Basis.Version, documentOf(gate.Basis.Issue, gate.Step.OrSpec()))
+	return fmt.Sprintf("a person's approval of %s stands for its version %d", documentOf(gate.Basis.Issue, gate.Step.OrSpec()), gate.Basis.Version)
+}
+
+// namesBasisApproval says whether named, the approval a wait's answered detail names after
+// basisOpenedAnswer, is the approval gate stands open on: basisApproval's words for it, or the
+// words a release before dispatch://INFRA-6065 stored for the same approval, which named
+// Basis.Version as the version a person approved. The detail outlives a deploy (gateOffAnswer),
+// so the resume reads both.
+func namesBasisApproval(named string, gate record.DesignGate) bool {
+	return named == basisApproval(gate) ||
+		named == fmt.Sprintf("a person approved version %d of %s", gate.Basis.Version, documentOf(gate.Basis.Issue, gate.Step.OrSpec()))
 }
 
 // basisStepsOf is every step the tree's work waits on (record.TreeGate.Required over steps, the

@@ -160,7 +160,12 @@ func reviewed(approval dispatch.Approval) bool {
 	return approval.State != "draft"
 }
 
-// approvalShown is what Dispatch shows of a document's approval, as a refusal names it.
+// approvalShown is what Dispatch shows of a document's approval, as a refusal names it. An approval
+// is named by the version a person approved: where Dispatch reports it standing for a latest
+// version above it (dispatch.Approval.Stands, R5 of dispatch://INFRA-6065), the text says so, and
+// where it does not report it standing, the text says that, and why where Dispatch still owes the
+// latest version's digest, so no refusal calls an approval one of a latest version no person
+// approved.
 func approvalShown(approval dispatch.Approval) string {
 	version := 0
 	if approval.Version != nil {
@@ -169,7 +174,16 @@ func approvalShown(approval dispatch.Approval) string {
 	by := actorNamed(approval.By)
 	switch approval.State {
 	case "approved":
-		return fmt.Sprintf("an approval of its latest version %d by %s", version, by)
+		switch {
+		case approval.Stands() && version == approval.LatestVersion:
+			return fmt.Sprintf("an approval of its latest version %d by %s", version, by)
+		case approval.Stands():
+			return fmt.Sprintf("an approval of version %d by %s, which Dispatch reports current for its latest version %d", version, by, approval.LatestVersion)
+		case approval.DigestOwed != nil && *approval.DigestOwed:
+			return fmt.Sprintf("an approval of version %d by %s, which Dispatch does not report current for its latest version %d while it owes that version's digest",
+				version, by, approval.LatestVersion)
+		}
+		return fmt.Sprintf("an approval of version %d by %s, which Dispatch does not report current for its latest version %d", version, by, approval.LatestVersion)
 	case "stale":
 		return fmt.Sprintf("an approval of version %d by %s, older than its latest version %d, and no open approval request", version, by, approval.LatestVersion)
 	case "changes_requested":
@@ -189,7 +203,8 @@ func approvalShown(approval dispatch.Approval) string {
 // registrationBasis checks the basis a register_gate call names, after the call's architect, root
 // and step are checked and the root's issue and own step document are read (root, own), and
 // answers the basis the registration records. It answers no basis, and true, when a person's
-// approval of the root's own document at the version the call names opens the step as today: that
+// approval of the root's own document that Dispatch reports standing for the version the call
+// names (dispatch.Approval.Stands, R5 of dispatch://INFRA-6065) opens the step as today: that
 // registration records none (R1). Each refusal writes its own code, records nothing, and names what
 // Dispatch shows.
 //
@@ -213,12 +228,13 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 		return nil, false
 	}
 
-	// The root's own document: its latest version, a person's approval of it, and its newest review.
+	// The root's own document: its latest version, a person's approval of it that stands for that
+	// version, whatever version it approved, and its newest review.
 	if req.Version < own.LatestVersion {
 		return refuse("ROOT_VERSION_NOT_LATEST", "Dispatch shows %s's %s (%s) at version %d, and the call names version %d; a registration on a basis names the latest version of the issue's own document",
 			root.Key, step.Document(), document, own.LatestVersion, req.Version)
 	}
-	if own.ApprovedLatest() != 0 && own.By.Person() {
+	if own.Stands() && own.By.Person() {
 		return nil, true
 	}
 	reviews, err := s.dispatch.Reviews(ctx, document)
@@ -301,22 +317,36 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 			ancestor.Key, record.StandsAt(*recorded), ancestor.Key, record.BasisNotYetAccepted)
 	}
 
-	// The ancestor's approval: a person's of its latest version, or its open request of that version
-	// waiting on the person (R1's second and third conditions, and the pending basis).
+	// The ancestor's approval: a person's that Dispatch reports standing for its latest version,
+	// whatever version it approved, or its open request of that latest version waiting on the
+	// person (R1's second and third conditions, and the pending basis). Either way the basis names
+	// that latest version (R5 of dispatch://INFRA-6065), and an approved basis carries the review's
+	// own mark and approver.
 	session := ""
 	if machine, holds := s.claimHolds(grant); holds {
 		session = machine.Claim().Session
 	}
 	basis := &record.GateBasis{Issue: ancestor.Key, ArtifactID: basisID, Version: req.BasisVersion, Reason: req.Reason, Session: session}
 	switch {
-	case shown.ApprovedLatest() != 0:
+	case shown.Stands():
+		// A refusal names the version the person approved, and, below the latest version, that
+		// Dispatch reports it current there, never an approval of a latest version nobody approved.
+		approved := shown.LatestVersion
+		if shown.Version != nil {
+			approved = *shown.Version
+		}
+		approvedAt, givenAt := fmt.Sprintf("its latest version %d", approved), fmt.Sprintf("version %d", approved)
+		if approved < shown.LatestVersion {
+			current := fmt.Sprintf("version %d, which Dispatch reports current for its latest version %d", approved, shown.LatestVersion)
+			approvedAt, givenAt = current, current+","
+		}
 		if req.BasisVersion != shown.LatestVersion {
-			return refuse("BASIS_VERSION_MISMATCH", "Dispatch shows %s's %s (%s) approved at its latest version %d, and the call names version %d; name version %d",
-				ancestor.Key, step.Document(), basisID, shown.LatestVersion, req.BasisVersion, shown.LatestVersion)
+			return refuse("BASIS_VERSION_MISMATCH", "Dispatch shows %s's %s (%s) approved at %s, and the call names version %d; name version %d",
+				ancestor.Key, step.Document(), basisID, approvedAt, req.BasisVersion, shown.LatestVersion)
 		}
 		if !shown.By.Person() {
-			return refuse("BASIS_NOT_BY_PERSON", "the approval of %s's %s (%s) at version %d was given by %s, not by a person; a basis is a person's approval, so request a person's approval of the issue's own document",
-				ancestor.Key, step.Document(), basisID, shown.LatestVersion, actorNamed(shown.By))
+			return refuse("BASIS_NOT_BY_PERSON", "the approval of %s's %s (%s) at %s was given by %s, not by a person; a basis is a person's approval, so request a person's approval of the issue's own document",
+				ancestor.Key, step.Document(), basisID, givenAt, actorNamed(shown.By))
 		}
 		basis.Approval, basis.Approver = record.EventMark{Seq: shown.Seq, At: shown.At}, shown.By.Name()
 	case shown.State == "awaiting":
@@ -340,7 +370,7 @@ func (s *server) registrationBasis(w http.ResponseWriter, r *http.Request, grant
 		}
 		basis.Pending = &record.PendingBasis{Ask: shown.AskID}
 	default:
-		return refuse("BASIS_NOT_APPROVED", "Dispatch shows on %s's %s (%s) %s; a basis is a person's approval of its latest version, or an open approval request of that version waiting on the person",
+		return refuse("BASIS_NOT_APPROVED", "Dispatch shows on %s's %s (%s) %s; a basis is a person's approval that Dispatch reports current for its latest version, or an open approval request of that version waiting on the person",
 			ancestor.Key, step.Document(), basisID, approvalShown(shown))
 	}
 

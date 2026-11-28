@@ -522,8 +522,10 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 
 // The resume of a root whose step stands on, or waits on, an ancestor's approval never says a
 // person approved the root's own document (dispatch://INFRA-3320, R1 and R2). An opening on an
-// ancestor's approval names that approval: the ancestor, its document and the version a person
-// approved, and says no person approved the root's version, also once the step has closed again.
+// ancestor's approval names that approval: the ancestor, its document and the version the
+// approval stands for, and says no person approved the root's version, also once the step has
+// closed again. The detail of such an opening that a release before dispatch://INFRA-6065
+// stored, in its words, still names the approval the step stands open on (namesBasisApproval).
 // A step that stands open on such an approval is the design-approved wake, whatever answered the
 // wait. A step that still waits on the ancestor's request names that request and asks for no
 // approval request of the root's own. A wait the end of such a wait answered names the act, the
@@ -539,7 +541,10 @@ func TestTheResumeTaskOfAStepOnAnAncestorsApproval(t *testing.T) {
 	pendingOn.Version = 4
 	pending := record.PendOnBasis(record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4}, pendingOn, "ask-100")
 	approvedByPerson := 4
-	const approval = "a person approved version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec)"
+	const approval = "a person's approval of the primary document of LEGION-100 (dispatch://LEGION-100/spec) stands for its version 3"
+	// storedApproval is the same approval as a release before dispatch://INFRA-6065 stored it in
+	// a wait's answered detail.
+	const storedApproval = "a person approved version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec)"
 	const ended = "user:alice requested changes on version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec): \"name the rollback path\". " +
 		"The spec step of LEGION-208 no longer waits on approval request ask-100 of version 4 of the primary document of LEGION-100 (dispatch://LEGION-100/spec). " +
 		"The step stays closed, registered on the primary document of LEGION-208 (dispatch://LEGION-208/spec) with no basis."
@@ -561,6 +566,15 @@ func TestTheResumeTaskOfAStepOnAnAncestorsApproval(t *testing.T) {
 			want: []string{"An ancestor's approval opened the spec step of LEGION-208 at version 4: " + approval + ". No person approved your primary document at that version.",
 				"The step stands open on that approval at version 4, and the design gate is open: " + DesignApprovedWake},
 			not: []string{"was approved", "is approved at version", "That approval no longer stands"},
+		},
+		{
+			name: "an opening on an ancestor's approval whose detail a release before stored in its own words",
+			waiting: record.Awaiting{Artifact: "artifact-208", GateVersion: 4, AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval,
+				AnsweredDetail: "version 4" + basisOpenedAnswer + storedApproval},
+			gate: &open,
+			want: []string{"An ancestor's approval opened the spec step of LEGION-208 at version 4: " + storedApproval + ". No person approved your primary document at that version.",
+				"The step stands open on that approval at version 4, and the design gate is open: " + DesignApprovedWake},
+			not: []string{"was approved", "is approved at version", "Your spec step stands open at version 4 on an ancestor's approval"},
 		},
 		{
 			name:    "an opening on an ancestor's approval that a new version closed since",

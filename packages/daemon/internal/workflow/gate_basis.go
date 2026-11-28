@@ -156,8 +156,9 @@ const ancestorOpenedStep = "An ancestor's approval opened the %s step of %s."
 // (dispatch://INFRA-6065 R5), and the notice names the version the person approved (Departure D6),
 // which is the approval the gate holds and so the one the predicate finds standing. For a step an
 // ancestor's approval opened it names that basis: the ancestor's document for the step as its
-// reference, the version a person approved and that person, with a reason that names the root's
-// version and says that no person approved it (R1, R2).
+// reference, the version that person's approval stands for (record.GateBasis.Version, which names
+// no version a person approved; dispatch://INFRA-6065 R5) and that person, with a reason that
+// names the root's version and says that no person approved it (R1, R2).
 //
 // The notice tells a person's decision, so it is asked first whether that decision is still the
 // person's word, as every sender of one asks and as the relay of this notice asks it again
@@ -172,9 +173,9 @@ func (e *Engine) tellOpened(ctx context.Context, tx pgx.Tx, root string, gate re
 	if gate.OnBasis() {
 		basis := gate.Basis
 		notice = record.Notice{Kind: "design-approved", Version: basis.Version, Actor: basis.Approver, Ref: stepRef(basis.Issue, step),
-			Reason: fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of the %s of %s. "+
+			Reason: fmt.Sprintf(ancestorOpenedStep+" A person's approval of the %s of %s stands for its version %d. "+
 				"%s registered version %d of its own %s on that approval. No person approved that version.",
-				step, root, basis.Version, step.Document(), basis.Issue, root, gate.LatestVersion, step.Document())}
+				step, root, step.Document(), basis.Issue, basis.Version, root, gate.LatestVersion, step.Document())}
 	}
 	gates := map[record.DesignStep]record.DesignGate{step: gate}
 	if superseded := NoticeSuperseded(gates, e.cfg.Steps, root, notice, record.DecisionDesignApproved); superseded != nil {
@@ -237,8 +238,8 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 		}
 		e.logOnCommit(ctx, "workflow: a design gate step opened on an ancestor's approval", "issue", root.Key, "step", step,
 			"version", gate.LatestVersion, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "recorded_before", stood)
-		what := fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of %s. %s rests on this approval.",
-			step, root.Key, basis.Version, documentOf(basis.Issue, step), root.Key)
+		what := fmt.Sprintf(ancestorOpenedStep+" A person's approval of %s stands for its version %d. %s rests on this approval.",
+			step, root.Key, documentOf(basis.Issue, step), basis.Version, root.Key)
 		return e.queueRestingRoot(ctx, tx, root, step, basis, restingOpened, what)
 	}
 	return nil
@@ -247,9 +248,9 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 // basisOpenedMessage is the message posted on root's Dispatch issue for a step an ancestor's
 // approval opened (R2): its first line (basisOpenedLine), then one fact to a sentence: the step;
 // the root's document and the version registered, which no person approved; the ancestor, its
-// document and the version a person approved; that person and Dispatch's time of the approval;
-// the ancestor's requirements the root's checks serve; the architect session that registered it;
-// and, quoted, the architect's reason. It asks nothing.
+// document and the version a person's approval of it stands for (record.GateBasis.Version); that
+// person and Dispatch's time of the approval; the ancestor's requirements the root's checks serve;
+// the architect session that registered it; and, quoted, the architect's reason. It asks nothing.
 func basisOpenedMessage(root string, gate record.DesignGate) string {
 	step := gate.Step.OrSpec()
 	basis := gate.Basis
@@ -266,7 +267,7 @@ func basisOpenedMessage(root string, gate record.DesignGate) string {
 	line("No person approved version %d of this document.", gate.LatestVersion)
 	line("The ancestor is %s.", basis.Issue)
 	line("The %s of %s for this step is %s (%s).", step.Document(), basis.Issue, stepRef(basis.Issue, step), basis.ArtifactID)
-	line("A person approved version %d of this document.", basis.Version)
+	line("A person's approval of this document stands for its version %d.", basis.Version)
 	line("The person is %s.", basis.Approver)
 	if basis.Approval.At.IsZero() {
 		line("Dispatch gave no time for this approval.")
@@ -777,10 +778,10 @@ func (e *Engine) endOpenBasis(ctx context.Context, tx pgx.Tx, root record.Issue,
 	if err := e.putGatePublished(ctx, tx, root.Key, closed, closed.LatestVersion); err != nil {
 		return err
 	}
-	verdict := fmt.Sprintf("Dispatch reports that the approval of version %d of %s does not stand for its latest version %d.",
-		basis.Version, documentOf(basis.Issue, step), fact.Latest)
+	verdict := fmt.Sprintf("Dispatch reports that the approval of %s that stood for its version %d does not stand for its latest version %d.",
+		documentOf(basis.Issue, step), basis.Version, fact.Latest)
 	if fact.Kind == intake.DispatchArtifactDigest {
-		verdict = fmt.Sprintf("Dispatch's verdict on version %d of %s is that the approval of version %d no longer stands.",
+		verdict = fmt.Sprintf("Dispatch's verdict on version %d of %s is that the approval that stood for its version %d no longer stands.",
 			fact.Version, documentOf(basis.Issue, step), basis.Version)
 	}
 	what := fmt.Sprintf("%s The %s step of %s stood open on that approval, so it no longer does. %s", verdict, step, root.Key, stepClosed(root.Key, step))
@@ -1182,7 +1183,7 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 		}
 		return err
 	}
-	asked := fmt.Sprintf("%s requested changes on version %d of %s, after the approval of that version that the %s step of %s stands open on.",
+	asked := fmt.Sprintf("%s requested changes on version %d of %s, after the approval that the %s step of %s stands open on.",
 		cmp.Or(review.Actor.Name(), "A person"), basis.Version, documentOf(basis.Issue, step), step, root.Key)
 	reason := "The daemon's read of Dispatch gave no reason; read the review on the document."
 	if review.Reason != "" {
