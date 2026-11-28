@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/holdrecord"
+	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 // NATSHold is what the NATS writer hold's routes need: the tables they write
@@ -64,7 +65,9 @@ const longestOperatorToken = machine.MaxTokenLoginLifetime + ciphertoken.ProofCl
 // credential operatorAuth's routes take: verified as the auth service verifies a service's, no
 // longer lived than an hour from its issue and not expired, naming the operator entry's account.
 // Anything else is 403 not_operator, whatever was wrong with it, so a caller learns nothing of the
-// operator's identity from the refusal, and none repeats the token.
+// operator's identity from the refusal, and none repeats the token. A token whose check reached no
+// verdict because its issuer's key set could not be read is no refusal: 503 issuer_unavailable
+// with Retry-After (noteIssuerUnavailable), which says nothing of the operator either.
 func (s *server) operatorCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	hold := s.deps.NATSHold
 	if hold.OperatorToken == nil || hold.OperatorAccount == "" {
@@ -73,6 +76,10 @@ func (s *server) operatorCaller(w http.ResponseWriter, r *http.Request) (caller,
 	}
 	account, google, issued, expiry, err := hold.OperatorToken(r.Context(), bearer(r))
 	switch {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		noteIssuerUnavailable(w, "verify the operator's platform token", err)
+		writeHoldRefusal(w, http.StatusServiceUnavailable, "issuer_unavailable", "the broker could not check the caller's token, because its issuer's key set could not be read: send it again after Retry-After", nil)
+		return caller{}, false
 	case err != nil:
 		writeHoldRefusal(w, http.StatusForbidden, "not_operator", "the caller's token does not verify as a platform token of the NATS audiences", nil)
 		return caller{}, false
@@ -131,7 +138,8 @@ func holdRowAnswer(row natshold.Row) holdRow {
 // operator's client read it, and what was refused, with the hold row it was refused against.
 type holdRefusal struct {
 	// The refusal's code: bad_request, too_large, bad_signature, bad_transition, not_operator,
-	// no_row, gen_mismatch, hold_mismatch, row_exists, below_floor or clock_skew.
+	// no_row, gen_mismatch, hold_mismatch, row_exists, below_floor, clock_skew or
+	// issuer_unavailable.
 	Error string `json:"error"`
 	// What was refused.
 	Message string `json:"message"`

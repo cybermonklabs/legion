@@ -769,8 +769,10 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // back (Existing), a different key in a live slot is ErrAlreadyEnrolled, and another slot of the
 // same pod is an enrollment of its own. A slot is valid only on a pod enrollment (ErrInvalidSlot);
 // a pod's runtime id is always the pod UID its projected token proves, whichever slot it enrolls.
-// A pod token past its expiry is ErrPodTokenExpired, naming that expiry; any other token that does
-// not prove this pod is ErrPodIdentity. Under a token login, whose whole authorization is the
+// A pod token past its expiry is ErrPodTokenExpired, naming that expiry; one whose check reached
+// no verdict because the issuer's key set could not be read is no refusal, and its error matches
+// oidc.ErrIssuerUnavailable (verifyPodToken); any other token that does not prove this pod is
+// ErrPodIdentity. Under a token login, whose whole authorization is the
 // deployment's settings, the pod must be one of two (podUnderTokenLogin): the login's own pod,
 // when the token proves the login's own account (ErrPodSelfEnrollOnly for any other pod of it),
 // or a pod of an account BROKER_SERVICES binds to the login's service, which is the deployment
@@ -1996,17 +1998,22 @@ type Renewal struct {
 // verifyPodToken verifies a pod's projected service-account token (issuer, audience, signature,
 // expiry) and requires it to name a pod UID. Create and Renew both call it before any transaction
 // opens, so the issuer's key-set fetch on an unknown key id never holds a row lock or a pooled
-// connection. A token past its expiry is ErrPodTokenExpired, naming that expiry; every other
-// failure, and a broker with no BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
+// connection. A token past its expiry is ErrPodTokenExpired, naming that expiry. A check that
+// reached no verdict because the issuer's key set could not be read is no refusal of the token:
+// its error is the verifier's, matching oidc.ErrIssuerUnavailable and carrying the key set's wait
+// (oidc.RetryAfter), never ErrPodIdentity. Every other failure, and a broker with no
+// BROKER_K8S_OIDC_ISSUER, is ErrPodIdentity.
 func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, error) {
 	if s.Pod == nil {
 		return PodClaims{}, fmt.Errorf("%w: a pod's token needs BROKER_K8S_OIDC_ISSUER", ErrPodIdentity)
 	}
 	claims, err := s.Pod.Verify(ctx, raw)
-	if errors.Is(err, oidc.ErrExpired) {
+	switch {
+	case errors.Is(err, oidc.ErrExpired):
 		return PodClaims{}, fmt.Errorf("%w (%v)", ErrPodTokenExpired, err)
-	}
-	if err != nil || claims.PodUID == "" {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		return PodClaims{}, err
+	case err != nil || claims.PodUID == "":
 		return PodClaims{}, ErrPodIdentity
 	}
 	return claims, nil
@@ -2019,7 +2026,9 @@ func (s *Service) verifyPodToken(ctx context.Context, raw string) (PodClaims, er
 // seconds) plus one lease. podToken is verified as Create verifies it (verifyPodToken, before the
 // row is locked) and required to name the pod UID (runtime_id) and the service-account subject the
 // enrollment recorded at Create, else ErrPodIdentity and the lease stays where it was. A token from
-// another pod or account never renews this one. A machine session renews on its proof alone; a
+// another pod or account never renews this one. A token whose check reached no verdict because the
+// issuer's key set could not be read renews nothing and refuses nothing: its error matches
+// oidc.ErrIssuerUnavailable (verifyPodToken). A machine session renews on its proof alone; a
 // token on its renewal is ErrPodIdentity.
 //
 // A machine's own session renews only while the launcher credential that enrolled it is still

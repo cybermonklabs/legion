@@ -8,6 +8,7 @@ package api_test
 import (
 	"crypto/ecdsa"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -24,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // unreadableRetryAfter is the Retry-After an answer through an unreadable key set carries at the
@@ -228,6 +230,131 @@ func TestATokenInTheBodyThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestTheRetryAfterOfAnUnreadableKeySetIsItsFailureSpacingRoundedUp: the wait an answer through an
+// unreadable key set names is that key set's own FailureSpacing, how long it answers its failure
+// before it reads the issuer again, in whole seconds rounded up and at least 1: 2.5 s is
+// Retry-After 3 and 400 ms is 1, on POST /v1/oauth/introspect with the listed caller's token.
+// "refused": a token signed by a key the issuer never published, the set readable, is 401
+// ACCOUNT_TOKEN_INVALID with no Retry-After.
+func TestTheRetryAfterOfAnUnreadableKeySetIsItsFailureSpacingRoundedUp(t *testing.T) {
+	for _, row := range []struct {
+		name       string
+		spacing    time.Duration
+		retryAfter string
+	}{
+		{"2.5 s", 2500 * time.Millisecond, "3"},
+		{"400 ms", 400 * time.Millisecond, "1"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ts := newTestServer(t)
+			ts.keys.FailureSpacing = row.spacing
+			ts.podIssuer.FailKeys(http.StatusServiceUnavailable)
+			answeredIssuerUnavailableAfter(t, "introspection with the listed caller's token, the key set's FailureSpacing "+row.spacing.String(),
+				introspectCall(t, ts.URL, ts.uiToken), row.retryAfter)
+		})
+	}
+	t.Run("refused", func(t *testing.T) {
+		ts := newTestServer(t)
+		ts.keys.FailureSpacing = 2500 * time.Millisecond
+		answeredRefusal(t, "introspection with the listed caller's token signed by a key the issuer never published",
+			introspectCall(t, ts.URL, ts.tokenSignedBy(t, neverPublished(t), dispatchAccount, "", podAudience)),
+			http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID")
+	})
+}
+
+// TestAGoogleAccountTokenThroughAnUnreadableKeySetIsAnswered503: identityAccount's Google path, a
+// caller presenting a machine's Google identity token, on POST /v1/oauth/introspect, where
+// BROKER_API_ACCOUNTS lists the account (newGoogleCallerServer), and on GET
+// /v1/project-repositories, where an edge-listener entry names it (googleEdgeServerOf).
+// "unreadable": the Google issuer's key set fails before the first check, and the route answers
+// 503 ISSUER_UNAVAILABLE with Retry-After 5. "refused": the token is signed by a key the issuer
+// never published while the set reads, and the route refuses it 401 ACCOUNT_TOKEN_INVALID, as
+// today.
+func TestAGoogleAccountTokenThroughAnUnreadableKeySetIsAnswered503(t *testing.T) {
+	t.Run("POST /v1/oauth/introspect", func(t *testing.T) {
+		t.Run("unreadable", func(t *testing.T) {
+			g := newGoogleCallerServer(t)
+			g.issuer.FailKeys(http.StatusServiceUnavailable)
+			answeredIssuerUnavailable(t, "introspection with the listed Google caller's token",
+				introspectCall(t, g.URL, googleIdentityToken(t, g.issuer, g.key, listenerGoogleAccount)))
+		})
+		t.Run("refused", func(t *testing.T) {
+			g := newGoogleCallerServer(t)
+			answeredRefusal(t, "introspection with the listed Google caller's token signed by a key the issuer never published",
+				introspectCall(t, g.URL, googleIdentityToken(t, g.issuer, neverPublished(t), listenerGoogleAccount)),
+				http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID")
+		})
+	})
+	t.Run("GET "+repositoriesPath, func(t *testing.T) {
+		const services = "edge-listener/edge-g/PRIV=google:" + edgeGoogleAccount
+		path := repositoriesPath + "?project=PRIV"
+		t.Run("unreadable", func(t *testing.T) {
+			google := oidctest.New(t)
+			key := google.PublishKey(t, "google-key")
+			ts, _ := googleEdgeServerOf(t, google, services)
+			google.FailKeys(http.StatusServiceUnavailable)
+			answeredIssuerUnavailable(t, "the Google edge listener's repositories",
+				bearerCall(t, ts.URL, http.MethodGet, path, googleIdentityToken(t, google, key, edgeGoogleAccount)))
+		})
+		t.Run("refused", func(t *testing.T) {
+			google := oidctest.New(t)
+			google.PublishKey(t, "google-key")
+			ts, _ := googleEdgeServerOf(t, google, services)
+			answeredRefusal(t, "the Google edge listener's repositories with its token signed by a key the issuer never published",
+				bearerCall(t, ts.URL, http.MethodGet, path, googleIdentityToken(t, google, neverPublished(t), edgeGoogleAccount)),
+				http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID")
+		})
+	})
+}
+
+// TestTokenLoginsThroughAnUnreadableKeySetSpendNoAddressRequest: a token login whose token check
+// reached no verdict, because the issuer's key set could not be read, gives back the address
+// request it spent before its token was checked. "unreadable": eleven logins from one address,
+// one more than its bucket holds (api.DefaultLauncherLimits), are each answered 503
+// ISSUER_UNAVAILABLE and none 429; once the set answers again and its FailureSpacing has passed
+// since its last failed read, the next login from that address is answered 200. The set's spacing
+// is 300 ms here (Retry-After 1), so the row waits no 5 s for it. "refused": a token signed by a
+// key the issuer never published, the set readable, is 401 TOKEN_INVALID and keeps its address
+// request as it did: once the bucket's ten are spent, the eleventh such login is 429.
+func TestTokenLoginsThroughAnUnreadableKeySetSpendNoAddressRequest(t *testing.T) {
+	burst := api.DefaultLauncherLimits.PerAddress.Burst
+	t.Run("unreadable", func(t *testing.T) {
+		const spacing = 300 * time.Millisecond
+		ts := newTestServer(t)
+		ts.keys.FailureSpacing = spacing
+		ts.podIssuer.FailKeys(http.StatusServiceUnavailable)
+		var answeredAt time.Time
+		for i := range burst + 1 {
+			got := ts.tokenLoginCall(t, ts.accountToken(t, daemonAccount, "", time.Hour))
+			answeredAt = time.Now()
+			answeredIssuerUnavailableAfter(t, fmt.Sprintf("the daemon's token login %d of %d from one address", i+1, burst+1), got, "1")
+		}
+		ts.podIssuer.FailKeys(0)
+		testwait.Eventually(t, "the key set's FailureSpacing to pass since the last login's answer", func() bool {
+			return time.Since(answeredAt) >= spacing
+		})
+		if got := ts.tokenLoginCall(t, ts.accountToken(t, daemonAccount, "", time.Hour)); got.status != http.StatusOK {
+			t.Fatalf("the daemon's token login once the key set answers again = %d %s, want 200: the %d logins the outage answered 503 spent none of the address's bucket of %d",
+				got.status, got.body, burst+1, burst)
+		}
+	})
+	t.Run("refused", func(t *testing.T) {
+		ts := newTestServer(t)
+		forger := neverPublished(t)
+		for i := range burst {
+			answeredRefusal(t, fmt.Sprintf("the daemon's token login %d of %d signed by a key the issuer never published", i+1, burst),
+				ts.tokenLoginCall(t, ts.tokenSignedBy(t, forger, daemonAccount, "", podAudience)), http.StatusUnauthorized, "TOKEN_INVALID")
+		}
+		got := ts.tokenLoginCall(t, ts.tokenSignedBy(t, forger, daemonAccount, "", podAudience))
+		var body wireError
+		_ = json.Unmarshal(got.body, &body)
+		if got.status != http.StatusTooManyRequests || body.Code != "RATE_LIMITED" {
+			t.Fatalf("the daemon's token login %d signed by a key the issuer never published = %d %s, want 429 RATE_LIMITED: each refused token keeps the address request it spent",
+				burst+1, got.status, got.body)
+		}
+	})
 }
 
 // pathParameter is a pattern's wildcard segment, such as {record}.
@@ -491,4 +618,25 @@ func answeredOAuthRefusal(t *testing.T, what string, got answered, status int, c
 	if got.status != status || body.Error != code || got.header.Get("Retry-After") != "" {
 		t.Fatalf("%s = %d (Retry-After %q) %s, want %d %s with no Retry-After", what, got.status, got.header.Get("Retry-After"), got.body, status, code)
 	}
+}
+
+// answeredIssuerUnavailableAfter is answeredIssuerUnavailable for a key set whose FailureSpacing a
+// row has set: the answer carries Retry-After retryAfter.
+func answeredIssuerUnavailableAfter(t *testing.T, what string, got answered, retryAfter string) {
+	t.Helper()
+	var body wireError
+	_ = json.Unmarshal(got.body, &body)
+	if got.status != http.StatusServiceUnavailable || got.header.Get("Retry-After") != retryAfter || body.Code != "ISSUER_UNAVAILABLE" || body.Error == "" {
+		t.Fatalf("%s while the issuer's key set cannot be read = %d (Retry-After %q) %s, want 503 with Retry-After %s and code ISSUER_UNAVAILABLE naming the outage",
+			what, got.status, got.header.Get("Retry-After"), got.body, retryAfter)
+	}
+}
+
+// introspectCall is POST /v1/oauth/introspect to base with bearer as the caller's own token,
+// reading back a token nobody issued, read whole.
+func introspectCall(t *testing.T, base, bearer string) answered {
+	t.Helper()
+	return send(t, http.DefaultClient, request(t, http.MethodPost, base+"/v1/oauth/introspect",
+		strings.NewReader(url.Values{"token": {"a-token-nobody-issued"}}.Encode()),
+		map[string]string{"Authorization": "Bearer " + bearer, "Content-Type": "application/x-www-form-urlencoded"}))
 }

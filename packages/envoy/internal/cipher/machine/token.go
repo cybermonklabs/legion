@@ -77,7 +77,10 @@ type TokenCredential struct {
 // POST /v1/oauth/exchange/pod-sessions and POST /v1/oauth/exchange/pod-sessions/release), so
 // they refuse the same accounts for the same reasons. With no Kubernetes issuer it is
 // ErrTokenLoginsOff. The other refusals are ErrTokenExpired, ErrTokenInvalid,
-// ErrTokenTooLongLived and ErrAccountNotListed; none repeats the token.
+// ErrTokenTooLongLived and ErrAccountNotListed; none repeats the token. A token whose check
+// reached no verdict because the issuer's key set could not be read is none of them: its error is
+// the verifier's, matching oidc.ErrIssuerUnavailable and carrying the key set's wait
+// (oidc.RetryAfter), since the token may be sound and its caller sends it again.
 //
 // The answer also names the person that BROKER_POD_OPERATORS maps the account to
 // (ServiceAccount.Person), as the setting is at this call. It names no person for an account that
@@ -96,9 +99,14 @@ func (s *Service) VerifyServiceToken(ctx context.Context, token string) (Service
 }
 
 // tokenRefusal is a ServiceAccount token that did not verify: ErrTokenExpired for one past its
-// expiry, else ErrTokenInvalid, each naming why.
+// expiry, else ErrTokenInvalid, each naming why. A check that reached no verdict because the
+// issuer's key set could not be read (oidc.ErrIssuerUnavailable) is no refusal: err comes back as
+// it came, with the key set's wait it carries, never as ErrTokenInvalid.
 func tokenRefusal(err error) error {
-	if errors.Is(err, oidc.ErrExpired) {
+	switch {
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
+		return err
+	case errors.Is(err, oidc.ErrExpired):
 		return fmt.Errorf("%w (%v)", ErrTokenExpired, err)
 	}
 	return fmt.Errorf("%w (%v)", ErrTokenInvalid, err)

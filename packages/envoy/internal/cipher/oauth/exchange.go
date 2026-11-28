@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // tokenTypeAccessToken is RFC 8693's own name for an access token: the only kind this provider's
@@ -473,6 +474,33 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 	}
 }
 
+// keySetUnreadable is the answer to err, NewAccessRequest's failure, when a subject or actor
+// token's check reached no verdict because its issuer's key set could not be read: keyFunc's
+// error wrapping oidc.ErrKeySet, which the library keeps as the Inner of a *jwt.ValidationError
+// inside its own invalid_request. A ValidationError unwraps to nothing, so the Inner is read from
+// it rather than through errors.Is on err. The answer is 503 temporarily_unavailable
+// ISSUER_UNAVAILABLE, never the invalid_request the library wrote, with Retry-After the key set's
+// FailureSpacing that the error carries (oidc.RetryAfter), or oidc.DefaultKeysFailureSpacing for
+// one that carries none, rounded up to whole seconds (ratelimit.RetryAfterSeconds); it writes
+// the ERROR line the token endpoint writes for every answer of 500 or more (writeError). Every
+// other err is nil: the library's refusal stands.
+func keySetUnreadable(err error) *Refusal {
+	var validation *jwt.ValidationError
+	if !errors.As(err, &validation) || !errors.Is(validation.Inner, oidc.ErrKeySet) {
+		return nil
+	}
+	slog.Error("broker: OAuth request failed", "error", validation.Inner)
+	wait, ok := oidc.RetryAfter(validation.Inner)
+	if !ok {
+		wait = oidc.DefaultKeysFailureSpacing
+	}
+	return &Refusal{
+		Status: http.StatusServiceUnavailable, OAuthError: "temporarily_unavailable", Code: "ISSUER_UNAVAILABLE",
+		Message:    "the broker could not check the subject or actor token, because its issuer's key set could not be read: send it again after Retry-After",
+		RetryAfter: ratelimit.RetryAfterSeconds(wait),
+	}
+}
+
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
 // Dispatch access token, bound to the key its DPoP proof names, or, for a read trade that sends a
 // holder proof, to the key that proof names (holderKey); or, for a result entry's run and a
@@ -536,6 +564,11 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // Both answers end the same way, with the claim, the commit and the warning for a name the claim
 // took (logSessionTaken), and then the answer is written.
 //
+// A subject or actor token whose check reached no verdict, because its issuer's key set could not
+// be read (keySetUnreadable), is no refusal of the token: 503 temporarily_unavailable
+// ISSUER_UNAVAILABLE with Retry-After. The library calls keyFunc before it reads exp or iat, so
+// an expired token sent while its key set cannot be read is answered so too.
+//
 // trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
 // the library has validated the request, before the exchange decides anything, and a *Refusal it
 // answers is written as that refusal. Nil runs nothing.
@@ -553,6 +586,10 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	request, err := p.oauth.NewAccessRequest(ctx, r, oauthstore.NewExchangeSession())
 	noteClient(ctx, request)
 	if err != nil {
+		if unreadable := keySetUnreadable(err); unreadable != nil {
+			WriteRefusal(w, unreadable)
+			return
+		}
 		p.writeError(ctx, w, request, err)
 		return
 	}
