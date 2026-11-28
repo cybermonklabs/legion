@@ -5,14 +5,15 @@ import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
- *  tick, per open tab, is unremarkable broker load (`useAgents.ts` polls its own list at the same
- *  cadence, for the same reason, but the two are independent constants - nothing ties them). */
+ *  tick, per open tab, plus one each time a tab is shown again, is unremarkable broker load
+ *  (`useAgents.ts` polls its own list at the same cadence, for the same reason, but the two are
+ *  independent constants - nothing ties them). */
 const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
 
 /** `null` is a Dispatch with no secrets broker; anything else - even an empty list - is one that
- *  answered. `enabled` and `refetchInterval` below both gate on this one fact through this one
- *  function, so the two can never drift apart: a `null`-holding query can neither fetch again on
- *  its own nor have the poll armed for it. */
+ *  answered. `enabled`, `refetchInterval` and `refetchOnWindowFocus` below all gate on this one
+ *  fact through this one function, so they can never drift apart: a `null`-holding query can
+ *  neither fetch again on its own nor have the poll or the focus refetch armed for it. */
 function holdsList(query: Query<CredentialPendingResponse | null>): boolean {
   return query.state.data !== null;
 }
@@ -26,13 +27,16 @@ function holdsList(query: Query<CredentialPendingResponse | null>): boolean {
  *  it holds a list, it also asks again every `CREDENTIAL_POLL_INTERVAL_MS` while the page is
  *  visible: TanStack's interval timer keeps ticking on a hidden tab, but leaves its fetch a no-op
  *  there unless `refetchIntervalInBackground` is set, which this query leaves unset - since no
- *  Dispatch event tells the page a request arrived at or left the broker. */
+ *  Dispatch event tells the page a request arrived at or left the broker. Each return to the tab
+ *  asks again too, however fresh the list is: a request decided on the broker's page, in the tab
+ *  its row opened, leaves the list as the person comes back. */
 export const credentialPendingQuery = () =>
   queryOptions({
     enabled: holdsList,
     queryKey: ["credential-pending"],
     queryFn: () => api.getCredentialPending(),
     refetchInterval: (query) => (holdsList(query) ? CREDENTIAL_POLL_INTERVAL_MS : false),
+    refetchOnWindowFocus: (query) => (holdsList(query) ? "always" : false),
   });
 
 /** The event feed's first start after a gap - any reconnect but a 4001 rotation whose next socket

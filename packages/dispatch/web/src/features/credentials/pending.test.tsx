@@ -1,14 +1,16 @@
 import { expect, spyOn, test } from "bun:test";
 import { type Query, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { CredentialPendingResponse } from "../../api/types";
+import { appClient, refocus, restoreWindowFocus } from "../issue-page/window-focus-fixture";
 import { credentialPendingQuery, useCredentialRequests } from "./pending";
 
-function renderPending() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPending(
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   const view = renderHook(() => useCredentialRequests(), {
     wrapper: ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
@@ -18,9 +20,10 @@ function renderPending() {
 }
 
 // A `null`-holding query (no secrets broker) can neither fetch again on its own nor have the poll
-// armed: `enabled` and `refetchInterval` both read the same `query.state.data !== null` fact, so
-// if one ever answered differently from the other a brokerless Dispatch would start polling.
-test("credentialPendingQuery's enabled and refetchInterval agree: armed for a list, off for null", () => {
+// or the focus refetch armed: `enabled`, `refetchInterval` and `refetchOnWindowFocus` all read the
+// same `query.state.data !== null` fact, so if one ever answered differently from the others a
+// brokerless Dispatch would start asking again.
+test("credentialPendingQuery's enabled, refetchInterval and refetchOnWindowFocus agree: armed for a list, off for null", () => {
   const query = credentialPendingQuery();
   const heldNull = { state: { data: null } } as unknown as Query<CredentialPendingResponse | null>;
   const heldList = {
@@ -31,12 +34,40 @@ test("credentialPendingQuery's enabled and refetchInterval agree: armed for a li
   expect(query.refetchInterval).toBeInstanceOf(Function);
   const enabled = query.enabled as (query: typeof heldNull) => boolean;
   const refetchInterval = query.refetchInterval as (query: typeof heldNull) => number | false;
+  const refetchOnWindowFocus = query.refetchOnWindowFocus as (
+    query: typeof heldNull
+  ) => boolean | "always";
 
   expect(enabled(heldNull)).toBe(false);
   expect(refetchInterval(heldNull)).toBe(false);
   expect(enabled(heldList)).toBe(true);
   expect(typeof refetchInterval(heldList)).toBe("number");
   expect(refetchInterval(heldList)).toBeGreaterThan(0);
+  expect(refetchOnWindowFocus(heldNull)).toBe(false);
+  expect(refetchOnWindowFocus(heldList)).toBe("always");
+});
+
+// A secret request's row opens the broker's page in a new tab, so the person decides it there and
+// comes back. The return asks for the list again although it is fresher than the app's 30 s
+// staleness, so the decided request leaves the Inbox then and not at the next poll.
+test("a return to the tab asks for a held list again, however fresh it is", async () => {
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+  const queryClient = appClient();
+  const { view } = renderPending(queryClient);
+  try {
+    await waitFor(() => expect(view.result.current.status).toBe("listed"));
+    expect(getCredentialPending).toHaveBeenCalledTimes(1);
+
+    await act(() => refocus(queryClient));
+
+    await waitFor(() => expect(getCredentialPending).toHaveBeenCalledTimes(2));
+  } finally {
+    view.unmount();
+    getCredentialPending.mockRestore();
+    restoreWindowFocus();
+  }
 });
 
 // LEGION-575 round 2. A background poll that fails after a list already loaded must not blank a
