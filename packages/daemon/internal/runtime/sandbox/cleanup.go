@@ -11,62 +11,50 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// CleanupTree deletes every issue Sandbox of tree, and with each the role Secrets it owns and the
-// kept volume it owns where its pod keeps one (deleteSandbox says how its foreground delete takes
-// them). It keeps nothing for a child the tree carried into a tree of its own: an issue pod's
-// ephemeral disk is the pod's own, which went with that pod, and a kept volume goes with its
-// Sandbox here, so there is no disk to hand over and the child's next launch creates a Sandbox of
-// its own (ensureSandbox). The tree's cleanup reservation calls it (store.CleanupReservedTree)
-// once every stored claim of the tree has retired, or runs nothing and belongs to an issue that
-// moved, so no launch creates a Sandbox of the tree meanwhile. The API's own listing by the
-// tree's label is the census: each Sandbox it names is deleted, in any order, and awaited, and the
-// listing is read again until none is left. Each delete is fenced to the listed object's UID and
-// resourceVersion, and one the object changed since — the precondition the API refuses with 409,
-// as a controller writing status through a foreground delete does — lists again after a recheck
-// interval rather than spinning the census; a Sandbox the new tree's launch relabelled meanwhile
-// fails the same fence and the next listing no longer names it, so it is left to that tree. A
-// Sandbox already gone is gone, so a retry after a failure finishes the rest.
-func (r *Runtime) CleanupTree(ctx context.Context, tree string) error {
-	for {
-		sandboxes, err := r.treeSandboxes(ctx, tree)
-		if err != nil {
-			return err
-		}
-		if len(sandboxes) == 0 {
-			return nil
-		}
-		for _, object := range sandboxes {
-			err := r.deleteSandbox(ctx, object)
-			if apierrors.IsConflict(err) {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(recheckInterval):
-				}
-				break
-			}
-			if err != nil {
-				return err
-			}
-		}
+// CleanupIssue deletes the issue's own Sandbox, named by the issue's identity alone
+// (issueSandboxName), and with it the role Secrets it owns and the kept volume it owns where its
+// pod keeps one (deleteSandbox says how its foreground delete takes them): nothing of another
+// issue, whatever tree either stored, and nothing found by the tree label, which is a Sandbox's
+// creation's and read by no decision (R17 of dispatch://INFRA-3320, decision 14 of
+// dispatch://INFRA-4730). The issue's cleanup reservation calls it (store.CleanupReservedIssue)
+// once every stored claim of the issue has retired, so no launch of the issue creates a Sandbox
+// meanwhile; it runs under the pod's launch turn all the same, as every other delete of an issue
+// Sandbox does. The issue's close has usually deleted the Sandbox already (SuspendIssue), and one
+// already gone is gone, so a retry after a failure finishes. A Sandbox by that name labelled with
+// another project or issue, or the image probe's, is not this issue's: it is left alone, with an
+// error that names it.
+func (r *Runtime) CleanupIssue(ctx context.Context, issue string) error {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return fmt.Errorf("cleanup issue %s: %w", issue, err)
 	}
+	endTurn, err := r.lockPod(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer endTurn()
+	object, err := r.sandboxClient().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cleanup issue %s: read Sandbox %s: %w", issue, name, err)
+	}
+	if !issueOwns(object, r.project, issue) {
+		return fmt.Errorf("cleanup issue %s: Sandbox %s does not belong to this issue (labels %v); kept", issue, name, object.GetLabels())
+	}
+	if err := r.deleteStoredSandbox(ctx, name); err != nil {
+		return fmt.Errorf("cleanup issue %s: %w", issue, err)
+	}
+	r.log.Info("sandbox runtime: the issue's cleanup deleted its Sandbox and the role Secrets it owned", "issue", issue, "sandbox", name, "uid", object.GetUID())
+	return nil
 }
 
-// treeSandboxes lists tree's issue Sandboxes from the API, the image probe's left out.
-func (r *Runtime) treeSandboxes(ctx context.Context, tree string) ([]*unstructured.Unstructured, error) {
-	list, err := r.sandboxClient().List(ctx, metav1.ListOptions{
-		LabelSelector: labelProject + "=" + r.project + "," + labelTree + "=" + labelValue(tree),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cleanup tree %s: list its Sandboxes: %w", tree, err)
-	}
-	var sandboxes []*unstructured.Unstructured
-	for i := range list.Items {
-		if object := &list.Items[i]; object.GetLabels()[labelProbe] == "" {
-			sandboxes = append(sandboxes, object)
-		}
-	}
-	return sandboxes, nil
+// issueOwns is whether object, the Sandbox by issue's name, is issue's own: labelled with project
+// and with issue, and not the image probe's. Its tree label decides nothing.
+func issueOwns(object *unstructured.Unstructured, project, issue string) bool {
+	labels := object.GetLabels()
+	return labels[labelProject] == project && labels[labelIssue] == labelValue(issue) && labels[labelProbe] == ""
 }
 
 // deleteSandbox deletes object with foreground propagation, fenced to its UID and resourceVersion,

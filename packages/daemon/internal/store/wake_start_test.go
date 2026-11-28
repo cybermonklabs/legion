@@ -121,8 +121,8 @@ func TestATeardownReadsAnEntryStartOrACheckLookBesideAWakeAsWorkThePodWasGiven(t
 		t.Run(tc.name, func(t *testing.T) {
 			st := migratedStore(t)
 			last := wakesBesideWork(t, st, tc.entry, tc.look)
-			decision, err := st.IssueRelease(context.Background(), "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue,
-				IssueGeneration: 1, TreeGeneration: 1, Row: last}, record.OutOfWorkflow)
+			decision, err := st.IssueRelease(context.Background(), "legion", IssueReleased{Issue: rootIssue, Generation: 1,
+				Row: last}, record.OutOfWorkflow)
 			if err != nil {
 				t.Fatalf("IssueRelease: %v", err)
 			}
@@ -403,8 +403,8 @@ func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
 	}
 	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
 
-	decision, err := st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1,
-		TreeGeneration: 1, Row: last}, record.OutOfWorkflow)
+	decision, err := st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Generation: 1, Row: last},
+		record.OutOfWorkflow)
 	if err != nil || decision.Act != ReleaseActs || !decision.PodTaken {
 		t.Fatalf("the teardown's next attempt = %s for %s (pod taken %t), %v; want it to act: the pod is gone", decision.Act, decision.Cause, decision.PodTaken, err)
 	}
@@ -433,7 +433,7 @@ func TestACommittedReleaseIsNeverCancelled(t *testing.T) {
 	boundary, stop, last := releaseTwoRolesThroughTheStore(t, st)
 	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
-	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 	committed, err := st.CommitIssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 	if err != nil || committed.Act != ReleaseActs || !committed.Committed || committed.PodTaken {
 		t.Fatalf("the runtime's read = %s (committed %t, pod taken %t), %v; want it to act and commit", committed.Act, committed.Committed, committed.PodTaken, err)
@@ -466,7 +466,7 @@ func TestARuntimeReadThatDoesNotActCommitsNothing(t *testing.T) {
 	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
 	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
-	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 	read, err := st.CommitIssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 	if err != nil || read.Act != ReleaseCancel || read.Committed {
 		t.Fatalf("the runtime's read after the takeover = %s (committed %t), %v; want a cancel that commits nothing", read.Act, read.Committed, err)

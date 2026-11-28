@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  The first boot of this release converts the store in numbered steps, each in its own
+  transaction and recorded in `tree_conversions`, so a boot stopped midway goes on from the next
+  step: it fences each queued row of the release before with its issue's run and entry, carries a
+  lingering or handed-over run, its design gate and its retention onto the issue, marks each claim
+  whose issue holds its own gate, so an operator's claim on a root is its tree's root, and tells
+  each root that stands under a parent at work once. Migration `20261122154645_issue_facts` adds
+  `issue_lifecycles`, `tree_conversions`, the issue's `retained_until`, `carried_generation`,
+  `carried_gate`, `pending_close`, `seen_seq` and `held_session_writes`, the claim's
+  `launch_tree`, `issue_epoch`, `holds_gate` (set on each claim whose issue is its stored tree),
+  `published_since` and `unpublished_since`, the outbox's `attempt_key` and `attempt_body`, the
+  outbox kind `retention_end`, and the design-news reads keyed by an issue's gate root on the
+  Dispatch chain; it writes the outbox's kind check last, with every kind.
+  `20261122154644_issue_holds_gate` adds `issues.holds_gate`. The old tree columns stay written,
+  so the release before can run again: `docs/kubernetes.md`, "Rolling back the release that stores
+  no tree", gives the step a rollback runs first.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

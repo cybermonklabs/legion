@@ -218,7 +218,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	}
 	// The second rule then releases the pod no claim can use. Its mark names no role, so it closes
 	// no resume.
-	marked, err := store.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := store.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: []IdleReleaseRow{{
 			Kind: "issue_release", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`),
 			Boundary: true}}}, nil

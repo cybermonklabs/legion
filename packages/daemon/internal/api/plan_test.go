@@ -100,10 +100,10 @@ func givenPlan(issue string, generation uint64, by claim.Token, artifactID strin
 
 var implementerReviewer = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}
 
-// register_plan takes a plan from the architect of the issue's tree alone, at a version Dispatch
-// has, and answers each cause of a plan this release does not carry out with its own reason
-// (plan.Supported) and a role nobody defines with plan.Validate's: both checks run, so a plan
-// with a cause of each kind is answered both, and none of them records anything. A plan both
+// register_plan takes a plan from an architect that acts on the issue on its Dispatch chain, at a
+// version Dispatch has, and answers each cause of a plan this release does not carry out with its
+// own reason (plan.Supported) and a role nobody defines with plan.Validate's: both checks run, so a
+// plan with a cause of each kind is answered both, and none of them records anything. A plan both
 // checks take is recorded as the one fact the workflow reads (intake.PlanGiven) and answered with
 // its tasks. No id decides whether a registration given again is the one taken (intake.ApplyFact
 // applies every PlanGiven), so each registration reaches this handler, which stores nothing, under
@@ -697,12 +697,35 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 	}
 }
 
+// moveCopy writes key's row of the copy of Dispatch's issues under parent ("" for none) at status,
+// as a reading at seq writes it (record.PutDispatchIssue): a later seq moves a row seedCopy wrote.
+func moveCopy(t *testing.T, h *harness, key, parent, status string, seq int64) {
+	t.Helper()
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: testDispatchProject, Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(parent), Labels: record.Carry([]string{})})
+	}); err != nil {
+		t.Fatalf("move the copy's row of %s under %q: %v", key, parent, err)
+	}
+}
+
+// notOwnedNaming holds recorder to the 403 ISSUE_NOT_OWNED of op on issue, whose sentence names
+// owner, the architect claim that acts on the issue on its Dispatch chain (intake.CallRefusal).
+func notOwnedNaming(t *testing.T, recorder *httptest.ResponseRecorder, op, issue string, owner claim.Token) {
+	t.Helper()
+	body := refused(t, recorder, http.StatusForbidden, "ISSUE_NOT_OWNED")
+	if !strings.Contains(body, op+" of "+issue+" is refused") || !strings.Contains(body, string(owner)) {
+		t.Fatalf("the refusal of %s of %s says %q, want it to name the call and %s, the architect that acts on the issue", op, issue, body, owner)
+	}
+}
+
 // An owner gives the plan before the work starts: a root after its own start and before
 // its gate opens, and a child before release_children records it, which the daemon has no record
-// of yet. The route takes a plan for such a child when Dispatch's parent chain reaches the
-// architect's tree and the child has not entered the workflow, and records it at generation 0;
-// it answers an issue whose chain does not reach the tree, a key Dispatch does not have, one in
-// the workflow already, and a recorded issue of another tree, as release_children answers them.
+// of yet. The route takes a plan for such a child from an architect that acts on it on its
+// Dispatch chain as the copy holds it, while the child has not entered the workflow, and records it
+// at generation 0. It refuses ISSUE_NOT_OWNED, naming the architect that acts on the issue, an
+// issue on no chain through the caller's issue, recorded or not, as every architect's call is
+// refused; it answers a key Dispatch does not have and one in the workflow already.
 //
 // This is the route's half: what the engine does with the fact — the
 // root's gate opens and its first step is implementing, the released child's first phase is
@@ -720,6 +743,18 @@ func TestAPlanGivenBeforeTheWorkStartsIsTheFirstStep(t *testing.T) {
 		"LEGION-299": {Key: "LEGION-299", Status: "todo"},
 		"LEGION-300": {Key: "LEGION-300", Status: "backlog", Parent: &otherRoot},
 	}
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		for _, row := range []struct{ key, parent, status string }{
+			{"LEGION-209", root, "backlog"}, {"LEGION-211", root, "in_progress"}, {"LEGION-299", "", "todo"}, {"LEGION-300", otherRoot, "backlog"},
+		} {
+			if err := seedCopy(tx, row.key, row.parent, row.status); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the copy's chains: %v", err)
+	}
 	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
 	statuses.givePlan(childDoc, 1, taskBlock("a", "implementer reviewer"))
 
@@ -729,14 +764,12 @@ func TestAPlanGivenBeforeTheWorkStartsIsTheFirstStep(t *testing.T) {
 	if recorder := registerPlan(h, architect.grant(t), "LEGION-209", childDoc, 1); recorder.Code != http.StatusOK {
 		t.Fatalf("register the unreleased child's plan = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-300", childDoc, 1), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
-		"LEGION-300 is outside the architect tree LEGION-208")
+	notOwnedNaming(t, registerPlan(h, architect.grant(t), "LEGION-300", childDoc, 1), "register_plan", "LEGION-300", "legion-legion-legion-300-architect")
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-404", childDoc, 1), http.StatusNotFound, "ISSUE_NOT_FOUND",
 		"LEGION-404 is not a Dispatch issue")
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-211", childDoc, 1), http.StatusConflict, "ISSUE_ALREADY_RELEASED",
 		"LEGION-211 is in_progress in Dispatch and the daemon holds no record of it; register_plan takes a plan for an issue the daemon has not recorded only while it is triage, backlog, icebox or todo")
-	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-500", childDoc, 1), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
-		"issue is outside the architect tree")
+	notOwnedNaming(t, registerPlan(h, architect.grant(t), "LEGION-500", childDoc, 1), "register_plan", "LEGION-500", "legion-legion-legion-500-architect")
 
 	want := []intake.Fact{
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...),
@@ -747,11 +780,12 @@ func TestAPlanGivenBeforeTheWorkStartsIsTheFirstStep(t *testing.T) {
 	}
 }
 
-// A plan names the owner that gave it: the architect of tree LEGION-208 gives a plan for
-// LEGION-209 before releasing it, and the fact names that architect. Once LEGION-209 is admitted
-// again as a root of its own, the plan is its new architect's to give: that architect's plan is
-// recorded at the issue's run, naming it, and the first architect, whose tree the issue has left,
-// is refused.
+// A plan names the owner that gave it: the architect of LEGION-208 gives a plan for LEGION-209
+// before releasing it, while LEGION-209 stands under LEGION-208 on its Dispatch chain, and the fact
+// names that architect. Once a person moves LEGION-209 out from under LEGION-208 in Dispatch and
+// it is admitted as a root of its own, the plan is its own architect's to give: that architect's
+// plan is recorded at the issue's run, naming it, and the first architect, which no longer acts on
+// the issue on its chain, is refused ISSUE_NOT_OWNED, naming the architect that does.
 //
 // This is the route's half: that the first step of the re-admitted root
 // takes no plan of an earlier owner — the default steps or its own owner's plan, the log line and
@@ -764,6 +798,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		"LEGION-208": {Key: "LEGION-208", Status: "todo", LastSeq: 7},
 		"LEGION-209": {Key: "LEGION-209", Status: "backlog", Parent: &root},
 	}
+	moveCopy(t, h, "LEGION-209", root, "backlog", 1)
 	for version := 1; version <= 3; version++ {
 		statuses.givePlan(childDoc, version, taskBlock("a", "implementer reviewer"))
 	}
@@ -771,13 +806,13 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		t.Fatalf("the first owner's plan = %d %s, want 200", recorder.Code, recorder.Body)
 	}
 
+	moveCopy(t, h, "LEGION-209", "", "todo", 2)
 	seedIssueAt(t, h, "LEGION-209", phase.Admitted)
 	owner := newLiveClaim(t, h, "LEGION-209", claim.RoleArchitect)
 	if recorder := registerPlan(h, owner.grant(t), "LEGION-209", childDoc, 2); recorder.Code != http.StatusOK {
 		t.Fatalf("the new owner's plan = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	refusedSaying(t, registerPlan(h, earlier.grant(t), "LEGION-209", childDoc, 3), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
-		"issue is outside the architect tree")
+	notOwnedNaming(t, registerPlan(h, earlier.grant(t), "LEGION-209", childDoc, 3), "register_plan", "LEGION-209", owner.token)
 
 	want := []intake.Fact{
 		givenPlan("LEGION-209", 0, earlier.token, childDoc, 1, implementerReviewer...),
@@ -788,54 +823,47 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	}
 }
 
-// seedMember records key in tree at admitted in its first run, a child of the tree's root.
-func seedMember(t *testing.T, h *harness, key, tree string) {
-	t.Helper()
-	parent := tree
-	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
-			Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: tree, Project: testProject, Title: key,
-			Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "in_progress",
-		})
-	}); err != nil {
-		t.Fatalf("seed %s in the tree %s: %v", key, tree, err)
-	}
-}
-
-// Who owns a recorded issue is one rule, record.ArchitectOfTree: an architect of the issue's tree
-// now, the root's or a sub-architect's, the rule the workflow holds the giver of a stored plan to
-// at the issue's first step. A sub-architect, the architect of LEGION-211, gives a plan for
-// LEGION-209 while LEGION-211 stands in the tree LEGION-208. Once LEGION-211 stands in a tree of
-// its own it is no architect of that tree, whatever tree its claim was registered in:
-// register_plan and stop_task both refuse it, and the root's architect is still taken.
-func TestAnArchitectWhoseIssueLeftTheTreeOwnsNoIssueOfIt(t *testing.T) {
+// Who may give and stop the plan of a recorded issue is one rule, the rule every architect's call
+// is held to (intake.CallRefusal): an architect that acts on the issue on its Dispatch chain now,
+// the issue's own or one above it, which the workflow also holds the giver of a stored plan to at
+// the issue's first step (record.PlanOwners). The architect of LEGION-211 gives a plan for
+// LEGION-209 while LEGION-209 stands under LEGION-211 on its chain; the architect of LEGION-210, a
+// sibling, never acts on it, and its refusal names the architect of LEGION-211, the nearest above
+// LEGION-209 that holds its role. Once a person moves LEGION-209 from under LEGION-211 to stand
+// directly under LEGION-208, the architect of LEGION-211 acts on it no longer, whatever tree its
+// claim was registered in: register_plan and stop_task both refuse it ISSUE_NOT_OWNED, naming the
+// architect of LEGION-208, whose plan is still taken.
+func TestAnArchitectWhoseIssueLeftTheChainOwnsNoIssueUnderIt(t *testing.T) {
 	h, facts, statuses := planHarness(t)
-	seedMember(t, h, "LEGION-209", "LEGION-208")
-	seedMember(t, h, "LEGION-211", "LEGION-208")
-	sub := newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect)
+	seedChain(t, h,
+		chainRow{"LEGION-211", "LEGION-208", "in_progress", phase.Implementing},
+		chainRow{"LEGION-210", "LEGION-208", "in_progress", phase.Implementing},
+		chainRow{"LEGION-209", "LEGION-211", "in_progress", phase.Admitted},
+	)
+	above := newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect)
+	sibling := newLiveClaimIn(t, h, "LEGION-208", "LEGION-210", claim.RoleArchitect)
 	root := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	for version := 1; version <= 3; version++ {
 		statuses.givePlan(childDoc, version, taskBlock("a", "implementer reviewer"))
 	}
-	if recorder := registerPlan(h, sub.grant(t), "LEGION-209", childDoc, 1); recorder.Code != http.StatusOK {
-		t.Fatalf("the sub-architect's plan while its issue stands in the tree = %d %s, want 200", recorder.Code, recorder.Body)
+	if recorder := registerPlan(h, above.grant(t), "LEGION-209", childDoc, 1); recorder.Code != http.StatusOK {
+		t.Fatalf("the plan of the architect above LEGION-209 = %d %s, want 200", recorder.Code, recorder.Body)
 	}
+	notOwnedNaming(t, registerPlan(h, sibling.grant(t), "LEGION-209", childDoc, 2), "register_plan", "LEGION-209", above.token)
 
-	seedIssueAt(t, h, "LEGION-211", phase.Admitted)
-	refusedSaying(t, registerPlan(h, sub.grant(t), "LEGION-209", childDoc, 2), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
-		"issue is outside the architect tree")
-	refusedSaying(t, stopTask(h, sub.grant(t), "LEGION-209", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE",
-		"issue is outside the architect tree")
+	moveCopy(t, h, "LEGION-209", "LEGION-208", "in_progress", 2)
+	notOwnedNaming(t, registerPlan(h, above.grant(t), "LEGION-209", childDoc, 2), "register_plan", "LEGION-209", root.token)
+	notOwnedNaming(t, stopTask(h, above.grant(t), "LEGION-209", "a"), "stop_task", "LEGION-209", root.token)
 	if recorder := registerPlan(h, root.grant(t), "LEGION-209", childDoc, 3); recorder.Code != http.StatusOK {
 		t.Fatalf("the root's architect's plan = %d %s, want 200", recorder.Code, recorder.Body)
 	}
 
 	want := []intake.Fact{
-		givenPlan("LEGION-209", 1, sub.token, childDoc, 1, implementerReviewer...),
+		givenPlan("LEGION-209", 1, above.token, childDoc, 1, implementerReviewer...),
 		givenPlan("LEGION-209", 1, root.token, childDoc, 3, implementerReviewer...),
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("facts = %#v, want %#v: the sub-architect's plan while it owned the issue, then the root's, and no fact of the refused calls", got, want)
+		t.Fatalf("facts = %#v, want %#v: the plan of the architect above while it acted on the issue, then the root's, and no fact of the refused calls", got, want)
 	}
 }
 
@@ -843,11 +871,13 @@ func stopTask(h *harness, grant, issue, task string) *httptest.ResponseRecorder 
 	return h.request(http.MethodPost, "/legion/v1/tasks/stop", map[string]any{"grantId": grant, "issue": issue, "task": task}, nil)
 }
 
-// stop_task is the owner's stop of one task of a recorded issue: the architect of the
-// issue's tree asks for it, and the route records the one fact the workflow stops the task by
-// (intake.TaskStopped), each request its own, so a task stopped, started again by a later version
-// and stopped once more is stopped twice. Whether the plan holds the task and whether it is done
-// is the workflow's to answer, in the words the route writes as they came.
+// stop_task is the owner's stop of one task of a recorded issue: an architect that acts on the
+// issue on its Dispatch chain asks for it, and the route records the one fact the workflow stops
+// the task by (intake.TaskStopped), each request its own, so a task stopped, started again by a
+// later version and stopped once more is stopped twice. An architect that does not act on the
+// issue is refused ISSUE_NOT_OWNED, naming the architect that does. Whether the plan holds the
+// task and whether it is done is the workflow's to answer, in the words the route writes as they
+// came.
 func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 	h, facts, _ := planHarness(t)
 	seedIssueAt(t, h, "LEGION-500", phase.Implementing)
@@ -857,7 +887,7 @@ func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
 	refused(t, stopTask(h, worker.grant(t), "LEGION-208", "a"), http.StatusForbidden, "ARCHITECT_REQUIRED")
 	refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-208", " "), http.StatusBadRequest, "MISSING_FIELD", "task is required")
 	refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-404", "a"), http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
-	refusedSaying(t, stopTask(h, architect.grant(t), "LEGION-500", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
+	notOwnedNaming(t, stopTask(h, architect.grant(t), "LEGION-500", "a"), "stop_task", "LEGION-500", "legion-legion-legion-500-architect")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused stops recorded %#v, want nothing", got)
 	}

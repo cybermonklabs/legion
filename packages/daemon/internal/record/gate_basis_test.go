@@ -488,10 +488,10 @@ func TestStoreRoundTripsTheAncestorAnIssueIsAViewOn(t *testing.T) {
 		if !reflect.DeepEqual(written(t, got), &view) {
 			t.Fatalf("the view's issue = %#v, want %#v", got, view)
 		}
-		issues, err := records.TreeIssues(ctx, tx, view.Key)
+		issues, err := records.IssuesByKey(ctx, tx, []string{view.Key})
 		must(t, err)
 		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{view}) {
-			t.Fatalf("tree issues = %#v, want %#v", issues, []Issue{view})
+			t.Fatalf("issues by key = %#v, want %#v", issues, []Issue{view})
 		}
 	})
 	none := view

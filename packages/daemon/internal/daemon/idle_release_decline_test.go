@@ -280,6 +280,11 @@ func TestAnUnownedPodWhoseDeclineNamesUnpushedWorkIsKept(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
+	// The launcher's decline tells the issue's architect, routed on the issue's Dispatch chain
+	// (record.OwningArchitect), so the rig writes the copy's row of the root, as a reading of
+	// Dispatch does; its architect is supervised by no daemon here, so the notice goes to the
+	// controller.
+	putCopyRow(t, rig.pool, rig.issue.Key, "", rig.issue.Status)
 	rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
 	rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
 	rig.passes(t, 1)

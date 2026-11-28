@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // servingReleasedClaim is role's claim of the root issue as a release left it: suspended as
@@ -64,7 +63,7 @@ func TestAReleaseIsMarkedNothingWhileTheProjectIsPaused(t *testing.T) {
 		t.Fatalf("hold the pod: %v", err)
 	}
 	var seen pods.IdleView
-	decide := func(view pods.IdleView) (IdleReleaseMark, error) {
+	decide := func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		seen = view
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}`)},
@@ -555,75 +554,6 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 		if resume.Pause != 0 {
 			t.Fatalf("after a later release the stranded read keeps the held resume %+v; that release let its pod go", resume)
 		}
-	}
-}
-
-// Decision 13 of dispatch://INFRA-3759: a tree's cleanup deletes every pod of the tree, so the
-// transaction that confirms it ends the pause's hold of each, as deleted. An operator's tree of
-// another project's issue, whose claim the daemon runs and whose issue it keeps no record of, is
-// cleaned up the same way: its pod's hold is found through the tree's claims. A record that
-// another project's daemon keeps on the same database, filing an issue under that tree, files no
-// pod of this project's there: the hold of this daemon's own spawn of that issue, in a tree of its
-// own, stands.
-func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	st := migratedStore(t)
-	openLingeringTree(t, st)
-	pause, _ := pauseLegion(t, st, pausedAt)
-	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
-		t.Fatalf("hold the pod: %v", err)
-	}
-	lifecycle, reserved, err := st.ReserveWorkflowTreeCleanup(ctx, "legion", rootIssue, 1)
-	if err != nil || !reserved {
-		t.Fatalf("reserve the cleanup = %+v, %t, %v", lifecycle, reserved, err)
-	}
-	if err := st.CleanupReservedTree(ctx, "legion", rootIssue, lifecycle.Epoch, &countingReleaser{}); err != nil {
-		t.Fatalf("clean the tree up: %v", err)
-	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || held {
-		t.Fatalf("after the cleanup a hold stands = %t, %v; want it ended", held, err)
-	}
-	if n := pauseCount(t, st, `select count(*) from project_pause_pod_holds where issue = $1 and ended_why = 'deleted'`, rootIssue); n != 1 {
-		t.Fatalf("holds ended as deleted = %d, want 1", n)
-	}
-
-	const other = "OTHER-5"
-	if _, err := st.OpenTreeLifecycle(ctx, "legion", other, treelifecycle.AuthorityOperator); err != nil {
-		t.Fatalf("open the operator's tree %s: %v", other, err)
-	}
-	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-other-5-architect", Project: "legion", Tree: other, Issue: other,
-		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateRetired}); err != nil {
-		t.Fatalf("seed the retired architect of %s: %v", other, err)
-	}
-	if _, err := holdPod(st, pause, other, pausedAt); err != nil {
-		t.Fatalf("hold the pod of %s: %v", other, err)
-	}
-	const recorded = "OTHER-9"
-	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-		values ($1, $2, 'OTHER', 'child', 'planning', 1, 'in_progress', 'A', 1)`, recorded, other); err != nil {
-		t.Fatalf("record %s as OTHER's issue under the tree %s: %v", recorded, other, err)
-	}
-	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-other-9-architect", Project: "legion", Tree: recorded, Issue: recorded,
-		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateRetired}); err != nil {
-		t.Fatalf("seed the retired architect of %s: %v", recorded, err)
-	}
-	if _, err := holdPod(st, pause, recorded, pausedAt); err != nil {
-		t.Fatalf("hold the pod of %s: %v", recorded, err)
-	}
-	operatorTree, reserved, err := st.ReserveOperatorTreeCleanup(ctx, "legion", other)
-	if err != nil || !reserved {
-		t.Fatalf("reserve the cleanup of %s = %+v, %t, %v", other, operatorTree, reserved, err)
-	}
-	if err := st.CleanupReservedTree(ctx, "legion", other, operatorTree.Epoch, &countingReleaser{}); err != nil {
-		t.Fatalf("clean the tree %s up: %v", other, err)
-	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", other); err != nil || held {
-		t.Fatalf("after the cleanup of %s its hold stands = %t, %v; want it ended", other, held, err)
-	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", recorded); err != nil || !held {
-		t.Fatalf("after the cleanup of %s the hold of %s = %t, %v; want it standing: OTHER's record of %s files no pod of this project under %s",
-			other, recorded, held, err, recorded, other)
 	}
 }
 

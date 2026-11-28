@@ -307,10 +307,11 @@ func keepNullPriorities(t *testing.T, path string, written []byte, state State) 
 // `repoChangePending` or `repoChangeReason` (withoutRepositoryCorrection,
 // repositoryCorrectionContract's row), the three other rows of stateNarrowings above the contract
 // it is served at, no issue's `priority` (withoutPriority, priorityContract's row), no claim
-// view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row) and
-// no `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row), and every
-// other key as a caller at shapedAnswersContract is served it, since no other row of
-// stateNarrowings stands between shapedAnswersContract and repositoriesLiveContract.
+// view's `lastDeathAt` or `lastStartFailureAt` (withoutCauseTimes, causeTimesContract's row), no
+// `dispatchCredential` (withoutDispatchCredential, dispatchCredentialContract's row) and no
+// `daemon.convertedAt` (withoutConvertedAt, chainContract's row), and every other key as a caller
+// at shapedAnswersContract is served it, since no other row of stateNarrowings stands between
+// shapedAnswersContract and repositoriesLiveContract.
 // shapedAnswersContract's row stands at or below the contract it is served at, which is why the
 // golden carries `lowestPluginContract` and each claim view's `updateState`; the populated state
 // holds no pause, so it carries no `paused`. The mark's `daemon` names this daemon's own contract,
@@ -840,7 +841,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 		GrantID: "grant-for-one-command", ExpiresAt: "2026-09-23T12:01:00Z",
 	})
 	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
-	golden(t, "issue-status.json", IssueStatusResponse{})
+	golden(t, "issue-status.json", StatusCallResponse{Queued: []QueuedStatusWrite{{Issue: "LEGION-208", Status: "backlog", Row: 41}}})
 	golden(t, "issue-pod-update.json", PodUpdateResponse{
 		Round:   "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22",
 		Reasons: "the project's controller asked for the replacement of this pod",
@@ -860,12 +861,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	})
 	golden(t, "agent-resume.json", AgentActionResponse{State: string(supervise.StateLaunching)})
 	golden(t, "gate-register.json", GateRegisterResponse{})
-	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}})
+	golden(t, "wave-release.json", WaveReleaseResponse{Released: []string{"LEGION-209"}, Queued: []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 43}}})
 	golden(t, "phase-backward.json", PhaseBackwardResponse{})
 	golden(t, "phase-retry.json", PhaseRetryResponse{})
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
-	golden(t, "child-rerun.json", EmptyResponse{})
+	golden(t, "child-rerun.json", StatusCallResponse{Queued: []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 42}}})
 }
 
 // The two routes of the owner's plan (contract 219) each have a fixture, named for its route as

@@ -599,6 +599,14 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the reviewed commit's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
 			applied)
 	}
+	// Dispatch shows the issue under the root, as the copy the boot fills holds it (R16 of
+	// dispatch://INFRA-3320), so the sweep reads its chain.
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		seedCopyRow(t, tx, key, root.Key, issue.DispatchStatus, 1)
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy row of %s: %v", key, err)
+	}
 	var entry int64
 	var entryTask string
 	if err := pool.QueryRow(ctx, "select entry, entry_task from phases where issue = $1 and role = 'tester'",

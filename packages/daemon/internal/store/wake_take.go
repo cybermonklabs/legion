@@ -147,7 +147,7 @@ type DeliveryWake struct {
 // machine from a row (supervisor.restore). Every later write of the claim, the release's
 // suspension of it as `released` among them, is an upsert of that row (upsertClaim), and no path
 // deletes a claim's row. The row is read `for update`, so the take and a write of the claim that
-// takes it over (an operator's suspension or resume, a close's or a linger's suspension, each one
+// takes it over (an operator's suspension or resume, a close's or a stop's suspension, each one
 // write of the claim's row) run one after the other: a write that commits first is what this read
 // finds, and one that comes later waits until the take commits.
 //

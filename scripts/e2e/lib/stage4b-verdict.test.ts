@@ -146,7 +146,7 @@ const outsideWrite =
   '[{"issue":"OTHER-12","seq":3,"type":"comment.created","actor":"legion-daemon:LEGSMOKE"}]';
 // controllerRun ends the controller checkpoint in blocked, in fail (the case the notes are for), in
 // pass as the last checkpoint of a run with STAGE4B_UNTIL=controller, or in a wait that times out
-// under the run's capacity hook, on_tree's subject the capacity's (none: a plain until_true), with
+// under the run's capacity hook, on_issue's subject the capacity's (none: a plain until_true), with
 // the cluster answering the capacity's pods and events.
 function controllerRun(
   outside: string,
@@ -157,7 +157,7 @@ function controllerRun(
     outside,
     ending !== "timeout"
       ? `${ending} "the controller's model route could not be installed"`
-      : `timeout_hook=limit_pending_blocked; ${capacity.subject === undefined ? "" : `on_tree ${capacity.subject} `}until_true 1 "the controller to take its first turn" false`,
+      : `timeout_hook=limit_pending_blocked; ${capacity.subject === undefined ? "" : `on_issue ${capacity.subject} `}until_true 1 "the controller to take its first turn" false`,
     capacity
   );
 }
@@ -222,7 +222,7 @@ ${fn("pass")}
 ${fn("limit_pending")}
 ${fn("limit_pending_exhausted")}
 ${fn("on_subject")}
-${fn("on_tree")}
+${fn("on_issue")}
 ${fn("limit_pending_blocked")}
 ${rigFn("until_true")}
 ${fn("remove_negative_config")}
@@ -700,8 +700,8 @@ shape_checked_blocked
   });
 });
 
-// The issue-independence checkpoint reads whether tree 2's planner held from on_tree's exit status
-// (`if left=$(on_tree "$tree2" left_planning "$tree2")`), so the wrapper must give back the
+// The issue-independence checkpoint reads whether tree 2's planner held from on_issue's exit status
+// (`if left=$(on_issue "$tree2" left_planning "$tree2")`), so the wrapper must give back the
 // command's status and not its own capacity_subject restore, which would report every tree as one
 // that left planning, with an empty reason.
 describe("stage 4b's tree-2 planner hold", () => {
@@ -726,8 +726,8 @@ daemon_log=${JSON.stringify(log)} capacity_subject=
 ${fn("log_lines")}
 ${fn("left_planning")}
 ${fn("on_subject")}
-${fn("on_tree")}
-if left=$(on_tree T2 left_planning T2); then echo "left planning ($left)"; else echo held; fi
+${fn("on_issue")}
+if left=$(on_issue T2 left_planning T2); then echo "left planning ($left)"; else echo held; fi
 `,
     ]);
     expect(result.exitCode).toBe(0);

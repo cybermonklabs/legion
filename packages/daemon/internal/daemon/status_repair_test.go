@@ -33,10 +33,10 @@ func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 	ctx := context.Background()
 	stranded := staleStatusIssue(phase.Implementing, "todo", "todo")
 	stranded.Key, stranded.Tree, stranded.Parent = "LEGION-209", "LEGION-208", new("LEGION-208")
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main",
+	putStatusRepairIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "the running root", Phase: phase.Accepting,
 		Generation: 1, Status: "needs_review", DispatchStatus: "needs_review", Rank: "U", HandedOver: true})
-	putOutboxIssue(t, pool, records, stranded)
+	putStatusRepairIssue(t, pool, records, stranded)
 	// The fixture seeds no slot for the root, as when it waits on another issue; its child holds one.
 	putStatusRepairSlot(t, pool, records, stranded.Key)
 	openStatusRepairLifecycle(t, pool, records, "LEGION-208")
@@ -102,7 +102,7 @@ func TestTheStatusRepairKeepsQueuingARowTheOutboxWillNotWrite(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	putOutboxIssue(t, pool, records, staleStatusIssue(phase.Implementing, "in_progress", "todo"))
+	putStatusRepairIssue(t, pool, records, staleStatusIssue(phase.Implementing, "in_progress", "todo"))
 	putStatusRepairSlot(t, pool, records, "LEGION-208")
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"}}
@@ -141,7 +141,7 @@ func TestTheStatusRepairWritesNothingOverAStatusTheDaemonNeverSaw(t *testing.T) 
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	putOutboxIssue(t, pool, records, staleStatusIssue(phase.Implementing, "in_progress", "todo"))
+	putStatusRepairIssue(t, pool, records, staleStatusIssue(phase.Implementing, "in_progress", "todo"))
 	putStatusRepairSlot(t, pool, records, "LEGION-208")
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "testing"}}
@@ -177,7 +177,7 @@ func TestNoOutboxFinishWritesTheRecordsDispatchStatus(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	putOutboxIssue(t, pool, records, staleStatusIssue(phase.Implementing, "todo", "todo"))
+	putStatusRepairIssue(t, pool, records, staleStatusIssue(phase.Implementing, "todo", "todo"))
 	putStatusRepairSlot(t, pool, records, "LEGION-208")
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "todo"}}
@@ -207,6 +207,30 @@ func staleStatusIssue(at phase.Phase, status, shown string) record.Issue {
 	return record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "the issue whose status write was lost", Phase: at,
 		Generation: 1, Status: status, DispatchStatus: shown, Rank: "U", HandedOver: true, LastDispatchSeq: 1}
+}
+
+// putStatusRepairIssue records issue and writes its row of the daemon's copy of Dispatch's issues
+// as a reading does: the parent the record names, the status Dispatch last showed, and the legion
+// label where the record holds the issue handed over. The repair reads the chain and its labels
+// from that copy (legionOnChain, R26 of dispatch://INFRA-3320), so an issue with no row stands on
+// no chain the copy shows, and the repair passes it by.
+func putStatusRepairIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
+	t.Helper()
+	putOutboxIssue(t, pool, records, issue)
+	var parent string
+	if issue.Parent != nil {
+		parent = *issue.Parent
+	}
+	var labels []string
+	if issue.HandedOver {
+		labels = []string{dispatch.LegionLabel}
+	}
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue.Key, Project: issue.Project, Seq: 1,
+			Status: record.Carry(issue.DispatchStatus), Parent: record.Carry(parent), Labels: record.Carry(labels)})
+	}); err != nil {
+		t.Fatalf("write the copy row of %s: %v", issue.Key, err)
+	}
 }
 
 // putStatusRepairSlot grants the issue's slot and opens its tree's lifecycle under the workflow's

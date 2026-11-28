@@ -32,8 +32,7 @@ import (
 func TestAProductionCheckFollowsAPlan(t *testing.T) {
 	t.Parallel()
 	t.Run("a plan with a tester and a plan with none", func(t *testing.T) {
-		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2,
-			config.Project{ProductionCheck: claim.RoleTester})
+		r := newPlanRig(t, 2, config.Project{ProductionCheck: claim.RoleTester})
 		r.givePlan("implementer", "tester")
 		r.openGate(phase.Implementing)
 		r.walkSteps([]string{"implementer", "tester"})
@@ -57,7 +56,7 @@ func TestAProductionCheckFollowsAPlan(t *testing.T) {
 	})
 
 	t.Run("control: production_check off opens none", func(t *testing.T) {
-		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
+		r := newPlanRig(t, 1, config.Project{})
 		r.givePlan("implementer", "tester")
 		r.openGate(phase.Implementing)
 		r.walkSteps([]string{"implementer", "tester"})

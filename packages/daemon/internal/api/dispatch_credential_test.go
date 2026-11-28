@@ -93,9 +93,11 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		}
 	}
 
-	// A caller at the contract stands below no frozen row, so no line says it dropped
-	// dispatchCredential: the lines it is written are the bands' above it (narrowingsExpected). It
-	// reads carriedState, as TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
+	// A caller at the contract itself is served the object. It stands below no frozen row, so no
+	// line may say it dropped dispatchCredential; the bands above it, gateBasisContract's
+	// (narrowing_test.go reads its line), the chain's, the P0 bound's and the state sequence's among
+	// them, still write their own lines (narrowingsExpected). It reads carriedState, as
+	// TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps does.
 	carried := carriedState(t)
 	at, narrowings := stateNarrowedStating(t, carried, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
 	if _, served := dispatchCredentialServed(t, at); !served {

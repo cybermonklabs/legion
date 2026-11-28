@@ -134,7 +134,8 @@ const cutoverEntrySweep = time.Second
 // still carries the slot mark, and S's (below), the one start the old record still holds, has
 // lost its mark by then. The whole daemon then boots on the store (startDaemonLogging).
 //
-// The ten issues, each a tree root of its own, all but N and T in `awaiting_merge`, and all but N
+// The ten issues, each a tree root of its own with its spec approved at its latest version (but E,
+// below), so no gate holds their mergers, all but N and T in `awaiting_merge`, and all but N
 // with their merger's READY head and `completed_at` on its phase row. None holds a slot but T:
 // that release kept none for `awaiting_merge`, and N holds none, as G holds none once the upgrade
 // moves it to `merging`. T stands in `testing`, where that release kept the slot of an issue at
@@ -746,8 +747,16 @@ func (r *cutoverRig) seed(t *testing.T) {
 		created_at) values ('supervise', $1, $2::jsonb, 0, now() - interval '150 minutes', '', now() - interval '150 minutes')`,
 		r.s.key, string(owed))
 
-	exec("the closed design gate of "+r.e.key, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
-		values ($1, $2, 2, 1, true, 'spec')`, r.e.key, "spec-"+r.e.key)
+	// Each root's design gate as the old build left it: its spec approved at its latest version,
+	// so its gate holds no merger, but E's, closed by a newer version than the one approved.
+	for _, issue := range r.roots() {
+		latest, what := 1, "the approved design gate of "+issue.key
+		if issue == r.e {
+			latest, what = 2, "the closed design gate of "+issue.key
+		}
+		exec(what, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
+			values ($1, $2, $3, 1, true, 'spec')`, issue.key, "spec-"+issue.key, latest)
+	}
 	exec("the listener's ready report", `insert into listener_reports (project, ready_at) values ($1, now())`, r.project)
 }
 

@@ -97,6 +97,8 @@ func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 	return nil
 }
 
+// leaveAs takes key out of Legion's work at status as a person's move does (leave), on its record
+// as the store holds it.
 func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status string) {
 	t.Helper()
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -104,19 +106,49 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 		if err != nil {
 			return err
 		}
+		issue.Status = status
+		if err := engine.store.PutIssue(ctx, tx, *issue); err != nil {
+			return err
+		}
 		return engine.leave(ctx, tx, *issue, status)
 	})
+}
 
+// returnAsTodo brings key back into Legion's work as a person's todo on an issue a stop left does
+// (ReturnToWork), on its record as the store holds it.
+func returnAsTodo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+	t.Helper()
+	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		parent := ""
+		if issue.Parent != nil {
+			parent = *issue.Parent
+		}
+		return engine.ReturnToWork(ctx, tx, issue, intake.DispatchIssue{Key: key, ResolvedRepo: issue.Repo, Seq: issue.LastDispatchSeq + 1,
+			Type: "issue.updated", Status: "todo", Title: issue.Title, Parent: parent, Rank: issue.Rank})
+	})
+}
+
+// taskStateAt is the state of key's task at generation, the run a new run replaced.
+func taskStateAt(t *testing.T, pool *pgxpool.Pool, key string, generation uint64) record.TaskState {
+	t.Helper()
+	var state record.TaskState
+	if err := pool.QueryRow(t.Context(), `select state from plan_tasks where issue = $1 and generation = $2`, key, int64(generation)).Scan(&state); err != nil {
+		t.Fatalf("read the task of %s at generation %d: %v", key, generation, err)
+	}
+	return state
 }
 
 // The task's place and issues.phase move in one write: after each move of an issue with plan rows,
-// the phase the store holds is the one the task's place derives. A root and a
-// child with the plan `implementer reviewer` each walk it from admitted to their merge, and then
-// leave as done: the root through its linger (beginLinger), the child through its own write
-// (leave). A root and a child parked at backlog in the middle of their first step leave before
-// their task is done: the task is left at that step, and the phase it derives is done, the phase of
-// an issue out of the workflow. The control writes issues.phase done and leaves the task's row
-// running at its merge, and the check fails.
+// the phase the store holds is the one the task's place derives. A root and a child with the plan
+// `implementer reviewer` each walk it from admitted to their merge, and the merge's close ends the
+// task done there, the one end at which its last step passed (closeLanded). A person's backlog,
+// and a person's done that is not the merge's close, in the middle of the first step stop the task
+// at that step, as stop_task stops it, and the issue keeps its phase (stopTaskAtLeave,
+// dispatch://INFRA-4730, the architect's decision of 2026-11-23): neither done nor left, since the
+// run goes on, and a todo resumes the task there at a new entry (resumeStoppedTask). Every other
+// end of a run leaves the task left where it stood: a root admission found with no way to run
+// (LeaveUnslotted), and a new run, whose task is its own (NewRun). The control writes
+// issues.phase done and leaves the task's row running at its merge, and the check fails.
 func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 	t.Parallel()
 	moves := []struct {
@@ -151,64 +183,69 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		return issue
 	}
 
-	t.Run("a root walked to done through its linger", func(t *testing.T) {
+	t.Run("a root walked to its merge and closed at it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
 		root := stepRoot(t, pool, phase.Admitted)
 		seedOwnersPlan(t, pool, root.Key, root.Generation)
 		walkToMerge(t, pool, engine, root.Key)
-		leaveAs(t, pool, engine, root.Key, "done")
+		endRunAs(t, pool, engine, root.Key, "done")
 		if err := taskStands(t, pool, engine, root.Key, merge, record.TaskDone, phase.Done); err != nil {
 			t.Fatal(err)
 		}
-		var lingers bool
-		if err := pool.QueryRow(t.Context(), "select linger_until is not null from issues where key = $1", root.Key).Scan(&lingers); err != nil || !lingers {
-			t.Fatalf("the root lingers = %t (%v), want true: its leave as done is its linger", lingers, err)
-		}
 	})
 
-	t.Run("a child walked to done through its leave", func(t *testing.T) {
+	t.Run("a child walked to its merge and closed at it", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
 		issue := child(t, pool)
 		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
 		walkToMerge(t, pool, engine, issue.Key)
-		leaveAs(t, pool, engine, issue.Key, "done")
+		endRunAs(t, pool, engine, issue.Key, "done")
 		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskDone, phase.Done); err != nil {
 			t.Fatal(err)
 		}
 	})
 
-	// A leave at a status that is not done takes the issue out before its work is done: its task is
-	// left where it stands, not done, and a todo opens a new run with rows of its own.
+	// A person's stop in the middle of the first step, a backlog or a done that is not the merge's
+	// close, stops the task at that step and keeps the phase it derives; a todo resumes it there.
 	stepOne := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
-	t.Run("a child parked at backlog in the middle of its first step", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := stepEngine(nil)
-		issue := child(t, pool)
-		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
-		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
-		leaveAs(t, pool, engine, issue.Key, "backlog")
-		if err := taskStands(t, pool, engine, issue.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	t.Run("a root parked at backlog in the middle of its first step, through its linger", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := stepEngine(nil)
-		root := stepRoot(t, pool, phase.Admitted)
-		seedOwnersPlan(t, pool, root.Key, root.Generation)
-		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		leaveAs(t, pool, engine, root.Key, "backlog")
-		if err := taskStands(t, pool, engine, root.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
-			t.Fatal(err)
-		}
-	})
+	for _, tc := range []struct {
+		name, status string
+		root         bool
+	}{
+		{"a child parked at backlog in the middle of its first step", "backlog", false},
+		{"a root parked at backlog in the middle of its first step", "backlog", true},
+		{"a child a person set done in the middle of its first step, which is no merge's close", "done", false},
+	} {
+		t.Run(tc.name+": the task stops there, and a todo resumes it", func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := stepEngine(nil)
+			var issue record.Issue
+			if tc.root {
+				issue = stepRoot(t, pool, phase.Admitted)
+			} else {
+				issue = child(t, pool)
+			}
+			seedOwnersPlan(t, pool, issue.Key, issue.Generation)
+			move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+			leaveAs(t, pool, engine, issue.Key, tc.status)
+			if err := taskStands(t, pool, engine, issue.Key, stepOne, record.TaskStopped, phase.Implementing); err != nil {
+				t.Fatalf("after the %s: %v", tc.status, err)
+			}
+			if task := taskOf(t, pool, engine, issue.Key); task.StoppedReason != issue.Key+" is "+tc.status {
+				t.Fatalf("the stopped task's reason = %q, want %q", task.StoppedReason, issue.Key+" is "+tc.status)
+			}
+			returnAsTodo(t, pool, engine, issue.Key)
+			if err := taskStands(t, pool, engine, issue.Key, stepOne, record.TaskRunning, phase.Implementing); err != nil {
+				t.Fatalf("after the todo: %v", err)
+			}
+		})
+	}
 
 	// The same park of a child that started its work before Legion took plans, whose run has no
-	// plan rows, writes its phase done and no task row.
-	t.Run("a child with no plan rows parked at backlog stands done with no task row", func(t *testing.T) {
+	// plan rows, keeps its phase and writes no task row.
+	t.Run("a child with no plan rows parked at backlog keeps its phase with no task row", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
 		// The child stands in planning with no plan rows, as a child whose planning started before
@@ -223,39 +260,34 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 			issue.Key).Scan(&got, &tasks); err != nil {
 			t.Fatal(err)
 		}
-		if phase.Phase(got) != phase.Done || tasks != 0 {
-			t.Fatalf("the parked child with no plan rows stands at %s with %d task rows, want done and none", got, tasks)
+		if phase.Phase(got) != phase.Planning || tasks != 0 {
+			t.Fatalf("the parked child with no plan rows stands at %s with %d task rows, want planning and none", got, tasks)
 		}
 	})
 
-	// A merge that lands while the tree lingers runs no transition: the close writes the move to
-	// done itself (closeMerged).
-	t.Run("a member of a lingering tree closed at its merge", func(t *testing.T) {
+	// A run that ends without its merge leaves its task left where it stood.
+	t.Run("a root admission ends with no way to run: the task is left, and the phase done", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := stepEngine(nil)
+		root := stepRoot(t, pool, phase.Admitted)
+		seedOwnersPlan(t, pool, root.Key, root.Generation)
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		endRunAs(t, pool, engine, root.Key, "backlog")
+		if err := taskStands(t, pool, engine, root.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("a new run of a child parked at backlog leaves the task of the run it replaces", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := stepEngine(nil)
 		issue := child(t, pool)
 		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
-		walkToMerge(t, pool, engine, issue.Key)
-		leaveAs(t, pool, engine, "LEGION-208", "done")
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			stored, err := engine.store.Issue(ctx, tx, issue.Key)
-			if err != nil {
-				return err
-			}
-			pr, err := engine.store.PullRequest(ctx, tx, issue.Key)
-			if err != nil {
-				return err
-			}
-			pr.State = record.PullRequestMerged
-			if err := engine.store.PutPullRequest(ctx, tx, *pr); err != nil {
-				return err
-			}
-			_, err = engine.closeMerged(ctx, tx, *stored, pr)
-			return err
-		})
-
-		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskDone, phase.Done); err != nil {
-			t.Fatal(err)
+		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		leaveAs(t, pool, engine, issue.Key, "backlog")
+		newRunOf(t, pool, engine, issue.Key, "LEGION-208")
+		if got := taskStateAt(t, pool, issue.Key, issue.Generation); got != record.TaskLeft {
+			t.Fatalf("the task of generation %d after the new run is %s, want left", issue.Generation, got)
 		}
 	})
 

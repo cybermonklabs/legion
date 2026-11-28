@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -41,7 +42,7 @@ const gatedRoot = "LEGION-208"
 // is what every reader of the step set takes.
 func stepsEngine(steps []record.DesignStep, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: steps, ReviewRoundCap: 3, Linger: time.Hour, ReviewAppLogin: testReviewApp,
+		Project: "LEGION", Steps: steps, ReviewRoundCap: 3, ReviewAppLogin: testReviewApp,
 		Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }
@@ -69,9 +70,6 @@ func seedGatedTree(t *testing.T, pool *pgxpool.Pool) {
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U",
 		HandedOver: true, LastDispatchSeq: 1})
 	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	// The lifecycle, not the slot, is what says the tree runs: a slot counts one issue at work
-	// (record.TreeLive), so the waiting line reads nothing of this tree without it.
-	seedTreeLifecycle(t, pool, gatedRoot)
 	seedArchitectClaim(t, pool, gatedRoot)
 }
 
@@ -119,7 +117,7 @@ func noticesOfKind(t *testing.T, pool *pgxpool.Pool, issue string, kind record.N
 		if err := json.Unmarshal(payload, &notice); err != nil {
 			t.Fatalf("decode a %s notice of %s: %v", kind, issue, err)
 		}
-		notices = append(notices, notice)
+		notices = append(notices, fencetest.Unfenced(notice).(record.Notice))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the %s notices of %s: %v", kind, issue, err)
@@ -145,7 +143,15 @@ func reconcileAwaiting(t *testing.T, pool *pgxpool.Pool, engine *Engine) []strin
 		if err != nil {
 			return err
 		}
-		entered, _, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", issues, nil)
+		keys := make([]string, len(issues))
+		for i, issue := range issues {
+			keys[i] = issue.Key
+		}
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), "LEGION", keys)
+		if err != nil {
+			return err
+		}
+		entered, _, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", chains, issues, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("reconcile the roots that wait: %v", err)
@@ -178,7 +184,7 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // Engine.StartFirstPhase, so the pass queues that start) and resumes no returning issue, so an
 // issue that gave its row back for a wait stands in the line (record.LineWaitingOnIssue) and is
 // started by nothing here. It leaves out these steps of the real pass too: ReconcileAwaiting (run
-// first there), adoptQueuedRoots, finishFencedStarts, releaseUnslotted, tellChildrenFirst, the
+// first there), finishFencedStarts, releaseUnslotted, tellChildrenFirst, the
 // second loop of releaseSlots (which clears record.Issue.ReleasedForWaitAt) and the re-read
 // rounds, so it cannot prove what any of them does. internal/admit's own tests run the real pass
 // with its cap.
@@ -204,17 +210,14 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		}
 		issues, slots, facts := read()
 		// Every issue that no longer needs its slot gives it back before the line is read, as the
-		// real pass does (admit's releaseSlots): a root whose gate has opened holds the slot its
-		// architect wrote the design in, and the line offers a slot to no issue already holding one.
+		// real pass does (admit's releaseSlots): an issue out of Legion's work, or past a phase that
+		// keeps a slot, and the line offers a slot to no issue already holding one.
 		byKey := make(map[string]record.Issue, len(issues))
 		for _, issue := range issues {
 			byKey[issue.Key] = issue
 		}
-		live := record.LiveRoots(issues, facts)
 		for _, slot := range slots {
-			issue, recorded := byKey[slot.Issue]
-			_, running := live[issue.Tree]
-			if recorded && record.NeedsSlot(issue, byKey[issue.Tree], running) {
+			if issue, recorded := byKey[slot.Issue]; recorded && record.NeedsSlot(issue) {
 				continue
 			}
 			if err := store.ReleaseSlot(scoped, tx, slot.Issue); err != nil {
@@ -230,7 +233,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		// Every started issue that waits on another issue gives its row back, as the real pass does
 		// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
 		// state that release leaves.
-		rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
+		rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 		if err != nil {
 			t.Fatalf("judge the line: %v", err)
 		}
@@ -243,7 +246,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 			}
 		}
 		issues, slots, facts = read()
-		rows, _, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
+		rows, facts, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
 		if err != nil {
 			t.Fatalf("judge the line again: %v", err)
 		}
@@ -253,10 +256,10 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 			if held != nil && held(entry.Issue.Key) {
 				break
 			}
-			if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, entry.Issue)) > 0 {
+			if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
 				continue
 			}
-			if err := engine.StartFirstPhase(scoped, tx, entry.Issue, rows[entry.Issue.Key].Blockers); err != nil {
+			if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains, rows[entry.Issue.Key].Blockers); err != nil {
 				t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 			}
 		}
@@ -695,62 +698,6 @@ func gatesOf(t *testing.T, pool *pgxpool.Pool, issue string) map[record.DesignSt
 	return gates
 }
 
-// A hand-over carries a copy of every step of its old root's gate, and each copy holds the new
-// root's work until it is open. The carry itself is admission's (internal/admit's test of this
-// name drives it); here the new root holds the two copies the carry left, its architect's
-// catch-up says the gate was carried and names both steps, and the approval of the old root's
-// Verification document opens the copy that was closed, which starts the new root's first phase.
-func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
-	t.Parallel()
-	pool := migratedPool(t)
-	engine := stepsEngine(twoSteps(), nil)
-	apply := applyFacts(t, pool, engine)
-	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: gatedRoot, Project: "LEGION", Title: "the old root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "U"})
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: "LEGION-209", Project: "LEGION", Title: "the carried root", Parent: new(gatedRoot), Phase: phase.Admitted, Generation: 2,
-		Status: "in_progress", Rank: "V", HandedOver: true, HandedOverFrom: gatedRoot, LastDispatchSeq: 1})
-	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	seedTreeLifecycle(t, pool, "LEGION-209")
-	// The old root's own rows, and the copies the hand-over left on the new root: the Verification
-	// document took a new version while the old tree lingered, so that step's copy is closed.
-	for _, issue := range []string{gatedRoot, "LEGION-209"} {
-		seedGate(t, pool, record.DesignGate{Issue: issue, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 2, ApprovedVersion: new(1)})
-		seedGate(t, pool, record.DesignGate{Issue: issue, Step: record.DesignStepSpec, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(4)})
-	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: "LEGION-209", Generation: 2, GateCarried: true})
-	})
-
-	claimReady(t, pool, engine, "LEGION-209", claim.RoleArchitect, 1)
-	caught := lastCatchUp(t, pool)
-	if !caught.HandedOver || !caught.Carried {
-		t.Fatalf("the catch-up says handed over %t, carried %t; want both of a root whose gate came with it", caught.HandedOver, caught.Carried)
-	}
-	want := []record.CatchUpGate{
-		{Step: record.DesignStepCriteria, Gated: true, Artifact: criteriaDoc, Version: 2, Approved: 1},
-		{Step: record.DesignStepSpec, Gated: true, Artifact: gateDoc, Version: 4, Approved: 4, Open: true},
-	}
-	if fmt.Sprint(caught.Gates) != fmt.Sprint(want) {
-		t.Fatalf("the catch-up states %#v, want one entry for each carried step: %#v", caught.Gates, want)
-	}
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Admitted {
-		t.Fatalf("the carried root = %s while a carried step is closed, want it admitted", got)
-	}
-
-	apply("approve-the-old-document", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 9}))
-	// The opening starts no phase itself: admission's pass gives the carried root the slot its
-	// first phase needs (record.Waiting's LineFirstPhase).
-	admissionPass(t, pool, engine)
-	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
-		t.Fatalf("the carried root = %s once every carried step is open, want planning", got)
-	}
-	opened := noticesOfKind(t, pool, "LEGION-209", "carried-gate-opened")
-	if len(opened) != 1 || opened[0].Version != 2 {
-		t.Fatalf("the carried root's notices = %#v, want one carried-gate-opened of version 2", opened)
-	}
-}
-
 // Every design decision a notice carries names the document the person reviewed, because a
 // decision nobody in its tree hears is kept and relayed under that reference, newest per
 // reference (the outbox's parkDecision, record.Store.AddParkedDecision): two steps of one root
@@ -992,7 +939,6 @@ func TestLegacyPolicyRootIssuesBehavesAsItDoesToday(t *testing.T) {
 			Tree: "LEGION-209", Project: "LEGION", Title: "the carried root", Parent: new(gatedRoot), Phase: phase.Admitted,
 			Generation: 2, Status: "in_progress", Rank: "V", HandedOver: true, HandedOverFrom: gatedRoot, LastDispatchSeq: 1})
 		seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-		seedTreeLifecycle(t, pool, "LEGION-209")
 		for _, issue := range []string{gatedRoot, "LEGION-209"} {
 			seedGate(t, pool, record.DesignGate{Issue: issue, ArtifactID: gateDoc, LatestVersion: 4, ApprovedVersion: new(3)})
 		}
@@ -1091,11 +1037,12 @@ func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testi
 
 // A new version of a registered Verification document closes the standing gate under the workers
 // already running, as a new spec version does: the merger and the root architect are told it
-// closed, and the predicate the merger's start hold reads (standingGateOpen, which the outbox's
-// designGateClosed asks through classify.StandingGate) holds the merge until a person approves
-// that version. The approval opens the gate, and they are told that too: each took the version
-// before, so each is owed the new one's news, and the task that carries it leads with the opening,
-// its told row recording the opening as owed in place of the opened message (openingDelivery).
+// closed, and the predicate the merger's start hold reads once a step of the gate has opened
+// (standingGateOpen, which the outbox's mergeHold asks through classify.MergeHold) holds the
+// merge until a person approves that version. The approval opens the gate, and they are told that
+// too: each took the version before, so each is owed the new one's news, and the task that
+// carries it leads with the opening, its told row recording the opening as owed in place of the
+// opened message (openingDelivery).
 func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -1104,7 +1051,6 @@ func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
 		LatestVersion: 1, ApprovedVersion: new(1)})
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
 		LatestVersion: 3, ApprovedVersion: new(3)})
-	seedTreeLifecycle(t, pool, gatedRoot)
 	took := map[record.DesignStep]int{record.DesignStepCriteria: 1, record.DesignStepSpec: 3}
 	seedTold(t, pool, gatedRoot, record.AudienceHolder, took)
 	seedTold(t, pool, gatedRoot, record.AudienceArchitect, took)

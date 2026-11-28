@@ -35,9 +35,9 @@
 // script starts and names in LEGION_E2E_NATS_URL. Dispatch is liveDispatch, the board the
 // package's whole-daemon live proofs share (dispatch_board_test.go), fronted by linkedDispatch,
 // which adds to each read of an issue the blocked_by links the driver gave it, and Envoy's
-// listener is the package's noticeListener. GitHub is child_adoption_live_test.go's
-// childAdoptionGitHub, which knows each repository's default branch and takes each issue branch
-// the workflow creates. No agent runs: every claim is launched by the package's fake runtime
+// listener is the package's noticeListener. GitHub is admissionIssuesGitHub
+// (admission_issues_live_test.go), which knows each repository's default branch and takes each
+// issue branch the workflow creates. No agent runs: every claim is launched by the package's fake runtime
 // (subArchitectRuntime, which refuses the relaunches the failure step names), and the driver plays
 // each claim a step needs over the daemon's own worker stream and HTTP routes
 // (subArchitectSession), as a pane's shim and its agent do. The daemon's timers never fire
@@ -152,7 +152,7 @@ func newSubArchitectLive(t *testing.T) *subArchitectLive {
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = childAdoptionGitHub(t)
+	o.githubAPI = admissionIssuesGitHub(t)
 	r.logged = newRecordingLog(r.log())
 	r.d = startDaemonLogging(t, r.cfg, o, slog.New(r.logged))
 	r.root = r.register(r.tree, claim.RoleArchitect, "ses_root_architect", 0)
@@ -187,6 +187,7 @@ func (r *subArchitectLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.tree, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.tree, err)
 	}
+	openIssue(t, r.st, r.project, r.tree, treelifecycle.AuthorityWorkflow)
 	architect := r.token(r.tree, claim.RoleArchitect)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: architect, Project: r.project, Tree: r.tree, Issue: r.tree, Role: claim.RoleArchitect,
@@ -759,7 +760,7 @@ func (r *subArchitectLive) release(by *subArchitectSession, keys ...string) (int
 // answer but 200, the refusal.
 func (r *subArchitectLive) rerun(by *subArchitectSession, key string) (int, api.Failure) {
 	r.t.Helper()
-	return r.answer(r.d.request(http.MethodPost, "/legion/v1/children/rerun", api.ChildRequest{GrantID: by.grant(), Issue: key}, false))
+	return r.answer(r.d.request(http.MethodPost, "/legion/v1/children/rerun", api.RerunChildRequest{GrantID: by.grant(), Issue: key}, false))
 }
 
 // answer is a route's status and, for any answer but 200, the refusal its body names.
@@ -777,7 +778,7 @@ func (r *subArchitectLive) answer(status int, body []byte) (int, api.Failure) {
 // echo publishes the event of the daemon's own status write on key as Dispatch delivers it: the
 // issue as the board holds it, the write applied, with its links and the daemon's own actor, on
 // the next sequence. The stand-in answers a status write with no sequence, so a route leaves the
-// record to that event (api's recordOwnStatusWrite), which the driver delivers as Dispatch would.
+// record to that event (api's ApplyOwnStatusWrite), which the driver delivers as Dispatch would.
 func (r *subArchitectLive) echo(key string) {
 	r.t.Helper()
 	r.board.mu.Lock()
@@ -1106,4 +1107,10 @@ func (r *subArchitectRuntime) refused(token claim.Token) int {
 		return refusal.refused
 	}
 	return 0
+}
+
+// planning says whether issue is in planning with a planner claim.
+func planning(issue api.Issue) bool {
+	_, planner := issue.Workers[claim.RolePlanner]
+	return issue.Phase == phase.Planning && planner
 }

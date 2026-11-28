@@ -1,0 +1,11 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Idempotency-Key: capture-key-in-flight-1
+Retry-After: 1
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Fri, 20 Nov 2026 15:47:44 GMT
+Content-Length: 172
+
+{"code":"KEY_IN_FLIGHT","error":"the first request under Idempotency-Key \"capture-key-in-flight-1\" is still running; this one was not run: ask again under the same key"}

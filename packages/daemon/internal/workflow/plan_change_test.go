@@ -148,11 +148,6 @@ func assertPlanRefusal(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 	}
 }
 
-// architectOf is the claim of the architect of LEGION-208, which gives every plan of these tests.
-func architectOf(t *testing.T) claim.Token {
-	return claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
-}
-
 // The owner's plan is stored where its task has not started: for a root the daemon
 // recorded at admitted, at the root's generation, so that its gate opens to the plan's first step;
 // for an issue the daemon has not recorded, at generation 0, where a later version replaces a
@@ -162,8 +157,8 @@ func architectOf(t *testing.T) claim.Token {
 // task, also while the task runs: the held plan is read as its block was given, not from its steps.
 // The version taken while the task runs queues one row, the run's plan node at that version.
 // An issue that started its work before Legion took plans is refused and walks today's line, and
-// so is a plan given at a generation the issue has left, and one given to a member of a lingering
-// tree, which the linger keeps admitted; each refusal writes nothing and leaves the fact unspent.
+// so is a plan given at a generation the issue has left; each refusal writes nothing and leaves
+// the fact unspent.
 // The twin: a root given no plan opens to planning, the first of the default steps, in the rows of
 // the task default that its first step writes.
 func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
@@ -182,7 +177,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 			t.Fatalf("the versions of %s = %v, want the owner's version 1 alone", root.Key, after.versions)
 		}
 		got, want := after.plan.Version, record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 1, ArtifactID: planArtifact,
-			Source: record.PlanSourceOwner, GivenBy: architectOf(t), GivenAt: stepClock}
+			Source: record.PlanSourceOwner, GivenBy: architectOf(t, "LEGION-208"), GivenAt: stepClock}
 		if !got.GivenAt.Equal(want.GivenAt) {
 			t.Fatalf("version 1 was given at %s, want the engine's clock %s", got.GivenAt, want.GivenAt)
 		}
@@ -324,28 +319,28 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 			t.Fatalf("the refused plan wrote the plan %+v at generation 2, want none", now.plan)
 		}
 	})
-
-	t.Run("a plan given to a member of a lingering tree is refused", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Implementing)
-		member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
-		// The root's leave as done begins the tree's linger (beginLinger), which writes the root
-		// done and keeps the member admitted, where a plan of its own would be stored.
-		leaveAs(t, pool, engine, root.Key, "done")
-		id := planID(member.Key, member.Generation, 1)
-		before := planStandingOf(t, pool, engine, member.Key, member.Generation)
-
-		result := applyFacts(t, pool, engine)(id, ownersPlan(t, member.Key, member.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer")))
-
-		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, lingeringPlan(), before)
-	})
 }
 
 // runningRefusal is the refusal of a version that removes task a while it runs, or changes its
 // steps.
 func runningRefusal() *intake.Refusal {
 	return intake.PlanRefused([]plan.Refusal{plan.RunningTaskChanged("a")})
+}
+
+// endRunAs ends the run of key, through engine, as each path that writes its phase done ends it
+// (endTaskWithLeave): for done, the merge's close as Dispatch's done lands it (closeLanded), which
+// ends the task done; for any other status, the end of a root admission found with no way to run,
+// at that status (LeaveUnslotted), which ends it left.
+func endRunAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status string) {
+	t.Helper()
+	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		if status == "done" {
+			issue.PendingClose = &record.PendingClose{Generation: issue.Generation, Kind: closeKindMerge, Reason: "the pull request merged"}
+			return engine.closeLanded(ctx, tx, issue)
+		}
+		issue.Status = status
+		return engine.LeaveUnslotted(ctx, tx, issue)
+	})
 }
 
 // A later version changes a task that waits or is stopped, and of a running task its text alone
@@ -467,8 +462,10 @@ func TestALaterVersionChangesAWaitingOrStoppedTask(t *testing.T) {
 	})
 
 	t.Run("a task that is done and a task that left are refused", func(t *testing.T) {
-		// The issue's leave writes its task done at a close and left at any other status
-		// (leaveState), and the issue done with it.
+		// The end of the issue's run writes its task done at a close and left at any other status
+		// (endTaskWithLeave, leaveState), and the issue done with it: the daemon's own close as it
+		// lands (closeLanded), and the end of a root admission found with no way to run
+		// (LeaveUnslotted).
 		for _, tc := range []struct {
 			state           record.TaskState
 			status, message string
@@ -482,7 +479,7 @@ func TestALaterVersionChangesAWaitingOrStoppedTask(t *testing.T) {
 				apply := applyFacts(t, pool, engine)
 				root := stepRoot(t, pool, phase.Admitted)
 				mustTake(t, "version 1", apply(planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-				leaveAs(t, pool, engine, root.Key, tc.status)
+				endRunAs(t, pool, engine, root.Key, tc.status)
 				before := planStandingOf(t, pool, engine, root.Key, root.Generation)
 				id := planID(root.Key, root.Generation, 2)
 
@@ -697,8 +694,9 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 }
 
 // The walk of the version an owner gave holds to its end, and holds the same across a boot. The
-// issue walks the line of version 1, implementing, reviewing, retro, merging and done, and its
-// run's plan holds version 1 alone at each move. With the daemon booted in the middle of the walk,
+// issue walks the line of version 1, implementing, reviewing, retro, merging and done, the last at
+// the landing of the close its merge queued (closeLanded), and its run's plan holds version 1
+// alone at each move. With the daemon booted in the middle of the walk,
 // the engine built again on the same store, the walk is the same. The control: version 2 given
 // while the task waits, before its first step, is taken, and the walk starts planning. The twin:
 // an issue that started its work before Legion took plans walks today's line, and its walk writes
@@ -734,6 +732,7 @@ func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 				if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: merged}); result.Refusal != nil {
 					t.Fatalf("the merge was refused: %+v", result.Refusal)
 				}
+				landClose(t, pool, engine, key)
 			},
 		}
 		var walked []walkStanding
@@ -808,7 +807,13 @@ func recordedAt(t *testing.T, pool *pgxpool.Pool, key, tree string) {
 func firstStep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
 	t.Helper()
 	issue := issueOf(t, pool, engine, key)
-	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.StartFirstPhase(ctx, tx, issue, nil) })
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		chains, err := record.ReadChainsOf(ctx, tx, engine.store, issue.Project, []string{issue.Key})
+		if err != nil {
+			return err
+		}
+		return engine.StartFirstPhase(ctx, tx, issue, chains, nil)
+	})
 }
 
 // planRowsOf is how many rows of key each of the three plan tables holds, of every generation:

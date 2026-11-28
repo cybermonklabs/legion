@@ -1,0 +1,10 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Idempotency-Key: capture-todo-under-backlog-on-1795261633
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Sat, 21 Nov 2026 11:47:14 GMT
+Content-Length: 400
+
+{"code":"PARENT_STATUS_CONFLICT","error":"this change would leave a parent's status out of line with its children's. LEGION-35 (backlog) is the parent of LEGION-36 and is not in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.","issues":[{"key":"LEGION-35","title":"child todo on parent","status":"backlog","relation":"parent"}],"changed":[]}

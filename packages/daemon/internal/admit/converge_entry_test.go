@@ -40,9 +40,6 @@ type convergeRow struct {
 	// stands is the phase the member is in, which names the role that works it
 	// (phase.RoleFor).
 	stands phase.Phase
-	// lingers records the root as a park left it: phase done at a status that is not todo, with
-	// a linger deadline ahead.
-	lingers bool
 	// unslotted leaves the member holding none of the cap's slots.
 	unslotted bool
 	// claimed records a claim of the role, in state and suspended by suspendedBy. A row without
@@ -114,12 +111,6 @@ func convergeRows() []convergeRow {
 			flipRoot: "LEGION-932", flipKey: "LEGION-933", flip: func(r *convergeRow) { r.given, r.started = seededEntry-1, true },
 			claimed: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByReleased, given: seededEntry,
 			why: "this row changes the entry the claim was given alone, to its row's own: the released pod holds that entry's work and its wake is what brings it back",
-		},
-		{
-			name: "a member of a tree that lingers", root: "LEGION-934", key: "LEGION-935", stands: phase.Testing,
-			flipRoot: "LEGION-936", flipKey: "LEGION-937", flip: func(r *convergeRow) { r.lingers, r.started = false, true },
-			lingers: true, claimed: true, state: supervise.StateWorking, given: seededEntry - 1,
-			why: "this row changes the root's own record alone, to the one a park left: nothing of a tree that has left the workflow is started again until its re-admission",
 		},
 		{
 			// The one holder record.AtWork answered false for was a merger whose READY a closed
@@ -198,7 +189,7 @@ func seedConvergeRows(t *testing.T, pool *pgxpool.Pool, rows []convergeRow) ([]c
 func seedConvergeRow(t *testing.T, pool *pgxpool.Pool, row convergeRow) {
 	t.Helper()
 	ctx := context.Background()
-	seedTreeAndMember(t, pool, row.root, row.key, row.stands, convergeGeneration, row.lingers)
+	seedTreeAndMember(t, pool, row.root, row.key, row.stands, convergeGeneration)
 	if !row.unslotted {
 		takeSlot(t, pool, row.key)
 	}

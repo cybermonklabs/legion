@@ -185,7 +185,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.checkReport(w, r, grant, position.check, c.ServingCheck(), req)
 		return
 	}
-	if issue.Phase == phase.Done {
+	// A done issue runs no phase, so a call naming no check is no completion of one. Its record
+	// says done by its status, whatever its phase: the daemon's merge close moves it to phase done
+	// (workflow's closeLanded), and a person's done keeps the phase it stood in (R20 of
+	// dispatch://INFRA-3320) though it still opens a merged issue's production check (its leave).
+	if issue.Phase == phase.Done || issue.Status == "done" {
 		whose := "it has no open production check, so there is nothing here for any role to report"
 		if position.check != nil && position.check.Open() {
 			whose = fmt.Sprintf(
@@ -328,7 +332,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", of, issue.Key))
 		return
 	}
-	treeGeneration, pass := position.treeGeneration, position.pass
+	pass := position.pass
 	// One phase's completion is identified by where the issue stands — its generation, phase, and
 	// pass through that phase — with the role and what it reported: the handoff record a
 	// file-backed phase names, or the commit every other phase reports, and the verdict. A
@@ -351,16 +355,17 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// report, which would be answered ALREADY_RECORDED and never reach the workflow. With it, that
 	// recorded refusal blocks no later call: its key carries the issue generation this route read,
 	// the one the issue has since left, so a retry is refused here (recording nothing) and the new
-	// run's completion carries the new issue generation and serving run, another key. The tree's
-	// generation is part of it for the same reason: re-admission starts a new generation of the tree
-	// by bumping only the root's, and restarts a child's worker in the phase it stood in, so a
-	// child's completion refused before (while the tree lingered, or while the old gate was closed)
-	// would otherwise take the new generation's key.
+	// run's completion carries the new issue generation and serving run, another key. The phase
+	// entry the route held the completion to is part of it for the same reason: a return to work
+	// raises the entry (R20 of dispatch://INFRA-3320), and a completion the workflow refused at
+	// its commit for that (HANDOFF_STALE_ENTRY) is recorded under the entry it was checked at, so
+	// the completion of the entry the return opened takes a key of its own. Both are the issue's
+	// own (R17): no tree's generation is in it.
 	//
 	// For an issue with plan rows the pass is its running task's (completionPosition), and the
 	// task is in the key before it, so a new task at pass 0 takes no key an earlier task of the
-	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
-	// upgrade keeps its key.
+	// issue used. An issue with no plan rows keeps the key it had before plans, so a completion
+	// retried across the upgrade keeps its key.
 	//
 	// The step a fail names its task's return to (returnTo) ends the key when the completion
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
@@ -374,7 +379,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if position.task != "" {
 		counted = position.task + ":" + counted
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, position.entry, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -382,7 +387,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	}
 	// The phase's last handoff is stored text, so what this completion reports is compared as the
 	// store would keep it (storetext.Text).
-	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.lingers && storetext.Text(reported) != position.lastHandoff {
+	if grant.Role == claim.RoleImplementer && issue.Phase == phase.Implementing && !position.stopped && storetext.Text(reported) != position.lastHandoff {
 		if !s.implementationPullRequest(w, r, issue, position.pullRequest, eventID) {
 			return
 		}
@@ -392,7 +397,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// is: the first completion the workflow took is what stands, so a retry that rates again is
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
-	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	if s.callJudged != nil {
+		s.callJudged(r.Context(), "handoff_complete", []string{grant.Issue})
+	}
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Entry: position.entry, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
 		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract,
 		ReturnTo: returnTo})
@@ -793,8 +801,8 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 //     when it finds one.
 //
 // A completion the workflow refuses whatever GitHub shows reads nothing: the route calls this only
-// for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
-// not linger and whose handoff record is not the one the implementer named for its previous phase
+// for one that is not already applied (eventID, its key, read with intake.Applied), whose issue is
+// in Legion's work and whose handoff record is not the one the implementer named for its previous phase
 // (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer. Its mint and its read
 // count as handoffPullRequestCaller's (githubrate.WithCaller).
 func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, recorded *record.PullRequest, eventID string) bool {

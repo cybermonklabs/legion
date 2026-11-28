@@ -33,16 +33,19 @@ func parseNoticeSummary(summary string) (record.NoticeKind, string, bool) {
 const noticeSummarySeparator = " on "
 
 // errNoticeWaits is a notice held for its architect: the architect holds no role while its claim
-// can hold it again, or an earlier notice held for the same architect has not gone yet, and a later
-// one must not overtake it. The row is tried again on the outbox's backoff, logged once, or,
-// while the wake pacing holds its architect's launch, at that launch's turn or parkedWakeBound
-// on, whichever comes first (wakeForDelivery's turn, parkedWait).
+// can hold it again, an earlier notice held for the same architect has not gone yet, and a later
+// one must not overtake it, or the owner walk met a Dispatch chain the copy cannot show to its top
+// (record.ErrChainUnknown), whose architect is known once the daemon has read Dispatch again. The
+// row is tried again on the outbox's backoff, logged once, or, while the wake pacing holds its
+// architect's launch, at that launch's turn or parkedWakeBound on, whichever comes first
+// (wakeForDelivery's turn, parkedWait).
 var errNoticeWaits = wait.New("the notice waits for its architect")
 
 // errNoticeUnroutable is a notice whose architect cannot be resolved from the record: its issue is
-// not recorded, has no tree or no recorded root, or its keys make no claim token. readNoticeRoute
-// decides it, once, when it reads the tree. Retrying cannot change the record and the outbox has
-// no dead-letter path, so the row finishes undelivered with one log line.
+// not recorded, or its keys make no claim token, which readNoticeTree decides, once, when it reads
+// the route; or it is a child's close or status change whose owner walk ends at its own issue
+// (record.ErrNoArchitectAbove), which noticeArchitect decides. The outbox has no dead-letter path,
+// so the row finishes undelivered with one log line.
 var errNoticeUnroutable = errors.New("the notice has no architect to go to")
 
 // errNoticeRowGone is a notice row, or a controller notice row, deleted while the runner held its
@@ -98,21 +101,23 @@ func (r *outbox) stillOwed(ctx context.Context, tx pgx.Tx, row record.OutboxRow,
 	return nil
 }
 
-// noticeRoute is what routes a notice of a tree: the tree's project token, its root, and every
-// issue of the tree whose key makes a claim token, by key. An issue whose key makes no claim token
-// owns nothing, so it is left out: a walk that meets it ends at the root, and an earlier notice of
-// it holds nothing back.
+// noticeRoute is what routes the notices of one read: the project's claim token, and the Dispatch
+// chains of their issues as one read of the copy holds them (record.Chains), over which the owner
+// walk runs (R18 of dispatch://INFRA-3320). Nothing of the stored tree is read, so a notice of an
+// issue whose parent moved goes to the architects of the chain it stands on now.
 type noticeRoute struct {
 	project string
-	root    record.Issue
-	issues  map[string]record.Issue
+	chains  *record.Chains
 }
 
-// treeSnapshot is one read of a notice's tree: its route, and the fence, the tree's unfinished
-// notices written before the row, oldest first. The owner walk, the fence, and the linger check
-// all see this one state, so a reparent committing meanwhile cannot show them half of itself.
-type treeSnapshot struct {
+// noticeSnapshot is one read of a notice's route: the route, the gate root of the notice's issue
+// (record.Chains.StateTree), for which a person's spec decision nobody will hear is kept
+// (parkDecision), and the fence, the project's unfinished notices written before the row, oldest
+// first. The owner walk and the fence see this one state, so a change of parent committing
+// meanwhile cannot show them half of itself.
+type noticeSnapshot struct {
 	noticeRoute
+	root    string
 	earlier []record.OutboxRow
 }
 
@@ -124,44 +129,65 @@ type recomposedCatchUp struct {
 	decided string
 }
 
-// readNoticeTree reads row's tree in one repeatable-read transaction: whether the row's publish is
-// still owed (stillOwed: the row is still in the outbox under its lease, and a changes request is
-// still the person's word), row's issue and the tree's route (readNoticeRoute), then the fence. A
-// row deleted under its lease is errNoticeRowGone, a changes request the person's approval
-// followed is changesSuperseded, and a notice it cannot route is errNoticeUnroutable.
+// readNoticeTree reads row's route in one repeatable-read transaction: whether the row's publish
+// is still owed (stillOwed: the row is still in the outbox under its lease, and a changes request
+// is still the person's word), the record of row's issue, the fence, and the chains of row's
+// issue and of every issue the fence names, in one read (readNoticeRoute). A row deleted under
+// its lease is errNoticeRowGone, a changes request the person's approval followed is
+// changesSuperseded, and a notice it cannot route is errNoticeUnroutable.
 // For a catch-up (payload.CatchUp) the same transaction composes again what the architect of
 // row's issue owns (workflow.TreeCatchUp, a pure read, for the issue the row is queued on, as
-// workflow.QueueCatchUp composed it: a root's whole tree, a child's own issue and every issue
-// under it, so a child's architect is never told the whole tree), and what the architect is told
-// is the record at this read, the one the owner walk and the fence see, rather than at the moment
-// the row was queued: a gate registered between the two reached the architect at its old version
-// (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it carries no Kept and
-// Decided stays empty. The reason it composes keeps the sentence of what the architect's last
-// process ended that the row was queued with (record.CatchUp.Relaunch,
+// workflow.QueueCatchUp composed it: the issue and every issue under it on the Dispatch chain as
+// this read shows it, so a child's architect is never told more than its own), and what the
+// architect is told is the record at this read, the one the owner walk and the fence see, rather
+// than at the moment the row was queued: a gate registered between the two reached the architect
+// at its old version (dispatch://INFRA-2819). A child's catch-up claims no kept decision, so it
+// carries no Kept and Decided stays empty. The reason it composes keeps the sentence of what the
+// architect's last process ended that the row was queued with (record.CatchUp.Relaunch,
 // workflow.CatchUpReason): that sentence is of what ended before the launch, which this read does
 // not restate. It writes Decided again from the decisions the row claimed (Kept), each asked of the
-// gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), so a kept decision
-// that stopped being the person's word while the row waited (workflow.SupersedingApproval) drops
-// from the text. It deletes nothing: the row's queueing claimed those decisions, and its settling
-// stays keyed to the whole of Kept, so the publish forgets a dropped decision with the rest. A
-// catch-up an earlier release queued with Decided and no Kept is told as its row holds it. It is
-// nil for every other notice. The transaction stays read-only.
-func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, payload record.Notice) (record.Issue, treeSnapshot, *recomposedCatchUp, error) {
+// gates this read holds (workflow.ReadKeptGates, workflow.KeptDecisionsTask), over the row's own
+// issue, the key QueueCatchUp composed them over, so a kept decision that stopped being the
+// person's word while the row waited (workflow.SupersedingApproval) drops from the text. It
+// deletes nothing: the row's queueing claimed those decisions, and its settling stays keyed to the
+// whole of Kept, so the publish forgets a dropped decision with the rest. A catch-up an earlier
+// release queued with Decided and no Kept is told as its row holds it. It is nil for every other
+// notice, and for a catch-up whose issue is out of the workflow (record.InWorkflow), which
+// deliverNotice finishes undelivered without reading it. The transaction stays read-only.
+func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, payload record.Notice) (record.Issue, noticeSnapshot, *recomposedCatchUp, error) {
 	var issue record.Issue
-	var tree treeSnapshot
+	var snapshot noticeSnapshot
 	var recomposed *recomposedCatchUp
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.stillOwed(ctx, tx, row, payload); err != nil {
 			return err
 		}
-		var err error
-		if issue, tree.noticeRoute, err = r.readNoticeRoute(ctx, tx, row.Issue, map[string]noticeRoute{}); err != nil {
+		if !claim.IsIssueKey(row.Issue) {
+			return fmt.Errorf("%w: %q is not an issue key", errNoticeUnroutable, row.Issue)
+		}
+		recorded, err := r.records.Issue(ctx, tx, row.Issue)
+		if err != nil {
 			return err
 		}
-		if tree.earlier, err = r.records.EarlierNotices(ctx, tx, tree.root.Key, row.ID); err != nil {
+		if recorded == nil {
+			return fmt.Errorf("%w: workflow issue %s is not recorded", errNoticeUnroutable, row.Issue)
+		}
+		if snapshot.earlier, err = r.records.EarlierNotices(ctx, tx, recorded.Project, row.ID); err != nil {
 			return err
 		}
-		if payload.CatchUp == nil {
+		keys := make([]string, 0, len(snapshot.earlier)+1)
+		keys = append(keys, row.Issue)
+		for _, other := range snapshot.earlier {
+			keys = append(keys, other.Issue)
+		}
+		if snapshot.noticeRoute, err = r.readNoticeRoute(ctx, tx, recorded.Project, keys); err != nil {
+			return err
+		}
+		if issue, err = snapshot.issue(row.Issue); err != nil {
+			return err
+		}
+		snapshot.root = snapshot.chains.StateTree(row.Issue)
+		if payload.CatchUp == nil || !record.InWorkflow(issue) {
 			return nil
 		}
 		state, reason, err := workflow.TreeCatchUp(ctx, tx, r.records, r.gatedSteps, issue)
@@ -171,65 +197,57 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow, paylo
 		recomposed = &recomposedCatchUp{tree: state, reason: workflow.CatchUpReason(payload.CatchUp.Relaunch, reason),
 			decided: payload.CatchUp.Decided}
 		if kept := payload.CatchUp.Kept; kept != nil {
-			gates, err := workflow.ReadKeptGates(ctx, tx, r.records, tree.root.Key, *kept)
+			gates, err := workflow.ReadKeptGates(ctx, tx, r.records, issue.Key, *kept)
 			if err != nil {
 				return err
 			}
-			recomposed.decided, _ = workflow.KeptDecisionsTask(gates, r.gatedSteps, tree.root.Key, *kept)
+			recomposed.decided, _ = workflow.KeptDecisionsTask(gates, r.gatedSteps, issue.Key, *kept)
 		}
 		return nil
 	}); err != nil {
-		return record.Issue{}, treeSnapshot{}, nil, fmt.Errorf("read the tree of notice row %d: %w", row.ID, err)
+		return record.Issue{}, noticeSnapshot{}, nil, fmt.Errorf("read the route of notice row %d: %w", row.ID, err)
 	}
-	return issue, tree, recomposed, nil
+	return issue, snapshot, recomposed, nil
 }
 
-// readNoticeRoute reads in tx the tree of the issue key names, and returns the issue as the tree's
-// own issue set holds it with the tree's route. routes holds the routes already read by tree root
-// and keeps the ones read here, so a caller routing several notices in one transaction reads each
-// tree once. A notice is unroutable when its issue is not recorded, has no
-// tree or no recorded root, or its keys make no claim token.
-func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, routes map[string]noticeRoute) (record.Issue, noticeRoute, error) {
+// readNoticeRoute reads in tx the route of the notices of the issues keys names, all of
+// dispatchProject: the project's claim token and the Dispatch chains of every key, in one read
+// (record.ReadChainsOf, which walks the keys' own chains), so a caller routing many notices reads
+// the copy a fixed number of times however many there are. A project that makes no claim token
+// routes nothing (errNoticeUnroutable).
+func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, dispatchProject string, keys []string) (noticeRoute, error) {
+	project, err := claim.ProjectToken(dispatchProject)
+	if err != nil {
+		return noticeRoute{}, fmt.Errorf("%w: %w", errNoticeUnroutable, err)
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, r.records, dispatchProject, keys)
+	if err != nil {
+		return noticeRoute{}, err
+	}
+	return noticeRoute{project: project, chains: chains}, nil
+}
+
+// issue is key's record as the route's read holds it: errNoticeUnroutable where key is no issue
+// key or the daemon records no such issue, which has no architect to hear its notices.
+func (n noticeRoute) issue(key string) (record.Issue, error) {
 	if !claim.IsIssueKey(key) {
-		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: %q is not an issue key", errNoticeUnroutable, key)
+		return record.Issue{}, fmt.Errorf("%w: %q is not an issue key", errNoticeUnroutable, key)
 	}
-	recorded, err := r.records.Issue(ctx, tx, key)
-	if err != nil {
-		return record.Issue{}, noticeRoute{}, err
+	issue, recorded := n.chains.Record(key)
+	if !recorded {
+		return record.Issue{}, fmt.Errorf("%w: workflow issue %s is not recorded", errNoticeUnroutable, key)
 	}
-	if recorded == nil {
-		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: workflow issue %s is not recorded", errNoticeUnroutable, key)
-	}
-	if recorded.Tree == "" {
-		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: issue %s has no tree root", errNoticeUnroutable, key)
-	}
-	if route, ok := routes[recorded.Tree]; ok {
-		return route.issues[key], route, nil
-	}
-	var route noticeRoute
-	if route.project, err = claim.ProjectToken(recorded.Project); err != nil {
-		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: %w", errNoticeUnroutable, err)
-	}
-	members, err := r.records.TreeIssues(ctx, tx, recorded.Tree)
-	if err != nil {
-		return record.Issue{}, noticeRoute{}, err
-	}
-	route.issues = record.TreeByKey(members)
-	var ok bool
-	if route.root, ok = route.issues[recorded.Tree]; !ok {
-		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: the root %s of %s is not recorded", errNoticeUnroutable, recorded.Tree, key)
-	}
-	routes[recorded.Tree] = route
-	return route.issues[key], route, nil
+	return issue, nil
 }
 
-// earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
-// run now — its id, the moment it is due, and whether it is a catch-up the wake pacing still
-// holds in its queue — or 0, the zero moment and false when there is none. Each earlier notice's
-// architect is resolved again rather than recorded when it was held, since a sub-architect can
-// start or end while it waits, and by the rule its own publish follows (noticeArchitect). An
-// earlier row whose architect cannot be resolved is no architect's, so it holds back no later
-// notice; it finishes on its own attempt (notice).
+// earlierNoticeFor is the oldest of the snapshot's earlier notices that goes to architect as the
+// claims run now — its id, the moment it is due, and whether it is a catch-up the wake pacing
+// still holds in its queue — or 0, the zero moment and false when there is none. Each earlier
+// notice's architect is resolved again rather than recorded when it was held, since a
+// sub-architect can start or end, and a parent change, while it waits, and by the rule its own
+// publish follows (noticeArchitect). An earlier row whose architect cannot be resolved, or whose
+// walk meets an unknown chain, is no architect's yet, so it holds back no later notice; it
+// finishes, or waits, on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
@@ -240,8 +258,8 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // queue is due at no moment until the pacer lets its place out (record.CatchUpIsHeld): held is
 // true for it and the moment is the zero time, and the row behind it waits for the pacer's
 // estimate of that place instead (deliverNotice).
-func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier int64, due time.Time, held bool) {
-	for _, other := range tree.earlier {
+func earlierNoticeFor(snapshot noticeSnapshot, architect claim.Token, runs func(claim.Token) bool) (earlier int64, due time.Time, held bool) {
+	for _, other := range snapshot.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
 			continue
@@ -250,11 +268,11 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if !ok {
 			continue
 		}
-		issue, ok := tree.issues[other.Issue]
-		if !ok {
+		issue, err := snapshot.issue(other.Issue)
+		if err != nil {
 			continue
 		}
-		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
+		if owner, err := noticeArchitect(snapshot.noticeRoute, issue, notice, runs); err == nil && owner == architect {
 			if record.CatchUpIsHeld(other.NextAt) {
 				return other.ID, time.Time{}, true
 			}
@@ -264,25 +282,40 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 	return 0, time.Time{}, false
 }
 
-// noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the
-// architect of its own issue and to no other: it states what that architect owns
+// noticeArchitect is the architect claim notice, of issue, goes to. A catch-up goes to the
+// architect of its own issue and to no other: it states what that architect acts on
 // (workflow.QueueCatchUp, which queues it on that issue), so a child's catch-up that walked up to
 // the architect above it while the child's own architect was stopped would be read there as that
-// architect's own state. It waits for its architect, and finishes undelivered once that claim
-// will not hold its role again or, for a child's catch-up, once the child is out of the workflow
-// by its status or its phase (deliverNotice's record.InWorkflow), since a park leaves that claim
-// suspended rather than ended. A root's catch-up gets no such check: besides the endings every
-// notice has, catchUpSuperseded, stoppedWithTree and architectEnded end it. Every other notice
-// goes to the architect that owns its issue (record.OwningArchitect), by runs, from the issue's
-// parent for a notice the architect above it must hear (record.NoticeStartsAtParent). The
-// publish (deliverNotice), the fence (earlierNoticeFor) and a ready's release (releaseWaiting)
-// all ask this, so each finds a notice the same architect. project is the tree's claim project
-// token.
-func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
-	if notice.CatchUp != nil {
-		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
+// architect's own state. A notice of a change of parent names the architect it tells
+// (record.Notice.To, R18 of dispatch://INFRA-3320's three architects), and goes to that one alone.
+// Each of those waits for its architect, and finishes undelivered once that claim will not hold
+// its role again or, for a catch-up, once its issue is out of the workflow by its status or its
+// phase (deliverNotice's record.InWorkflow), since a stop leaves that claim suspended rather than
+// ended. Every other notice goes to the architect that owns its issue on the Dispatch chain
+// (record.NoticeArchitect, the owner walk record.OwningArchitect), by runs, from the issue above it
+// for a notice the architect above it must hear (record.NoticeStartsAtParent), and waits
+// (errNoticeWaits) while that walk meets a chain the copy cannot show to its top. A child's close
+// or status change whose walk ends at its own issue — nothing above it in Legion's work, and no
+// recorded gate root above it — goes to no architect (errNoticeUnroutable,
+// record.ErrNoArchitectAbove): it is for the architect above the issue alone, while a worker-died
+// or worker-stalled about a root's own architect still reaches that architect. The publish
+// (deliverNotice), the fence (earlierNoticeFor) and a ready's release (releaseWaiting) all ask
+// this, so each finds a notice the same architect.
+func noticeArchitect(route noticeRoute, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
+	switch {
+	case notice.CatchUp != nil:
+		return claim.NewToken(route.project, issue.Key, claim.RoleArchitect)
+	case notice.To != "":
+		return claim.NewToken(route.project, notice.To, claim.RoleArchitect)
 	}
-	return record.OwningArchitect(project, tree, issue, record.NoticeStartsAtParent(notice.Kind, notice.Role), runs)
+	architect, err := record.NoticeArchitect(route.project, route.chains, issue.Key, notice.Kind, notice.Role, runs)
+	switch {
+	case errors.Is(err, record.ErrChainUnknown):
+		return "", fmt.Errorf("%w: %w", errNoticeWaits, err)
+	case errors.Is(err, record.ErrNoArchitectAbove):
+		return "", fmt.Errorf("%w: %w", errNoticeUnroutable, err)
+	}
+	return architect, err
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's
@@ -290,7 +323,7 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 // release suspended it), and that decision is not stopping its process for good
 // (supervise.ClaimView's Stopping) — a suspension, a failure, a release. The owner walk reads it,
 // so no notice but a catch-up is routed to a sub-architect whose session is being stopped: such a
-// notice goes on up the tree while the stop runs. It goes on up after the stop too, unless the
+// notice goes on up the chain while the stop runs. It goes on up after the stop too, unless the
 // stop is the idle release's, whose released claim holds its role again (supervise.HoldsRole). A
 // catch-up waits for the architect of its own issue (noticeArchitect).
 func holdsRole(held supervise.ClaimView) bool {
@@ -303,10 +336,10 @@ func holdsRole(held supervise.ClaimView) bool {
 // catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
 // not ended: a resume starts its agent again — the operator's resume or deliver whoever suspended
 // it (`legion claims resume`), and the controller's any suspension but the operator's
-// (supervise.Claim.HeldAgainst) — and so does the workflow's
-// next start of its role for a claim the workflow suspended, which for a child's own architect is
-// the child's next first phase start (workflow's StartFirstPhase), or, after its tree's linger,
-// the re-admission's start of a child past admitted (admit's startMidPhaseMembers).
+// (supervise.Claim.HeldAgainst) — and so does the workflow's next start of its role for a claim
+// the workflow suspended, which for an issue Dispatch moved out of Legion's work is its return (R20
+// of dispatch://INFRA-3320). So a notice for a suspended or released architect waits for it, and
+// one for a failed or retired architect ends undelivered (R18).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }
@@ -332,28 +365,4 @@ func (r *outbox) claimState(token claim.Token) supervise.ClaimState {
 // (record.OwningArchitect).
 func (r *outbox) holdsItsRole(token claim.Token) bool {
 	return holdsRole(r.supervisedClaim(token))
-}
-
-// architectEnded says why nobody will hold the role of the owning architect, in state, for a
-// notice of tree, or "" when its claim can hold the role again: a lingering tree's architects are
-// suspended, and a closed tree's retired, until re-admission, which starts each with the tree's
-// record rather than the notices of its close.
-func architectEnded(tree treeSnapshot, state supervise.ClaimState) string {
-	if tree.root.Lingers() {
-		return "its tree lingers or has closed"
-	}
-	if claimEnded(state) {
-		return "its claim has failed, retired, or is not supervised"
-	}
-	return ""
-}
-
-// stoppedWithTree says whether the owning architect of a notice, its claim held, has stopped with
-// its finished tree: the tree lingers or has closed (lingers), and the claim holds its role no
-// longer (holdsRole), as the close suspended it, or is suspending it now, or it failed or retired.
-// Nothing more is sent to such an architect, not even through the Envoy registration its stopped
-// session left behind: re-admission starts it with the tree's record rather than the notices of its
-// close.
-func stoppedWithTree(lingers bool, held supervise.ClaimView) bool {
-	return lingers && !holdsRole(held)
 }

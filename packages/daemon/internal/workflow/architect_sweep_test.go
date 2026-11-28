@@ -17,8 +17,8 @@ import (
 // (ArchitectAtWork). It is wider than record.AtWork at admitted — a root whose design gate has
 // opened is still a root whose own architect is the only role at work on the root itself — and it
 // is no wider than the work the rule has to send: a root past admitted under its own power has a
-// phase role that owns its work, the hand-over row of this generation is what says a root stands
-// in the run a hand-over carried it into (record.Store.HandedOverRoot), and the one entry such a
+// phase role that owns its work, the issue's own carried generation is what says a root stands
+// in the run a hand-over carried it into (record.Issue.CarriedGeneration), and the one entry such a
 // root's architect is owed past admitted is a resume's its claim was not given, which the
 // admission pass that resumed the root can have promoted past admitted.
 //
@@ -119,18 +119,24 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			issue: waiting("LEGION-813"), entry: resume, claimed: true, given: 2,
 			why: "its architect handed the work back since that resume, and the answer to the new wait queues the next start",
 		},
+		{
+			name: "an issue that ran as a root, at admitted, whose record stores the tree it was first recorded in", issue: func() record.Issue {
+				held := root("LEGION-814", phase.Admitted, 1)
+				parent := "LEGION-800"
+				held.Tree, held.Parent, held.HoldsGate = "LEGION-800", &parent, true
+				return held
+			}(), reaches: true,
+			why: "it holds its own gate on the Dispatch chain (record.Chains.HoldsOwnGate), and the tree its record stores decides nothing (R15 of dispatch://INFRA-3320)",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			seedIssue(t, pool, tc.issue)
+			issue := tc.issue
+			issue.CarriedGeneration = tc.handedOver
+			seedIssue(t, pool, issue)
 			if tc.gateOpen {
 				version := 1
 				seedGate(t, pool, record.DesignGate{Issue: tc.issue.Key, ArtifactID: "artifact-" + tc.issue.Key,
 					LatestVersion: 1, ApprovedVersion: &version, EverOpened: true})
-			}
-			if tc.handedOver != 0 {
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					return store.PutHandedOverRoot(t.Context(), tx, record.HandedOverRoot{Issue: tc.issue.Key, Generation: tc.handedOver})
-				})
 			}
 			var run record.RoleRun
 			if tc.claimed {
@@ -138,9 +144,12 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			}
 			var reaches bool
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				var err error
-				reaches, err = ArchitectAtWork(t.Context(), tx, store, tc.issue, tc.entry, run)
-				return err
+				chains, err := record.ReadChains(t.Context(), tx, store, issue.Project, []string{issue.Key})
+				if err != nil {
+					return err
+				}
+				reaches = ArchitectAtWork(issue, chains.HoldsOwnGate(issue.Key), tc.entry, run)
+				return nil
 			})
 			if reaches != tc.reaches {
 				t.Fatalf("ArchitectAtWork(%s) = %t, want %t: %s", tc.issue.Key, reaches, tc.reaches, tc.why)

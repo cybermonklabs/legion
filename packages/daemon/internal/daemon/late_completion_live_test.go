@@ -235,7 +235,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 		strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
-	r.dispatch = startHandoffDispatch(t, root)
+	r.dispatch = startHandoffDispatch(t, root, "")
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -409,6 +409,7 @@ func (r *lateCompletionLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
+	openIssue(t, r.st, r.project, r.key, treelifecycle.AuthorityWorkflow)
 	implementer := r.token(claim.RoleImplementer)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: implementer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleImplementer,

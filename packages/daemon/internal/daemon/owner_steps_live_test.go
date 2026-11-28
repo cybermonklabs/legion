@@ -130,7 +130,7 @@ func newOwnerStepsLive(t *testing.T, script string, issues int) *ownerStepsLive 
 	fixtureenv.Live(t)
 	proof := newLiveProof(t, script)
 	root := liveCLICheckout(t)
-	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues, config.Project{})
+	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root, "").scratchDispatch, issues, config.Project{})
 	l := &ownerStepsLive{ownerStepsRig: rig, reads: &stepRecordsLive{stepRecordsRig: rig.stepRecordsRig, root: root, cliHome: t.TempDir()}}
 	l.reads.mintReader("owner-steps-reader")
 	return l

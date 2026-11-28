@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,37 +48,42 @@ const (
 	claimTakeable claimVerdict = "takeable"
 )
 
-// releaseClaim releases the Dispatch claim (record.ClaimRelease) of a session the issue's own tree
-// recorded once nothing of the daemon's runs in that session for the issue. Dispatch releases a
-// claim at a close alone, so a claim the daemon gave up any other way would otherwise stand on the
-// board, and the next agent of the tree would find the issue claimed by a session that is gone.
-// The row comes in two shapes, and each reads the holder from Dispatch and the issue from the
-// daemon's own record when it runs, never from when it was queued, because that is the reading
-// that is current when the DELETE is sent: a person who claimed the issue since, a re-admission, a
-// second move or a holder that let the claim go on its own each end the row on their own, with no
-// generation or holder to fence it.
+// releaseClaim releases the Dispatch claim (record.ClaimRelease) of a session the daemon records on
+// the issue itself, or in the tree of the gate holder the issue stands under on the Dispatch chain
+// (record.Chains.StateTree and GateTree, R18 of dispatch://INFRA-3320), once nothing of the
+// daemon's runs in that session for the issue. Dispatch releases a claim at a close alone, so a
+// claim the daemon gave up any other way would otherwise stand on the board, and the next agent of
+// the issue would find it claimed by a session that is gone. The row comes in two shapes, and each
+// reads the holder from Dispatch and the issue from the daemon's own record when it runs, never
+// from when it was queued, because that is the reading that is current when the DELETE is sent: a
+// person who claimed the issue since, a return to work, a second move or a holder that let the
+// claim go on its own each end the row on their own. So neither shape carries a run or a
+// phase-entry fence (record.FenceOf): a move's row that runs after a return or a new run finds the
+// issue in work, leaves the claim to that run and writes why (issue-runs), and one that runs once
+// a later move has taken the issue out of work again releases as that move's own row would.
 //
 // The row of a move out of the workflow, and of the boot pass, names no session. It releases a
-// session of the issue's tree while the record says the issue stopped: a session a claim of the
-// tree names now, or one claim_sessions holds for a claim of the tree that left it behind
-// (record.Store.SessionOfTree), which is how it reaches a session left before its own row existed,
-// or whose own row Dispatch refused until after the move. A claim of an issue in the workflow
-// again belongs to that run (issue-runs). A person's claim is theirs; the daemon's own session is
-// a legitimate holder, as workflow.Unresumable treats it; a session the project controller's claim
-// or a claim of another tree recorded, its current one or one it left behind, owns the issue
-// instead (record.Store.SessionClaim); and a name no claim of the project recorded is one the
-// daemon cannot attribute, which it leaves and logs rather than take a claim from a session it
-// knows nothing about. The tree is asked first, so a name a claim of the tree names as its session
-// now is the tree's whatever claim_sessions holds the name for.
+// session of the issue or of that gate tree while the record says the issue stopped: a session a
+// claim of one of those issues names now, or one claim_sessions holds for such a claim that left
+// it behind (record.Store.SessionOf), which is how it reaches a session left before its own row
+// existed, or whose own row Dispatch refused until after the move. A claim of an issue in the
+// workflow again belongs to that run (issue-runs). A person's claim is theirs; the daemon's own
+// session is a legitimate holder, as workflow.Unresumable treats it; a session the project
+// controller's claim or a claim under another gate root recorded, its current one or one it left
+// behind, owns the issue instead (record.Store.SessionClaim); and a name no claim of the project
+// recorded is one the daemon cannot attribute, which it leaves and logs rather than take a claim
+// from a session it knows nothing about. The issue and its gate tree are asked first, so a name a
+// claim of one of them names as its session now is theirs whatever claim_sessions holds the name
+// for.
 //
 // The row of a session the daemon left behind names that session: store's putClaim queued it in
 // the claim write that moved the claim off the session. It judges that session's claim alone.
 // Any other holder is a person who took the issue since or the new session's own claim, of which
 // the row judges nothing, so it writes nothing either. A left session is dead to the daemon
 // whatever the issue does, so this row does not ask whether the issue stopped. It releases the
-// claim unless the operator holds the tree, or a claim names the session as its current one again
-// (a name an operator's release of a claim's names freed and another claim took): that claim's
-// own tree (works-now), the project controller's or another tree's.
+// claim unless the operator holds the issue, or a claim names the session as its current one again
+// (a name an operator's release of a claim's names freed and another claim took): a claim of the
+// issue or of its gate tree (works-now), the project controller's or one under another gate root.
 //
 // Each outcome that leaves a claim on purpose is written into the issue's record with its reason
 // and holder (record.Store.RecordClaimLeft), in the transaction that read what decided it, so a
@@ -86,12 +92,12 @@ const (
 // is written in a transaction of its own (takeClaim), and a refusal no retry repairs by
 // finishRefused.
 //
-// A tree the operator holds is left alone whoever holds the claim, on the predicate the leave of
-// such a root reads (record.OperatorHoldsTree): the operator's tree shares the root's key, so its
-// own session reads as a session of the issue's tree here, and the workflow may record nothing
-// that acts on such a tree's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here
-// rather than where the row is queued because the operator can open the tree in the hour a row
-// waits out a holder.
+// An issue the operator holds is left alone whoever holds the claim, on the predicate the leave of
+// such an issue reads (record.OperatorHolds): the operator's lifetime shares the issue's key, so
+// its own session reads as a session of the issue here, and the workflow may record nothing that
+// acts on such an issue's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here rather
+// than where the row is queued because the operator can take the issue in the hour a row waits out
+// a holder.
 func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow, release record.ClaimRelease) error {
 	if r.dispatch == nil {
 		return errors.New("claim release executor has no Dispatch client")
@@ -110,9 +116,9 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow, release
 	if issue.Claim != nil && !issue.ClaimUnread {
 		holder = issue.Claim.Holder()
 	}
-	// The record, the tree's lifecycle and the claims the holder is judged against are read in
-	// one transaction, so they are one state of the record, and the entry that says why the claim
-	// stays is written from that state in the same transaction.
+	// The record, the issue's lifecycle, the Dispatch chain and the claims the holder is judged
+	// against are read in one transaction, so they are one state of the record, and the entry that
+	// says why the claim stays is written from that state in the same transaction.
 	var verdict claimVerdict
 	var reason record.ClaimLeftReason
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -147,7 +153,7 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 	switch {
 	case shown.ClaimUnread:
 		// Dispatch showed a claim naming no actor, so the read says neither who holds it nor
-		// that nobody does: there is nothing to hold the tree test against.
+		// that nobody does: there is nothing to judge a holder by.
 		return claimStays, record.ClaimLeftUnread, nil
 	case shown.Claim == nil:
 		return claimStays, "", nil
@@ -170,27 +176,35 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 	if err != nil || recorded == nil {
 		return claimUnrecorded, "", err
 	}
-	// The issue is live again, or its tree runs again at a later generation while Dispatch still
-	// shows it out of the workflow: the claim belongs to the run, not to the move this row
-	// answered.
+	// The issue is live again, or it runs again at a later generation while Dispatch still shows it
+	// out of the workflow: the claim belongs to the run, not to the move this row answered.
 	if release.Session == "" && !record.Stopped(*recorded) {
 		return claimStays, record.ClaimLeftIssueRuns, nil
 	}
-	held, err := record.OperatorHoldsTree(ctx, r.records, tx, *recorded)
+	held, err := record.OperatorHolds(ctx, r.records, tx, *recorded)
 	if err != nil {
 		return "", "", err
 	}
 	if held {
 		return claimStays, record.ClaimLeftOperatorTree, nil
 	}
-	if release.Session != "" {
-		return r.judgeLeftSession(ctx, tx, recorded.Tree, holder.ID)
-	}
-	ofTree, err := r.records.SessionOfTree(ctx, tx, recorded.Tree, holder.ID)
+	// The holder is judged against the issue's own claims and the tree of the gate holder it
+	// stands under on the Dispatch chain (record.Chains.StateTree, GateTree), never the tree a
+	// claim or the record stores: an issue out of Legion's work is in no gate root's tree of its
+	// own, and one in it stands in the tree of its gate root.
+	chains, err := record.ReadChains(ctx, tx, r.records, recorded.Project, []string{recorded.Key})
 	if err != nil {
 		return "", "", err
 	}
-	if ofTree {
+	issues := append([]string{recorded.Key}, chains.GateTree(chains.StateTree(recorded.Key))...)
+	if release.Session != "" {
+		return r.judgeLeftSession(ctx, tx, issues, holder.ID)
+	}
+	of, err := r.records.SessionOf(ctx, tx, issues, holder.ID)
+	if err != nil {
+		return "", "", err
+	}
+	if of {
 		return claimTakeable, "", nil
 	}
 	owner, found, err := r.records.SessionClaim(ctx, tx, r.project, holder.ID)
@@ -203,37 +217,40 @@ func (r *outbox) judgeClaim(ctx context.Context, tx pgx.Tx, key string, release 
 	return claimStays, ownerLeft(owner), nil
 }
 
-// judgeLeftSession is the left session's row once its session holds the claim of an issue of tree
-// that the operator does not hold: the session stays only where a claim names it as its current
-// session again, and is released otherwise. Whether the claim claim_sessions holds the name for left
-// it behind is read off that claim's current session, as the claim that recorded the name first is
-// the only one that can name it now. The row finds that claim through the hold alone
-// (record.Store.SessionClaim), where the move's row asks the tree's claims first
-// (record.Store.SessionOfTree). So where the name is held for no claim (an empty claim), the row
+// judgeLeftSession is the left session's row once its session holds the claim of an issue that
+// the operator does not hold, judged against issues, the issue and the tree of the gate holder it
+// stands under on the Dispatch chain: the session stays only where a claim names it as its current
+// session again, and is released otherwise. Whether the claim claim_sessions holds the name for
+// left it behind is read off that claim's current session, as the claim that recorded the name
+// first is the only one that can name it now. The row finds that claim through the hold alone
+// (record.Store.SessionClaim), where the move's row asks the claims of issues first
+// (record.Store.SessionOf). So where the name is held for no claim (an empty claim), the row
 // releases in every case: also where a claim names the session as its current one now, and where
 // the move's row leaves the Dispatch claim as unattributed. The only claims that name such a name
 // as their current session are the conflicts the boot logs (suspendSessionConflicts), and the hold
 // refuses every launch of each of them. So for each claim that runs, the hold names that claim, and
 // the two rows agree on whose session it is.
-func (r *outbox) judgeLeftSession(ctx context.Context, tx pgx.Tx, tree, session string) (claimVerdict, record.ClaimLeftReason, error) {
+func (r *outbox) judgeLeftSession(ctx context.Context, tx pgx.Tx, issues []string, session string) (claimVerdict, record.ClaimLeftReason, error) {
 	owner, found, err := r.records.SessionClaim(ctx, tx, r.project, session)
 	switch {
 	case err != nil:
 		return "", "", err
 	case !found || owner.Session != session:
 		return claimTakeable, "", nil
-	case owner.Tree == tree:
-		// The project controller's claim stands on no tree (0032_controller_claim's shape check),
-		// and the tree of an issue the daemon records is never empty.
+	case slices.Contains(issues, owner.Issue):
+		// The project controller's claim stands on no issue (0032_controller_claim's shape check),
+		// and each of issues is an issue's key, so that claim is never among them.
 		return claimStays, record.ClaimLeftWorksNow, nil
 	}
 	return claimStays, ownerLeft(owner), nil
 }
 
-// ownerLeft is the reason a claim stays with a session a claim outside the issue's tree recorded:
-// the project controller's claim, which stands on no tree, or a claim of another tree.
+// ownerLeft is the reason a claim stays with a session a claim outside the judged issues recorded:
+// the project controller's claim, which stands on no issue, or a claim under another gate root.
+// SessionClaim reads no stored tree, and 0032_controller_claim's shape check holds a controller
+// claim's tree empty with its issue, so the tree claim.IsController is handed is that empty one.
 func ownerLeft(owner record.SessionClaim) record.ClaimLeftReason {
-	if claim.IsController(owner.Role, owner.Issue, owner.Tree) {
+	if claim.IsController(owner.Role, owner.Issue, "") {
 		return record.ClaimLeftController
 	}
 	return record.ClaimLeftOtherTree
@@ -340,19 +357,19 @@ func claimContendedWait(issue string) error {
 // one batch of the records, because the pass runs inside the boot's serialized transaction,
 // holding the fact lock every boot fact waits on (intake.SerializeFacts), where a read per issue
 // would be hundreds of round trips. Whether the issue stopped is the record's to say and never
-// the listing's, because an unslotted root and a lingering root both keep an active Dispatch
-// status (workflow.Engine.LeaveUnslotted leaves the root at the status it stood at). An issue the
+// the listing's, because an unslotted root keeps an active Dispatch status
+// (workflow.Engine.LeaveUnslotted leaves the root at the status it stood at). An issue the
 // daemon does not record is left alone with nothing logged: it could attribute no claim of it.
 //
-// The pass attributes no claim itself. The row's executor re-reads Dispatch, the record and the
-// tree's lifecycle when it runs (outbox.releaseClaim), so a person's claim, a session the project
-// controller's claim or a claim of another tree recorded, a holder whose name no claim of the
-// project recorded in claim_sessions, a tree the operator holds and an issue running again all end
-// the row there, each written into the issue's record with its reason, on the reading that is
-// current when the DELETE would be sent — which is why the operator-held test is the executor's
-// alone and the pass makes none. The rows are drained by the outbox's own sweep rather than by a
-// commit wake: attach stores the outbox the records' wake reaches (wakeOutbox) after the reconcile
-// probe has run (daemon.go's boot stages).
+// The pass attributes no claim itself. The row's executor re-reads Dispatch, the record, the
+// issue's lifecycle and the Dispatch chain when it runs (outbox.releaseClaim), so a person's claim,
+// a session the project controller's claim or a claim under another gate root recorded, a holder
+// whose name no claim of the project recorded in claim_sessions, an issue the operator holds and
+// an issue running again all end the row there, each written into the issue's record with its
+// reason, on the reading that is current when the DELETE would be sent — which is why the
+// operator-held test is the executor's alone and the pass makes none. The rows are drained by the
+// outbox's own sweep rather than by a commit wake: attach stores the outbox the records' wake
+// reaches (wakeOutbox) after the reconcile probe has run (daemon.go's boot stages).
 func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, scope []dispatch.IssueSummary) error {
 	keys := make([]string, 0, len(scope))
 	for _, summary := range scope {

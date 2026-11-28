@@ -41,7 +41,8 @@ func holdFrom(t *testing.T, h *harness, key string, at phase.Phase) {
 // consumer delivers it. Dispatch shows the write at the issue's next sequence, and the write's
 // event, whose actor is owner's session, is applied through handlers, the daemon's own chain. The
 // daemon takes that write as it takes a person's move (dispatch://INFRA-3178/spec R1), so key
-// leaves the workflow at the write's sequence and nothing sets it back.
+// leaves Legion's work at the write's sequence, its phase kept (R20 of dispatch://INFRA-3320), and
+// nothing sets it back.
 func ownersBacklog(t *testing.T, h *harness, handlers []intake.Handler, statuses *statusRecorder, owner liveClaim, key string) {
 	t.Helper()
 	shown := statuses.issues[key]
@@ -56,8 +57,8 @@ func ownersBacklog(t *testing.T, h *harness, handlers []intake.Handler, statuses
 	if _, err := intake.ApplyFact(context.Background(), h.store.Pool(), "dispatch", fmt.Sprintf("owner-backlog-%s-%d", key, shown.LastSeq), backlog, handlers...); err != nil {
 		t.Fatalf("apply the owning architect's backlog of %s: %v", key, err)
 	}
-	if got := recordedChild(t, h, key); got == nil || got.Phase != phase.Done || got.Status != "backlog" || got.LastDispatchSeq != shown.LastSeq {
-		t.Fatalf("%s after its owning architect's backlog = %#v, want it out of the workflow at phase done, status backlog, at the write's sequence %d",
+	if got := recordedChild(t, h, key); got == nil || record.InLegionsWork(*got) || got.Status != "backlog" || got.LastDispatchSeq != shown.LastSeq {
+		t.Fatalf("%s after its owning architect's backlog = %#v, want it out of Legion's work at status backlog, at the write's sequence %d",
 			key, got, shown.LastSeq)
 	}
 }
@@ -137,7 +138,7 @@ func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testi
 	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
 		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
 	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
-		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, where " + statusRoot + " is not the tree's root"
+		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed"
 	if message != want {
 		t.Fatalf("the refusal = %q, want %q", message, want)
 	}
@@ -176,9 +177,9 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 	}
 }
 
-// A6. The refusal is the daemon's own reading of its records, so the ancestor it names is the
-// one record.AcceptedAncestor finds over the tree: the nearest issue above the child in retro or
-// merging, found by walking past a parent that is already done.
+// A6. The refusal is the daemon's own reading of the Dispatch chain, so the ancestor it names is
+// the one record.AcceptedAncestorIn finds over the copy of Dispatch's issues: the nearest issue
+// above the child in retro or merging, found by walking past a parent that is already done.
 func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 	h, _, _ := statusHarness(t)
 	acceptPhase(t, h, statusRoot, phase.Merging)
@@ -190,9 +191,19 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 
 	var ancestor string
 	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, statusRoot, "LEGION-300", "")
-		return err
+		for _, row := range []struct{ key, parent, status string }{
+			{statusRoot, "", "in_progress"}, {statusChild, statusRoot, "done"}, {"LEGION-300", statusChild, "todo"},
+		} {
+			if err := seedCopy(tx, row.key, row.parent, row.status); err != nil {
+				return err
+			}
+		}
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), testDispatchProject, []string{"LEGION-300"})
+		if err != nil {
+			return err
+		}
+		ancestor = record.AcceptedAncestorIn(chains, "LEGION-300", "")
+		return nil
 	}); err != nil {
 		t.Fatalf("read the accepted ancestor: %v", err)
 	}

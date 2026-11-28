@@ -131,19 +131,61 @@ func outboxRows(t *testing.T, h *harness, issue string) map[string]int {
 	return rows
 }
 
-// todoChild is a child Dispatch already shows todo, so the release records it from that view and
-// the workflow decides there and then whether its first phase starts (enterTodoChild).
+// todoChild is a child Dispatch already shows todo, so the release writes nothing on it and records
+// it from that view, and the workflow decides there and then whether its first phase starts.
 func todoChild(key string, waits ...string) dispatch.Issue {
 	parent := releaseRoot
 	return dispatch.Issue{Key: key, ResolvedRepo: "acme/widgets", Title: key, Status: "todo", Parent: &parent, LastSeq: 7, BlockedBy: waits}
 }
 
-// backlogChild is a child Dispatch shows in backlog, so the release writes it todo and records it
-// from that write, in the same request (recordOwnStatusWrite).
+// backlogChild is a child Dispatch shows in backlog, so the release queues its todo and counts it
+// on the record in the same request, before Dispatch takes the write (decision 5 of
+// dispatch://INFRA-4730).
 func backlogChild(key string, waits ...string) dispatch.Issue {
 	child := todoChild(key, waits...)
 	child.Status = "backlog"
 	return child
+}
+
+// queuedTodos is each issue whose todo the outbox holds queued, in the order the rows were queued:
+// what the release_children calls of a test wrote, which the outbox writes to Dispatch once the
+// call's request has answered (decision 5 of dispatch://INFRA-4730), so no route writes to Dispatch
+// itself (statusRecorder.writes stays empty). The in_progress a started child's first phase writes
+// is the workflow's own row, and no write of the call's.
+func queuedTodos(t *testing.T, h *harness) []string {
+	t.Helper()
+	var writes []string
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select issue from outbox where kind = 'dispatch_status' and payload->>'status' = 'todo' order by id`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var issue string
+			if err := rows.Scan(&issue); err != nil {
+				return err
+			}
+			writes = append(writes, issue)
+		}
+		return rows.Err()
+	}); err != nil {
+		t.Fatalf("read the queued status writes: %v", err)
+	}
+	return writes
+}
+
+// assertQueuedRows holds each write a status call's answer names to the outbox's status row of
+// that id: the row is on that issue and writes that status.
+func assertQueuedRows(t *testing.T, h *harness, queued []QueuedStatusWrite) {
+	t.Helper()
+	for _, write := range queued {
+		var issue, status string
+		if err := h.store.Pool().QueryRow(context.Background(), `select issue, payload->>'status' from outbox where id = $1 and kind = 'dispatch_status'`,
+			write.Row).Scan(&issue, &status); err != nil || issue != write.Issue || status != write.Status {
+			t.Fatalf("the outbox's status row %d = %s %s (%v), want the %s of %s the answer names", write.Row, issue, status, err, write.Status, write.Issue)
+		}
+	}
 }
 
 // seedMirrorRow writes what Dispatch says of an issue the release's own children wait on, as the
@@ -159,7 +201,9 @@ func seedMirrorRow(t *testing.T, h *harness, key, status string) {
 }
 
 // releaseWave posts one accepted release_children and keeps its body, which the answer's arrays
-// are read back from unparsed.
+// are read back from unparsed. The answer's queued writes are held to the outbox's rows
+// (assertQueuedRows) and left off the answer it returns, so a test reads them from the outbox
+// (queuedTodos).
 func releaseWave(t *testing.T, h *harness, architect liveClaim, issues ...string) (WaveReleaseResponse, string) {
 	t.Helper()
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": issues}, nil)
@@ -169,6 +213,8 @@ func releaseWave(t *testing.T, h *harness, architect liveClaim, issues ...string
 	body := recorder.Body.String()
 	var response WaveReleaseResponse
 	decodeInto(t, recorder, &response)
+	assertQueuedRows(t, h, response.Queued)
+	response.Queued = nil
 	return response, body
 }
 
@@ -255,13 +301,43 @@ func TestWaveReleaseUnderAClosedDesignGateHoldsNoChild(t *testing.T) {
 	}
 }
 
-// A child the release moves out of backlog is recorded by the release itself, from the issue
-// Dispatch answered the write with, at that write's sequence: before, it was recorded only when the
-// write's todo event came back through the Dispatch consumer, after the answer, so a consumer
-// running behind left the child unrecorded and unstarted for as long as it ran behind. The blocked
-// one is held at admitted and named with its blocker; the free one is started. The write's todo
-// event, when the consumer delivers it, finds the record already at its sequence and changes
-// nothing: no second record, no second start.
+// landed is issue as Dispatch shows it once the outbox has written status on it: at that status, one
+// sequence on from the view the call decided over.
+func landed(issue dispatch.Issue, status string) dispatch.Issue {
+	issue.Status, issue.LastSeq = status, issue.LastSeq+1
+	return issue
+}
+
+// assertEchoMovesOnlyDispatchsView delivers the echo of the release's write of key, as the
+// consumer delivers it once the outbox's write has landed (landed), and holds the record to what
+// the release left, but for the status Dispatch shows and the sequence it has seen: the call
+// counted the write already (R16 of dispatch://INFRA-3320), so the echo starts and tells nothing
+// more.
+func assertEchoMovesOnlyDispatchsView(t *testing.T, h *harness, statuses *statusRecorder, key string) {
+	t.Helper()
+	before, rows := recordedChild(t, h, key), outboxRows(t, h, key)
+	echo := landed(statuses.issues[key], "todo")
+	deliverEcho(t, h, echo)
+	after := recordedChild(t, h, key)
+	if after == nil || before == nil {
+		t.Fatalf("the record of %s before its todo event = %#v, after = %#v, want both", key, before, after)
+	}
+	want := *before
+	want.LastDispatchSeq, want.DispatchStatus = echo.LastSeq, "todo"
+	if !reflect.DeepEqual(*after, want) {
+		t.Fatalf("the record of %s after its todo event = %#v, want %#v: only Dispatch's status and sequence move", key, *after, want)
+	}
+	if again := outboxRows(t, h, key); !reflect.DeepEqual(again, rows) {
+		t.Fatalf("outbox of %s after its todo event = %v, want %v: the event started or told nothing more", key, again, rows)
+	}
+}
+
+// A child the release moves out of backlog is recorded by the release itself, in its own request,
+// from the copy's reading of the child the route made, before Dispatch takes the queued todo (R16 of
+// dispatch://INFRA-3320): a consumer running behind leaves no released child unrecorded and
+// unstarted. The blocked one is held at admitted and named with its blocker; the free one is
+// started. The record still shows the backlog Dispatch shows until the write's todo event, which,
+// when the consumer delivers it, moves only that: no second record, no second start.
 func TestWaveReleaseRecordsABacklogChildFromItsOwnWrite(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	blocked, free := "LEGION-209", "LEGION-210"
@@ -280,8 +356,8 @@ func TestWaveReleaseRecordsABacklogChildFromItsOwnWrite(t *testing.T) {
 	if !reflect.DeepEqual(response, want) {
 		t.Fatalf("release answered %#v, want %#v", response, want)
 	}
-	if wantWrites := []statusWrite{{blocked, "todo"}, {free, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
-		t.Fatalf("Dispatch writes = %#v, want %#v", statuses.writes, wantWrites)
+	if want := []string{blocked, free}; !reflect.DeepEqual(queuedTodos(t, h), want) || len(statuses.writes) != 0 {
+		t.Fatalf("queued todos = %v and Dispatch writes = %#v, want %v queued and none written in the request", queuedTodos(t, h), statuses.writes, want)
 	}
 	// A child the release starts shows its phase's status, in_progress, from its first phase; one
 	// held at admitted has started nothing and stays todo.
@@ -289,38 +365,28 @@ func TestWaveReleaseRecordsABacklogChildFromItsOwnWrite(t *testing.T) {
 	// The held child keeps the todo the release wrote, since admitted has no status of its own;
 	// the free child's entry into planning writes in_progress over it.
 	wantStatus := map[string]string{blocked: "todo", free: "in_progress"}
-	before := map[string]record.Issue{}
-	rowsBefore := map[string]map[string]int{}
 	for _, key := range []string{blocked, free} {
 		recorded := recordedChild(t, h, key)
-		if recorded == nil || recorded.Tree != releaseRoot || recorded.Phase != wantPhase[key] || recorded.Generation != 1 || recorded.LastDispatchSeq != 8 || recorded.Status != wantStatus[key] {
-			t.Fatalf("the record of %s as the release answered = %#v, want it in %s's tree at %s, status %s, generation 1, at the write's sequence 8",
-				key, recorded, releaseRoot, wantPhase[key], wantStatus[key])
+		if recorded == nil || recorded.Phase != wantPhase[key] || recorded.Generation != 1 || recorded.LastDispatchSeq != 7 || recorded.Status != wantStatus[key] ||
+			recorded.DispatchStatus != "backlog" {
+			t.Fatalf("the record of %s as the release answered = %#v, want it at %s, status %s, generation 1, Dispatch still shown backlog at the read's sequence 7",
+				key, recorded, wantPhase[key], wantStatus[key])
 		}
-		before[key], rowsBefore[key] = *recorded, outboxRows(t, h, key)
 	}
-	if rowsBefore[free][string(record.OutboxKindSupervise)] == 0 {
-		t.Fatalf("outbox of %s = %v, want its planner's start queued by the release", free, rowsBefore[free])
+	if rows := outboxRows(t, h, free); rows[string(record.OutboxKindSupervise)] == 0 {
+		t.Fatalf("outbox of %s = %v, want its planner's start queued by the release", free, rows)
 	}
 
 	for _, key := range []string{blocked, free} {
-		deliverEcho(t, h, statuses.issues[key])
-	}
-	for _, key := range []string{blocked, free} {
-		if after := recordedChild(t, h, key); after == nil || !reflect.DeepEqual(*after, before[key]) {
-			t.Fatalf("the record of %s after its todo event = %#v, want it unchanged from %#v", key, after, before[key])
-		}
-		if rows := outboxRows(t, h, key); !reflect.DeepEqual(rows, rowsBefore[key]) {
-			t.Fatalf("outbox of %s after its todo event = %v, want %v: the event started or told nothing more", key, rows, rowsBefore[key])
-		}
+		assertEchoMovesOnlyDispatchsView(t, h, statuses, key)
 	}
 }
 
 // A parked child — its record at done, Dispatch at backlog — released again is re-entered by the
-// release's own write, as its todo event would re-enter it: a new run, held at admitted while it
-// waits on an unfinished issue (so not started), or started at planning when it waits on nothing.
-// Before, the record stayed parked at done until that event came back through the consumer. The
-// event itself, delivered later, changes nothing.
+// release's own write in the release's request, as its todo event would re-enter it: a new run,
+// held at admitted while it waits on an unfinished issue (so not started), or started at planning
+// when it waits on nothing. The event itself, delivered later, moves only the record's view of
+// Dispatch.
 func TestWaveReleaseReentersAParkedChildFromItsOwnWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -349,19 +415,14 @@ func TestWaveReleaseReentersAParkedChildFromItsOwnWrite(t *testing.T) {
 			if !reflect.DeepEqual(response, want) {
 				t.Fatalf("release answered %#v, want %#v", response, want)
 			}
+			if want := []string{child}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+				t.Fatalf("queued todos = %v, want %v", queuedTodos(t, h), want)
+			}
 			recorded := recordedChild(t, h, child)
-			if recorded == nil || recorded.Phase != tc.phase || recorded.Generation != 2 || recorded.Status != tc.status || recorded.LastDispatchSeq != 8 {
-				t.Fatalf("the record of %s as the release answered = %#v, want its next run, generation 2, at %s, status %s, at the write's sequence 8", child, recorded, tc.phase, tc.status)
+			if recorded == nil || recorded.Phase != tc.phase || recorded.Generation != 2 || recorded.Status != tc.status || recorded.DispatchStatus != "backlog" {
+				t.Fatalf("the record of %s as the release answered = %#v, want its next run, generation 2, at %s, status %s, Dispatch still shown backlog", child, recorded, tc.phase, tc.status)
 			}
-			rows := outboxRows(t, h, child)
-
-			deliverEcho(t, h, statuses.issues[child])
-			if after := recordedChild(t, h, child); after == nil || !reflect.DeepEqual(*after, *recorded) {
-				t.Fatalf("the record of %s after its todo event = %#v, want it unchanged from %#v", child, after, recorded)
-			}
-			if again := outboxRows(t, h, child); !reflect.DeepEqual(again, rows) {
-				t.Fatalf("outbox of %s after its todo event = %v, want %v", child, again, rows)
-			}
+			assertEchoMovesOnlyDispatchsView(t, h, statuses, child)
 		})
 	}
 }
@@ -417,13 +478,13 @@ func TestWaveReleaseRecordsAChildWhoseDispatchDetailReadFails(t *testing.T) {
 	if !reflect.DeepEqual(response, want) {
 		t.Fatalf("release answered %#v, want %#v", response, want)
 	}
-	for key, seq := range map[string]int64{alreadyTodo: 7, unreleased: 8} {
-		if recorded := recordedChild(t, h, key); recorded == nil || recorded.Tree != releaseRoot || recorded.Phase != phase.Planning || recorded.LastDispatchSeq != seq {
-			t.Fatalf("the record of %s = %#v, want it in %s's tree, planning, at sequence %d", key, recorded, releaseRoot, seq)
+	for key, status := range map[string]string{alreadyTodo: "todo", unreleased: "triage"} {
+		if recorded := recordedChild(t, h, key); recorded == nil || recorded.Phase != phase.Planning || recorded.LastDispatchSeq != 7 || recorded.DispatchStatus != status {
+			t.Fatalf("the record of %s = %#v, want it planning, at the listing's sequence 7, Dispatch shown %s", key, recorded, status)
 		}
 	}
-	if wantWrites := []statusWrite{{unreleased, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
-		t.Fatalf("Dispatch writes = %#v, want only the triage child's release", statuses.writes)
+	if want := []string{unreleased}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos = %v, want only the triage child's release", queuedTodos(t, h))
 	}
 	if listings := slices.Index(statuses.reads, "listing"); listings < 0 || slices.Contains(statuses.reads[listings+1:], "listing") {
 		t.Fatalf("Dispatch reads = %q, want the listing read exactly once", statuses.reads)
@@ -448,15 +509,16 @@ func TestWaveReleaseNamesAFailedReadTheListingDoesNotCover(t *testing.T) {
 	if !strings.Contains(body, "detail read timed out") || !strings.Contains(body, "listing read timed out") {
 		t.Fatalf("answer = %s, want it to name both Dispatch failures", body)
 	}
-	if len(statuses.writes) != 0 || recordedChild(t, h, child) != nil {
-		t.Fatalf("writes = %#v, record = %#v, want neither", statuses.writes, recordedChild(t, h, child))
+	if queued := queuedTodos(t, h); len(queued) != 0 || recordedChild(t, h, child) != nil {
+		t.Fatalf("queued writes = %#v, record = %#v, want neither", queued, recordedChild(t, h, child))
 	}
 }
 
-// A release whose write landed stands even when the record does not take the write in the request
-// (here the repository read the workflow needs fails): Dispatch shows the child todo, the release
-// answers it released, and the write's todo event, when the consumer delivers it, records it.
-// Failing the call would send the architect to retry a release that already happened.
+// A release whose write is queued stands even when the record does not take the write in the
+// request (here the repository read the workflow needs fails): the release answers the child
+// released with its todo queued, and the write's todo event, when the consumer delivers it once the
+// write has landed, records it. Failing the call would send the architect to retry a release that
+// already happened.
 func TestWaveReleaseStandsWhenTheRecordDoesNotTakeALandedWrite(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	child := "LEGION-209"
@@ -477,19 +539,21 @@ func TestWaveReleaseStandsWhenTheRecordDoesNotTakeALandedWrite(t *testing.T) {
 	if want := (WaveReleaseResponse{Released: []string{child}, Started: []string{}, Held: []HeldChild{}}); !reflect.DeepEqual(response, want) {
 		t.Fatalf("release answered %#v, want %#v", response, want)
 	}
+	if want := []string{child}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos = %v, want %v", queuedTodos(t, h), want)
+	}
 	if recorded := recordedChild(t, h, child); recorded != nil {
 		t.Fatalf("the record of %s = %#v, want none before its todo event", child, recorded)
 	}
-	deliverEcho(t, h, statuses.issues[child])
-	if recorded := recordedChild(t, h, child); recorded == nil || recorded.Tree != releaseRoot || recorded.LastDispatchSeq != 8 {
-		t.Fatalf("the record of %s after its todo event = %#v, want it in %s's tree at sequence 8", child, recorded, releaseRoot)
+	deliverEcho(t, h, landed(statuses.issues[child], "todo"))
+	if recorded := recordedChild(t, h, child); recorded == nil || recorded.LastDispatchSeq != 8 {
+		t.Fatalf("the record of %s after its todo event = %#v, want it recorded at sequence 8", child, recorded)
 	}
 }
 
 // A todo child the release cannot record yet (its parent is outside the wave and unrecorded, so
-// the answer is CHILD_NOT_RECORDED) does not hold back the rest of the wave: every child the release
-// writes todo under none of the wave's todo children is written, and recorded from its own write,
-// before the stuck child answers.
+// the answer is CHILD_NOT_RECORDED) does not hold back the rest of the wave: the call queues every
+// other child's todo and counts it on the record before the stuck child answers.
 func TestWaveReleaseWritesAndRecordsTheWaveBeforeAStuckTodoChildAnswers(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	stuck, unrecordedParent, free := "LEGION-209", "LEGION-299", "LEGION-210"
@@ -504,23 +568,23 @@ func TestWaveReleaseWritesAndRecordsTheWaveBeforeAStuckTodoChildAnswers(t *testi
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{stuck, free}}, nil)
 
 	refused(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
-	if wantWrites := []statusWrite{{free, "todo"}}; !reflect.DeepEqual(statuses.writes, wantWrites) {
-		t.Fatalf("Dispatch writes = %#v, want %s released whatever %s answered", statuses.writes, free, stuck)
+	if want := []string{free}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos = %v, want %s released whatever %s answered", queuedTodos(t, h), free, stuck)
 	}
-	if recorded := recordedChild(t, h, free); recorded == nil || recorded.Tree != releaseRoot || recorded.Phase != phase.Planning || recorded.LastDispatchSeq != 8 {
-		t.Fatalf("the record of %s = %#v, want it recorded from its own write, planning, at sequence 8", free, recorded)
+	if recorded := recordedChild(t, h, free); recorded == nil || recorded.Tree != releaseRoot || recorded.Phase != phase.Planning || recorded.Status != "in_progress" {
+		t.Fatalf("the record of %s = %#v, want it recorded from its own write, planning", free, recorded)
 	}
 	if recorded := recordedChild(t, h, stuck); recorded != nil {
 		t.Fatalf("the record of %s = %#v, want none while its parent is unrecorded", stuck, recorded)
 	}
 }
 
-// A child to write under a todo child of the wave is not written until that todo child is
-// recorded: written first, its own todo event, delivered by a consumer that keeps up, would reach a
-// daemon with no record of its parent, and a labelled one would be recorded as a root of its own.
-// When the todo child cannot be recorded (CHILD_NOT_RECORDED), the child under it is neither
-// written nor recorded, and the architect's retry releases both once the parent is recorded.
-func TestWaveReleaseWritesNoChildUnderATodoChildItCannotRecord(t *testing.T) {
+// A labelled child the release writes todo under a todo child of the wave that the call cannot
+// record (CHILD_NOT_RECORDED) is queued with the rest of the wave, and is recorded as no root of its
+// own: its Dispatch chain reaches the root in Legion's work, so neither the call, which records a
+// child only under a recorded parent at work, nor admission takes it for a root (R15 of
+// dispatch://INFRA-3320).
+func TestWaveReleaseQueuesAChildUnderATodoChildItCannotRecordAndRecordsNeither(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	stuck, unrecordedParent, under := "LEGION-209", "LEGION-299", "LEGION-210"
 	parent := releaseRoot
@@ -534,17 +598,22 @@ func TestWaveReleaseWritesNoChildUnderATodoChildItCannotRecord(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": architect.grant(t), "issues": []string{under, stuck}}, nil)
 
 	refused(t, recorder, http.StatusConflict, "CHILD_NOT_RECORDED")
-	if len(statuses.writes) != 0 {
-		t.Fatalf("Dispatch writes = %#v, want none: %s waits for %s to be recorded", statuses.writes, under, stuck)
+	if want := []string{under}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos = %v, want %v", queuedTodos(t, h), want)
 	}
-	if recorded := recordedChild(t, h, under); recorded != nil {
-		t.Fatalf("the record of %s = %#v, want none", under, recorded)
+	deliverEcho(t, h, landed(statuses.issues[under], "todo"))
+	for _, key := range []string{under, stuck} {
+		if recorded := recordedChild(t, h, key); recorded != nil {
+			t.Fatalf("the record of %s once the todo of %s landed = %#v, want none: %s is unrecorded", key, under, recorded, stuck)
+		}
 	}
 }
 
 // Children the release writes todo under a child Dispatch already showed todo, and under those in
-// turn, are recorded in the request once that todo child is: each written one after its parent, a
-// chain of the wave's own children, named in whatever order.
+// turn, are recorded in the request with that todo child: each after its parent, a chain of the
+// wave's own children, named in whatever order. Only the lowest starts: a parent whose Dispatch
+// child is open starts none of its own work while it stands open (record.HeldChildrenFirst), so the
+// two above it wait at admitted.
 func TestWaveReleaseRecordsWrittenDescendantsOfATodoChildOfTheWave(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	top, middle, bottom := "LEGION-209", "LEGION-210", "LEGION-211"
@@ -559,12 +628,15 @@ func TestWaveReleaseRecordsWrittenDescendantsOfATodoChildOfTheWave(t *testing.T)
 
 	response, _ := releaseWave(t, h, architect, bottom, middle, top)
 
-	if want := []string{bottom, middle, top}; !reflect.DeepEqual(response.Started, want) {
-		t.Fatalf("release answered started %v, want %v: every child of the chain recorded and started by the release", response.Started, want)
+	if want := []string{bottom}; !reflect.DeepEqual(response.Started, want) {
+		t.Fatalf("release answered started %v, want %v: the lowest child of the chain started, its parents waiting on it", response.Started, want)
 	}
-	for key, seq := range map[string]int64{top: 7, middle: 8, bottom: 8} {
-		if recorded := recordedChild(t, h, key); recorded == nil || recorded.Tree != releaseRoot || recorded.LastDispatchSeq != seq {
-			t.Fatalf("the record of %s = %#v, want it in %s's tree at sequence %d", key, recorded, releaseRoot, seq)
+	if want := []string{middle, bottom}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos = %v, want %v: each parent's before its child's", queuedTodos(t, h), want)
+	}
+	for key, at := range map[string]phase.Phase{top: phase.Admitted, middle: phase.Admitted, bottom: phase.Planning} {
+		if recorded := recordedChild(t, h, key); recorded == nil || recorded.Tree != releaseRoot || recorded.Phase != at {
+			t.Fatalf("the record of %s = %#v, want it in %s's tree at %s", key, recorded, releaseRoot, at)
 		}
 	}
 }
@@ -578,8 +650,8 @@ func labelledChild(key, parent, status string) dispatch.Issue {
 
 // A child carrying the legion label that the release writes todo under a child of the wave
 // Dispatch already showed todo, and that the daemon has not recorded, joins the tree under that
-// parent. Recorded from its write before its parent, no handler of the workflow would record it,
-// and admission would take it for an orphan and record it as a root of its own.
+// parent, which the call records first: recorded before its parent, no handler of the workflow
+// would record it. It starts, and its parent waits on it (record.HeldChildrenFirst).
 func TestWaveReleaseRecordsALabelledChildUnderAnUnrecordedTodoChildInItsTree(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	parent, labelled := "LEGION-209", "LEGION-210"
@@ -589,11 +661,14 @@ func TestWaveReleaseRecordsALabelledChildUnderAnUnrecordedTodoChildInItsTree(t *
 
 	response, _ := releaseWave(t, h, architect, labelled, parent)
 
-	if want := []string{labelled, parent}; !reflect.DeepEqual(response.Started, want) {
+	if want := []string{labelled}; !reflect.DeepEqual(response.Started, want) {
 		t.Fatalf("release answered started %v, want %v", response.Started, want)
 	}
-	if recorded := recordedChild(t, h, labelled); recorded == nil || recorded.Tree != releaseRoot {
-		t.Fatalf("the record of %s = %#v, want it in %s's tree, not a root of its own", labelled, recorded, releaseRoot)
+	if recorded := recordedChild(t, h, labelled); recorded == nil || recorded.Tree != releaseRoot || recorded.Parent == nil || *recorded.Parent != parent {
+		t.Fatalf("the record of %s = %#v, want it under %s in %s's tree, not a root of its own", labelled, recorded, parent, releaseRoot)
+	}
+	if recorded := recordedChild(t, h, parent); recorded == nil || recorded.Phase != phase.Admitted {
+		t.Fatalf("the record of %s = %#v, want it admitted, waiting on its child", parent, recorded)
 	}
 }
 
@@ -612,7 +687,7 @@ func TestWaveReleaseRecordsATodoChildUnderAWrittenChildOfTheWaveInItsTree(t *tes
 
 	response, _ := releaseWave(t, h, architect, bottom, middle, top)
 
-	if want := []string{bottom, middle, top}; !reflect.DeepEqual(response.Started, want) {
+	if want := []string{bottom}; !reflect.DeepEqual(response.Started, want) {
 		t.Fatalf("release answered started %v, want %v", response.Started, want)
 	}
 	for _, key := range []string{top, middle, bottom} {
@@ -624,7 +699,7 @@ func TestWaveReleaseRecordsATodoChildUnderAWrittenChildOfTheWaveInItsTree(t *tes
 
 // A wave that names a written child twice still records that child before the labelled todo child
 // under it: named once, it has its own depth in releaseOrder, not that depth counted once per
-// naming, which put it after its child and had admission record the child as a root of its own.
+// naming, which put it after its child and left the child unrecorded.
 func TestWaveReleaseNamingAChildTwiceKeepsItAheadOfItsChild(t *testing.T) {
 	h, statuses := releaseHarness(t, true)
 	top, middle, bottom := "LEGION-209", "LEGION-210", "LEGION-211"
@@ -645,38 +720,8 @@ func TestWaveReleaseNamingAChildTwiceKeepsItAheadOfItsChild(t *testing.T) {
 	if want := []string{top, bottom, middle}; !reflect.DeepEqual(response.Released, want) {
 		t.Errorf("release answered released %v, want %v", response.Released, want)
 	}
-	if want := []statusWrite{{middle, "todo"}}; !reflect.DeepEqual(statuses.writes, want) {
-		t.Errorf("Dispatch writes = %#v, want %s written once", statuses.writes, middle)
-	}
-}
-
-// A child the release writes todo is not recorded from that write when the daemon has already
-// applied a later event of the child that recorded nothing — a person moved it back to backlog
-// right after the release, and that event beat the release to the fact lock. The write's answer is
-// older than what Dispatch has said since, so it applies nothing, and no planner starts for a child
-// Dispatch shows in backlog.
-func TestWaveReleaseDoesNotRecordAChildFromAWriteALaterEventOvertook(t *testing.T) {
-	h, statuses := releaseHarness(t, true)
-	child := "LEGION-209"
-	statuses.issues[child] = backlogChild(child)
-	// The person's backlog, one event after the release's write (sequence 8), already applied: the
-	// copy holds it as an issue fact the daemon applied (record.DispatchReading.Applied, as
-	// blockers.Mirror writes an event), and the workflow recorded nothing for a child in backlog.
-	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: child, Project: testDispatchProject, Seq: 9,
-			Status: record.Carry("backlog"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil), Applied: true})
-	}); err != nil {
-		t.Fatalf("seed the mirror row of %s: %v", child, err)
-	}
-	architect := newLiveClaim(t, h, releaseRoot, claim.RoleArchitect)
-
-	response, _ := releaseWave(t, h, architect, child)
-
-	if want := (WaveReleaseResponse{Released: []string{child}, Started: []string{}, Held: []HeldChild{}}); !reflect.DeepEqual(response, want) {
-		t.Fatalf("release answered %#v, want %#v", response, want)
-	}
-	if recorded := recordedChild(t, h, child); recorded != nil {
-		t.Fatalf("the record of %s = %#v, want none: Dispatch moved it back to backlog after the release's write", child, recorded)
+	if want := []string{middle}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Errorf("queued todos = %v, want %s written once", queuedTodos(t, h), middle)
 	}
 }
 
@@ -710,7 +755,7 @@ func TestWaveReleaseRetryRecordsATodoChildOnceItsParentIsRecorded(t *testing.T) 
 	if got := recordedChild(t, h, child); got == nil || got.Tree != releaseRoot || got.LastDispatchSeq != 5 {
 		t.Fatalf("the child after the retry = %#v, want it recorded in %s's tree at Dispatch's sequence 5", got, releaseRoot)
 	}
-	if len(statuses.writes) != 0 {
-		t.Fatalf("Dispatch writes = %#v, want none: the child was already todo", statuses.writes)
+	if queued := queuedTodos(t, h); len(queued) != 0 {
+		t.Fatalf("queued writes = %#v, want none: the child was already todo", queued)
 	}
 }

@@ -113,9 +113,13 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	c := m.Claim()
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
+	// The answer's tree is the gate root the claim's process was launched under (decision 13 of
+	// dispatch://INFRA-4730, supervise.Claim.LaunchedTree), which the plugin keeps as its claim's
+	// and holds its register_gate to; a claim no start of this release has marked — an operator's
+	// spawn, or a launch of the release before — answers the tree its row stores.
 	s.writeAnswer(w, r, AnswerRegister, http.StatusOK, claim.RegisterResponse{
 		ClaimToken:   c.Token,
-		Tree:         c.Tree,
+		Tree:         c.LaunchedTree(),
 		Issue:        c.Issue,
 		Role:         c.Role,
 		Generation:   launch.Generation,

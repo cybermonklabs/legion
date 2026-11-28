@@ -61,8 +61,8 @@ func TestTheBootCensusHoldsEverySandboxToTheLaunchersItsLabelsName(t *testing.T)
 		"a controller pod running the workflow launchers":  {"legion-legion-controller", controller, workflow, "not the one container controller its labels name"},
 		"an issue pod missing a launcher":                  {"legion-legion-legion-208", issue, workflow[1:], "not the one container roles its labels name"},
 		"an issue pod running a container more":            {"legion-legion-legion-208", issue, append(append([]string{}, workflow...), string(claim.RoleController)), "not the one container roles its labels name"},
-		"a controller-labelled pod of a tree": {"legion-legion-other", map[string]string{labelProject: testProject, labelRole: string(claim.RoleController), labelTree: testTree},
-			[]string{string(claim.RoleController)}, "name neither an issue nor the project controller"},
+		"a controller-labelled pod with a tree label, read as the controller's whatever its tree": {"legion-legion-other", map[string]string{labelProject: testProject, labelRole: string(claim.RoleController), labelTree: testTree},
+			[]string{string(claim.RoleController)}, "owns no volume"},
 		"labels naming no role list": {"legion-legion-other", map[string]string{labelProject: testProject}, []string{string(claim.RoleController)}, "name neither an issue nor the project controller"},
 	} {
 		t.Run(label, func(t *testing.T) {

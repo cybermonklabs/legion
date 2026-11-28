@@ -3,9 +3,6 @@ package workflow
 import (
 	"reflect"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -14,9 +11,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// A new run clears its issue's generation alone (Engine.ClearGeneration, as Engine.NewRun
+// does): no record holds a tree to clear (R22 of dispatch://INFRA-3320), so "cleared issue" is the
+// one clear a started step outlives.
 func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 	t.Parallel()
-	for _, which := range []string{"no entry", "entry without task", "started", "empty token", "missing record", "cleared issue", "cleared tree"} {
+	for _, which := range []string{"no entry", "entry without task", "started", "empty token", "missing record", "cleared issue"} {
 		t.Run(which, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := testEngine(config.DesignGateRootIssues, nil)
@@ -31,13 +31,8 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 				row.EntryTask = ""
 			}
 			seedPhase(t, pool, row)
-			if which == "cleared issue" || which == "cleared tree" {
-				seedRecord(t, pool, func(tx pgx.Tx) error {
-					if which == "cleared tree" {
-						return engine.ClearTreeGeneration(t.Context(), tx, issue.Tree, time.Now())
-					}
-					return engine.ClearGeneration(t.Context(), tx, issue, time.Now())
-				})
+			if which == "cleared issue" {
+				clearIssueGeneration(t, pool, issue)
 				issue.Generation++
 				seedIssue(t, pool, issue)
 				if _, err := pool.Exec(t.Context(), "update claims set serving_generation = $2 where token = $1", string(token), issue.Generation); err != nil {
@@ -81,7 +76,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 					t.Fatalf("second report = %+v, want refused", again.Refusal)
 				}
 			}
-			if which == "cleared issue" || which == "cleared tree" {
+			if which == "cleared issue" {
 				row = phaseRowOf(t, pool, claim.RoleTester)
 				row.Entry++
 				row.EntryTask = "test the new run"

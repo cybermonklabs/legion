@@ -58,10 +58,12 @@ import (
 //     delivery's credit can have told part of the news, or a credit the item was rendered against
 //     can have been given back, and the pair the send names is the pair the audience is owed now;
 //   - every item and opening it keeps is marked with the run its issue stands in now (inRun): the
-//     issue's generation and its tree root's. The credit of the prompt that carries it counts only
-//     while the record still holds that run (the SQL function design_news_current), so what a
-//     prompt sent before a clear of a generation told counts nothing for the run after it, and a
-//     send after the clear tells the next run what that run is owed;
+//     issue's generation, its gate root on the Dispatch chain and that root's generation. The
+//     credit of the prompt that carries it counts only while the record still holds that run (the
+//     SQL function design_news_counts) and is read or folded under that gate root, so what a
+//     prompt sent before a clear of a generation, or before a change of parent that moved its gate
+//     root, told counts nothing for the run after it, and a send after it tells the next run what
+//     that run is owed;
 //   - an item that names its pair (From) is told with that pair's change set, and is dropped as well
 //     where none is recorded yet: nothing else can say what changed, and the item stays owed for a
 //     later start, or the reconcile, to carry;
@@ -244,10 +246,11 @@ func listenersOf(news record.DeliveryNews) []*newsListener {
 	return listeners
 }
 
-// newsTree is what the send reads of one tree: its root's record, the root's gate rows, whether
-// the standing gate is open (record.TreeGate.Open), the told rows of its issues, and what names the
-// holder of each member's phase (newsClaims), which reads the tree's architect claims only the
-// first time the owner of a member in accepting is asked.
+// newsTree is what the send reads of one tree, the tree of a gate root on the Dispatch chain
+// (record.Chains.GateTree): its gate root's record, the root's gate rows, whether the standing gate
+// is open (record.TreeGate.Open), the told rows of its issues, and what names the holder of each
+// member's phase (newsClaims), which reads the tree's architect claims only the first time the owner
+// of a member in accepting is asked.
 type newsTree struct {
 	root   record.Issue
 	gates  map[record.DesignStep]record.DesignGate
@@ -271,18 +274,18 @@ type newsListened struct {
 
 // readNewsAtSend reads, in the caller's one transaction, what carried says as the record stands at
 // the moment the clock now gives, read for the claim whose token is reader, and renders it
-// (designNews). An item, an opening or a listener whose issue the record does not hold is dropped:
-// nothing can say what the gate of a tree the record does not know stands at. So is the architect
-// of a tree that lingers, items, opening and summary alike. A holder listener whose member's phase
-// reader does not hold now (newsClaims.holderOf) is dropped too, items and opening: its told row is
-// what the session holding that phase took, and that session is another claim now, whose own task
-// tells it. An item dropped as an item of such a listener, as one that no longer stands, or as one
-// the record cannot tell yet names its tree among the dropped, for the reconcile its caller queues.
-// An item dropped because the record does not hold its issue or its tree, or because it is to the
-// architect of a lingering tree, names none, since no reconcile has anything to send it. An item
-// that stands is decided on what the delivery carries (rekeyed, carriedChange); the summary's
-// members are read as a start reads the record (memberDraft.told). The gate's state is said to a
-// listener as openingAtSend decides.
+// (designNews). Each listener's tree is the tree of its issue's gate root on the Dispatch chain, as
+// this transaction reads the chain (record.Chains.StateTree), whatever tree the record stores. An
+// item, an opening or a listener whose issue the record does not hold is dropped: nothing can say
+// what the gate of a tree the record does not know stands at. A holder listener whose member's
+// phase reader does not hold now (newsClaims.holderOf) is dropped too, items and opening: its told
+// row is what the session holding that phase took, and that session is another claim now, whose
+// own task tells it. An item dropped as an item of such a listener, as one that no longer stands,
+// or as one the record cannot tell yet names its tree among the dropped, for the reconcile its
+// caller queues. An item dropped because the record does not hold its issue or its tree names none,
+// since no reconcile has anything to send it. An item that stands is decided on what the delivery
+// carries (rekeyed, carriedChange); the summary's members are read as a start reads the record
+// (memberDraft.told). The gate's state is said to a listener as openingAtSend decides.
 func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
 	carried record.DeliveryNews, now func() time.Time) (newsAtSend, error) {
 	trees := map[string]*newsTree{}
@@ -291,28 +294,44 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	// items is each carried item as this send reads it: re-keyed against its told row, then as the
 	// delivery goes on carrying it once told (carriedChange).
 	items := slices.Clone(carried.Items)
-	for _, listener := range listenersOf(carried) {
+	listeners := listenersOf(carried)
+	issues := make(map[string]record.Issue, len(listeners))
+	var keys []string
+	for _, listener := range listeners {
 		issue, err := records.Issue(ctx, tx, listener.issue)
 		if err != nil {
 			return newsAtSend{}, err
 		}
-		if issue == nil {
+		if issue != nil {
+			issues[issue.Key] = *issue
+			keys = append(keys, issue.Key)
+		}
+	}
+	// One reading of the Dispatch chains for the whole send: every listener of one delivery is an
+	// issue of the reader's project.
+	var chains *record.Chains
+	if len(keys) > 0 {
+		var err error
+		if chains, err = record.ReadChains(ctx, tx, records, issues[keys[0]].Project, keys); err != nil {
+			return newsAtSend{}, err
+		}
+	}
+	for _, listener := range listeners {
+		issue, recorded := issues[listener.issue]
+		if !recorded {
 			continue
 		}
-		tree, err := readNewsTree(ctx, tx, records, steps, trees, issue.Tree)
+		tree, err := readNewsTree(ctx, tx, records, steps, trees, chains, chains.StateTree(issue.Key))
 		if err != nil {
 			return newsAtSend{}, err
 		}
 		if tree == nil {
 			continue
 		}
-		if listener.audience == record.AudienceArchitect && tree.root.Lingers() {
-			continue
-		}
-		heard := newsListened{listener: listener, issue: *issue, tree: tree,
+		heard := newsListened{listener: listener, issue: issue, tree: tree,
 			told: record.ToldRow(tree.told, listener.issue, listener.audience)}
 		if listener.audience == record.AudienceHolder {
-			holder, held, err := tree.claims.holderOf(ctx, tx, records, *issue)
+			holder, held, err := tree.claims.holderOf(ctx, tx, records, issue)
 			if err != nil {
 				return newsAtSend{}, err
 			}
@@ -326,20 +345,20 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			if !itemStands(item, tree.gates, heard.told) {
 				continue
 			}
-			items[i] = inRun(rekeyed(item, heard.told), issue.Generation, tree.root.Generation)
+			items[i] = inRun(rekeyed(item, heard.told), issue.Generation, tree.root)
 			heard.items = append(heard.items, i)
 			// An item told by the unread history it carries asks the record nothing of it.
 			if items[i].From != nil || items[i].HistoryUnread == nil {
-				asks.add(issue.Tree, items[i].NewsItem())
+				asks.add(tree.root.Key, items[i].NewsItem())
 			}
 		}
 		heard.opening = heard.openingAtSend()
-		if listener.audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
+		if listener.audience == record.AudienceArchitect && issue.Key == tree.root.Key {
 			if heard.members, err = readTreeMembers(ctx, tx, records, steps, tree.claims); err != nil {
 				return newsAtSend{}, err
 			}
 			for _, member := range heard.members {
-				asks.add(issue.Tree, member.owed...)
+				asks.add(tree.root.Key, member.owed...)
 			}
 		}
 		listened = append(listened, heard)
@@ -352,7 +371,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	keep := map[int]bool{}
 	var texts []string
 	for _, heard := range listened {
-		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
+		news := workflow.News{Audience: heard.listener.audience, Tree: heard.tree.root.Key, Issue: heard.issue.Key,
 			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
 		// The holder form of an issue in accepting answers with a move back, whose phases are read
 		// from the issue's task (moveBackOf).
@@ -388,13 +407,13 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 			sent.kept.Items = append(sent.kept.Items, item)
 			was := carried.Items[i]
 			sent.rewritten = sent.rewritten || item.From != was.From || item.HistoryUnread != was.HistoryUnread ||
-				item.Generation != was.Generation || item.TreeGeneration != was.TreeGeneration
+				item.Generation != was.Generation || item.Root != was.Root || item.TreeGeneration != was.TreeGeneration
 		}
 	}
 	for _, heard := range listened {
 		for _, i := range heard.listener.items {
-			if !keep[i] && !slices.Contains(sent.dropped, heard.issue.Tree) {
-				sent.dropped = append(sent.dropped, heard.issue.Tree)
+			if !keep[i] && !slices.Contains(sent.dropped, heard.tree.root.Key) {
+				sent.dropped = append(sent.dropped, heard.tree.root.Key)
 			}
 		}
 	}
@@ -404,7 +423,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 
 // openingAtSend is the gate's state a send says to heard's listener, whose told row is heard.told,
 // while the standing gate of heard's tree is open or not, as the opening the send carries (nil for
-// none), marked with the run of heard's issue and of its tree's root (inRun):
+// none), marked with the run of heard's issue and of its tree's gate root (inRun):
 //
 //   - while the gate stands open and the row owes the opening, the opening, under the number the
 //     row holds for it now (record.DesignTold.Opening), whether or not the delivery carried it: the
@@ -418,14 +437,14 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 //     told it, or the gate is closed and the delivery carried none.
 func (heard *newsListened) openingAtSend() *record.DeliveryOpening {
 	listener, open := heard.listener, heard.tree.open
-	generation, treeGeneration := heard.issue.Generation, heard.tree.root.Generation
+	generation, root := heard.issue.Generation, heard.tree.root
 	switch {
 	case open && heard.told.OpeningOwed:
 		return &record.DeliveryOpening{Issue: listener.issue, Audience: listener.audience, Seq: heard.told.Opening,
-			Generation: generation, TreeGeneration: treeGeneration}
+			Generation: generation, Root: root.Key, TreeGeneration: root.Generation}
 	case !open && listener.opening != nil:
 		closed := *listener.opening
-		closed.Closed, closed.Generation, closed.TreeGeneration = true, generation, treeGeneration
+		closed.Closed, closed.Generation, closed.Root, closed.TreeGeneration = true, generation, root.Key, root.Generation
 		return &closed
 	}
 	return nil
@@ -441,28 +460,30 @@ func sameOpening(a, b *record.DeliveryOpening) bool {
 	return *a == *b
 }
 
-// readNewsTree is the tree whose root is root, gated on steps as the deployment names them, read
-// once for every listener of it; nil when the record holds no such root.
+// readNewsTree is the tree of the gate root root on chains, gated on steps as the deployment names
+// them, read once for every listener of it; nil when the record holds no such root. Its told rows
+// are those of the gate root and the issues in Legion's work whose gate root it is
+// (record.Chains.GateTree, record.Store.TreeTold).
 func readNewsTree(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, trees map[string]*newsTree,
-	root string) (*newsTree, error) {
+	chains *record.Chains, root string) (*newsTree, error) {
 	if tree, read := trees[root]; read {
 		return tree, nil
 	}
-	issue, err := records.Issue(ctx, tx, root)
-	if err != nil || issue == nil {
+	issue, recorded := chains.Record(root)
+	if !recorded {
 		trees[root] = nil
-		return nil, err
+		return nil, nil
 	}
 	gates, err := records.GatesOf(ctx, tx, root)
 	if err != nil {
 		return nil, err
 	}
-	told, err := records.TreeTold(ctx, tx, root)
+	told, err := records.TreeTold(ctx, tx, root, chains.GateTree(root))
 	if err != nil {
 		return nil, err
 	}
-	trees[root] = &newsTree{root: *issue, gates: gates, open: record.TreeGate{Steps: steps, Rows: gates}.Open(), told: told,
-		claims: newNewsClaims(*issue, nil)}
+	trees[root] = &newsTree{root: issue, gates: gates, open: record.TreeGate{Steps: steps, Rows: gates}.Open(), told: told,
+		claims: newNewsClaims(issue, chains)}
 	return trees[root], nil
 }
 
@@ -512,13 +533,14 @@ func rekeyed(item record.DeliveryNewsItem, told record.DesignTold) record.Delive
 }
 
 // inRun is item marked with the run the send renders it in: generation, the generation of the
-// item's issue, and treeGeneration, that of the root of the tree the issue stands in
-// (record.DeliveryNewsItem.Generation and TreeGeneration), as the transaction reads them. The
-// credit of the prompt that carries it counts only while the record still holds that run (the SQL
-// function design_news_current), so a send after a clear of a generation marks the item with the
-// next run, and tells that run what it is owed now.
-func inRun(item record.DeliveryNewsItem, generation, treeGeneration uint64) record.DeliveryNewsItem {
-	item.Generation, item.TreeGeneration = generation, treeGeneration
+// item's issue, and root, the gate root of the tree the issue stands in on the Dispatch chain, with
+// its generation (record.DeliveryNewsItem.Generation, Root and TreeGeneration), as the transaction
+// reads them. The credit of the prompt that carries it counts only while the record still holds
+// that run, and only in a read of that gate root's tree (the SQL functions design_news_counts and
+// design_news_told_of), so a send after a clear of a generation marks the item with the next run,
+// and tells that run what it is owed now.
+func inRun(item record.DeliveryNewsItem, generation uint64, root record.Issue) record.DeliveryNewsItem {
+	item.Generation, item.Root, item.TreeGeneration = generation, root.Key, root.Generation
 	return item
 }
 
@@ -584,11 +606,11 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 	return member
 }
 
-// readTreeMembers is every member of the tree whose holders claims names, the root first, as its
-// root architect's summary names it: what OwedNews owes each now, read from the facts that rule
-// reads (record.TreeNewsFacts), and what each is told. claims is the send's own for the tree
-// (newsTree.claims), so a holder item of the same send and this read share one read of the tree's
-// architect claims, and each member is read through it (newsClaims.member).
+// readTreeMembers is every member of the tree whose holders claims names, the gate root first, as
+// its root architect's summary names it: what OwedNews owes each now, read from the facts that rule
+// reads (record.TreeNewsFacts) over the chains claims holds, and what each is told. claims is the
+// send's own for the tree (newsTree.claims), so a holder item of the same send and this read share
+// one read of the tree's architect claims, and each member is read through it (newsClaims.member).
 //
 // A member owed news is told by a task now (workflow.NewsSentNow) when its holder's claim was
 // given its phase's current entry, runs and holds no task its worker has not taken yet — the claim
@@ -608,19 +630,15 @@ func (m memberDraft) told(recorded newsRecorded) workflow.NewsMember {
 // (record.UntoldHeldBack) is one whose news the standing gate holds, closed again before the
 // summary was sent: OwedNews owes no member anything while it is closed, so no task carries any
 // member's news and no start will, and each such member is told nothing yet, for that reason
-// (workflow.NewsGateClosed), rather than said to be told now or at its next start. The summary of
-// a lingering tree is never sent.
+// (workflow.NewsGateClosed), rather than said to be told now or at its next start.
 func readTreeMembers(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, claims *newsClaims) ([]memberDraft, error) {
-	facts, err := record.TreeNewsFacts(ctx, records, tx, steps, claims.root.Key)
+	facts, err := record.TreeNewsFacts(ctx, records, tx, steps, claims.chains, claims.root.Key)
 	if err != nil {
 		return nil, err
 	}
-	// The facts read every member of the tree in this transaction, so the claims that name each
-	// member's holder take them from here rather than read the tree's issues a second time.
-	claims.seed(&facts)
 	members := facts.Members
 	slices.SortStableFunc(members, func(a, b record.Issue) int {
-		return boolOrder(claim.IsTreeRoot(b.Key, b.Tree)) - boolOrder(claim.IsTreeRoot(a.Key, a.Tree))
+		return boolOrder(b.Key == facts.Root) - boolOrder(a.Key == facts.Root)
 	})
 	owed := record.OwedNews(facts)
 	told, err := readMemberClaims(ctx, tx, records, claims, owed)
@@ -707,8 +725,7 @@ func readMemberClaims(ctx context.Context, tx pgx.Tx, records record.Store, clai
 
 // untoldReason is how the root architect's summary says why OwedNews owes a member nothing
 // (record.UntoldReason, decided there once; readTreeMembers). A member OwedNews holds back is one
-// whose news the standing gate holds, closed again (workflow.NewsGateClosed): a lingering tree, the
-// rule's other hold, gets no summary at all (readNewsAtSend).
+// whose news the standing gate holds, closed again (workflow.NewsGateClosed).
 func untoldReason(reason record.UntoldReason) workflow.NewsState {
 	switch reason {
 	case record.UntoldTaken:

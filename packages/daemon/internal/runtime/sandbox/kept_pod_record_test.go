@@ -90,7 +90,7 @@ func TestAKeptPodsStartRecordsThePodAndMarksTheNextPodOfItsVolume(t *testing.T) 
 
 	// The release keeps the Sandbox and its volume, and the issue's next launch brings the next pod
 	// of that Sandbox, in which the role starts again.
-	if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, nil); err != nil || !released {
+	if released, err := g.r.ReleaseIssue(g.ctx, testTree, "", authorized, nil); err != nil || !released {
 		t.Fatalf("ReleaseIssue = %v, %v; want the issue's pod released", released, err)
 	}
 	next := g.relaunchOnNewPod(first, &spec)

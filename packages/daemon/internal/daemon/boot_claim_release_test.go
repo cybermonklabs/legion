@@ -196,8 +196,10 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 				if err != nil {
 					return err
 				}
-				_, err = records.OpenTreeLifecycle(ctx, tx, token, fixture.key, treelifecycle.AuthorityOperator)
-				return err
+				if _, err := records.OpenTreeLifecycle(ctx, tx, token, fixture.key, treelifecycle.AuthorityOperator); err != nil {
+					return err
+				}
+				return openIssueTx(ctx, tx, token, fixture.key, treelifecycle.AuthorityOperator)
 			}
 			if !fixture.slotted {
 				return nil

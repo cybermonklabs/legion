@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // stateProject is the Dispatch project key the daemon of these tests works for, and stateRun the
@@ -71,14 +70,6 @@ func recordIssue(t *testing.T, s *Store, key, project string) {
 	if _, err := s.pool.Exec(context.Background(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 		values ($1, $1, $2, 'recorded', 'implementing', 1, 'in_progress', 'A', 1)`, key, project); err != nil {
 		t.Fatalf("record %s in %s: %v", key, project, err)
-	}
-}
-
-// openTree opens the lifecycle of the tree key roots, which an admission binds to.
-func openTree(t *testing.T, s *Store, key string) {
-	t.Helper()
-	if _, err := s.OpenTreeLifecycle(context.Background(), "legion", key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("open the lifecycle of %s: %v", key, err)
 	}
 }
 
@@ -224,7 +215,7 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 		s := migratedStore(t)
 		wakes := publishStates(t, s)
 		recordIssue(t, s, issue, stateProject)
-		openTree(t, s, issue)
+		openIssueLifecycle(t, s, issue)
 		for _, step := range []struct {
 			name     string
 			write    func() error
@@ -248,7 +239,7 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 		s.PublishRoleHolders(nil)
 		wakes := publishStates(t, s)
 		recordIssue(t, s, issue, stateProject)
-		openTree(t, s, issue)
+		openIssueLifecycle(t, s, issue)
 		queues(t, s, wakes, "the admission", admit(s, tester(t, supervise.StateLaunching)), issue,
 			claimMoved(claim.RoleTester, "", supervise.StateLaunching))
 		queues(t, s, wakes, "AdmitClaim again", admit(s, tester(t, supervise.StateLaunching)), issue)
@@ -309,7 +300,7 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 		recordIssue(t, s, otherProjects, "OTHER")
 		recordIssue(t, s, recorded, stateProject)
 		for _, key := range []string{unrecorded, otherProjects, recorded} {
-			openTree(t, s, key)
+			openIssueLifecycle(t, s, key)
 		}
 		queues(t, s, wakes, "the first admission on an issue with no record",
 			admit(s, stateClaim(t, unrecorded, claim.RoleImplementer, supervise.StateLaunching)), unrecorded,
@@ -335,7 +326,7 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 		s := migratedStore(t)
 		wakes := publishStates(t, s)
 		recordIssue(t, s, issue, stateProject)
-		openTree(t, s, issue)
+		openIssueLifecycle(t, s, issue)
 		queues(t, s, wakes, "the admission", admit(s, tester(t, supervise.StateLaunching)), issue,
 			claimMoved(claim.RoleTester, "", supervise.StateLaunching))
 		counter := func() int64 {
@@ -380,7 +371,7 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 				s.PublishRoleHolders(nil)
 			}
 			wakes := &stateWakes{}
-			openTree(t, s, issue)
+			openIssueLifecycle(t, s, issue)
 			name := fmt.Sprintf("with the role-holder publication on: %t, ", holders)
 			for _, step := range []struct {
 				name  string

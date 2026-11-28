@@ -1091,21 +1091,25 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261114031356, the role-holders publication's 20261116165926, the step record's
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
-// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the merge holds' 20261126110259
-// (merge_holds_changed) and dispatch://INFRA-3931's state events' 20261126163320 do: the case of a
-// database main migrated applies a version left out of the list before the list's own rewrites of
-// that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
-// So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
+// dispatch://INFRA-3320's 20261122154643 (the two basis seeds), dispatch://INFRA-4730's
+// 20261122154645 (retention_end), the merge holds' 20261126110259 (merge_holds_changed),
+// dispatch://INFRA-3931's state events' 20261126163320 and the merge's union of the two,
+// 20261128030241, do: the case of a database main migrated
+// applies a version left out of the list before the list's own rewrites of that check, which do
+// not name the later kind, so the row seeded of that kind fails the upgrade. So does one that
+// reads a column a version of the list adds, as t-e-54's 20261116144907 reads
 // claims.abandoned_session (20261029121200) and dispatch://INFRA-5463's 20261123212127 reads
 // claims.last_start_failure (20261029121000): applied before that version, it fails on the missing
 // column. So does one that changes a table a version of the list creates, as the givers of a plan
 // version (20261124033010) and the parent of a plan task (20261124022547) add a column to
 // 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
-// fails on the missing table. 20261126163320 is the last migration that writes outbox_kind_check:
-// it stands above main's 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which
-// write it too, and main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write
-// none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of
-// the list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
+// fails on the missing table. 20261128030241 is the last migration that writes outbox_kind_check:
+// it stands above main's 20261126163320 and 20261126110259, dispatch://INFRA-4730's
+// 20261122154645 and main's 20261122154643, 20261119203047 and 20261119003157, which write it
+// too, and main's 20261111090000, 20261111091500, 20261116144907, 20261123212127 and
+// 20261127193428 write none.
+// The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of the
+// list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
 // well, though it rewrites no kind list: a database migrated before the pause takes it in the
 // upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
 // must take them all. Any other version left out makes the cases below weaker, never red, which is
@@ -1120,8 +1124,9 @@ var thisRelease = map[int]bool{
 	20261114232555: true, 20261115060739: true, 20261115121838: true, 20261115194357: true,
 	20261116144907: true, 20261116165926: true, 20261117000528: true, 20261117004117: true,
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
-	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
-	20261124033010: true, 20261126110259: true, 20261126163320: true,
+	20261119203047: true, 20261122154643: true, 20261122154645: true, 20261123212127: true,
+	20261124022547: true, 20261124033010: true, 20261126110259: true, 20261126163320: true,
+	20261128030241: true,
 }
 
 const idleRelease = 20261101222956
@@ -1143,13 +1148,11 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // order. Migrations from 0039 on ship only in binaries that carry 0030, and Migrate applies in
 // ascending order, so none can run before it: 0043 sets the list after every kind it names. On a
 // fresh database the rewrite with the highest version is the last word, so a kind that only a
-// lower one names is refused there: design_changes would be, had its 20261119203047 stood below
-// the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
-// it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
-// merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
-// conflict_confirm, merge_forward, design_changes, the two basis seeds and merge_holds_changed are
-// refused too, unless the state events' list, which runs after each list that names them, names
-// them too.
+// lower one names is refused there. That rewrite is the merge's union of the kind lists
+// (20261128030241), which runs after each list that names step_record, plan_record,
+// conflict_confirm, merge_forward, design_changes, the two basis seeds, merge_holds_changed,
+// retention_end or the three state kinds, so each of them is refused unless that list names it
+// too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()

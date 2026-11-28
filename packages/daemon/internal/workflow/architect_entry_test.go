@@ -173,7 +173,7 @@ func TestOwedEntryReadsARootArchitectEntryAsItReadsAPhaseWorkers(t *testing.T) {
 				}
 				run := runs[token]
 				row := entryRow(t, pool, claim.RoleArchitect)
-				if owed := OwedEntry(run, root, row.Entry); owed != tc.owed {
+				if owed := OwedEntry(run, row.Entry); owed != tc.owed {
 					t.Fatalf("the architect is owed = %t on the entry %d its row names, with claim %+v and %d queued rows; want owed = %t",
 						owed, row.Entry, run.Claim, len(run.Queued), tc.owed)
 				}
@@ -351,7 +351,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 		if run.Claim == nil || run.Claim.GivenEntry != seededEntry-1 {
 			t.Fatalf("the architect's claim after the wake = %+v, want it still given entry %d", run.Claim, seededEntry-1)
 		}
-		if !OwedEntry(run, *root, seededEntry) {
+		if !OwedEntry(run, seededEntry) {
 			t.Fatalf("the architect reads as holding entry %d's work after the wake, want it still owed: the wake's start carries no entry", seededEntry)
 		}
 		return nil

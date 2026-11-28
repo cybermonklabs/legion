@@ -872,7 +872,7 @@ func (r *pauseDaemonRig) awaitLaunch(token claim.Token, want int) {
 }
 
 // ready walks token's launched claim through its shim's hello, its agent's registration and its
-// ready, at the claim's generation, on the session the claim keeps, as readyClaimOf does.
+// ready, at the claim's generation, on the session the claim keeps, as readyClaimAs does.
 func (r *pauseDaemonRig) ready(token claim.Token) {
 	r.t.Helper()
 	c := r.claim(token)

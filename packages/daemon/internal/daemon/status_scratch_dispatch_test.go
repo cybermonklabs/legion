@@ -52,8 +52,9 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedPlanningRoot(t, pool, records, issue)
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	// A person leaves a comment while the row is between its read and its write; the status is
 	// untouched, but Dispatch has moved the issue's sequence on.
@@ -96,8 +97,9 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedPlanningRoot(t, pool, records, issue)
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		setDispatchStatus(t, baseURL, issue, "done")
@@ -112,7 +114,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 		t.Fatalf("Dispatch shows %s at %q, want the person's done: the daemon wrote nothing over it", issue, got)
 	}
 	recorded := recordOf(t, pool, records, issue)
-	if !workflow.InWorkflow(recorded) {
+	if !record.InWorkflow(recorded) {
 		t.Fatalf("the record of %s = %+v, want it where the workflow left it: the row's read decides its own write and tells the engine nothing", issue, recorded)
 	}
 	if rows := statusRowsOf(t, pool, issue); rows != 0 {
@@ -133,8 +135,9 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedPlanningRoot(t, pool, records, issue)
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	bootQueuesTheWrite(t, pool, issue, engine)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	client := &interleaving{Client: dispatch.New(baseURL, dispatch.BearerTransport(token, nil)), act: func() {
 		setDispatchStatus(t, baseURL, issue, "needs_review")
@@ -161,13 +164,20 @@ func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing
 // a phase whose tree never opened is a root waiting for its promotion, carrying the phase a
 // hand-over left it, and the correction leaves it alone so that `todo` keeps it in the waiting
 // line (correctStatuses). The slot is kept beside the lifecycle: this root is at work, so it
-// holds one.
+// holds one. Its row of the copy says it is a root on its Dispatch chain, which the correction
+// reads (R16 of dispatch://INFRA-3320).
 func seedPlanningRoot(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning, Generation: 1,
 			Status: "todo", DispatchStatus: "todo", HandedOver: true, Rank: "U"}); err != nil {
+			return err
+		}
+		// The legion label on its row of the copy is what makes it Legion's to correct
+		// (workflow's legionOnChain).
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+			Status: record.Carry("todo"), Parent: record.Carry(""), Labels: record.Carry([]string{"legion"})}); err != nil {
 			return err
 		}
 		project, err := claim.ProjectToken("LEGION")
@@ -180,6 +190,23 @@ func seedPlanningRoot(t *testing.T, pool *store.Pool, records record.Store, key 
 		return records.PutSlot(context.Background(), tx, record.Slot{Issue: key, Index: 0, AdmittedAt: time.Now()})
 	}); err != nil {
 		t.Fatalf("seed the planning root: %v", err)
+	}
+}
+
+// seenAsDispatchShows moves the record of issue's cursor of the Dispatch events it has seen
+// (record.Issue.SeenSeq) to the sequence Dispatch shows the issue at: what the daemon's consumer
+// would have done delivering each event of the issue, which a test that drives the outbox alone
+// runs none of. A queued write waits for that cursor before it writes (the outbox's awaitSeen).
+func seenAsDispatchShows(t *testing.T, pool *store.Pool, baseURL, token, issue string) {
+	t.Helper()
+	shown, err := dispatch.New(baseURL, dispatch.BearerTransport(token, nil)).GetIssue(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("read %s: %v", issue, err)
+	}
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().AdvanceSeenSeq(context.Background(), tx, issue, shown.LastSeq)
+	}); err != nil {
+		t.Fatalf("record that the events of %s up to %d were seen: %v", issue, shown.LastSeq, err)
 	}
 }
 

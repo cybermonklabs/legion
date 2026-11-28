@@ -34,7 +34,7 @@ func (r *personHandoverRig) openingWordsTold(tree, issue string, texts ...string
 	}
 	var owed bool
 	if err := store.TransactWith(r.t.Context(), r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		told, err := record.NewStore().TreeTold(ctx, tx, tree)
+		told, err := record.NewStore().TreeTold(ctx, tx, tree, []string{issue})
 		owed = slices.ContainsFunc(told, func(row record.DesignTold) bool { return row.Issue == issue && row.OpeningOwed })
 		return err
 	}); err != nil {

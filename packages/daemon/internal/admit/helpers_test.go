@@ -2,9 +2,11 @@ package admit
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,11 +167,27 @@ func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key,
 	return workflow.ArchitectStartTask(start)
 }
 
+// apply applies fact as the Dispatch consumer does: the Mirror first, which writes the reading
+// into the daemon's copy of Dispatch's issues that every decision reads the chain from
+// (record.ReadChains), then engine and admission.
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {
 	t.Helper()
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact, engine, admission); err != nil {
+	fact.Labels = handedOverLabels(fact.HandedOver, fact.Labels)
+	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", eventID, fact,
+		blockers.NewMirror(record.NewStore(), admission.project), engine, admission); err != nil {
 		t.Fatalf("ApplyFact %s: %v", eventID, err)
 	}
+}
+
+// handedOverLabels is the labels Dispatch shows on an issue a fixture states as handed to Legion
+// or not: the labels it names, else the legion label where it is handed over, since Dispatch
+// says an issue is handed over by that label (dispatch.CarriesLegionLabel) and the copy holds it
+// (R26 of dispatch://INFRA-3320 reads it there).
+func handedOverLabels(handedOver bool, labels []string) []string {
+	if labels == nil && handedOver {
+		return []string{dispatch.LegionLabel}
+	}
+	return labels
 }
 
 // notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
@@ -206,13 +224,21 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // names no phase is no phase worker's — the architect start promotion makes, the production
 // check's look — and is left in. A step record is written beside the rows of each start and end
 // of a step, and the tests of those sites read it exactly (workflow's step_sites_test.go and
-// step_sites_linger_test.go, and step_records_test.go here for admission's own sites), so every
-// row of any other kind is still compared here.
+// step_sites_linger_test.go, and run_end_test.go and parent_waits_no_slot_test.go here, through
+// step_records_test.go's assertStepWrites, for admission's own sites), so every row of any other
+// kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has
 // been handed, so two runs of the same events write the same number and a comparison of two runs
 // reads it like any other field.
+//
+// Every kind whose run and entry fields are its fence and nothing else is read without them
+// (unfenced): the run and the phase entry it was queued at, which its executor checks where it
+// commits (record.Fence). These assertions read what each effect does; the fence is
+// record.FenceOf's and its own tests' (the outbox kind inventory and k27's late-effect test), and
+// a count of phase entries in every expected row would tie each assertion here to how many
+// entries the fixture's roles happened to be handed.
 //
 // The state lane's rows are left out too (notStateRows): these tests assert the effects of the
 // other lanes, and the state events are asserted where they are written.
@@ -241,12 +267,53 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 				continue
 			}
 		}
-		got = append(got, effect{kind: row.Kind, issue: row.Issue, payload: payload})
+		got = append(got, effect{kind: row.Kind, issue: row.Issue, payload: unfenced(payload)})
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate outbox: %v", err)
 	}
 	return got
+}
+
+// unfenced is payload with its fence cleared, for a kind whose run and entry fields are its fence
+// and nothing else (record.FenceOf), and an ordinary status row without the Dispatch status its
+// record held when it was queued (record.StatusWrite.DispatchStatus), which record.NewFencedRow
+// stamps beside the fence. Every other kind is left whole: a supervise start's generation and entry
+// are the work it hands out, and a retention end's are what it ends.
+func unfenced(payload record.OutboxPayload) record.OutboxPayload {
+	switch value := payload.(type) {
+	case record.StatusWrite:
+		value.Generation, value.Entry, value.DispatchStatus = 0, 0, ""
+		return value
+	case record.MessagePost:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.Notice:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.ControllerNotice:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.RoleMessage:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.MergeForwardMessage:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.UpdateAsk:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.PhaseEnded:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.HookPrompt:
+		value.Generation, value.Entry = 0, 0
+		return value
+	case record.MergeQueueRemoval:
+		value.Generation, value.Entry = 0, 0
+		return value
+	}
+	return payload
 }
 
 func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
@@ -285,7 +352,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []recor
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil, time.Now())
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -372,18 +439,58 @@ func resumeTaskOf(t testing.TB, pool *pgxpool.Pool, engine *workflow.Engine, key
 	return task
 }
 
+// putIssue writes issue's record and its row of the copy of Dispatch's issues as a reading of
+// Dispatch would show it (putCopyTx): the copy is what every decision reads the chain from, so a
+// fixture that seeds a record seeds the issue's place on Dispatch's chain with it.
 func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put issue: %v", err)
 		}
+		putCopyTx(t, tx, issue)
 	})
 }
 
+// putCopyTx writes the copy's row of issue as a reading of Dispatch does
+// (record.Store.PutDispatchIssue): the parent the record names, the status Dispatch last showed
+// it in (DispatchStatus, else Status) and the legion label where the record says it is handed over
+// (handedOverLabels), at a sequence above every value the copy holds of it, so the row reads as the
+// record does whatever was written before. A fixture that names no parent but a tree other than the
+// issue's own key states that the issue stands under that tree's root, and its row says so. It is
+// the one way these tests seed an issue's place on Dispatch's chain.
+func putCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
+	t.Helper()
+	ctx := context.Background()
+	var seq int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(greatest(status_seq, parent_seq, labels_seq)), 0) from dispatch_issues where key = $1`,
+		issue.Key).Scan(&seq); err != nil {
+		t.Fatalf("read the copy's sequences of %s: %v", issue.Key, err)
+	}
+	status, parent := issue.DispatchStatus, ""
+	if status == "" {
+		status = issue.Status
+	}
+	switch {
+	case issue.Parent != nil:
+		parent = *issue.Parent
+	case issue.Tree != "" && issue.Tree != issue.Key:
+		parent = issue.Tree
+	}
+	labels := handedOverLabels(issue.HandedOver, nil)
+	if labels == nil {
+		labels = []string{}
+	}
+	if err := record.NewStore().PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: issue.Project,
+		Seq: seq + 1, Status: record.Carry(status), Parent: record.Carry(parent), Labels: record.Carry(labels)}); err != nil {
+		t.Fatalf("put the copy's row of %s: %v", issue.Key, err)
+	}
+}
+
 // seedSlotted records key as a running root of its own tree: its record, its admission slot and
-// its tree lifecycle, open under the workflow, which is what says the tree runs
-// (record.TreeLive) now that a slot counts one issue at work rather than one tree.
+// its tree lifecycle, open under the workflow, as admission's promotion writes all three. The slot
+// is what says the root runs (record.RunningRoots); the lifecycle is the shadow the release before
+// reads (R22 of dispatch://INFRA-3320).
 func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 	t.Helper()
 	seedSlottedForProject(t, pool, testProject, key, rank)
@@ -413,6 +520,7 @@ func seedSlottedInPhase(t *testing.T, pool *pgxpool.Pool, project, key, rank str
 		if err := records.PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put active issue: %v", err)
 		}
+		putCopyTx(t, tx, issue)
 		slots, err := records.Slots(context.Background(), tx)
 		if err != nil {
 			t.Fatalf("list slots: %v", err)
@@ -520,9 +628,23 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
+	// The daemon's own order (daemon's reconcileListing): the copy takes every summary before
+	// admission decides anything from it, so admission reads each listed issue's chain from the
+	// listing itself (R16 of dispatch://INFRA-3320). A listing Dispatch sends carries each issue's
+	// sequence and labels; a fixture's summary that names no sequence is copied at 1, the lowest a
+	// reading carries, and one handed over with no labels named carries the legion label
+	// (handedOverLabels), so the copy holds the row of every listed issue as it does in production.
+	mirrored := slices.Clone(summaries)
+	for i := range mirrored {
+		mirrored[i].LastSeq = max(mirrored[i].LastSeq, 1)
+		mirrored[i].Labels = handedOverLabels(mirrored[i].HandedOver, mirrored[i].Labels)
+	}
 	var refused []string
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if err := blockers.Reconcile(ctx, tx, record.NewStore(), admission.project, mirrored); err != nil {
+			return fmt.Errorf("mirror the listing: %w", err)
+		}
 		var err error
 		if refused, err = admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
@@ -532,4 +654,13 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 		t.Fatalf("Reconcile: %v", err)
 	}
 	return refused
+}
+
+// deref is the string a pointer names, "" for nil: the parent a test's fact carries from a record
+// that may name none.
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

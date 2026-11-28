@@ -90,7 +90,9 @@ func TestAFailedStepNamesTheStepItReturnsTo(t *testing.T) {
 	if want := []int{1, 2, 0}; !reflect.DeepEqual(named, want) {
 		t.Fatalf("the completions' ReturnTo = %v, want %v", named, want)
 	}
-	today := "handoff:LEGION-208:1:1:1:tester:testing:0:" + written + ":fail"
+	// The key's second field is the phase entry the tester's row stands at, 0 where no entry was
+	// raised, as here: the issue's own, never a tree's generation (R17 of dispatch://INFRA-3320).
+	today := "handoff:LEGION-208:0:1:1:tester:testing:0:" + written + ":fail"
 	if got, want := completionKeys(t, h, "LEGION-208"), []string{today, today + ":1", today + ":2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the completion keys = %q, want %q", got, want)
 	}

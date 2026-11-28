@@ -79,7 +79,7 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 		{
 			name: "the retry of a hold (retryPhase)", at: phase.Held, heldFrom: phase.Implementing, generation: 1, place: reviewing,
 			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, "the architect retried the phase", false)
+				_, err := engine.retryPhase(ctx, tx, issue, phase.Implementing, "the architect retried the phase", false, false)
 				return err
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in implementing, and its task a is running at {Kind:step Position:3}, which stands in reviewing",
@@ -114,15 +114,6 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 			},
 			refusal: "put LEGION-208 at generation 1: it stands in held from awaiting_person, and its task a is running at {Kind: Position:0}, which stands in admitted",
 		},
-		{
-			name: "an adopted member parked at its next run (moveIntoTree)", at: phase.Admitted, generation: 2, place: implementing,
-			write: func(ctx context.Context, tx pgx.Tx, engine *Engine, issue record.Issue) error {
-				issue.Status = "backlog"
-				into := record.Issue{Key: "LEGION-300", Tree: "LEGION-300", Project: "LEGION"}
-				return engine.moveIntoTree(ctx, tx, issue, into, intake.AdoptedChild{})
-			},
-			refusal: "put LEGION-208 at generation 2: it stands in done, and its task a is running at {Kind:step Position:1}, which stands in implementing",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -149,10 +140,11 @@ func TestAWriteOfAPhaseThatDisagreesWithItsTasksPlaceIsRefused(t *testing.T) {
 	}
 }
 
-// A root that leaves the workflow while the operator runs a tree under its key ends its task as
-// every other leave does (leaveState): left where the status is not done, at the place it stood,
-// so the phase done its record takes is the phase its task stands in.
-func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
+// A root that leaves the workflow while the operator runs a tree under its key keeps its run as
+// every other leave does (leave): its phase and its task stand where they stood, so the phase its
+// record keeps is still the phase its task stands in, and the leave is taken. A task waiting for
+// its first step keeps waiting: a leave stops a running task alone (stopTaskAtLeave).
+func TestARootLeavingUnderTheOperatorsTreeKeepsItsTask(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -172,10 +164,10 @@ func TestARootLeavingUnderTheOperatorsTreeEndsItsTask(t *testing.T) {
 		t.Fatalf("the leave under the operator's tree: %v", err)
 	}
 
-	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done {
-		t.Fatalf("%s stands in %s after its leave, want done", root.Key, issue.Phase)
+	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Admitted {
+		t.Fatalf("%s stands in %s after its leave, want admitted, its run kept", root.Key, issue.Phase)
 	}
-	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft || task.Place != (record.TaskPlace{}) {
-		t.Fatalf("task a is %s at %+v after its issue left, want left at no act", task.State, task.Place)
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskWaiting || task.Place != (record.TaskPlace{}) {
+		t.Fatalf("task a is %s at %+v after its issue left, want waiting at no act", task.State, task.Place)
 	}
 }

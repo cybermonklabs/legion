@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The daemon acts on each issue's own status in Dispatch. An issue Dispatch shows in `triage`,
+  `icebox`, `backlog` or `done` frees its slot and its claims stop at once: suspended, or at a
+  close retired after any production check it owes. Its pods go, and its phase, sessions, branch
+  and pull request stay. When Dispatch shows it in work again, it waits among the work that came
+  back and resumes its phase at a new phase entry. Each queued effect and each completion names
+  the issue's run and phase entry, and one from before a stop is refused where it commits.
+  `rerun_child` on a child in `backlog` or `icebox`, the reopen of an issue its merge closed, and a
+  person's `todo` on an issue the release before left at phase `done` open a new run from the first
+  phase; an issue that held its own design gate starts its architect again on that new run. No
+  tree lingers: a stop of a root waits for no deadline, and a `linger_hours` key in `legion.yaml`
+  is read for nothing and warned about, with the reason.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

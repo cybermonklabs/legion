@@ -122,23 +122,22 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "the promotion's start", rows: both, raises: true,
 			walk: func(t *testing.T, noCommit bool) (*pgxpool.Pool, string) {
 				if noCommit {
-					// A re-admission clears the generation, the commit with it.
+					// A new run clears the generation, the commit with it.
 					pool, engine, _ := reviewedChild(t)
-					readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
+					clearsTheGeneration(t, pool, engine, engine.now().Add(time.Hour))
 					outboxRan(t, pool)
 					promotesTheReviewer(t, pool, engine, engine.now().Add(time.Hour))
 					return pool, "Working copy: branch legion/LEGION-208.\nContinue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work."
 				}
-				// A carried hand-over keeps its rows and the commit with them (admit's readmit
-				// returns before the clear), and its promotion raises the reviewer's entry.
+				// A carried run keeps its rows and the commit with them (its promotion clears
+				// nothing, workflow's StartCarriedRun), and its promotion raises the reviewer's entry.
 				pool, engine, _ := reviewRoundTwo(t)
 				outboxRan(t, pool)
 				carried := issueRecord(t, pool, "LEGION-208")
 				carried.Generation++
 				seedIssue(t, pool, *carried)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					_, err := engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer, false)
-					return err
+					return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
 				})
 				return pool, resume
 			},
@@ -191,7 +190,7 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+					return engine.repairSilence(ctx, tx, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 						intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 						reviewTestedAt.Add(2*time.Hour))
 				})
@@ -215,10 +214,10 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 			name: "the resume of an entry whose stored task is empty", rows: []string{withNone}, noEntry: true,
 			walk: func(t *testing.T, _ bool) (*pgxpool.Pool, string) {
 				pool, engine, _ := reviewedChild(t)
-				readmitsTheTree(t, pool, engine, engine.now().Add(time.Hour))
+				clearsTheGeneration(t, pool, engine, engine.now().Add(time.Hour))
 				row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 				if row.EntryTask != "" {
-					t.Fatalf("after the re-admission the reviewer's row stores the task %q, want none", row.EntryTask)
+					t.Fatalf("after the clear the reviewer's row stores the task %q, want none", row.EntryTask)
 				}
 				outboxRan(t, pool)
 				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
@@ -423,7 +422,7 @@ func bootResumesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 	outboxRan(t, pool)
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
+		_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, role: claim.RoleReviewer,
 			run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
 		return err
 	})

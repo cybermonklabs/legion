@@ -14,10 +14,11 @@ import (
 // of eleven words, one for each arm of the release that leaves a claim on purpose: `unread` (a
 // claim with no actor named), `person` (a person holds it), `daemon` (the daemon's own session),
 // `controller` (a session the project controller's claim recorded), `other-tree` (a session a claim
-// of another tree recorded, current or left behind), `unattributed` (no claim of the daemon's
-// project holds the holder's name), `operator-tree` (the operator holds the issue's tree),
+// under another gate root recorded, current or left behind), `unattributed` (no claim of the
+// daemon's project holds the holder's name), `operator-tree` (the operator holds the issue),
 // `issue-runs` (a move's row that ran once the issue was in the workflow again), `works-now` (a
-// left session's row that found that session the current session of a claim of the tree again),
+// left session's row that found that session the current session of a claim of the issue, or of
+// the gate root's tree it stands under on the Dispatch chain, again),
 // `held-an-hour` (Dispatch refused the release for an hour) and `refused` (Dispatch refused the
 // read or the release with an answer no retry repairs). `at` is the executor's clock when its row
 // left the claim. A release that takes the claim, or a row that finds no claim, clears the entry,

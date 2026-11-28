@@ -126,7 +126,6 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	until := time.Now().Add(time.Hour)
 	opened := time.Now().Add(-time.Hour).UTC().Truncate(time.Microsecond)
 	rig := &checkWakeRig{cfg: cfg, root: root, implementer: implementer, github: newCheckWakeGitHub(t),
 		rt: fake.NewRuntime(), built: &built{}, records: record.NewStore(), pool: pool, logs: &syncBuffer{}}
@@ -139,7 +138,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	defer st.Close()
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: cfg.Project, Tree: root, Title: "Closed root", Phase: phase.Done,
-			Generation: 1, Status: "done", HandedOver: true, Rank: "U", LingerUntil: &until}); err != nil {
+			Generation: 1, Status: "done", HandedOver: true, Rank: "U"}); err != nil {
 			return err
 		}
 		return rig.records.PutProductionCheck(ctx, tx, record.ProductionCheck{
@@ -153,6 +152,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	if _, err := st.OpenTreeLifecycle(ctx, project, root, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", root, err)
 	}
+	openIssue(t, st, project, root, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, supervise.Claim{Token: implementer, Project: project, Tree: root, Issue: root, Role: claim.RoleImplementer, Generation: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon, Session: "ses_implementer", SessionFile: filepath.Join(cfg.StateDir, "implementer.jsonl")}); err != nil {
 		t.Fatalf("record the suspended implementer: %v", err)

@@ -38,8 +38,8 @@ func slotBaseContract() int { return entryNumber(claimStartContract) - 1 }
 // functions: no package-level initializer reads a value the registry derives (registerEntry).
 func slotNewContract() int { return entryNumber(claimStartContract) }
 
-// waitingTree records LEGION-208, the root, standing in planning, so the workflow's restart of a
-// worker on its child LEGION-209 is not refused for a tree that lingers.
+// waitingTree records LEGION-208, the root, standing in planning, above LEGION-209, the issue whose
+// worker each case restarts.
 func waitingTree(t *testing.T, h *harness) {
 	t.Helper()
 	root := "LEGION-208"
@@ -307,7 +307,7 @@ func refusedAfterTheForget(token claim.Token, session, refusal string, state sup
 func TestARestartRefusedAfterTheForgetAnswersTheRefusal(t *testing.T) {
 	for _, door := range freshSessionDoors() {
 		t.Run(door.name, func(t *testing.T) {
-			facts := &heldRetrier{lingers: true}
+			facts := &heldRetrier{outOfWork: true}
 			h, token := stoppedImplementer(t, facts)
 			heldIssue(t, h, phase.Implementing)
 
@@ -317,7 +317,7 @@ func TestARestartRefusedAfterTheForgetAnswersTheRefusal(t *testing.T) {
 				t.Fatalf("the fresh session = %d, want 200: the forget changed the claim; body %s", recorder.Code, recorder.Body)
 			}
 			want := refusedAfterTheForget(token, "ses_implementer", "LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+
-				string(token)+": its tree lingers, and a lingering tree's members stay where they stood", supervise.StateRetired)
+				string(token)+": the issue is out of Legion's work, where a retry starts nothing, and a todo on LEGION-209 brings it back and releases its hold", supervise.StateRetired)
 			if got := freshSessionNote(t, recorder); got != want {
 				t.Errorf("the answer says %q, want %q", got, want)
 			}
@@ -394,10 +394,10 @@ func TestAMachineRetryRefusedAfterTheForgetAnswersTheRefusal(t *testing.T) {
 		t.Run(door.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := failedRoot(t, h)
-			// The tree's cleanup is reserved, so the retry's admission of the claim is refused
-			// (supervise's revive, store.AdmitClaim).
-			if _, err := h.store.Pool().Exec(h.ctx, "update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208'"); err != nil {
-				t.Fatalf("reserve the tree's cleanup: %v", err)
+			// The root's own cleanup is reserved, so the retry's admission of the claim is refused
+			// (supervise's revive, store.AdmitClaim, which reads the issue's lifecycle alone).
+			if _, err := h.store.Pool().Exec(h.ctx, "update issue_lifecycles set cleanup_started = true where issue = 'LEGION-208'"); err != nil {
+				t.Fatalf("reserve the root's cleanup: %v", err)
 			}
 
 			recorder := door.ask(t, h, "LEGION-208", claim.RoleArchitect, nil)
@@ -428,10 +428,10 @@ func TestAResumeRefusedAfterTheForgetOnASuspendedClaimAnswersTheRefusal(t *testi
 		t.Run(door.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := controllerSuspendedImplementer(t, h)
-			// The tree's cleanup is reserved, so the resume's admission of the claim is refused
-			// (supervise's revive, store.AdmitClaim).
-			if _, err := h.store.Pool().Exec(h.ctx, "update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208'"); err != nil {
-				t.Fatalf("reserve the tree's cleanup: %v", err)
+			// The issue's own cleanup is reserved, so the resume's admission of the claim is refused
+			// (supervise's revive, store.AdmitClaim, which reads the issue's lifecycle alone).
+			if _, err := h.store.Pool().Exec(h.ctx, "update issue_lifecycles set cleanup_started = true where issue = 'LEGION-209'"); err != nil {
+				t.Fatalf("reserve the issue's cleanup: %v", err)
 			}
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
@@ -474,14 +474,14 @@ func TestACallerBelowTheNewContractIsAnsweredAsBefore(t *testing.T) {
 				}
 			})
 			t.Run(door.name+": a restart refused after the forget, stating "+strconv.Itoa(contract), func(t *testing.T) {
-				facts := &heldRetrier{lingers: true}
+				facts := &heldRetrier{outOfWork: true}
 				h, token := stoppedImplementer(t, facts)
 				heldIssue(t, h, phase.Implementing)
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, stating(contract))
 
 				refusal := "LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched " + string(token) +
-					": its tree lingers, and a lingering tree's members stay where they stood"
+					": the issue is out of Legion's work, where a retry starts nothing, and a todo on LEGION-209 brings it back and releases its hold"
 				if contract == slotBaseContract() {
 					wantRefusal(t, recorder, http.StatusConflict, refusal)
 					return

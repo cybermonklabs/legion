@@ -12,11 +12,11 @@ import "time"
 // carries to the version its told row holds now, and renders the text again from the record, so
 // the text sent is always Task, a blank line, then the news as the record stands at that send, and
 // the news the delivery carries is exactly what that text names, each item and opening marked with
-// the run it was rendered in (DeliveryNewsItem.Generation and TreeGeneration). The claim store
-// reads it in SQL, by these JSON names, from the copy the prompt a confirmed turn answers carried
-// (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news): while the
+// the run it was rendered in (DeliveryNewsItem.Generation, Root and TreeGeneration). The claim
+// store reads it in SQL, by these JSON names, from the copy the prompt a confirmed turn answers
+// carried (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news): while the
 // delivery holds that confirmation, the copy is the delivery's credit, which every read of what an
-// audience took counts (the SQL function design_news_told_in, Postgres.TreeTold), and once the
+// audience took counts (the SQL function design_news_told_of, Postgres.TreeTold), and once the
 // turn's result says the turn ran, the write that records it folds the copy into the told rows
 // (store's settleDesignNews). A take-back or a retirement of the delivery ends its credit with its
 // row and writes nothing else. So the prompt that carried an item is the one thing that says the
@@ -56,17 +56,18 @@ type DeliveryNewsItem struct {
 	Artifact string         `json:"artifact"`
 	From     *int           `json:"from"`
 	To       int            `json:"to"`
-	// Generation is the generation of Issue, and TreeGeneration the generation of the root of the
-	// tree Issue stood in, when the item was rendered (Issue.Generation of each): the run the news
-	// was told to. A clear of a generation (Postgres.ClearGeneration, ClearTreeGeneration) deletes
-	// what the holders of each issue it covers took, and the write beside it raises one of the two:
-	// a child set back to todo (workflow's ReenterChild) and an issue moved into another tree
-	// (workflow's moveIntoTree) raise the issue's own, and a root set back to todo (admit's
-	// readmit) raises the root's, which every member of its tree reads as its tree's. So an item
-	// counts as a credit, and folds into a told row, only while both still equal the record's (the
-	// SQL function design_news_current): news told to a run that is over tells the next run
-	// nothing, and stays owed to it.
+	// Generation is the generation of Issue, Root the gate root of the tree Issue stood in on the
+	// Dispatch chain (Chains.GateRoot) and TreeGeneration that root's generation, when the item was
+	// rendered (Issue.Generation of each): the run the news was told to. A clear of a generation
+	// (Postgres.ClearGeneration) deletes what the holders of the issue it covers took, and raises
+	// that issue's generation; a new run of a gate root raises its own, which every member of its
+	// tree reads as its tree's. So an item counts as a credit, and folds into a told row, only while
+	// both still equal the record's (the SQL function design_news_counts), and a read of a tree's
+	// told rows counts only the items rendered under its gate root (design_news_told_of): news told
+	// to a run that is over, or under another gate, tells the next run nothing, and stays owed to
+	// it. An item a build before Root was rendered names none, and counts for nothing.
 	Generation     uint64 `json:"generation"`
+	Root           string `json:"root,omitempty"`
 	TreeGeneration uint64 `json:"tree_generation"`
 	// HistoryUnread is the unread review history the item was attached with (DesignHistoryUnread):
 	// a start attaches an item whose told row knows no version only while the record holds that
@@ -104,11 +105,11 @@ func (i DeliveryNewsItem) Unread() *DesignHistoryUnread {
 
 // DeliveryOpening is one audience of one issue a delivery says the gate's state to: the opening its
 // told row owed when the send rendered it, named by the number the row held for it then (Seq,
-// DesignTold.Opening) and the run of its issue then (Generation and TreeGeneration, as an item's),
-// or, where the gate closed again after the delivery took that opening on, that the gate is closed
-// (Closed). The credit of a confirmed delivery that carried it says the opening told only where it
-// said opened, its issue still stands in that run, and the row still holds that number, and so
-// does the fold of that credit once its turn's result says it ran (the claim store's
+// DesignTold.Opening) and the run of its issue then (Generation, Root and TreeGeneration, as an
+// item's), or, where the gate closed again after the delivery took that opening on, that the gate
+// is closed (Closed). The credit of a confirmed delivery that carried it says the opening told only
+// where it said opened, its issue still stands in that run, and the row still holds that number,
+// and so does the fold of that credit once its turn's result says it ran (the claim store's
 // settleDesignNews, through the SQL function design_news_opening_told, in which a missing number
 // matches no row). A close, a reopening and the opened role message each give the row its next
 // number (Postgres.SettleOpening, CloseOpenings, through design_news_opening_settled), so no credit
@@ -121,5 +122,6 @@ type DeliveryOpening struct {
 	Seq            int            `json:"seq"`
 	Closed         bool           `json:"closed,omitempty"`
 	Generation     uint64         `json:"generation"`
+	Root           string         `json:"root,omitempty"`
 	TreeGeneration uint64         `json:"tree_generation"`
 }

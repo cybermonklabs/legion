@@ -76,7 +76,7 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 			repos.fill(ghrepo.MustParse("acme/widgets"))
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
-			shown := shownUnder(key, "icebox", "", true)
+			shown := shownLabelled(key, "icebox")
 			shown.PrimaryArtifactID, shown.LastSeq = "art-1", 11
 			client := &eventLogDispatch{}
 			client.issues = map[string]dispatch.Issue{key: shown}

@@ -106,14 +106,14 @@ var keptLoopReaders = map[keptLoopName]string{
 		"(record.ParkedDecision.Mark), the list ForgetSuperseded and KeptDecisionsTask each ask of in a loop of their own, and renders nothing",
 	{senderModule + "workflow.ReadKeptGates", "for _, d := range owed.Decisions"}: "it collects the issue each decision was made on, " +
 		"to read their gates in one read (record.Store.Gates), and renders nothing",
-	{"(*" + senderModule + "workflow.Engine).warnKeptDecisionsOfAClosedTree", "for _, decision := range kept"}: "it writes each " +
-		"decision a closing tree still owes into the daemon's log (keptDecisionOfAClosedTree), which no architect or person is " +
-		"sent; the controller was told each when it was kept",
+	{"(*" + senderModule + "daemon.workflowRuntime).rootTask", "for _, held := range named.Decisions"}: "it collects the issue " +
+		"of each mark a held task named that its delivery still holds, to read their Dispatch chains in one read " +
+		"(record.ReadChainsOf), and renders nothing",
 	{"(*" + senderModule + "daemon.workflowRuntime).rootTask", "for _, mark := range named.Decisions"}: "it drops the marks a " +
-		"held task named that its delivery no longer holds and sorts the rest into those whose issue stands in the tree (stays) " +
-		"and those whose issue left it (left), rendering nothing: what stays is asked and written again by " +
-		"workflow.KeptDecisionsTask, and what left is released to the tree it is owed to now, whose catch-up asks it " +
-		"(workflow.CatchUpTheTreesOwed)",
+		"held task named that its delivery no longer holds and sorts the rest into those whose issue the Dispatch chain still " +
+		"shows under the claim's issue (stays) and those whose issue left it (left), rendering nothing: what stays is asked and " +
+		"written again by workflow.KeptDecisionsTask, and what left is released to the gate root it is owed to now, whose " +
+		"catch-up asks it (workflow.CatchUpTheTreesOwed)",
 }
 
 // keptLoop is a loop of a function one pass of whose body reads a kept decision: where it is,

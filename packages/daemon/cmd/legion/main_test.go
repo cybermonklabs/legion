@@ -1118,11 +1118,11 @@ func TestConfigCheckValidatesAndStartsNothing(t *testing.T) {
 
 // A file given as an argument is refused rather than ignored, by every command that reads only
 // --config: `legion config check broken.yaml` would otherwise check ./legion.yaml and answer
-// Config OK for a file it never read, and start, stop, state and probe-boot would act on the team
-// ./legion.yaml names.
+// Config OK for a file it never read, and start, stop, state, probe-boot and members-back would act
+// on the team or read the store ./legion.yaml names.
 func TestStartRefusesAConfigurationGivenAsAnArgument(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState); it changes the whole process's working directory.
-	for _, command := range []string{"config check", "start", "stop", "state", "probe-boot"} {
+	for _, command := range []string{"config check", "start", "stop", "state", "probe-boot", "members-back"} {
 		t.Run(command, func(t *testing.T) {
 			legionState(t)
 			config, _ := workflowConfig(t, 13370, "")
@@ -3627,11 +3627,16 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 }
 
 // `legion state` prints what the project holds beside what it waits on: how many issues the
-// admission list holds and how many of each word for why, in the ladder's own order
-// (record.HeldReasons) whatever order the state lists them in, and `none` where it holds
-// nothing, as the blocked line reads. The prefix names the admission list, which is what tells
-// a reader the line from the held lifecycle rows the same output prints below it. A grep of the
-// source would pass on a comment, so this reads what the command prints.
+// admission list holds and how many of each word for why, the words this build knows in the
+// ladder's own order (record.HeldReasons) whatever order the state lists them in, then each word
+// it does not know, sorted, so the counts add up to the total a later daemon's state names, and
+// `none` where it holds nothing, as the blocked line reads. The prefix names the admission list,
+// which is what tells a reader the line from the held lifecycle rows the same output prints below
+// it. A grep of the source would pass on a comment, so this reads what the command prints.
+//
+// Negative control, run when this was written: with heldAdmissionSummary walking
+// record.HeldReasons alone, as it did before, the words it does not know are left out of the
+// counts and both cases that carry them fail.
 func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	// Each case serves a state the daemon serves: every issue its admission block names, and every
@@ -3667,18 +3672,21 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 	}{
 		{
 			// LEGION-208's architect writes its design from a slot while its gate stands shut, so
-			// its members LEGION-209 and LEGION-213 read design_gate. LEGION-212 is parked in
-			// backlog, so its member LEGION-210 reads tree_parked, and its tree is no live one.
-			name:   "two words, counted in the ladder's order",
+			// its members LEGION-209 and LEGION-213 read design_gate. LEGION-210's chain runs to a
+			// parent the daemon's copy holds no row of, so it reads chain_unknown and stands in no
+			// tree, and LEGION-214, a root a person moved to in_progress before its first
+			// promotion, reads awaiting_todo.
+			name:   "three words, counted in the ladder's order",
 			active: `["LEGION-208"]`,
-			trees:  `["LEGION-208"]`,
+			trees:  `["LEGION-208","LEGION-214"]`,
 			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
-				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
-				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
+				`{"issue":"LEGION-210","reason":"chain_unknown"},` +
+				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]},` +
+				`{"issue":"LEGION-214","reason":"awaiting_todo"}]`,
 			issues: records(slotted("LEGION-208", "LEGION-208", "admitted", "in_progress"), issue("LEGION-209", "LEGION-208", "admitted", "todo"),
-				issue("LEGION-210", "LEGION-212", "admitted", "todo"), issue("LEGION-212", "LEGION-212", "admitted", "backlog"),
-				issue("LEGION-213", "LEGION-208", "admitted", "todo")),
-			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
+				issue("LEGION-210", "LEGION-210", "admitted", "todo"), issue("LEGION-213", "LEGION-208", "admitted", "todo"),
+				issue("LEGION-214", "LEGION-214", "admitted", "in_progress")),
+			want: "admission.held: 4 issues — chain_unknown 1, awaiting_todo 1, design_gate 2\n",
 		},
 		{
 			// A root at implementing that holds no slot row and that the line does not place: a gap,
@@ -3689,6 +3697,30 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 			held:   `[{"issue":"LEGION-209","reason":"unclassified"}]`,
 			issues: records(issue("LEGION-209", "LEGION-209", "implementing", "in_progress")),
 			want:   "admission.held: 1 issue — unclassified 1\n",
+		},
+		{
+			// Words of a later daemon: each issue the list names, and LEGION-208, which holds
+			// LEGION-212, has its record, each a todo root at admitted but LEGION-212, under
+			// LEGION-208.
+			name:   "words this build does not know, counted after the known ones in sorted order",
+			active: `[]`,
+			trees:  `["LEGION-208","LEGION-209","LEGION-210","LEGION-213"]`,
+			held: `[{"issue":"LEGION-209","reason":"waits_on_a_moon"},` +
+				`{"issue":"LEGION-210","reason":"label_off"},` +
+				`{"issue":"LEGION-212","reason":"awaits_a_vote","heldBy":["LEGION-208"]},` +
+				`{"issue":"LEGION-213","reason":"waits_on_a_moon"}]`,
+			issues: records(issue("LEGION-208", "LEGION-208", "admitted", "todo"), issue("LEGION-209", "LEGION-209", "admitted", "todo"),
+				issue("LEGION-210", "LEGION-210", "admitted", "todo"), issue("LEGION-212", "LEGION-208", "admitted", "todo"),
+				issue("LEGION-213", "LEGION-213", "admitted", "todo")),
+			want: "admission.held: 4 issues — label_off 1, awaits_a_vote 1, waits_on_a_moon 2\n",
+		},
+		{
+			name:   "only a word this build does not know",
+			active: `[]`,
+			trees:  `["LEGION-209"]`,
+			held:   `[{"issue":"LEGION-209","reason":"awaits_a_vote"}]`,
+			issues: records(issue("LEGION-209", "LEGION-209", "admitted", "todo")),
+			want:   "admission.held: 1 issue — awaits_a_vote 1\n",
 		},
 		{
 			// The two holds of an owner's plan stand after accepted_ancestor and before at_work and

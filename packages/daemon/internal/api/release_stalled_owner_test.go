@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -60,7 +61,7 @@ func TestASubArchitectsStalledReleaseIsToldOnItsOwnIssue(t *testing.T) {
 			Steps:      config.DesignGateRootIssues.Steps(),
 			Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 			Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-			Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
+			Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 		}).Handler
 		h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 		h.recordIssue(ownIssue)

@@ -3,8 +3,8 @@ package daemon
 // A record written before records carried their repository holds none (record.Issue.Unfilled).
 // The backfill fills it (fillRepositories), with checks a correction makes none of. So no pass
 // over a recorded issue's resolution corrects such a record or reads GitHub for it: a live event's
-// preparation (prepareIssue), a hand-over's (prepareHandover), the follow (followListing) and the
-// boot's listing, which asks for no follow of it (prepareRecorded). A move prepared against such
+// preparation (prepareIssue), the follow (followListing) and the boot's listing, which asks for no
+// follow of it (prepareRecorded). A move prepared against such
 // a record while the refresher's backfill fills it (backfillLater) is followed by the engine where
 // it is applied after the fill (workflow.Engine.ApplyRepositoryChange). These tests run the
 // daemon's own preparations, backfill and one writer (workflow.Engine.ApplyRepositoryChange) over
@@ -73,16 +73,6 @@ func TestNoPassCorrectsARecordWithNoRepositoryAndTheBackfillFillsIt(t *testing.T
 				t.Fatalf("prepare the event: %v", err)
 			}
 			applyCorrection(t, w, prepared)
-		}},
-		{name: "a hand-over the outbox prepares", pass: func(t *testing.T, w *workflowRuntime) {
-			handover, err := w.prepareHandover(ctx, intake.Handover{Issue: unfilledKey, ResolvedRepo: strangerRepo})
-			if err != nil {
-				t.Fatalf("prepare the hand-over: %v", err)
-			}
-			// The fact admission's consumeHandover builds from the hand-over.
-			applyCorrection(t, w, intake.DispatchIssue{Key: unfilledKey, ResolvedRepo: handover.ResolvedRepo,
-				RepositoryRead: handover.RepositoryRead, RepositoryRefusal: handover.RepositoryRefusal,
-				RepositoryRefusalKind: handover.RepositoryRefusalKind, PreparedAgainst: handover.PreparedAgainst})
 		}},
 		{name: "the follow", pass: func(t *testing.T, w *workflowRuntime) {
 			if left, err := w.followListing(ctx, map[string]bool{unfilledKey: true}); err != nil || len(left) != 0 {

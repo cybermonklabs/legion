@@ -38,7 +38,8 @@ func TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames(t *testing.T) {
 			{role: claim.RoleMerger, at: phase.Retro},
 		} {
 			t.Run(string(step)+" to the "+string(tc.role)+" in "+string(tc.at), func(t *testing.T) {
-				_, err := NewOutboxRow("LEGION-208", message(tc.role, step, tc.at), now)
+				// A writer of this release names the run and the phase entry it queues the row for (unrecordedRow).
+				_, err := unrecordedRow("LEGION-208", message(tc.role, step, tc.at), now)
 				if taken := err == nil; taken != tc.taken {
 					t.Fatalf("NewOutboxRow of a %s to the %s naming %s: err = %v, want taken %t", step, tc.role, tc.at, err, tc.taken)
 				}
@@ -73,7 +74,8 @@ func TestAWithdrawalGoesToTheImplementerAlone(t *testing.T) {
 		{name: "with no why", payload: MergeForwardMessage{Role: claim.RoleImplementer, Step: withdrawn, Head: "c0de", Base: "main", Phase: phase.Merging, PullRequest: 42}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewOutboxRow("LEGION-208", tc.payload, now)
+			// A writer of this release names the run and the phase entry it queues the row for (unrecordedRow).
+			_, err := unrecordedRow("LEGION-208", tc.payload, now)
 			if taken := err == nil; taken != tc.taken {
 				t.Fatalf("NewOutboxRow of %+v: err = %v, want taken %t", tc.payload, err, tc.taken)
 			}

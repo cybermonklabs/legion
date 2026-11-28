@@ -6,18 +6,15 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // committedLine is one owner branch of admission whose line says what its transaction wrote:
@@ -51,20 +48,6 @@ func committedLines() []committedLine {
 				return "dispatch", intake.DispatchConsumerPosition{AckFloorStream: 5}, []intake.Handler{engineStub{}, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool { return holdsSlot(t, pool, "LEGION-EDGE") }},
-		{name: "the hand-over event", line: `msg="admission hand-over" issue=LEGION-209`,
-			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {
-				admission := newAdmission(t, 1, log)
-				engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-					Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-				seedFinishedChildUnderLingeringRoot(t, pool, "LEGION-208", "LEGION-209")
-				return "dispatch", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-						Status: "todo", Title: "LEGION-209", Parent: "LEGION-208", Rank: "B", HandedOver: true, DaemonActor: true},
-					[]intake.Handler{engine, admission}
-			},
-			wrote: func(t *testing.T, pool *pgxpool.Pool) bool {
-				got := issue(t, pool, "LEGION-209")
-				return got.Tree == "LEGION-209" && got.Generation == 2
-			}},
 		{name: "a slot given back to an issue whose work came back", line: `msg="admission gives a slot back to an issue whose work came back"`,
 			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {
 				admission := newAdmission(t, 1, log)
@@ -107,26 +90,6 @@ func committedLines() []committedLine {
 					Version: 1, Mark: record.EventMark{Seq: 4, At: reviewedAt}}, []intake.Handler{admission.engine, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool { return len(childrenFirstNotices(t, pool, cfRoot)) == 1 }},
-		{name: "an orphan the record holds as a child", line: `msg="admission orphan" issue=LEGION-STRAY`,
-			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {
-				admission := newAdmission(t, 1, log)
-				gone := "LEGION-GONE"
-				putIssue(t, pool, record.Issue{Key: "LEGION-STRAY", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-					Project: testProject, Title: "LEGION-STRAY", Tree: gone, Parent: &gone, Phase: phase.Admitted, Generation: 1,
-					Status: "backlog", Rank: "B", LastDispatchSeq: 1})
-				return "dispatch", intake.DispatchIssue{Key: "LEGION-STRAY", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-					Status: "todo", Title: "LEGION-STRAY", Parent: gone, Rank: "B", HandedOver: handed}, []intake.Handler{engineStub{}, admission}
-			},
-			wrote: func(t *testing.T, pool *pgxpool.Pool) bool {
-				return issue(t, pool, "LEGION-STRAY").Tree == "LEGION-STRAY"
-			}},
-		{name: "an orphan the record does not hold", line: `msg="admission orphan" issue=LEGION-ORPHAN`,
-			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {
-				admission := newAdmission(t, 1, log)
-				return "dispatch", intake.DispatchIssue{Key: "LEGION-ORPHAN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated",
-					Status: "todo", Title: "orphan", Parent: "LEGION-MISSING", Rank: "A", HandedOver: handed}, []intake.Handler{engineStub{}, admission}
-			},
-			wrote: func(t *testing.T, pool *pgxpool.Pool) bool { return maybeIssue(t, pool, "LEGION-ORPHAN") != nil }},
 	}
 }
 

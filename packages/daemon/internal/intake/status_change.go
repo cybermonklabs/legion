@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
@@ -103,4 +104,57 @@ func statusChangedAfter(events []json.RawMessage, seq int64) (int64, error) {
 		status, known = event.Status, true
 	}
 	return 0, nil
+}
+
+// StatusTransition is the change of an issue's Dispatch status that left the issue at the status a
+// view or a listing of it shows (StatusTransitionAt): who wrote that status, and over what.
+type StatusTransition struct {
+	// Seq is the sequence of the issue event that made the change. It is 0 where Dispatch's log
+	// proves no writer of the status (StatusTransitionAt says when), or where nothing read the log.
+	Seq int64
+	// StatusBefore is the status the issue event before it left, "" where none stands before it,
+	// as for an issue created at its status.
+	StatusBefore string
+	// Session is the session that made the change, by the decoder's rule (dispatchEvent.actorSession):
+	// "" for a person, Dispatch itself and the daemon's own session, which writes the todo of
+	// release_children and rerun_child.
+	Session string
+	// At is when Dispatch recorded the change, zero for an event that carries no time.
+	At time.Time
+}
+
+// StatusTransitionAt is the transition that left an issue at status as Dispatch showed it at seq,
+// read from events, the issue's Dispatch event log as dispatch.Client.EventsAfter serves it from
+// sequence 0, oldest first: the newest issue event at or below seq whose status differs from the
+// issue event before it, or the first issue event, which gives the issue its first status. That
+// is the rule statusChangedAfter reads a change by (walkIssueEvents), so every other event (a
+// comment, a claim, a document version) and an issue event that leaves the status as it was (a
+// rename, a re-rank, a label, a link, a write of the status already shown) names no writer. The
+// walk stops at the first issue event past seq, so a later event does not move it.
+//
+// The log proves no writer, and the transition's Seq is 0, where no issue event stands at or below
+// seq, where the newest one leaves the issue at another status than status, or where the event of
+// the transition names no actor kind. For a log walkIssueEvents cannot read up to there, it returns
+// the walk's *dispatch.EventLogError, since such a log cannot say who wrote the status.
+func StatusTransitionAt(events []json.RawMessage, seq int64, status string) (StatusTransition, error) {
+	var transition StatusTransition
+	var kind, last string
+	known := false
+	for event, err := range walkIssueEvents(events) {
+		if err != nil {
+			return StatusTransition{}, err
+		}
+		if event.Seq > seq {
+			break
+		}
+		if !known || event.Status != last {
+			transition = StatusTransition{Seq: event.Seq, StatusBefore: last, Session: event.Session, At: event.At}
+			kind = event.ActorKind
+		}
+		last, known = event.Status, true
+	}
+	if !known || last != status || kind == "" {
+		return StatusTransition{}, nil
+	}
+	return transition, nil
 }

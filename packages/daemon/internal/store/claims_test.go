@@ -449,6 +449,41 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// The tree a claim last launched under, the epoch of its issue's own lifecycle it is bound to and
+// whether its issue held its own gate at that launch are columns of their own (decision 13 and 16
+// of dispatch://INFRA-4730), each read back as written beside the tree and the tree epoch the
+// release before reads, which they never overwrite: a restart builds every claim from this table,
+// and the spawn spec, the launch check and the machine's root reading take them from it.
+func TestAClaimsLaunchTreeIssueEpochAndGateMarkRoundTrip(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-launched")
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	if got := onlyClaim(t, store); got.LaunchTree != "" || got.IssueEpoch != 0 || got.HoldsGate {
+		t.Fatalf("a claim no launch set them on read back launch tree %q, issue epoch %d, gate %t; want none", got.LaunchTree, got.IssueEpoch, got.HoldsGate)
+	}
+
+	want.LaunchTree, want.IssueEpoch, want.HoldsGate = "LEGION-100", 3, true
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put the launched claim: %v", err)
+	}
+	got := onlyClaim(t, store)
+	sameClaim(t, got, want)
+	if got.Tree != want.Tree || got.LaunchTree != "LEGION-100" || got.IssueEpoch != 3 || !got.HoldsGate {
+		t.Fatalf("launched claim read back tree %q, launch tree %q, issue epoch %d, gate %t; want %q, LEGION-100, 3, true",
+			got.Tree, got.LaunchTree, got.IssueEpoch, got.HoldsGate, want.Tree)
+	}
+
+	want.LaunchTree, want.IssueEpoch, want.HoldsGate = "LEGION-209", 4, false
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put the relaunched claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
 // The mark of a launch that had Oh My Pi resume the claim's session by its id itself
 // (AgentResumeGeneration) is a column of its own: a daemon restarted between that launch and its
 // agent's registration reads the mark back, and with it whether the launch's end is charged and
@@ -1221,70 +1256,6 @@ func TestTheSchemaRefusesAControllerClaimOnAnIssueAndAWorkflowClaimOnNone(t *tes
 		if err := s.PutClaim(context.Background(), c); err == nil {
 			t.Errorf("stored %s on role %s with issue %q and tree %q", c.Token, c.Role, c.Issue, c.Tree)
 		}
-	}
-}
-
-// IssueRunsElsewhere names a claim of the issue in another tree that may hold a process: one in a
-// state supervise's RunsNothing does not hold, or one that still records a locator. Every claim
-// state is walked against RunsNothing, so the query and the machine read one set; a launch whose
-// outcome is uncertain and a suspended claim that still records a locator are named. A claim of the
-// asking tree or of another issue is not.
-func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	store := migratedStore(t)
-	elsewhere := func(tree string) string {
-		t.Helper()
-		got, err := store.IssueRunsElsewhere(ctx, "legion", "LEGION-209", tree)
-		if err != nil {
-			t.Fatalf("IssueRunsElsewhere(LEGION-209, %s): %v", tree, err)
-		}
-		return got
-	}
-	implementer := tmuxClaim("legion-LEGION-209-implementer")
-	locator := implementer.Locator
-	put := func(state supervise.ClaimState, withLocator bool) {
-		t.Helper()
-		implementer.State, implementer.Locator = state, nil
-		if withLocator {
-			implementer.Locator = locator
-		}
-		if err := store.PutClaim(ctx, implementer); err != nil {
-			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
-		}
-	}
-	for _, state := range supervise.States() {
-		put(state, false)
-		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
-		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
-			t.Errorf("a %s claim of tree LEGION-208 without a locator: named %t, want %t, as RunsNothing says", state, named, runs)
-		}
-	}
-	for _, tc := range []struct {
-		name        string
-		state       supervise.ClaimState
-		withLocator bool
-	}{
-		{"a launch whose outcome is uncertain", supervise.StateLaunchUncertain, false},
-		{"a suspended claim that still records a locator", supervise.StateSuspended, true},
-		{"an idle claim with its locator", supervise.StateIdle, true},
-	} {
-		put(tc.state, tc.withLocator)
-		if got, want := elsewhere("LEGION-209"), "legion-LEGION-209-implementer:"+string(tc.state); got != want {
-			t.Errorf("%s of tree LEGION-208: IssueRunsElsewhere = %q, want %q", tc.name, got, want)
-		}
-		if got := elsewhere("LEGION-208"); got != "" {
-			t.Errorf("%s, asked by the claim's own tree: IssueRunsElsewhere = %q, want none", tc.name, got)
-		}
-	}
-	other := tmuxClaim("legion-LEGION-210-implementer")
-	other.Issue = "LEGION-210"
-	put(supervise.StateSuspended, false)
-	if err := store.PutClaim(ctx, other); err != nil {
-		t.Fatalf("put %s: %v", other.Token, err)
-	}
-	if got := elsewhere("LEGION-209"); got != "" {
-		t.Fatalf("only another issue's claim runs: IssueRunsElsewhere = %q, want none", got)
 	}
 }
 

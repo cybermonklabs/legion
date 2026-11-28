@@ -25,10 +25,9 @@ type issueWrites struct {
 }
 
 // WithIssueWrites answers ctx in which the store keeps each issue a write touches — its record
-// (PutIssue), its pull request (PutPullRequest) or its hand-over fence (PutHandover,
-// DeleteHandover, DeleteHandoverAt), the inputs of the end of a step's run the store writes —
-// which IssuesWritten answers, and whether a write changed any record of the project, which
-// RecordsWritten answers. A ctx that keeps them already is answered as it is, so the writes of
+// (PutIssue) or its pull request (PutPullRequest), the inputs of the end of a step's run the store
+// writes — which IssuesWritten answers, and whether a write changed any record of the project,
+// which RecordsWritten answers. A ctx that keeps them already is answered as it is, so the writes of
 // one transaction are kept once whoever asks for them.
 func WithIssueWrites(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(issueWritesKey{}).(*issueWrites); ok {
@@ -50,15 +49,15 @@ func IssuesWritten(ctx context.Context) []string {
 // RecordsWritten says whether a write in ctx matched a row of a record of the project that
 // admission reads, which is what a fact runs the admission pass for (admit's Admission.Apply).
 // That record is an issue's own rows — its issues row in any column, its phase rows, its slot,
-// its pull request, its hand-over fence, and what a clear of its generation empties — the copy of
-// what Dispatch says of an issue and of its claim, a root's asks, a design gate, and a plan's
-// rows. Every writer of those rows in this package keeps the mark when its statement matches a
-// row (noteRowsWritten), whatever else it keeps: a statement that matches no row, one a row's own
-// fence refuses among them, keeps nothing. A statement that matches a row and sets a value the
-// row already holds keeps the mark all the same, which costs a pass and decides nothing new. The
-// writers of an issue's repository columns that run outside any fact (the one-time backfill and
-// rename passes) keep nothing either. Only the writes of an issue's record, pull request and
-// hand-over fence name the issue among IssuesWritten, which the end of a step's run reads.
+// its pull request, and what a clear of its generation empties — the copy of what Dispatch says
+// of an issue and of its claim, a root's asks, a design gate, and a plan's rows. Every writer of
+// those rows in this package keeps the mark when its statement matches a row (noteRowsWritten),
+// whatever else it keeps: a statement that matches no row, one a row's own fence refuses among
+// them, keeps nothing. A statement that matches a row and sets a value the row already holds
+// keeps the mark all the same, which costs a pass and decides nothing new. The writers of an
+// issue's repository columns that run outside any fact (the one-time backfill and rename passes)
+// keep nothing either. Only the writes of an issue's record and pull request name the issue
+// among IssuesWritten, which the end of a step's run reads.
 // The pass reads other rows that change outside this set — the starts a project owes in the
 // outbox, the claims the supervisor writes, the tree lifecycles — and their writers keep no mark:
 // the tick's pass, which runs whatever it wrote, reads them. False for a ctx that keeps no writes

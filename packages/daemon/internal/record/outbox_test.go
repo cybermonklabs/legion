@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +35,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done", 7),
-		HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
+		// A write with options of Dispatch's status-change route, queued after the write of its
+		// parent it follows, for the controller (decisions 5, 6 and 12 of dispatch://INFRA-4730).
+		StatusWrite{Kind: OrdinaryStatusRow, Status: "backlog", ObservedStatus: "in_progress", IncludeChildren: true, UnlinkChildren: true,
+			IncludeParent: true, After: 12, Controller: true},
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
 		MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
@@ -59,6 +64,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
 			Reason: "the model provider is down"}},
 		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
+		ControllerNotice{Kind: StatusScopeNotice, Reason: "Dispatch refused the daemon's status write on LEGION-208 with 403 LEGION_STATUS_SCOPE_REQUIRED."},
 		ControllerNotice{Kind: IntakeGaveUpNotice, Count: 3, GiveUps: []NoticeGiveUp{
 			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"},
 			{ID: 42, Consumer: "legion-go-LEGION-wake", Subject: "notifications.legion.LEGION.wake"}}},
@@ -74,10 +80,18 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-100", BasisVersion: 3, Ask: "ask-100",
 			Generation: 2, RegisteredAt: now.Add(-time.Hour + 123*time.Microsecond)},
-		ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own from 2026-11-01"},
+		// R18's notice of a change of parent, which goes on carrying the fields the release before
+		// requires beside its own (dispatch://INFRA-4730's decision 15).
+		ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "its run, its phase and its gate steps stay with it", Generation: 2, Entry: 5,
+			OldParent: "LEGION-299", Phase: phase.Implementing, Slot: true,
+			Steps: []ReparentStep{{Step: DesignStepSpec, Open: true, Basis: "LEGION-100", BasisVersion: 3}}},
+		Notice{Kind: ReparentedNotice, To: "LEGION-300", Reason: "LEGION-208's Dispatch parent moved from LEGION-299 to LEGION-301."},
 		Notice{Kind: "basis-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec", Reason: "name the rollback path"},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
+		// The end of a converted linger's retention of one issue, fenced by the run and the entry
+		// the conversion queued it at (dispatch://INFRA-4730's decision 17).
+		RetentionEnd{Generation: 3, Entry: 5},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
@@ -148,7 +162,12 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		StateAdmission{Project: "LEGION", Run: stateRun, Admission: json.RawMessage(`{}`)},
 		StateBoot{Project: "LEGION", Run: stateRun, Settings: json.RawMessage(`{}`), SchemaVersion: 20261126163320},
 	}
+	// Each payload carries the fence a writer of this release gives it (Fenced), which therefore
+	// round-trips with it: a fenced kind's run, phase entry and pod, and nothing on a kind that
+	// carries none.
+	fence := Fence{Generation: 3, Entry: 5, PodUID: "pod-of-legion-208"}
 	for _, payload := range payloads {
+		payload := Fenced(payload, fence)
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
 			ctx := context.Background()
 			st := migratedStore(t)
@@ -190,7 +209,7 @@ func TestExpediteOutboxReportsWhetherItMovedARow(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	now := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
-	row, err := NewOutboxRow("LEGION-208", MessagePost{Body: "A row to wake."}, now.Add(time.Minute))
+	row, err := NewOutboxRow("LEGION-208", Fenced(MessagePost{Body: "A row to wake."}, FirstFence), now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("make the row: %v", err)
 	}
@@ -223,7 +242,6 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 		OrdinaryStatusRow:       OrdinaryStatusWrite("testing", "in_progress", ""),
 		PersonHandoverStatusRow: PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusRow:       ReassertStatusWrite("in_progress", "done", 7),
-		HandOverStatusRow:       HandOverStatusWrite("todo", "in_progress", "LEGION-200", 3),
 		CloseStatusRow:          CloseStatusWrite("done", "in_progress", "merged", 7),
 	}
 	if len(built) != len(StatusRowKinds) {
@@ -256,7 +274,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	records := NewStore()
 	enqueue := func(issue string, payload OutboxPayload) {
 		t.Helper()
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow: %v", err)
 		}
@@ -276,7 +294,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	}
 
 	enqueue("LEGION-208", PersonHandoverStatusWrite("todo", "triage"))
-	enqueue("LEGION-209", HandOverStatusWrite("todo", "backlog", "LEGION-200", 3))
+	enqueue("LEGION-209", ReassertStatusWrite("todo", "backlog", 2))
 	enqueue("LEGION-210", OrdinaryStatusWrite("todo", "triage", ""))
 	enqueue("LEGION-210", ControllerNotice{Kind: TriageNotice})
 
@@ -284,7 +302,7 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 		t.Fatalf("PersonHandoverPending(LEGION-208) = false, want true while its marked row is in the outbox")
 	}
 	if pending("LEGION-209") {
-		t.Fatalf("PersonHandoverPending(LEGION-209) = true, want false for an issue whose only pending row is a hand-over")
+		t.Fatalf("PersonHandoverPending(LEGION-209) = true, want false for an issue whose only pending row is a re-assertion")
 	}
 	if pending("LEGION-210") {
 		t.Fatalf("PersonHandoverPending(LEGION-210) = true, want false for an unmarked todo and a triage wake")
@@ -311,6 +329,13 @@ func TestPersonHandoverPendingCountsOnlyMarkedStatusRows(t *testing.T) {
 	}
 }
 
+// unrecordedRow is NewOutboxRow of payload carrying the fence an issue the store records nothing of
+// stands at (FirstFence), as a writer of this release queues it for such an issue
+// (NewFencedRow): what a test that queues a row of a fenced kind for an unrecorded issue builds.
+func unrecordedRow(issue string, payload OutboxPayload, at time.Time) (OutboxRow, error) {
+	return NewOutboxRow(issue, Fenced(payload, FirstFence), at)
+}
+
 // Every kind the outbox stores runs on exactly one lane, and LaneOf names the lane whose kinds
 // list it: a kind on neither lane would be queued and never run, one on both would run twice over.
 // The kinds and the lanes named here are this test's own, the oracle, and the kinds are read from
@@ -323,7 +348,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
 		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
-		OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
+		OutboxKindRetentionEnd, OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage, LaneState}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -392,10 +417,13 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindPendingBasisSeed: "",
 		// A re-parent seed reads Dispatch for a root's new parent and starts no turn
 		// (dispatch://INFRA-3320).
-		OutboxKindReparentSeed:       "",
-		OutboxKindLingerClose:        "",
-		OutboxKindIssueSuspend:       "",
-		OutboxKindWorkspaceRemove:    "",
+		OutboxKindReparentSeed:    "",
+		OutboxKindLingerClose:     "",
+		OutboxKindIssueSuspend:    "",
+		OutboxKindWorkspaceRemove: "",
+		// The end of a converted linger's retention retires suspended claims and removes a
+		// workspace, which starts no turn, as a stop does (dispatch://INFRA-4730).
+		OutboxKindRetentionEnd:       "",
 		OutboxKindIssueBranch:        "",
 		OutboxKindIssueBundle:        "",
 		OutboxKindIssueRelease:       "",
@@ -459,6 +487,437 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 	}
 }
 
+// fencePart is one of the three things a queued effect names so that it does nothing to a later
+// run of its issue (R17 of dispatch://INFRA-3320): the field of the kind's payload that carries it,
+// or why the kind carries none.
+type fencePart struct{ field, why string }
+
+// carries is a fence part the payload's field named field carries.
+func carries(field string) fencePart { return fencePart{field: field} }
+
+// lacks is a fence part the kind carries none of, and why.
+func lacks(why string) fencePart { return fencePart{why: why} }
+
+// podUIDField is the field a stop, a suspend, a workspace check or a release names its pod's
+// incarnation in. It may be empty, which fences no pod: a tmux claim runs in no pod, and a claim
+// with no locator names none.
+const podUIDField = "PodUID"
+
+// declaredOutboxKinds is every kind the outbox's lanes run (OutboxLanes, LaneKinds), which
+// TestEveryOutboxKindIsInExactlyOneLane holds equal to every kind the outbox stores, so a kind
+// added to a lane and decided nowhere fails the test that ranges over it.
+func declaredOutboxKinds(t *testing.T) map[OutboxKind]bool {
+	t.Helper()
+	declared := map[OutboxKind]bool{}
+	for _, lane := range OutboxLanes() {
+		for _, kind := range LaneKinds(lane) {
+			declared[kind] = true
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("the outbox's lanes run no kind: a test over none would pass")
+	}
+	return declared
+}
+
+// setFenceField gives field, which a payload carries a fence part in, a value when it has none,
+// and says whether its type is one a fence part can be carried in.
+func setFenceField(field reflect.Value) bool {
+	if !field.IsZero() {
+		return true
+	}
+	switch field.Kind() {
+	case reflect.Uint, reflect.Uint32, reflect.Uint64:
+		field.SetUint(7)
+	case reflect.Int, reflect.Int32, reflect.Int64:
+		field.SetInt(3)
+	case reflect.String:
+		field.SetString("fence-of-legion-208")
+	default:
+		return false
+	}
+	return true
+}
+
+// Every effect the daemon queues for later names its issue's generation, its phase entry and the
+// pod or claim it acts on, so that a late one does nothing to a later run of the issue (R17 and R20
+// of dispatch://INFRA-3320); a kind that names fewer says, for each one it lacks, why. decided is
+// that inventory, and its keys are every kind the outbox's lanes run (declaredOutboxKinds): a kind
+// added to a lane fails here until somebody decides it. For each part a kind carries the test sets the
+// payload's field, and NewOutboxRow must take the payload so set; then it must refuse the payload
+// without its generation, and without its entry, so no row is queued unfenced. The pod UID may be
+// empty (podUIDField), so a payload without it is still taken.
+//
+// The defaults are the plan's of dispatch://INFRA-4730 ("Lists written before the code"): a kind
+// that acts on one issue's run is fenced by all three, the pod's UID for a kind that stops,
+// suspends, saves or releases a pod and the role's claim for a message to one role; the
+// publications of current state and merge_queue_read act on no run; the production check's kinds
+// and the gate's carry the generation and no entry, since the check follows the close and the gate
+// belongs to the run across a stop (R17); and linger_close, like workspace_remove, which only a
+// linger's expiry writes, is written by no daemon after its first boot on this release.
+//
+// What delivery checks is a second decision of each kind (record.LateAt): every kind that carries
+// an entry is late at a later phase entry of its run as well as in a later run, but for the kinds
+// that only tell somebody something (reportOnly, the architect's ruling of 2026-11-21 on
+// dispatch://INFRA-3320), an architect's notice and a controller's, which name their entry and
+// are late in a later run alone, and so is a message that names undelivered hook prompts, the one
+// payload of its kind that reports. A kind added there or taken away from it fails here until
+// somebody decides it, so no kind that acts is fenced by its run alone.
+func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	const (
+		dispatchRow     = "it writes the issue's Dispatch row, which no pod and no claim of the daemon's holds"
+		currentState    = "it publishes the state as it stands when the row runs, so a late row publishes the later state and acts on no run"
+		notAfterBoot    = "no daemon writes it after its first boot on this release, whose conversion finishes or deletes each such row (decision 17 of dispatch://INFRA-4730)"
+		gateAcrossStop  = "the gate belongs to the run across a stop (R17), so a seed of the run applies at any phase entry"
+		checkAfterClose = "the production check follows the close, where the issue stands at no phase entry (R17)"
+		readsAndApplies = "it reads Dispatch or GitHub and applies what it read as a fact, which the record fences where it commits; it acts on no pod and no claim"
+		history         = "it is the record of a step or a plan of one run, keyed by that run's own id: a late write records what that run did and acts on no later run"
+		owedWhenRun     = "it reads what its gate root's tree owes when it runs (OwedNews), never what it owed when queued, and acts on no pod and no claim: a role hears it only through a news-only start, a supervise row fenced by its own run and entry"
+		stateSequence   = "it is the event of the committed write that queued it, in its project's one sequence (StateSeq), which Dispatch reads for a gap, so a late one still publishes, and it acts on no pod and no claim"
+		judgedWhenRun   = "it is judged on the issue's record when it runs (the daemon's releaseClaim), which leaves the claim of a run that returned to work and writes why (issue-runs), so a late row harms nothing of that run, and a fence would only finish it unrun with that record unwritten (the architect's ruling of 2026-11-28 on dispatch://INFRA-4730, item 2)"
+	)
+	decided := map[OutboxKind]struct {
+		generation, entry, target fencePart
+		// payload is a payload of the kind that NewOutboxRow takes once the test has set each
+		// field the kind carries a fence part in; nil for a kind that carries none.
+		payload OutboxPayload
+	}{
+		OutboxKindDispatchStatus: {carries("Generation"), carries("Entry"), lacks(dispatchRow),
+			OrdinaryStatusWrite("in_progress", "todo", "")},
+		OutboxKindDispatchMessage: {carries("Generation"), carries("Entry"), lacks(dispatchRow),
+			MessagePost{Body: "A message of one run."}},
+		// A notice's architect is read when it is delivered, by the owner walk over the chain
+		// (R18), so it names no claim when it is queued.
+		OutboxKindNotice: {carries("Generation"), carries("Entry"),
+			lacks("its architect is read when it is delivered, by R18's owner walk, so a notice names no claim when it is queued"),
+			Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}},
+		// The project's controller notice names the run and the entry of the issue its row is
+		// keyed by, the first fence for a row keyed by the project (FirstFence).
+		OutboxKindControllerNotice: {carries("Generation"), carries("Entry"), lacks("it is told to the project's controller topic, which no claim of the issue's holds"),
+			ControllerNotice{Kind: TickNotice}},
+		OutboxKindSupervise: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer}},
+		OutboxKindGateSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
+			GateSeed{ArtifactID: "artifact-208", Step: DesignStepSpec, Version: 1}},
+		OutboxKindPendingBasisSeed: {carries("Generation"), lacks(gateAcrossStop), lacks(readsAndApplies),
+			PendingBasisSeed{Step: DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2, Ask: "ask-1", RegisteredAt: now}},
+		// R18's notice of a change of parent names the issue's run it tells of (dispatch://INFRA-4730's
+		// t6), and tells the architects through notices of its own. It names the phase entry too,
+		// for the words, but is told at whatever entry the issue stands, the zero entry of an issue
+		// whose first phase has not started included.
+		OutboxKindReparentSeed: {carries("Generation"),
+			lacks("a change of parent is told whatever phase entry the issue stands at, the zero entry of an issue no phase has started included, so the entry it names is in its words and fences nothing"),
+			lacks("it reads the new parent from Dispatch and tells the architects through notices of its own, which route by the chain when they are delivered"),
+			ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own"}},
+		OutboxKindLingerClose:     {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
+		OutboxKindWorkspaceRemove: {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
+		// It does for one issue, at its retention's deadline, what a linger's expiry did for a tree,
+		// so it names the run and the entry the conversion queued it at (decision 17 of
+		// dispatch://INFRA-4730).
+		OutboxKindRetentionEnd: {carries("Generation"), carries("Entry"),
+			lacks("it acts on the one issue: it retires every suspended claim of it and removes its workspace, and no single pod or claim is what it fences"),
+			RetentionEnd{}},
+		OutboxKindIssueSuspend: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			IssueSuspend{Tree: "LEGION-208", TreeGeneration: 7}},
+		OutboxKindIssueBundle: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			IssueWorkspaceCheck{Tree: "LEGION-208", TreeGeneration: 7, Role: claim.RoleImplementer}},
+		OutboxKindIssueRelease: {carries("Generation"), carries("Entry"), carries(podUIDField),
+			IssueRelease{Tree: "LEGION-208", TreeGeneration: 7}},
+		// The branch is the run's and stays across a stop (R20), and the start of the entry a
+		// return opens waits on the row (outboxInOrder), so a branch row of the run acts at any
+		// entry.
+		OutboxKindIssueBranch: {carries("Generation"),
+			lacks("the branch is the run's and stays across a stop (R20), so a branch row of the run acts at any entry"),
+			lacks("it creates a branch on GitHub, which no pod and no claim of the daemon's holds"), IssueBranch{}},
+		OutboxKindCheckWake:  {carries("Generation"), lacks(checkAfterClose), lacks("the start of the look it wakes names the claim"), CheckWakeDue{Look: 1, Reason: "the agent's own wake"}},
+		OutboxKindCheckLook:  {carries("Generation"), lacks(checkAfterClose), lacks("it ends a look of the check, and acts on no claim"), CheckLook{Look: 1}},
+		OutboxKindCheckBound: {carries("Generation"), lacks(checkAfterClose), lacks("the start of the last look it starts names the claim"), CheckBound{}},
+		// Its role is the claim token it is published to.
+		OutboxKindRoleMessage: {carries("Generation"), carries("Entry"), carries("Role"),
+			RoleMessage{Role: "legion-legion-legion-208-implementer", Body: "The checks of the head settled."}},
+		// Each of these four goes to one role of the row's issue, whose claim the role names.
+		OutboxKindPhaseEnded: {carries("Generation"), carries("Entry"), carries("Role"),
+			PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.AwaitingChildren, Reason: "LEGION-209 (todo) is open"}},
+		OutboxKindHookPrompt: {carries("Generation"), carries("Entry"), carries("Role"),
+			HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Say what the round missed."}},
+		OutboxKindUpdateAsk: {carries("Generation"), carries("Entry"), carries("Role"),
+			UpdateAsk{Role: claim.RoleImplementer, Round: "round-1", Text: "Commit and push, then stop."}},
+		OutboxKindMergeForward: {carries("Generation"), carries("Entry"), carries("Role"),
+			MergeForwardMessage{Step: MergeForwardAsk, Role: claim.RoleImplementer, Head: "abc123", Base: "main", Phase: phase.Merging, PullRequest: 42, Why: ConflictMergeNext}},
+		// The merger is the one role it is ever for, so the row's issue names its claim.
+		OutboxKindMergeQueueRemoval: {carries("Generation"), carries("Entry"),
+			lacks("the merger is the one role it is ever for, so the row's issue names the claim"),
+			MergeQueueRemoval{Number: 42, Head: "abc123"}},
+		OutboxKindGatedStepsPublish:  {lacks(currentState), lacks(currentState), lacks(currentState), nil},
+		OutboxKindDesignGatesPublish: {lacks(currentState), lacks(currentState), lacks(currentState), nil},
+		OutboxKindRoleHoldersPublish: {lacks(currentState), lacks(currentState), lacks(currentState), nil},
+		OutboxKindMergeQueueRead:     {lacks(readsAndApplies), lacks(readsAndApplies), lacks(readsAndApplies), nil},
+		OutboxKindConflictConfirm:    {lacks(readsAndApplies), lacks(readsAndApplies), lacks(readsAndApplies), nil},
+		// It releases the issue's Dispatch claim when a park left the issue, and its executor reads
+		// the issue's record when it runs: a row that runs after a return leaves the claim of the
+		// run that returned and says why, so neither of its shapes carries a fence.
+		OutboxKindClaimRelease: {lacks(judgedWhenRun), lacks(judgedWhenRun),
+			lacks("it releases the issue's Dispatch claim, which no pod and no claim of the daemon's holds"), nil},
+		OutboxKindStepRecord: {lacks(history), lacks(history), lacks(history), nil},
+		OutboxKindPlanRecord: {lacks(history), lacks(history), lacks(history), nil},
+		// Main's reconcile of a tree's news (#3995) carries nothing but its gate root, the row's issue:
+		// it reads what that tree owes when it runs, and reaches a role only through the news-only
+		// starts it queues, each a supervise row with a fence of its own.
+		OutboxKindDesignChanges: {lacks(owedWhenRun), lacks(owedWhenRun), lacks(owedWhenRun), nil},
+		// #4065's word to the merger that the project's merge holds changed is news to whatever run
+		// and entry of the issue stand in merging when it runs: its executor reads that the issue
+		// still works merging then (workflow.MergingNow), and the merger is the one role it is for.
+		OutboxKindMergeHoldsChanged: {
+			lacks("the project's merge holds changed, which is news to whatever run of the issue stands in merging when the row runs, and its executor reads that the issue still works merging then (workflow.MergingNow)"),
+			lacks("the change is news at whatever phase entry of merging the issue stands at when the row runs, which its executor reads then (workflow.MergingNow)"),
+			lacks("the merger is the one role it is ever for, so the row's issue names the claim"), nil},
+		// #4432's state events are the committed write's own report of what moved, in the project's
+		// one sequence, which Dispatch reads for a gap: a fence that dropped a late one would leave
+		// a gap in that sequence, so none carries a fence.
+		OutboxKindStateChange:    {lacks(stateSequence), lacks(stateSequence), lacks(stateSequence), nil},
+		OutboxKindStateAdmission: {lacks(stateSequence), lacks(stateSequence), lacks(stateSequence), nil},
+		OutboxKindStateBoot:      {lacks(stateSequence), lacks(stateSequence), lacks(stateSequence), nil},
+	}
+	// The kinds whose delivery reads the run alone, and why: every other kind that carries an entry
+	// is late at a later entry of its run too (record.LateAt).
+	const tellsOnly = "it only tells somebody something, and a telling of an earlier phase entry of the run is still news (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320)"
+	reportOnly := map[OutboxKind]string{OutboxKindNotice: tellsOnly, OutboxKindControllerNotice: tellsOnly}
+	declared := declaredOutboxKinds(t)
+	for _, kind := range slices.Sorted(maps.Keys(declared)) {
+		if _, ok := decided[kind]; !ok {
+			t.Errorf("the outbox runs %s, and nobody decided what fences it: add it to decided, with the field of each part it carries or why it carries none", kind)
+		}
+	}
+	for _, kind := range slices.Sorted(maps.Keys(decided)) {
+		fence := decided[kind]
+		if !declared[kind] {
+			t.Errorf("decided names %s, which no lane of the outbox runs", kind)
+			continue
+		}
+		parts := []struct {
+			name string
+			part fencePart
+		}{{"generation", fence.generation}, {"entry", fence.entry}, {"pod or claim", fence.target}}
+		carried := false
+		for _, p := range parts {
+			if (p.part.field == "") == (p.part.why == "") {
+				t.Errorf("%s: its %s names %+v, want a field that carries it or why it carries none, and not both", kind, p.name, p.part)
+			}
+			carried = carried || p.part.field != ""
+		}
+		if !carried {
+			continue
+		}
+		if fence.payload == nil || fence.payload.OutboxKind() != kind {
+			t.Errorf("%s carries a part of its fence but decided gives it no payload of its own kind to try: %#v", kind, fence.payload)
+			continue
+		}
+		whole := reflect.New(reflect.TypeOf(fence.payload)).Elem()
+		whole.Set(reflect.ValueOf(fence.payload))
+		missing := false
+		for _, p := range parts {
+			if p.part.field == "" {
+				continue
+			}
+			field := whole.FieldByName(p.part.field)
+			if !field.IsValid() {
+				t.Errorf("%s: %T has no field %s to carry its %s in, so a late %s cannot tell what it acts on from what a later run holds", kind, fence.payload, p.part.field, p.name, kind)
+				missing = true
+				continue
+			}
+			if !setFenceField(field) {
+				t.Errorf("%s: %T.%s is a %s, which carries no %s", kind, fence.payload, p.part.field, field.Type(), p.name)
+				missing = true
+			}
+		}
+		if missing {
+			continue
+		}
+		if _, err := NewOutboxRow("LEGION-208", whole.Interface().(OutboxPayload), now); err != nil {
+			t.Errorf("%s: NewOutboxRow refuses a payload that carries its whole fence: %v", kind, err)
+			continue
+		}
+		// What delivery checks of the fence (LateAt): a later run makes every kind it fences late,
+		// and a later phase entry of the same run every kind that names one but the reports. A
+		// kind whose run its own executor reads (a re-parent seed's) is no kind LateAt fences.
+		queued, fencedAtDelivery := FenceOf(whole.Interface().(OutboxPayload))
+		if fencedAtDelivery && fence.generation.field != "" && !LateAt(Fence{Generation: queued.Generation + 1, Entry: queued.Entry}, whole.Interface().(OutboxPayload)) {
+			t.Errorf("%s: a row of run %d is delivered in run %d, want it late: it does nothing to a later run", kind, queued.Generation, queued.Generation+1)
+		}
+		if fence.entry.field != "" {
+			why, report := reportOnly[kind]
+			late := LateAt(Fence{Generation: queued.Generation, Entry: queued.Entry + 1}, whole.Interface().(OutboxPayload))
+			switch {
+			case report && late:
+				t.Errorf("%s: a row of entry %d is late at entry %d of the same run, want it delivered: %s", kind, queued.Entry, queued.Entry+1, why)
+			case !report && !late:
+				t.Errorf("%s: a row of entry %d still acts at entry %d of the same run, want it late: a kind that acts is fenced by its run and its entry", kind, queued.Entry, queued.Entry+1)
+			}
+		}
+		// Each part the kind carries is taken away in turn: the generation and the entry must be
+		// refused, the pod UID taken empty. A claim the payload names by its role is the row's own
+		// issue's, and an empty role is refused by the kind's own rule already.
+		for _, p := range parts {
+			if p.part.field == "" || (p.name == "pod or claim" && p.part.field != podUIDField) {
+				continue
+			}
+			without := reflect.New(whole.Type()).Elem()
+			without.Set(whole)
+			without.FieldByName(p.part.field).SetZero()
+			_, err := NewOutboxRow("LEGION-208", without.Interface().(OutboxPayload), now)
+			switch {
+			case p.part.field == podUIDField && err != nil:
+				t.Errorf("%s: NewOutboxRow refuses a payload whose pod UID is empty: %v; an empty one fences no pod, as a tmux claim's or one with no locator", kind, err)
+			case p.part.field != podUIDField && err == nil:
+				t.Errorf("%s: NewOutboxRow takes a payload without its %s (%s), so such a row could be queued unfenced", kind, p.name, p.part.field)
+			}
+		}
+	}
+	// A dispatch_message row that names undelivered hook prompts (MessagePost.HookPrompts) only
+	// tells the issue what reached no session, so its delivery reads the run alone (reportOnly):
+	// hook prompts fire at moves back, and an entry fence would drop the message after the very
+	// moves that make it. Every other message acts as its kind decided above, late at a later entry
+	// of its run too.
+	queuedAt := Fence{Generation: 3, Entry: 5}
+	prompts := Fenced(UndeliveredHookPrompts{Role: claim.RoleImplementer, Paragraphs: []string{"Legion hook back-to-implementing fired at 1 moves back."}}.Message("LEGION-208"), queuedAt)
+	if LateAt(Fence{Generation: queuedAt.Generation, Entry: queuedAt.Entry + 1}, prompts) {
+		t.Errorf("the message of undelivered hook prompts of entry %d is late at entry %d of the same run, want it delivered: %s", queuedAt.Entry, queuedAt.Entry+1, tellsOnly)
+	}
+	if !LateAt(Fence{Generation: queuedAt.Generation + 1, Entry: queuedAt.Entry}, prompts) {
+		t.Errorf("the message of undelivered hook prompts of run %d is delivered in run %d, want it late: a report of an earlier run is no news", queuedAt.Generation, queuedAt.Generation+1)
+	}
+	if plain := Fenced(MessagePost{Body: "A message of one run."}, queuedAt); !LateAt(Fence{Generation: queuedAt.Generation, Entry: queuedAt.Entry + 1}, plain) {
+		t.Errorf("a message that names no hook prompts, of entry %d, still posts at entry %d of the same run, want it late: it is fenced by its run and its entry", queuedAt.Entry, queuedAt.Entry+1)
+	}
+	// The first boot's conversion stamps a row the release before queued with each part of its
+	// fence its kind carries (FencedKinds, StampReleaseBeforeFences), so that list names each kind
+	// whose delivery is fenced (FenceOf) with the parts decided here, and no other: a kind fenced
+	// later fails here until its rows are stamped too.
+	stamped := map[OutboxKind]FenceKeys{}
+	for _, keys := range FencedKinds() {
+		stamped[keys.Kind] = keys
+	}
+	for _, kind := range slices.Sorted(maps.Keys(decided)) {
+		fence := decided[kind]
+		fenced := false
+		if fence.payload != nil {
+			_, fenced = FenceOf(fence.payload)
+		}
+		keys, listed := stamped[kind]
+		switch {
+		case fenced != listed:
+			t.Errorf("%s: its delivery is fenced %t, and the conversion stamps it %t", kind, fenced, listed)
+		case listed && (!keys.Generation || keys.Entry != (fence.entry.field != "") || keys.PodUID != (fence.target.field == podUIDField)):
+			t.Errorf("%s: the conversion stamps %+v, want the generation, the entry %t and the pod %t decided here", kind, keys,
+				fence.entry.field != "", fence.target.field == podUIDField)
+		}
+	}
+}
+
+// No claim release carries a fence, of either shape (the architect's ruling of 2026-11-28 on
+// dispatch://INFRA-4730, item 2): the row of a move out of the workflow names no session, and the
+// row of a session the daemon left behind names that session (ClaimRelease.Session, which store's
+// putClaim queues in the claim write that moved the claim off it). Each is judged on the issue's
+// record when it runs (the daemon's releaseClaim), so a late one harms nothing of a run that
+// returned to work. FenceOf says each carries none, Fenced stamps nothing on it, NewOutboxRow takes
+// it with no run and no entry and encodes nothing beside the session it names, and no later run or
+// phase entry makes it late (LateAt).
+func TestNoClaimReleaseCarriesAFence(t *testing.T) {
+	now := time.Date(2026, 11, 28, 3, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		release ClaimRelease
+		encoded string
+	}{
+		{name: "the release of a move", release: ClaimRelease{}, encoded: `{}`},
+		{name: "the release of a left session", release: ClaimRelease{Session: "ses_x"}, encoded: `{"session":"ses_x"}`},
+	} {
+		if fence, carries := FenceOf(tc.release); carries || fence != (Fence{}) {
+			t.Errorf("FenceOf(%s) = %+v, %t, want no fence: a claim release is judged on the issue's record when it runs", tc.name, fence, carries)
+		}
+		if stamped := Fenced(tc.release, Fence{Generation: 2, Entry: 3, PodUID: "pod-uid-1"}); stamped != OutboxPayload(tc.release) {
+			t.Errorf("Fenced(%s) = %#v, want %#v as it was: a claim release carries no part of a fence", tc.name, stamped, tc.release)
+		}
+		switch row, err := NewOutboxRow("LEGION-208", tc.release, now); {
+		case err != nil:
+			t.Errorf("NewOutboxRow refuses %s, which names no run and no entry: %v", tc.name, err)
+		case row.Kind != OutboxKindClaimRelease || string(row.Payload) != tc.encoded:
+			t.Errorf("%s queues as %s %s, want claim_release %s", tc.name, row.Kind, row.Payload, tc.encoded)
+		}
+		for _, at := range []Fence{{Generation: 1, Entry: 1}, {Generation: 1, Entry: 2}, {Generation: 2, Entry: 1}, {Generation: 9, Entry: 9}} {
+			if LateAt(at, tc.release) {
+				t.Errorf("%s is late at %+v, want it run at every run and phase entry", tc.name, at)
+			}
+		}
+	}
+}
+
+// The first boot's conversion stamps the fence its kind carries on each unfinished row the release
+// before queued without one (StampReleaseBeforeFences), and none on a claim release of either
+// shape: {}, as main's daemon queues a move's, and {"session": …}, as its #5908 queues a left
+// session's. No claim release carries a fence (FenceOf). Beside them, a message the release before
+// queued without its fence is stamped with the run and the phase entry the issue stands at, so the
+// stamp read the issue's rows and passed both claim releases over.
+func TestTheConversionStampsNoFenceOnAClaimRelease(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-208")
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+	})
+	queue := func(kind OutboxKind, payload string) int64 {
+		t.Helper()
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, $2, $3::jsonb, 0, now(), '') returning id`, string(kind), issue.Key, payload).Scan(&id); err != nil {
+			t.Fatalf("queue the %s row %s as main's daemon queued it: %v", kind, payload, err)
+		}
+		return id
+	}
+	move := queue(OutboxKindClaimRelease, `{}`)
+	left := queue(OutboxKindClaimRelease, `{"session": "ses-left"}`)
+	message := queue(OutboxKindDispatchMessage, `{"body": "The checks of the head settled."}`)
+
+	var stamped int64
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		stamped, err = StampReleaseBeforeFences(ctx, tx, records, "LEGION")
+		must(t, err)
+	})
+	read := func(id int64) string {
+		t.Helper()
+		var payload string
+		if err := st.Pool().QueryRow(ctx, `select payload::text from outbox where id = $1`, id).Scan(&payload); err != nil {
+			t.Fatalf("read the row %d: %v", id, err)
+		}
+		return payload
+	}
+	for _, release := range []struct {
+		name string
+		id   int64
+		want string
+	}{
+		{name: "the move's claim release", id: move, want: `{}`},
+		{name: "the left session's claim release", id: left, want: `{"session": "ses-left"}`},
+	} {
+		got := read(release.id)
+		if got != release.want {
+			t.Errorf("%s after the conversion = %s, want %s as it was queued: no claim release carries a fence", release.name, got, release.want)
+		}
+		if _, err := DecodeOutboxPayload(OutboxRow{ID: release.id, Kind: OutboxKindClaimRelease, Issue: issue.Key, Payload: []byte(got)}); err != nil {
+			t.Fatalf("decode %s as the executor does: %v", release.name, err)
+		}
+	}
+	if got, want := read(message), `{"body": "The checks of the head settled.", "entry": 1, "generation": 3}`; got != want {
+		t.Errorf("the message after the conversion = %s, want %s: the run and the phase entry %s stands at", got, want, issue.Key)
+	}
+	if stamped != 1 {
+		t.Errorf("the conversion stamped %d rows, want the message's alone", stamped)
+	}
+}
+
 func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 	now := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -470,7 +929,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a status write of a kind nobody gave a rule", payload: StatusWrite{Kind: "escalation", Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind "escalation"`},
 		{name: "empty status", payload: StatusWrite{Kind: OrdinaryStatusRow}, reason: "empty status"},
 		{name: "a reason on a re-assertion", payload: StatusWrite{Kind: ReassertStatusRow, Status: "in_progress", ObservedStatus: "done", Reason: "set back"}, reason: "only a done write or the workflow's own move does"},
-		{name: "a reason on a hand-over", payload: StatusWrite{Kind: HandOverStatusRow, Status: "todo", ObservedStatus: "in_progress", HandOverTree: "LEGION-200", HandOverLinger: 3, Reason: "handed over"}, reason: "only a done write or the workflow's own move does"},
+		{name: "a status write after no row", payload: StatusWrite{Kind: OrdinaryStatusRow, Status: "todo", ObservedStatus: "backlog", After: -1}, reason: "which no row is"},
 		{name: "unknown notice", payload: Notice{Kind: "unknown"}, reason: "unknown notice kind"},
 		{name: "a triage notice for an architect", payload: Notice{Kind: TriageNotice}, reason: "unknown notice kind"},
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},
@@ -485,6 +944,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
 		{name: "a memory-guard-kill notice for an architect", payload: Notice{Kind: MemoryGuardKillNotice, Role: claim.RoleController}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
+		{name: "a status-scope notice for an architect", payload: Notice{Kind: StatusScopeNotice}, reason: "unknown notice kind"},
+		{name: "a status-scope notice naming nothing", payload: ControllerNotice{Kind: StatusScopeNotice}, reason: "a status-scope notice carries the reason"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
 		{name: "a decision on a basis notice", payload: Notice{Kind: "basis-ended", Ref: "dispatch://LEGION-100/spec", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
@@ -826,7 +1287,7 @@ func TestAMessageArtifactIsRefusedUnlessDispatchWouldFileItUnderItsName(t *testi
 		post("r", strings.Repeat("x", MaxMessageArtifactBytes)),
 		{Body: "a message that links no document"},
 	} {
-		if _, err := NewOutboxRow("LEGION-208", payload, now); err != nil {
+		if _, err := unrecordedRow("LEGION-208", payload, now); err != nil {
 			t.Errorf("NewOutboxRow of a message whose artifact Dispatch takes as named = %v, want it queued", err)
 		}
 	}
@@ -1089,7 +1550,8 @@ func TestATickNoticeCarriesItsOpenCapabilitiesThroughTheRow(t *testing.T) {
 		{"a slot-free wake", ControllerNotice{Kind: SlotFreeNotice}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row, err := NewOutboxRow("LEGION", tc.payload, now)
+			payload := Fenced(tc.payload, FirstFence)
+			row, err := NewOutboxRow("LEGION", payload, now)
 			if err != nil {
 				t.Fatalf("NewOutboxRow: %v", err)
 			}
@@ -1100,8 +1562,8 @@ func TestATickNoticeCarriesItsOpenCapabilitiesThroughTheRow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DecodeOutboxPayload: %v", err)
 			}
-			if !reflect.DeepEqual(got, tc.payload) {
-				t.Fatalf("payload = %#v, want %#v", got, tc.payload)
+			if !reflect.DeepEqual(got, payload) {
+				t.Fatalf("payload = %#v, want %#v", got, payload)
 			}
 		})
 	}
@@ -1117,6 +1579,7 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 		ControllerNotice{Kind: ParkedDecisionNotice, Decision: DecisionAskReply, Root: "LEGION-1", Ref: "dispatch://LEGION-2/comment/c-1", Actor: "user:alice"},
 		Notice{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
 	} {
+		payload := Fenced(payload, FirstFence)
 		row, err := NewOutboxRow("LEGION-1", payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
@@ -1135,7 +1598,8 @@ func TestAParkedDecisionKeepsItsDecisionThroughTheRow(t *testing.T) {
 // design-changes-requested one (ChangesRequest), and the parked-decision controller notice that
 // relays either spec decision as the notice did, whose publish asks again whether the review stands
 // when it relays a changes request. Every other kind is refused them
-// (TestNewOutboxRowRefusesInvalidPayloads).
+// (TestNewOutboxRowRefusesInvalidPayloads). Each names the fence it was queued at, as every notice
+// the outbox takes does (Fence).
 func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
 	now := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
 	review := EventMark{Seq: 8, At: now.Add(-time.Hour)}
@@ -1154,6 +1618,7 @@ func TestAReviewsMarkAndDocumentTravelOnTheNoticesOfAReview(t *testing.T) {
 			Root: "LEGION-1", Ref: spec, Actor: "user:alice", Version: 3, Review: review,
 			Artifact: document},
 	} {
+		payload = Fenced(payload, FirstFence)
 		row, err := NewOutboxRow("LEGION-1", payload, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%#v): %v", payload, err)
@@ -1442,6 +1907,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
 				StatusNotTakenYet + " " + EndChildRule},
+		{Kind: ReparentedNotice, Phase: phase.Planning, To: "LEGION-300",
+			Reason: "LEGION-500 moved from under LEGION-208 to under LEGION-300 in Dispatch; its planning phase goes on."},
 		{Kind: WorkspaceKeptNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,
@@ -1478,6 +1945,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	}
 
 	for _, notice := range every {
+		// The notice carries the fence its writer gives it (Fenced), and so does what the publish
+		// keeps of it: the re-held copy is that notice's, of its row's run and phase entry.
+		notice := Fenced(notice, FirstFence).(Notice)
 		t.Run(string(notice.Kind), func(t *testing.T) {
 			if _, err := NewOutboxRow("LEGION-208", notice, paced); err != nil {
 				t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)

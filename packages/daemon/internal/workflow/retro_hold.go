@@ -16,17 +16,17 @@ import (
 // in R8's order) where issue moves into the retro (to) and its task's last step is not the owner's
 // sign-off, and no hold for every other move. A parent is accepted only once checks across the
 // issues under it prove each of its requirements (dispatch://INFRA-3320 R8): after the issues
-// beneath it in its tree, the roots of any tree that rest on its approval, and its open Dispatch
-// children. The owner's sign-off is refused while any of them holds it (acceptanceHolds), so a
-// task whose last step is the sign-off passes into its retro with none of them holding it. A task
-// whose last step is another has no such refusal before its retro: a task with no step
-// acceptance:owner, and a task whose sign-off stands before another step (`implementer
-// acceptance:owner reviewer`), where an issue may come to hold the parent after the sign-off. Such
-// a parent is held before its retro instead (transition), from retro for its children
-// (record.HoldForChildren), until none of the three holds it (StartHeldRetro). The hold stands in
-// place of the retro, which keeps no slot (record.KeepsSlot reads record.StandsAt), so the parent
-// holds none of the slots its children may need. An issue with no plan rows walks today's line
-// (todaysWalk), whose last step is the owner's sign-off, so it is never held so.
+// beneath it on its Dispatch chain, the roots of any tree that rest on its approval, and its open
+// Dispatch children. The owner's sign-off is refused while any of them holds it
+// (acceptanceHolds), so a task whose last step is the sign-off passes into its retro with none of
+// them holding it. A task whose last step is another has no such refusal before its retro: a task
+// with no step acceptance:owner, and a task whose sign-off stands before another step
+// (`implementer acceptance:owner reviewer`), where an issue may come to hold the parent after the
+// sign-off. Such a parent is held before its retro instead (transition), from retro for its
+// children (record.HoldForChildren), until none of the three holds it (StartHeldRetro). The hold
+// stands in place of the retro, which keeps no slot (record.KeepsSlot reads record.StandsAt), so
+// the parent holds none of the slots its children may need. An issue with no plan rows walks
+// today's line (todaysWalk), whose last step is the owner's sign-off, so it is never held so.
 func (e *Engine) retroHeld(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, to phase.Phase) (acceptanceHold, error) {
 	steps := w.steps()
 	if to != phase.Retro || len(steps) == 0 || steps[len(steps)-1] == phase.Accepting {
@@ -118,24 +118,29 @@ func (e *Engine) tellRetroHeld(ctx context.Context, tx pgx.Tx, parent record.Iss
 // hold (planHoldRefusal) and the reason posted beside the status a todo on a held root is set back
 // to (releaseHeldRoot). held is the first of the three holds on its acceptance that holds it
 // (acceptanceHeld). With none holding it its tree alone holds it, since the settle of every fact
-// and every admission pass release such a parent in a tree that runs (releaseHeldParents, admit's
-// childrenWaits): the tree lingers after its root left the workflow, where lingers says so, and
-// otherwise its root waits in the line for the promotion that opens it, a hand-over among them
-// (record.TreeRuns, record.QueuedRoot).
+// and every admission pass release such a parent where its tree runs (releaseHeldParents, admit's
+// childrenWaits): tree is the tree the state names for parent on its Dispatch chain
+// (record.Chains.StateTree), whose gate root runs nothing yet, as R4's rule reads it
+// (record.TreeRuns): it waits in the line for the slot it does not hold.
 type heldParentWait struct {
-	parent  record.Issue
-	held    acceptanceHold
-	lingers bool
+	parent record.Issue
+	held   acceptanceHold
+	tree   string
 }
 
-// heldParentWaitOf decides why parent, held before its retro, still waits.
+// heldParentWaitOf decides why parent, held before its retro, still waits, on the Dispatch chains
+// of its project read once with parent named (record.ReadChains): the first hold on its acceptance
+// that holds it (acceptanceHeldOn), and where none does, its tree on those chains.
 func (e *Engine) heldParentWaitOf(ctx context.Context, tx pgx.Tx, parent record.Issue) (heldParentWait, error) {
-	held, err := e.acceptanceHeld(ctx, tx, parent)
+	chains, err := record.ReadChains(ctx, tx, e.store, parent.Project, []string{parent.Key})
+	if err != nil {
+		return heldParentWait{}, err
+	}
+	held, err := e.acceptanceHeldOn(ctx, tx, parent, chains)
 	if err != nil || held.code != "" {
 		return heldParentWait{parent: parent, held: held}, err
 	}
-	lingers, err := record.TreeLingers(ctx, e.store, tx, parent.Tree)
-	return heldParentWait{parent: parent, lingers: lingers}, err
+	return heldParentWait{parent: parent, tree: chains.StateTree(parent.Key)}, nil
 }
 
 // refusal is the answer to a release of the hold, which would start the retro's role early: the
@@ -145,7 +150,7 @@ func (w heldParentWait) refusal() *intake.Refusal {
 	if w.held.code != "" {
 		return intake.RetryOfHeldParent(w.parent.Key, w.held.holding())
 	}
-	return intake.RetryOfHeldParentUntilTreeRuns(w.parent.Key, w.parent.Tree, w.lingers)
+	return intake.RetryOfHeldParentUntilTreeRuns(w.parent.Key, w.tree)
 }
 
 // reason is the reason posted beside the status a todo on the held root is set back to, which the
@@ -157,47 +162,53 @@ func (w heldParentWait) reason() string {
 	if w.held.code != "" {
 		return intake.HeldParentWaitsForChildren(w.parent.Key, w.held.holding())
 	}
-	return intake.HeldParentWaitsForTree(w.parent.Key, w.parent.Tree, w.lingers)
+	return intake.HeldParentWaitsForTree(w.parent.Key, w.tree)
 }
 
 // releaseHeldParents is where a parent held before its retro (record.HoldForChildren) is released
 // at the settle of every fact and of every other transaction the daemon settles (SettleFact,
-// intake.OpenSettlers): each such parent of each tree in which the fact wrote an issue
-// (record.IssuesWritten), or which holds an ancestor a root stopped resting on in the fact
-// (restEnded), has its retro started where none of the three holds on its acceptance holds it and
-// its tree runs, and is told a hold no notice of its run has named where one does
-// (StartHeldRetro). Every change of what stands beneath a parent is the write of an issue of the
-// parent's tree: an issue beneath it that leaves the workflow (leave), a re-parent in Dispatch
-// that moves one out from under it (admit's recordObservation), the parent itself handed over as a
-// root of its own with its hold and its plan once its old root's linger closes (admit's readmit),
-// and the promotion or the reopen of a root, which makes a tree that ran nothing run again. A root
-// that rests on the parent's approval stops resting on it when it leaves the workflow or when its
-// step's wait on the parent's approval request ends, each of which names the parent (restEnded).
-// The end of a hold over a Dispatch child, a child never released among them, changes the daemon's
-// mirror of Dispatch alone, which the admission pass reads for every held parent of its project
-// (admit's childrenWaits, StartHeldRetro). So nothing leaves a parent held with nothing holding it
-// in a tree that runs past the next settle or pass: such a parent stands in a tree that runs
-// nothing, whose root lingers or waits in the line, and the hold's refusal of a retry names that
-// wait (planHoldRefusal) where it names no issue that holds it. Each tree is read once, and a fact
-// that wrote no issue and ended no rest reads nothing.
+// intake.OpenSettlers) that wrote an issue (record.IssuesWritten) or in which a root stopped
+// resting on an ancestor (restEnded): each such parent of each project of a written issue or of
+// such an ancestor has its retro started where none of the three holds on its acceptance holds it
+// and its tree runs, and is told a hold no notice of its run has named where one does
+// (StartHeldRetro). Every change of what stands beneath a parent writes an issue: an issue beneath
+// it that leaves the workflow (leave), a change of parent in Dispatch that moves one out from under
+// it, which admission records on the moved issue (admit's recordObservation), and the promotion or
+// the return to work of a gate root, which makes a tree that ran nothing run again. A change of
+// parent leaves the moved issue on a chain that no longer passes through the parent it left, so
+// the parents are read by project, and not from the chains of the written issues: the issues of
+// the project held before their retro, and those alone (record.Store.HeldForChildrenIssues), so a
+// settle costs one read and the work of the parents held so, whatever the number of issues at
+// work. A root that rests on the parent's approval stops resting on it when it leaves the workflow
+// or when its step's wait on the parent's approval request ends, each of which names the parent
+// (restEnded). The end of a hold over a Dispatch child, a child never released among them, changes
+// the daemon's mirror of Dispatch alone, which the admission pass reads for every held parent of
+// its project (admit's childrenWaits, StartHeldRetro). So nothing leaves a parent held with nothing
+// holding it in a tree that runs past the next settle or pass: such a parent stands in a tree that
+// runs nothing, whose gate root waits in the line, and the hold's refusal of a retry names that
+// wait (planHoldRefusal) where it names no issue that holds it. Each project is read once, and a
+// fact that wrote no issue and ended no rest reads nothing.
 func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []string) error {
-	var trees []string
-	for _, key := range written {
-		issue, err := e.store.Issue(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		if issue != nil && !slices.Contains(trees, issue.Tree) {
-			trees = append(trees, issue.Tree)
+	if len(written) == 0 {
+		return nil
+	}
+	issues, err := e.store.IssuesByKey(ctx, tx, written)
+	if err != nil {
+		return err
+	}
+	var projects []string
+	for _, issue := range issues {
+		if !slices.Contains(projects, issue.Project) {
+			projects = append(projects, issue.Project)
 		}
 	}
-	for _, tree := range trees {
-		members, err := e.store.TreeIssues(ctx, tx, tree)
+	for _, project := range projects {
+		held, err := e.store.HeldForChildrenIssues(ctx, tx, project)
 		if err != nil {
 			return err
 		}
-		for _, member := range members {
-			if _, err := e.StartHeldRetro(ctx, tx, member); err != nil {
+		for _, parent := range held {
+			if _, err := e.StartHeldRetro(ctx, tx, parent); err != nil {
 				return err
 			}
 		}
@@ -206,18 +217,20 @@ func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []st
 }
 
 // StartHeldRetro starts the retro of parent where it is held before it (record.HoldForChildren),
-// none of the three holds on its acceptance holds it (acceptanceHeld) and its tree runs
-// (record.TreeRunning), in the transaction whose settle or admission pass finds it so, and answers
+// its tree runs — its gate root on its Dispatch chain (record.Chains.GateRoot) runs by R4's rule
+// (gateRootRuns, record.TreeRuns), on the chains of its project read once with parent named
+// (record.ReadChains) — and none of the three holds on its acceptance holds it on those chains
+// (acceptanceHeldOn), in the transaction whose settle or admission pass finds it so, and answers
 // whether it started it; every other issue it leaves as it stands. Where a hold still holds the
 // parent, its owner is told it if no notice of the run has named it yet (tellRetroHeld). A tree
-// that runs nothing, one whose root lingers or waits in the line for its tree to open, starts no
-// retro, as it runs no transition: the promotion or the reopen that runs it again writes its root,
-// and that settle starts the retro. The settle reads each held parent of each tree the fact wrote
-// (releaseHeldParents). The admission pass reads, with nobody acting, a held parent of its project
-// whose holds its own facts show changed or gone (admit's childrenWaits), because the end of a hold
-// over a Dispatch child, a child closed, moved to icebox or moved out from under the parent, never
-// released or not, and the start of one, change the daemon's mirror of Dispatch alone, which no
-// settle of the engine reads.
+// that runs nothing, one whose gate root waits in the line for its slot, or one on a chain with no
+// gate root, starts no retro and tells nothing, as it runs no transition: the promotion or the
+// return that runs it again writes its gate root, and that settle starts the retro. The settle
+// reads each held parent of each project of an issue the fact wrote (releaseHeldParents). The
+// admission pass reads, with nobody acting, a held parent of its project whose holds its own facts
+// show changed or gone (admit's childrenWaits), because the end of a hold over a Dispatch child, a
+// child closed, moved to icebox or moved out from under the parent, never released or not, and the
+// start of one, change the daemon's mirror of Dispatch alone, which no settle of the engine reads.
 //
 // The hold is cleared and parent stands in its retro, where its task already stands ({retro 0},
 // moveTask at the hold). The retro's Dispatch status is queued through Engine.status, since the
@@ -232,11 +245,16 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if !record.HeldForChildren(parent) || !record.InWorkflow(parent) {
 		return false, nil
 	}
-	root, err := e.store.Issue(ctx, tx, parent.Tree)
-	if err != nil || root == nil {
+	chains, err := record.ReadChains(ctx, tx, e.store, parent.Project, []string{parent.Key})
+	if err != nil {
 		return false, err
 	}
-	if running, err := record.TreeRunning(ctx, e.store, tx, *root, e.cfg.Steps); err != nil || !running {
+	gateRoot := chains.GateRoot(parent.Key)
+	root, recorded := chains.Record(gateRoot)
+	if !recorded {
+		return false, nil
+	}
+	if running, err := e.gateRootRuns(ctx, tx, root, gateRoot); err != nil || !running {
 		return false, err
 	}
 	w, err := e.walk(ctx, tx, parent)
@@ -248,7 +266,7 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if !w.Stored {
 		return false, nil
 	}
-	held, err := e.acceptanceHeld(ctx, tx, parent)
+	held, err := e.acceptanceHeldOn(ctx, tx, parent, chains)
 	if err != nil {
 		return false, err
 	}
@@ -280,7 +298,7 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.store.MarkIssueMoved(ctx, tx, parent.Key, e.now()); err != nil {
 		return false, err
 	}
-	e.logOnCommit(ctx, "workflow: nothing holds a parent held before its retro any longer, and its retro starts", "issue", parent.Key, "tree", parent.Tree,
+	e.logOnCommit(ctx, "workflow: nothing holds a parent held before its retro any longer, and its retro starts", "issue", parent.Key, "gate_root", gateRoot,
 		"task", w.Task, "act", "children_done", "from", phase.Held, "to", phase.Retro, "status", parent.Status)
 	// The parent now stands in its retro, so it is accepted (record.Accepted) as a pass into the
 	// retro makes it, and every step of another root that waits on it as an ancestor ends its wait

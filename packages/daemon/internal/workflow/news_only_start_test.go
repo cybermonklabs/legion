@@ -43,7 +43,7 @@ func TestAStartQueuedForNewsAloneIsNoStartOfItsPhase(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			failed := record.RoleRun{Queued: tc.queued, Claim: &record.RoleClaim{State: supervise.StateFailed, Tree: silent.root.Key}}
-			if got := StartFor(failed, silent.root, silent.issue.Generation, silent.issue.Phase); got == tc.starts {
+			if got := StartFor(failed, silent.issue.Generation, silent.issue.Phase); got == tc.starts {
 				t.Errorf("StartFor of a failed claim = %t with %s, want %t: a failed claim is brought back by a start of its phase alone", got, tc.name, !tc.starts)
 			}
 

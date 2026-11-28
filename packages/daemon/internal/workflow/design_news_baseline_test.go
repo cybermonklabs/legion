@@ -15,14 +15,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// toldVersions is the versions each told row of tree's issues holds, keyed `<issue>/<audience>`;
-// a row that knows no version holds an empty map.
+// toldVersions is the versions each told row of the issues of the tree of the gate root tree holds,
+// on the Dispatch chain (record.ReadTreeNewsFacts), keyed `<issue>/<audience>`; a row that knows no
+// version holds an empty map.
 func toldVersions(t *testing.T, pool *pgxpool.Pool, tree string) map[string]map[record.DesignStep]int {
 	t.Helper()
 	versions := map[string]map[record.DesignStep]int{}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		rows, err := record.NewStore().TreeTold(t.Context(), tx, tree)
-		for _, row := range rows {
+		facts, _, err := record.ReadTreeNewsFacts(t.Context(), record.NewStore(), tx, config.DesignGateRootIssues.Steps(), "LEGION", tree)
+		for _, row := range facts.Told {
 			versions[row.Issue+"/"+string(row.Audience)] = row.Versions
 		}
 		return err
@@ -130,13 +131,13 @@ func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, 
 var laterEntryTesterFails = intake.HandoffComplete{Generation: 1, Issue: laterEntryMember, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
 	HandoffRecord: "test-0", HandoffVersion: 1}
 
-// owedNewsOf is what record.OwedNews owes tree as the record holds it now, over the facts every
-// reader of a tree's news reads (record.TreeNewsFacts).
+// owedNewsOf is what record.OwedNews owes the tree of the gate root tree as the record holds it
+// now, over the facts every reader of a tree's news reads (record.ReadTreeNewsFacts).
 func owedNewsOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, tree string) record.TreeNews {
 	t.Helper()
 	var news record.TreeNews
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(t.Context(), record.NewStore(), tx, engine.cfg.Steps, tree)
+		facts, _, err := record.ReadTreeNewsFacts(t.Context(), record.NewStore(), tx, engine.cfg.Steps, "LEGION", tree)
 		if err != nil {
 			return err
 		}

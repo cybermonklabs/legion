@@ -83,11 +83,15 @@ func TestRigWorld(t *testing.T) {
 	})
 
 	// A root whose design gate is open, at its architect's launch: the start task its admission
-	// queues, and the catch-up its launch queues, which names the root and its backlog child.
+	// queues, and the catch-up its launch queues, which names the root and its child in Legion's
+	// work and not its backlog child: an owner's catch-up names the issues under it in Legion's
+	// work (R18 of dispatch://INFRA-3320).
 	t.Run("the owner", func(t *testing.T) {
 		world := rigOwnWorld()
-		backlog := "LEGION-2"
-		world.Issues = append(world.Issues, rigWorldIssue{Key: backlog, Title: "The rig's child", Parent: &world.Subject, Tree: world.Subject, Status: "backlog"})
+		backlog, working := "LEGION-2", "LEGION-3"
+		world.Issues = append(world.Issues,
+			rigWorldIssue{Key: backlog, Title: "The rig's child", Parent: &world.Subject, Tree: world.Subject, Status: "backlog"},
+			rigWorldIssue{Key: working, Title: "The rig's child at work", Parent: &world.Subject, Tree: world.Subject, Status: "todo"})
 		world.PullRequest = nil
 		world.Moment, world.Role = "owner", string(claim.RoleArchitect)
 		got := rigWorld(t, world)
@@ -111,8 +115,11 @@ func TestRigWorld(t *testing.T) {
 		for _, issue := range notice.CatchUp.Issues {
 			keys = append(keys, issue.Key)
 		}
-		if !slices.Contains(keys, world.Subject) || !slices.Contains(keys, backlog) {
-			t.Errorf("the catch-up names %v, want the root %s and its backlog child %s", keys, world.Subject, backlog)
+		if !slices.Contains(keys, world.Subject) || !slices.Contains(keys, working) {
+			t.Errorf("the catch-up names %v, want the root %s and its child at work %s", keys, world.Subject, working)
+		}
+		if slices.Contains(keys, backlog) {
+			t.Errorf("the catch-up names %v, want no %s: a backlog child is out of Legion's work (R18 of dispatch://INFRA-3320)", keys, backlog)
 		}
 	})
 }
@@ -274,8 +281,9 @@ func writeRigWorldAnswer(t *testing.T, path string, answer rigWorldAnswer) {
 //   - the engine is returnEngine's, for the request's project, the design-gate steps of a
 //     deployment that leaves `gates.design` unset (config.Gates.Steps), the request's repository
 //     and the request's workspace, which WorkspaceDir answers for every issue;
-//   - each issue is recorded at its phase and status, each root with its tree's lifecycle, then
-//     the gate and the subject's pull request;
+//   - each issue is recorded at its phase and status, each root marked holding its own gate as
+//     its admission marks it (record.Store.MarkHoldsGate), then the gate and the subject's pull
+//     request;
 //   - a plan is given as register_plan gives it (intake.PlanGiven), at version 2, whose one task
 //     is the request's id and text;
 //   - a subject at admitted with a plan, or at a step's moment, starts its first phase as the
@@ -300,11 +308,8 @@ func rigWorld(t *testing.T, req rigWorldRequest) rigWorldAnswer {
 		}
 		seedIssue(t, pool, record.Issue{Key: issue.Key, Tree: issue.Tree, Project: req.Project, Title: issue.Title, Parent: issue.Parent,
 			Phase: at, Generation: 1, Status: issue.Status, DispatchStatus: issue.Status, Rank: fmt.Sprintf("R%04d", i),
-			LastDispatchSeq: 1, HandedOver: claim.IsTreeRoot(issue.Key, issue.Tree),
+			LastDispatchSeq: 1, HandedOver: claim.IsTreeRoot(issue.Key, issue.Tree), HoldsGate: claim.IsTreeRoot(issue.Key, issue.Tree),
 			Repo: req.Repository, DefaultBranch: req.DefaultBranch, GitHubRepo: req.Repository})
-		if claim.IsTreeRoot(issue.Key, issue.Tree) {
-			seedTreeLifecycle(t, pool, issue.Key)
-		}
 	}
 	if gate := req.Gate; gate != nil {
 		seeded := record.DesignGate{Issue: gate.Issue, Step: record.DesignStep(gate.Step), ArtifactID: gate.ArtifactID,
@@ -325,7 +330,13 @@ func rigWorld(t *testing.T, req rigWorldRequest) rigWorldAnswer {
 		walk.givePlan(subject)
 	}
 	if subject.Phase == phase.Admitted && (req.Plan != nil || req.Moment == "step") {
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.StartFirstPhase(ctx, tx, subject, nil) })
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			chains, err := record.ReadChainsOf(ctx, tx, engine.store, subject.Project, []string{subject.Key})
+			if err != nil {
+				return err
+			}
+			return engine.StartFirstPhase(ctx, tx, subject, chains, nil)
+		})
 	}
 	for i, step := range req.Earlier {
 		walk.pass(i+1, step)

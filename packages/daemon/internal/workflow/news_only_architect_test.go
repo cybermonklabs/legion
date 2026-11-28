@@ -91,7 +91,7 @@ func TestNewsAloneHoldsNoRootArchitectStartBack(t *testing.T) {
 		t.Run("a failed claim with "+tc.name, func(t *testing.T) {
 			failed := record.RoleRun{Queued: []record.QueuedSupervise{tc.queued},
 				Claim: &record.RoleClaim{State: supervise.StateFailed, Tree: root.Key, GivenEntry: rowEntry}}
-			if got := ArchitectRelaunchOf(failed, root, time.Time{}, time.Now()); got != tc.want {
+			if got := ArchitectRelaunchOf(failed, time.Time{}, time.Now()); got != tc.want {
 				t.Fatalf("ArchitectRelaunchOf = %d, want %d: %s", got, tc.want, tc.why)
 			}
 		})

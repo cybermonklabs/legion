@@ -7,40 +7,27 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
-	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// readyClaimOf drives token's launched claim through its shim's hello, its agent's registration and
-// its ready, at the claim's current generation, on the session the claim keeps under its role.
-func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.Role) {
-	t.Helper()
-	readyClaimAs(t, sup, token, role, "ses-"+string(role))
-}
-
-// readyClaimAs is readyClaimOf on session, whose file is named for it: the daemon holds a session's
-// id and its file's path and name to the first claim of the project that recorded them
-// (supervise's holdRecorded), so a test with two claims of one role names the second's session
-// itself, and so its file.
+// readyClaimAs drives token's launched claim through its shim's hello, its agent's registration
+// and its ready, at the claim's current generation, on session, whose file is named for it: the
+// daemon holds a session's id and its file's path and name to the first claim of the project that
+// recorded them (supervise's holdRecorded), so a test with two claims of one role names the
+// second's session itself, and so its file.
 func readyClaimAs(t *testing.T, sup *supervisor, token claim.Token, role claim.Role, session string) {
 	t.Helper()
 	machine, ok := sup.Machine(token)
@@ -169,45 +156,6 @@ func TestABootRuleResumeThatSpendsTheLaunchBudgetFinishes(t *testing.T) {
 	if got := machine.Claim().State; got != supervise.StateFailed || len(resumesOf(rt, tester)) != limit || outboxRows(t, pool) != 0 {
 		t.Fatalf("after six ticks the tester is %s after %d launches with %d rows left; want failed after its budget of %d launches and the row finished",
 			got, len(resumesOf(rt, tester)), outboxRows(t, pool), limit)
-	}
-}
-
-// The linger's suspension of a claim in a turn waits for that turn to end. An architect's sign-off,
-// which moves its tree into linger, is a tool call inside a turn that goes on after it: stopping it
-// at the stop timeout cuts off what the turn was doing. The linger's own expiry, which closes the
-// tree whatever its claims are doing, bounds the wait.
-func TestTheLingersSuspensionWaitsForTheArchitectsTurnToEnd(t *testing.T) {
-	t.Parallel()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	until := time.Now().Add(time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, root)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	// Real timers, so the held suspension's stop timeout runs as it does in a daemon.
-	sup.deps.Clock = supervise.RealClock{}
-	architect := launchedClaim(t, sup, root.Key, root.Key, claim.RoleArchitect)
-	machine, _ := sup.Machine(architect)
-	ctx := context.Background()
-	// The architect is in a turn: the one whose sign-off closed its tree.
-	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: architect}); err != nil {
-		t.Fatalf("the architect's turn: %v", err)
-	}
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, project: "legion", now: time.Now}
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "suspend", Tree: root.Tree, Role: claim.RoleArchitect,
-		Generation: 1, Reason: "the tree of LEGION-208 lingers"}, time.Now()))
-
-	if err := runner.RunOnce(ctx); err != nil {
-		t.Fatalf("run the linger's suspend: %v", err)
-	}
-	time.Sleep(3 * sup.deps.Timeouts.Stop)
-	if got := machine.Claim().State; got != supervise.StateWorking || len(rt.CallsOf("Suspend")) != 0 {
-		t.Fatalf("three stop timeouts into the turn the architect is %s after %d suspensions, want its turn still running",
-			got, len(rt.CallsOf("Suspend")))
-	}
-	endTurn(ctx, t, machine, architect)
-	if got := machine.Claim().State; got != supervise.StateSuspended || len(rt.CallsOf("Suspend")) != 1 {
-		t.Fatalf("after its turn the architect is %s after %d suspensions, want suspended once", got, len(rt.CallsOf("Suspend")))
 	}
 }
 
@@ -353,185 +301,14 @@ func TestTheControllerKeeperResumesEveryControllerButOneTheOperatorSuspended(t *
 	}
 }
 
-// readmissionRig is a lingering tree, LEGION-208, whose child LEGION-209 was implementing when the
-// tree closed: the root's architect and the child's implementer each ran, and each was suspended,
-// suspend as the case says. The returned function re-admits the tree and runs what it queued.
-func readmissionRig(t *testing.T, suspend func(*supervisor, claim.Token)) (rt *fake.Runtime, sup *supervisor, architect, implementer claim.Token, readmit func(), tick func(time.Duration)) {
-	t.Helper()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(time.Hour)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U",
-		LingerUntil: &until, LastDispatchSeq: 5, HandedOver: true}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "Child",
-		Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
-	sup, rt = newOutboxSupervisor(t, "legion", t.TempDir())
-	architect = launchedClaim(t, sup, root.Key, root.Key, claim.RoleArchitect)
-	implementer = launchedClaim(t, sup, root.Key, "LEGION-209", claim.RoleImplementer)
-	suspend(sup, architect)
-	suspend(sup, implementer)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
-	var clock time.Time
-	runner := &outbox{
-		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		githubAPI: newBranchGitHub(t, nil, branchExists).url,
-		dispatch:  &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}, handlers: []intake.Handler{engine, admission},
-		now: func() time.Time { return clock }, log: quietLogger(),
-		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
-			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
-		},
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { return nil },
-	}
-	tick = func(by time.Duration) {
-		t.Helper()
-		clock = time.Now().Add(by)
-		if err := runner.RunOnce(ctx); err != nil {
-			t.Fatalf("run the outbox: %v", err)
-		}
-		for _, token := range []claim.Token{architect, implementer} {
-			machine, _ := sup.Machine(token)
-			machine.Wait()
-		}
-	}
-	readmit = func() {
-		t.Helper()
-		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "todo-again", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 6, Type: "issue.updated", Status: "todo",
-			Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
-			t.Fatalf("apply the todo: %v", err)
-		}
-		// The re-admission writes the mid-phase child's start owing a slot (admit's
-		// startMidPhaseMembers through workflow.StartOrOwe), and that row is written after this
-		// pass read its waiting line, so the slot it waits for is the next pass's to grant. Every
-		// fact and every tick makes such a pass; here the controller's tick is it.
-		if _, err := intake.ApplyFact(ctx, pool, "controller", "tick-after-the-readmission", intake.ControllerTick{}, engine, admission); err != nil {
-			t.Fatalf("apply the tick that gives the child its slot: %v", err)
-		}
-		// The first run creates the branches the starts wait for; the second runs the starts.
-		tick(0)
-		tick(0)
-	}
-	return rt, sup, architect, implementer, readmit, tick
-}
-
-// Re-admitting a tree whose claims the daemon suspended when the tree closed resumes them: the
-// root's architect, and the worker of the child's own phase, each relaunch their sessions, rather
-// than the tree inheriting claims that never run again.
-func TestReadmissionResumesTheClaimsTheTreesCloseSuspended(t *testing.T) {
-	t.Parallel()
-	rt, sup, architect, implementer, readmit, _ := readmissionRig(t, func(sup *supervisor, token claim.Token) {
-		machine, _ := sup.Machine(token)
-		if err := machine.Handle(context.Background(), supervise.RequestSuspend{Claim: token, Reason: "the tree of LEGION-208 lingers", By: supervise.SuspendedByDaemon}); err != nil {
-			t.Fatalf("the linger's suspend of %s: %v", token, err)
-		}
-	})
-	readmit()
-	for _, token := range []claim.Token{architect, implementer} {
-		machine, _ := sup.Machine(token)
-		if got := machine.Claim().State; got != supervise.StateLaunching || len(resumesOf(rt, token)) != 1 {
-			t.Fatalf("after re-admission %s is %s with %d resumes, want its session relaunched once", token, got, len(resumesOf(rt, token)))
-		}
-	}
-}
-
-// A root parked after its architect exhausted the launch budget keeps that failed claim and its
-// session into re-admission. Forgetting that stopped claim's session before the root is admitted
-// again makes the workflow start a fresh architect rather than repeat the failed resume. The
-// re-admission relaunches every role of each member it carries (admit's startMidPhaseMembers),
-// so the architect's own launch is read out of the calls by its claim rather than counted
-// against their number.
-func TestReadmissionSpawnsAFreshArchitectAfterForgettingItsSession(t *testing.T) {
-	t.Parallel()
-	rootArchitect := mustClaimToken(t, "LEGION-208", claim.RoleArchitect)
-	var rt *fake.Runtime
-	var sup *supervisor
-	var architect claim.Token
-	var readmit func()
-	rt, sup, architect, _, readmit, _ = readmissionRig(t, func(sup *supervisor, token claim.Token) {
-		machine, _ := sup.Machine(token)
-		if token == rootArchitect {
-			refused := fake.SpawnResult{Err: errors.New("the session table holds no such session")}
-			sup.deps.Runtime.(*fake.Runtime).ScriptResume(refused, refused, refused)
-			if err := machine.Handle(context.Background(), supervise.RuntimeObservation{Observation: runtime.Observation{
-				Locator: *machine.Claim().Locator, Kind: runtime.Gone,
-			}}); err == nil {
-				t.Fatal("the missing-session relaunches answered no error")
-			}
-			return
-		}
-		if err := machine.Handle(context.Background(), supervise.RequestSuspend{
-			Claim: token, Reason: "the tree of LEGION-208 is parked", By: supervise.SuspendedByDaemon,
-		}); err != nil {
-			t.Fatalf("park %s: %v", token, err)
-		}
-	})
-	architectMachine, _ := sup.Machine(architect)
-	if failed := architectMachine.Claim(); failed.State != supervise.StateFailed || failed.SessionFile == "" {
-		t.Fatalf("parked architect = %+v, want failed with its session still recorded", failed)
-	}
-	if err := architectMachine.Handle(context.Background(), supervise.RequestForgetSession{
-		Claim: architect, Session: architectMachine.Claim().Session, By: supervise.SuspendedByOperator,
-	}); err != nil {
-		t.Fatalf("forget the architect session: %v", err)
-	}
-	if cleared := architectMachine.Claim(); cleared.Session != "" || cleared.SessionFile != "" {
-		t.Fatalf("architect after forget = %+v, want no recorded session", cleared)
-	}
-	before := len(rt.CallsOf("Spawn"))
-	resumed := len(resumesOf(rt, architect))
-
-	readmit()
-
-	var fresh []fake.Call
-	for _, call := range rt.CallsOf("Spawn")[before:] {
-		if call.Spec.Claim == architect {
-			fresh = append(fresh, call)
-		}
-	}
-	if len(fresh) != 1 || fresh[0].Spec.ResumeSessionFile != "" {
-		t.Fatalf("re-admission spawned the architect %+v, want one fresh spawn carrying no session to resume", fresh)
-	}
-	if again := len(resumesOf(rt, architect)) - resumed; again != 0 {
-		t.Fatalf("re-admission resumed the architect %d times, want none: the session it would resume was forgotten", again)
-	}
-}
-
-// Re-admission does not override an operator's suspend: the starts it queues wait until the
-// operator resumes each claim, and then go on, the child's worker given the task to carry its
-// phase on.
-func TestReadmissionWaitsForTheOperatorToResumeTheClaimsItSuspended(t *testing.T) {
-	t.Parallel()
-	rt, sup, architect, implementer, readmit, tick := readmissionRig(t, func(sup *supervisor, token claim.Token) { operatorSuspend(t, sup, token) })
-	readmit()
-	for _, token := range []claim.Token{architect, implementer} {
-		machine, _ := sup.Machine(token)
-		if got := machine.Claim().State; got != supervise.StateSuspended || len(resumesOf(rt, token)) != 0 {
-			t.Fatalf("after re-admission %s is %s with %d resumes, want it held suspended for the operator", token, got, len(resumesOf(rt, token)))
-		}
-	}
-	for _, token := range []claim.Token{architect, implementer} {
-		machine, _ := sup.Machine(token)
-		if err := machine.Handle(context.Background(), supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
-			t.Fatalf("the operator's resume of %s: %v", token, err)
-		}
-	}
-	tick(2 * time.Minute)
-	machine, _ := sup.Machine(implementer)
-	if pending := machine.Claim().Pending; pending == nil || pending.Phase != phase.Implementing {
-		t.Fatalf("after the operator's resume the implementer holds %+v, want its phase's resume task", pending)
-	}
-}
-
-// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue,
-// the admission slot its phase keeps (record.KeepsSlot: none in accepting, retro or merging) and
-// its tree's lifecycle, as admission leaves a root it promoted — and each of claims, bound to that
-// lifecycle as the daemon binds a claim it admits, its pending delivery written too when it
-// carries one (AdmitClaim alone writes only the claim row). Each tree takes the next free slot,
-// so a test may seed more than one running tree.
+// seedWorkflowTree records root as an admitted tree of project in the store at dsn — the issue and
+// its row of the copy, as a reading of Dispatch leaves it (so the root stands on a known Dispatch
+// chain, record.Chains), the admission slot its phase keeps (record.KeepsSlot: none in accepting,
+// retro or merging), its tree's lifecycle and the root's own issue lifecycle, as admission leaves
+// a root it promoted — and each of claims, bound to its issue's lifecycle as the daemon binds a
+// claim it admits, that issue's lifecycle opened as admission opens it for each issue it starts,
+// and its pending delivery written too when it carries one (AdmitClaim alone writes only the
+// claim row). Each tree takes the next free slot, so a test may seed more than one running tree.
 func seedWorkflowTree(t *testing.T, dsn, project string, root record.Issue, claims ...supervise.Claim) {
 	t.Helper()
 	st, err := store.Open(context.Background(), dsn)
@@ -551,6 +328,7 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
+		seedIssueCopyRow(t, tx, root)
 		if !record.KeepsSlot(root) {
 			return nil
 		}
@@ -573,7 +351,9 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 	if _, err := st.OpenTreeLifecycle(ctx, project, root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", root.Key, err)
 	}
+	openIssue(t, st, project, root.Key, treelifecycle.AuthorityWorkflow)
 	for _, c := range claims {
+		openIssue(t, st, c.Project, c.Issue, treelifecycle.AuthorityWorkflow)
 		if _, err := st.AdmitClaim(ctx, c); err != nil {
 			t.Fatalf("put %s: %v", c.Token, err)
 		}

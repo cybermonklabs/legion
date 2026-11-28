@@ -107,8 +107,7 @@ const (
 	// does; it ranks below the operator's, so the controller can neither take over nor lift a
 	// suspension the operator holds (suspensionRank, ErrOperatorHolds).
 	SuspendedByController SuspendSource = "controller"
-	// SuspendedByDaemon: the workflow's own suspend — the issue left the workflow, or its tree
-	// lingers.
+	// SuspendedByDaemon: the workflow's own suspend — the issue left Legion's work.
 	SuspendedByDaemon SuspendSource = "daemon"
 	// SuspendedByExit: the tree root's agent reported its own exit, which suspends a root.
 	SuspendedByExit SuspendSource = "exit"
@@ -193,15 +192,32 @@ const (
 
 // Claim is one role claim as the supervisor holds and persists it.
 type Claim struct {
-	Token      claim.Token
-	Project    string
-	Tree       string
+	Token   claim.Token
+	Project string
+	// Tree is the tree the claim's issue stored when the daemon first recorded it (issues.tree),
+	// or, for an operator's claim on an issue the daemon records nothing of, the tree the operator
+	// named: what claims.tree holds for the release before after a rollback (R22 of
+	// dispatch://INFRA-3320). The store writes it from the issue's record where there is one
+	// (store.Store.AdmitClaim).
+	Tree string
+	// LaunchTree is the issue's gate root at the claim's last launch: what the spawn spec, the
+	// role's LEGION_TREE and the registration's answer name (decision 13 of
+	// dispatch://INFRA-4730). "" for a claim no launch of this release has set it on.
+	LaunchTree string
 	Issue      string
 	Role       claim.Role
 	Generation uint64
-	// TreeEpoch is the durable lifecycle epoch this claim bound to before its first persistence.
-	// A cleanup reservation closes that epoch before a later claim/launch can write or run.
-	TreeEpoch uint64
+	// TreeEpoch is the epoch of the tree lifecycle of Tree the claim was last admitted under,
+	// written for the release before, whose launch checks it (R22); no decision of this release
+	// reads it. IssueEpoch is the durable lifecycle epoch of the claim's own issue it bound to
+	// before its first persistence (store.Store.AdmitClaim): a cleanup reservation of the issue
+	// closes that epoch before a later claim or launch can write or run.
+	TreeEpoch  uint64
+	IssueEpoch uint64
+	// HoldsGate is whether the claim's issue held its own design gate at the claim's last launch
+	// (record.Chains.HoldsOwnGate), set at each launch beside LaunchTree: what the machine reads
+	// an architect of a gate holder by.
+	HoldsGate bool
 	// Session and SessionFile are the agent's reported session id and absolute transcript path.
 	Session     string
 	SessionFile string
@@ -1014,9 +1030,17 @@ type ClaimView struct {
 	WakeWaiting *WakeWaiting
 }
 
-// treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
-// when its tree closes.
-func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) }
+// treeRoot is whether the claim is the architect of an issue that holds its own design gate (R15
+// of dispatch://INFRA-3320): a root's, or one that ran as a root and keeps its gate under a parent
+// in Legion's work. It is the claim the stop refusal, the exit suspension, the superseding of an
+// unconfirmed task and the root's hearing guard (asksRoot) treat as the gate holder's own, which
+// ends only at its issue's close. supervise holds no store, so it reads the mark the outbox writes
+// on the claim at each launch from the Dispatch chain (Claim.HoldsGate, record.Chains.HoldsOwnGate):
+// where the mark says the claim's issue holds its own gate, that issue is the gate root, so the
+// claim is its architect exactly when its role is the architect's.
+func (c Claim) treeRoot() bool {
+	return c.HoldsGate && c.Role == claim.RoleArchitect
+}
 
 // Event is everything that reaches a machine: RuntimeObservation, StreamHello, StreamTurnStart,
 // StreamTurnEnd, IssueTurnEnded, StreamPromptResult, StreamClosed, StreamLateRefusal,
@@ -1225,10 +1249,10 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
-	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
-	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
-	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
-	// next runs — which can be after a park, a hand back to `todo` or a linger, generations later.
+	// RootHears says whether the root of c's tree has an architect to hear d now: it holds its own
+	// design gate, it is in Legion's work and it does not wait in `todo` for an admission slot. A
+	// root architect's task of a run names no phase, so no phase ever drops it, and it waits on the
+	// claim until that claim next runs — which can be after a park or a hand back to `todo`, generations later.
 	// Such a task names a person's decisions, which its own confirmation tells (daemon's
 	// settleKept, the claim store's putDelivery), so it is held rather than dropped: false keeps it
 	// pending, unsent and uncharged, and the start of the root's next run sends it (StartedBy,
@@ -1289,7 +1313,7 @@ type Deps struct {
 	WorkingCopy func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
-	// than a refusal. It is asked for the operator's own close — the workflow's linger close is its
+	// than a refusal. It is asked for the operator's own close — the workflow's close is its
 	// own decision — and here rather than by the caller, so the answer and the stop it decides are
 	// one decision rather than two round trips apart; and by a refused stop of the tree's root,
 	// whose refusal then names that close. It is not a lock on what it reads: an issue recorded for
@@ -1599,7 +1623,7 @@ var ErrRetryNotTheController = errors.New("the operator's retry does not relaunc
 
 // ErrHeldForCyberPolicy is a retry the daemon makes by itself (RequestRetry with no decision behind
 // it) of a claim held for OpenAI's cyber-policy refusal (Claim.HeldForCyberPolicy): the next start
-// of its role, a re-admission of its tree, a production check's look, the controller keeper.
+// of its role, a return to work's start, a production check's look, the controller keeper.
 // Launching its agent again would send the session's content to OpenAI again, so only a retry
 // someone decided launches it, in a new session (retry). It is a refusal and not a wait: nothing
 // the daemon does later lifts it. The refusal adds the operator's command that brings the agent
@@ -1858,6 +1882,12 @@ type Machine struct {
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
 	staleRelaunch *string
+	// retree is the gate root a relaunch in the claim's session waits for the agent's turn to end
+	// under (relaunchUnder, afterTurn); "" for none. It is memory only, as staleRelaunch is: the
+	// daemon's boot pass and every orphan sweep post GateRootMoved again for a claim whose launch
+	// still names another gate root (internal/daemon's relaunchUnderGateRoots), and letGo drops it
+	// with the process it was made for.
+	retree string
 	// busyTurn is the claim recorded working by Oh My Pi's busy answer to a prompt of its pending
 	// task (recordBusyTurn): the agent said its session is in a prompt, preparing or running a
 	// turn, and no agent_start of that turn has been read yet. It arms the sweep's question
@@ -3070,10 +3100,10 @@ func (m *Machine) stoppingProcess() func() {
 // ends in unlock, and a section that takes mu without it reads the claim or counts goroutines and
 // changes none of them. The sections that defer it are Handle, which every event and every timer
 // of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold),
-// PublishUpdateAsk, StartedBy, ReadProcess, Retree and the refresh gate's reclaimCredit; the
-// sections that take mu without it are Claim, OnDurableState, Wait, compaction and the two
-// goroutine tails in delivery.go and secrets.go. It is that rule a section added later has to
-// keep, rather than this list of the sections there are now.
+// PublishUpdateAsk, StartedBy, ReadProcess and the refresh gate's reclaimCredit; the sections that
+// take mu without it are Claim, OnDurableState, Wait, compaction and the two goroutine tails in
+// delivery.go and secrets.go. It is that rule a section added later has to keep, rather than this
+// list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.endPodPark()
@@ -4280,7 +4310,9 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
-	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
+	// The launch names the gate root the claim's issue stood under at its last start
+	// (Claim.LaunchedTree), never the tree the claim stores, which is the release before's.
+	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.LaunchedTree(), m.claim.Issue, m.claim.Role
 	spec.Generation, spec.BootToken = m.claim.Generation, token
 	spec.ResumeSessionFile, spec.ResumeSessionID = "", ""
 	spec.ResumeSession, spec.ResumeByAgent = "", false
@@ -5055,7 +5087,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 		m.unsaved = true
 	}
 	m.held, m.heldLaunch = nil, false
-	m.staleRelaunch = nil
+	m.staleRelaunch, m.retree = nil, ""
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting, m.lostCompaction = nil, nil
@@ -5696,10 +5728,12 @@ func HoldsCapability(state ClaimState) bool {
 // It is the one rule for whether a claim holds its role, which HoldsCapability (a running process)
 // is not: the owner walk reads it (record.ArchitectRuns, and the daemon's holdsRole over the
 // machine's live view), and so does the role-holder publication, both the claim write that queues
-// it (internal/store's roleHolder) and the set it sends (record.Postgres.RoleHolders). Were a
-// released architect to lose its role here, a notice for it would walk up to the architect above
-// it, which owns neither the issue nor the answer, and Dispatch would name no architect of its
-// issue until the next wake.
+// it (internal/store's roleHolder) and the set it sends (record.Postgres.RoleHolders), and the
+// times internal/store's upsertClaim stamps when a claim begins and stops holding its role, which
+// judge a session's write by the holders Dispatch was shown when it recorded the write
+// (record.RoleHolderAt.PublishedAt). Were a released architect to lose its role here, a notice
+// for it would walk up to the architect above it, which owns neither the issue nor the answer,
+// and Dispatch would name no architect of its issue until the next wake.
 func HoldsRole(state ClaimState, by SuspendSource) bool {
 	switch state {
 	case "", StateFailed, StateRetired:
@@ -5708,6 +5742,23 @@ func HoldsRole(state ClaimState, by SuspendSource) bool {
 		return Claim{State: state, SuspendedBy: by}.Released()
 	}
 	return true
+}
+
+// RoleHoldingPairs is every pair of a claim state and a suspension source, the empty source of a
+// claim that is not suspended among them, that HoldsRole answers true for, over every state and
+// source this package declares, as two lists of their text, one pair to an index: the rule as a
+// statement reads it against claims.state and claims.suspended_by, so no statement spells it
+// again and a state or a source added here is read there with nothing added.
+func RoleHoldingPairs() (states, sources []string) {
+	bys := append([]SuspendSource{""}, allSuspendSources...)
+	for _, state := range allStates {
+		for _, by := range bys {
+			if HoldsRole(state, by) {
+				states, sources = append(states, string(state)), append(sources, string(by))
+			}
+		}
+	}
+	return states, sources
 }
 
 // SaidReady is whether a claim in state has an agent that said it can be prompted: ready, working
@@ -5759,6 +5810,8 @@ func claimOf(ev Event) claim.Token {
 		return ev.Claim
 	case StalePlugin:
 		return ev.Claim
+	case GateRootMoved:
+		return ev.Claim
 	case RecordedDeath:
 		return ev.Claim
 	case StallBackstop:
@@ -5784,8 +5837,6 @@ func claimOf(ev Event) claim.Token {
 	case RequestRuleResume:
 		return ev.Claim
 	case RequestStop:
-		return ev.Claim
-	case RequestTreeClose:
 		return ev.Claim
 	case RequestIssueClose:
 		return ev.Claim

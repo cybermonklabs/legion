@@ -95,7 +95,6 @@ func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 	engine := gatedStepEngine(config.DesignGateRootIssues, nil)
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "T", LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: basisAncestor, Repo: "sjawhar/legion", Number: 41,
 		Branch: "legion/" + basisAncestor, HeadSHA: "head", Failing: []string{}})
 	reviewingWithoutAcceptance(t, pool, engine, basisAncestor)
@@ -105,7 +104,6 @@ func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U",
 		HandedOver: true, LastDispatchSeq: 1, ViewOf: basisAncestor})
 	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	seedTreeLifecycle(t, pool, gatedRoot)
 	seedArchitectClaim(t, pool, gatedRoot)
 	waiting := pendingBasis()
 	waiting.RegisteredAt = basisEngineNow
@@ -125,7 +123,7 @@ func heldForARestingRoot(t *testing.T) (*pgxpool.Pool, *Engine) {
 // before its retro: held from retro for its children, accepted by nothing, R's wait on P's request
 // standing, and P's architect told once which root holds it, in the words of the sign-off's
 // refusal. A retry of the hold is refused naming R. R's leave of the workflow ends the hold with
-// nobody acting: P's retro starts in the fact of the leave, which writes no issue of P's tree.
+// nobody acting: P's retro starts in the fact of the leave, which writes no record of P.
 func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
 	t.Parallel()
 	pool, engine := heldForARestingRoot(t)
@@ -164,8 +162,8 @@ func TestARootRestingOnAParentHoldsItsRetroUntilTheRootLeaves(t *testing.T) {
 // the workflow (dispatch://INFRA-3320 R8): here a session closes P's request ask-100 with no
 // approval, which queues R's pending-basis seed, and the seed's read of Dispatch, which shows the
 // request closed, ends R's wait (tellPendingEnded) and leaves R's step resting on nothing. That
-// fact writes no issue of P's tree, so its settle reads P's tree only because the end names P to
-// it (restEnded), and P's retro starts in that fact, with nobody acting.
+// fact writes no record of P, so its settle reads the parents held in P's project only because
+// the end names P to it (restEnded), and P's retro starts in that fact, with nobody acting.
 func TestTheEndOfAWaitOnTheParentsRequestStartsItsHeldRetro(t *testing.T) {
 	t.Parallel()
 	pool, engine := heldForARestingRoot(t)

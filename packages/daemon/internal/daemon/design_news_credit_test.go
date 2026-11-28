@@ -64,7 +64,7 @@ func (r *creditRig) claim() supervise.Claim {
 func (r *creditRig) confirmedTask(id string, from, to int) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Implement the plan.", Items: []record.DeliveryNewsItem{
-		newsItem(reconcileChild, record.AudienceHolder, record.DesignStepSpec, reconcileDoc, from, to)}})
+		reconcileItem(reconcileChild, record.AudienceHolder, record.DesignStepSpec, reconcileDoc, from, to)}})
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func (r *creditRig) owed() []record.NewsItem {
 	r.t.Helper()
 	var items []record.NewsItem
 	r.inTx(func(tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(r.ctx, r.records, tx, config.DesignGateRootIssues.Steps(), reconcileRoot)
+		facts, _, err := record.ReadTreeNewsFacts(r.ctx, r.records, tx, config.DesignGateRootIssues.Steps(), "LEGION", reconcileRoot)
 		if err != nil {
 			return err
 		}
@@ -238,7 +238,7 @@ func TestATestersTurnThatRanMakesItsCreditFinalAndItIsNotToldAgain(t *testing.T)
 	r.wantTold("after the turn's result made the credit final and the task was retired", pathRoot, record.AudienceHolder, 5, false)
 	var owed record.TreeNews
 	r.inTx(func(tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(r.ctx, r.records, tx, config.DesignGateRootIssues.Steps(), pathRoot)
+		facts, _, err := record.ReadTreeNewsFacts(r.ctx, r.records, tx, config.DesignGateRootIssues.Steps(), "LEGION", pathRoot)
 		owed = record.OwedNews(facts)
 		return err
 	})

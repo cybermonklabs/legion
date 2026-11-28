@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -45,12 +44,11 @@ func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 	}
 }
 
-// The holder of a member's phase is named from the member's record (newsClaims.member). A caller
-// that read none of the tree's issues hands none over (newNewsClaims), and a member is then read
-// from the record with the rest of the tree, so the tester's claim is named for a member in
-// testing, and that claim is told by a task now. Without that read the member would be the zero
-// issue, in no phase, which names no holder and reads as told at its next start. A key the record
-// holds no issue of in the tree is an error, never a member told at its next start.
+// The holder of a member's phase is named from the member's record as the caller's reading of the
+// Dispatch chains holds it (newsClaims.member), so the tester's claim is named for a member in
+// testing, and that claim is told by a task now. Without that record the member would be the zero
+// issue, in no phase, which names no holder and reads as told at its next start. A key the reading
+// holds no record of is an error, never a member told at its next start.
 func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T) {
 	t.Parallel()
 	r := newNewsReconcileRig(t)
@@ -61,8 +59,11 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 
 	var holders map[toldKey]owedHolder
 	r.inTx(func(tx pgx.Tx) error {
-		var err error
-		holders, err = readOwedHolders(r.ctx, tx, r.records, newNewsClaims(root, nil), []toldKey{child})
+		chains, err := record.ReadChains(r.ctx, tx, r.records, "LEGION", []string{reconcileRoot})
+		if err != nil {
+			return err
+		}
+		holders, err = readOwedHolders(r.ctx, tx, r.records, newNewsClaims(root, chains), []toldKey{child})
 		return err
 	})
 	holder, held := holders[child]
@@ -76,7 +77,11 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 
 	const unknown = "LEGION-699"
 	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(root, nil),
+		chains, err := record.ReadChains(ctx, tx, r.records, "LEGION", []string{reconcileRoot})
+		if err != nil {
+			return err
+		}
+		_, err = readOwedHolders(ctx, tx, r.records, newNewsClaims(root, chains),
 			[]toldKey{{unknown, record.AudienceHolder}})
 		return err
 	})
@@ -85,11 +90,10 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 	}
 }
 
-// The owner walk of a member in accepting reads every issue of the tree (newsClaims.owningIssue),
-// since a caller hands over the facts it read of the tree, whole, or nothing (newNewsClaims). So a
-// member in accepting whose parent's own architect holds its role is held by that architect, never
-// by the root's, whether the walk reads the tree itself, asked first with nothing handed over, or
-// reads the facts its caller handed over.
+// The owner walk of a member in accepting runs over the Dispatch chain (newsClaims.owningIssue,
+// record.OwningIssue), whatever issue the caller's reading started from. So a member in accepting
+// whose parent's own architect holds its role is held by that architect, never by the root's,
+// whether the reading started from the gate root or from the member itself.
 func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOver(t *testing.T) {
 	t.Parallel()
 	r := newNewsReconcileRig(t)
@@ -99,25 +103,20 @@ func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOve
 	r.holder(reconcileRoot, claim.RoleArchitect, supervise.StateWorking, "", 0)
 	own := r.holder(reconcileChild, claim.RoleArchitect, supervise.StateWorking, "", 0)
 
-	for _, handed := range []bool{false, true} {
+	for _, from := range []string{reconcileRoot, reconcileGrandchild} {
 		var holder newsHolder
 		var held bool
 		r.inTx(func(tx pgx.Tx) error {
-			var facts *record.NewsFacts
-			if handed {
-				read, err := record.TreeNewsFacts(r.ctx, r.records, tx, config.DesignGateRootIssues.Steps(), reconcileRoot)
-				if err != nil {
-					return err
-				}
-				facts = &read
+			chains, err := record.ReadChains(r.ctx, tx, r.records, "LEGION", []string{from})
+			if err != nil {
+				return err
 			}
-			var err error
-			holder, held, err = newNewsClaims(root, facts).holderOf(r.ctx, tx, r.records, accepting)
+			holder, held, err = newNewsClaims(root, chains).holderOf(r.ctx, tx, r.records, accepting)
 			return err
 		})
 		if !held || holder.token != own || holder.issue.Key != reconcileChild || holder.role != claim.RoleArchitect {
-			t.Fatalf("the holder of %s in accepting, the facts handed over %t = %+v (held %t), want its parent's architect %s",
-				reconcileGrandchild, handed, holder, held, own)
+			t.Fatalf("the holder of %s in accepting, the chains read from %s = %+v (held %t), want its parent's architect %s",
+				reconcileGrandchild, from, holder, held, own)
 		}
 	}
 }
@@ -136,11 +135,8 @@ func TestTheRootArchitectsSummarySaysItAnswersAMemberInAcceptingItOwns(t *testin
 
 	var drafts []memberDraft
 	r.inTx(func(tx pgx.Tx) error {
-		root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
-		if err != nil {
-			return err
-		}
-		drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
+		var err error
+		drafts, err = r.treeMembers(tx)
 		return err
 	})
 	for _, draft := range drafts {

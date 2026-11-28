@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -19,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -179,13 +183,22 @@ func decodeFailureState(t *testing.T, body []byte) servedFailureState {
 }
 
 // heldForRetry records a child of failureRetryRoot held from implementing, as the hold its
-// implementer's failure wrote leaves it: the issue its architect's retry_or_escalate answers.
+// implementer's failure wrote leaves it: the issue its architect's retry_or_escalate answers. The
+// copy of Dispatch's issues holds the child under the root, the chain the retry is judged on.
 func heldForRetry(t *testing.T, h *harness, issue string) {
 	t.Helper()
 	root := failureRetryRoot
 	h.recordIssue(record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Tree: root, Parent: &root, Project: testProject, Title: issue, Phase: phase.Held,
 		Hold: &record.Hold{From: phase.Implementing}, Generation: 1, Status: "in_progress", Rank: "V"})
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := seedCopy(tx, root, "", "in_progress"); err != nil {
+			return err
+		}
+		return seedCopy(tx, issue, root, "in_progress")
+	}); err != nil {
+		t.Fatalf("seed the copy rows of %s: %v", issue, err)
+	}
 }
 
 // startedTask is the task the start of issue's role carries, read from the outbox row the

@@ -113,7 +113,7 @@ type StepResult string
 
 const (
 	// ResultPassed is a run whose step's work was done: the move that ended it went forward, or
-	// its merge landed in a lingering tree (closeMerged).
+	// its merge landed (closeMerged).
 	ResultPassed StepResult = steprecord.ResultPassed
 	// ResultFailed is a run a role or a report sent back: the tester's fail, a review's request
 	// for changes, a role's or the architect's backward move.
@@ -161,7 +161,7 @@ type StepEnd struct {
 }
 
 // stepStopped is the end of a step that no completion and no move of the table ended: the issue
-// left the workflow, its tree lingered, or its run ended under it.
+// left the workflow, or its run ended under it.
 var stepStopped = StepEnd{Result: ResultStopped}
 
 // startStep writes the start of the step issue stands in (record.StandsAt), run by agent: one more
@@ -292,7 +292,7 @@ func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Is
 // recordsSteps says whether issue's steps are recorded: its key is an issue key, which every key
 // Dispatch gives is, and so names claims (claim.NewToken) and an issue the route can hold. The
 // record has keys that are none only where a test wrote them, and those have no claims either,
-// as the promotion's own walk passes over them (admit's startMidPhaseMembers).
+// as the promotion's own walk passes over them (admit's promotion).
 func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) }
 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
@@ -372,8 +372,8 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // store records it, and a claim whose start is only queued does not hold its role yet
 // (supervise.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
 // move into accepting, which starts a failed child architect again (reviveArchitect), and a
-// re-admitted tree's first run, which brings back a member's suspended architect (admit's
-// startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
+// re-admission's promotion, which brings back a member's suspended architect (admit's
+// promotion). Once that start runs, the child's own architect owns the child, and it
 // signs it off. The start is one of no phase or of accepting (architectStartQueued).
 //
 // Two such starts do not count. One queued for a claim a suspension that holds is over (the
@@ -472,18 +472,18 @@ func endOfTransition(w Walk, trigger TriggerKind, from, to phase.Phase, handoff 
 
 // StartStepRecord writes the start of the step issue stands in on the walk of its run
 // (standingStep), under the agent that step names (startNamedStep): admission's promotion of a
-// member whose phase worker it does not start (admit's startMidPhaseMembers), whose step starts
-// again all the same. A step whose latest run is still open at the issue's own generation goes
-// on, and nothing is written: a role the promotion found already started for this run
-// (workflow.StartFor), or a member held from merging whose tree is admitted again, whose merge
-// step the linger left open (beginLinger) and whose retry goes on with it. A second start there
-// would open a run while the one before it has no end, and the count would leave that one none. A
-// run still open at an earlier generation is another run's: a member held from merging and then
-// handed over at the linger's close stands at the generation its readmit raised, while the settle
-// that ends its old merge runs only at the fact's end, so the start goes on, and its own settle
-// (settleStart) ends that old run before it opens the new one. A member its plan holds starts no
-// step (standingStep): its stopped task runs again only when a later version of the plan starts
-// the task at its first step, and a parent held for its children has started no retro.
+// member whose phase worker it does not start (admit's promotion), whose step starts again all the
+// same. A step whose latest run is still open at the issue's own generation goes on, and nothing is
+// written: a role the promotion found already started for this run (workflow.StartFor), or an
+// issue held from merging that came back to work, whose merge step its stop left open and whose
+// retry goes on with it. A second start there would open a run while the one before it has no end,
+// and the count would leave that one none. A run still open at an earlier generation is another
+// run's: an issue a new run reopened (NewRun) while a step of its old run was still open stands at
+// the generation that run raised, while the settle that ends its old step runs only at the fact's
+// end, so the start goes on, and its own settle (settleStart) ends that old run before it opens the
+// new one. A member its plan holds starts no step (standingStep): its stopped task runs again only
+// when a later version of the plan starts the task at its first step, and a parent held for its
+// children has started no retro.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {

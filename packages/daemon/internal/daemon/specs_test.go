@@ -76,7 +76,7 @@ func TestARootArchitectIsToldTheGatedStepsAndWhatTheyAsk(t *testing.T) {
 					t.Fatal(err)
 				}
 				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: deployment.steps, appOwners: noAppOwners}
-				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: tc.issue, Tree: "S1-1", Role: tc.role})
+				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: tc.issue, Tree: "S1-1", Role: tc.role, HoldsGate: tc.root})
 				if err != nil {
 					t.Fatalf("SpawnSpec: %v", err)
 				}

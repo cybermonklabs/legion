@@ -124,39 +124,36 @@ func (c IdleClaim) SuspensionHolds() bool {
 	return c.State == supervise.StateSuspended && c.SuspendedBy.Holds()
 }
 
-// IdleRoot is the tree root of the issue the idle rule is deciding, read with it.
-type IdleRoot struct {
-	Phase       phase.Phase
-	Status      string
-	Generation  uint64
-	LingerUntil *time.Time
-	// AwaitingPerson is whether the root waits on a person (phase awaiting_person) and Answered
-	// whether that person has answered, which leaves the root waiting only for the admission pass
-	// that resumes it on the slot it holds.
-	AwaitingPerson bool
-	Answered       bool
-}
-
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
-// the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
-// in the workflow and its tree root's. Found is false for an issue the record does not hold under
-// the daemon's own project, which is no pod of the workflow's to release: a record another
-// project's daemon keeps of the issue on a shared database is not this daemon's
-// (store.readIdleView).
+// the pod, whether any queued outbox row is addressed to one of its roles, and the issue's own
+// place in the workflow, which is all the rule reads of where the issue stands (R20 of
+// dispatch://INFRA-3320: the daemon acts on each issue's own status, whatever stands above it).
+// Found is false for an issue the record does not hold under the daemon's own project, which is
+// no pod of the workflow's to release: a record another project's daemon keeps of the issue on a
+// shared database is not this daemon's (store.readIdleView).
+//
+// Tree and TreeGeneration are the tree the issue's record stores and that tree root's generation
+// (the issue's own where the root is not recorded), which the release's rows carry because the
+// release before requires them of each row (record.IssueWorkspaceCheck, record.IssueRelease); no
+// decision of this release reads them.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
 // for it.
 type IdleView struct {
-	Issue       string
-	Tree        string
-	Found       bool
-	Phase       phase.Phase
-	Status      string
-	Generation  uint64
-	LingerUntil *time.Time
-	Root        IdleRoot
-	Claims      []IdleClaim
+	Issue          string
+	Tree           string
+	TreeGeneration uint64
+	Found          bool
+	Phase          phase.Phase
+	Status         string
+	Generation     uint64
+	// AwaitingPerson is whether the issue itself waits on a person (phase awaiting_person) and
+	// Answered whether that person has answered, which leaves the issue waiting only for the
+	// admission pass that resumes it on the slot it holds.
+	AwaitingPerson bool
+	Answered       bool
+	Claims         []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. A start queued for news of the approved design alone is not counted, and
 	// neither is a worker start that waits for an admission slot its issue does not hold: each
@@ -177,6 +174,16 @@ type IdleView struct {
 	RoleStopQueued     bool
 	IssueSuspendQueued bool
 	CheckLookOpen      bool
+	// OperatorHolds is whether the operator holds the issue's own lifecycle (issue_lifecycles,
+	// treelifecycle.Lifecycle.HeldByOperator): its claims and its pod are the operator's, so the
+	// issue's departure queued nothing of them (the workflow's leave), and the operator's own close
+	// is the one to stop them. CleanupStarted is whether the issue's own lifecycle cleanup has
+	// started (issue_lifecycles.cleanup_started), which deletes the issue's Sandbox itself, so a
+	// close's suspension finishes there without acting (store's issueStopFences). Only the rule
+	// for the pod of an issue the workflow has taken out reads the two (workflow.LeftPodClose):
+	// each is a close of that pod other than the departure's, so the rule leaves the pod to it.
+	OperatorHolds  bool
+	CleanupStarted bool
 	// Releasing is whether a release of this pod is already marked in progress, which no second
 	// release starts behind.
 	Releasing bool
@@ -221,59 +228,34 @@ type IdleView struct {
 	Holding bool
 }
 
-// IsRoot is whether the issue is its tree's root, the one issue a root's own wait on a person
-// holds: the children of a root that waits on a person are released like any other issue.
-func (v IdleView) IsRoot() bool { return v.Issue == v.Tree }
-
-// Standing is where one issue stands in the three plain fields the pod gate reads: its phase,
-// its Dispatch status and whether it lingers after a close.
+// Standing is where one issue stands in the two plain fields the pod gate reads: its phase and
+// its Dispatch status.
 type Standing struct {
-	Phase   phase.Phase
-	Status  string
-	Lingers bool
+	Phase  phase.Phase
+	Status string
 }
 
-// Standing is the issue's own standing, and RootStanding its tree root's.
+// Standing is the issue's own standing.
 func (v IdleView) Standing() Standing {
-	return Standing{Phase: v.Phase, Status: v.Status, Lingers: v.LingerUntil != nil}
-}
-
-func (v IdleView) RootStanding() Standing {
-	return Standing{Phase: v.Root.Phase, Status: v.Root.Status, Lingers: v.Root.LingerUntil != nil}
+	return Standing{Phase: v.Phase, Status: v.Status}
 }
 
 // InWorkflow is whether one issue's status and phase alone are still the workflow's: it carries
 // no status that takes an issue out of the workflow (outOfWorkflow, which is
 // record.OutOfWorkflow — this package sits below record, so the rule is passed in rather than
-// restated) and its phase is short of done. A linger is not read here: admission and
-// awaiting-person add it beside this call themselves, the production check and the tree-close
-// wait leave it out, and the pod gate adds it in InWorkflowNotLingering.
+// restated) and its phase is short of done.
 //
-// It is the one statement of that rule in the daemon: workflow.InWorkflow is this call, which
-// is what admission, the linger, the production check and awaiting-person read, and
-// InWorkflowNotLingering is this call and the linger, which is what every path that acts on an
-// idle or released pod reads. A new terminal phase added here moves all of them together, where
-// two copies of the rule would have let the release gate and admission disagree about one issue.
+// It is the one statement of that rule in the daemon: record.InWorkflow is this call, which
+// is what admission, the production check and awaiting-person read, and it is the one gate every
+// path that acts on an idle or released pod reads — the idle rule, a wake applied inside a fact,
+// a wake the outbox takes for a delivery it holds, and the store's own authorization of a
+// release's teardown — because a pod whose work has stopped being the workflow's is a stop's to
+// end, never a release's to take or a wake's to bring back. Each reads the issue's own standing
+// and nothing above it (R20 of dispatch://INFRA-3320). A new terminal phase added here moves all
+// of them together, where two copies of the rule would have let the release gate and admission
+// disagree about one issue.
 func (s Standing) InWorkflow(outOfWorkflow func(status string) bool) bool {
 	return !outOfWorkflow(s.Status) && s.Phase != phase.Done
-}
-
-// InWorkflowNotLingering is whether an issue and its tree root are both still the workflow's to
-// run: neither is out of the workflow by status or phase (InWorkflow), and neither lingers after
-// its close.
-//
-// It is the one gate every path that acts on an idle or released pod reads — the idle rule, a
-// wake applied inside a fact, a wake the outbox takes for a delivery it holds, and the store's
-// own authorization of a release's teardown — because a pod whose tree has stopped being the
-// workflow's is a close's to stop, never a release's to take or a wake's to bring back. The store
-// is one of the four and sits below workflow, so the rule lives here, where both reach it.
-func InWorkflowNotLingering(issue, root Standing, outOfWorkflow func(status string) bool) bool {
-	return issue.live(outOfWorkflow) && root.live(outOfWorkflow)
-}
-
-// live is one issue's half of InWorkflowNotLingering.
-func (s Standing) live(outOfWorkflow func(status string) bool) bool {
-	return s.InWorkflow(outOfWorkflow) && !s.Lingers
 }
 
 // QuietSince is when anything of the pod was last recorded — the newest claim write of any of its

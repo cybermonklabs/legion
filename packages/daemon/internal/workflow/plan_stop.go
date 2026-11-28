@@ -132,9 +132,11 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (Notice.StoppedBy): the daemon's notice executor publishes it only where that is another
 // claim, since the caller is answered by its own call.
 //
-// Apply judged the stop already on the record as the fact reads it (requestRefusal): an
-// architect that owns the issue no longer, or a stop of a run the issue has left since its route
-// read it (TaskStaleGeneration), is refused there, unspent, before this reads anything.
+// Apply judged the stop already on the record and the Dispatch chain as the fact reads them
+// (requestRefusal): an architect that acts on the issue on its chain no longer is refused
+// ISSUE_NOT_OWNED, naming the architect that does, and a stop of a run the issue has left since
+// its route read it TASK_STALE_GENERATION (TaskStaleGeneration), each there, unspent, before this
+// reads anything.
 //
 // An issue the record does not hold, or one with no plan rows whose work started before Legion
 // took plans, has no task to stop, and a task the plan does not hold is none either (TaskNotFound,
@@ -146,13 +148,12 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // stop of a task already stopped changes nothing and is no refusal, so a retry of a stop already
 // applied finds it stopped. A task that is done, or left the workflow with its issue before it was
 // done, has nothing left to stop (FinishedTask): each is refused here, before the store's
-// stop, which refuses both states itself and would fail the whole fact, and before the linger a
-// root's leave begins, since the task's own state is the truer answer. A stop in a lingering tree
-// changes nothing and says so, and so does a stop where its hold cannot stand: a root that waits on
-// a person before its first step (stopRefusal), and a parent waiting in awaiting_children, which no
-// hold is from either (issues_held_from_check): its stop is refused WAITING_ON_CHILDREN, naming
-// its open children and the architect's levers over them, as its sign-off and its move back are
-// (waitingRefusal, dispatch://INFRA-3320 R11).
+// stop, which refuses both states itself and would fail the whole fact. A stop where its hold
+// cannot stand changes nothing and says so: a root that waits on a person before its first step
+// (stopRefusal), and a parent waiting in awaiting_children, which no hold is from either
+// (issues_held_from_check): its stop is refused WAITING_ON_CHILDREN, naming its open children and
+// the architect's levers over them, as its sign-off and its move back are (waitingRefusal,
+// dispatch://INFRA-3320 R11).
 //
 // An issue whose group runs the project's default steps (groupOf, takesNoPlan) takes no stop of
 // its tasks from its owner: the experiment decides how the issue is done. The stop is
@@ -208,13 +209,6 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	}
 	if refusal := intake.FinishedTask(issue.Key, w.Task, w.State, intake.StopOfTask); refusal != nil {
 		return intake.Result{Refusal: refusal}, nil
-	}
-	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	if lingers {
-		return refusedLingering(*issue, fmt.Sprintf("the owner's stop of task %s", w.Task)), nil
 	}
 	from := record.StandsAt(*issue)
 	why := fmt.Sprintf("task %s of %s was stopped by its owner", w.Task, issue.Key)

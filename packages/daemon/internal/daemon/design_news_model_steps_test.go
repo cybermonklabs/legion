@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -57,25 +56,26 @@ const newsModelLatest = 40
 // version once of each kind, so the reviewer's credit counted from the tester's is made final while
 // the tester's stands; from then on the tester's provider error is listed six times, which gives the
 // tester's credit back and ends the turn. The second is held to a clear under a credit of the run it
-// ends: its tester's turn runs to the end of the drive, a re-entry and a re-admission are each listed
-// four times while it does and its run stands, until one of them is made (handoverClearDue, whether
-// or not the reviewer holds a prompt and outside newsModelClears), and a person's new version six
-// times of each kind once a clear has ended that run, which owes the next run an opening under the
-// number the tester's prompt carried for the run that ended.
+// ends: its tester's turn runs to the end of the drive, a re-entry is listed four times while it
+// does and its run stands, until one is made (handoverClearDue, whether or not the reviewer holds a
+// prompt and outside newsModelClears), and a person's new version six times of each kind once a
+// clear has ended that run, which owes the next run an opening under the number the tester's
+// prompt carried for the run that ended.
 //
-// Otherwise a clear of a generation is listed while the reviewer holds a prompt or is in a turn:
-// the claim then holds what the clear must leave counting for nothing, and a re-admission is listed
-// three times more where that prompt told the approved version and that version changed the work,
-// which the clear must leave counting for nothing though no later version has come. The sweep, which
-// queues the reconcile of a tree owed news, is listed twice more while the child's run after a
-// re-admission knows no version and no reconcile is queued. A seed makes at most newsModelClears
-// re-entries and re-admissions beside the second hand-over's, so the steps left are spent telling
-// the run the last one began. The restart waits until the reviewer holds nothing and the root
-// architect is in no turn (restart). The root architect's task is listed three times while it has
-// news to carry (rootTaskEnabled) and has not been handed one yet, and once after; its turn's result
-// is listed eight times once the gate has moved the architect's opening past the one its prompt
-// carried and no role message told the one that stands, once while its prompt carried an opening
-// otherwise, so a person's new version can come first, and twice for a prompt that carried none.
+// Otherwise a re-entry is listed while the reviewer holds a prompt or is in a turn: the claim then
+// holds what the clear must leave counting for nothing. Main's re-admission of the tree has no step
+// here: in this branch a person's done and todo on the root returns it to work in the same run and
+// leaves the child holding its own gate (record.Store.MarkHoldsGate), out of the one tree this
+// model follows, which TestAMembersCreditCountsNothingOnceItHoldsItsOwnGate holds. The sweep, which
+// queues the reconcile of a tree owed news, is listed twice more while the child's row knows no
+// version and no reconcile is queued. A seed makes at most newsModelClears re-entries beside the
+// second hand-over's, so the steps left are spent telling the run the last one began. The restart
+// waits until the reviewer holds nothing and the root architect is in no turn (restart). The root
+// architect's task is listed three times while it has news to carry (rootTaskEnabled) and has not
+// been handed one yet, and once after; its turn's result is listed eight times once the gate has
+// moved the architect's opening past the one its prompt carried and no role message told the one
+// that stands, once while its prompt carried an opening otherwise, so a person's new version can
+// come first, and twice for a prompt that carried none.
 func (m *newsModel) enabled() []string {
 	rev, tester := m.reviewer, m.tester
 	var ops []string
@@ -99,9 +99,6 @@ func (m *newsModel) enabled() []string {
 	}
 	if starts {
 		add("starts", 6)
-	}
-	if !reconciles && m.child.base == newsModelUnknown {
-		add("sweep", 2)
 	}
 	prompt := rev.turn
 	if prompt == "" {
@@ -137,7 +134,7 @@ func (m *newsModel) enabled() []string {
 		case stale:
 			add("approve-changed", 6)
 			add("approve-decision-only", 6)
-		case architectOpening, prompt != "" && tells && m.child.base != newsModelUnknown, prompt == "" && !reconciles && !starts:
+		case architectOpening, prompt != "" && tells, prompt == "" && !reconciles && !starts:
 			add("approve-changed", 3)
 			add("approve-decision-only", 3)
 		default:
@@ -182,15 +179,9 @@ func (m *newsModel) enabled() []string {
 	case tester.turn != "" && m.handovers == 1:
 	case m.handoverClearDue():
 		add("reenter", 4)
-		add("readmit", 4)
 	case m.clears >= newsModelClears || prompt == "":
 	default:
 		add("reenter", 1)
-		add("readmit", 1)
-		if p != nil && p.run == m.child.run && !m.decisionOnly[m.latest] &&
-			slices.ContainsFunc(p.pairs, func(l newsModelLink) bool { return l.to == m.latest }) {
-			add("readmit", 3)
-		}
 	}
 	if m.handovers < newsModelHandovers && rev.turn == "" && tester.turn == "" && m.latest+2 <= newsModelLatest {
 		add("handover", 6)
@@ -299,18 +290,14 @@ func (m *newsModel) do(name string) {
 		m.superseding = fmt.Sprintf("model:%d", m.step)
 		m.handle(rev, supervise.RequestDeliver{Claim: rev.token, ID: m.superseding, Task: "Review the change again.",
 			Phase: phase.Reviewing, Generation: readIssue(m.t, m.r.pool, pathChild).Generation})
-	case "reenter", "readmit":
+	case "reenter":
 		m.entryStarts = true
 		if m.handoverClearDue() {
 			m.handoverClear++
 		} else {
 			m.clears++
 		}
-		if name == "reenter" {
-			m.reenter()
-		} else {
-			m.readmit()
-		}
+		m.reenter()
 	case "handover":
 		m.entryStarts = true
 		m.handover()
@@ -407,7 +394,7 @@ func (m *newsModel) providerError(a *newsModelAgent) {
 	a.turn = ""
 }
 
-// newsModelClears is how many re-entries and re-admissions one seed makes at most beside the one
+// newsModelClears is how many re-entries one seed makes at most beside the one
 // made under the second hand-over's tester credit (handoverClearDue), and newsModelHandovers how
 // many hand-overs (newsModel.enabled).
 const (
@@ -438,16 +425,12 @@ func (m *newsModel) reconcile() {
 	}
 }
 
-// settled is the model's side of what the reconcile settles for row: a row that knows no version
-// is filled from the review history, which names the version below the approved one
-// (newNewsModel), and a row owed only versions that changed decision blocks alone, and no opening,
-// is raised past them, by a credit counted from the version it took (record.Store.RaiseTold), so a
-// raise read off a version an unfinal credit gave reaches nothing once that credit is given back.
+// settled is the model's side of what the reconcile settles for row: a row owed only versions
+// that changed decision blocks alone, and no opening, is raised past them, by a credit counted
+// from the version it took (record.Store.RaiseTold), so a raise read off a version an unfinal
+// credit gave reaches nothing once that credit is given back.
 func (m *newsModel) settled(row *newsModelRow, stored map[claim.Token]*supervise.Delivery) {
 	m.t.Helper()
-	if row.base == newsModelUnknown {
-		row.base = m.latest - 1
-	}
 	links, opens := m.standing(row, stored)
 	took, known := newsModelClosure(row.base, append(slices.Clone(row.final), links...))
 	if !known || took >= m.latest || !m.workUnchanged(took, m.latest) || m.owesOpening(row, opens) {
@@ -471,7 +454,7 @@ func (m *newsModel) clear(row *newsModelRow, base int) {
 }
 
 // reenterChild is a person setting the child back to todo while its tree runs: its run starts
-// again as its next generation (workflow's ReenterChild), and the claims of its roles are kept with
+// again as its next generation (workflow's NewRun), and the claims of its roles are kept with
 // whatever they hold. The gate stands open, so the child's first phase starts at once and takes the
 // approved version as its baseline. Dispatch shows the child's own status before the todo, as the
 // daemon's status write makes it: a todo that only repeats what Dispatch last showed moves nothing.
@@ -575,40 +558,6 @@ func (m *newsModel) handover() {
 	m.reviewed = false
 }
 
-// readmit is a person closing the root and setting it back to todo inside the linger, before any
-// suspension the linger queued has run: a new generation of the whole tree (admit's readmit), which
-// clears what every issue of it took and its gate, and raises the root's generation alone. The
-// child keeps its generation and its phase, and its claims whatever they hold. The tree's
-// architect then registers the spec again at the version a person approved. A tree whose gate rows
-// went with the clear stands released until a row closes it (workflow's standingGateOpen), so that
-// registration opens nothing and owes the run no opening. The registration writes the architect's
-// row at the version it registers, which the architect took at that opening (workflow's
-// putGateTold). Nothing says yet what the child's holder stood on: its row knows no version until
-// the reconcile reads the review history.
-func (m *newsModel) readmit() {
-	m.t.Helper()
-	// A prompt the model has not read yet was sent before the clear.
-	m.observe()
-	before := readIssue(m.t, m.r.pool, pathRoot)
-	m.r.statusEvent(pathRoot, record.DoneStatus)
-	m.r.statusEvent(pathRoot, "todo")
-	if root := readIssue(m.t, m.r.pool, pathRoot); root.Generation != before.Generation+1 || root.Lingers() {
-		m.fail("%s = %+v after it was closed and set back to todo, want generation %d and no linger", pathRoot, root, before.Generation+1)
-	}
-	m.rootGen++
-	m.clear(m.child, newsModelUnknown)
-	m.clear(m.root, m.latest)
-	m.r.marks++
-	applyFact(m.t, m.r.pool, "api", fmt.Sprintf("register-%s-%d", pathDoc, m.r.marks), intake.GateRegistered{Issue: pathRoot,
-		ArtifactID: pathDoc, Version: m.latest, ApprovedVersion: m.latest, ApprovedMark: record.EventMark{Seq: m.r.marks},
-		ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}}, m.r.engine, m.r.admission)
-	m.opened()
-	for _, row := range m.rows() {
-		row.told[row.openSeq] = true
-	}
-	m.startReviewer()
-}
-
 // rootTask is the tree root's architect handed the task of a new entry, which names two decisions
 // a person made on the tree while nobody in it could hear them and carries the news the architect's
 // row is owed, as the workflow's start of an entry carries them (record.SuperviseRequest.Kept, the
@@ -624,7 +573,7 @@ func (m *newsModel) rootTask() {
 	m.t.Helper()
 	a := m.architect
 	// The entry is a new one: past what this model handed it, and past any entry the workflow
-	// raised on the architect's phases row meanwhile (a re-admitted root's promotion).
+	// raised on the architect's phases row meanwhile (the root's return to work at a new entry).
 	m.entry = max(m.entry, rolePhaseRow(m.t, m.r.pool, pathRoot, claim.RoleArchitect).Entry) + 1
 	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC).Add(time.Duration(m.entry) * time.Hour)
 	stays := record.DecisionMark{Issue: pathRoot, Ref: fmt.Sprintf("dispatch://%s/ask/entry-%d-stays", pathRoot, m.entry),
@@ -649,7 +598,7 @@ func (m *newsModel) rootTask() {
 	if a.machine != nil {
 		m.handle(a, supervise.StreamTurnStart{Claim: a.token})
 	}
-	request := record.SuperviseRequest{Op: "start", Tree: pathRoot, Role: claim.RoleArchitect, Generation: m.rootGen, Entry: m.entry, Task: task,
+	request := record.SuperviseRequest{Op: "start", Tree: pathRoot, Role: claim.RoleArchitect, Generation: newsModelRootGen, Entry: m.entry, Task: task,
 		Kept: &record.KeptDecisions{Decisions: []record.DecisionMark{stays, replaced}}}
 	mark := m.r.lastRowID()
 	m.r.inTx(func(tx pgx.Tx) error {

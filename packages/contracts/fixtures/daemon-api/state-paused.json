@@ -5,6 +5,7 @@
     "boots": 4,
     "firstBootAt": "2126-09-18T14:03:27Z",
     "startedAt": "2126-09-22T09:15:02Z",
+    "convertedAt": "2126-09-18T14:04:11Z",
     "stateSeq": 43,
     "stateId": "7c1e9a4d-3b52-4f08-a6d1-2e9b0c5f8a37",
     "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
@@ -43,7 +44,7 @@
       "LEGION-210",
       "LEGION-211",
       "LEGION-212",
-      "LEGION-215",
+      "LEGION-214",
       "LEGION-216",
       "LEGION-218",
       "LEGION-219"
@@ -95,7 +96,6 @@
       "treeRuns": false,
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "lingerUntil": "2126-09-22T10:10:12Z",
       "priority": null,
       "resolvedPriority": 2,
       "priorityFrom": "OTHER-5",
@@ -376,18 +376,9 @@
         "state": "blocked",
         "reason": "It waits on LEGION-210 and LEGION-213, which are not done."
       },
-      "memoryGroup": "memory",
-      "memoryDrawMode": "random",
-      "memoryDrawnAt": "2126-09-20T11:04:05Z",
       "treeMovedAt": "2126-09-22T09:17:12Z",
       "quietHours": 0.01611111111111111,
       "assignments": [
-        {
-          "experiment": "memory",
-          "variant": "memory",
-          "mode": "random",
-          "drawnAt": "2126-09-20T11:04:05Z"
-        },
         {
           "experiment": "plan-length",
           "variant": "long",
@@ -649,37 +640,27 @@
       ],
       "why": {
         "state": "unlisted",
-        "reason": "It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."
-      }
+        "reason": "No issue above it is in Legion's work and its record says the legion label is off, so nothing hands it to the daemon."
+      },
+      "treeMovedAt": "2126-09-22T07:02:00Z",
+      "quietHours": 2.2694444444444444
     },
     "LEGION-215": {
       "key": "LEGION-215",
       "generation": 1,
       "phase": "admitted",
       "status": "todo",
-      "tree": "LEGION-215",
-      "treeRuns": false,
+      "tree": "LEGION-208",
       "repo": "sjawhar/legion",
       "defaultBranch": "main",
-      "ancestry": [
-        "LEGION-217",
-        "LEGION-208"
-      ],
       "priority": null,
       "workers": {},
-      "gatedSteps": [
-        {
-          "step": "spec",
-          "approvedVersion": null,
-          "status": "unregistered"
-        }
-      ],
       "why": {
         "state": "unlisted",
-        "reason": "Its Dispatch chain reaches live work above it: LEGION-208. It stands as that tree's unreleased work."
+        "reason": "Its Dispatch parent is not in Legion's work, and LEGION-208, above that parent, is: it stands as LEGION-208's unreleased work."
       },
-      "treeMovedAt": "2126-09-22T07:45:00Z",
-      "quietHours": 1.5527777777777778
+      "treeMovedAt": "2126-09-22T09:17:12Z",
+      "quietHours": 0.01611111111111111
     },
     "LEGION-216": {
       "key": "LEGION-216",
@@ -1533,7 +1514,7 @@
         }
       }
     },
-    "linger_hours": 1.5,
+    "linger_hours": 0,
     "production_check_hours": 240,
     "pod_update_grace_minutes": 30,
     "stalled_tree_notice_hours": 6,

@@ -229,7 +229,9 @@ const resumeSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smok
 // Claude backend. The Claude worker's Sandbox is the Oh My Pi worker's byte for byte: its lane is
 // the launcher's start command (launcherCommand), which
 // TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile holds, so a pod change made for Claude Code
-// alone shows in its golden and leaves worker's.
+// alone shows in its golden and leaves worker's. The member is a launch of an issue under its gate
+// root, LEGION-209 under LEGION-208: its Sandbox's tree label and its LEGION_TREE are the gate root
+// its spec names, and its issue label its own key (decision 13 and 14 of dispatch://INFRA-4730).
 func manifestCases(t *testing.T) map[string]manifestCase {
 	resume := workerSpec(t)
 	resume.Generation, resume.BootToken, resume.ResumeSessionFile = 2, "boot-g2", resumeSession
@@ -240,6 +242,7 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		"root":              {spec: rootSpec(t)},
 		"worker":            {spec: workerSpec(t)},
 		"claude-worker":     {spec: claudeWorkerSpec(t)},
+		"member":            {spec: childSpec(t)},
 		"resume":            {spec: resume},
 		"controller":        {spec: controllerSpec(t), controllerAccount: goldenControllerAccount},
 		"controller-resume": {spec: controllerResume},
@@ -316,6 +319,39 @@ func TestManifestGoldens(t *testing.T) {
 			checkGolden(t, name, manifestOf(t, r, tc.spec))
 		})
 	}
+}
+
+// A launch of an issue under its gate root makes its Sandbox with the gate root its spec names
+// (runtime.SpawnSpec.Tree, the daemon's launch tree) as the tree label and as every role's
+// LEGION_TREE, and its own key as the issue label: the pod's label is its creation's (decision 14
+// of dispatch://INFRA-4730), pinned whole by the `member` golden. The daemon half, the spec's tree
+// read from the Dispatch chain, is internal/daemon's test of this name.
+func TestANewLaunchSetsLegionTreeToTheGateRoot(t *testing.T) {
+	t.Parallel()
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := childSpec(t)
+	if spec.Tree != testTree || spec.Issue == testTree {
+		t.Fatalf("the member's spec names tree %q and issue %q, want an issue under the gate root %s: the case's own premise", spec.Tree, spec.Issue, testTree)
+	}
+	l := launchOf(t, r, spec)
+	labels := r.sandboxManifest(l).Labels
+	if labels[labelTree] != labelValue(testTree) || labels[labelIssue] != labelValue(spec.Issue) {
+		t.Fatalf("the member's Sandbox is labelled tree %q, issue %q; want the gate root %s and its own key %s",
+			labels[labelTree], labels[labelIssue], testTree, spec.Issue)
+	}
+	told := ""
+	for _, env := range l.kind.agentEnv(l) {
+		if env.Name == "LEGION_TREE" {
+			told = env.Value
+		}
+	}
+	if told != testTree {
+		t.Fatalf("the member's roles are told LEGION_TREE=%q, want the gate root %s", told, testTree)
+	}
+	checkGolden(t, "member", manifestOf(t, r, spec))
 }
 
 // The root issue pod under the Go live harnesses' operator pod (deploy/kubernetes/operator-route/

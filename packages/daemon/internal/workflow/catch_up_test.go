@@ -45,14 +45,17 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 			// The reason is worded for a relaunch mid-tree as much as for the first launch: an
 			// architect told to start over would edit its spec, and a new version closes its gate.
 			// Nothing has registered the tree's gate, so the one step it must hold open is
-			// unregistered; a deployment on `off` gates that step for no person.
-			gates := "spec(gated=true,unregistered=true)"
+			// unregistered, and the reason names it and says to register its document and request
+			// the person's approval; a deployment on `off` gates that step for no person, so its
+			// reason names nothing.
+			gates, unregistered := "spec(gated=true,unregistered=true)",
+				"; no document is registered for the spec step of LEGION-1: register the document of that step with register_gate and request the person's approval"
 			if tc.policy == config.DesignGateOff {
-				gates = "spec(gated=false,unregistered=true)"
+				gates, unregistered = "spec(gated=false,unregistered=true)", ""
 			}
 			told := func(generation, launch int) string {
-				return fmt.Sprintf("gen=%d launch=%d gates=%s issues=LEGION-1,LEGION-2 reason=the tree of LEGION-1 at generation %d as the daemon records it now; start or resume it as your role says",
-					generation, launch, gates, generation)
+				return fmt.Sprintf("gen=%d launch=%d gates=%s issues=LEGION-1,LEGION-2 reason=the tree of LEGION-1 at generation %d as the daemon records it now; start or resume it as your role says%s",
+					generation, launch, gates, generation, unregistered)
 			}
 
 			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
@@ -85,27 +88,29 @@ func TestARootArchitectIsToldItsTreeAtEachLaunchsReady(t *testing.T) {
 	}
 }
 
-// A root a hand-over created at this generation is said to be handed over in its architect's
-// catch-up, whatever the phase, so the architect resumes rather than decomposing the tree anew; it
-// is said to be carried as well when its old root's gate came with it, so the architect registers
-// no spec. The same root at a later generation (closed and reopened) is a root like any other.
+// A root a hand-over carried in at this generation (record.Issue.CarriedGeneration) is said to be
+// handed over in its architect's catch-up, whatever the phase, so the architect resumes rather than
+// decomposing the tree anew; it is said to be carried as well when its old root's gate came with it
+// (record.Issue.CarriedGate), so the architect registers no spec. Its reason names no unregistered
+// step either way: its prompt says which steps it registers. The same root at a later generation
+// (closed and reopened) is a root like any other, and its reason names the step it has registered
+// no document for.
 func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 	t.Parallel()
 	for _, at := range []phase.Phase{phase.Planning, phase.Reviewing, phase.Accepting} {
 		for _, gateCarried := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s, gate carried %t", at, gateCarried), func(t *testing.T) {
 				pool := migratedPool(t)
-				root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: at, Generation: 2, Status: "in_progress", Rank: "U"}
+				root := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION", Title: "Root", Phase: at, Generation: 2, Status: "in_progress", Rank: "U",
+					CarriedGeneration: 2, CarriedGate: gateCarried}
 				seedIssue(t, pool, root)
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-					return record.NewStore().PutHandedOverRoot(context.Background(), tx, record.HandedOverRoot{Issue: root.Key, Generation: 2, GateCarried: gateCarried})
-				}); err != nil {
-					t.Fatalf("seed handed-over root: %v", err)
-				}
 				engine := testEngine(config.DesignGateRootIssues, nil)
 				claimReady(t, pool, engine, root.Key, claim.RoleArchitect, 1)
 				if got := lastCatchUp(t, pool); !got.HandedOver || got.Carried != gateCarried {
 					t.Fatalf("handed-over root in %s: catch-up says handed over %t, carried %t; want true, %t", at, got.HandedOver, got.Carried, gateCarried)
+				}
+				if got := catchUps(t, pool); len(got) != 1 || strings.Contains(got[0], "no document is registered") {
+					t.Fatalf("handed-over root in %s: catch-ups %v, want one that names no unregistered step", at, got)
 				}
 				if _, err := pool.Exec(t.Context(), "delete from outbox"); err != nil {
 					t.Fatal(err)
@@ -115,6 +120,9 @@ func TestACatchUpMarksAHandedOverRootInEveryPhase(t *testing.T) {
 				claimReady(t, pool, engine, root.Key, claim.RoleArchitect, 2)
 				if got := lastCatchUp(t, pool); got.HandedOver || got.Carried {
 					t.Fatalf("the root's later generation in %s: catch-up still says handed over %t, carried %t", at, got.HandedOver, got.Carried)
+				}
+				if got := catchUps(t, pool); len(got) != 1 || !strings.Contains(got[0], "no document is registered for the spec step of LEGION-1") {
+					t.Fatalf("the root's later generation in %s: catch-ups %v, want one that names its unregistered spec step", at, got)
 				}
 			})
 		}
@@ -160,13 +168,73 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 		if err := tx.QueryRow(ctx, "select id from outbox where kind = 'notice' and payload->>'kind' = 'catch-up' order by id desc limit 1").Scan(&row); err != nil {
 			return err
 		}
-		return record.NewStore().ForgetKeptDecisions(ctx, tx, "LEGION-1", *lastCatchUp(t, pool).Kept, row)
+		members, err := record.KeptMembers(ctx, tx, record.NewStore(), "LEGION-1")
+		if err != nil {
+			return err
+		}
+		return record.NewStore().ForgetKeptDecisionsOf(ctx, tx, "LEGION-1", members, *lastCatchUp(t, pool).Kept, row)
 	}); err != nil {
 		t.Fatalf("forget what the delivered catch-up named: %v", err)
 	}
 	claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 3)
 	if got := lastCatchUp(t, pool); got.Decided != "" || got.Kept != nil {
 		t.Fatalf("the launch after a delivered catch-up is told %q (kept %#v), want nothing", got.Decided, got.Kept)
+	}
+}
+
+// A gate holder whose record stores another issue's tree — an issue first recorded under a parent
+// that has since left Legion's work, so it holds its own gate on the Dispatch chain — is told what
+// a person decided on it while nobody could hear it, at its architect's ready and at its
+// architect's start alike: each composes the decisions over the gate holder's own key
+// (ParkedDecisionTask) and claims them over that same key (EnqueueNaming), never over the tree its
+// record stores (R15 and R18 of dispatch://INFRA-3320). The start keeps the stored tree in its
+// payload (decision 13 of dispatch://INFRA-4730).
+//
+// Negative control, run when this was written: with EnqueueNaming claiming over the stored tree,
+// the claim names a decision none of that tree's members holds, and the ready's transaction fails.
+func TestAGateHolderStoredUnderAnotherTreeIsToldWhatWasKeptForIt(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := migratedPool(t)
+	const oldRoot, holder, ref = "LEGION-700", "LEGION-701", "dispatch://LEGION-701/ask/ask-1"
+	parent := oldRoot
+	seedIssue(t, pool, record.Issue{Key: oldRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: oldRoot,
+		Project: "LEGION", Title: "Old root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "T"})
+	gateHolder := record.Issue{Key: holder, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: oldRoot,
+		Parent: &parent, Project: "LEGION", Title: "Gate holder", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"}
+	seedIssue(t, pool, gateHolder)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), "LEGION", []string{holder})
+		if err != nil {
+			return err
+		}
+		if !chains.HoldsOwnGate(holder) || chains.GateRoot(holder) != holder {
+			t.Fatalf("%s holds its own gate %t, gate root %q; want it its own gate root: this case proves nothing", holder,
+				chains.HoldsOwnGate(holder), chains.GateRoot(holder))
+		}
+		return record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: holder, Ref: ref,
+			Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
+	})
+	told := fmt.Sprintf("While nobody in %s's tree could hear it, a person decided on the tree: %s (%s by user:alice). Read each before you continue.",
+		holder, ref, record.DecisionAskAnswered)
+
+	claimReady(t, pool, engine, holder, claim.RoleArchitect, 1)
+	if got := lastCatchUp(t, pool); got.Decided != told || got.Kept == nil || len(got.Kept.Decisions) != 1 || got.Kept.Decisions[0].Ref != ref {
+		t.Fatalf("the ready's catch-up names %q (kept %#v), want %q", got.Decided, got.Kept, told)
+	}
+
+	// The catch-up's delivery ended undelivered, which leaves the decision unclaimed for the start.
+	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
+		t.Fatalf("end the queued catch-up: %v", err)
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(ctx, tx, gateHolder) })
+	start := architectStartOf(t, pool, holder)
+	if start.Tree != oldRoot || start.Kept == nil || len(start.Kept.Decisions) != 1 || start.Kept.Decisions[0].Ref != ref ||
+		!strings.Contains(start.Task, told) {
+		t.Fatalf("the architect's start = tree %q, kept %#v, task %q; want the stored tree %s and the task naming %q", start.Tree, start.Kept,
+			start.Task, oldRoot, told)
 	}
 }
 
@@ -217,7 +285,7 @@ func TestACatchUpNamesAKeptDecisionOnlyWhileNoLaterApprovalSupersededIt(t *testi
 			var kept []record.ParkedDecision
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error
-				kept, err = records.ParkedDecisions(ctx, tx, "LEGION-1")
+				kept, err = records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-1"})
 				return err
 			}); err != nil {
 				t.Fatalf("read what is kept: %v", err)
@@ -266,26 +334,33 @@ func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 // wake, and it names every issue in accepting whose acceptance is that architect's, whatever each
 // is waiting for: the acceptance itself is refused while an issue beneath it is still in the
 // workflow (signOff), and the catch-up is what tells the architect the issue is there to be
-// decided.
+// decided. The catch-up names the issues the architect acts on: its own issue and the issues
+// under it in Legion's work (R18 of dispatch://INFRA-3320), so a child done or on the backlog is
+// not among them.
 func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) {
 	t.Parallel()
-	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
+	// Nothing registered the tree's gate, so the reason names its spec step before the issues
+	// waiting in accepting.
+	const base = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +
+		"; no document is registered for the spec step of LEGION-1: register the document of that step with register_gate and request the person's approval"
 	awaiting := func(keys string) string {
 		return base + "; in accepting, waiting for your acceptance, which no worker gives: " + keys + " (read the evidence, then sign_off or request_backward_move)"
 	}
+	const both, rootAlone = "LEGION-1,LEGION-2", "LEGION-1"
 	for _, tc := range []struct {
 		name                    string
 		root, child             phase.Phase
 		rootStatus, childStatus string
+		issues                  string
 		want                    string
 	}{
-		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", awaiting("LEGION-1")},
-		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", awaiting("LEGION-1")},
-		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", awaiting("LEGION-1")},
-		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", awaiting("LEGION-2")},
-		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", awaiting("LEGION-1, LEGION-2")},
-		{"the root merging", phase.Merging, phase.Done, "retro", "done", base},
-		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", base},
+		{"the root accepting, its child done", phase.Accepting, phase.Done, "needs_review", "done", rootAlone, awaiting("LEGION-1")},
+		{"the root accepting, its child parked in backlog", phase.Accepting, phase.Done, "needs_review", "backlog", rootAlone, awaiting("LEGION-1")},
+		{"the root accepting, its child still implementing", phase.Accepting, phase.Implementing, "needs_review", "in_progress", both, awaiting("LEGION-1")},
+		{"a child accepting while the root implements", phase.Implementing, phase.Accepting, "in_progress", "needs_review", both, awaiting("LEGION-2")},
+		{"the root and its child both accepting", phase.Accepting, phase.Accepting, "needs_review", "needs_review", both, awaiting("LEGION-1, LEGION-2")},
+		{"the root merging", phase.Merging, phase.Done, "retro", "done", rootAlone, base},
+		{"nothing accepting", phase.Reviewing, phase.Testing, "needs_review", "testing", both, base},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -297,7 +372,7 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 				Phase: tc.child, Generation: 1, Status: tc.childStatus, Rank: "V"})
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), root.Key, claim.RoleArchitect, 1)
 			got := catchUps(t, pool)
-			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=LEGION-1,LEGION-2 reason=%s", tc.want)
+			want := fmt.Sprintf("gen=1 launch=1 gates=spec(gated=true,unregistered=true) issues=%s reason=%s", tc.issues, tc.want)
 			if len(got) != 1 || got[0] != want {
 				t.Fatalf("catch-ups %v; want [%s]", got, want)
 			}
@@ -337,17 +412,11 @@ func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T)
 	}
 }
 
-// Only a live tree's architects are told their issues. A tree that lingers or has left the
-// workflow is told nothing, nor is a phase worker on the root; a child's own architect is told
+// Only the architects of an issue in Legion's work are told their issues. A root that has left
+// Legion's work is told nothing, nor is a phase worker on the root; a child's own architect is told
 // the child and the issues under it, with no gate.
 func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 	t.Parallel()
-	// A lingering root set back to todo still lingers until admission takes it again: only its
-	// linger, not its status, says the tree has left the workflow.
-	lingering := func(root *record.Issue) {
-		until := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
-		root.Phase, root.Status, root.LingerUntil = phase.Done, "todo", &until
-	}
 	for _, tc := range []struct {
 		name  string
 		root  func(*record.Issue)
@@ -355,7 +424,6 @@ func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 		role  claim.Role
 		want  []string
 	}{
-		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect, nil},
 		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect, nil},
 		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect, []string{
 			"gen=1 launch=1 gates= issues=LEGION-2 reason=the issues under LEGION-2, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"}},

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // Issue.StartsNow and HoldersOf are the two functions the replay of cybermonklabs/legion#4771
@@ -90,11 +89,12 @@ func TestStartsNowAndHoldersOfAreTheReplaysSeam(t *testing.T) {
 }
 
 // PriorityOf places an entry in the waiting line's band by the priority Dispatch resolves where
-// Dispatch sent one (C2 of dispatch://INFRA-5636), whatever its tree root's: a known resolved
-// priority beats the root's, and a known null under a P0 root bands as none. Where Dispatch sent
-// none, the issue's own priority places it, and with none of its own its tree root's does, which is
-// an older Dispatch's order alone (decision 3 of the plan): it never makes the issue start outside
-// the cap. The line built from such issues stands in those bands.
+// Dispatch sent one (C2 of dispatch://INFRA-5636), whatever its top issue's: a known resolved
+// priority beats the top issue's, and a known null under a P0 top issue bands as none. Where
+// Dispatch sent none, the issue's own priority places it, and with none of its own its top issue's
+// does, which is an older Dispatch's order alone (decision 3 of the plan): it never makes the issue
+// start outside the cap. The line built from such issues, read over their Dispatch chains, stands
+// in those bands.
 func TestPriorityOfBandsByTheResolvedPriorityWhereKnown(t *testing.T) {
 	opened := time.Date(2026, 11, 25, 6, 0, 0, 0, time.UTC)
 	p0Root := withPriority(linePartIssue("LEGION-40", "LEGION-40", "in_progress", phase.Admitted, "M"), P0)
@@ -146,7 +146,7 @@ func TestPriorityOfBandsByTheResolvedPriorityWhereKnown(t *testing.T) {
 		open = append(open, OpenChild{Key: row.issue.Key, Status: "todo", Released: true})
 	}
 	facts := LineFacts{
-		Lifecycles: map[string]treelifecycle.Lifecycle{p0Root.Key: {Tree: p0Root.Key, Authority: treelifecycle.AuthorityWorkflow}},
+		Chains:     chainsOf(issues, copyOf(issues...)),
 		Gates:      map[string]TreeGate{p0Root.Key: openGate(p0Root.Key, opened)},
 		ChildWaits: map[string]ChildWait{p0Root.Key: {Parent: p0Root.Key, Open: open}},
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -24,24 +25,31 @@ import (
 )
 
 // newWorkflowHarness serves the daemon's routes with the workflow of cfg deciding every fact they
-// apply, over a real Postgres and the GitHub stand-in a completing implementer reads, and with the
-// workflow's own table of which role works each phase (workflow.RoleFor), as the daemon wires it.
-// It answers the engine the test applies its own facts with — a settlement, a status a person set,
-// a failed claim — and the recorder of every fact the routes applied.
-func newWorkflowHarness(t *testing.T, cfg workflow.Config) (*harness, *workflow.Engine, *factRecorder) {
+// apply, over a real Postgres and the GitHub stand-in a completing implementer reads, behind the
+// Mirror that writes each route's reads of Dispatch into the copy, as the daemon's own chain does
+// (daemon/workflow.go), and with the workflow's own table of which role works each phase
+// (workflow.RoleFor), as the daemon wires it. It answers the engine the test applies its own facts
+// with — a settlement, a status a person set, a failed claim — and the recorder of every fact the
+// routes applied. Each of configure sets an option of the server first, such as a test's seam.
+func newWorkflowHarness(t *testing.T, cfg workflow.Config, configure ...func(*Options)) (*harness, *workflow.Engine, *factRecorder) {
 	t.Helper()
 	h := newHarness(t)
 	h.handoffs = &statusRecorder{}
 	github := newHandoffGitHub(t)
 	facts := &factRecorder{}
-	engine := workflow.New(record.NewStore(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	h.handler = NewServer("127.0.0.1", 8437, Options{
+	records := record.NewStore()
+	engine := workflow.New(records, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	opts := Options{
 		Steps:      cfg.Steps,
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
-		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{engine, facts}, Dispatch: h.handoffs, RoleFor: workflow.RoleFor,
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{blockers.NewMirror(records, testDispatchProject), engine, facts}, Dispatch: h.handoffs, RoleFor: workflow.RoleFor,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
-	}).Handler
+	}
+	for _, set := range configure {
+		set(&opts)
+	}
+	h.handler = NewServer("127.0.0.1", 8437, opts).Handler
 	return h, engine, facts
 }
 
@@ -87,7 +95,7 @@ func newCheckLookClaim(t *testing.T, h *harness, key string, role claim.Role, lo
 // mergedCloseBehindATestingTurn drives the reviewer's trace as far as the close. A child's pull
 // request merges while the child is still in testing, before it reaches merging, and a person
 // sets the issue done from Dispatch while the tester's testing turn is still running: the close
-// spares the check's role (workflow's linger.go, `except = e.checkRole()`), opens the tester's
+// spares the check's role (workflow's leave.go, `except = e.checkRole()`), opens the tester's
 // production check and starts look 1 behind that running turn. It answers the harness, its
 // record of every fact the routes applied, and the tester's claim with the machine that holds it.
 func mergedCloseBehindATestingTurn(t *testing.T) (*harness, *factRecorder, liveClaim, *supervise.Machine) {
@@ -146,10 +154,11 @@ func theCheckIsUntouched(t *testing.T, h *harness, facts *factRecorder) {
 }
 
 // A tester ends its testing turn after the merge closed the issue. Its verdict also names a
-// valid check outcome, but only checkOpenedAt selects a check report. This fieldless call is a
-// phase completion, and a done issue runs no phase. The route refuses it with
-// CHECK_LOOK_NOT_SERVED and the check identity's recovery path. It records nothing and leaves
-// the check untouched.
+// valid check outcome, but only checkOpenedAt selects a check report, so this fieldless call is a
+// phase completion. The issue runs no phase: the person's done kept its testing phase (R20 of
+// dispatch://INFRA-3320), yet its record is done by its status, so the route refuses the call
+// with CHECK_LOOK_NOT_SERVED and names checkOpenedAt, the check identity's recovery path. It
+// records nothing and leaves the check untouched.
 func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 1 {
@@ -158,12 +167,16 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 	if look := machine.Claim().ServingCheck(); look.Look != 0 {
 		t.Fatalf("the tester serves check look %+v, want none: its live assignment is the testing task's", look)
 	}
+	if stopped := recordedChild(t, h, "LEGION-209"); stopped == nil || stopped.Phase != phase.Testing || stopped.Status != "done" || record.InLegionsWork(*stopped) {
+		t.Fatalf("LEGION-209 after the person's done = %#v, want it done, out of Legion's work with its testing phase kept", stopped)
+	}
 
 	// The testing turn ends with the verdict a check report also names.
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "CHECK_LOOK_NOT_SERVED")
-	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") {
-		t.Fatalf("the refusal is %q, want the missing check identity and nothing recorded", message)
+	if !strings.Contains(message, "checkOpenedAt") || !strings.Contains(message, "recorded nothing") ||
+		!strings.Contains(message, "production check is the tester's") {
+		t.Fatalf("the refusal is %q, want the check's role, the missing check identity and nothing recorded", message)
 	}
 	theCheckIsUntouched(t, h, facts)
 }
@@ -179,9 +192,9 @@ func TestATestingVerdictAfterTheMergedCloseIsNoReportOnTheProductionCheck(t *tes
 // A look the claim has only had sent to it is no look it serves: read as one, this verdict would
 // close the production check as a pass with nobody having looked at production, which is the
 // whole of what the fallback for an unread task must not do. So the completion reports on no
-// look, and a done issue runs no phase for it to complete either: it is refused
-// CHECK_LOOK_NOT_SERVED, before the phase path, with nothing recorded and the check left open at
-// its look.
+// look, and it completes no phase either: the person's done kept the issue's testing phase, yet
+// the issue is done, so the call is refused CHECK_LOOK_NOT_SERVED, naming checkOpenedAt, with
+// nothing recorded and the check left open at its look.
 func TestATestingVerdictBehindAnUnreadLooksTaskIsNoReportOnTheProductionCheck(t *testing.T) {
 	h, facts, tester, machine := mergedCloseBehindATestingTurn(t)
 	ctx := context.Background()

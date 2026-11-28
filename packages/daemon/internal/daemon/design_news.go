@@ -59,8 +59,10 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 }
 
 // designChanges runs one design_changes row: the reconcile of its tree's news of the approved
-// design (record.DesignNewsReconcile), whose issue is the tree's root. It does five things, in
-// order, each against the record as it stands when that step runs:
+// design (record.DesignNewsReconcile), whose issue is the tree's gate root. Its tree is that gate
+// root and the issues in Legion's work whose gate root it is on the Dispatch chain
+// (record.Chains.GateTree), whatever tree their records store. It does five things, in order, each
+// against the record as it stands when that step runs:
 //
 //  1. In one read transaction, it reads what the tree owes (record.OwedNews over
 //     record.TreeNewsFacts).
@@ -105,7 +107,11 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 		if root, err = r.records.Issue(ctx, tx, row.Issue); err != nil || root == nil {
 			return err
 		}
-		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, root.Tree)
+		chains, err := record.ReadChains(ctx, tx, r.records, root.Project, []string{root.Key})
+		if err != nil {
+			return err
+		}
+		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, chains, root.Key)
 		owed = record.OwedNews(facts)
 		return err
 	}); err != nil {
@@ -115,7 +121,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 		r.log.Info("outbox design_changes of a tree the record does not hold; finished without acting", "row", row.ID, "issue", row.Issue)
 		return nil
 	}
-	items := owedNewsItems(owed, root.Tree)
+	items := owedNewsItems(owed, root.Key)
 	if len(owed.Members) == 0 && !owed.ArchitectOwed() {
 		return nil
 	}
@@ -128,7 +134,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 			recorded, err = r.records.DesignChangesOf(ctx, tx, baselines.pairs)
 			return err
 		}); err != nil {
-			return fmt.Errorf("read the recorded change sets of the tree of %s: %w", root.Tree, err)
+			return fmt.Errorf("read the recorded change sets of the tree of %s: %w", root.Key, err)
 		}
 	}
 	read, readErr := r.readChangeSets(ctx, row, baselines.pairs, recorded)
@@ -157,13 +163,13 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 			}
 			return nil
 		}); err != nil {
-			return fmt.Errorf("record what the reconcile of the tree of %s read from Dispatch: %w", root.Tree, err)
+			return fmt.Errorf("record what the reconcile of the tree of %s read from Dispatch: %w", root.Key, err)
 		}
 	}
 	if err := errors.Join(historyErr, readErr); err != nil {
 		return err
 	}
-	return r.settleNews(ctx, row, root.Tree)
+	return r.settleNews(ctx, row, root.Key)
 }
 
 // resolvedBaselines is what the second step's first half resolved (resolveBaselines): the version
@@ -485,13 +491,12 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 //     earlier opening that a close and a reopening replaced), is sent the same way: its task leads
 //     with the opening and says nothing more.
 //
-// A tree that lingers, a member out of the workflow, one that merged, or one whose phase has no
-// holder is owed nothing (record.OwedNews), so nothing is queued for it. Each start reads again,
-// when it runs, what it carries and whether it may reach its claim (the start executor's
-// newsForStart and newsOnlyRefusal), since the record can move before then. The lines that say
-// what the settlement queued and raised are hooks of its commit (store.OnCommit), so a settlement
-// that rolls back says nothing, and one whose commit reply is lost says it once the store says it
-// committed.
+// A member out of the workflow, one that merged, or one whose phase has no holder is owed nothing
+// (record.OwedNews), so nothing is queued for it. Each start reads again, when it runs, what it
+// carries and whether it may reach its claim (the start executor's newsForStart and
+// newsOnlyRefusal), since the record can move before then. The lines that say what the settlement
+// queued and raised are hooks of its commit (store.OnCommit), so a settlement that rolls back says
+// nothing, and one whose commit reply is lost says it once the store says it committed.
 func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree string) error {
 	now := r.now().UTC()
 	if err := r.settleUnderFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -501,14 +506,18 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 		if err != nil || root == nil {
 			return err
 		}
-		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, root.Tree)
+		chains, err := record.ReadChains(ctx, tx, r.records, root.Project, []string{root.Key})
+		if err != nil {
+			return err
+		}
+		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, chains, root.Key)
 		if err != nil {
 			return err
 		}
 		owed := record.OwedNews(facts)
 		var asks newsAsks
-		for _, item := range owedNewsItems(owed, root.Tree) {
-			asks.add(root.Tree, item.item)
+		for _, item := range owedNewsItems(owed, root.Key) {
+			asks.add(root.Key, item.item)
 		}
 		recorded, err := readNewsRecorded(ctx, tx, r.records, asks, r.now)
 		if err != nil {
@@ -541,7 +550,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 				sendTo = append(sendTo, toldKey{root.Key, record.AudienceArchitect})
 			}
 		}
-		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, &facts), sendTo)
+		holders, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(*root, chains), sendTo)
 		if err != nil {
 			return err
 		}
@@ -632,11 +641,11 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 	sent := renderedNews{task: payload.Task}
 	roundNamed := payload.RoundNamed
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
+		facts, chains, err := record.ReadTreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Project, issue.Key)
 		if err != nil {
 			return err
 		}
-		if carried.Items, carried.Openings, err = r.owedToClaim(ctx, tx, facts, issue, payload.Role, token); err != nil {
+		if carried.Items, carried.Openings, err = r.owedToClaim(ctx, tx, facts, chains, issue, payload.Role, token); err != nil {
 			return err
 		}
 		if carried.Empty() {
@@ -658,17 +667,17 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 
 // owedToClaim is what facts owe the claim token, of role on issue, speaks for, as a delivery
 // carries it: each told row owed news whose holder is that claim (newsClaims.holderOf, and
-// rootArchitect for the tree root's architect row). For a phase worker that is its member's holder
+// rootArchitect for the gate root's architect row). For a phase worker that is its member's holder
 // row while the role is the one the member's phase names; for an architect, its own summary when
-// issue is the tree root and its row is owed, and the holder form of each member in accepting it
-// owns. Which architect owns such a member is the owner walk over the machine's live view
-// (withLiveView, the outbox's holdsItsRole), as the outbox routes a notice of the member, so a
-// start carries a member's news to no architect a decision in flight is stopping. Each told row it
-// speaks for carries the opening too, where the row owes it and the standing gate is open. An
-// architect is never handed a worker's news, and a worker never an architect's. Where the tree's
-// root is not among its issues, nothing is carried, since every holder is named over the root's
-// record (newsClaims).
-func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFacts, issue record.Issue, role claim.Role,
+// issue is the gate root and its row is owed, and the holder form of each member in accepting it
+// owns. Which architect owns such a member is the owner walk over chains, the Dispatch chains facts
+// were read from, weighed by the machine's live view (withLiveView, the outbox's holdsItsRole), as
+// the outbox routes a notice of the member, so a start carries a member's news to no architect a
+// decision in flight is stopping. Each told row it speaks for carries the opening too, where the
+// row owes it and the standing gate is open. An architect is never handed a worker's news, and a
+// worker never an architect's. Where the gate root is not among the tree's issues the record
+// holds, nothing is carried, since every holder is named over the root's record (newsClaims).
+func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFacts, chains *record.Chains, issue record.Issue, role claim.Role,
 	token claim.Token) ([]record.DeliveryNewsItem, []record.DeliveryOpening, error) {
 	owed := record.OwedNews(facts)
 	open := record.TreeGate{Steps: facts.Steps, Rows: facts.Gates}.Open()
@@ -683,12 +692,12 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 			openings = append(openings, record.DeliveryOpening{Issue: key, Audience: audience, Seq: told.Opening})
 		}
 	}
-	rootAt := slices.IndexFunc(facts.Members, func(member record.Issue) bool { return claim.IsTreeRoot(member.Key, member.Tree) })
+	rootAt := slices.IndexFunc(facts.Members, func(member record.Issue) bool { return member.Key == facts.Root })
 	if rootAt < 0 {
 		return nil, nil, nil
 	}
 	root := facts.Members[rootAt]
-	claims := newNewsClaims(root, &facts).withLiveView(r.holdsItsRole)
+	claims := newNewsClaims(root, chains).withLiveView(r.holdsItsRole)
 	if holder, held := claims.rootArchitect(); held && holder.token == token && owed.ArchitectOwed() {
 		tell(root.Key, record.AudienceArchitect, owed.Architect)
 	}
@@ -725,13 +734,13 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (bool, error) {
 	var unrecorded bool
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
+		facts, _, err := record.ReadTreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Project, issue.Key)
 		if err != nil {
 			return err
 		}
 		if member, owes := record.OwedNews(facts).Member(issue.Key); owes {
 			var asks newsAsks
-			asks.add(issue.Tree, member.Items...)
+			asks.add(facts.Root, member.Items...)
 			recorded, err := readNewsRecorded(ctx, tx, r.records, asks, r.now)
 			if err != nil {
 				return err
@@ -772,11 +781,17 @@ func (w *workflowRuntime) queueOwedDesignNews(ctx context.Context) error {
 			return err
 		}
 		roots, err := w.records.GatedIssues(ctx, tx, w.dispatchProject)
+		if err != nil || len(roots) == 0 {
+			return err
+		}
+		// Each gated issue is the gate root of its tree, read on one reading of the Dispatch chains
+		// for the whole sweep (record.Chains.GateTree).
+		chains, err := record.ReadChains(ctx, tx, w.records, w.dispatchProject, roots)
 		if err != nil {
 			return err
 		}
 		for _, root := range roots {
-			facts, err := record.TreeNewsFacts(ctx, w.records, tx, w.gatedSteps, root)
+			facts, err := record.TreeNewsFacts(ctx, w.records, tx, w.gatedSteps, chains, root)
 			if err != nil {
 				return err
 			}
@@ -813,4 +828,23 @@ func (w *workflowRuntime) queueDesignNews(ctx context.Context, trees []string) e
 		return fmt.Errorf("queue the reconcile of the news of %v: %w", trees, err)
 	}
 	return nil
+}
+
+// gateRootsOf is the gate root each of issues stands under on the Dispatch chain of the daemon's
+// project, read in tx (record.ReadChainsOf, record.Chains.StateTree), whatever tree the record
+// stores: what the claim store's fold of a delivery's final credit of news holds each item to
+// (store.GateRoots), so a credit of the gate an issue has left folds nothing into its told row.
+func (w *workflowRuntime) gateRootsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]string, error) {
+	if len(issues) == 0 {
+		return map[string]string{}, nil
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, w.records, w.dispatchProject, issues)
+	if err != nil {
+		return nil, err
+	}
+	roots := make(map[string]string, len(issues))
+	for _, issue := range issues {
+		roots[issue] = chains.StateTree(issue)
+	}
+	return roots, nil
 }

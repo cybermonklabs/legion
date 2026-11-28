@@ -316,6 +316,26 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerWaveRelease:
+		release, isRelease := body.(WaveReleaseResponse)
+		if !isRelease {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// `queued`, the status writes the release queued, arrived at chainContract, so a reader
+		// below it is served the three lists it reads and no fourth (WaveReleaseResponse's
+		// queuedHidden).
+		release.queuedHidden = strip < entryNumber(chainContract)
+		return release, took
+	case AnswerStatusCall:
+		if _, isCall := body.(StatusCallResponse); !isCall {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		// The answer was the empty object until chainContract gave it `queued`, so a reader below
+		// it is served that object.
+		if strip < entryNumber(chainContract) {
+			return EmptyResponse{}, took
+		}
+		return body, took
 	case AnswerPlanRegister:
 		// The running-step entry's row. Every numbered contract reads this answer whole, so it
 		// stands among the numbered entries' identity answers (frozenIdentityAnswers), and this
@@ -380,12 +400,13 @@ func identityAnswer(id AnswerID) bool { return registry().identityAnswers[id] }
 // stateMachineContract, AnswerProjectPause and AnswerProjectResume arrived whole at
 // pauseContract, AnswerPlanRegister arrived whole at OwnerPlanContract, and AnswerIntakeReplay and
 // AnswerIntakeDiscard arrived whole at intakeGiveUpsContract, so no older contract records any of
-// the six at all. The two registration answers, a role's and the controller's, were identity
-// answers of the numbered entries too, until the replaces entry added `replaces` to both: they
-// have rows of their own in shapeAnswer now.
+// the six at all. AnswerWaveRelease was one of them until the chain entry gave it `queued`, and
+// shapeAnswer names it in a case of its own since. The two registration answers, a role's and the
+// controller's, were identity answers of the numbered entries too, until the replaces entry added
+// `replaces` to both: they have rows of their own in shapeAnswer now.
 var frozenIdentityAnswers = []AnswerID{AnswerHealth, AnswerNoContent,
 	AnswerGrant, AnswerHandoffComplete, AnswerEmptyObject, AnswerFreshSession,
-	AnswerCompact, AnswerTurnOutcome, AnswerWaveRelease, AnswerProjectPause, AnswerProjectResume,
+	AnswerCompact, AnswerTurnOutcome, AnswerProjectPause, AnswerProjectResume,
 	AnswerPlanRegister, AnswerIntakeReplay, AnswerIntakeDiscard}
 
 // tookOff is what one shaping of the state took off that body: the rows of stateNarrowings and
@@ -1267,6 +1288,16 @@ func withoutPriority(issue Issue) (Issue, bool) {
 // answers.go's frozenContracts.
 const causeTimesContract = 256
 
+// withoutConvertedAt is state with no `daemon.convertedAt`, the key chainContract added to the
+// state's daemon block. The key is an `omitempty` pointer, absent until the project's conversion
+// has finished, so the band reports a move only for a state that carries it. The block is a value
+// of the state's own, so the state the source answered is left as it was.
+func withoutConvertedAt(state State) (State, bool) {
+	moved := state.Daemon.ConvertedAt != nil
+	state.Daemon.ConvertedAt = nil
+	return state, moved
+}
+
 // withoutGateBasis is the issue with no `treeRuns`, and with no `gatedSteps` where a step of them
 // carries `basis`: the two keys gateBasisContract added to an issue. `basis` rides only on a step
 // of that contract's two status words, so the gated steps of every other issue are kept whole.
@@ -1881,21 +1912,24 @@ func withoutUnadmittedHoldReason(issue Issue, restore int) (Issue, bool) {
 }
 
 // withoutUnadmittedHeldWords is state whose `admission.held` names no row by a word restore's
-// reader does not admit. It follows the declared table (answers.go's heldReasons) and takes any
+// reader does not admit. It follows the declared table (the arrivals of `admission.held.*.reason`,
+// answers.go's heldReasons with the words entries add to it, read through arrivalsAt) and takes any
 // word the table holds back from restore (fieldArrivals.heldBack says which words and why): today
-// the `children_before_retro` and `task_stopped` of OwnerPlanContract and the
-// `awaiting_children` of gateBasisContract, and tomorrow any word the table gives a later
-// arrival. A reader from heldContract up to such a contract reads `reason` with a `z.enum` of the
-// words before it and refuses the whole body for another.
+// the `children_before_retro` and `task_stopped` of OwnerPlanContract, the `awaiting_children` of
+// the gate-basis entry and the `chain_unknown` and `awaiting_todo` of the chain entry (each in its
+// entry's `enumeratedValues`), and tomorrow any word the table gives a later arrival. A reader
+// from heldContract up to such a contract reads `reason` with a `z.enum` of the words before it
+// and refuses the whole body for another.
 //
 // The row is rewritten rather than dropped, which is where this parts company with
 // withoutUnadmittedStrandedStates: an older word does stand for it. A word an older word of the
 // field stands in for is served as that word, with its `heldBy`, which names what that word names
 // (heldReasonStandIn): `awaiting_children` as `children_first`, the wait that word named before
 // gateBasisContract gave it its own. Every other such word is served as `unclassified` with no
-// `heldBy`: each issue of the two holds OwnerPlanContract added read `unclassified` at every
-// daemon before that contract, and a word no row of the table declares is no word any older
-// reader is known to admit. `unclassified` and `children_first` both arrived with the field, so
+// `heldBy`: each issue of the two holds OwnerPlanContract added, and of the two words
+// chainContract added, read `unclassified` at every daemon before that contract, and a word no
+// row of the table declares is no word any older reader is known to admit. `unclassified` and
+// `children_first` both arrived with the field, so
 // every reader that knows the field admits them. So the row is served as that reader read it
 // before, and every other row as it stands.
 //
@@ -2379,9 +2413,10 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
-// PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that
-// carries `replaces`, and for an agent action's answer that carries `phaseNotRestarted`, and false
-// for every other answer. Those answers' shapes moved at pauseContract, at OwnerPlanContract, at
+// PauseFailure or a PlanRefusal, for the two answers of the status calls, the wave release's and
+// the status call's, for a registration, a role's or the controller's, that carries `replaces`,
+// and for an agent action's answer that carries `phaseNotRestarted`, and false for every other
+// answer. Those answers' shapes moved at pauseContract, at OwnerPlanContract, at chainContract, at
 // the replaces entry and at the claim start entry, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
 // that replaces no session is the same body at every contract, so it reads none. Every other
@@ -2392,7 +2427,7 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // claims (writeAnswerFrom).
 func placedByPod(id AnswerID, body any) bool {
 	switch id {
-	case AnswerReleaseRecords:
+	case AnswerReleaseRecords, AnswerWaveRelease, AnswerStatusCall:
 		return true
 	case AnswerRefusal:
 		switch body.(type) {

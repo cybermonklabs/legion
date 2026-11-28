@@ -216,12 +216,13 @@ func aDeletionOfThePodDuringAWait(t *testing.T) {
 	h.wantNoStartsAfter(first, second)
 }
 
-// aCloseOfTheTreeDuringAWait: a close of the tree during a wait does not wait.
-func aCloseOfTheTreeDuringAWait(t *testing.T) {
+// aCloseOfTheIssueDuringAWait: the close of the waiting claim's issue during a wait does not
+// wait, and the pod's next start goes to the claim behind it once the loading one has loaded.
+func aCloseOfTheIssueDuringAWait(t *testing.T) {
 	h := podHarness(t, "")
 	first, second, third := h.waitingTrio()
 
-	h.stopsWithoutWaiting(second, RequestTreeClose{Claim: second.token}, StateRetired)
+	h.stopsWithoutWaiting(second, RequestIssueClose{Claim: second.token}, StateRetired)
 
 	h.loadEnds(first)
 	h.wantGrantedStart(third, 1)

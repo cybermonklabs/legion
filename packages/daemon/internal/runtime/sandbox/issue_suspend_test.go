@@ -54,8 +54,8 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.Pool().Exec(g.ctx, `insert into issues
-		(key, tree, project, title, phase, generation, status, rank, linger_until, last_dispatch_seq)
-		values ($1, $1, 'LEGION', 'root', 'done', 1, 'done', 'A', now() + interval '1 hour', 1)`, testTree); err != nil {
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'LEGION', 'root', 'done', 1, 'done', 'A', 1)`, testTree); err != nil {
 		t.Fatal(err)
 	}
 	g.issueLaunchers(rootToken)
@@ -63,14 +63,14 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	old := g.spawn(spec)
 	name := SandboxName(rootToken)
 	uid := g.sandbox(name).UID
-	authorize := authorizeClose(st, store.IssueClose{Issue: testTree, Tree: testTree, IssueGeneration: 1, TreeGeneration: 1, Row: 1})
+	authorize := authorizeClose(st, store.IssueClose{Issue: testTree, Generation: 1, Row: 1})
 	stored := supervise.Claim{Token: rootToken, Project: testProject, Tree: testTree, TreeEpoch: 1, Issue: testTree, Role: claim.RoleArchitect,
 		Generation: 1, State: supervise.StateWorking, Locator: &old, Session: "retained-session", SessionFile: resumeSession}
 	if err := st.PutClaim(g.ctx, stored); err != nil {
 		t.Fatal(err)
 	}
 	// A stored role still working keeps the close a wait, independently of runtime membership.
-	if err := g.r.SuspendIssue(g.ctx, testTree, testTree, authorize); !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "stored claim") {
+	if err := g.r.SuspendIssue(g.ctx, testTree, "", authorize); !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "stored claim") {
 		t.Fatalf("issue suspension with a remaining role process = %v, want the stored claim's wait", err)
 	}
 	if g.sandbox(name).mode() != modeRunning {
@@ -83,7 +83,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	if err := st.PutClaim(g.ctx, stored); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.r.SuspendIssue(g.ctx, testTree, testTree, authorize); err != nil {
+	if err := g.r.SuspendIssue(g.ctx, testTree, "", authorize); err != nil {
 		t.Fatal(err)
 	}
 	if got := g.sandbox(name); got != nil {
@@ -92,7 +92,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	if g.pod(name) != nil {
 		t.Fatal("issue suspension returned while its pod remained")
 	}
-	if _, err := st.Pool().Exec(g.ctx, `update issues set generation = 2, phase = 'admitted', status = 'todo', linger_until = null where key = $1`, testTree); err != nil {
+	if _, err := st.Pool().Exec(g.ctx, `update issues set generation = 2, phase = 'admitted', status = 'todo' where key = $1`, testTree); err != nil {
 		t.Fatal(err)
 	}
 	spec.Generation = 2
@@ -113,7 +113,7 @@ func TestIssueSuspensionReadmissionResumesTheRetainedSession(t *testing.T) {
 	if resumed != stored.SessionFile {
 		t.Fatalf("resumed session = %q, want %q", resumed, stored.SessionFile)
 	}
-	if err := g.r.SuspendIssue(context.Background(), testTree, testTree, authorize); err != nil {
+	if err := g.r.SuspendIssue(context.Background(), testTree, "", authorize); err != nil {
 		t.Fatalf("stale close: %v", err)
 	}
 	if obs, err := g.r.Probe(g.ctx, loc); err != nil || obs.Kind != runtime.Alive {
@@ -176,9 +176,9 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 			name := SandboxName(childToken)
 			uid := g.sandbox(name).UID
 			g.clearActions()
-			authorize := authorizeClose(st, store.IssueClose{Issue: childIssue, Tree: testTree, IssueGeneration: 2, TreeGeneration: 7, Row: 1})
+			authorize := authorizeClose(st, store.IssueClose{Issue: childIssue, Generation: 2, Row: 1})
 
-			if err := g.r.SuspendIssue(g.ctx, childIssue, testTree, authorize); err != nil {
+			if err := g.r.SuspendIssue(g.ctx, childIssue, "", authorize); err != nil {
 				t.Fatal(err)
 			}
 
@@ -207,7 +207,7 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 				}
 			}
 			// A retry after the delete — the outbox row run again — finds no Sandbox and finishes.
-			if err := g.r.SuspendIssue(g.ctx, childIssue, testTree, authorize); err != nil {
+			if err := g.r.SuspendIssue(g.ctx, childIssue, "", authorize); err != nil {
 				t.Fatalf("retried close = %v, want it finished on the Sandbox already gone", err)
 			}
 			if len(deletes) != 1 {
@@ -232,53 +232,49 @@ func issueSecrets(sandbox string) []string {
 	return secrets
 }
 
-// A Sandbox under the issue's name whose labels name another project, issue or tree is not the
-// issue's to end. The close (SuspendIssue) and the release (ReleaseIssue) refuse it, and they do so
-// before they ask authorize. The daemon's authorize of a release commits the release where it acts
+// A Sandbox under the issue's name whose labels name another project or issue is not the issue's
+// to end. The close (SuspendIssue) and the release (ReleaseIssue) refuse it, and they do so before
+// they ask authorize. The daemon's authorize of a release commits the release where it acts
 // (store.Store.CommitIssueRelease), and a committed release is never cancelled. A refusal after
 // that commit would come on every attempt, and the release would never end. The refusal leaves the
-// Sandbox, its pod and its Secrets as the launch made them. The control is each end of the issue's
-// own Sandbox, whose labels name the issue and its tree: it asks authorize once, and where
-// authorize answers false it acts on nothing.
-func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.T) {
+// Sandbox, its pod and its Secrets as the launch made them. Its tree label is no part of the check
+// (decision 14 of dispatch://INFRA-4730; TestEveryDecisionIsTheSameWithEveryStoredTreeWrong). The
+// control is each end of the issue's own Sandbox: it asks authorize once, and where authorize
+// answers false it acts on nothing.
+func TestASandboxOfAnotherProjectOrIssueIsRefusedBeforeAuthorize(t *testing.T) {
 	t.Parallel()
 	for _, end := range []struct {
 		name string
 		call func(*Runtime, context.Context, string, string, func(context.Context) (bool, error)) error
 	}{
 		{name: "the close", call: (*Runtime).SuspendIssue},
-		{name: "the release", call: func(r *Runtime, ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-			_, err := r.ReleaseIssue(ctx, issue, tree, authorize, nil)
+		{name: "the release", call: func(r *Runtime, ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error {
+			_, err := r.ReleaseIssue(ctx, issue, podUID, authorize, nil)
 			return err
 		}},
 	} {
 		for _, other := range []struct {
 			name string
-			// tree is the tree the end names. labels are the labels the test sets on the
-			// launch's Sandbox.
-			tree   string
+			// labels are the labels the test sets on the launch's Sandbox.
 			labels map[string]string
 		}{
-			{name: "another project", tree: testTree, labels: map[string]string{labelProject: "other"}},
-			{name: "another issue", tree: testTree, labels: map[string]string{labelIssue: labelValue("LEGION-210")}},
-			{name: "another tree", tree: "LEGION-210"},
+			{name: "another project", labels: map[string]string{labelProject: "other"}},
+			{name: "another issue", labels: map[string]string{labelIssue: labelValue("LEGION-210")}},
 		} {
 			t.Run(end.name+" of a Sandbox of "+other.name, func(t *testing.T) {
 				g := newRig(t, nil)
 				loc := g.spawn(childSpec(t))
 				name := SandboxName(childToken)
-				if len(other.labels) > 0 {
-					object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
-					if err != nil {
-						t.Fatal(err)
-					}
-					relabelled := object.(*unstructured.Unstructured).DeepCopy()
-					labels := relabelled.GetLabels()
-					maps.Copy(labels, other.labels)
-					relabelled.SetLabels(labels)
-					if err := g.dyn.Tracker().Update(sandboxGVR, relabelled, testNamespace); err != nil {
-						t.Fatal(err)
-					}
+				object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				relabelled := object.(*unstructured.Unstructured).DeepCopy()
+				labels := relabelled.GetLabels()
+				maps.Copy(labels, other.labels)
+				relabelled.SetLabels(labels)
+				if err := g.dyn.Tracker().Update(sandboxGVR, relabelled, testNamespace); err != nil {
+					t.Fatal(err)
 				}
 				g.clearActions()
 				var asked atomic.Int32
@@ -287,8 +283,8 @@ func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.
 					return true, nil
 				}
 
-				err := end.call(g.r, g.ctx, childIssue, other.tree, authorize)
-				if err == nil || !strings.Contains(err.Error(), "does not belong to this issue and tree") {
+				err = end.call(g.r, g.ctx, childIssue, "", authorize)
+				if err == nil || !strings.Contains(err.Error(), "does not belong to this issue") {
 					t.Fatalf("%s = %v, want the refusal of a Sandbox of %s", end.name, err, other.name)
 				}
 				if n := asked.Load(); n != 0 {
@@ -319,7 +315,7 @@ func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.
 				return false, nil
 			}
 
-			if err := end.call(g.r, g.ctx, childIssue, testTree, refuse); err != nil {
+			if err := end.call(g.r, g.ctx, childIssue, "", refuse); err != nil {
 				t.Fatalf("%s of the issue's own Sandbox = %v, want no error: authorize answered that it does not act", end.name, err)
 			}
 			if n := asked.Load(); n != 1 {
@@ -341,8 +337,9 @@ func TestASandboxOfAnotherProjectIssueOrTreeIsRefusedBeforeAuthorize(t *testing.
 // eviction, which deletes the pod while the Sandbox stays Running; the update round's ReplacePod; a
 // launch that fails once its Running patch is sent; the release of an idle pod, which keeps the
 // Sandbox Suspended and deletes the Secrets that its next launch writes again; and a launch under a
-// new tree, which relabels the Sandbox. The next pod after each of them mounts the same claim at
-// TreeRoot. The release records on the Sandbox that it deleted the Secrets
+// new gate root, which keeps the Sandbox and the tree label its creation wrote. The next pod after
+// each of them mounts the same claim at TreeRoot. The release records on the Sandbox that it
+// deleted the Secrets
 // (secretsReleasedAnnotation), and the released Sandbox runs no pod, so IssueSandbox answers it
 // absent: the release of a pod no claim owns has nothing of it to release. The next launch removes
 // that record before it writes the first Secret. The daemon makes no request on a
@@ -484,7 +481,7 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			if sandbox, present := g.r.IssueSandbox(childIssue); !present || sandbox != name {
 				t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", sandbox, present, name)
 			}
-			if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+			if released, err := g.r.ReleaseIssue(g.ctx, childIssue, "", authorized, nil); err != nil || !released {
 				t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 			}
 			if s := g.sandbox(name); s == nil || s.UID != uid || s.mode() != modeSuspended || !ownsKeptVolume(s) {
@@ -535,25 +532,15 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 				t.Fatalf("IssueSandbox after the launch = %q, %t; want %s present", sandbox, present, name)
 			}
 
-			// The issue is re-admitted as a root of its own: its launch relabels the Sandbox for the
-			// new tree and keeps it. The relabel is fenced to the Sandbox's resourceVersion, which an
-			// API server gives every object and the rig's tracker does not, so the test gives the
-			// Sandbox one first.
-			object, err := g.dyn.Tracker().Get(sandboxGVR, testNamespace, name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			versioned := object.(*unstructured.Unstructured).DeepCopy()
-			versioned.SetResourceVersion("sandbox-rv-before-the-new-tree")
-			if err := g.dyn.Tracker().Update(sandboxGVR, versioned, testNamespace); err != nil {
-				t.Fatal(err)
-			}
+			// The issue is re-admitted as a root of its own: its launch under the new gate root
+			// keeps the Sandbox, and with it the tree label its creation wrote, which no decision
+			// reads and no launch rewrites (decision 14 of dispatch://INFRA-4730).
 			orphan := claim.Token("legion-legion-legion-209-architect")
 			orphanSpec := testSpec(t, orphan, claim.RoleArchitect, childIssue)
 			orphanSpec.Tree = childIssue
 			loc = g.spawn(orphanSpec)
-			if s := g.sandbox(name); s.Labels[labelTree] != labelValue(childIssue) {
-				t.Fatalf("after the launch under tree %s the Sandbox carries tree %q", childIssue, s.Labels[labelTree])
+			if s := g.sandbox(name); s.Labels[labelTree] != labelValue(testTree) {
+				t.Fatalf("after the launch under tree %s the Sandbox carries tree %q, want its creation's %s", childIssue, s.Labels[labelTree], testTree)
 			}
 			keeps(t, g, "a launch under a new tree", loc, uid, template)
 
@@ -568,10 +555,10 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 
 // A kept volume does not outlive its issue's time in the workflow. Each end that takes the issue
 // out of the workflow deletes the Sandbox that owns the kept volume, in the foreground, so garbage
-// collection takes the claim with it: the issue's suspension (SuspendIssue: a close, a tree's
-// linger, a production check's wait) waits the pod out first; the tree's cleanup (CleanupTree)
-// deletes each kept Sandbox of the tree; and the orphan sweep (ReconcileOrphans) deletes a kept
-// Sandbox of a tree that is not live. The API then holds no Sandbox of the name.
+// collection takes the claim with it: the issue's suspension (SuspendIssue: a close, a stop, a
+// production check's wait) waits the pod out first; the issue's own cleanup (CleanupIssue)
+// deletes the kept Sandbox of that issue; and the orphan sweep (ReconcileOrphans) deletes a kept
+// Sandbox of an issue whose own lifecycle is not live. The API then holds no Sandbox of the name.
 func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
 	t.Parallel()
 	t.Run("the issue's suspension", func(t *testing.T) {
@@ -595,7 +582,7 @@ func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
 			t.Fatalf("the issue's Sandbox = %+v, want one that owns the kept volume, or this case proves nothing", s)
 		}
 
-		if err := g.r.SuspendIssue(g.ctx, childIssue, testTree, authorized); err != nil {
+		if err := g.r.SuspendIssue(g.ctx, childIssue, "", authorized); err != nil {
 			t.Fatalf("SuspendIssue: %v", err)
 		}
 
@@ -646,17 +633,20 @@ func TestAKeptVolumeGoesWithItsIssuesSuspension(t *testing.T) {
 		}
 	}
 
-	t.Run("the tree's cleanup", func(t *testing.T) {
+	t.Run("each issue's own cleanup", func(t *testing.T) {
 		c := keptCleanupRig(t)
-		if err := c.r.CleanupTree(c.ctx, testTree); err != nil {
-			t.Fatalf("CleanupTree: %v", err)
+		for _, issue := range []string{testTree, childIssue} {
+			if err := c.r.CleanupIssue(c.ctx, issue); err != nil {
+				t.Fatalf("CleanupIssue(%s): %v", issue, err)
+			}
 		}
 		deletedKept(t, c)
 	})
 
-	t.Run("the orphan sweep of a tree that is not live", func(t *testing.T) {
+	t.Run("the orphan sweep of issues whose own cleanup confirmed", func(t *testing.T) {
 		c := keptCleanupRig(t)
 		c.store.close(testTree)
+		c.store.close(childIssue)
 		if err := c.r.ReconcileOrphans(c.ctx, nil, 0); err != nil {
 			t.Fatalf("ReconcileOrphans: %v", err)
 		}
@@ -730,7 +720,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 			return nil
 		}
 		g.clearActions()
-		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || !released || wrote != 1 {
+		if released, err := g.r.ReleaseIssue(g.ctx, testTree, "", authorized, writing); err != nil || !released || wrote != 1 {
 			t.Fatalf("ReleaseIssue = %t, %v with its writing callback called %d times; want the running pod's Sandbox released and the callback called once",
 				released, err, wrote)
 		}
@@ -751,7 +741,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 		}
 		// The teardown of a second release, as the daemon's would run, finds no Sandbox and
 		// answers that it released none.
-		if released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, writing); err != nil || released || wrote != 1 {
+		if released, err := g.r.ReleaseIssue(g.ctx, testTree, "", authorized, writing); err != nil || released || wrote != 1 {
 			t.Fatalf("a second ReleaseIssue = %t, %v with the callback called %d times in all; want false and no call: there is no Sandbox left to release",
 				released, err, wrote)
 		}
@@ -818,7 +808,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 			t.Fatalf("IssueSandbox of the running kept Sandbox = %q, %t; want %s present", got, present, kept)
 		}
 
-		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, "", authorized, nil); err != nil || !released {
 			t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 		}
 		s := g.sandbox(kept)
@@ -836,7 +826,7 @@ func TestIssueSandboxAnswersASandboxThatIsGoingAbsent(t *testing.T) {
 		g.clearActions()
 		var wrote int
 		writing := func(context.Context) error { wrote++; return nil }
-		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, writing); err != nil || released || wrote != 0 {
+		if released, err := g.r.ReleaseIssue(g.ctx, childIssue, "", authorized, writing); err != nil || released || wrote != 0 {
 			t.Fatalf("a second ReleaseIssue = %t, %v with its writing callback called %d times; want false and no call: the kept Sandbox holds nothing left to release",
 				released, err, wrote)
 		}
@@ -874,7 +864,7 @@ func TestAReleaseWhoseWritingCallbackFailsWritesNothing(t *testing.T) {
 	}
 	refused := errors.New("the release's mark cannot be noted")
 	g.clearActions()
-	released, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, func(context.Context) error { return refused })
+	released, err := g.r.ReleaseIssue(g.ctx, testTree, "", authorized, func(context.Context) error { return refused })
 	if !errors.Is(err, refused) || released {
 		t.Fatalf("ReleaseIssue = %t, %v; want false and the callback's error", released, err)
 	}

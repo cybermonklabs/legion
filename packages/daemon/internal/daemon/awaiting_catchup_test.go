@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -141,7 +142,9 @@ func catchUpRig(t *testing.T, client dispatch.Client, cap int) (*store.Pool, *wo
 }
 
 // catchUpRigLogging is catchUpRig writing the runtime's and admission's own lines to log, for a
-// test that reads what the daemon logged rather than what the store holds.
+// test that reads what the daemon logged rather than what the store holds. Its handlers are the
+// runtime's own (workflow.go): the Mirror first, which writes each reading into the copy of
+// Dispatch's issues every decision reads the chain from, then the engine and admission.
 func catchUpRigLogging(t *testing.T, client dispatch.Client, cap int, log *slog.Logger) (*store.Pool, *workflowRuntime) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -156,7 +159,7 @@ func catchUpRigOn(t *testing.T, pool *store.Pool, client dispatch.Client, cap in
 	admission := admit.New(records, engine, cap, "CAPTURE", log)
 	return &workflowRuntime{pool: pool, records: records, dispatch: client, dispatchProject: "CAPTURE", engine: engine, admission: admission,
 		gatedSteps: config.DesignGateRootIssues.Steps(),
-		handlers:   []intake.Handler{engine, admission}, log: log, bootID: "boot-1", catchUpRetryDelay: time.Millisecond}
+		handlers:   []intake.Handler{blockers.NewMirror(records, "CAPTURE"), engine, admission}, log: log, bootID: "boot-1", catchUpRetryDelay: time.Millisecond}
 }
 
 // bootCatchUp runs the boot's catch-up as the boot does: every root it reads is held in the
@@ -169,11 +172,40 @@ func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 	return w.catchUpAwaiting(context.Background())
 }
 
-// seedRecord runs put in a transaction of its own.
+// seedCatchUp runs put in a transaction of its own, then writes, for each record the copy of
+// Dispatch's issues holds no row of, the row a reading of Dispatch would have written: the parent
+// the record names and the status Dispatch last showed it in. The copy is what every decision
+// reads an issue's place on its chain from (record.ReadChains), so a fixture that records an
+// issue states that place with it.
 func seedCatchUp(t *testing.T, pool *store.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error { return put(ctx, tx, record.NewStore()) }); err != nil {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		records := record.NewStore()
+		if err := put(ctx, tx, records); err != nil {
+			return err
+		}
+		rows, err := tx.Query(ctx, `select key, project, coalesce(parent, ''), coalesce(nullif(dispatch_status, ''), status) from issues i
+			where not exists (select 1 from dispatch_issues d where d.key = i.key)`)
+		if err != nil {
+			return err
+		}
+		type uncopied struct{ key, project, parent, status string }
+		missing, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (uncopied, error) {
+			var u uncopied
+			return u, row.Scan(&u.key, &u.project, &u.parent, &u.status)
+		})
+		if err != nil {
+			return err
+		}
+		for _, u := range missing {
+			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: u.key, Project: u.project, Seq: 1,
+				Status: record.Carry(u.status), Parent: record.Carry(u.parent)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 }
@@ -186,15 +218,17 @@ func captureRoot(at phase.Phase, waiting *record.Awaiting) record.Issue {
 		Awaiting: waiting, LastDispatchSeq: catchUpHandout}
 }
 
-// readIssue is key as the record holds it.
+// readIssue is key as the record holds it, read and nothing written.
 func readIssue(t *testing.T, pool *store.Pool, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
-	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+	if err := store.TransactWith(context.Background(), pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		got, err = records.Issue(ctx, tx, key)
+		got, err = record.NewStore().Issue(ctx, tx, key)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
 	return got
 }
 
@@ -1289,20 +1323,18 @@ func TestARootRecordedBeforeTheCursorGetsOneAtItsFirstHandout(t *testing.T) {
 	}
 }
 
-// A re-admission starts the root's catch-up cursor again: the new generation's next boot reads
-// from the re-admission's handout, never the old generation's tail, so a changes request a person
-// gave in the old generation is not told to the new one's architect, whose processed marker is
-// per generation.
+// A new run starts the root's catch-up cursor again: the new generation's next boot reads from the
+// new run's handout, never the old generation's tail, so a changes request a person gave in the
+// old generation is not told to the new one's architect, whose processed marker is per generation.
 func TestAReadmittedRootsCatchUpReadsFromItsReadmission(t *testing.T) {
 	t.Parallel()
 	const readmittedAt int64 = 50
 	client := &awaitingDispatch{issue: dispatch.Issue{Key: "CAPTURE-100", LastSeq: readmittedAt + 1},
 		events: []json.RawMessage{specChanges(20, 3, "name the rollback path")}}
 	pool, w := catchUpRig(t, client, 1)
-	lingers := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		root := captureRoot(phase.Done, nil)
-		root.Status, root.DispatchStatus, root.LingerUntil = "done", "done", &lingers
+		root.Status, root.DispatchStatus = "done", "done"
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

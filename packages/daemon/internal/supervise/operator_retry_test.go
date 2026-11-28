@@ -8,10 +8,11 @@ import (
 )
 
 // subArchitectClaim is an architect of a child issue of the tree: an architect whose claim a stop
-// may end, since only the tree's root ends with its tree.
+// may end, since only an architect that holds its own design gate ends with its tree. It is
+// rootClaim's but for its issue and its gate mark: a child's architect holds no gate of its own.
 func subArchitectClaim() Claim {
 	c := rootClaim()
-	c.Token, c.Issue, c.Role = "legion-LEGION-209-architect", "LEGION-209", claim.RoleArchitect
+	c.Token, c.Issue, c.Role, c.HoldsGate = "legion-LEGION-209-architect", "LEGION-209", claim.RoleArchitect, false
 	return c
 }
 

@@ -31,11 +31,7 @@ func (r *outbox) tellHookPromptUndelivered(ctx context.Context, tx pgx.Tx, issue
 	if err != nil || !opened {
 		return posts, err
 	}
-	notice, err := record.NewOutboxRow(issue, hookPromptUndeliveredNotice(issue, prompt, why, posts), now)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return posts, r.records.Enqueue(ctx, tx, notice)
+	return posts, record.EnqueueFenced(ctx, tx, r.records, issue, hookPromptUndeliveredNotice(issue, prompt, why, posts), now)
 }
 
 // hookPromptUndeliveredNotice is the architect's notice of prompt, a hook's prompt to a role of

@@ -315,20 +315,11 @@ func liveRootSpec(project, issue string, token claim.Token, bootToken, prompt st
 	}
 }
 
-// firstLaunchStore answers the runtime as the daemon's store does for an issue's first launch:
-// its tree live, no other tree running it, its Sandbox its own tree's, and no controller claim
-// stored.
+// firstLaunchStore answers the runtime as the daemon's store does for an issue's first launch: its
+// own lifecycle live and no controller claim stored.
 type firstLaunchStore struct{}
 
-func (firstLaunchStore) TreeLive(context.Context, string, string) (bool, error) { return true, nil }
-
-func (firstLaunchStore) IssueRunsElsewhere(context.Context, string, string, string) (string, error) {
-	return "", nil
-}
-
-func (firstLaunchStore) IssueSandboxHome(_ context.Context, _, issue string) (string, error) {
-	return issue, nil
-}
+func (firstLaunchStore) IssueLive(context.Context, string, string) (bool, error) { return true, nil }
 
 func (firstLaunchStore) ClaimUnretired(context.Context, claim.Token) (bool, error) { return false, nil }
 func (firstLaunchStore) Claims(context.Context) ([]supervise.Claim, error)         { return nil, nil }

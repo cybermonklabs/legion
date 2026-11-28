@@ -18,7 +18,7 @@ import (
 
 // credits is what the copy carried credits row with, by the model's rule: each item to row as a
 // link, and each opening it says opened, by its number, counting only what was rendered for the run
-// the issue stands in now (design_news_current).
+// the issue stands in now, under its gate root (design_news_counts).
 func (m *newsModel) credits(row *newsModelRow, carried []byte) ([]newsModelLink, map[int]bool) {
 	m.t.Helper()
 	var news record.DeliveryNews
@@ -232,7 +232,7 @@ func (m *newsModel) check() {
 // holds (nil for none), in the place of the task whose turn a's agent runs. Two things do. The
 // supersede step's newer task leaves the reviewer's claim holding that task, or none where the
 // retirement landed and the write of the task was refused. The start of a newer entry, which a
-// re-entry, a re-admission, a hand-over, the sweep or the starts step can run (entryStarts), leaves
+// re-entry, a hand-over, the sweep or the starts step can run (entryStarts), leaves
 // the claim holding a task of an entry above the one whose turn runs, or none on the same refusal.
 // A task of news alone carries no entry, so it never takes that place.
 func (m *newsModel) replaced(a *newsModelAgent, pending *supervise.Delivery) bool {
@@ -252,10 +252,10 @@ func (m *newsModel) replaced(a *newsModelAgent, pending *supervise.Delivery) boo
 // checkRow holds row's told row, told, to the model, with the claim store as stored reads it, and
 // answers whether the claim store lags the machine of a claim that credits it.
 //
-// After a re-admission of the tree nothing says what the child's holder stood on, and the row knows
-// no version, until the reconcile reads the review history: the version approved before the one
-// that stands, which is the one below it (newNewsModel). The model takes that as the run's base at
-// the reconcile that reads it (settled), and holds the row to it from that step on.
+// Where nothing says what a holder stood on, its row knows no version until the reconcile reads the
+// review history: the version approved before the one that stands, which is the one below it
+// (newNewsModel). The model takes that as the run's base at the reconcile that reads it (settled),
+// and holds the row to it from that step on.
 func (m *newsModel) checkRow(row *newsModelRow, stored map[claim.Token]*supervise.Delivery, told record.DesignTold) bool {
 	m.t.Helper()
 	took, known := told.Took(record.DesignStepSpec)
@@ -267,17 +267,17 @@ func (m *newsModel) checkRow(row *newsModelRow, stored map[claim.Token]*supervis
 	m.settleFinals(row, lagging)
 	links, opens := m.standing(row, stored)
 	credited := append(slices.Clone(row.final), links...)
-	if row.base != newsModelUnknown && !known {
+	if !known {
 		m.fail("exactly: the %s's row knows no version of the spec, but its run started from version %d: %+v", row.name, row.base, told)
 	}
-	if upper := m.truth(row, row.toldPrompts(lagging), true); known && row.base != newsModelUnknown && took > upper {
+	if upper := m.truth(row, row.toldPrompts(lagging), true); known && took > upper {
 		m.fail("never ahead of what it was told: the record says the %s took version %d, but it was told no further than %d", row.name, took, upper)
 	}
 	if want, wantKnown := newsModelClosure(row.base, credited); known != wantKnown || (known && took != want) {
 		m.fail("exactly: the record says the %s took %s, but what the claim store credits gives %s: from %s through the credits %v (final %v, standing %v)",
-			row.name, versionWords(took, known), versionWords(want, wantKnown), versionWords(row.base, row.base != newsModelUnknown), credited, row.final, links)
+			row.name, versionWords(took, known), versionWords(want, wantKnown), versionWords(row.base, true), credited, row.final, links)
 	}
-	if !lagging && row.base != newsModelUnknown {
+	if !lagging {
 		if lower := m.truth(row, row.creditedPrompts(), false); took < lower {
 			m.fail("level with what it read: the record says the %s took version %d, but it read the news up to %d", row.name, took, lower)
 		}

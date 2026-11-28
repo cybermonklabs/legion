@@ -3,8 +3,8 @@ package record
 // A Dispatch status write is the one outbox payload whose retry is judged differently for each
 // thing a write can be for, so what it is for is a value of its own (StatusRowKind), stored in
 // the row and set by one constructor per kind. They live here rather than beside the other
-// payloads because they are a vocabulary in their own right: five kinds, five constructors and
-// the rule that every reader of the list is held to the same five.
+// payloads because they are a vocabulary in their own right: four kinds, four constructors and
+// the rule that every reader of the list is held to the same four.
 
 // StatusRowKind is what a status row is for, and the one thing that decides the rule the outbox
 // judges its retry by (the daemon's stillWanted). It is stored in the payload rather than worked
@@ -28,43 +28,40 @@ const (
 	// row from the workflow's other status rows, which suppress nothing: while one is pending for
 	// an issue, no second one is queued for it. The outbox's status executor also drops such a row
 	// at delivery when the re-read issue no longer carries the label: a person who took it off
-	// withdrew the handover. A HandOverStatusRow, also a todo, is not one.
+	// withdrew the handover.
 	PersonHandoverStatusRow StatusRowKind = "person-handover"
 	// ReassertStatusRow is the daemon setting its own status back over a status that it does not
-	// take (ReassertStatusWrite names the cases): a session's write, which the workflow
-	// keeps out of the record (workflow's sessionStatusWrite), or the daemon's own stale
-	// hand-over todo (rejectStaleHandover). The write it undoes stands in Dispatch and the record
-	// kept the daemon's status, so this row is queued observing a status the issue is not meant
-	// to be at, such as done, backlog or icebox, exactly as a person's handover is. Asking the
-	// ordinary rule of it, whether the issue is still in the workflow, would drop the row for
+	// take (ReassertStatusWrite names the cases): a session's write, which the workflow keeps out
+	// of the record (workflow's sessionStatusWrite). The write it undoes stands in Dispatch and the
+	// record kept the daemon's status, so this row is queued observing a status the issue is not
+	// meant to be at, such as done, backlog or icebox, exactly as a person's handover is. Asking
+	// the ordinary rule of it, whether the issue is still in the workflow, would drop the row for
 	// being at the status it exists to undo.
 	ReassertStatusRow StatusRowKind = "reassert"
-	// HandOverStatusRow hands a child of a closed tree to Legion: the write also puts
-	// dispatch.LegionLabel on the issue, in the same Dispatch write, and the runner makes it while
-	// the label is missing even where Dispatch already shows Status.
-	HandOverStatusRow StatusRowKind = "hand-over"
 	// CloseStatusRow is the daemon's own close of an issue: the done a merge or an architect's
 	// close_root writes, queued in the transaction that takes the record out of the workflow. The
 	// ordinary rule cannot judge it, for the reason the re-assert's cannot: one refusal — an
 	// agent's comment, a handoff record, or the done reason this row itself just posted — sends
 	// it to its retry, which would find the record already out of the workflow and drop the write
-	// that puts Dispatch there, leaving the issue open in Dispatch for good while the tree
-	// lingers and frees its slot. Its own rule asks the question that matters instead: the close
+	// that puts Dispatch there, leaving the issue open in Dispatch for good while the record stands
+	// closed and frees its slot. Its own rule asks the question that matters instead: the close
 	// still stands in the record at the generation the row names.
 	CloseStatusRow StatusRowKind = "close"
 )
 
-// StatusRowKinds is every kind of status row, listed once. The daemon's rule switch, the
-// migration that gave the stored rows their kind and the tests of both packages read this list,
-// so a kind is added in one place and every reader of it is held to the same five.
-var StatusRowKinds = []StatusRowKind{OrdinaryStatusRow, PersonHandoverStatusRow, ReassertStatusRow, HandOverStatusRow, CloseStatusRow}
+// StatusRowKinds is every kind of status row this release queues, listed once. The daemon's rule
+// switch and the tests of both packages read this list, so a kind is added in one place and every
+// reader of it is held to the same four. The release before also queued "hand-over" rows, whose
+// executor is gone with the hand-over; the first boot's conversion finishes them.
+var StatusRowKinds = []StatusRowKind{OrdinaryStatusRow, PersonHandoverStatusRow, ReassertStatusRow, CloseStatusRow}
 
 // StatusWrite is a Dispatch status the daemon writes. ObservedStatus is the status Dispatch shows
-// until the write runs: the runner writes Status only while Dispatch still shows ObservedStatus, so a
-// move someone else made since the write was queued stands. Kind is what the write is for, set by
+// until the write runs: the runner writes Status only while Dispatch still shows ObservedStatus, or
+// the Dispatch status an ordinary row's record held when it was queued (DispatchStatus), so a move
+// someone else made since the write was queued stands. Kind is what the write is for, set by
 // the constructor its queueing site goes through — OrdinaryStatusWrite, PersonHandoverStatusWrite,
-// ReassertStatusWrite, HandOverStatusWrite or CloseStatusWrite — which are the only places one is
-// built, so no row reaches the outbox without a kind (validateOutboxPayload refuses one that does).
+// ReassertStatusWrite or CloseStatusWrite — which are the only places one is built, so no row
+// reaches the outbox without a kind (validateOutboxPayload refuses one that does).
 type StatusWrite struct {
 	Kind           StatusRowKind `json:"kind"`
 	Status         string        `json:"status"`
@@ -74,11 +71,6 @@ type StatusWrite struct {
 	// nothing else on Dispatch explains (workflow's moveReason: a worker's backward move). Empty
 	// for a write with no reason to record.
 	Reason string `json:"reason,omitempty"`
-	// HandOverTree and HandOverLinger fence a hand-over (HandOverStatusRow): the runner writes it
-	// only while the issue is still that tree's and the tree's root still lingers at that
-	// generation (Issue.LingersAt), so a root re-admitted since keeps the issue as its child.
-	HandOverTree   string `json:"handOverTree,omitempty"`
-	HandOverLinger uint64 `json:"handOverLinger,omitempty"`
 	// CloseGeneration fences the daemon's own close (CloseStatusRow) on the run it closed: every
 	// attempt of the row writes done only while the record still holds that generation, so a
 	// person's reopen, which re-admits the issue in a generation of its own, drops a close that
@@ -86,26 +78,79 @@ type StatusWrite struct {
 	// known for — one migration 20261102003600 gave its kind, queued by a release that fenced
 	// such a write on nothing — which writes as that release wrote it.
 	CloseGeneration uint64 `json:"closeGeneration,omitempty"`
-	// ObservedSeq is the Dispatch sequence of the write that a set-back undoes (ReassertStatusRow):
-	// a session's write, or the daemon's own hand-over todo that arrived stale (ReassertStatusWrite
-	// names each case). Before each write the runner reads the issue's events after it and
-	// finishes the row without writing when a later event changed the status and the daemon did
-	// not write that event, so a set-back never writes over a move that came after the write it
-	// undoes: the owning architect's, or a person's (dispatch://INFRA-3178 R3). A row with zero,
-	// which an earlier release queued, writes as that release wrote it. That release decodes a
-	// payload strictly, so a rollback removes the key first (the way back of migration
-	// 20261120012547).
+	// Generation and Entry are the issue's run and phase entry the write was queued at (Fence),
+	// which the outbox checks on the record before it writes: a write of an earlier one is not
+	// written (R20 of dispatch://INFRA-3320). CloseGeneration above is the release before's fence
+	// of a close, which it requires and this release keeps writing.
+	Generation uint64 `json:"generation,omitempty"`
+	Entry      int64  `json:"entry,omitempty"`
+	// IncludeChildren, UnlinkChildren and IncludeParent are the options of Dispatch's
+	// status-change route the write carries (dispatch.StatusChange, R24 of dispatch://INFRA-3320):
+	// the same status on each open issue under the issue, each open child unlinked, each ancestor
+	// not in work moved to in_progress. A row with any of them is written on that route under a
+	// request key of its own attempt (decision 6 of dispatch://INFRA-4730, the daemon's
+	// changeStatus), and a row with none on the issue PATCH, which takes none of them.
+	IncludeChildren bool `json:"includeChildren,omitempty"`
+	UnlinkChildren  bool `json:"unlinkChildren,omitempty"`
+	IncludeParent   bool `json:"includeParent,omitempty"`
+	// After is the outbox row whose write this one waits for: a child's write whose parent is
+	// written in the same release wave waits until the parent's row has finished (decision 5).
+	// Zero waits for none.
+	After int64 `json:"after,omitempty"`
+	// Controller says the controller asked for the write (its set_status), so a refusal the
+	// record undoes is told to the project's controller rather than to the issue's architect
+	// (decision 12 of dispatch://INFRA-4730).
+	Controller bool `json:"controller,omitempty"`
+	// ObservedSeq is the Dispatch sequence of the write that a set-back undoes (ReassertStatusRow),
+	// a session's write (ReassertStatusWrite names the cases). Before each write the runner reads
+	// the issue's events after it and finishes the row without writing when a later event changed
+	// the status and the daemon did not write that event, so a set-back never writes over a move
+	// that came after the write it undoes: the owning architect's, or a person's
+	// (dispatch://INFRA-3178 R3). A row with zero, which an earlier release queued, writes as that
+	// release wrote it. That release decodes a payload strictly, so a rollback removes the key
+	// first (the way back of migration 20261120012547).
 	ObservedSeq int64 `json:"observedSeq,omitempty"`
+	// DispatchStatus is the status the record of an ordinary row's issue (OrdinaryStatusRow) last
+	// saw Dispatch show (Issue.DispatchStatus) when the row was queued: the last Dispatch move the
+	// daemon applied before it. NewFencedRow stamps it, as it stamps the fence, on every ordinary row
+	// of an issue the daemon records, whatever path queued it, and it is empty on every other kind.
+	// The runner takes Dispatch at it as it takes Dispatch at ObservedStatus, as no move someone
+	// else made since the row was queued (the daemon's statusMoved). ObservedStatus is the status
+	// the record counts, which an earlier write of the issue still queued puts on Dispatch only if it
+	// runs; a write of an earlier phase entry finishes unwritten at a later one (LateAt), and a row
+	// queued after it then finds Dispatch where the record last saw it (R20 of
+	// dispatch://INFRA-3320). The release before decodes a payload strictly, so a rollback removes
+	// the key first (the way back of migration 20261122154645).
+	DispatchStatus string `json:"dispatchStatus,omitempty"`
+}
+
+// HasOption says whether the write carries an option of the status-change route, the one route
+// that takes them (StatusWrite.IncludeChildren).
+func (w StatusWrite) HasOption() bool {
+	return w.IncludeChildren || w.UnlinkChildren || w.IncludeParent
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
 
 // OrdinaryStatusWrite is the workflow's own move of an issue inside the workflow, to status from
-// the observed status Dispatch shows until the write runs. reason is posted as a message before
-// the status lands (StatusWrite.Reason): a done write's, or a move's that no worker's act on
-// Dispatch explains; every other write has none.
+// the observed status Dispatch shows until the write runs, beside the status the issue's record
+// last saw Dispatch show, which NewFencedRow stamps where it queues the row (DispatchStatus).
+// reason is posted as a message before the status lands (StatusWrite.Reason): a done write's, or a
+// move's that no worker's act on Dispatch explains; every other write has none.
 func OrdinaryStatusWrite(status, observed, reason string) StatusWrite {
 	return StatusWrite{Kind: OrdinaryStatusRow, Status: status, ObservedStatus: observed, Reason: reason}
+}
+
+// shownTo is payload with the status recorded last saw Dispatch show (StatusWrite.DispatchStatus)
+// where it is an ordinary status row that names none: what NewFencedRow stamps beside the fence.
+// recorded is nil for an issue the daemon records nothing of, whose row names none.
+func shownTo(payload OutboxPayload, recorded *Issue) OutboxPayload {
+	write, ok := payload.(StatusWrite)
+	if !ok || write.Kind != OrdinaryStatusRow || write.DispatchStatus != "" || recorded == nil {
+		return payload
+	}
+	write.DispatchStatus = recorded.DispatchStatus
+	return write
 }
 
 // PersonHandoverStatusWrite is the write a person's handover queues, observed at the status that
@@ -116,21 +161,14 @@ func PersonHandoverStatusWrite(status, observed string) StatusWrite {
 
 // ReassertStatusWrite is the daemon's own status set back over a status that the daemon does not
 // take, which the row observes (ReassertStatusRow), at observedSeq, the Dispatch sequence of the
-// write that put that status on the issue. The workflow queues one in these cases. A session with
-// a claim in the issue's tree writes a status, other than the owning architect's move of a child
-// out of the workflow (workflow's sessionStatusWrite). A session with no claim in the tree writes
-// a status on a root that runs or that waits on a person (sessionStatusWrite too). The daemon's own
-// hand-over todo on a child of a closed tree arrives stale, for example after the root of that tree
-// came back (workflow's rejectStaleHandover).
+// write that put that status on the issue. The workflow queues one in three cases (workflow's
+// sessionStatusWrite, sessionTodoOnChild). A session with a claim on an issue of the written
+// issue's Dispatch chain or of its gate root's tree writes a status, other than the owning
+// architect's move of a child out of the workflow. Such a session writes todo on an unrecorded
+// child under a parent in Legion's work, set back to the status Dispatch showed before it. A
+// session with no claim there writes a status on a gate root that runs or that waits on a person.
 func ReassertStatusWrite(status, observed string, observedSeq int64) StatusWrite {
 	return StatusWrite{Kind: ReassertStatusRow, Status: status, ObservedStatus: observed, ObservedSeq: observedSeq}
-}
-
-// HandOverStatusWrite hands a child of tree to Legion at status, fenced on that tree and on the
-// root generation whose linger queued the write (HandOverStatusRow).
-func HandOverStatusWrite(status, observed, tree string, linger uint64) StatusWrite {
-	return StatusWrite{Kind: HandOverStatusRow, Status: status, ObservedStatus: observed,
-		HandOverTree: tree, HandOverLinger: linger}
 }
 
 // CloseStatusWrite is the daemon's own close of an issue, to status (done) from the observed

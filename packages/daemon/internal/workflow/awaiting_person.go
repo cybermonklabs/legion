@@ -19,19 +19,22 @@ import (
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session of its tree are legitimate holders. The daemon's own session is the
 // session of project, the daemon's own Dispatch project (dispatch.DaemonSession). A session of its
-// tree is one a claim of the tree names now or one it left behind (record.Store.SessionOfTree),
+// tree is one a claim of an issue whose gate root the root is on the Dispatch chain
+// (record.Chains.GateTree) names now, or one such a claim left behind (record.Store.SessionOf),
 // the read the claim release executor judges a holder by: the daemon queued a left session's claim
 // release when it left the session, so the root keeps its row until that release takes the claim,
 // rather than being removed for a claim of its own tree's.
 // The claim is the one the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim).
 // ReconcileAwaiting keeps a root it answers no for at admitted, where it holds its slot unless it
 // waits on another issue (blockers.waitsOf), and admission removes an awaiting root, and skips an
-// answered one, that it answers no for.
-func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project string, issue record.Issue) (string, error) {
+// answered one, that it answers no for. chains is the caller's reading of the Dispatch chains with
+// issue named, the whole project's (record.ReadChains), whose tree of issue it reads
+// (record.Chains.GateTree).
+func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project string, chains *record.Chains, issue record.Issue) (string, error) {
 	switch {
 	case !issue.HandedOver:
 		return "the legion label was removed", nil
-	case issue.Lingers() || !record.InWorkflow(issue):
+	case !record.InWorkflow(issue):
 		return "it left the workflow", nil
 	}
 	claimedBy, err := store.DispatchClaim(ctx, tx, issue.Key)
@@ -46,7 +49,9 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project str
 		return "", nil
 	}
 	if kind == "session" {
-		ofTree, err := store.SessionOfTree(ctx, tx, issue.Tree, id)
+		// A session of the root's tree is one a claim of one of the issues whose gate root the root
+		// is on the Dispatch chain (record.Chains.GateTree) names now or left behind.
+		ofTree, err := store.SessionOf(ctx, tx, chains.GateTree(issue.Key), id)
 		if err != nil || ofTree {
 			return "", err
 		}

@@ -186,10 +186,10 @@ func TestReplacementReapsOnlyDatabaseBackedOrEmptySessions(t *testing.T) {
 	}
 }
 
-// A stopped carried child is re-pointed to its new tree before the old tree's
-// cleanup removes the still-labelled legacy Sandbox. The claim's session still
-// belongs to that old Sandbox until the guard permits its reap.
-func TestTreeCleanupRefusesToReapARetreedLegacySession(t *testing.T) {
+// A stopped child's issue cleanup refuses to reap the legacy Sandbox it still holds, labelled with
+// the tree it was made under: the claim's session still belongs to that Sandbox until the guard
+// permits its reap.
+func TestAnIssueCleanupRefusesToReapALegacySession(t *testing.T) {
 	t.Parallel()
 	store := newFakeStore()
 	store.claims = []supervise.Claim{{
@@ -201,7 +201,7 @@ func TestTreeCleanupRefusesToReapARetreedLegacySession(t *testing.T) {
 		map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: childIssue}))
 	g := newRig(t, []k8sruntime.Object{object}, withoutController(), withOptions(func(o *Options) { o.Store = store }))
 
-	err := g.r.CleanupTree(g.ctx, testTree)
+	err := g.r.CleanupIssue(g.ctx, childIssue)
 
 	if err == nil || !strings.Contains(err.Error(), "refuse to reap volume") || !strings.Contains(err.Error(), "ses_carried") {
 		t.Fatalf("cleanup = %v, want the carried session-volume refusal", err)
@@ -236,18 +236,18 @@ func TestSessionVolumeReapGuardCoversEveryDeletionPath(t *testing.T) {
 		return g, name
 	}
 
-	t.Run("tree cleanup", func(t *testing.T) {
+	t.Run("issue cleanup", func(t *testing.T) {
 		store := newFakeStore()
 		store.claims = []supervise.Claim{legacy(rootToken, testTree, testTree)}
 		g, name := legacyIssue(t, store)
-		refusal(t, g.r.CleanupTree(g.ctx, testTree), g, name)
+		refusal(t, g.r.CleanupIssue(g.ctx, testTree), g, name)
 	})
 
 	t.Run("issue close", func(t *testing.T) {
 		store := newFakeStore()
 		store.claims = []supervise.Claim{legacy(rootToken, testTree, testTree)}
 		g, name := legacyIssue(t, store)
-		refusal(t, g.r.SuspendIssue(g.ctx, testTree, testTree, func(context.Context) (bool, error) { return true, nil }), g, name)
+		refusal(t, g.r.SuspendIssue(g.ctx, testTree, "", func(context.Context) (bool, error) { return true, nil }), g, name)
 	})
 
 	t.Run("issue orphan sweep", func(t *testing.T) {

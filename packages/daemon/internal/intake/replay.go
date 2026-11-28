@@ -151,10 +151,12 @@ func (g *GiveUps) Replay(ctx context.Context, selector record.IntakeSelector, ca
 // a live delivery is (handleMessage), with no message and no stream position: the read of whether
 // a review's or a settlement's pull request is recorded, the preparations, each with the view of
 // Dispatch it reads now, and the review's reads all run as they do live, so a late fact is judged
-// against the present. An applied fact and a duplicate
-// close the record inside ApplyFact's own transaction (withReplayClose); a message the handling
-// acknowledges with no transaction, or one that decodes to no fact, closes it in a statement of
-// its own (noFact). A failure keeps its error (failed).
+// against the present. An applied fact and a duplicate close the record inside ApplyFact's own
+// transaction (withReplayClose), which moves the cursor of the issue a Dispatch event is on as a
+// live delivery's does (recordSeen); a message the handling acknowledges with no transaction, or
+// one that decodes to no fact, closes it in a statement of its own (noFact), which for an event
+// of one of the project's issues moves that cursor as the live drop does (seeDropped). A failure
+// keeps its error (failed), and moves no cursor.
 func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, caller string) ReplayedGiveUp {
 	replayed := ReplayedGiveUp{ID: given.ID, Consumer: given.Consumer, StreamSeq: given.StreamSeq}
 	decoded, err := decodeMessage(given.Subject, g.spec.Project, g.repositories(), given.Payload)
@@ -162,7 +164,7 @@ func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, cal
 		return g.failed(ctx, replayed, err)
 	}
 	if decoded.Fact == nil {
-		return g.noFact(ctx, replayed, caller)
+		return g.noFact(ctx, replayed, caller, decoded.Seen)
 	}
 	log := func(level slog.Level, line string, attributes ...any) {
 		g.spec.Logger.Log(context.Background(), level, line,
@@ -181,19 +183,26 @@ func (g *GiveUps) replayOne(ctx context.Context, given record.IntakeFailure, cal
 		logDuplicate(log, decoded, given.Consumer, uint64(given.Deliveries))
 		replayed.Outcome = ReplayAlreadyApplied
 	case outcomeAcked:
-		return g.noFact(ctx, replayed, caller)
+		return g.noFact(ctx, replayed, caller, nil)
 	}
 	return replayed
 }
 
 // noFact closes replayed's record as a replay that found no fact in its message, in a statement
-// of its own: nothing was applied, so no fact's transaction carries the close.
-func (g *GiveUps) noFact(ctx context.Context, replayed ReplayedGiveUp, caller string) ReplayedGiveUp {
+// of its own: nothing was applied, so no fact's transaction carries the close. seen is the event
+// of one of the project's issues the message holds, whose cursor the close moves in its own
+// transaction, as the live delivery of an event no handler takes moves it (seeDropped); nil for
+// every other message, and for one the handling acknowledged with no transaction, whose live
+// delivery moves no cursor either.
+func (g *GiveUps) noFact(ctx context.Context, replayed ReplayedGiveUp, caller string, seen *seenEvent) ReplayedGiveUp {
 	var closed bool
 	err := g.write(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		closed, err = record.NewStore().CloseIntakeGiveUp(ctx, tx, g.spec.Project, replayed.ID, record.IntakeNoFact, caller, g.spec.Now())
-		return err
+		if err != nil || !closed || seen == nil {
+			return err
+		}
+		return record.NewStore().AdvanceSeenSeq(ctx, tx, seen.key, seen.seq)
 	})
 	if err == nil && !closed {
 		err = closedByAnotherReplay(replayed.ID)

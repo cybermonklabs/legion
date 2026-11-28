@@ -1,5 +1,7 @@
 import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
+  LEGION_CHILDREN_ARGUMENTS,
+  LEGION_PARENT_ARGUMENTS,
   LEGION_PHASES,
   LegionGateRegisterRequest,
   type LegionGrant,
@@ -136,7 +138,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'.
  * `read_build` is a phase op and has a line here too: a controller session runs it on this
  * file's own branch rather than through `executePhaseOp`, so this is where its one check that
- * it takes no field stands. */
+ * it takes no field stands. set_status takes the two arguments of Dispatch's parent rule and
+ * rerun_child its parent one (`parentRuleArguments`). */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step", "basis", "basisVersion", "reason"],
   register_plan: ["issue", "artifactId", "version"],
@@ -145,10 +148,10 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
-  rerun_child: ["issue"],
+  rerun_child: ["issue", "parent"],
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
-  set_status: ["issue", "status"],
+  set_status: ["issue", "status", "children", "parent"],
   replace_pod: ["issue"],
   ...Object.fromEntries(AGENT_ACTIONS.map((operation) => [operation, AGENT_FIELDS])),
   pause: ["reason"],
@@ -160,6 +163,48 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
+
+/** The arguments of Dispatch's parent rule (R24 of dispatch://INFRA-3320) that set_status and
+ * rerun_child send, as the call names them: `children`, include or unlink, which goes with a
+ * backlog or icebox, and `parent`, include, which goes with a todo (rerun_child's status is
+ * todo). A call that names one wrongly is refused here in the daemon's own words (its
+ * INVALID_CHILDREN and INVALID_PARENT), before a grant is minted; a call that names neither
+ * sends neither. */
+function parentRuleArguments(
+  parameters: Record<string, unknown>,
+  operation: string,
+  status: (typeof ISSUE_STATUSES)[number]
+): {
+  readonly children?: (typeof LEGION_CHILDREN_ARGUMENTS)[number];
+  readonly parent?: (typeof LEGION_PARENT_ARGUMENTS)[number];
+} {
+  let children: (typeof LEGION_CHILDREN_ARGUMENTS)[number] | undefined;
+  if (parameters.children !== undefined) {
+    children = LEGION_CHILDREN_ARGUMENTS.find((word) => word === parameters.children);
+    if (children === undefined) {
+      throw new Error(`${operation}'s children must be ${LEGION_CHILDREN_ARGUMENTS.join(" or ")}`);
+    }
+    if (status === "todo") {
+      throw new Error(
+        `${operation}'s children goes with backlog or icebox, which move an issue out of work`
+      );
+    }
+  }
+  let parent: (typeof LEGION_PARENT_ARGUMENTS)[number] | undefined;
+  if (parameters.parent !== undefined) {
+    parent = LEGION_PARENT_ARGUMENTS.find((word) => word === parameters.parent);
+    if (parent === undefined) {
+      throw new Error(`${operation}'s parent must be ${LEGION_PARENT_ARGUMENTS.join(" or ")}`);
+    }
+    if (status !== "todo") {
+      throw new Error(`${operation}'s parent goes with todo, which moves an issue into work`);
+    }
+  }
+  return {
+    ...(children === undefined ? {} : { children }),
+    ...(parent === undefined ? {} : { parent }),
+  };
+}
 
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
@@ -588,7 +633,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue and parent: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -601,6 +646,21 @@ function toolSchema(pi: PiApi): unknown {
     return_to: phaseOp.return_to,
     round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
+    // The two arguments of Dispatch's parent rule, in the contract's own words
+    // (`LEGION_CHILDREN_ARGUMENTS`, `LEGION_PARENT_ARGUMENTS`), as the steps above are, so this
+    // schema and the daemon's request admit the same words.
+    children: z
+      .enum(LEGION_CHILDREN_ARGUMENTS)
+      .describe(
+        "set_status's children argument, with backlog or icebox: include moves each open issue under the issue with it, unlink takes each open child out from under it. The daemon requires one where the move would leave a child in work under the issue (CHILDREN_ARGUMENT_REQUIRED, naming each)"
+      )
+      .optional(),
+    parent: z
+      .enum(LEGION_PARENT_ARGUMENTS)
+      .describe(
+        "set_status's and rerun_child's parent argument, with a todo: include moves each issue above the issue that is not in work to in_progress with it. The daemon requires it where the todo would put the issue in work under a parent that is not (PARENT_ARGUMENT_REQUIRED, naming each)"
+      )
+      .optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
     role: z.enum(LEGION_ROLES).optional(),
@@ -918,11 +978,11 @@ export function createLegionTool(deps: {
         "that started its work before Legion took plans), a version Dispatch does " +
         "not have (VERSION_NOT_IN_DISPATCH), a version below the plan in force (PLAN_VERSION_OLD; the plan in force given " +
         "again is answered as taken, and adds you to its givers), another document than the plan " +
-        "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
-        "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
-        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), a plan given for a run of the issue " +
-        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION), and every plan of a recorded issue whose tree " +
-        "lingers after it left the workflow, the plan in force among them (TREE_LINGERING). " +
+        "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue you do not own on its " +
+        "Dispatch chain (ISSUE_NOT_OWNED, naming the architect that does), an issue the daemon has not recorded whose Dispatch " +
+        "status is not triage, backlog, icebox or todo " +
+        "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
+        "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
         "An issue whose experiment's group runs the project's default steps takes only a version that changes just the text of its " +
         "running task default. Legion refuses every other plan of it (PLAN_NOT_TAKEN, naming the group): it records nothing, and " +
         "the same plan given again gets the same answer. " +
@@ -932,16 +992,16 @@ export function createLegionTool(deps: {
         "gate and its line, as any task does before its first step); retry_or_escalate does not start it again (TASK_STOPPED). On an " +
         "issue whose first step has not run, the stop first settles the plan that step would walk, the newest plan you gave or the " +
         "project's default steps (task default), and then stops its task. The daemon refuses a task the plan does not hold " +
-        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), a stop in a tree that lingers after it left the " +
-        "workflow (TREE_LINGERING), every task of an issue whose experiment's group runs the project's default steps, since its owner " +
-        "stops none of its tasks (PLAN_NOT_TAKEN), a stop of a root that waits on a person before its first step " +
-        "(TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once the person has answered) and a stop " +
-        "of a parent in awaiting_children (WAITING_ON_CHILDREN, naming its open Dispatch children: act on the children). It also " +
-        "refuses, changing nothing, a stop of an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run " +
-        "of the issue that ended before Legion applied it: read the issue again (TASK_STALE_GENERATION). " +
+        "(TASK_NOT_FOUND, naming the plan's tasks), one that is done (TASK_DONE), every task of an issue whose experiment's group " +
+        "runs the project's default steps, since its owner stops none of its tasks (PLAN_NOT_TAKEN), a stop of a root that waits " +
+        "on a person before its first step (TASK_AWAITING_PERSON: change its task with a later version of the plan, or stop it once " +
+        "the person has answered) and a stop of a parent in awaiting_children (WAITING_ON_CHILDREN, naming its open Dispatch " +
+        "children: act on the children). It also refuses, changing nothing, a stop of an issue you do not own on its Dispatch chain " +
+        "(ISSUE_NOT_OWNED, naming the architect that does), and a stop of a run of the issue that ended before Legion applied it: " +
+        "read the issue again (TASK_STALE_GENERATION). " +
         "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
         "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
-        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
+        "sign-off of an issue you no longer own (ISSUE_NOT_OWNED), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again), one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING) and one on an issue in awaiting_children " +
         "(WAITING_ON_CHILDREN, naming its open Dispatch children and the start it holds: no phase of a parent starts while an open " +
@@ -960,6 +1020,7 @@ export function createLegionTool(deps: {
         "End a child with your own status write in Dispatch. " +
         "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
         "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+        "Dispatch closes an issue only once each issue under it is done, so when the child has open children, close each of them done first, from the bottom. " +
         "For a fold, name the carrier in the reason: the issue that carries the work. " +
         "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
         "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
@@ -969,6 +1030,7 @@ export function createLegionTool(deps: {
         "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
         "Do this before done, or at once after a done that you wrote first. " +
         "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+        "A backlog or icebox of a child that has open children takes include_children, which moves those children with it. " +
         "A restart is backlog, then rerun_child. " +
         "Say why in a dispatch comment. " +
         "Write no status on a child that is already done, because a move out of done ends an open production check. " +
@@ -987,7 +1049,10 @@ export function createLegionTool(deps: {
         "stop that work mid-turn or leave it undone. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
-        "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
+        "under it now: wait for the ancestor to close, then release it. " +
+        "rerun_child takes parent include where its todo would put the child in work under a parent that is not, which " +
+        "moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming each), and its answer's queued " +
+        "names the status writes it queued. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, how " +
         "many give-ups each intake consumer has open and the newest stream sequence among them, each " +
@@ -997,8 +1062,14 @@ export function createLegionTool(deps: {
         "phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
         "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
-        "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
-        "controller's report issue's icebox, because that issue holds no work. " +
+        "One write is not that move: the controller's report issue's icebox, because that issue holds no work. " +
+        "A todo on an issue in Legion's work writes no status, and on a root whose architect claim failed it starts that " +
+        "claim again in its session. " +
+        "Dispatch keeps a parent in work while a child of it is: a backlog or icebox that would leave a child in work under " +
+        "the issue takes children, include to move the open issues under it with it or unlink to take them out from under " +
+        "it (CHILDREN_ARGUMENT_REQUIRED, naming each), and a todo that would put the issue in work under a parent that is " +
+        "not takes parent include, which moves each such issue above it to in_progress (PARENT_ARGUMENT_REQUIRED, naming " +
+        "each). The answer's queued names each status write the call queued. " +
         "The controller's replace_pod (issue) asks the daemon to replace the pod that runs the roles of an issue of its " +
         "own project. The daemon opens its update round over that pod, also where an earlier round kept the pod. It " +
         "asks each role in the pod to push its work and answer ready_for_update. The round ends once each role has " +
@@ -1282,9 +1353,11 @@ export function createLegionTool(deps: {
           if (status === undefined) {
             throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);
           }
+          const parentRule = parentRuleArguments(parameters, operation, status);
           const { grantId } = await controllerGrant(active.sessionID);
-          await client.issueStatus({ grantId, issue, status });
-          return jsonSuccess({});
+          // The daemon's answer: each status write the call queued, none for a todo on an issue
+          // in Legion's work, which writes no status.
+          return jsonSuccess(await client.issueStatus({ grantId, issue, status, ...parentRule }));
         }
         switch (operation) {
           case "register_gate": {
@@ -1370,9 +1443,9 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "register_plan": {
-            // The owner gives the plan of any issue of its tree, a child the daemon has not
-            // recorded yet included; which issues those are is the daemon's to hold
-            // (ISSUE_OUTSIDE_TREE), so the call is checked whole here and nothing more.
+            // The owner gives the plan of any issue it owns on its Dispatch chain, a child the
+            // daemon has not recorded yet included; which issues those are is the daemon's to hold
+            // (ISSUE_NOT_OWNED), so the call is checked whole here and nothing more.
             const issue = requiredString(parameters, operation, "issue");
             const reference = requiredString(parameters, operation, "artifactId");
             const version = parameters.version;
@@ -1457,12 +1530,12 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "rerun_child": {
+            // Validated whole before the grant is minted: its todo takes the parent argument
+            // alone. The answer is the daemon's: the status write the call queued.
+            const issue = requiredString(parameters, operation, "issue");
+            const parentRule = parentRuleArguments(parameters, operation, "todo");
             const grantId = await mintClaimGrant(client, active);
-            await client.childRerun({
-              grantId,
-              issue: requiredString(parameters, operation, "issue"),
-            });
-            return jsonSuccess({});
+            return jsonSuccess(await client.childRerun({ grantId, issue, ...parentRule }));
           }
           default:
             throw new Error(`Unsupported legion operation: ${operation}`);

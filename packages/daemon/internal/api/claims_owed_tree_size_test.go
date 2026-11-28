@@ -56,6 +56,38 @@ func (c *statementCount) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBa
 
 func (*statementCount) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
+// chainReads is a record store that counts what its reader reads of the Dispatch chains: the
+// walks of the copy of Dispatch's issues from the keys it names (Store.ChainRowsOf), the walks of
+// every chain of the project (Store.ChainRows), and the records it asks for by key
+// (Store.IssuesByKey), so a test holds the owed route to one read of the asking issue's own chain
+// per ask and to the records of that chain's issues alone.
+type chainReads struct {
+	record.Store
+	walks, projectWalks, records atomic.Int64
+}
+
+func (c *chainReads) ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]record.ChainRow, error) {
+	c.projectWalks.Add(1)
+	return c.Store.ChainRows(ctx, tx, project, extra)
+}
+
+func (c *chainReads) ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([]record.ChainRow, error) {
+	c.walks.Add(1)
+	return c.Store.ChainRowsOf(ctx, tx, keys)
+}
+
+func (c *chainReads) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]record.Issue, error) {
+	c.records.Add(int64(len(keys)))
+	return c.Store.IssuesByKey(ctx, tx, keys)
+}
+
+// reset sets each count back to zero, for the next ask.
+func (c *chainReads) reset() {
+	c.walks.Store(0)
+	c.projectWalks.Store(0)
+	c.records.Store(0)
+}
+
 // serveOwedOver has h's server read the records through records over pool, with the workflow's
 // table of which role works each phase (workflow.RoleFor), as the daemon wires the owed route.
 func serveOwedOver(h *harness, pool *store.Pool, records record.Store) {
@@ -65,74 +97,94 @@ func serveOwedOver(h *harness, pool *store.Pool, records record.Store) {
 	}).Handler
 }
 
-// owedChain is a tree of size issues in one chain, each issue the parent of the next, with the
-// claims the owner walk weighs on it: the root's architect, which holds its role, an architect the
-// daemon retired on every issue below the root, as a child's architect is once the child closes,
-// and the planner of the issue at the chain's bottom, which asks what it owes.
+// owedTree is a tree of size issues whose deepest chain is links long, with the claims the owner
+// walk weighs on it: the root's architect, which holds its role, an architect the daemon retired
+// on every issue of that chain below the root, as a child's architect is once the child closes,
+// and the planner of the issue at the chain's bottom, which asks what it owes. Every other issue
+// of the tree is a child of that asking issue.
 //
-// It is the shape on which the walk does the most (record.OwningIssue, which OwnerWalk.Architect
-// ends): the walk climbs one parent at a time from the asking issue and stops at the first
-// architect that holds its role, else at the root. From the bottom of a chain whose architects
-// below the root are all retired, it asks about every issue of the tree and passes each over, and
-// the read of their claims (record.ArchitectRuns) answers a row for each. A wide tree of the same
-// size ends the walk after a few parents.
-type owedChain struct {
-	size      int
-	architect liveClaim
-	planner   liveClaim
+// The chain is the shape on which the walk does the most (record.OwningIssue, which
+// OwnerWalk.Architect ends): the walk climbs the Dispatch chain one parent at a time from the
+// asking issue and stops at the first architect that holds its role, else at the gate root. From
+// the bottom of a chain whose architects below the root are all retired, it asks about every link
+// and passes each over, and the read of their claims (record.ArchitectRuns) answers a row for
+// each. The rest of the tree stands under the asking issue and on no link of its chain: no answer
+// of the walk asks of an issue below the one it starts from, so the walk reads none of it, and a
+// read of the asking issue's children would read the rest of the tree.
+type owedTree struct {
+	size, links int
+	architect   liveClaim
+	planner     liveClaim
 }
 
-// seedOwedChain records a chain of size issues numbered from LEGION-<first>, its root, with a
-// retired architect on each issue below the root, in one transaction, and launches the root's
-// architect and the bottom issue's planner.
-func seedOwedChain(t *testing.T, h *harness, first, size int) owedChain {
+// seedOwedTree records a tree of size issues numbered from LEGION-<first>, its root: a chain of
+// links issues below the root, each the child of the one before, each with a retired architect,
+// and every other issue a child of the chain's bottom issue. Each issue has its row of the copy of
+// Dispatch's issues, where the daemon reads each chain (R15 of dispatch://INFRA-3320), and all of
+// it is written in one transaction. It then launches the root's architect and the planner of the
+// chain's bottom issue.
+func seedOwedTree(t *testing.T, h *harness, first, size, links int) owedTree {
 	t.Helper()
-	root, bottom := fmt.Sprintf("LEGION-%d", first), fmt.Sprintf("LEGION-%d", first+size-1)
+	root, bottom := fmt.Sprintf("LEGION-%d", first), fmt.Sprintf("LEGION-%d", first+links)
 	records := record.NewStore()
 	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		var parent *string
 		for n := first; n < first+size; n++ {
-			key := fmt.Sprintf("LEGION-%d", n)
-			if err := records.PutIssue(ctx, tx, record.Issue{
-				Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: key, Parent: parent,
-				Phase: phase.Planning, Status: "in_progress",
+			key, parent := fmt.Sprintf("LEGION-%d", n), ""
+			switch {
+			case n == first:
+			case n <= first+links:
+				parent = fmt.Sprintf("LEGION-%d", n-1)
+			default:
+				parent = bottom
+			}
+			// The record names the Dispatch project its copy rows name, as the daemon records an
+			// issue, so a read of the copy's children of the asking issue finds the rest of the tree.
+			issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+				Project: testDispatchProject, Title: key, Phase: phase.Planning, Status: "in_progress"}
+			if parent != "" {
+				issue.Parent = &parent
+			}
+			if err := records.PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+			if err := seedCopy(tx, key, parent, "in_progress"); err != nil {
+				return err
+			}
+			if n == first || n > first+links {
+				continue
+			}
+			token, err := claim.NewToken(testProject, key, claim.RoleArchitect)
+			if err != nil {
+				return err
+			}
+			if err := h.store.PutClaimTx(ctx, tx, supervise.Claim{
+				Token: token, Project: testProject, Tree: root, Issue: key, Role: claim.RoleArchitect, State: supervise.StateRetired,
 			}); err != nil {
 				return err
 			}
-			if parent != nil {
-				token, err := claim.NewToken(testProject, key, claim.RoleArchitect)
-				if err != nil {
-					return err
-				}
-				if err := h.store.PutClaimTx(ctx, tx, supervise.Claim{
-					Token: token, Project: testProject, Tree: root, Issue: key, Role: claim.RoleArchitect, State: supervise.StateRetired,
-				}); err != nil {
-					return err
-				}
-			}
-			parent = &key
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("seed a chain of %d issues from %s: %v", size, root, err)
+		t.Fatalf("seed a tree of %d issues from %s with a chain of %d links: %v", size, root, links, err)
 	}
-	return owedChain{
+	return owedTree{
 		size:      size,
+		links:     links,
 		architect: newLiveClaim(t, h, root, claim.RoleArchitect),
 		planner:   newLiveClaimIn(t, h, root, bottom, claim.RolePlanner),
 	}
 }
 
-// ask is the planner's ask of what it owes, held to the answer the chain gives — the planning
+// ask is the planner's ask of what it owes, held to the answer the tree gives — the planning
 // phase of its issue, owned by the root's architect — and the time the route took to answer it.
-func (c owedChain) ask(t *testing.T) time.Duration {
+func (o owedTree) ask(t *testing.T) time.Duration {
 	t.Helper()
 	start := time.Now()
-	got := c.planner.owed(t)
+	got := o.planner.owed(t)
 	elapsed := time.Since(start)
-	if want := (OwedResponse{Owes: true, Work: "the planning phase of " + c.planner.issue, Architect: c.architect.token}); got != want {
-		t.Fatalf("the planner at the bottom of a chain of %d issues is told %+v, want %+v", c.size, got, want)
+	if want := (OwedResponse{Owes: true, Work: "the planning phase of " + o.planner.issue, Architect: o.architect.token}); got != want {
+		t.Fatalf("the planner at the bottom of a chain of %d links in a tree of %d issues is told %+v, want %+v", o.links, o.size, got, want)
 	}
 	return elapsed
 }
@@ -142,19 +194,24 @@ func milliseconds(d time.Duration) float64 {
 	return float64(d.Microseconds()) / 1000
 }
 
-// The owed route reads the claim's tree for the architect that owns it on every ask
-// (owningArchitect), and the worker's end-of-turn reminder waits OWED_READ_BOUND_MS, 3 s, for the
-// answer before it nudges with "could not read the record" (packages/pi-shared/src/phase-reminder.ts),
-// so a read that grew with the tree would nudge at every turn's end on a large one. The owner walk
-// reads the tree's issues in one statement and their architects' claims in another
-// (record.ReadOwnerWalk), so an ask sends the same statements whatever the tree's size, and only
-// their rows grow. Asked from the bottom of a chain (owedChain), the route names the root's
-// architect on a chain of 16 issues and on one of 1024, twice INFRA's largest tree, and the pool
-// the server reads through counts as many statements for the one ask as for the other.
+// The owed route reads the architect that owns the claim on every ask (owningArchitect), and the
+// worker's end-of-turn reminder waits OWED_READ_BOUND_MS, 3 s, for the answer before it nudges
+// with "could not read the record" (packages/pi-shared/src/phase-reminder.ts), so a read that grew
+// with the tree would nudge at every turn's end on a large one. The owner walk reads the claim's
+// Dispatch chain and no stored tree (R15 and R18 of dispatch://INFRA-3320): one read of the chain
+// per ask, the records of its issues and the architect claims on its links (record.ReadOwnerWalk),
+// so an ask sends the same statements whatever the chain's length and the tree's size, and only
+// their rows grow. Asked from the bottom of a chain (owedTree), the route names the root's
+// architect over a chain of one link in a tree of 16 issues and over one of record.MaxChainLinks,
+// the longest Dispatch lets an issue stand below the top of its chain, in a tree of 1024, twice
+// INFRA's largest, the rest of each tree standing under the asking issue. The store counts one
+// walk of the asking issue's chain for each ask, no walk of every chain of the project, and the
+// records of that chain's issues alone, none of the asking issue's children; and the pool the
+// server reads through counts as many statements for the one ask as for the other.
 //
-// The suite holds the count and not a time. It runs on a pod that other work loads, where a
+// The suite holds the counts and not a time. It runs on a pod that other work loads, where a
 // wall-clock bound fails on that load and not on the code, while a read per issue changes the
-// count on any machine. Each ask's time is logged, and TestClaimOwedTimingOnAChainOf1024Issues
+// count on any machine. Each ask's time is logged, and TestClaimOwedTimingOnATreeOf1024Issues
 // reads the time on its own when it is asked to.
 func TestClaimOwedSendsAsManyStatementsOnATreeOf1024IssuesAsOn16(t *testing.T) {
 	h := newHarness(t)
@@ -166,45 +223,62 @@ func TestClaimOwedSendsAsManyStatementsOnATreeOf1024IssuesAsOn16(t *testing.T) {
 		t.Fatalf("open the counted pool: %v", err)
 	}
 	t.Cleanup(traced.Close)
-	serveOwedOver(h, store.NewPool(traced), record.NewStore())
+	walks := &chainReads{Store: record.NewStore()}
+	serveOwedOver(h, store.NewPool(traced), walks)
 
-	chains := []owedChain{seedOwedChain(t, h, 100, 16), seedOwedChain(t, h, 1000, largeTree)}
-	sent := make([]int64, len(chains))
-	for i, chain := range chains {
+	trees := []owedTree{seedOwedTree(t, h, 100, 16, 1), seedOwedTree(t, h, 1000, largeTree, record.MaxChainLinks)}
+	sent := make([]int64, len(trees))
+	for i, tree := range trees {
 		counted.sent.Store(0)
-		elapsed := chain.ask(t)
+		walks.reset()
+		elapsed := tree.ask(t)
 		sent[i] = counted.sent.Load()
-		t.Logf("owed on a chain of %d issues: %d statements, answered in %.1f ms", chain.size, sent[i], milliseconds(elapsed))
+		t.Logf("owed on a chain of %d links in a tree of %d issues: %d statements, answered in %.1f ms",
+			tree.links, tree.size, sent[i], milliseconds(elapsed))
+		if read := walks.walks.Load(); read != 1 {
+			t.Errorf("an ask on a chain of %d links in a tree of %d issues read the Dispatch chains of the asking issue %d times, want once",
+				tree.links, tree.size, read)
+		}
+		if read := walks.projectWalks.Load(); read != 0 {
+			t.Errorf("an ask on a chain of %d links in a tree of %d issues read every Dispatch chain of the project %d times, want none: "+
+				"the owner walk asks of the asking issue's own chain alone", tree.links, tree.size, read)
+		}
+		if read, chain := walks.records.Load(), int64(tree.links+1); read != chain {
+			t.Errorf("an ask on a chain of %d links in a tree of %d issues read %d records, want the %d of the asking issue and its links: "+
+				"no answer of the owner walk reads the asking issue's %d children", tree.links, tree.size, read, chain, int64(tree.size)-chain)
+		}
 	}
 	if sent[0] != sent[1] {
-		t.Fatalf("an ask on a chain of %d issues sent %d statements and one on a chain of %d sent %d, want as many: "+
-			"the owed route's reads grow with the tree", chains[0].size, sent[0], chains[1].size, sent[1])
+		t.Fatalf("an ask on a chain of %d links in a tree of %d issues sent %d statements and one on a chain of %d links "+
+			"in a tree of %d sent %d, want as many: the owed route's reads grow with the chain or the tree",
+			trees[0].links, trees[0].size, sent[0], trees[1].links, trees[1].size, sent[1])
 	}
 }
 
-// The time the owed route takes to answer on a chain of 1024 issues (owedChain), read only when
-// LEGION_OWED_TIMING=1 asks for it, since a wall-clock bound in the package's suite fails on the
-// load of the pod it runs on. One warm-up ask is not counted; of the owedTimedAsks after it, the
-// slowest, the median and the fastest answer are logged on one line. It fails only when the
-// slowest takes over 1 s, a third of the 3 s the worker's reminder waits for the answer.
-func TestClaimOwedTimingOnAChainOf1024Issues(t *testing.T) {
+// The time the owed route takes to answer on a tree of 1024 issues, asked from the bottom of its
+// longest chain (owedTree), read only when LEGION_OWED_TIMING=1 asks for it, since a wall-clock
+// bound in the package's suite fails on the load of the pod it runs on. One warm-up ask is not
+// counted; of the owedTimedAsks after it, the slowest, the median and the fastest answer are
+// logged on one line. It fails only when the slowest takes over 1 s, a third of the 3 s the
+// worker's reminder waits for the answer.
+func TestClaimOwedTimingOnATreeOf1024Issues(t *testing.T) {
 	if os.Getenv(owedTimingEnabled) != "1" {
-		t.Skip("set LEGION_OWED_TIMING=1 to time the owed route on a chain of 1024 issues: a wall-clock bound in the " +
+		t.Skip("set LEGION_OWED_TIMING=1 to time the owed route on a tree of 1024 issues: a wall-clock bound in the " +
 			"package's suite fails on the load of the pod it runs on, so the suite holds the route's statement count instead")
 	}
 	h := newHarness(t)
 	serveOwedOver(h, h.store.Pool(), record.NewStore())
-	chain := seedOwedChain(t, h, 1000, largeTree)
+	tree := seedOwedTree(t, h, 1000, largeTree, record.MaxChainLinks)
 
-	chain.ask(t)
+	tree.ask(t)
 	times := make([]time.Duration, owedTimedAsks)
 	for i := range times {
-		times[i] = chain.ask(t)
+		times[i] = tree.ask(t)
 	}
 	slices.Sort(times)
 	slowest, median, fastest := times[len(times)-1], times[len(times)/2], times[0]
-	t.Logf("owed on a chain of %d issues, %d asks: slowest %.1f ms, median %.1f ms, fastest %.1f ms",
-		chain.size, len(times), milliseconds(slowest), milliseconds(median), milliseconds(fastest))
+	t.Logf("owed on a chain of %d links in a tree of %d issues, %d asks: slowest %.1f ms, median %.1f ms, fastest %.1f ms",
+		tree.links, tree.size, len(times), milliseconds(slowest), milliseconds(median), milliseconds(fastest))
 	if slowest > time.Second {
 		t.Fatalf("the slowest of %d asks took %.1f ms, over 1 s: a third of the 3 s the worker's reminder waits for the "+
 			"answer (OWED_READ_BOUND_MS, packages/pi-shared/src/phase-reminder.ts) before it nudges with \"could not read "+

@@ -11,10 +11,10 @@ import (
 	"sort"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -143,14 +143,11 @@ func runsTheDefaultTask(key string) func(*testing.T, *pgxpool.Pool, *Admission, 
 }
 
 // assertNoRunOpenWhereItsIssueNoLongerStands fails, naming what, for each run the store holds open
-// that is over: its issue stands at another place or in another generation, or its tree's run is
-// over — the root lingers — and the run is not a merge that can still land in that tree (the
-// linger still runs, the pull request is open, or the linger's close handed the member over).
-// lingerClosed says the fact closed the linger, which ends its window whatever the clock says.
+// that is over: its issue stands at another place or in another generation, or it is out of
+// Legion's work and the run is not a merge that can still land (its pull request is open).
 // It states the end rule itself rather than calling workflow's (runOver, mergeCanLand): a check
-// that read the rule it judges would agree with any fault in it. With mergeCanLand made to answer
-// true for every merge, this check fails a linger close that leaves a merge open.
-func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool, what string, now time.Time, lingerClosed bool) {
+// that read the rule it judges would agree with any fault in it.
+func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool, what string) {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select issue, task, kind, place, coalesce(record->>'generation', '') from step_starts where run = 'open' order by issue, kind, place`)
 	if err != nil {
@@ -190,28 +187,19 @@ func assertNoRunOpenWhereItsIssueNoLongerStands(t *testing.T, pool *pgxpool.Pool
 					what, run.issue, run.place, run.generation, at, stands.Generation)
 				continue
 			}
-			root, err := records.Issue(ctx, tx, stands.Tree)
-			if err != nil {
-				t.Fatalf("read the root of %s: %v", run.issue, err)
-			}
-			if root == nil || !root.Lingers() {
+			if record.InLegionsWork(*stands) {
 				continue
 			}
 			mergeCanLand := false
-			if stands.Key != root.Key && (stands.Phase == phase.Merging || stands.Phase == phase.Held && stands.Hold != nil && stands.Hold.From == phase.Merging) {
+			if stands.Phase == phase.Merging || stands.Phase == phase.Held && stands.Hold != nil && stands.Hold.From == phase.Merging {
 				pr, err := records.PullRequest(ctx, tx, stands.Key)
 				if err != nil {
 					t.Fatalf("read the pull request of %s: %v", run.issue, err)
 				}
-				handover, err := records.Handover(ctx, tx, stands.Key)
-				if err != nil {
-					t.Fatalf("read the hand-over of %s: %v", run.issue, err)
-				}
-				mergeCanLand = record.Lingering(*root, now) && !lingerClosed || pr != nil && pr.State == record.PullRequestOpen ||
-					handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation
+				mergeCanLand = pr != nil && pr.State == record.PullRequestOpen
 			}
 			if !mergeCanLand {
-				t.Errorf("%s: the run of %s at %+v is open, and its tree's root %s lingers", what, run.issue, run.place, root.Key)
+				t.Errorf("%s: the run of %s at %+v is open, and the issue is out of Legion's work", what, run.issue, run.place)
 			}
 		}
 	})
@@ -275,8 +263,8 @@ func TestTheEndOfARunReadsNoOtherIssuesRuns(t *testing.T) {
 	}
 }
 
-// parkFinishingTree parks the running tree's root, a person's: it leaves the workflow and its
-// tree lingers.
+// parkFinishingTree parks the running tree's root, a person's: it leaves Legion's work, and
+// nothing under it stops.
 func parkFinishingTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 	t.Helper()
 	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
@@ -299,8 +287,8 @@ func (wayOut) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Resul
 // Every way out of a step ends its run, whatever fact takes the issue out and whatever writes it:
 // the end follows from the record at the one point every fact passes, not from a call each way
 // out must remember. For each kind of fact the workflow and admission apply, on a tree whose
-// issues each run a step, no run is left open where its issue no longer stands, nor in a tree whose
-// run is over, but for a merge that can still land there. Each row that takes an issue out says
+// issues each run a step, no run is left open where its issue no longer stands, nor where its
+// issue is out of Legion's work, but for a merge that can still land. Each row that takes an issue out says
 // which, and the row fails when the fact did not take it out, so a row cannot quietly stop testing
 // its way out. A row whose fact is no way out, though it acts on an issue standing in a step, says
 // which issue it keeps there, and fails when that issue's step moved or its run ended. A kind of
@@ -317,9 +305,8 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		// keeps is the issue the fact acts on and leaves in the step it stands in, its run still
 		// open, "" for none, and then what the fact must have written on that issue's pull request,
 		// nil for nothing to check.
-		keeps        string
-		then         func(t *testing.T, pr record.PullRequest)
-		lingerClosed bool
+		keeps string
+		then  func(t *testing.T, pr record.PullRequest)
 	}
 	none := func(*testing.T, *pgxpool.Pool, *Admission, intake.Handler) {}
 	parked := parkFinishingTree
@@ -334,14 +321,19 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 	moves := map[string][]row{
 		"DispatchIssue": {
 			{name: "a person parks a child", arrange: none, fact: issueFact(planning, "backlog"), leaves: planning},
-			{name: "a person parks the root, and its tree lingers", arrange: none, fact: issueFact(finishedRoot, "backlog"), leaves: finishedRoot},
-			{name: "a person sets a running child back to todo", arrange: none, fact: issueFact(planning, "todo"), leaves: planning},
-			{name: "a person reopens the closed root, and the tree is promoted again", arrange: closed, fact: issueFact(finishedRoot, "todo")},
+			// The root stands in merging, and a merge that can still land keeps its run though the
+			// root leaves Legion's work (workflow's runOver, mergeCanLand).
+			{name: "a person parks the root, and nothing under it stops", arrange: none, fact: issueFact(finishedRoot, "backlog"), keeps: finishedRoot},
+			// A todo on a running child keeps it in Legion's work: nothing of its step moves (R20 of
+			// dispatch://INFRA-3320; a todo opens a new run only on a record at done).
+			{name: "a person sets a running child back to todo", arrange: none, fact: issueFact(planning, "todo"), keeps: planning},
+			{name: "a person's todo on the closed root returns it to work", arrange: closed, fact: issueFact(finishedRoot, "todo")},
 		},
 		"BackwardMove": {{name: "the implementer moves its retro back", arrange: none,
 			fact: intake.BackwardMove{Issue: inRetro, Requester: claim.RoleImplementer, To: phase.Implementing, Reason: "redo"}, leaves: inRetro}},
-		// The route builds each architect's request with its owner and the run it read (api's
-		// signOff): here the tree's root architect, and the run the start counted.
+		// The route builds each architect's request with its caller and the run it read (api's
+		// signOff): here the architect of the root above the child, which acts on it over the
+		// chain, and the run the start counted.
 		"SignOff": {{name: "the architect accepts a child", arrange: none, fact: intake.SignOff{Issue: inAccepting, By: ownersArchitect(t, finishedRoot), Generation: 1,
 			Entry: record.StepEntry{Place: stepPlaces[phase.Accepting], Starts: 1}}, leaves: inAccepting}},
 		// A first plan is taken only before the issue's work (workflow's planGiven), so a plan of a
@@ -353,12 +345,31 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 				Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}}, Text: "Build the widget."}}}}, keeps: planning}},
 		"TaskStopped": {{name: "the owner stops the task of a child in planning", arrange: runsTheDefaultTask(planning),
 			fact: intake.TaskStopped{Issue: planning, Task: "default", By: ownersArchitect(t, finishedRoot), Generation: 1}, leaves: planning}},
-		"PullRequestMerged": {{name: "a member's merge lands while its tree lingers", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
+		// Dispatch's refusal of a close the daemon queued moves nothing either: the issue keeps its
+		// phase and its run, and the close is written again once its children are done (R24).
+		"CloseRefused": {{name: "a refused close keeps the issue in its step", arrange: none, source: "outbox",
+			fact: intake.CloseRefused{Issue: planning, Generation: 1, Entry: 1, Children: []string{"LEGION-777 (todo)"}}, keeps: planning}},
+		// Dispatch's refusal of any other write the daemon queued moves nothing of the issue's step
+		// either: the record's status goes back to Dispatch's, where it still holds the refused one,
+		// and the caller is told (decision 12 of dispatch://INFRA-4730).
+		"StatusRefused": {{name: "a refused status write keeps the issue in its step", arrange: none, source: "outbox",
+			fact: intake.StatusRefused{Issue: planning, Generation: 1, Entry: 1, Status: "backlog", Issues: []string{"LEGION-777 (todo)"}}, keeps: planning}},
+		// A status call counts its write on the record before Dispatch echoes it (R16 of
+		// dispatch://INFRA-3320): the controller's backlog on a running child takes it out of
+		// Legion's work where it stands, as a person's would, and ends its step's run; its todo on
+		// a child in work writes no status, and nothing of its step moves (workflow's statusCall).
+		"StatusCall": {
+			{name: "the controller's set_status parks a running child", arrange: none,
+				fact: intake.StatusCall{Op: intake.SetStatusCall, Issues: []intake.StatusCallIssue{{Key: planning, Status: "backlog"}}}, leaves: planning},
+			{name: "the controller's set_status todo on a running child keeps it in its step", arrange: none,
+				fact: intake.StatusCall{Op: intake.SetStatusCall, Issues: []intake.StatusCallIssue{{Key: planning, Status: "todo"}}}, keeps: planning},
+		},
+		// A member's merge queues its close and moves nothing: it leaves merging, and its step's
+		// run ends, once Dispatch shows it done (R24 of dispatch://INFRA-3320, workflow's closeLanded).
+		"PullRequestMerged": {{name: "a member's merge lands while the root is parked", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {
 			seedAwaitingPullRequest(t, pool)
 			parked(t, pool, admission, engine)
-		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, leaves: awaiting}},
-		"LingerExpired": {{name: "the linger's close stops a merge that can no longer land", arrange: parked, source: "timer",
-			fact: intake.LingerExpired{Issue: finishedRoot, Generation: lingerOfRoot}, lingerClosed: true}},
+		}, source: "github", fact: intake.PullRequestMerged{Repo: "acme/widgets", Number: 5, MergeSHA: "merge-5", HeadSHA: "head-5"}, keeps: awaiting}},
 		// A head that conflicts with its base moves no issue (dispatch://INFRA-4374): the second
 		// read that confirms the conflict asks the implementer to merge the base forward while the
 		// merger keeps merging's step (workflow's mergeForward, which writes no transition), and
@@ -419,9 +430,18 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("apply %s: %v", kind, err)
 				}
 				if tc.leaves != "" {
+					// The fact takes the issue out of its step either by moving it on, or by taking
+					// it out of Legion's work where it stands, which keeps its phase (R20 of
+					// dispatch://INFRA-3320) and ends the step's run.
 					after := issue(t, pool, tc.leaves)
-					if at, _ := standsAt(after); at == stepPlaces[record.StandsAt(before)] && after.Generation == before.Generation {
-						t.Fatalf("%s left %s in %s at generation %d, want it out of the step it stood in", kind, tc.leaves, record.StandsAt(after), after.Generation)
+					var open int
+					if err := pool.QueryRow(context.Background(), `select count(*) from step_starts where issue = $1 and run = 'open'`, tc.leaves).Scan(&open); err != nil {
+						t.Fatalf("read the open runs of %s: %v", tc.leaves, err)
+					}
+					at, _ := standsAt(after)
+					moved := at != stepPlaces[record.StandsAt(before)] || after.Generation != before.Generation
+					if !moved && (record.InLegionsWork(after) || open != 0) {
+						t.Fatalf("%s left %s in %s at generation %d with %d open runs, want it out of the step it stood in", kind, tc.leaves, record.StandsAt(after), after.Generation, open)
 					}
 				}
 				if tc.keeps != "" {
@@ -447,7 +467,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 						})
 					}
 				}
-				assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, kind+"/"+tc.name, fixedNow, tc.lingerClosed)
+				assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, kind+"/"+tc.name)
 			})
 		}
 	}
@@ -459,7 +479,7 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 		if got := issue(t, pool, planning); got.Phase != phase.Done {
 			t.Fatalf("the unknown way out left %s in %s, want it done", planning, got.Phase)
 		}
-		assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, "the unknown way out", fixedNow, false)
+		assertNoRunOpenWhereItsIssueNoLongerStands(t, pool, "the unknown way out")
 	})
 }
 
@@ -479,8 +499,8 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.RestartPhase{}, intake.SignOff{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{},
 		intake.CheckReport{}, intake.CheckLookEnded{}, intake.CheckWakeDue{}, intake.CheckBound{},
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
-		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.LingerDeadline{},
-		intake.Handover{}, intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
+		intake.ControllerTick{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
+		intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
 		intake.BasisChangesRead{}, intake.ReparentRead{},
 		// A change of the P0 bound, which records it and makes the pass every fact that is not a
 		// Dispatch issue makes.

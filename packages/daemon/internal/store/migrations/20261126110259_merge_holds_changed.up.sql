@@ -13,10 +13,12 @@
 -- thirty-two kinds, in its order, and then this one, thirty-three in all. Its version stands above
 -- 20261122154643, the list with the two basis seeds, 20261119203047, the design news's list,
 -- 20261119003157, the list with the conflict's second read and the merge forward, 20261117023932,
--- the plan record's, and 20261117000528, the step record's, so on any database this list is the
--- last word: Migrate applies every unrecorded migration in version order, and at a lower version
--- any of those lists, none of which names merge_holds_changed, would be applied after this one and
--- refuse the kind.
+-- the plan record's, and 20261117000528, the step record's, so this list is applied after each of
+-- those on any database: Migrate applies every unrecorded migration in version order, and at a
+-- lower version any of those lists, none of which names merge_holds_changed, could be applied
+-- after this one and refuse the kind. The state events' 20261126163320 and then the merge's
+-- 20261128030241 write the list again above this one, each with merge_holds_changed, and
+-- 20261128030241's list is the one applied last on every database.
 --
 -- This list must name step_record, plan_record, conflict_confirm, merge_forward, design_changes,
 -- phase_ended, pending_basis_seed and reparent_seed, because a database main's release migrated
@@ -39,6 +41,14 @@
 -- 20261122154643 on a database main migrated, where its list, without the two basis seeds, would
 -- have refused a pending row of either. A database a build of this branch migrated before this
 -- merge records an older version, and it is a test's own, to make again.
+--
+-- The list names retention_end too, the kind dispatch://INFRA-4730's 20261122154645 adds, which
+-- stands below this version: on a fresh database, and on one a build of that branch migrated,
+-- this list is applied after that one, and 20261128030241's, which names retention_end too, is
+-- applied last; a list here without retention_end would fail the upgrade over a pending end of an
+-- issue's retention before 20261128030241 ran. Thirty-four kinds in all. On a database main
+-- migrated before that branch's merge, 20261122154645 is applied after this one, and its list
+-- names merge_holds_changed for that reason.
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
@@ -47,4 +57,4 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed'));
+  'merge_holds_changed', 'retention_end'));

@@ -284,6 +284,14 @@ type overrides struct {
 	// has done what it needs done before them, and releases them by answering false. nil, in
 	// production, holds nothing.
 	holdOutbox func(record.OutboxRow) bool
+	// statusRowChecked and statusRowRead are the two seams of a Dispatch status row's run
+	// (outbox.statusRowChecked, outbox.statusRowRead): told of the row once its run and phase
+	// entry have passed their check and before it reads Dispatch, and after each read a write of it
+	// is fenced on, with that read's sequence, before it waits for the record to see it. Each runs
+	// on the row's lane, so a test holds the row there by not returning until it has moved the
+	// issue. nil, in production, tells no one.
+	statusRowChecked func(ctx context.Context, row record.OutboxRow)
+	statusRowRead    func(ctx context.Context, row record.OutboxRow, seq int64)
 	// gateRegistrationRead is api.Options.GateRegistrationRead: told of each register_gate call
 	// once its Dispatch reads are made and before its fact is applied, on the route's goroutine,
 	// so a test can act on Dispatch between the two and release the call by returning. nil, in
@@ -317,12 +325,26 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// afterConversionStep is told the number of each step of the first boot's conversion of what
+	// the release before stored once that step commits (workflowRuntime.runConversionSteps); an
+	// error it answers stops the boot there, as a crash after that step would, and the daemon's
+	// next boot starts at the step after it. nil, in production, tells no one. It is the seam the
+	// live proof of the cut-over stops the daemon at after each step in turn.
+	afterConversionStep func(step int) error
+	// wrapDispatch, when set, wraps the one Dispatch client the workflow builds (openWorkflow), so
+	// the tick's listing and its re-reads, the boot's reconcile, the API and the outbox all read and
+	// write through what it answers. nil, in production, wraps nothing. It is the seam the live
+	// proof of the rollback keeps one issue's Dispatch chain unknown through: its wrapper answers a
+	// read of the issue's parent with a 503 and leaves the parent out of every listing
+	// (tree_rollback_live_test.go).
+	wrapDispatch func(dispatch.Client) dispatch.Client
 	// experimentSource is the random source admission and the workflow draw every `random`
-	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
-	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
-	// test that compares a run's draws with a seed's hands in a source of that seed. The API's draw
-	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
-	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
+	// experiment with: admission's draw of each issue it records and at each issue's first start,
+	// and the workflow's of each child it records (experiment.Draw). nil, in production, is
+	// experiment.CryptoSource; a test that compares a run's draws with a seed's hands in a source of
+	// that seed. The API's draw at an operator's spawn keeps its own: it draws only the tree-unit
+	// experiments, and an experiment that sets how an issue is done draws for each issue (config's
+	// checkExperimentPlans).
 	experimentSource func(uint64) (uint64, error)
 }
 
@@ -535,7 +557,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, wakePacer, plan.clock.Now, o.experimentSource, o.appCalls)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, dispatchTransport, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, o.wrapDispatch, wakePacer, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -553,6 +575,19 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
+		workflow.afterConversionStep = o.afterConversionStep
+		// The first boot on this release converts what the release before stored (decision 21 of
+		// dispatch://INFRA-4730): its steps that read the store alone run here, once the store has
+		// migrated and before anything decodes a row that release queued — supervision's restore,
+		// the open of the uncounted runs below, every fact — since the first of them gives those
+		// rows the fence every decoder reads. The steps that read the listing run in the boot's
+		// reconcile (workflowRuntime.reconcile), before its first admission pass. A boot whose
+		// conversion is finished runs nothing here.
+		if err := workflow.convertStore(boot); err != nil {
+			workflow.stop()
+			st.Close()
+			return err
+		}
 		plan.identity = workflow.identity
 		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.issueLaunchRepository
@@ -618,6 +653,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// so no claim write of this boot is left out.
 		st.PublishRoleHolders(workflow.wakeRoleHolders)
 		st.ReleaseLeftSessionClaims(workflow.wakeClaimRelease)
+		// The fold of a delivery's final credit of news of the approved design holds each item to
+		// the gate root its issue stands under on the Dispatch chain now, which only a daemon with
+		// the workflow reads (store.ReadGateRootsWith, workflowRuntime.gateRootsOf), wired before any
+		// claim is restored.
+		st.ReadGateRootsWith(workflow.gateRootsOf)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
@@ -769,6 +809,16 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 					return workflow.connect(attempt, cfg, plan.nats)
 				}, bootTimeout, natsauth.Unreachable))
 		}
+		// Every boot fills the copy of Dispatch's issues from a listing of the project before its
+		// first decision (R16 of dispatch://INFRA-3320): the reconcile writes the listing's rows
+		// first (blockers.Reconcile) and runs the first admission pass on them, in one
+		// transaction, so a child the event stream has not applied yet is in the copy before any
+		// parent's start or sign_off is decided. No ancestry is read: every decision reads the
+		// chain from the copy (record.Chains). On the first boot on this release the reconcile
+		// also runs the steps of its conversion that read the listing and the copy, under this
+		// probe's retry: the fill, those steps and the first admission pass then each commit on
+		// their own (workflowRuntime.convertListed), so all of the conversion is done before
+		// attach.
 		if err == nil {
 			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
@@ -1431,9 +1481,11 @@ type plan struct {
 	// rows only that project's daemon runs, and each caller says so rather than report a row it
 	// did not write.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
-	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
-	// nil holds, tells and drops nothing.
+	// holdOutbox, statusRowChecked, statusRowRead, gateRegistrationRead and dropConsumedEvent are
+	// the overrides of those names; nil holds, tells and drops nothing.
 	holdOutbox           func(record.OutboxRow) bool
+	statusRowChecked     func(ctx context.Context, row record.OutboxRow)
+	statusRowRead        func(ctx context.Context, row record.OutboxRow, seq int64)
 	gateRegistrationRead func(ctx context.Context, issue string)
 	dropConsumedEvent    func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
@@ -1588,7 +1640,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
+		holdOutbox: o.holdOutbox, statusRowChecked: o.statusRowChecked, statusRowRead: o.statusRowRead,
+		gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -1728,33 +1781,54 @@ func checkPaneRoleOverlays(ctx context.Context, cfg config.Config, image capabil
 }
 
 // launchVariants is the one reader a launch's arms come from: the experiments the project
-// declares, resolved against the answers the daemon's own store recorded for the launch's unit
-// and against the launch's role (experiment.Launch, which decides which keys to read and which
-// arms the rows put the launch in). Everything here is the transaction that reads those rows.
+// declares, resolved against the answers the daemon's own store recorded for the launch's issue
+// itself, its tree experiments' included (experiment.Launch, which decides which keys to read and
+// which arms the rows put the launch in), and against the launch's role. For an issue the daemon
+// records, no tree its record stores and no issue above it is read: a change of parent changes no
+// arm (R17 of dispatch://INFRA-3320). Everything here is the transaction that reads those rows.
+//
+// An issue the daemon holds no record of holds no row, so its launch takes, for each tree-unit
+// experiment, the row of the nearest issue above it on its Dispatch chain that is in Legion's work
+// and holds one: the carry's order and choice of row at a start (record.ReadChainsOf over the
+// daemon's copy, record.Chains.Above, record.Postgres.NearestTreeAssignments). It runs in no arm of
+// an experiment no such issue holds, and its issue-unit experiments give it nothing.
 //
 // It reads the daemon's own store rather than the workflow's, in a transaction of its own as the
 // supervisor's predicates read a record: the operator's spawn draws a tree's experiments through
 // the same store with no workflow configured (api's drawExperiments), and a launch that could not
-// read that draw back would run the unit against an arm the daemon had already recorded for it.
+// read that draw back would run the issue against an arm the daemon had already recorded for it.
 // A declaration no launch could use names no key to read, so such a deployment opens no
 // transaction per worker spawn at all (experiment.Launch.Keys).
-func launchVariants(st *store.Store, declared []config.Experiment, stateDir string) func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
+func launchVariants(st *store.Store, declared []config.Experiment, stateDir, project string) func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
 	launch := experiment.ForLaunch(declared, stateDir)
 	records := record.NewStore()
-	return func(ctx context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
-		keys := launch.Keys(tree, issue)
+	return func(ctx context.Context, issue string, role claim.Role) (experiment.Arms, error) {
+		keys := launch.Keys(issue)
 		if len(keys) == 0 {
 			return experiment.Arms{}, nil
 		}
 		var recorded map[string][]record.Assignment
 		if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			recorded, err = records.AssignmentsFor(ctx, tx, keys)
+			// A row is keyed by its issue's record (experiment_assignments.issue_key), so an issue
+			// that holds one is recorded and reads nothing more.
+			if recorded, err = records.AssignmentsFor(ctx, tx, keys); err != nil || len(recorded[issue]) > 0 {
+				return err
+			}
+			own, err := records.Issue(ctx, tx, issue)
+			if err != nil || own != nil {
+				return err
+			}
+			chains, err := record.ReadChainsOf(ctx, tx, records, project, []string{issue})
+			if err != nil {
+				return err
+			}
+			recorded[issue], err = records.NearestTreeAssignments(ctx, tx, chains.Above(issue))
 			return err
 		}); err != nil {
 			return experiment.Arms{}, err
 		}
-		return launch.Arms(recorded, tree, issue, role), nil
+		return launch.Arms(recorded, issue, role), nil
 	}
 }
 
@@ -2047,6 +2121,12 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets the supervisor's durable-state callback there.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// gateRoots is the gate root each of issues stands under on the Dispatch chain now, by issue,
+	// for each one the workflow records in Legion's work (workflowRuntime.gateRoots); nil in a
+	// deployment with no workflow. It is what the boot's and every sweep's pass over the running
+	// architects reads (relaunchUnderGateRoots). The workflow sets it where it attaches, as it
+	// sets enqueue above.
+	gateRoots func(ctx context.Context, issues []string) (map[string]string, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -2260,7 +2340,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir, cfg.Project),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,
@@ -2686,8 +2766,12 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	// daemon's contract; a stale-plugin relaunch posted to it first would raise its launch outside
 	// that order and leave the turn the pass reserves it spent. The orphan sweep's own stale-plugin
 	// posts pass over a claim whose relaunch waits (parkedWakes), so this is the one post to skip.
+	// The gate-root pass posts to such a claim too: over a claim whose record says its process
+	// died, the machine writes the gate root for the relaunch that death owes and replaces nothing
+	// (supervise's relaunchUnder), so the relaunch raised below launches under that gate root.
 	deaths := recordedDeaths(s.claims)
 	s.refreshStalePlugins(slices.DeleteFunc(slices.Clone(s.claims), func(c supervise.Claim) bool { return slices.Contains(deaths, c.Token) }), "boot")
+	s.relaunchUnderGateRoots(boot, s.claims)
 	if len(deaths) > 0 {
 		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
 			"claims", len(deaths))
@@ -2743,6 +2827,49 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 	if found > 0 {
 		s.log.Info("supervise: an earlier daemon left these claims in a plugin update round; this boot takes each of them out of it",
 			"claims", found)
+	}
+}
+
+// relaunchUnderGateRoots is the pass that finds each architect claim whose process was launched
+// under another gate root than its issue stands under on the Dispatch chain now
+// (supervise.Claim.LaunchedTree, workflowRuntime.gateRoots) and posts it GateRootMoved, which
+// relaunches the process in its own session under that gate root, at the end of the turn it is
+// in (supervise's relaunchUnder): a change of parent, or an unlink of its children, that moved
+// the root of the gate above the issue reaches its running architect, whose plugin registers the
+// new gate root (R22 of dispatch://INFRA-3320, decision 13 of dispatch://INFRA-4730). It runs at
+// boot and at every sweep, so a relaunch a restart forgot, or one the lifecycle recheck refused,
+// is raised again; the machine decides nothing for a claim whose launch names the gate root
+// already, so the re-posts are free. Only an architect is relaunched, and only one whose process
+// holds its capability: a phase worker keeps the LEGION_TREE of its launch until its next one,
+// and a claim with no process takes the gate root at its next start. An issue the workflow does
+// not record in Legion's work is passed over, as an operator's claim is.
+func (s *supervision) relaunchUnderGateRoots(ctx context.Context, claims []supervise.Claim) {
+	if s.gateRoots == nil {
+		return
+	}
+	var issues []string
+	for _, c := range claims {
+		if c.Role == claim.RoleArchitect && c.Issue != "" && supervise.HoldsCapability(c.State) && !slices.Contains(issues, c.Issue) {
+			issues = append(issues, c.Issue)
+		}
+	}
+	if len(issues) == 0 {
+		return
+	}
+	roots, err := s.gateRoots(ctx, issues)
+	if err != nil {
+		if ctx.Err() == nil {
+			s.log.Error("supervise: read the gate roots of the running architects", "error", err)
+		}
+		return
+	}
+	for _, c := range claims {
+		if c.Role != claim.RoleArchitect || !supervise.HoldsCapability(c.State) {
+			continue
+		}
+		if tree, recorded := roots[c.Issue]; recorded && tree != c.LaunchedTree() {
+			s.supervisor.post(c.Token, supervise.GateRootMoved{Claim: c.Token, Tree: tree})
+		}
 	}
 }
 
@@ -3107,6 +3234,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 			s.log.Error("reconcile orphans", "error", err)
 		}
 		s.refreshStalePlugins(claims, "sweep")
+		s.relaunchUnderGateRoots(ctx, claims)
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
@@ -3546,18 +3674,18 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // Its rule is that a record of another project is no record of this daemon's (owns). The issues
 // table holds the records of every project on the database, each under its project
 // (record.Issue.Project, the Dispatch key, which is project's spelling too), and a record is read
-// by key alone (record.Postgres.Issue), or by tree alone (TreeIssues), so a claim of another
+// by key alone (record.Postgres.Issue), so a claim of another
 // project's issue, which the operator's spawn makes under this daemon's own token, would find the
 // record that project's daemon keeps of the issue. A row built from that record would be keyed by
 // an issue whose rows the other project's daemon runs, against its own claims, and this daemon's
 // outbox never does (record's DueRows reads the rows of its own project's keys); and a drop or a
 // write it led to would change that daemon's rows. So each read here that returns issue records
 // and names no project answers this project's alone: Issue answers no record, and no error, for
-// a record of another project, and TreeIssues, Issues and QueuedRootsUnder leave such records
+// a record of another project, and Issues leaves such records
 // out. Every read that starts from them is within this filtered set, and so is every path of a
 // claim through the workflow: a claim of another project's issue reads no record at all, as a
 // claim of an issue nobody records reads none. The reads that name a project (LiveIssues,
-// IssuesOf, AncestorsOf, SlottedIssues, UnfilledIssues, UnnamedIssues) are scoped by their own
+// IssuesOf, SlottedIssues, UnfilledIssues, UnnamedIssues) are scoped by their own
 // SQL to the project their caller names, which every caller names as this one.
 //
 // Slots are not filtered here: a slot's index is unique across every project's slots, so
@@ -3570,22 +3698,22 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 // upserts, expedites or deletes outbox rows by a key — Enqueue, EnqueueID, EnqueueStart,
 // NameUndeliveredHookPrompt, ExpediteOutbox, EnqueueDesignGates, EnqueueGatedSteps, DropCatchUps
 // and DropStatusWrites — refuses a key of another project, and EnqueueID refuses it with
-// claim.ErrKeyOfAnotherProject. ClearGeneration and ClearTreeGeneration refuse one too: they write
-// no outbox row, since their caller queues the publication of the gates they empty (workflow's
-// Engine.ClearGeneration, through EnqueueDesignGates), but the facts they delete are that
-// project's daemon's, and so are the changes requests their forget deletes by id
-// (DropQueuedChanges), which only the clear's own read hands it. The state rows that
-// internal/record and internal/store queue inside their own writes (package stateevent's comment
-// names them) are not among those writes: each is keyed by the bare Dispatch project key of what
-// its write names. The boot row goes in through Enqueue (workflowRuntime.queueStateBoot), and its
-// key is the project's own. The rest act on a row by its id under a lease this daemon holds of a
-// row its own scope gave it (ClaimRow, RenewOutboxLease, FinishOutbox, FinishLeasedOutbox,
-// RetryOutbox), and need no rule here.
+// claim.ErrKeyOfAnotherProject. ClearGeneration refuses one too: it writes no outbox row, since
+// its caller queues the publication of the gates it empties (workflow's Engine.ClearGeneration,
+// through EnqueueDesignGates), but the facts it deletes are that project's daemon's, and so are
+// the changes requests its forget deletes by id (DropQueuedChanges), which only the clear's own
+// read hands it. The state rows that internal/record and internal/store queue inside their own
+// writes (package stateevent's comment names them) are not among those writes: each is keyed by
+// the bare Dispatch project key of what its write names. The boot row goes in through Enqueue
+// (workflowRuntime.queueStateBoot), and its key is the project's own. The rest act on a row by
+// its id under a lease this daemon holds of a row its own scope gave it (ClaimRow,
+// RenewOutboxLease, FinishOutbox, FinishLeasedOutbox, RetryOutbox), and need no rule here.
 //
 // It is also where the outbox learns of its rows: every write that makes a row due — Enqueue,
 // NameUndeliveredHookPrompt where it opens a message, and ExpediteOutbox — wakes the row's lane
 // (outbox.wake) once the transaction has committed, through the transaction's commit hooks
-// (store.OnCommit), so no lane runs a row it cannot yet read, and no lane polls for one. A state
+// (store.OnCommit), so no lane runs a row it cannot yet read, and no lane polls for one. So does
+// DropStatusWrites for each row its drop lets out from behind the issue's status writes. A state
 // row the store queues itself — the write of an issue, a slot or the admission block that moved
 // what Dispatch observes — wakes the project's state lane the same way, through the call the store
 // makes once it has queued the row (publishRecordStates). wake is nil where there is no workflow
@@ -3594,13 +3722,12 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 //
 // And it is where the refresher learns that the live records may have changed: each write that can
 // add a record to the live set or take one out of it — PutIssue, which writes an issue's phase and
-// status, and ReleaseSlot, ReleaseSlotForWait and ReleaseTreeSlots, which take slots away, the
-// tree's close and its root's re-admission among them — and each correction that moves a record
-// onto another repository (CorrectIssueRepository, where it wrote the row), which changes the
-// repository a live record names, asks for one read of the live records once its transaction
-// commits (live, the workflow's wakeLive, which holds one request at most), so the repository
-// caches and legion state follow the records without a timer. live is nil where no refresher
-// runs.
+// status, and ReleaseSlot and ReleaseSlotForWait, which take an issue's slot away, the tree's
+// close among them — and each correction that moves a record onto another repository
+// (CorrectIssueRepository, where it wrote the row), which changes the repository a live record
+// names, asks for one read of the live records once its transaction commits (live, the
+// workflow's wakeLive, which holds one request at most), so the repository caches and legion
+// state follow the records without a timer. live is nil where no refresher runs.
 type projectRecords struct {
 	record.Store
 	project  string
@@ -3650,15 +3777,6 @@ func (s projectRecords) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, k
 	return true, nil
 }
 
-func (s projectRecords) ReleaseTreeSlots(ctx context.Context, tx pgx.Tx, tree string) ([]string, error) {
-	released, err := s.Store.ReleaseTreeSlots(ctx, tx, tree)
-	if err != nil {
-		return nil, err
-	}
-	s.liveOnCommit(ctx)
-	return released, nil
-}
-
 // liveOnCommit asks for a read of the live records once the transaction that wrote one commits
 // (store.OnCommit), and at once for a write outside a commit scope, whose read then finds the
 // write or a later one does.
@@ -3684,22 +3802,6 @@ func (s projectRecords) Issue(ctx context.Context, tx pgx.Tx, key string) (*reco
 
 func (s projectRecords) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, error) {
 	all, err := s.Store.Issues(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	return s.own(all), nil
-}
-
-func (s projectRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string) ([]record.Issue, error) {
-	all, err := s.Store.TreeIssues(ctx, tx, tree)
-	if err != nil {
-		return nil, err
-	}
-	return s.own(all), nil
-}
-
-func (s projectRecords) QueuedRootsUnder(ctx context.Context, tx pgx.Tx, key string) ([]record.Issue, error) {
-	all, err := s.Store.QueuedRootsUnder(ctx, tx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -3799,7 +3901,7 @@ func (s projectRecords) NameUndeliveredHookPrompt(ctx context.Context, tx pgx.Tx
 //
 // Unlike the other writes, it refuses a row keyed by another project's issue with an error
 // (claim.ErrKeyOfAnotherProject), as the store's insertOutboxRow does: every caller names the row
-// by the id it answers — the decisions a start claims (ClaimKeptDecisions), the claims a re-held
+// by the id it answers — the decisions a start claims (ClaimKeptDecisionsOf), the claims a re-held
 // catch-up takes over (MoveKeptClaims), the start a pause's stop released — and an id of no row
 // would name nothing, so the caller's transaction rolls back instead.
 func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.OutboxRow) (int64, error) {
@@ -3869,11 +3971,29 @@ func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, i
 	return s.Store.DropUnfencedCheckWakes(ctx, tx, issue)
 }
 
+// DropStatusWrites wakes, once the drop commits, the board lane of each issue whose write into
+// work outboxInOrder held behind the status writes it drops (record.WaitingChildStatusIssues), as
+// the outbox's finish of a status row wakes them (wakeWaitingChildren): a held row takes no lease
+// and its lane exits with nothing due, so nothing else would wake it before the sweep. The issues
+// are read in the drop's own transaction, after the drop, and only where there is a lane to wake.
 func (s projectRecords) DropStatusWrites(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !s.ownsKey(record.OutboxKindDispatchStatus, issue) {
 		return nil
 	}
-	return s.Store.DropStatusWrites(ctx, tx, issue)
+	if err := s.Store.DropStatusWrites(ctx, tx, issue); err != nil {
+		return err
+	}
+	if s.wake == nil {
+		return nil
+	}
+	children, err := record.WaitingChildStatusIssues(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		s.wakeOnCommit(ctx, record.OutboxRow{Issue: child, Kind: record.OutboxKindDispatchStatus})
+	}
+	return nil
 }
 
 // ClearGeneration deletes the facts of the issue's generation and answers the issues whose gates
@@ -3885,15 +4005,6 @@ func (s projectRecords) ClearGeneration(ctx context.Context, tx pgx.Tx, issue re
 		return nil, nil
 	}
 	return s.Store.ClearGeneration(ctx, tx, issue, forget)
-}
-
-// ClearTreeGeneration is ClearGeneration for every issue of tree, each of which is of tree's
-// project: a record takes its root's project when the workflow writes it.
-func (s projectRecords) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget record.KeptForget) ([]string, error) {
-	if !s.ownsKey(record.OutboxKindDesignGatesPublish, tree) {
-		return nil, nil
-	}
-	return s.Store.ClearTreeGeneration(ctx, tx, tree, forget)
 }
 
 // PutSlot grants the slot and then wakes the issue's lifecycle lane once the transaction
@@ -3960,19 +4071,7 @@ func serializedTx(ctx context.Context, pool *store.Pool, what string, write func
 // it (api.StateSource): the route reads the caller's plugin contract from those claims, so the
 // body and the contract it is cut to come from one snapshot.
 func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	version, err := s.store.SchemaVersionTx(ctx, tx)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	// The state publication, read in this same snapshot as everything else the body holds: its
-	// sequence and its store id are the body's `daemon.stateSeq` and `daemon.stateId`
-	// (api.DaemonInfo.StateSeq and StateID say what each tells a reader). A project with no state
-	// row reads 0 and no id, and the 0 is served too.
-	published, err := s.records.StatePublication(ctx, tx, s.project)
+	info, err := s.readDaemonInfo(ctx, tx)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -4065,7 +4164,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if state.Paused, state.LastPause, err = api.PauseStateTx(ctx, tx, s.project, now); err != nil {
 		return api.State{}, nil, err
 	}
-	state.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
+	state.Daemon = info
 	state.Settings = s.settings
 	if state.Admission.P0Bound, err = s.p0BoundView(ctx, tx); err != nil {
 		return api.State{}, nil, err
@@ -4118,20 +4217,13 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 // read in tx's one snapshot, so the view's stateSeq is the sequence of the newest state event its
 // issues and its admission block hold, as the full state's is. The route reads the caller's plugin
 // contract from the claims, as it does for State, so the view and the contract it is cut to come
-// from one snapshot. It reads only what the view needs: the schema version, the boots, the state
-// publication, the project's claims and the P0 bound in force (`p0BoundView`) here, and what
+// from one snapshot. It reads only what the view needs: what the daemon block is built from
+// (readDaemonInfo: the schema version, the boots, the state publication and the tree
+// conversion), the project's claims and the P0 bound in force (`p0BoundView`) here, and what
 // projection.Observe reads there; it judges nothing the view does not serve: no stranded claims,
 // no stalled architects, no paced wakes.
 func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
-	version, err := s.store.SchemaVersionTx(ctx, tx)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	published, err := s.records.StatePublication(ctx, tx, s.project)
+	info, err := s.readDaemonInfo(ctx, tx)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -4140,18 +4232,14 @@ func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []sup
 		return api.State{}, nil, err
 	}
 	claims = ofProject(claims, s.projectToken)
-	now := time.Now().UTC()
-	if s.now != nil {
-		now = s.now().UTC()
-	}
 	observed, err := projection.Observe(ctx, projection.ObservedInputs{
 		Tx: tx, Store: projectRecords{Store: s.records, project: s.project}, Project: s.project,
-		Cap: s.admissionCap, Steps: s.gatedSteps, Claims: claims, Now: now,
+		Cap: s.admissionCap, Steps: s.gatedSteps, Claims: claims,
 	})
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
+	observed.Daemon = info
 	observed.Settings = s.settings
 	// The observed view's admission block is the full state's (api.ObservedState), the P0 bound in
 	// force included.
@@ -4172,19 +4260,44 @@ func (s *source) p0BoundView(ctx context.Context, tx pgx.Tx) (*api.P0BoundView, 
 	return &bound, nil
 }
 
-// daemonInfo is the daemon block both views of the state serve (api.DaemonInfo), from what each
-// read in its snapshot: the store's schema version, the project's boots and the state publication.
-func (s *source) daemonInfo(version, boots int, firstBootAt time.Time, published record.StatePublication) api.DaemonInfo {
+// readDaemonInfo is the daemon block both views of the state serve (api.DaemonInfo), read through
+// tx: the store's schema version, the project's boots, the state publication, and the time the
+// project's first boot on this release finished its conversion (R22 of dispatch://INFRA-3320):
+// the conversion records its time last, and a rollback's step deletes the row, so a project not
+// converted is served no time. Each view reads it first, in the one repeatable-read snapshot the
+// route reads the view in (api's readSnapshot), so it is of the snapshot the rest of the view is.
+func (s *source) readDaemonInfo(ctx context.Context, tx pgx.Tx) (api.DaemonInfo, error) {
+	version, err := s.store.SchemaVersionTx(ctx, tx)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
+	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
+	// The state publication, read in this same snapshot as everything else the body holds: its
+	// sequence and its store id are the body's `daemon.stateSeq` and `daemon.stateId`
+	// (api.DaemonInfo.StateSeq and StateID say what each tells a reader). A project with no state
+	// row reads 0 and no id, and the 0 is served too.
+	published, err := s.records.StatePublication(ctx, tx, s.project)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
+	conversion, err := record.ReadTreeConversion(ctx, tx, s.project)
+	if err != nil {
+		return api.DaemonInfo{}, err
+	}
 	return api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,
 		Boots:         boots,
 		FirstBootAt:   firstBootAt,
 		StartedAt:     s.startedAt,
+		ConvertedAt:   conversion.ConvertedAt,
 		StateSeq:      &published.Seq,
 		StateID:       published.StateID,
 		StateRun:      s.stateRun,
-	}
+	}, nil
 }
 
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)

@@ -78,7 +78,8 @@ func TestATransitionWritesTheStatusOfThePhaseItEnters(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	// The child is recorded where the line finds it, and nothing of its own status is written
-	// until the slot comes.
+	// until the slot comes. The copy takes its todo first, as the daemon's handler order has it.
+	mirrorChild(t, pool, "LEGION-209", "LEGION-208", "todo", 1)
 	applyRefusingNothing(t, pool, engine, intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 1, Type: "issue.updated",
 		Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V"})
 	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Admitted {

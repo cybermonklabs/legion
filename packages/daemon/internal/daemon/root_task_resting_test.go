@@ -74,7 +74,8 @@ func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testin
 				t.Fatalf("encode what the task names: %v", err)
 			}
 			runtime := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
-			task, kept, _, err := runtime.rootTask(ctx, supervise.Claim{Token: mustClaimToken(t, heldTaskRoot, claim.RoleArchitect), Tree: heldTaskRoot},
+			// The root architect's claim names its own issue, which the narrowing reads the root by.
+			task, kept, _, err := runtime.rootTask(ctx, supervise.Claim{Token: mustClaimToken(t, heldTaskRoot, claim.RoleArchitect), Tree: heldTaskRoot, Issue: heldTaskRoot},
 				supervise.Delivery{ID: "outbox-71", Task: "a person decided on the tree", Kept: named, Entry: tc.entry})
 			if err != nil {
 				t.Fatalf("narrow the held task: %v", err)

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -23,12 +22,10 @@ import (
 func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.T) {
 	t.Parallel()
 	root := "LEGION-208"
-	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name      string
 		issue     record.Issue
 		role      claim.Role
-		lingers   bool
 		wantPhase phase.Phase
 		wantTask  string
 		wantCode  string
@@ -69,23 +66,12 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 			wantPhase: phase.Done,
 			wantCode:  "PHASE_NOT_RESTARTED",
 		},
-		{
-			name:      "a lingering tree, which holds every member where it stood",
-			issue:     record.Issue{Phase: phase.Implementing},
-			role:      claim.RoleImplementer,
-			lingers:   true,
-			wantPhase: phase.Implementing,
-			wantCode:  "TREE_LINGERING",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			ctx := context.Background()
 			rootIssue := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
 				Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
-			if tc.lingers {
-				rootIssue.Phase, rootIssue.Status, rootIssue.LingerUntil = phase.Done, "done", &until
-			}
 			seedIssue(t, pool, rootIssue)
 			child := tc.issue
 			child.Key, child.Repo, child.DefaultBranch, child.GitHubRepo = "LEGION-209", "acme/widgets", "main", "acme/widgets"

@@ -454,9 +454,12 @@ func waveClaimsFrom(t *testing.T, cfg config.Config, role claim.Role, first, cou
 		}
 		c := build(i, token)
 		c.Token, c.Project, c.Tree, c.Issue, c.Role = token, project, issue, issue, role
+		// A claim on its tree's root holds its gate, as an operator's spawn and the store's migration mark it.
+		c.HoldsGate = claim.IsTreeRoot(c.Issue, c.Tree)
 		if _, err := st.OpenTreeLifecycle(ctx, project, issue, treelifecycle.AuthorityOperator); err != nil {
 			t.Fatalf("admit the tree of %s: %v", token, err)
 		}
+		openIssue(t, st, project, issue, treelifecycle.AuthorityOperator)
 		if _, err := st.AdmitClaim(ctx, c); err != nil {
 			t.Fatalf("put %s: %v", token, err)
 		}

@@ -382,7 +382,7 @@ func TestAHeldReleaseWhoseCommitOutcomeIsUnknownReleasesOnceTheStoreAnswers(t *t
 	}
 	// LEGION-HELD's summary stands ahead of its record, so the reconcile holds it; the target is
 	// past anything the stream's ack floor reaches, so only an idle reading releases it.
-	reconcileAdmission(t, direct, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, direct, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-HELD", ResolvedRepo: "sjawhar/legion", Title: "LEGION-HELD", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 		{Key: "LEGION-NEXT", ResolvedRepo: "sjawhar/legion", Title: "LEGION-NEXT", Status: "todo", Rank: "B", HandedOver: true, LastSeq: 1},
 	}, 1000, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})

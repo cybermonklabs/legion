@@ -1,1 +1,9 @@
-{}
+{
+  "queued": [
+    {
+      "issue": "LEGION-209",
+      "status": "todo",
+      "row": 42
+    }
+  ]
+}

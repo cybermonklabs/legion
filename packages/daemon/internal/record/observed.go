@@ -53,28 +53,24 @@ func waitingOnOf(w Awaiting) *WaitingOnView {
 	return view
 }
 
-// IssueObservation is what Dispatch observes of an issue's own record: the three fields of the
+// IssueObservation is what Dispatch observes of an issue's own record: the two fields of the
 // issue's view on the state route that the record's issues row alone decides (the slot and the
-// claims are rows of their own). Each field is the value the route serves at that issue, and each
-// encodes as a state event names it (StateFieldChange): Phase is the phase string; Tree the root
-// key of the issue's tree, nil for an issue that names none, which the route leaves out; WaitingOn
-// the view of what the issue waits on from a person, nil unless the issue is a root in
-// awaiting_person (Issue.AwaitingPerson), which the route leaves out too.
+// claims are rows of their own, and the tree is the Dispatch chain's, record.Chains.StateTree,
+// which no one row decides: R22 of dispatch://INFRA-3320). Each field is the value the route
+// serves at that issue, and each encodes as a state event names it (StateFieldChange): Phase is
+// the phase string; WaitingOn the view of what the issue waits on from a person, nil unless the
+// issue is a root in awaiting_person (Issue.AwaitingPerson), which the route leaves out.
 type IssueObservation struct {
 	Phase     phase.Phase
-	Tree      *string
 	WaitingOn *WaitingOnView
 }
 
 // ObservationOf is what Dispatch observes of issue (IssueObservation). It is the one definition of
-// those three values: the state route's projection builds each issue's view from it, and PutIssue
-// compares it before and after each write to decide which fields a state event names.
+// those two values: the state route's projection builds each issue's view from it, and PutIssue
+// compares it before and after each write to decide which fields a state event names. The stored
+// tree (Issue.Tree) is no part of it.
 func ObservationOf(issue Issue) IssueObservation {
 	observed := IssueObservation{Phase: issue.Phase}
-	if issue.Tree != "" {
-		tree := issue.Tree
-		observed.Tree = &tree
-	}
 	if issue.AwaitingPerson() {
 		observed.WaitingOn = waitingOnOf(*issue.Awaiting)
 	}
@@ -83,13 +79,13 @@ func ObservationOf(issue Issue) IssueObservation {
 
 // observedIssueFields is the fields of an issue a state change of PutIssue can name, in the order
 // it names them, which is the order IssueObservation.encoded answers their values in.
-var observedIssueFields = [...]StateField{StateFieldPhase, StateFieldTree, StateFieldWaitingOn}
+var observedIssueFields = [...]StateField{StateFieldPhase, StateFieldWaitingOn}
 
 // encoded is each field of o as a state event carries it, in the order of observedIssueFields: the
 // JSON the state route serves at the issue, and null where it serves none.
 func (o IssueObservation) encoded() ([len(observedIssueFields)]json.RawMessage, error) {
 	var values [len(observedIssueFields)]json.RawMessage
-	for i, value := range [...]any{o.Phase, o.Tree, o.WaitingOn} {
+	for i, value := range [...]any{o.Phase, o.WaitingOn} {
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return values, fmt.Errorf("encode the %s Dispatch observes: %w", observedIssueFields[i], err)
@@ -100,7 +96,7 @@ func (o IssueObservation) encoded() ([len(observedIssueFields)]json.RawMessage, 
 }
 
 // issueChanges is each field of an issue's observation that a write moved from before to after,
-// in the order phase, tree, waitingOn, each with its encoded old and new value; none when the write
+// in the order phase, waitingOn, each with its encoded old and new value; none when the write
 // moved nothing Dispatch observes. A nil before is an issue the write recorded for the first time:
 // each of its fields was null, so a field whose first value is null too is named by none.
 func issueChanges(before *IssueObservation, after IssueObservation) ([]StateFieldChange, error) {
@@ -108,7 +104,7 @@ func issueChanges(before *IssueObservation, after IssueObservation) ([]StateFiel
 	if err != nil {
 		return nil, err
 	}
-	olds := [len(observedIssueFields)]json.RawMessage{stateevent.Null, stateevent.Null, stateevent.Null}
+	olds := [len(observedIssueFields)]json.RawMessage{stateevent.Null, stateevent.Null}
 	if before != nil {
 		if olds, err = before.encoded(); err != nil {
 			return nil, err
@@ -125,11 +121,11 @@ func issueChanges(before *IssueObservation, after IssueObservation) ([]StateFiel
 }
 
 // observedIssueColumns is the issues columns ObservationOf reads, as scanObservedIssue scans them:
-// the phase, the tree, and each awaiting_* column the waitingOn view carries or that says whether
-// the issue waits at all (Issue.AwaitingPerson asks for an ask or a gate version).
-// awaiting_answered_detail and awaiting_since_seq are not among them: the view carries neither,
-// so a write that moves one of them alone moves nothing Dispatch observes.
-const observedIssueColumns = `phase, tree, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), awaiting_since`
+// the phase, and each awaiting_* column the waitingOn view carries or that says whether the issue
+// waits at all (Issue.AwaitingPerson asks for an ask or a gate version). awaiting_answered_detail
+// and awaiting_since_seq are not among them: the view carries neither, so a write that moves one
+// of them alone moves nothing Dispatch observes. The stored tree is not among them either.
+const observedIssueColumns = `phase, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), awaiting_since`
 
 // scanObservedIssue reads one row of observedIssueColumns, then extra: the destinations of any
 // columns the statement selects after them. It builds the record's wait from the columns as
@@ -142,7 +138,7 @@ func scanObservedIssue(row scanner, extra ...any) (IssueObservation, error) {
 	var awaitingGate *int
 	var awaitingArtifact, answeredBy string
 	var answeredAt, since *time.Time
-	if err := row.Scan(append([]any{&phaseValue, &issue.Tree, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt,
+	if err := row.Scan(append([]any{&phaseValue, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt,
 		&answeredBy, &since}, extra...)...); err != nil {
 		return IssueObservation{}, err
 	}

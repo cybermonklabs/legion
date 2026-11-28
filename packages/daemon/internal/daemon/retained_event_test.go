@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -108,9 +109,9 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 					return err
 				}
-				// The tree runs, which its open lifecycle is what says (record.TreeLive): without
-				// it admission would find a root at a running status with no tree of it running
-				// and take it out (admit's unslotted), which is not the fence this test is about.
+				// The tree's lifecycle is open beside the slot above, as admission's promotion
+				// leaves both (the shadow of R22 of dispatch://INFRA-3320), which is not the
+				// fence this test is about.
 				return openTreeTx(ctx, tx, "LEGION", root.Tree)
 			}); err != nil {
 				t.Fatal(err)
@@ -148,14 +149,16 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{{Key: root.Key, Title: root.Title, Rank: "A", Status: "backlog", LastSeq: 2, HandedOver: true,
+			reconcileAdmission(t, pool, admission, "LEGION", []dispatch.IssueSummary{{Key: root.Key, Title: root.Title, Rank: "A", Status: "backlog", LastSeq: 2, HandedOver: true,
 				ResolvedRepo: "acme/widgets"}}, int64(ack.Sequence), intake.DispatchConsumerPosition{})
 			if !admission.Held() {
 				t.Fatal("the boot summary is not held behind the retained event")
 			}
 			run, cancel := context.WithCancel(ctx)
 			done := make(chan error, 1)
-			go func() { done <- consumers.Run(run, engine, admission) }()
+			// The daemon's own handler order (workflow.go): the copy first, so the engine reads the
+			// chain and the labels this very event writes.
+			go func() { done <- consumers.Run(run, blockers.NewMirror(records, "LEGION"), engine, admission) }()
 			t.Cleanup(func() {
 				cancel()
 				if err := <-done; err != nil {
@@ -179,9 +182,9 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != root.Status || got.Phase != root.Phase || got.LingerUntil != nil || got.Repo != "acme/widgets" {
-				t.Fatalf("after the session's backlog: status %s, phase %s, linger %v, repo %s; want the root running on acme/widgets",
-					got.Status, got.Phase, got.LingerUntil, got.Repo)
+			if got.Status != root.Status || got.Phase != root.Phase || got.Repo != "acme/widgets" {
+				t.Fatalf("after the session's backlog: status %s, phase %s, repo %s; want the root running on acme/widgets",
+					got.Status, got.Phase, got.Repo)
 			}
 			if reads := client.readCount(); reads != 0 {
 				t.Fatalf("Dispatch was read %d times for a recorded issue, want none", reads)
@@ -229,7 +232,9 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	}
 	run, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- consumers.Run(run, engine, admission) }()
+	// The daemon's own handler order (workflow.go): the copy first, so admission reads the row
+	// this very event writes.
+	go func() { done <- consumers.Run(run, blockers.NewMirror(records, "LEGION"), engine, admission) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {

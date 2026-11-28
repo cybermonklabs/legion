@@ -32,17 +32,21 @@ import (
 // notice or a hook prompt runs on a lane of its own, so the wake one of those makes can
 // resume a role in between. A teardown that took the first answer and ignored the second
 // would record a release of a pod that still stands and forget its wake marks, and leave the other
-// roles released in a running pod with nothing to bring them back.
+// roles released in a running pod with nothing to bring them back. Here the store's answer under
+// the lock refuses the pod because the issue left the workflow, so the cancel resumes no role:
+// those claims are the issue's close's to end (store.CancelIssueRelease).
 func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	// Under the pod lock, before the store is asked: a re-admission moved the issue's run on,
-	// which is a close's business and not a release's.
+	// Under the pod lock, before the store is asked: a person moved the issue to the backlog,
+	// which is a close's business and not a release's. The issue's own fence (its run, phase entry
+	// and pod, which a change of those cancels as overtaken first) has not moved, so it is the
+	// store's answer under the lock that refuses the pod.
 	rig.rt.beforeAuthorize = func() {
-		if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
-			t.Errorf("move the issue's generation on: %v", err)
+		if _, err := rig.pool.Exec(ctx, `update issues set status = 'backlog' where key = $1`, rig.issue.Key); err != nil {
+			t.Errorf("move the issue to the backlog: %v", err)
 		}
 	}
 
@@ -64,8 +68,8 @@ func TestATeardownTheRuntimeFindsUnauthorizedCancelsTheRelease(t *testing.T) {
 	if rig.marked(t) {
 		t.Fatal("the cancelled release left its mark behind")
 	}
-	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
-		t.Fatalf("the claim = %s by %s, want the cancelled release to have resumed it into the pod it kept",
+	if got := rig.machine.Claim(); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByReleased {
+		t.Fatalf("the claim = %s by %s, want it left as the release stopped it: an issue out of the workflow is given no resume",
 			got.State, got.SuspendedBy)
 	}
 }
@@ -839,11 +843,11 @@ func (r *idleRig) restarted(t *testing.T) *outbox {
 const idleRigReadPodGone = "outbox: the pod the release's launcher read is no longer the issue's pod"
 
 // teardownRow is the issue's teardown row as the outbox holds it: the pod it takes or nothing
-// (record.IssueRelease.PodUID), its attempts, and whether it is queued at all, since a row that
-// finished is gone.
+// (record.IssueRelease.ReadPodUID, the pod the launcher read; PodUID is the fence's pod), its
+// attempts, and whether it is queued at all, since a row that finished is gone.
 func (r *idleRig) teardownRow(t *testing.T) (pod string, attempts int, queued bool) {
 	t.Helper()
-	err := r.pool.QueryRow(context.Background(), `select coalesce(payload->>'podUid', ''), attempts from outbox
+	err := r.pool.QueryRow(context.Background(), `select coalesce(payload->>'readPodUid', ''), attempts from outbox
 		where issue = $1 and kind = 'issue_release'`, r.issue.Key).Scan(&pod, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", 0, false
@@ -856,7 +860,7 @@ func (r *idleRig) teardownRow(t *testing.T) (pod string, attempts int, queued bo
 
 // A teardown whose runtime read committed the release, and whose runtime failed after it took the
 // pod, runs again once the runtime no longer holds the pod the launcher's read found clean
-// (record.IssueRelease.PodUID): the runtime took it, so it holds no Sandbox of the issue and
+// (record.IssueRelease.ReadPodUID): the runtime took it, so it holds no Sandbox of the issue and
 // answers no pod for it. The retry reads the mark as committed (store.ReleaseDecision.Committed),
 // and the pod check under the pod lock does not cancel it: the retry asks the runtime again, which
 // finds no Sandbox, and the retry records the release, since the mark notes that the first attempt

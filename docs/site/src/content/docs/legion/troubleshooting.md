@@ -387,15 +387,20 @@ Check, in order:
    ```
 
    `active` lists the issues holding a slot, roots and children alike.
-   `waiting` lists the issues in line, `trees` lists the roots of the live trees, `cap` is
-   `admission_cap` (which counts only holders that are not P0), `p0Holders` counts the holders
-   that are P0 outside `cap`, and `p0Bound` gives the P0 bound in force.
+   `waiting` lists the issues in line, `trees` lists the roots in Legion's work, `cap` is
+   `admission_cap` (which counts only holders that are not P0, the issues the daemon has started,
+   not trees), `p0Holders` counts the holders that are P0 outside `cap`, and `p0Bound` gives the
+   P0 bound in force.
    A P0 issue needs no free regular slot and starts outside `cap` while below any P0 bound.
    A parent whose own first phase waits for its open children is in `blocked`, with each child it
    waits for.
    So is a parent in phase `awaiting_children`, whose phases had started: it holds no slot, `held`
    names it `awaiting_children`, and it goes on by itself once no child under it is open
-   ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
+   ([Concepts](/legion/legion/concepts/#trees-and-the-architect)). `held` names every other issue
+   the record holds in the workflow outside those lists with its one word, such as `chain_unknown`
+   for an issue whose Dispatch parent chain the daemon cannot read to its top yet, or
+   `awaiting_todo` for one that waits for a person's `todo` to start its run
+   ([Observe](/legion/legion/running-legion/#observe) gives every word).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
    that placed it (the priority Dispatch resolves for it, 0 for P0 to 3 for P3, or null for one
@@ -414,9 +419,9 @@ Check, in order:
    priority it waits at, `issues.<KEY>.priority` is its own, and `issues.<KEY>.resolvedPriority`
    is what Dispatch resolved (with `priorityFrom` naming the ancestor when inherited). With an
    older Dispatch release that sends no `resolved_priority`, an issue waits at its own priority,
-   else its Legion root's, for the line alone, and that fallback never makes an issue P0. A priority
-   change in Dispatch moves the issue at the next admission pass, and priority takes no slot back
-   from work that runs.
+   else its top issue's, if that issue has one, for the line alone, and that fallback never makes
+   an issue P0. A priority change in Dispatch moves the issue at the next admission pass, and
+   priority takes no slot back from work that runs.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
    branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
@@ -530,8 +535,8 @@ the `approver` and `approvedAt`, and `approvedVersion` is the root's version tha
 registered. A step that reads `pending_on_basis` is closed until a person approves the ancestor's
 version that `basis` names; `basis.askId` is the open approval request, so read that request on the
 ancestor, not an approval request on the root. On a root, `treeRuns` says whether its tree runs:
-`false` on a root that lingers, or that waits in the line for its tree to open after a
-re-admission, whatever its architect's claim reads.
+`false` on a root out of Legion's work, or one that waits in the line for a slot it does not hold,
+for its first start or after a stop, whatever its architect's claim reads.
 
 ## A parked tree did not come back after a decision
 
@@ -575,9 +580,9 @@ JSON log names the issue and the root on each of these lines but one, which the 
   is told that one and not this one. The line names the reference and the version.
 - `outbox parked decision not relayed: it names no person`: the gate opened on a deployment that
   gates no step, so no person made the decision.
-- `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a
-  lingering root someone moved back into the workflow is not relayed`: someone moved the
-  lingering root back to a status of the workflow (`in_progress` and the like), so it is nobody's
+- `outbox parked decision not relayed: its root is not parked` or `workflow: a decision on a root
+  out of Legion's work whose status someone moved back into work is not relayed`: someone moved
+  the root back to a status of the workflow (`in_progress` and the like), so it is nobody's
   parked tree.
 - `outbox parked decision not relayed: its tree hears it` or `outbox parked decision not relayed:
   its root has no record`: the tree runs and its architect hears the decision, or the daemon keeps
@@ -589,15 +594,14 @@ JSON log names the issue and the root on each of these lines but one, which the 
   person's decision on a tree waiting for its slot is kept for its architect's start`: the root was
   set to `todo` already, so no controller is told, and its architect's start names the decision.
   The daemon keeps the decision under the issue it was made on, so the architect it is owed to is
-  the one of the tree that issue stands in now: a child handed over into a tree of its own, an
-  orphaned child and a queued root adopted into a live tree each take what was decided on them
-  with them. It is kept until the one start or catch-up that names it has told an architect of
+  the one of the tree that issue stands in now: an issue whose gate root changed takes what was
+  decided on it with it. It is kept until the one start or catch-up that names it has told an architect of
   that tree — a catch-up at its publish, a start's task at the moment the turn that takes it
   starts — and one that reaches no architect hands it to a fresh catch-up of that tree's current
   architect (`outbox start finished without giving its claim the task; the decisions it named are
   handed over`), or leaves it for the next start while the tree is parked.
 - `supervise: the root of this task's tree has no architect to hear it; the task stays pending`: a
-  root architect's start task met a parked, lingering or waiting tree. It is sent when the tree's
+  root architect's start task met a parked or waiting tree. It is sent when the tree's
   next start runs; nothing to do.
 - `supervise: a decision this held task named is owed to another tree now; the task is sent without
   it`, or `supervise: everything this held task named is owed to another tree now; it is retired
@@ -716,40 +720,43 @@ the ladder does not run. The ladder's own rungs never change family.
 always in a new session.** Each copy of the refused content sent to OpenAI again adds a refusal to
 the organization's record, and a prompt from the daemon is input from outside the session, which
 ends Oh My Pi's own hold. So no start the daemon makes by itself launches such an agent again: a
-role's next phase start, a child architect's next phase start, the starts a re-admission gives the
-tree's members and a production check's look each finish without acting and log `outbox start
+role's next phase start, a child architect's next phase start, the starts a return to work gives
+the issue's roles and a production check's look each finish without acting and log `outbox start
 finishes without acting: its claim is held for OpenAI's cyber_policy refusal of its session's
 content`. Where that start is of the issue's working phase, by the role that works it — a held
-child set to `todo` comes back at `admitted` and starts its phase, as an architect's `backlog` then
-`rerun_child` does — the daemon applies the claim's stored failure to that phase: the issue is held
-again, and its architect gets the `worker-died` notice, which its `retry` answers. Any other such
-start ends at that log line, and the notice the claim's failure sent stands. The three notices
-that would promise such a start (a child's own architect's, a role's that failed outside its
-issue's phase, and a production check's checking role's) say instead `it does not start again by
-itself`, and nothing more: no notice names the cause's handling or a command, since an agent acts
-on every failure the same way. The operator's command is in the daemon's logs: the outbox's line
-above carries it in its `error`, as `legion claims retry --claim <token>`. The daemon's own
+issue a stop took out of Legion's work that a `todo` brings back, whose release starts the held
+phase's worker at a new phase entry, or a new run's first phase, as an architect's `park_child`
+then `rerun_child` opens — the daemon applies the claim's stored failure to that phase: the issue
+is held again, and its architect gets the `worker-died` notice, which its `retry` answers. Any
+other such start ends at that log line, and the notice the claim's failure sent stands. The three
+notices that would promise such a start (a child's own architect's, a role's that failed outside
+its issue's phase, and a production check's checking role's) say instead `it does not start again
+by itself`, and nothing more: no notice names the cause's handling or a command, since an agent
+acts on every failure the same way. The operator's command is in the daemon's logs: the outbox's
+line above carries it in its `error`, as `legion claims retry --claim <token>`. The daemon's own
 controller is not retried by its keeper, which logs `controller: the daemon's controller is held
 for OpenAI's cyber_policy refusal of its session's content` once, with that command in its
 `reason`, and the controller liveness line names it each time it repeats.
 
-Five decisions launch such an agent again: the architect's `retry_or_escalate` of the held phase;
-a `todo` on a held root, which retries that phase as well; a `todo` that puts a root back in the
-admission line (the controller's restart of a tree, `backlog` then `todo`, among them), whose
-promotion starts the root's architect; the operator's `legion claims retry --claim <token>` (or
-`--failed`, which retries every failed claim); and the controller's `fresh_session`. Only the
-operator's retry reaches the daemon's own controller. Each of them starts the agent in a new
-session and never resumes the refused one, since the new launch's first task is input from outside
-the session too and would end Oh My Pi's hold: the retry logs `supervise: retrying in a new
-session`, the claim's run of provider-error turns goes back to zero, and `--fresh-session` changes
-nothing for such a claim. Nothing of the refused session comes back, so the architect's `reason`
-is where what the role must know goes. A start row that a daemon before this release queued
-records no decision, so a held claim's start from such a row is refused as the daemon's own starts
-are and, where it is of the issue's working phase, holds the issue as above. One send can still
-slip through: a turn that ran no prompt of the daemon's is reported over HTTP while its end reaches
-the daemon over the worker stream, in no fixed order, so a task the claim holds can go before the
-report lands. That prompt's own result then names `cyber_policy` and fails the claim, so the race
-costs one send at most.
+Six decisions launch such an agent again: the architect's `retry_or_escalate` of the held phase;
+a `todo` on a held issue in Legion's work, which retries that phase as well; a `todo` on a root in
+Legion's work whose architect claim failed (a person's, or the controller's `set_status`, its
+restart of a stuck tree), which starts that architect as `legion claims retry` does; the promotion
+of a root out of the admission line, which starts its architect, whether a person handed the root
+to Legion or a `todo` or `rerun_child` opened a new run of it; the operator's `legion claims retry
+--claim <token>` (or `--failed`, which retries every failed claim); and the controller's
+`fresh_session`. Only the operator's retry reaches the daemon's own controller. Each of them starts
+the agent in a new session and never resumes the refused one, since the new launch's first task is
+input from outside the session too and would end Oh My Pi's hold: the retry logs `supervise:
+retrying in a new session`, the claim's run of provider-error turns goes back to zero, and
+`--fresh-session` changes nothing for such a claim. Nothing of the refused session comes back, so
+the architect's `reason` is where what the role must know goes. A start row that a daemon before
+this release queued records no decision, so a held claim's start from such a row is refused as the
+daemon's own starts are and, where it is of the issue's working phase, holds the issue as above.
+One send can still slip through: a turn that ran no prompt of the daemon's is reported over HTTP
+while its end reaches the daemon over the worker stream, in no fixed order, so a task the claim
+holds can go before the report lands. That prompt's own result then names `cyber_policy` and fails
+the claim, so the race costs one send at most.
 
 **After a rollback, a held claim reads as `provider_error`, and the older daemon does not hold
 it.** The store keeps the hold in a column of its own (`claims.held_for`, store migration
@@ -923,26 +930,27 @@ rest on its approval or its open Dispatch children, and the refusal names which)
 and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
-restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
-it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
+sets the root to `todo` with its `set_status` when it finds no cause or the cause is gone, which
+starts that claim again in its session with fresh budgets and moves no issue under the root, and
+asks a person whether to park it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
 the architect above it is told with a `worker-died` and takes the child's notices, and the child's
-next phase start starts it again. What brings a root's architect back depends on where its tree
+next phase start starts it again. What brings a root's architect back depends on where its root
 stands:
 
-- **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
+- **Its root is in Legion's work:** `legion state`'s `claims nothing will wake` line
   names the architect under `failed, retry`. Retry it, as [A tree does not move after a
-  restart](#a-tree-does-not-move-after-a-restart) shows: the daemon relaunches it on the session
+  restart](#a-tree-does-not-move-after-a-restart) shows, or set the root to `todo`, which does the
+  same: the daemon relaunches it on the session
   it kept, or on a new one once supervise's `forgetSession` has dropped that, with fresh budgets,
   and the tree carries on at the generation and phase it stands at.
-- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
-  in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
-  generation; a retry by hand would run it outside the admission cap, and it would be sent no
-  catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
-  legion issue status <KEY> backlog --config legion.yaml --operator-token-file operator-token
-  legion issue status <KEY> todo    --config legion.yaml --operator-token-file operator-token
+  legion issue status <KEY> todo --config legion.yaml --operator-token-file operator-token
   ```
+
+- **Its root is out of Legion's work** (parked, or `done` by a person's move): leave the claim as
+  it is. The root's return to work starts it again in its session; a retry by hand would run it
+  outside the admission cap, and it would be sent no catch-up.
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
 budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
@@ -955,21 +963,19 @@ spawned rather than
 retried, a suspended claim is resumed, and the daemon's own controller is its keeper's to retry,
 which the refusal says, unless it is held for `cyber_policy`, which its keeper retries no more. A
 claim held for `cyber_policy` has its agent launched in a new session, with or without
-`--fresh-session` (above). A retry that leaves the issue held, as a lingering tree's does, is
-refused naming the issue.
+`--fresh-session` (above). A retry that leaves the issue held is refused naming the issue.
 `legion claims retry --failed` asks the same of every failed claim the daemon holds, in turn,
 prints each one it retried, and exits 1 naming each it refused: run it once the cause of a run of
 failed launches is gone (a host moved onto tmux, a broken key replaced). It passes over a stopped
 claim, which is retired rather than failed, so name that one with `--claim`.
 
 A held issue has one more release, and it costs nothing. `legion issue status <KEY> todo` on the
-tree's own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's
+held issue releases the hold: the issue returns to the phase `heldFrom` names, that phase's
 worker starts with its task, and the generation, the review rounds, the pod and the issue's place in
-the admission line stay as they were. A person's move of the root to `todo` in the Dispatch
+the admission line stay as they were. A person's move of the issue to `todo` in the Dispatch
 dashboard and the controller's own `set_status` do the same, since all three write the one status
-the daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
-of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
-generation, which is what the restart above does.
+the daemon reads. A `todo` on a held issue out of Legion's work brings it back and releases the
+hold the same way, and a `todo` on an issue at `phase: done` starts a new run.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a handoff document of that session, with
@@ -1031,8 +1037,8 @@ claim is started by running the same command again, and a claim the refusal left
 state, such as `launching` with its launch tried again at the probe interval, starts by itself.
 What a refusal does on its own, before any of this, is in the paragraphs above and in
 [Starting fresh when a session is lost or wedged](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#starting-fresh-when-a-session-is-lost-or-wedged).
-When the workflow refused that phase's restart — a lingering tree, whose members stay where they
-stood, is the usual cause — the command prints a second line under the claim's own, saying the
+When the workflow refused that phase's restart — an issue out of Legion's work, which stays where
+it stood, is one cause — the command prints a second line under the claim's own, saying the
 claim is back in a new session owing no task and why nothing restarted its phase, and the
 controller's `fresh_session` answers that same sentence as `phaseNotRestarted` rather than an
 empty answer: the claim is running with no work, so clear what the line names and run the
@@ -1052,8 +1058,8 @@ legion claims forget-session --config legion.yaml --operator-token-file operator
 ```
 
 The daemon does not read or change the session database, so the old session row remains. A root
-that was parked should be re-admitted after this command, not retried by hand; its next workflow
-start spawns a fresh session. To replace a session of a claim that is still live, suspend it first;
+that was parked should be brought back to work after this command, with `todo`, not retried by
+hand; its return starts the claim in a fresh session. To replace a session of a claim that is still live, suspend it first;
 the command refuses every live claim and any `--session` that does not equal the recorded session.
 The resumed claim starts fresh with its pending task.
 
@@ -1299,24 +1305,23 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   while its tree runs, whatever its role): a failed worker's issue is held ([An issue is
   held](#an-issue-is-held)), and the architect that owns the issue retries the phase or escalates
   it to the controller; `legion claims retry` applies the same retry when the architect cannot, and
-  a `todo` on a held root releases the hold without either of them. A failed claim ignores `legion
+  a `todo` on a held issue releases the hold without either of them. A failed claim ignores `legion
   claims resume` and `legion claims deliver`. A retired claim ignores those two as well. `legion
   claims retry --claim <token>` reaches it as it reaches a failed one, and `legion claims retry
   --failed` passes over it. A workflow start also relaunches it, for example a start of the phase
-  it owns — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or a
-  tree close and re-admission — or, for an architect, a start of its issue's run: its tree's
+  it owns — its architect's `retry_or_escalate` of a held phase, a transition into that phase, or
+  the issue's return to work — or, for an architect, a start of its issue's run: its tree's
   admission for a root's, its child's first phase start for a child's own. Each relaunches the
   session it kept, or a new one once supervise's `forgetSession` has dropped that.
 
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
 something will still start: a worker whose phase is not its own is started again when its phase
-comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
+comes, a parked issue's claims wait for its return to work, and an issue whose start waits for a free
 slot has that start queued already. A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
-claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
-return to `todo` starts it.
+claim of an issue out of Legion's work; the issue's return to work starts it.
 The list never names a child's own architect: while that architect does not hold its role, the
 architect above it takes the child's notices, and a later start of the role brings it back, as the
 daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
@@ -1325,8 +1330,8 @@ architect that the operator or the controller suspended waits for that holder's 
 operator's, which lifts the controller's too (`legion claims list` shows the holder as its
 `suspendedBy`). Any other claim whose agent either of them suspended is listed even when a
 workflow start is queued for it: that start waits for the same resume. One whose `suspendedBy` is
-`unknown` is listed only while no start is queued for it, since the next phase start or
-re-admission resumes it as before.
+`unknown` is listed only while no start is queued for it, since the next phase start or a return
+to work resumes it as before.
 
 ## A worker that stopped taking turns
 
@@ -1429,7 +1434,7 @@ The daemon adopts only for a task that names a phase, and only for the role that
 
   - a boot resumes an owner that the daemon suspended;
 
-  - a tree is re-admitted in the middle of a phase;
+  - an issue comes back into Legion's work in the middle of a phase;
 
   - the daemon repairs a slot whose worker has no task, or a worker that went silent.
 
@@ -2080,12 +2085,12 @@ moment of the move, which `legion state --json` also shows on the issue as `repo
 The daemon owns a running tree's status. A status an agent session writes on a running root is set
 back, and the tree's architect is told who wrote it. A person's move in the Dispatch dashboard, the
 controller's `set_status`, or `legion issue status` from an operator's shell, is what takes a
-tree out.
+running root out.
 
 A person's move between the workflow's own statuses on a running issue does not stick either. The
 daemon's status repair runs at each boot and then every `controller_wake_interval_seconds` (an
 hour by default), and writes back the status of the phase the issue stands in. `backlog` or
-`icebox` takes the tree out of the workflow, and the repair leaves it there.
+`icebox` takes that issue out of the workflow, and the repair leaves it there.
 
 When the daemon's own status writes to Dispatch are failing, `legion state` says so on its
 `pending Dispatch status writes` line:
@@ -2456,8 +2461,8 @@ notice comes once per handoff commit, from whichever read finds it first.
   of four things:
   - The daemon applied it, and the line it would tell is the line it already told for that head,
     so it tells nobody again. The earlier `CI settled` message of that head stands for it.
-  - The daemon applied it on a tree that lingers after its root left the workflow, where the
-    daemon tells nobody.
+  - The daemon applied it on an issue out of Legion's work, or on a parent waiting in
+    `awaiting_children`, where the daemon tells nobody.
   - The daemon applied it and woke the released worker of the issue's open phase with a task that
     names the settlement: `wake: a released pod is coming back`, kind `checks`, whose `detail`
     starts with the head's first 12 characters. That task is the worker's `CI settled` message.

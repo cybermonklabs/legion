@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -10,6 +11,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -36,7 +39,9 @@ import (
 // pod the release of a pod no claim owns decides (workflow.UnownedPodRelease); with parked true it
 // stands where a park leaves it under its running tree, which is the left pod's close
 // (workflow.LeftPodClose). The tree root's architect holds its role, so a notice of the child
-// reaches that architect's role topic, which publisher records. No decline of the child's release
+// reaches that architect's role topic, which publisher records: the notice is routed on the
+// child's Dispatch chain (record.OwningArchitect), so the rig writes the copy's rows of the child
+// under its root (putCopyRow), as a reading of Dispatch does. No decline of the child's release
 // stands, so nothing on record says what the child's disk holds.
 func noRoleRig(t *testing.T, parked bool) (*idleRig, *outboxPublisher) {
 	t.Helper()
@@ -44,6 +49,8 @@ func noRoleRig(t *testing.T, parked bool) (*idleRig, *outboxPublisher) {
 	rig := newLeftPodRig(t, parked)
 	publisher := &outboxPublisher{}
 	rig.runner.notices = publisher
+	putCopyRow(t, rig.pool, rig.issue.Tree, "", "in_progress")
+	putCopyRow(t, rig.pool, rig.issue.Key, rig.issue.Tree, cmp.Or(rig.issue.DispatchStatus, rig.issue.Status))
 	if _, err := rig.pool.Exec(ctx, `update claims set state = 'failed', suspended_by = '', locator = null
 		where token = $1`, string(rig.token)); err != nil {
 		t.Fatalf("fail the planner: %v", err)
@@ -387,6 +394,15 @@ func (s *commitWatch) CommitIssueRelease(ctx context.Context, project string, re
 // a_read_of_another_pod: pod-b took pod-a's place before the read, so the launcher read pod-b, not
 // the pod the release was marked over. The read is discarded: no decline, no notice, and no
 // teardown.
+//
+// clean_then_no_pod and close_clean_then_no_pod: after the launcher reads pod-a clean, the runtime
+// holds no pod at all (IssuePod answers "", true) while the Sandbox still stands: neither the
+// release's teardown nor the close's suspension acts, because holdsPod requires the exact pod the
+// launcher read (ReadPodUID).
+//
+// close_without_read_pod_when_no_pod_runs: a close of a suspended Sandbox with a kept volume whose
+// IssueSuspend row names no ReadPodUID and whose PodUID the fence filled from a claim's locator
+// (record.NewFencedRow) is not refused when the runtime holds no pod.
 func TestALauncherReadNamesAndTakesOnlyThePodItRead(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -488,6 +504,87 @@ func TestALauncherReadNamesAndTakesOnlyThePodItRead(t *testing.T) {
 		}
 		if rig.marked(t) {
 			t.Fatal("the release's mark still stands, want the release cancelled")
+		}
+	})
+
+	gone := func(rig *idleRig) func() {
+		return func() { rig.rt.ScriptIssuePod(rig.issue.Key, "") }
+	}
+
+	t.Run("clean_then_no_pod", func(t *testing.T) {
+		rig, _ := noRoleRig(t, false)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+		rig.rt.mu.Lock()
+		rig.rt.afterPodRead = gone(rig)
+		rig.rt.mu.Unlock()
+		rig.w.releaseUnownedPods(ctx)
+		rig.drain(t)
+		if launcherReads(rig) != 1 {
+			t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the teardown took %d pods, want none: the clean read was of pod-a, and the runtime holds no pod now", suspended)
+		}
+		if rig.marked(t) {
+			t.Fatal("the release's mark still stands, want the release cancelled")
+		}
+	})
+
+	t.Run("close_clean_then_no_pod", func(t *testing.T) {
+		rig, _ := noRoleRig(t, true)
+		rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+		rig.rt.mu.Lock()
+		rig.rt.afterPodRead = gone(rig)
+		rig.rt.mu.Unlock()
+		idlePasses(rig)
+		rig.drain(t)
+		if launcherReads(rig) != 1 {
+			t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the close's suspension took %d pods, want none: the clean read was of pod-a, and the runtime holds no pod now", suspended)
+		}
+	})
+
+	t.Run("close_without_read_pod_when_no_pod_runs", func(t *testing.T) {
+		rig, _ := noRoleRig(t, true)
+		rig.rt.ScriptKeptVolume(rig.issue.Key, time.Now().Add(-time.Hour))
+		rig.rt.ScriptIssuePod(rig.issue.Key, "")
+		// Stamp the claim's locator with pod-a while queueing the close so NewFencedRow fills
+		// PodUID from the claim and leaves ReadPodUID empty, then clear the locator as a role stop
+		// ahead of the suspension does.
+		if _, err := rig.pool.Exec(ctx, `update claims set locator = $2::jsonb where token = $1`, string(rig.token),
+			`{"runtime":"sandbox","claim":"`+string(rig.token)+`","incarnation":"pod-a/1","sandbox":{"namespace":"legion","name":"sb","podUid":"pod-a","container":"roles","generation":1}}`); err != nil {
+			t.Fatalf("seed the claim's locator: %v", err)
+		}
+		var queued record.OutboxRow
+		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			queued, err = record.NewFencedRow(ctx, tx, rig.issues, rig.issue.Key,
+				record.IssueSuspend{Tree: rig.issue.Tree, Generation: rig.issue.Generation, TreeGeneration: 1}, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			return rig.issues.Enqueue(ctx, tx, queued)
+		}); err != nil {
+			t.Fatalf("queue the fenced suspension: %v", err)
+		}
+		payload, err := record.DecodeOutboxPayload(queued)
+		if err != nil {
+			t.Fatalf("decode the fenced suspension: %v", err)
+		}
+		suspend, ok := payload.(record.IssueSuspend)
+		if !ok || suspend.PodUID != "pod-a" || suspend.ReadPodUID != "" {
+			t.Fatalf("queued suspension = %+v, want fence PodUID pod-a and empty ReadPodUID", payload)
+		}
+		if _, err := rig.pool.Exec(ctx, `update claims set locator = null where token = $1`, string(rig.token)); err != nil {
+			t.Fatalf("clear the claim's locator: %v", err)
+		}
+		rig.drain(t)
+		if _, suspended := rig.rt.reads(); suspended != 1 {
+			t.Fatalf("the close's suspension took %d Sandboxes, want 1: the row names no ReadPodUID and the fence's PodUID does not refuse a Sandbox with no pod", suspended)
 		}
 	})
 }

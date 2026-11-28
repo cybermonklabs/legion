@@ -6,23 +6,23 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // requestRefusal judges fact, where it is an architect's request on one issue
-// (intake.ArchitectRequest), on the record as the fact reads it, under the fact lock and before
-// the fact's own handler reads anything: the one place every such fact passes (Apply). Its route
-// judged the request on a read of the record taken before that lock, and an adoption, a new run,
-// a re-parent or a new run of accepting can commit between the two. So the request stands only
-// while its architect owns the issue now by the rule its route judged — an architect of the
-// issue's tree (record.ArchitectOfTree, ISSUE_OUTSIDE_TREE otherwise), and for OwnerAbove the
-// issue's own architect or one above it (record.ArchitectAbove, ISSUE_NOT_OWNED otherwise) — while
-// the issue is on the generation its route read (the request's StaleGeneration otherwise; a
-// generation of 0 is a plan given for an issue the route read unrecorded, which planGiven judges),
-// and, for a request about the run of accepting (intake.EnteredRequest), while that run stands
-// (its StaleEntry otherwise). Apply leaves each refusal unspent, so the request made again is
-// judged on the record as it stands then. An issue the record does not hold is the handler's to
-// answer, and nil is answered for every fact that is no architect's request.
+// (intake.ArchitectRequest), on the record and the Dispatch chain as the fact reads them, under
+// the fact lock and before the fact's own handler reads anything: the one place every such fact
+// passes (Apply). Its route judged the request on reads taken before that lock, and a change of
+// parent in Dispatch, a new run or a new run of accepting can commit between the two. So the
+// request stands only while its architect acts on the issue on the chain this transaction reads,
+// by the rule its route judged (architectCallRefusal over the request's intake.ArchitectCall:
+// ISSUE_NOT_OWNED, naming the architect claim that acts on the issue now, or the call's own
+// code), while the issue is on the generation its route read (the request's StaleGeneration
+// otherwise; a generation of 0 is a plan given for an issue the route read unrecorded, which
+// planGiven judges), and, for a request about the run of accepting (intake.EnteredRequest), while
+// that run stands (its StaleEntry otherwise). Apply leaves each refusal unspent, so the request
+// made again is judged on the record and the chain as they stand then. An issue the record does
+// not hold is the handler's to answer, and nil is answered for every fact that is no architect's
+// request.
 func (e *Engine) requestRefusal(ctx context.Context, tx pgx.Tx, fact intake.Fact) (*intake.Refusal, error) {
 	request, ok := fact.(intake.ArchitectRequest)
 	if !ok {
@@ -36,21 +36,8 @@ func (e *Engine) requestRefusal(ctx context.Context, tx pgx.Tx, fact intake.Fact
 	if err != nil || issue == nil {
 		return nil, err
 	}
-	owned, err := record.ArchitectOfTree(ctx, e.store, tx, call.By, *issue)
-	if err != nil {
-		return nil, err
-	}
-	if !owned {
-		return intake.IssueOutsideTree(issue.Key, call.By, call.Operation), nil
-	}
-	if call.Owners == record.OwnerAbove {
-		above, err := record.ArchitectAbove(ctx, e.store, tx, call.By, *issue)
-		if err != nil {
-			return nil, err
-		}
-		if !above {
-			return intake.IssueNotOwned(call.Operation, issue.Key, call.By), nil
-		}
+	if refusal, err := e.architectCallRefusal(ctx, tx, call.By, *issue, call.Call); err != nil || refusal != nil {
+		return refusal, err
 	}
 	if call.Generation != 0 && call.Generation != issue.Generation {
 		return request.StaleGeneration(issue.Generation), nil

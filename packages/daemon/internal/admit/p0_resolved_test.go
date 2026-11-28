@@ -180,8 +180,8 @@ func TestEveryPathFromDispatchStoresEachResolvedPriority(t *testing.T) {
 				pool := migratedPool(t)
 				admission := quiet(t, 1)
 				p0Holder(t, pool, "LEGION-1", "A", record.P1)
-				applyFact(t, pool, admission, "detail", intake.ObservedIssue(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C",
-					HandedOver: true, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(want.Priority), From: want.From}}))
+				apply(t, pool, admission, "detail", intake.ObservedIssue(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C",
+					HandedOver: true, LastSeq: 2, ResolvedRepo: "acme/widgets", Resolved: &dispatch.ResolvedPriority{Priority: level(want.Priority), From: want.From}}), admission.engine)
 				check(t, pool, "the detail")
 			})
 			t.Run("a status write's returned issue", func(t *testing.T) {
@@ -287,7 +287,7 @@ func TestAMemberMovedIntoOrOutOfAP0ChainWithNoEditOfItsOwn(t *testing.T) {
 		moved := issue(t, pool, "LEGION-1").MovedAt
 
 		later := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-			Linger: time.Hour, Clock: func() time.Time { return moved.Add(time.Hour) }}, nil)
+			Clock: func() time.Time { return moved.Add(time.Hour) }}, nil)
 		apply(t, pool, admission, "out", resolvedEvent(t, "LEGION-1", "in_progress", "A", 2, resolvedFrom(record.P2), "resolved_priority"), later)
 		if got := issue(t, pool, "LEGION-1").MovedAt; !got.Equal(moved) {
 			t.Fatalf("LEGION-1's movement mark moved from %s to %s on an update of its resolved priority alone, want it kept", moved, got)

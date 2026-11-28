@@ -241,7 +241,7 @@ func TestTheDispatchShapeReachesTheRecordFromBytes(t *testing.T) {
 				if err != nil {
 					t.Fatalf("get %s: %v", tc.key, err)
 				}
-				applyFact(t, pool, admission, "detail", intake.ObservedIssue(detail))
+				apply(t, pool, admission, "detail", intake.ObservedIssue(detail), admission.engine)
 				check(t, pool, "the detail")
 			})
 			t.Run("a status write's returned issue", func(t *testing.T) {

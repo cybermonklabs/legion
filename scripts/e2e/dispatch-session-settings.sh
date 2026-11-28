@@ -18,7 +18,7 @@
 #     ANTHROPIC_API_KEY=… OPENAI_API_KEY=… bash scripts/e2e/dispatch-session-settings.sh
 #
 # Inputs, each refused when missing, naming it:
-#   LEGION_TEST_PG_DSN          a loopback PostgreSQL with pgvector, as child-adoption.sh takes it;
+#   LEGION_TEST_PG_DSN          a loopback PostgreSQL with pgvector, as sub-architect.sh takes it;
 #                               the run creates a database of its own in it and drops it on any exit
 #   LEGION_E2E_NATS_BIN         a nats-server; default the pinned v2.15.1, installed once with
 #                               `go install` into /legion/scratch/bin on an issue pod's volume, else
@@ -60,7 +60,7 @@ openai_key=${OPENAI_API_KEY:-}
 unset ANTHROPIC_API_KEY OPENAI_API_KEY
 
 # The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
-# packages/envoy/go.mod pins, as child-adoption.sh installs it. The Envoy listener refuses a
+# packages/envoy/go.mod pins, as lib/live-daemon-proof.sh installs it. The Envoy listener refuses a
 # nats-server below v2.11.12, v2.12.4 or v2.14.0 (packages/envoy/natsversion).
 nats_version=v2.15.1
 # The pi-envoy the older-plugin session runs: a release before the settings frame.

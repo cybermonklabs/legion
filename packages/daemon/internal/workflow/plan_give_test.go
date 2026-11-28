@@ -60,14 +60,14 @@ func TestAGiveOfTheVersionInForceAppliesNothingWhateverItsID(t *testing.T) {
 	}
 }
 
-// A give of a plan is judged on the record its fact reads, whatever its id's mark: a give that
-// was taken, delivered again after its giver owns the issue no more, is refused ISSUE_OUTSIDE_TREE,
-// and one delivered again after the issue moved to a later generation is refused
-// PLAN_STALE_GENERATION, each changing no row of any table (testdb.TableRows, read before and
-// after it). The move comes between the two deliveries, applied in a transaction of its own before
-// the second, so the second reads it. Here the sub-architect of LEGION-209 gives version 1 for
-// LEGION-210, a member of the tree LEGION-208; then LEGION-209 is adopted into another tree, or
-// LEGION-210 starts its next run.
+// A give of a plan is judged on the record and the chain its fact reads, whatever its id's mark: a
+// give that was taken, delivered again after its giver owns the issue no more, is refused
+// ISSUE_NOT_OWNED, and one delivered again after the issue moved to a later generation is refused
+// PLAN_STALE_GENERATION, each changing no row of any table (testdb.TableRows, read before and after
+// it). The move comes between the two deliveries, applied in a transaction of its own before the
+// second, so the second reads it. Here the architect of LEGION-209 gives version 1 for LEGION-210,
+// which stands under LEGION-209 on its Dispatch chain, under LEGION-208; then Dispatch moves
+// LEGION-210 back under LEGION-208, or LEGION-210 starts its next run.
 //
 // The faults it catches: a give answered by its id's mark before the owner and the generation are
 // judged (its control: intake.ApplyFact answering a PlanGiven whose id is marked as a duplicate, as
@@ -79,21 +79,22 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		move func(t *testing.T, pool *pgxpool.Pool, engine *Engine, sub, target record.Issue)
-		want func(target record.Issue, given intake.PlanGiven) *intake.Refusal
+		want func(t *testing.T, target record.Issue, given intake.PlanGiven) *intake.Refusal
 	}{
 		{"its giver owns the issue no more",
 			func(t *testing.T, pool *pgxpool.Pool, engine *Engine, sub, target record.Issue) {
-				adoptInto(t, pool, engine, sub.Key, otherRoot(t, pool))
+				reparentTo(t, pool, engine, target.Key, "LEGION-208")
 			},
-			func(target record.Issue, given intake.PlanGiven) *intake.Refusal {
-				return intake.IssueOutsideTree(target.Key, given.GivenBy, "register_plan")
+			func(t *testing.T, target record.Issue, given intake.PlanGiven) *intake.Refusal {
+				return notOwned(t, "register_plan", target.Key, given.GivenBy, "LEGION-208")
 			}},
 		{"the issue moved to a later generation",
 			func(t *testing.T, pool *pgxpool.Pool, engine *Engine, sub, target record.Issue) {
-				target.Generation++
-				seedIssue(t, pool, target)
+				moved := issueOf(t, pool, engine, target.Key)
+				moved.Generation++
+				seedIssue(t, pool, moved)
 			},
-			func(target record.Issue, given intake.PlanGiven) *intake.Refusal {
+			func(t *testing.T, target record.Issue, given intake.PlanGiven) *intake.Refusal {
 				return intake.PlanStaleGeneration(target.Key, target.Generation, target.Generation+1)
 			}},
 	} {
@@ -103,16 +104,17 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 			stepRoot(t, pool, phase.Implementing)
 			sub := todoChild(t, pool, "LEGION-209")
 			target := stepChild(t, pool, "LEGION-210", phase.Admitted, nil)
+			reparentTo(t, pool, engine, target.Key, sub.Key)
 			given := ownersPlan(t, target.Key, target.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 			given.GivenBy = claim.Token(treeRoleToken(t, sub.Key, claim.RoleArchitect))
 			id := planID(target.Key, target.Generation, 1)
 			apply := applyFacts(t, pool, engine)
-			mustTake(t, "the sub-architect's version 1", apply(id, given))
+			mustTake(t, "the version 1 of LEGION-209's architect", apply(id, given))
 
 			tc.move(t, pool, engine, sub, target)
 			before := settledRows(t, pool, engine)
 			result := apply(id, given)
-			if want := tc.want(target, given); !reflect.DeepEqual(result.Refusal, want) || result.Duplicate {
+			if want := tc.want(t, target, given); !reflect.DeepEqual(result.Refusal, want) || result.Duplicate {
 				t.Errorf("the second delivery = %+v, want the refusal %+v", result, want)
 			}
 			if changed := testdb.ChangedTables(before, testdb.TableRows(t, pool)); len(changed) != 0 {
@@ -125,11 +127,12 @@ func TestAGiveIsJudgedOnTheRecordItsSecondDeliveryReads(t *testing.T) {
 // A give of a plan delivered again writes nothing a second time and tells nobody a second time,
 // whatever its first delivery came to, and answers the same: a give refused for good (an issue that
 // started its work before Legion took plans), one an issue's group takes no plan for
-// (PLAN_NOT_TAKEN), one in a lingering tree, one whose first apply failed and rolled back, which
-// its second delivery takes and its third writes nothing of, one taken, and one taken before its
-// tree began to linger, which is refused TREE_LINGERING after that. Every table's rows, read before
-// and after each delivery (testdb.TableRows), hold it: no row written, deleted or changed in place,
-// so no plan row, no notice, no outbox row, no message on the issue, no mark of a refusal.
+// (PLAN_NOT_TAKEN), one by an architect that does not act on the issue on its Dispatch chain, one
+// whose first apply failed and rolled back, which its second delivery takes and its third writes
+// nothing of, one taken, and one taken before Dispatch moved the issue out from under its giver's
+// issue, which is refused ISSUE_NOT_OWNED after that. Every table's rows, read before and after
+// each delivery (testdb.TableRows), hold it: no row written, deleted or changed in place, so no
+// plan row, no notice, no outbox row, no message on the issue, no mark of a refusal.
 //
 // The faults it catches: a delivery that writes again (its control: planGiven writing a give of the
 // version in force as a later version, under which the taken give's second delivery fails as a
@@ -164,14 +167,15 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 				return planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, widget(t))
 			},
 			[]delivery{{false, planNotTakenOfB("LEGION-208")}, {false, planNotTakenOfB("LEGION-208")}}},
-		{"a plan given in a lingering tree",
+		{"a plan given by an architect that does not act on the issue",
 			func(t *testing.T, pool *pgxpool.Pool, engine *Engine) (string, intake.PlanGiven) {
-				root := stepRoot(t, pool, phase.Implementing)
+				stepRoot(t, pool, phase.Implementing)
 				member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
-				leaveAs(t, pool, engine, root.Key, "done")
-				return planID(member.Key, member.Generation, 1), ownersPlan(t, member.Key, member.Generation, 1, widget(t))
+				given := ownersPlan(t, member.Key, member.Generation, 1, widget(t))
+				given.GivenBy = claim.Token(treeRoleToken(t, otherRoot(t, pool).Key, claim.RoleArchitect))
+				return planID(member.Key, member.Generation, 1), given
 			},
-			[]delivery{{false, lingeringPlan()}, {false, lingeringPlan()}}},
+			[]delivery{{false, notOwnedOfOther(t)}, {false, notOwnedOfOther(t)}}},
 		{"a plan whose first apply failed",
 			func(t *testing.T, pool *pgxpool.Pool, engine *Engine) (string, intake.PlanGiven) {
 				root := stepRoot(t, pool, phase.Admitted)
@@ -192,16 +196,19 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 				return planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, widget(t))
 			},
 			[]delivery{{true, nil}, {false, nil}, {false, nil}}},
-		{"a plan taken before its tree began to linger",
+		{"a plan taken before Dispatch moved the issue out from under its giver's issue",
 			func(t *testing.T, pool *pgxpool.Pool, engine *Engine) (string, intake.PlanGiven) {
-				root := stepRoot(t, pool, phase.Implementing)
+				stepRoot(t, pool, phase.Implementing)
+				above := todoChild(t, pool, "LEGION-300")
 				member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
+				reparentTo(t, pool, engine, member.Key, above.Key)
 				id, given := planID(member.Key, member.Generation, 1), ownersPlan(t, member.Key, member.Generation, 1, widget(t))
+				given.GivenBy = claim.Token(treeRoleToken(t, above.Key, claim.RoleArchitect))
 				mustTake(t, "version 1", applyFacts(t, pool, engine)(id, given))
-				leaveAs(t, pool, engine, root.Key, "done")
+				reparentTo(t, pool, engine, member.Key, "LEGION-208")
 				return id, given
 			},
-			[]delivery{{false, lingeringPlan()}}},
+			[]delivery{{false, notOwnedOfOther(t)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -221,9 +228,9 @@ func TestARedeliveredPlanGiveWritesNothingASecondTime(t *testing.T) {
 	}
 }
 
-// lingeringPlan is the refusal of version 1 of the plan of LEGION-209 while its tree LEGION-208
-// lingers.
-func lingeringPlan() *intake.Refusal {
-	return &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
-		Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-209 changed nothing"}
+// notOwnedOfOther is the refusal of a plan of LEGION-209, which stands under LEGION-208 on its
+// Dispatch chain, given by the architect of LEGION-300, which does not act on it.
+func notOwnedOfOther(t *testing.T) *intake.Refusal {
+	t.Helper()
+	return notOwned(t, "register_plan", "LEGION-209", claim.Token(treeRoleToken(t, "LEGION-300", claim.RoleArchitect)), "LEGION-208")
 }

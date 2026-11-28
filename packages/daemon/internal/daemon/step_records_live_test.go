@@ -7,11 +7,12 @@
 //
 // Nothing of the record path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch, as handoff-records.sh's driver starts it), on a database of its own on
-// LEGION_TEST_PG_DSN's server, with NATS off; it is stopped and started again on the same database
-// and port for the outage. The daemon is the whole daemon (run, the function `legion start` calls,
-// through startDaemonLogging) with dispatch_url at that server, so every step record it writes goes
-// through its outbox and its Dispatch client to the real route. The issue walks as the package's
-// whole-daemon tests walk it (stepRecordsRig, step_records_rig_test.go): each role over the worker
+// LEGION_TEST_PG_DSN's server, publishing its events on the script's broker, which the daemon
+// reads; it is stopped and started again on the same database and port for the outage. The daemon
+// is the whole daemon (run, the function `legion start` calls, through startDaemonLogging) with
+// dispatch_url at that server, so every step record it writes goes through its outbox and its
+// Dispatch client to the real route. The issue walks as the package's whole-daemon tests walk it
+// (stepRecordsRig, step_records_rig_test.go): each role over the worker
 // stream and the daemon's own routes, its handoff record written to Dispatch under its own
 // session, a person's review and the merge as GitHub's envelopes on the broker, and the
 // architect's sign-off through its own route. The reader is the real `dispatch` CLI
@@ -61,11 +62,12 @@ type stepRecordsLive struct {
 // one issue that walks planning to done with one failed review. The handoff of planning,
 // implementing and testing is read from Dispatch at each completion, so Dispatch is stopped only
 // once the issue is in reviewing for the second time: the second review, the acceptance, the retro
-// and the merge then walk it to done with Dispatch stopped.
+// and the merge then walk it to merging with its close queued with Dispatch stopped, and it
+// reaches done once Dispatch is back and shows the close (R20 and R24 of dispatch://INFRA-3320).
 func TestStepRecordsLive(t *testing.T) {
 	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live, in newStepRecordsLive).
 	l := newStepRecordsLive(t, "scripts/e2e/step-records.sh", 1, "steps-reader")
-	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
+	l.note("Dispatch %s (database of its own, its events on the script's broker), project %s with default repository %s, issue %s on pull request %d; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, l.key, l.number, l.cfg.DispatchURL)
 	l.step("walk-to-the-second-review-with-dispatch-up", l.walkToTheSecondReview)
 	l.step("a-phase-moves-while-dispatch-is-down", l.outage)
@@ -84,7 +86,9 @@ func newStepRecordsLive(t *testing.T, script string, issues int, reader string) 
 	fixtureenv.Live(t)
 	proof := newLiveProof(t, script)
 	root := liveCLICheckout(t)
-	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, startHandoffDispatch(t, root).scratchDispatch, issues), root: root, cliHome: t.TempDir()}
+	// Dispatch's events reach the daemon: a status write waits for them, and a close lands on Dispatch's done.
+	dispatch := startHandoffDispatch(t, root, proof.cfg.NatsURLs[0])
+	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigWith(t, proof, dispatch.scratchDispatch, issues), root: root, cliHome: t.TempDir()}
 	l.mintReader(reader)
 	return l
 }
@@ -118,11 +122,13 @@ func (l *stepRecordsLive) walkToTheSecondReview() {
 	l.note("implementing and testing completed again: %s in reviewing for the second time", l.key)
 }
 
-// outage stops Dispatch and walks the issue to done: the second review approves, the architect
+// outage stops Dispatch and walks the issue to its close: the second review approves, the architect
 // signs off, the retro completes and GitHub merges the pull request, with no Dispatch to write the
-// records of those steps to. Dispatch then starts again on the same database, and the records of
+// records of those steps to, and the issue stands in merging with its close queued, since the
+// daemon's close lands only on Dispatch's done (R20 and R24 of dispatch://INFRA-3320). Dispatch then
+// starts again on the same database, the close lands and the issue reaches done, and the records of
 // the steps that ran while it was stopped reach it, each ended. The control holds the outage real:
-// once the walk is done and Dispatch still stopped, `dispatch steps` fails naming the server it
+// with the close queued and Dispatch still stopped, `dispatch steps` fails naming the server it
 // could not reach, and the daemon's outbox holds the issue's step records unfinished.
 func (l *stepRecordsLive) outage() {
 	t := l.t
@@ -131,8 +137,9 @@ func (l *stepRecordsLive) outage() {
 	l.review("APPROVED", phase.Accepting)
 	l.accept()
 	l.retro()
-	l.merge()
-	l.note("the review, the acceptance, the retro and the merge walked %s to done with Dispatch stopped", l.key)
+	l.mergeQueuesTheClose()
+	l.waitPhase(phase.Merging)
+	l.note("the review, the acceptance, the retro and the merge walked %s to merging with its close queued, Dispatch stopped", l.key)
 
 	out, code := l.steps()
 	if code == 0 || !strings.Contains(out, "is unreachable") {
@@ -146,7 +153,8 @@ func (l *stepRecordsLive) outage() {
 	l.note("control: the daemon's outbox holds %d unfinished step records of %s", unfinished, l.key)
 
 	l.dispatch.start()
-	l.note("Dispatch started again on the same database and port")
+	l.waitPhase(phase.Done)
+	l.note("Dispatch started again on the same database and port, and %s's close landed: done", l.key)
 	want := []stepWant{stepRecordsTen[6], stepRecordsTen[7], stepRecordsTen[8], stepRecordsTen[9]}
 	// A row Dispatch refused while it was stopped waits out its backoff, at most
 	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within

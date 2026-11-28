@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
@@ -163,6 +164,18 @@ func deref(value *string) string {
 // answers the write: as the write left it, at the sequence of the event the write made
 // (issue.updated, or issue.closed for done). Dispatch appends that event for every status it is
 // sent, the issue's own status included.
+//
+// On a Legion issue, one that carries the legion label or is under an issue of its own project
+// that carries it, a Dispatch whose DISPATCH_LEGION_STATUS_SCOPE is on takes the daemon's write
+// only on a token that holds the legion-status scope, and answers any other 403
+// LEGION_STATUS_SCOPE_REQUIRED before it writes (refuseLegionStatusWrite and
+// legionStatusScopeRefusal in packages/envoy/internal/dispatch/api/legion_status_scope.go, the
+// first check of refuseIssueWritePlan in parent_status_rule.go). The secrets broker grants that
+// scope only to the token it mints for a BROKER_EXCHANGE_ACCOUNTS entry that names one project
+// and fixes the session legion-daemon:<that project> (isLegionDaemon in
+// packages/envoy/internal/cipher/exchange/exchange.go), so the token that passes proves the
+// session legion-daemon:<PROJECT> (DaemonSession) and holds legion-status. No bearer that
+// dispatch_token_file names holds the scope (model.ScopeLegionStatus).
 func (c *HTTPClient) SetStatus(ctx context.Context, key, status string) (Issue, error) {
 	var response issueResponse
 	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), daemonWrite{
@@ -179,7 +192,9 @@ func (c *HTTPClient) SetStatus(ctx context.Context, key, status string) (Issue, 
 // ISSUE_CHANGED when anything was recorded on the issue since that read, rather than writing over
 // it. Every event moves the sequence, the daemon's own messages among them, so a refusal says only
 // that the read is stale: the caller reads the issue again and decides from what it then shows
-// (the outbox's status row).
+// (the outbox's status row). It is refused 403 LEGION_STATUS_SCOPE_REQUIRED as SetStatus is: on
+// a Legion issue, Dispatch takes it only on a token that proves the session
+// legion-daemon:<PROJECT> and holds the legion-status scope.
 func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error) {
 	var response issueResponse
 	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), daemonWrite{
@@ -190,6 +205,39 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 		return Issue{}, err
 	}
 	return response.issue(), nil
+}
+
+// ChangeStatus writes change.Status on the issue key through POST
+// /api/v1/issues/{key}/status-change, the route that takes the options the PATCH does not
+// (StatusChange), as the daemon's own session, the actor every write of this client carries, and
+// under change.IdempotencyKey. Dispatch writes one issue at a time, each step in a transaction of
+// its own, in an order that keeps each parent's status in line with its children's after every
+// commit, and answers the named issue as the PATCH answers it with an entry for each issue the
+// call changed. Every refusal is an *Error that carries the entries of the steps that committed
+// before it (Error.Changed): 409 ISSUE_CHANGED for a stale ExpectedSequence, read as SetStatusAt's
+// is; 409 PARENT_STATUS_CONFLICT with the issues that hold the rule (Error.Issues); 403
+// LEGION_STATUS_SCOPE_REQUIRED, which a Dispatch whose DISPATCH_LEGION_STATUS_SCOPE is on answers
+// when a step writes a Legion issue's status on a token that does not hold the legion-status
+// scope; and the request key's own answers, 422 KEY_REUSED, 409 KEY_IN_FLIGHT and 409
+// KEY_COMMITTED. Dispatch judges the scope over the whole plan before the first step
+// (planStatusChangeUnderLocks in packages/envoy/internal/dispatch/api/status_change.go), and again
+// at each step (writeIssue in issue_patch.go), by SetStatus's rule: the token that passes proves
+// the session legion-daemon:<PROJECT> and holds legion-status. A dry run is refused the same way.
+// A Dispatch older than the route answers its router's 404 (NoRoute).
+func (c *HTTPClient) ChangeStatus(ctx context.Context, key string, change StatusChange) (StatusChangeResult, error) {
+	var response statusChangeResponse
+	if err := c.requestKeyed(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/status-change", change.IdempotencyKey, statusChangeWrite{
+		Status:           change.Status,
+		ExpectedSequence: change.ExpectedSequence,
+		IncludeChildren:  change.IncludeChildren,
+		UnlinkChildren:   change.UnlinkChildren,
+		IncludeParent:    change.IncludeParent,
+		DryRun:           change.DryRun,
+		Actor:            c.actor(key),
+	}, &response); err != nil {
+		return StatusChangeResult{}, err
+	}
+	return StatusChangeResult{Issue: response.Issue.issue(), Changed: statusChangeEntries(response.Changed)}, nil
 }
 
 // ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
@@ -252,9 +300,18 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 // session) pairs appends quiet issue.role_holders_changed; a publication of the same pairs appends
 // no event and notifies nobody. The list is always sent, empty for an issue where no session holds
 // a role: Dispatch refuses a body that names no list, and the empty list is the publication that
-// removes every holder. Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404
-// ISSUE_NOT_FOUND for an issue it does not know; a Dispatch older than the route answers its
-// router's 404 (NoRoute), which the outbox's row waits on until the server release that has it.
+// removes every holder. Dispatch answers two 403s to a token it does not take as the daemon's own
+// (putIssueRoleHolders in packages/envoy/internal/dispatch/api/issue_role_holders.go). With
+// DISPATCH_LEGION_STATUS_SCOPE on, it takes the write only on a token that proves the session
+// legion-daemon:<PROJECT> of the issue's project and holds the legion-status scope, the token the
+// secrets broker mints for a BROKER_EXCHANGE_ACCOUNTS entry that names PROJECT and fixes that
+// session, and answers every other 403 ROLE_HOLDER_FORBIDDEN; with the setting off, it answers 403
+// ROLE_HOLDER_FORBIDDEN to a write whose actor is not a Legion daemon's session. Both come before
+// the checks of the body and the read of the issue. On a project whose proven_sessions is on, it
+// answers 403 ROLE_HOLDER_NOT_PROVEN to a token that does not prove that session, after those.
+// Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
+// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}
@@ -776,6 +833,12 @@ func (c *HTTPClient) Whoami(ctx context.Context) (Caller, error) {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
+	return c.requestKeyed(ctx, method, path, "", body, into)
+}
+
+// requestKeyed is request under the request key key, which Dispatch's Idempotency-Key header
+// carries; an empty key sends no header, as every route but the status change does.
+func (c *HTTPClient) requestKeyed(ctx context.Context, method, path, key string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -796,6 +859,9 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	if key != "" {
+		request.Header.Set(idempotencyKeyHeader, key)
+	}
 
 	// A request that got no answer is named through redact.RequestError, before transportFailure
 	// reads its class: dispatch_url can carry a user name and a password, and a dial's or a
@@ -811,7 +877,11 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(redact.RequestError(dispatchServer, route, err)))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		refusal := dispatchError(response.StatusCode, response.Status, payload)
+		if seconds, err := strconv.Atoi(strings.TrimSpace(response.Header.Get("Retry-After"))); err == nil && seconds > 0 {
+			refusal.RetryAfter = time.Duration(seconds) * time.Second
+		}
+		return refusal
 	}
 	if into == nil {
 		return nil
@@ -854,14 +924,13 @@ func transportFailure(err error) error {
 }
 
 // DaemonSession is the session of the Legion daemon of the project it is given,
-// legion-daemon:<PROJECT>, PROJECT being key up to its first "-": a project key is its own project.
-// Every write of a client made with no option names the session of the key it is on, which is how
-// the daemon writes with dispatch_token_broker off. Under dispatch_token_broker the daemon makes its
-// client WritesAs the session of its own project, the one its broker token proves, and every write
-// names that session instead.
+// legion-daemon:<PROJECT>, PROJECT being key up to its first "-" (claim.KeyProject): a project key
+// is its own project. Every write of a client made with no option names the session of the key it
+// is on, which is how the daemon writes with dispatch_token_broker off. Under
+// dispatch_token_broker the daemon makes its client WritesAs the session of its own project, the
+// one its broker token proves, and every write names that session instead.
 func DaemonSession(key string) string {
-	project, _, _ := strings.Cut(key, "-")
-	return "legion-daemon:" + project
+	return "legion-daemon:" + claim.KeyProject(key)
 }
 
 func (c *HTTPClient) actor(key string) actor {
@@ -882,5 +951,25 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 	if response.Error == "" {
 		response.Error = statusText
 	}
-	return &Error{Status: status, Code: response.Code, Message: response.Error}
+	refusal := &Error{Status: status, Code: response.Code, Message: response.Error}
+	// A status write's refusal names the issues that hold it and the status-change steps that
+	// committed before it. They are read apart from the code and the message, so the refusal of
+	// another route whose body holds a member of either name in another shape keeps both.
+	var members struct {
+		Issues  []conflictIssueResponse     `json:"issues"`
+		Changed []statusChangeEntryResponse `json:"changed"`
+	}
+	if json.Unmarshal(payload, &members) == nil {
+		for _, issue := range members.Issues {
+			refusal.Issues = append(refusal.Issues, ConflictIssue{Key: issue.Key, Status: issue.Status})
+		}
+		refusal.Changed = statusChangeEntries(members.Changed)
+	}
+	return refusal
 }
+
+// idempotencyKeyHeader is the request header a write names its intent with, the same on every
+// retry of that intent: Dispatch's contracts.IdempotencyKeyHeader (packages/envoy/internal/contracts,
+// generated from IDEMPOTENCY_KEY_HEADER in packages/contracts), which this module cannot import,
+// since it is internal to Envoy's. No mechanism shares the value, so the spellings change together.
+const idempotencyKeyHeader = "Idempotency-Key"

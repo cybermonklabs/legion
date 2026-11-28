@@ -14,108 +14,99 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// A clear of a generation is handed the forget it runs over the decisions kept on the issues it
+// A clear of a generation is handed the forget it runs over the decisions kept on the issue it
 // clears (KeptForget), because it deletes the gates that forget's rule reads: a decision that is no
 // longer the person's word, asked after its gate is gone, would read as their word again. So the
-// forget is required, and a clear handed none is refused before it writes anything, whichever of
-// the two clears it is. It answers no emptied issue, so its caller queues no publication of the
-// empty set of gates, and a caller that commits its transaction after the refusal finds the issue
-// as it was: its handoff, its rounds and its entry's task, and its gate.
+// forget is required, and a clear handed none is refused before it writes anything. It answers no
+// emptied issue, so its caller queues no publication of the empty set of gates, and a caller that
+// commits its transaction after the refusal finds the issue as it was: its handoff, its rounds and
+// its entry's task, and its gate.
 func TestAClearHandedNoForgetForTheKeptDecisionsIsRefusedAndClearsNothing(t *testing.T) {
 	ctx := context.Background()
 	records := NewStore()
 	const task = "Continue the change. Issue: LEGION-288. Phase: implementing."
-	for _, tc := range []struct {
-		name  string
-		clear func(tx pgx.Tx, issue Issue) ([]string, error)
-	}{
-		{name: "the clear of one issue", clear: func(tx pgx.Tx, issue Issue) ([]string, error) {
-			return records.ClearGeneration(ctx, tx, issue, nil)
-		}},
-		{name: "the clear of a tree", clear: func(tx pgx.Tx, issue Issue) ([]string, error) {
-			return records.ClearTreeGeneration(ctx, tx, issue.Tree, nil)
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st := migratedStore(t)
-			issue := issueFixture("LEGION-288")
-			approved := 2
-			inTx(t, st, func(tx pgx.Tx) {
-				must(t, records.PutIssue(ctx, tx, issue))
-				must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
-					HandoffCommit: "head", Rounds: 2, Entry: 3, EntryTask: task}))
-				must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-288", LatestVersion: 2, ApprovedVersion: &approved}))
-			})
-			inTx(t, st, func(tx pgx.Tx) {
-				emptied, err := tc.clear(tx, issue)
-				if err == nil {
-					t.Fatalf("%s handed no forget for the kept decisions answered nil, want it refused: the clear deletes the gates "+
-						"the forget's rule reads, so a clear that skips it leaves a superseded decision to read as the person's word", tc.name)
-				}
-				if len(emptied) != 0 {
-					t.Fatalf("%s was refused and answers %v emptied, want none: its caller would publish an empty set of gates the issue still holds",
-						tc.name, emptied)
-				}
-			})
-			inTx(t, st, func(tx pgx.Tx) {
-				rows, err := records.Phases(ctx, tx, issue.Key)
-				must(t, err)
-				if len(rows) != 1 || rows[0].HandoffCommit != "head" || rows[0].Rounds != 2 || rows[0].EntryTask != task {
-					t.Fatalf("phases after %s was refused = %#v, want the implementer's row as it was put: handoff head, two rounds, its entry's task",
-						tc.name, rows)
-				}
-				gates, err := records.GatesOf(ctx, tx, issue.Key)
-				must(t, err)
-				if len(gates) != 1 {
-					t.Fatalf("gates after %s was refused = %#v, want the one gate put", tc.name, gates)
-				}
-			})
-		})
-	}
+	st := migratedStore(t)
+	issue := issueFixture("LEGION-288")
+	approved := 2
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer",
+			HandoffCommit: "head", Rounds: 2, Entry: 3, EntryTask: task}))
+		must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-288", LatestVersion: 2, ApprovedVersion: &approved}))
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		emptied, err := records.ClearGeneration(ctx, tx, issue, nil)
+		if err == nil {
+			t.Fatalf("the clear of one issue handed no forget for the kept decisions answered nil, want it refused: the clear deletes the gates " +
+				"the forget's rule reads, so a clear that skips it leaves a superseded decision to read as the person's word")
+		}
+		if len(emptied) != 0 {
+			t.Fatalf("the clear of one issue was refused and answers %v emptied, want none: its caller would publish an empty set of gates the issue still holds",
+				emptied)
+		}
+	})
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := records.Phases(ctx, tx, issue.Key)
+		must(t, err)
+		if len(rows) != 1 || rows[0].HandoffCommit != "head" || rows[0].Rounds != 2 || rows[0].EntryTask != task {
+			t.Fatalf("phases after the clear of one issue was refused = %#v, want the implementer's row as it was put: handoff head, two rounds, its entry's task",
+				rows)
+		}
+		gates, err := records.GatesOf(ctx, tx, issue.Key)
+		must(t, err)
+		if len(gates) != 1 {
+			t.Fatalf("gates after the clear of one issue was refused = %#v, want the one gate put", gates)
+		}
+	})
 }
 
-// A clear runs the forget it is handed once, over the decisions kept on the issues it clears and
-// the changes requests the outbox holds on them, while those issues' gates still stand
-// (Postgres.forgetKept): the clear of one issue hands over that issue's, and the clear of a tree
-// those of every issue of it. Neither hands over a decision kept on, or a request queued on,
-// another tree, nor the tree's kept approval, which the forget deletes nothing of, nor a queued
-// approval, whose own notice is the person's later word. A request is handed over as the row
-// carries it, a design-changes-requested notice for the architect or its relay to the controller
-// read as the Notice it is, with the version, the mark and the document the forget asks of. The
-// forget asks each of the gates of the issue it was made on, so a set handed over after the gates
-// went would ask a gate that is gone.
-func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
+// A clear runs the forget it is handed once, over the decisions kept on the issue it clears and
+// the changes requests the outbox holds on it, while that issue's gates still stand
+// (Postgres.forgetKept), naming the issue it clears. It hands over no decision kept on, or
+// request queued on, another issue, its Dispatch parent and its child included (R17 of
+// dispatch://INFRA-3320: a new run is the issue's own), nor the kept approval, which the forget
+// deletes nothing of, nor a queued approval, whose own notice is the person's later word. A
+// request is handed over as the row carries it, a design-changes-requested notice for the
+// architect or its relay to the controller read as the Notice it is, with the version, the mark
+// and the document the forget asks of. The forget asks each of the gates of the issue it was made
+// on, so a set handed over after the gates went would ask a gate that is gone.
+func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssueItClears(t *testing.T) {
 	ctx := context.Background()
 	records := NewStore()
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	const root, child, other = "LEGION-300", "LEGION-301", "LEGION-302"
 	parent := root
 	issues := []Issue{
-		{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+		{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 			Title: "Root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U"},
-		{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+		{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 			Title: "Child", Parent: &parent, Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "V"},
-		{Key: other, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: other, Project: "LEGION",
-			Title: "Another tree", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "W"},
+		{Key: other, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+			Title: "Another root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "W"},
 	}
+	// gateRoots is the gate root each issue's relay names (Notice.Root): the root for the root and
+	// its child, and the other root for its own.
+	gateRoots := map[string]string{root: root, child: root, other: other}
 	kept := []ParkedDecision{
 		{Issue: root, Ref: "dispatch://LEGION-300/spec", Decision: DecisionDesignChangesRequested, Actor: "user:alice", At: at, Seq: 8},
 		{Issue: child, Ref: "dispatch://LEGION-301/spec", Decision: DecisionDesignChangesRequested, Actor: "user:bob", At: at.Add(time.Minute), Seq: 9},
 		{Issue: other, Ref: "dispatch://LEGION-302/spec", Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: at.Add(2 * time.Minute), Seq: 10},
 	}
 	// changes is the changes request each issue's notice carries, and relay the parked-decision
-	// controller notice that relays it, read as the Notice it is.
+	// controller notice that relays it, read as the Notice it is. Each names the fence its issue
+	// stands at, run 2 before any phase entry, as every notice the outbox takes does (Fence).
 	changes := func(issue Issue) Notice {
 		return Notice{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path",
 			Actor: "user:alice", Ref: "dispatch://" + issue.Key + "/spec",
-			Review: EventMark{Seq: 11, At: at.Add(time.Hour)}, Artifact: "artifact-" + issue.Key}
+			Review: EventMark{Seq: 11, At: at.Add(time.Hour)}, Artifact: "artifact-" + issue.Key,
+			Generation: issue.Generation, Entry: FirstFence.Entry}
 	}
 	relay := func(issue Issue, decision DecisionKind) Notice {
 		notice := changes(issue)
 		if decision != DecisionDesignChangesRequested {
 			notice.Reason = ""
 		}
-		notice.Kind, notice.Decision, notice.Root = ParkedDecisionNotice, decision, issue.Tree
+		notice.Kind, notice.Decision, notice.Root = ParkedDecisionNotice, decision, gateRoots[issue.Key]
 		return notice
 	}
 	queuedOn := func(keys ...string) map[string]Notice {
@@ -130,16 +121,12 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name   string
-		clear  func(tx pgx.Tx, forget KeptForget) ([]string, error)
+		issue  Issue
 		want   []string
 		queued map[string]Notice
 	}{
-		{name: "the clear of the child", clear: func(tx pgx.Tx, forget KeptForget) ([]string, error) {
-			return records.ClearGeneration(ctx, tx, issues[1], forget)
-		}, want: []string{kept[1].Ref}, queued: queuedOn(child)},
-		{name: "the clear of the tree", clear: func(tx pgx.Tx, forget KeptForget) ([]string, error) {
-			return records.ClearTreeGeneration(ctx, tx, root, forget)
-		}, want: []string{kept[0].Ref, kept[1].Ref}, queued: queuedOn(root, child)},
+		{name: "the clear of the child", issue: issues[1], want: []string{kept[1].Ref}, queued: queuedOn(child)},
+		{name: "the clear of its parent", issue: issues[0], want: []string{kept[0].Ref}, queued: queuedOn(root)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := migratedStore(t)
@@ -147,6 +134,9 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 			inTx(t, st, func(tx pgx.Tx) {
 				for i, issue := range issues {
 					must(t, records.PutIssue(ctx, tx, issue))
+					// Each issue has its row of the copy, so the child stands under its parent on
+					// the Dispatch chain and a clear that walked that chain would reach the other.
+					putCopy(t, ctx, tx, issue)
 					must(t, records.PutGate(ctx, tx, DesignGate{Issue: issue.Key, ArtifactID: "artifact-" + issue.Key, LatestVersion: 3,
 						ApprovedVersion: &approved}))
 					must(t, records.AddParkedDecision(ctx, tx, kept[i]))
@@ -163,13 +153,13 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 				must(t, records.KeepReadmittedApproval(ctx, tx, root, KeptApproval{Step: DesignStepSpec, Approved: 2, Latest: 3}))
 			})
 			var runs int
-			var tree string
+			var cleared string
 			var handed KeptDecisions
 			var requests []QueuedChanges
 			var ungated []string
-			forget := func(ctx context.Context, tx pgx.Tx, owedTo string, owed KeptDecisions, queued []QueuedChanges) error {
+			forget := func(ctx context.Context, tx pgx.Tx, issue string, owed KeptDecisions, queued []QueuedChanges) error {
 				runs++
-				tree, handed, requests = owedTo, owed, queued
+				cleared, handed, requests = issue, owed, queued
 				var asked []string
 				for _, d := range owed.Decisions {
 					asked = append(asked, d.Issue)
@@ -189,12 +179,12 @@ func TestAClearHandsItsForgetTheDecisionsKeptOnTheIssuesItClears(t *testing.T) {
 				return nil
 			}
 			inTx(t, st, func(tx pgx.Tx) {
-				_, err := tc.clear(tx, forget)
+				_, err := records.ClearGeneration(ctx, tx, tc.issue, forget)
 				must(t, err)
 			})
-			if runs != 1 || tree != root {
-				t.Fatalf("%s ran its forget %d times, last for tree %q, want once for %s, the tree the cleared issues stand in",
-					tc.name, runs, tree, root)
+			if runs != 1 || cleared != tc.issue.Key {
+				t.Fatalf("%s ran its forget %d times, last for %q, want once for %s, the issue it clears",
+					tc.name, runs, cleared, tc.issue.Key)
 			}
 			var refs []string
 			for _, d := range handed.Decisions {
@@ -260,7 +250,7 @@ func TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts(t *te
 	var selected []QueuedChanges
 	inTx(t, st, func(tx pgx.Tx) {
 		for _, payload := range payloads {
-			row, err := NewOutboxRow(key, payload, at)
+			row, err := unrecordedRow(key, payload, at)
 			if err != nil {
 				continue
 			}
@@ -272,7 +262,7 @@ func TestTheClearsSelectOfChangesRequestsNamesTheRowsChangesRequestAccepts(t *te
 			}
 		}
 		var err error
-		selected, err = queuedChanges(ctx, tx, clearedIssue, key)
+		selected, err = queuedChanges(ctx, tx, key)
 		must(t, err)
 	})
 	if kinds := slices.Collect(maps.Values(accepted)); !slices.Contains(kinds, OutboxKindNotice) ||

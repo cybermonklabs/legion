@@ -72,8 +72,10 @@ func TestTheArchitectIsToldOnceForEachKeptPod(t *testing.T) {
 					decline.Reason, decline.Head, decline.Commits = pods.DeclineWorkspaceUnread, "", 0
 				}
 				if r.kept || !r.unread {
-					message, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect,
-						Reason: "the pod is kept"}, at)
+					// Every notice row names the run and the phase entry it is queued for
+					// (record.Fence); the issue's first is the one this test's issue stands at.
+					message, err := record.NewOutboxRow(rootIssue, record.Fenced(record.Notice{Kind: record.WorkspaceKeptNotice, Role: claim.RoleArchitect,
+						Reason: "the pod is kept"}, record.FirstFence), at)
 					if err != nil {
 						t.Fatal(err)
 					}

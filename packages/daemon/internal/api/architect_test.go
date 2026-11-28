@@ -77,7 +77,6 @@ type statusWrite struct {
 }
 
 type statusRecorder struct {
-	err    error
 	writes []statusWrite
 	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
 	// project>`: a message, a document upload, a role-holder publication, and a write of the
@@ -162,6 +161,10 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 	return summaries, nil
 }
 
+// GetIssue answers Dispatch's issue read. Dispatch names the project of every issue it answers and
+// a sequence of 1 or more, and an API route's read of an issue is a reading of the copy only with
+// both (intake.ReadingOf, record.PutDispatchIssue), so an issue a case gives no project answers its
+// key's, and one a case gives no sequence answers 1.
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {
@@ -171,6 +174,12 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 	if !ok {
 		return dispatch.Issue{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "issue not found"}
 	}
+	if issue.Project == "" {
+		issue.Project, _, _ = strings.Cut(key, "-")
+	}
+	if issue.LastSeq == 0 {
+		issue.LastSeq = 1
+	}
 	return issue, nil
 }
 
@@ -178,9 +187,6 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 // by the one event every status write makes, the issue's own status included. The fake keeps the
 // written issue, so a later read sees the write.
 func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dispatch.Issue, error) {
-	if r.err != nil {
-		return dispatch.Issue{}, r.err
-	}
 	r.writes = append(r.writes, statusWrite{issue: issue, status: status})
 	written, ok := r.issues[issue]
 	if !ok {
@@ -199,6 +205,11 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 // take it, and they run in the outbox.
 func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
+}
+
+// ChangeStatus is the status-change route, which no architect route calls.
+func (r *statusRecorder) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("the architect routes send no status change")
 }
 
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
@@ -376,6 +387,9 @@ func newArchitectHarnessGating(t *testing.T, steps []record.DesignStep, grants *
 	return h, facts, statuses
 }
 
+// seedTree records root, in planning, and each of children under it, in planning, with the copy
+// of Dispatch's issues holding the same chain: the daemon reads each chain from the copy (R15 of
+// dispatch://INFRA-3320), so a record with no copy row stands on an unknown chain.
 func seedTree(t *testing.T, h *harness, root string, children ...string) {
 	t.Helper()
 	records := record.NewStore()
@@ -383,6 +397,9 @@ func seedTree(t *testing.T, h *harness, root string, children ...string) {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{
 			Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Status: "in_progress",
 		}); err != nil {
+			return err
+		}
+		if err := seedCopy(tx, root, "", "in_progress"); err != nil {
 			return err
 		}
 		for _, child := range children {
@@ -393,12 +410,23 @@ func seedTree(t *testing.T, h *harness, root string, children ...string) {
 			}); err != nil {
 				return err
 			}
+			if err := seedCopy(tx, child, root, "in_progress"); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("seed tree: %v", err)
 	}
+}
+
+// seedCopy writes key's row of the copy of Dispatch's issues, under parent ("" for none) at status,
+// as a reading at sequence 1 writes it (record.PutDispatchIssue): a reading changes nothing a newer
+// one wrote.
+func seedCopy(tx pgx.Tx, key, parent, status string) error {
+	return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: testDispatchProject, Seq: 1,
+		Status: record.Carry(status), Parent: record.Carry(parent), Labels: record.Carry([]string{})})
 }
 
 type liveClaim struct {
@@ -592,10 +620,15 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 		"artifactId": "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093", "version": 1,
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
+	// An architect of an issue the chain of LEGION-209 does not pass through is refused
+	// ISSUE_NOT_OWNED, and the refusal names the architect that acts on it (R18 of
+	// dispatch://INFRA-3320).
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
+	if body := refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{
 		"grantId": foreign.grant(t), "issue": "LEGION-209",
-	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
+	}, nil), http.StatusForbidden, "ISSUE_NOT_OWNED"); !strings.Contains(body, "legion-legion-legion-208-architect") {
+		t.Fatalf("the foreign sign_off's refusal = %s, want it to name the architect of LEGION-208", body)
+	}
 
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
 	refused(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
@@ -705,25 +738,27 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 	}
 }
 
-// A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
-// parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
-// notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
-// notice reaches may accept it and retry it, and a sub-architect still may not.
-func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
+// A child the daemon records whose chain the copy of Dispatch cannot show to its top - no copy row
+// of its own, or a parent with none, as a record the copy has not caught up with leaves it - has
+// no architect who may act on it yet (R16 of dispatch://INFRA-3320): sign_off and
+// retry_or_escalate on it are refused CHAIN_UNKNOWN to the architect of the issue its record names
+// as its tree's and to every other alike, and apply nothing, until the daemon has read Dispatch
+// again.
+func TestACallOnAChainTheCopyCannotShowIsRefused(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
 	unrecorded := "LEGION-999"
 	records := record.NewStore()
 	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, child := range []record.Issue{
-			{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "no parent", Phase: phase.Accepting, Status: "needs_review"},
-			{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "unrecorded parent", Parent: &unrecorded, Phase: phase.Accepting, Status: "needs_review"},
+			{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "no copy row", Phase: phase.Accepting, Status: "needs_review"},
+			{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "a parent with no copy row", Parent: &unrecorded, Phase: phase.Accepting, Status: "needs_review"},
 		} {
 			if err := records.PutIssue(context.Background(), tx, child); err != nil {
 				return err
 			}
 		}
-		return nil
+		return seedCopy(tx, "LEGION-212", unrecorded, "needs_review")
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -741,15 +776,13 @@ func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 				}
 				return body
 			}
-			before := len(facts.recorded())
-			refused(t, h.request(http.MethodPost, route.path, request(subArchitect.grant(t)), nil), http.StatusForbidden, "ISSUE_NOT_OWNED")
-			if got := h.request(http.MethodPost, route.path, request(root.grant(t)), nil); got.Code != http.StatusOK {
-				t.Fatalf("%s on %s by the root architect = %d: %s", route.path, issue, got.Code, got.Body)
-			}
-			if got := len(facts.recorded()) - before; got != 1 {
-				t.Fatalf("%s on %s applied %d facts, want the root architect's one", route.path, issue, got)
+			for _, architect := range []liveClaim{root, subArchitect} {
+				refused(t, h.request(http.MethodPost, route.path, request(architect.grant(t)), nil), http.StatusConflict, "CHAIN_UNKNOWN")
 			}
 		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("calls on an unknown chain applied %#v, want nothing", got)
 	}
 }
 
@@ -787,35 +820,28 @@ func TestArchitectureRouteRefusalsExposeTheFactResultAndGrantState(t *testing.T)
 }
 
 // release_children exists for children the architect created and has not yet released, which the
-// record does not hold: it records a child only once the child is todo under a live tree. So tree
-// membership is read over Dispatch's issue graph, as the shipped daemon checks it over the mirrored
-// graph (routes/issues.ts handleWaveRelease). A child already in the workflow is refused, since
-// writing todo would move an in-progress child back.
+// record does not hold: it records a child only once the child is todo under a parent at work. So
+// the route reads each named child, and each issue above it, from Dispatch into the copy, and the
+// workflow decides the whole wave over the copy's chains (decision 5 of dispatch://INFRA-4730):
+// children under the caller's own issue on the chain are released, each todo queued as a status
+// row, the parent's before its child's. A child already in work is refused, since writing todo
+// would move it back; an issue the chain does not put under the caller's is another architect's,
+// and one Dispatch does not have is not found. A refused wave queues nothing.
 func TestWaveReleaseReleasesUnreleasedChildrenOfTheTreeOverTheDispatchGraph(t *testing.T) {
-	h, _, statuses := newArchitectHarness(t, nil, nil)
-	seedTree(t, h, "LEGION-208")
-	root, child := "LEGION-208", "LEGION-209"
-	statuses.issues = map[string]dispatch.Issue{
-		"LEGION-208": {Key: "LEGION-208", ResolvedRepo: "acme/widgets", Status: "in_progress"},
-		"LEGION-209": {Key: "LEGION-209", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &root},
-		"LEGION-210": {Key: "LEGION-210", ResolvedRepo: "acme/widgets", Status: "triage", Parent: &child},
-		"LEGION-211": {Key: "LEGION-211", ResolvedRepo: "acme/widgets", Status: "in_progress", Parent: &root},
-		"LEGION-212": {Key: "LEGION-212", ResolvedRepo: "acme/widgets", Status: "backlog"},
+	h, statuses := releaseHarness(t, true)
+	root, child := releaseRoot, "LEGION-209"
+	statuses.issues["LEGION-209"] = dispatch.Issue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Title: "LEGION-209", Status: "backlog", Parent: &root, LastSeq: 7}
+	statuses.issues["LEGION-210"] = dispatch.Issue{Key: "LEGION-210", ResolvedRepo: "acme/widgets", Title: "LEGION-210", Status: "triage", Parent: &child, LastSeq: 7}
+	statuses.issues["LEGION-211"] = dispatch.Issue{Key: "LEGION-211", ResolvedRepo: "acme/widgets", Title: "LEGION-211", Status: "in_progress", Parent: &root, LastSeq: 7}
+	statuses.issues["LEGION-212"] = dispatch.Issue{Key: "LEGION-212", ResolvedRepo: "acme/widgets", Title: "LEGION-212", Status: "backlog", LastSeq: 7}
+	architect := newLiveClaim(t, h, releaseRoot, claim.RoleArchitect)
+
+	response, _ := releaseWave(t, h, architect, "LEGION-209", "LEGION-210")
+	if want := []string{"LEGION-209", "LEGION-210"}; !reflect.DeepEqual(response.Released, want) {
+		t.Fatalf("released = %#v, want %#v", response.Released, want)
 	}
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
-		"grantId": architect.grant(t), "issues": []string{"LEGION-209", "LEGION-210"},
-	}, nil)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("wave release = %d: %s", recorder.Code, recorder.Body)
-	}
-	var response WaveReleaseResponse
-	decodeInto(t, recorder, &response)
-	if len(response.Released) != 2 || response.Released[0] != "LEGION-209" || response.Released[1] != "LEGION-210" {
-		t.Fatalf("released = %#v", response.Released)
-	}
-	if len(statuses.writes) != 2 || statuses.writes[0] != (statusWrite{issue: "LEGION-209", status: "todo"}) || statuses.writes[1] != (statusWrite{issue: "LEGION-210", status: "todo"}) {
-		t.Fatalf("Dispatch writes = %#v", statuses.writes)
+	if want := []string{"LEGION-209", "LEGION-210"}; !reflect.DeepEqual(queuedTodos(t, h), want) || len(statuses.writes) != 0 {
+		t.Fatalf("queued todos = %v and Dispatch writes = %#v, want %v queued, the parent first, and none written in the request", queuedTodos(t, h), statuses.writes, want)
 	}
 
 	for _, tc := range []struct {
@@ -824,7 +850,7 @@ func TestWaveReleaseReleasesUnreleasedChildrenOfTheTreeOverTheDispatchGraph(t *t
 		code   string
 	}{
 		{issue: "LEGION-211", status: http.StatusConflict, code: "ISSUE_ALREADY_RELEASED"},
-		{issue: "LEGION-212", status: http.StatusForbidden, code: "ISSUE_OUTSIDE_TREE"},
+		{issue: "LEGION-212", status: http.StatusForbidden, code: "ISSUE_NOT_OWNED"},
 		{issue: "LEGION-213", status: http.StatusNotFound, code: "ISSUE_NOT_FOUND"},
 	} {
 		refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
@@ -832,115 +858,100 @@ func TestWaveReleaseReleasesUnreleasedChildrenOfTheTreeOverTheDispatchGraph(t *t
 		}, nil), tc.status, tc.code)
 	}
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
-	refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
+	if body := refused(t, h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
 		"grantId": foreign.grant(t), "issues": []string{"LEGION-209"},
-	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
-	if len(statuses.writes) != 2 {
-		t.Fatalf("Dispatch writes after refusals = %#v, want only the released pair", statuses.writes)
+	}, nil), http.StatusForbidden, "ISSUE_NOT_OWNED"); !strings.Contains(body, "legion-legion-legion-208-architect") {
+		t.Fatalf("the foreign release's refusal = %s, want it to name the architect of %s, which takes the child", body, releaseRoot)
+	}
+	if want := []string{"LEGION-209", "LEGION-210"}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos after refusals = %v, want only the released pair", queuedTodos(t, h))
 	}
 }
 
-// release_children writes one child at a time, so a Dispatch failure part way through leaves the
-// earlier children released and answers 502. The architect's retry is the whole wave again, and a
-// child already todo is exactly what this call produces: it is released, not refused, and is not
-// written a second time. Before, the retry met ISSUE_ALREADY_RELEASED on its own earlier work and
-// no retry could ever finish the wave.
+// The architect's retry of a wave is the whole wave again, and a child already todo - an earlier
+// attempt's write that landed - is exactly what the call produces: it is released, not refused,
+// and nothing is queued for it again. Only the child Dispatch still shows out of work is written.
 func TestWaveReleaseRetryFinishesAWaveAPartialFailureLeftHalfReleased(t *testing.T) {
-	h, _, statuses := newArchitectHarness(t, nil, nil)
-	seedTree(t, h, "LEGION-208", "LEGION-209") // the first attempt's todo event recorded LEGION-209
-	root := "LEGION-208"
-	statuses.issues = map[string]dispatch.Issue{
-		"LEGION-208": {Key: "LEGION-208", ResolvedRepo: "acme/widgets", Status: "in_progress"},
-		"LEGION-209": {Key: "LEGION-209", ResolvedRepo: "acme/widgets", Status: "todo", Parent: &root},    // the first attempt released it
-		"LEGION-210": {Key: "LEGION-210", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &root}, // its write is the one that failed
-	}
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	h, statuses := releaseHarness(t, true)
+	root := releaseRoot
+	h.recordIssue(record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: releaseRoot, Parent: &root,
+		Project: testDispatchProject, Title: "LEGION-209", Phase: phase.Planning, Generation: 1, Status: "in_progress", DispatchStatus: "todo", LastDispatchSeq: 7})
+	statuses.issues["LEGION-209"] = todoChild("LEGION-209")
+	statuses.issues["LEGION-210"] = backlogChild("LEGION-210")
+	architect := newLiveClaim(t, h, releaseRoot, claim.RoleArchitect)
 
-	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
-		"grantId": architect.grant(t), "issues": []string{"LEGION-209", "LEGION-210"},
-	}, nil)
+	response, _ := releaseWave(t, h, architect, "LEGION-209", "LEGION-210")
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("wave release retry = %d: %s", recorder.Code, recorder.Body)
-	}
-	var response WaveReleaseResponse
-	decodeInto(t, recorder, &response)
-	if len(response.Released) != 2 {
+	if want := []string{"LEGION-209", "LEGION-210"}; !reflect.DeepEqual(response.Released, want) {
 		t.Fatalf("released = %#v, want the whole wave", response.Released)
 	}
-	if len(statuses.writes) != 1 || statuses.writes[0] != (statusWrite{issue: "LEGION-210", status: "todo"}) {
-		t.Fatalf("Dispatch writes = %#v, want only the child the failed attempt had not released", statuses.writes)
+	if want := []string{"LEGION-210"}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Fatalf("queued todos = %v, want only the child the earlier attempt had not released", queuedTodos(t, h))
 	}
 }
 
-// A wave that names a child twice releases it once: one Dispatch write, and the answer names it
-// once, at its first place. Before, the child was written todo twice, each write a todo event of its
-// own, and the answer named it twice.
+// A wave that names a child twice releases it once: one queued todo, and the answer names it once,
+// at its first place.
 func TestWaveReleaseOfAChildNamedTwiceWritesItOnce(t *testing.T) {
-	h, _, statuses := newArchitectHarness(t, nil, nil)
-	seedTree(t, h, "LEGION-208")
-	root := "LEGION-208"
-	statuses.issues = map[string]dispatch.Issue{
-		"LEGION-208": {Key: "LEGION-208", ResolvedRepo: "acme/widgets", Status: "in_progress"},
-		"LEGION-209": {Key: "LEGION-209", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &root},
-		"LEGION-210": {Key: "LEGION-210", ResolvedRepo: "acme/widgets", Status: "backlog", Parent: &root},
-	}
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	h, statuses := releaseHarness(t, true)
+	statuses.issues["LEGION-209"] = backlogChild("LEGION-209")
+	statuses.issues["LEGION-210"] = backlogChild("LEGION-210")
+	architect := newLiveClaim(t, h, releaseRoot, claim.RoleArchitect)
 
-	recorder := h.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{
-		"grantId": architect.grant(t), "issues": []string{"LEGION-209", "LEGION-210", "LEGION-209"},
-	}, nil)
+	response, _ := releaseWave(t, h, architect, "LEGION-209", "LEGION-210", "LEGION-209")
 
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("wave release = %d: %s", recorder.Code, recorder.Body)
-	}
-	var response WaveReleaseResponse
-	decodeInto(t, recorder, &response)
 	if want := []string{"LEGION-209", "LEGION-210"}; !reflect.DeepEqual(response.Released, want) {
 		t.Errorf("released = %#v, want %#v", response.Released, want)
 	}
-	if want := []statusWrite{{issue: "LEGION-209", status: "todo"}, {issue: "LEGION-210", status: "todo"}}; !reflect.DeepEqual(statuses.writes, want) {
-		t.Errorf("Dispatch writes = %#v, want each child written once: %#v", statuses.writes, want)
+	if want := []string{"LEGION-209", "LEGION-210"}; !reflect.DeepEqual(queuedTodos(t, h), want) {
+		t.Errorf("queued todos = %v, want each child written once: %v", queuedTodos(t, h), want)
 	}
 }
 
-// An architect runs a child that is out of the workflow again by the same Dispatch status a person
-// would move it by: todo. The route applies its own write in the request, as the write's event, at
-// the sequence Dispatch answered it with and with the daemon's own actor, so it takes the person's
-// move's path through the workflow, which starts the child's next run under the live tree
-// (reenterChild), without waiting for the event. The tree root is never a child, a running child
-// is refused until its owning architect writes backlog on it, an issue of another tree is outside
-// the architect's, a lingering tree runs nothing more, and a refused write applies nothing.
+// An architect runs a child that is out of Legion's work again by the same Dispatch status a
+// person would move it by: todo. The call is decided over the copy the route brought up to date
+// and queues the todo, counted on the record in the request (decision 5 of dispatch://INFRA-4730):
+// a child the daemon closed opens its next run there and then, without waiting for the event. The
+// architect's own issue is no issue under it, a running child is refused until its architect
+// writes backlog on it, an issue of another architect's chain is not the caller's, and a failed
+// read of Dispatch queues nothing.
 func TestRerunMovesAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
-	h, facts, statuses := newArchitectHarness(t, nil, nil)
-	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
-	setIssue(t, h, "LEGION-210", func(issue *record.Issue) { issue.Phase, issue.Status = phase.Done, "done" })
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	h, _, statuses := statusHarness(t)
+	root, closed := statusRoot, "LEGION-210"
+	h.recordIssue(record.Issue{Key: closed, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: statusRoot, Parent: &root,
+		Project: testDispatchProject, Title: closed, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", LastDispatchSeq: 5})
+	statuses.issues[closed] = dispatch.Issue{Key: closed, ResolvedRepo: "acme/widgets", Title: closed, Status: "done", Parent: &root, LastSeq: 5}
+	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	rerun := func(issue string) *httptest.ResponseRecorder {
 		return h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": issue}, nil)
 	}
 
-	if recorder := rerun("LEGION-210"); recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "{}" {
-		t.Fatalf("rerun = %d %s, want 200 {}", recorder.Code, recorder.Body)
+	recorder := rerun(closed)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("rerun = %d %s, want 200", recorder.Code, recorder.Body)
 	}
-	want := statusWrite{issue: "LEGION-210", status: "todo"}
-	if len(statuses.writes) != 1 || statuses.writes[0] != want {
-		t.Fatalf("Dispatch writes = %#v, want %#v", statuses.writes, want)
+	queuedWrite(t, h, recorder, closed, "todo")
+	if next := recordedChild(t, h, closed); next == nil || next.Generation != 2 || !record.InLegionsWork(*next) {
+		t.Fatalf("the child once rerun_child answered = %#v, want its next run, generation 2, in Legion's work", next)
 	}
+	if len(statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes = %#v, want none in the request", statuses.writes)
+	}
+	rows := statusRows(t, h, closed)
 
 	for _, tc := range []struct {
 		issue  string
 		status int
 		code   string
 	}{
-		{issue: "LEGION-208", status: http.StatusForbidden, code: "CHILD_REQUIRED"},
-		{issue: "LEGION-209", status: http.StatusConflict, code: "CHILD_RUNNING"},
+		{issue: statusRoot, status: http.StatusForbidden, code: "ISSUE_NOT_OWNED"},
+		{issue: statusChild, status: http.StatusConflict, code: "CHILD_RUNNING"},
 		{issue: "LEGION-777", status: http.StatusNotFound, code: "ISSUE_NOT_FOUND"},
 		{issue: "not a key", status: http.StatusBadRequest, code: "INVALID_ISSUE"},
 	} {
 		t.Run(tc.issue, func(t *testing.T) {
 			recorder := rerun(tc.issue)
-			if tc.status != http.StatusBadRequest && tc.status != http.StatusNotFound && !strings.Contains(recorder.Body.String(), tc.issue) {
+			if tc.status != http.StatusBadRequest && !strings.Contains(recorder.Body.String(), tc.issue) {
 				t.Fatalf("refusal %s does not name %s", recorder.Body, tc.issue)
 			}
 			refused(t, recorder, tc.status, tc.code)
@@ -948,29 +959,19 @@ func TestRerunMovesAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 	}
 	foreign := newLiveClaim(t, h, "LEGION-999", claim.RoleArchitect)
 	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{
-		"grantId": foreign.grant(t), "issue": "LEGION-210",
-	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
-	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+		"grantId": foreign.grant(t), "issue": closed,
+	}, nil), http.StatusForbidden, "ISSUE_NOT_OWNED")
+	worker := newLiveClaim(t, h, statusRoot, claim.RoleImplementer)
 	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{
-		"grantId": worker.grant(t), "issue": "LEGION-210",
+		"grantId": worker.grant(t), "issue": closed,
 	}, nil), http.StatusForbidden, "ARCHITECT_REQUIRED")
 
-	until := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Done, &until })
-	refused(t, rerun("LEGION-210"), http.StatusConflict, "TREE_LINGERING")
-	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Phase, issue.LingerUntil = phase.Implementing, nil })
+	statuses.readFails = map[string]error{closed: errors.New("connection refused")}
+	statuses.listFails = errors.New("listing read timed out")
+	refused(t, rerun(closed), http.StatusBadGateway, "DISPATCH_FAILED")
 
-	statuses.err = &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
-	refused(t, rerun("LEGION-210"), http.StatusBadGateway, "UNAVAILABLE")
-	statuses.err = errors.New("connection refused")
-	refused(t, rerun("LEGION-210"), http.StatusBadGateway, "DISPATCH_FAILED")
-
-	if len(statuses.writes) != 1 {
-		t.Fatalf("Dispatch writes after refusals = %#v, want only the rerun", statuses.writes)
-	}
-	wantFacts := []intake.Fact{intake.DispatchIssue{Key: want.issue, Seq: 1, Type: "issue.updated", Status: want.status, DaemonActor: true, StatusMove: true, ClaimKnown: true}}
-	if got := facts.recorded(); !reflect.DeepEqual(got, wantFacts) {
-		t.Fatalf("facts = %#v, want the route's own write, as its event, and nothing for a refused write: %#v", got, wantFacts)
+	if after := statusRows(t, h, closed); !reflect.DeepEqual(after, rows) {
+		t.Fatalf("status rows of %s after refusals = %v, want only the rerun's %v", closed, after, rows)
 	}
 }
 
@@ -1017,15 +1018,15 @@ func TestGateRegistrationRefusesAnotherIssuesDocumentAndAChildIssue(t *testing.T
 	refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-209", "artifactId": "5c3d9e1f-7a2b-4e6c-8d40-1f9b3a7e2c65", "version": 1,
 	}, nil), http.StatusForbidden, "GATE_ROOT_ONLY")
-	// The root's gate is its own architect's to register: a sub-architect of the tree holding the
-	// root document's id is refused too.
+	// The root's gate is its own architect's to register: the architect of an issue under it on
+	// the Dispatch chain holding the root document's id is refused too, and told whose it is.
 	statuses.documents["7d1e4f2a-3b5c-4d6e-8f70-9a1b2c3d4e5f"] = "LEGION-208"
 	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
 	refusal := h.request(http.MethodPost, "/legion/v1/gates/register", map[string]any{
 		"grantId": subArchitect.grant(t), "issue": "LEGION-208", "artifactId": "7d1e4f2a-3b5c-4d6e-8f70-9a1b2c3d4e5f", "version": 1,
 	}, nil)
-	if body := refusal.Body.String(); !strings.Contains(body, "its root architect registers it") {
-		t.Fatalf("sub-architect refusal %s does not say the root architect registers the gate", body)
+	if body := refusal.Body.String(); !strings.Contains(body, "its own architect legion-legion-legion-208-architect registers it") {
+		t.Fatalf("sub-architect refusal %s does not say the root's own architect registers the gate", body)
 	}
 	refused(t, refusal, http.StatusForbidden, "GATE_ROOT_ONLY")
 	if got := facts.recorded(); len(got) != 0 {
@@ -1252,8 +1253,8 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 		t.Fatalf("close facts = %#v", got)
 	}
 
-	// A child is not the root, a sub-architect of the tree is not the root's architect, and a
-	// phase worker is not the architect.
+	// A child is not a root on its Dispatch chain, the architect of an issue under the root is
+	// not the root's own, and a phase worker is not the architect.
 	refused(t, h.request(http.MethodPost, "/legion/v1/roots/close", map[string]any{
 		"grantId": architect.grant(t), "issue": "LEGION-209", "reason": "moot",
 	}, nil), http.StatusForbidden, "ROOT_REQUIRED")

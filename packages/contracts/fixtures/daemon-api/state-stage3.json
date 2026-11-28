@@ -98,7 +98,10 @@
       "issue": "LEGION-208",
       "payload": {
         "kind": "ordinary",
+        "entry": 1,
         "status": "needs_review",
+        "generation": 4,
+        "dispatchStatus": "needs_review",
         "observedStatus": "in_progress"
       },
       "attempts": 2,
@@ -273,7 +276,7 @@
         "spec"
       ]
     },
-    "linger_hours": 72,
+    "linger_hours": 0,
     "production_check_hours": 336,
     "pod_update_grace_minutes": 30,
     "stalled_tree_notice_hours": 6,

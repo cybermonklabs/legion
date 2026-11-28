@@ -1619,8 +1619,8 @@ func (r *liveRig) checkOrphanSweep() error {
 	if s, err := r.getSandbox(name); err != nil || s.DeletionTimestamp != nil {
 		return fmt.Errorf("unrecorded %s of the live tree %s did not survive a sweep past the grace: %v", name, orphan.tree, err)
 	}
-	note("runtime", "sweep with grace 1s while its tree %s is live: %s survives", orphan.tree, name)
-	r.trees.close(orphan.tree)
+	note("runtime", "sweep with grace 1s while its issue %s is live: %s survives", orphan.issue, name)
+	r.trees.close(orphan.issue)
 	r.stopRuntime()
 	restarted := time.Now()
 	if err := r.startRuntime(); err != nil {
@@ -1662,9 +1662,9 @@ func (r *liveRig) checkOrphanSweep() error {
 // cleanup-reaps-the-issue: the two halves of what a stop now leaves, on the run's first issue,
 // which no later check needs. Release ends only the named role process: the shared issue Sandbox,
 // the root process and the pod they live in stay, and so does the pod's own disk, which lives
-// exactly as long as that pod. Then the tree's cleanup — the daemon's durable whole-issue effect,
-// which this direct runtime harness calls itself since it has no store or outbox — deletes every
-// issue Sandbox of the tree and hands none over (CleanupTree), and the issue is left nothing: its
+// exactly as long as that pod. Then the issue's cleanup — the daemon's durable whole-issue effect,
+// which this direct runtime harness calls itself since it has no store or outbox — deletes the
+// issue's own Sandbox and hands nothing over (CleanupIssue), and the issue is left nothing: its
 // pod goes with its Sandbox, and the disk goes with the pod. The check's name said the opposite
 // before INFRA-80, when a released role left the issue's volume for a cleanup that could hand it
 // to another tree.
@@ -1745,24 +1745,24 @@ func (r *liveRig) checkCleanupReapsTheIssue() error {
 	note("runtime", "Release(%s) ended only that role; issue Sandbox %s and root %s stayed Alive", worker.name, name, root.token)
 	note("operator", "the pod's own disk %s: uid %s, %s, owned by %s", disk.name, short(disk.uid), disk.phase, disk.owner)
 
-	// The tree's cleanup, the effect a daemon runs once every stored claim of the tree has retired.
-	// Every claim of this tree is a claim of this one issue, so the run is done with all four.
-	if err := r.rt.CleanupTree(r.ctx, root.tree); err != nil {
-		return fmt.Errorf("CleanupTree(%s): %w", root.tree, err)
+	// The issue's cleanup, the effect a daemon runs once every stored claim of the issue has
+	// retired. Every claim of this issue is done with all four.
+	if err := r.rt.CleanupIssue(r.ctx, root.issue); err != nil {
+		return fmt.Errorf("CleanupIssue(%s): %w", root.issue, err)
 	}
 	for _, c := range r.claims {
-		if c.tree == root.tree {
+		if c.issue == root.issue {
 			c.loc, c.last, c.state = nil, nil, stateReleased
 		}
 	}
 	if _, err := r.getSandbox(name); !apierrors.IsNotFound(err) {
-		return fmt.Errorf("the issue Sandbox %s outlived its tree's cleanup: %v", name, err)
+		return fmt.Errorf("the issue Sandbox %s outlived its issue's cleanup: %v", name, err)
 	}
 	if err := r.awaitDiskGone(worker); err != nil {
 		return err
 	}
-	r.trees.close(root.tree)
-	note("runtime", "CleanupTree(%s) deleted issue Sandbox %s, handing nothing over", root.tree, name)
+	r.trees.close(root.issue)
+	note("runtime", "CleanupIssue(%s) deleted issue Sandbox %s, handing nothing over", root.issue, name)
 	note("operator", "get sandbox %s: NotFound; get pvc %s: none — the Sandbox took its pod, and the pod took the disk %s (uid %s) this issue's work was on",
 		name, disk.name, disk.name, short(disk.uid))
 	return nil
@@ -1790,8 +1790,9 @@ func (r *liveRig) checkIssueSuspendResume() error {
 	}
 	note("operator", "%s runs in pod uid %s on its pod's own disk %s (uid %s), owned by %s", c.name, short(old.Sandbox.PodUID), disk.name, short(disk.uid), disk.owner)
 	// authorize is the store's check of the close against the issue's starts, stops and stored
-	// roles; the harness is the store here, and this close is the one it means to make.
-	if err := r.rt.SuspendIssue(r.ctx, c.issue, c.tree, func(context.Context) (bool, error) { return true, nil }); err != nil {
+	// roles; the harness is the store here, and this close is the one it means to make, queued for
+	// the pod the issue runs in.
+	if err := r.rt.SuspendIssue(r.ctx, c.issue, old.Sandbox.PodUID, func(context.Context) (bool, error) { return true, nil }); err != nil {
 		return fmt.Errorf("SuspendIssue(%s): %w", c.issue, err)
 	}
 	c.loc, c.state = nil, stateSuspended

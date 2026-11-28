@@ -359,8 +359,8 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
-			// The release starts the retro only in a tree that runs (StartHeldRetro, record.TreeRunning).
-			seedTreeLifecycle(t, pool, "LEGION-208")
+			// The release starts the retro only where its gate root on the chain runs
+			// (StartHeldRetro, record.TreeRuns), which LEGION-208, a root at work, does.
 			if tc.child {
 				stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 			}

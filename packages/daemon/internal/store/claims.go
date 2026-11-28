@@ -51,7 +51,7 @@ var _ supervise.Store = (*Store)(nil)
 // The two cause columns are read beside held_for, which says whether a `provider_error` either of
 // them holds stands for `cyber_policy` (supervise.DecodeCause); upsertClaim writes the three
 // together (storedCause, heldFor).
-const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
+const claimSelect = `select c.token, c.project, c.tree, c.launch_tree, c.issue, c.role, c.generation, c.tree_epoch, c.issue_epoch, c.holds_gate, c.session,
 	c.session_file, c.locator, c.working_repository, c.working_repository_incarnation,
 	c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.held_for, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -374,6 +374,11 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) erro
 	return nil
 }
 
+// roleHoldingStates and roleHoldingSources are the pairs of claims.state and claims.suspended_by
+// that hold a claim's role (supervise.RoleHoldingPairs), as the text arrays upsertClaim's crossings
+// read.
+var roleHoldingStates, roleHoldingSources = supervise.RoleHoldingPairs()
+
 // storedClaim is what the row of a claim holds before a write replaces it (lockedClaim): its state,
 // the source of its suspension and its session, all empty for a claim the store does not hold yet.
 // unlisted is whether the write is the first to list the claim's issue in the state route at all:
@@ -396,7 +401,7 @@ type storedClaim struct {
 // whether the write lists c's issue first (storedClaim.unlisted): whether the issue has a record of
 // state's project, and, only for an issue that has none, whether any claim of c's project names it.
 // That second read is rare, since almost every claim write is of a claim the store already holds,
-// and the claims table has no index on the issue.
+// and it reads the claims of the issue through their index (claims_issue, 20261126035722).
 func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *statePublication) (storedClaim, error) {
 	var stored storedClaim
 	var storedState, by, session *string
@@ -457,6 +462,15 @@ func lockedClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim, state *state
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// published_since and unpublished_since are taken from SQL the same way, each on its own crossing
+// alone: the write that moves the claim into a state and a suspension source that hold its role
+// (supervise.HoldsRole, the rule the daemon publishes its session as its role's holder by)
+// stamps published_since, an insert that holds it included, and the write that moves it out of
+// them stamps unpublished_since. Every other write leaves both where they stand, the idle
+// release's suspension, a pause's stop and the launch that resumes the session they kept among
+// them, so a session's write in Dispatch can be judged by the holders Dispatch was shown when it
+// recorded the write (record.Store.RoleHoldersAt).
 func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -525,6 +539,9 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 	if delivered == nil {
 		delivered = []int64{}
 	}
+	if c.IssueEpoch > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: issue epoch %d does not fit a bigint", c.Token, c.IssueEpoch)
+	}
 	repository, repositoryRound := roundRepositoryColumns(c)
 	working, workingIncarnation := workingRepositoryColumns(c)
 	_, err = tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
@@ -542,13 +559,15 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_repository, update_repository_round,
 		working_repository, working_repository_incarnation,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest, session_run, held_for,
-		retired_at_write_mark)
+		retired_at_write_mark, launch_tree, issue_epoch, holds_gate, published_since)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
-		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
+		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, $70, $71, $72,
+		case when ($11, $26) in (select * from unnest($73::text[], $74::text[])) then now() end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
+		launch_tree = excluded.launch_tree, issue_epoch = excluded.issue_epoch, holds_gate = excluded.holds_gate,
 		session = excluded.session, session_file = excluded.session_file,
 		locator = excluded.locator, state = excluded.state, failure = excluded.failure,
 		pod_end = excluded.pod_end,
@@ -561,6 +580,14 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		-- retired and left alone by every other write (this function's doc).
 		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
 			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
+		-- The times the claim last began and stopped holding its role, each taken on its own
+		-- crossing alone (this function's doc).
+		published_since = case when (excluded.state, excluded.suspended_by) in (select * from unnest($73::text[], $74::text[]))
+				and (claims.state, claims.suspended_by) not in (select * from unnest($73::text[], $74::text[]))
+			then now() else claims.published_since end,
+		unpublished_since = case when (excluded.state, excluded.suspended_by) not in (select * from unnest($73::text[], $74::text[]))
+				and (claims.state, claims.suspended_by) in (select * from unnest($73::text[], $74::text[]))
+			then now() else claims.unpublished_since end,
 		serving_generation = excluded.serving_generation,
 		given_entry = excluded.given_entry,
 		served_entry = excluded.served_entry,
@@ -648,6 +675,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt), sessionRun,
 		heldFor(c),
+		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate, roleHoldingStates, roleHoldingSources,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -726,22 +754,6 @@ func (s *Store) StoredClaimMayRun(ctx context.Context, token claim.Token, row in
 	return may, nil
 }
 
-// StoredClaimMayRunIn is whether the stored claim of token stands in tree and may still hold a
-// process. Its caller can wait for the supervising machine rather than treating no machine as no
-// process. Unlike StoredClaimMayRun, it has no start-row term: no start of another tree runs
-// against a claim still standing in this tree.
-func (s *Store) StoredClaimMayRunIn(ctx context.Context, token claim.Token, tree string) (bool, error) {
-	var may bool
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select exists (select 1 from claims where token = $1 and tree = $2 and `+claimMayRun+`)`,
-			string(token), tree).Scan(&may)
-	})
-	if err != nil {
-		return false, fmt.Errorf("read stored claim %s in tree %s: %w", token, tree, err)
-	}
-	return may, nil
-}
-
 // ClaimUnretired is whether the store holds token's claim in any state but retired: the claims the
 // daemon's orphan sweep knows (knownClaims), read at the moment the runtime decides rather than when
 // the sweep read its claims. A token no claim holds is not unretired.
@@ -757,10 +769,6 @@ func (s *Store) ClaimUnretired(ctx context.Context, token claim.Token) (bool, er
 	return unretired, nil
 }
 
-// runsNothingStates is supervise's runs-nothing set (supervise.RunsNothingStates), as the text
-// array a query binds: the store names no state of that set itself.
-func runsNothingStates() []string { return claimStateNames(supervise.RunsNothingStates()) }
-
 // goneStates is supervise's gone set (supervise.GoneStates: suspended, failed, retired), as the
 // text array a query binds: the store names no state of that set itself.
 func goneStates() []string { return claimStateNames(supervise.GoneStates()) }
@@ -772,27 +780,6 @@ func claimStateNames(states []supervise.ClaimState) []string {
 		names[i] = string(state)
 	}
 	return names
-}
-
-// IssueRunsElsewhere names, as token:state, a stored claim of issue whose tree is not tree and that
-// does not run nothing: a claim in a state with a process of its own, running or coming up
-// (supervise.RunsNothingStates), or one that still records a locator. It answers "" when none
-// does. A child carried into a tree of its own keeps its Sandbox, labelled with the tree it left,
-// until a launch of its new tree relabels it: while a claim of the old tree runs there, the relabel
-// would end it.
-func (s *Store) IssueRunsElsewhere(ctx context.Context, project, issue, tree string) (string, error) {
-	var running string
-	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `select token || ':' || state from claims where project = $1 and issue = $2 and tree <> $3
-			and not (state = any($4) and locator is null) order by token limit 1`, project, issue, tree, runsNothingStates()).Scan(&running)
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read the claims of issue %s outside tree %s: %w", issue, tree, err)
-	}
-	return running, nil
 }
 
 // HasLegacySandboxClaims is a raw JSON census used before Claims unmarshals locators. A legacy
@@ -846,7 +833,7 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 // row is itself the credit of what the prompt its turn answers carried; final, the write folds that
 // credit into the told rows (design_news_told.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
-	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error { return putDelivery(ctx, tx, token, d, s.gateRootsOf()) })
 }
 
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
@@ -858,10 +845,11 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // claim's previous delivery held it under; the write that records the confirmation tells them.
 // The news a prompt of it carried (Delivery.Carried) is the delivery's credit while the row holds
 // a confirmation, which the readers of what an audience took read from the row; the write of a
-// final credit (Delivery.Ran) folds it into the told rows (settleDesignNews).
+// final credit (Delivery.Ran) folds it into the told rows (settleDesignNews), each item under the
+// gate root roots reads for its issue in this transaction (GateRoots).
 // All of it is in the caller's transaction, so no row is ever held by a delivery the store does
 // not hold, and no confirmation commits without telling what it confirmed.
-func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
+func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery, roots GateRoots) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
@@ -876,7 +864,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 			return err
 		}
 	}
-	if err := settleDesignNews(ctx, tx, token, d, carried); err != nil {
+	if err := settleDesignNews(ctx, tx, token, d, carried, roots); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
@@ -935,7 +923,7 @@ func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervis
 	if err := s.putClaim(ctx, tx, c); err != nil {
 		return err
 	}
-	return putDelivery(ctx, tx, c.Token, d)
+	return putDelivery(ctx, tx, c.Token, d, s.gateRootsOf())
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
@@ -1001,6 +989,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		cause, pendingCause, held   string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
+		issueEpoch                  int64
 		agentResumeGeneration       int64
 		locator                     []byte
 		working                     *string
@@ -1049,7 +1038,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
 	)
-	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
+	err := row.Scan(&token, &c.Project, &c.Tree, &c.LaunchTree, &c.Issue, &role, &generation, &treeEpoch, &issueEpoch, &c.HoldsGate, &c.Session,
 		&c.SessionFile, &locator, &working, &workingIncarnation,
 		&state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &held, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
@@ -1086,7 +1075,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.Token, c.Role, c.State, c.SuspendedBy = claim.Token(token), claim.Role(role), supervise.ClaimState(state), supervise.SuspendSource(by)
 	c.FailureCause, c.PendingCause = supervise.DecodeCause(cause, held), supervise.DecodeCause(pendingCause, held)
 	c.FailedAt = orZero(failedAt)
-	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.Generation, c.TreeEpoch, c.IssueEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(issueEpoch), uint64(servingGeneration)
 	c.AgentResumeGeneration = uint64(agentResumeGeneration)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued

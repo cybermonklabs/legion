@@ -180,7 +180,8 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 			var queued []queuedRow
 			for _, project := range []string{"LEGION", "OTHER"} {
 				for _, q := range rowsOf(project) {
-					row, err := record.NewOutboxRow(project+"-208", q.payload, queuedAt)
+					// As this release queues it: a fenced kind names its issue's run and phase entry (record.Fenced).
+					row, err := record.NewOutboxRow(project+"-208", record.Fenced(q.payload, record.FirstFence), queuedAt)
 					if err != nil {
 						t.Fatalf("queue %s of %s: %v", q.name, project, err)
 					}

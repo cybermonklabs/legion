@@ -83,7 +83,6 @@ type ObservedInputs struct {
 	Cap     int
 	Steps   []record.DesignStep
 	Claims  []supervise.Claim
-	Now     time.Time
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -97,16 +96,35 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		return api.State{}, err
 	}
 	knownIssues := make(map[string]struct{}, len(issues))
+	// Everything admission is judged from is judged over this project's own records. The state
+	// lists every project's issues, for the sake of a claim on an issue of another, while the
+	// cap, the waiting line and the tick read the project's own live records alone
+	// (record.Store.LiveIssues, admit's pass): another project's queued root, and its root a
+	// person has answered, would otherwise stand in this project's `admission.waiting`, and
+	// whatever either waits on in its `blocked`, as work this daemon neither runs nor admits.
+	// They reach one read at all because the issues table is one table shared by every daemon of
+	// the database (the issue slots migration, "shared by every daemon of the database").
+	own := make([]record.Issue, 0, len(issues))
 	keys := make([]string, 0, len(issues))
-	// lingering is every tree whose root lingers, or closed after it lingered: only a root carries a
-	// linger deadline, and re-admission clears it.
-	lingering := make(map[string]bool)
+	ownKeys := make([]string, 0, len(issues))
 	for _, issue := range issues {
 		knownIssues[issue.Key] = struct{}{}
 		keys = append(keys, issue.Key)
-		if issue.Lingers() {
-			lingering[issue.Key] = true
+		if issue.Project == in.Project {
+			own = append(own, issue)
+			ownKeys = append(ownKeys, issue.Key)
 		}
+	}
+	// The pass's one reading of the Dispatch chains of the project (record.ReadChains over the
+	// project's own records, as the admission pass's facts read them), read before any view is
+	// built: each issue's `tree` is the tree the chain names for it (record.Chains.StateTree, R22
+	// of dispatch://INFRA-3320), and whether it holds its own gate (record.Chains.HoldsOwnGate)
+	// decides the handshake it carries and the gated steps it answers. Nothing of the stored tree is
+	// read. The gates and the rest of the facts the line is judged from are the admission
+	// judgement's own (blockers.JudgeAdmission, below).
+	chains, err := record.ReadChains(ctx, in.Tx, in.Store, in.Project, ownKeys)
+	if err != nil {
+		return api.State{}, err
 	}
 	// Every experiment answer the record holds for this project's issues, by issue key, in one
 	// statement (record.Store.Assignments). The database is shared by every project's daemon, so
@@ -229,7 +247,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// and for the observed view of the state (Observe) alike, by the one definition both read
 	// (listIssues), and put on both views' issues by one function (putListed): the two views cannot
 	// disagree about what Dispatch observes.
-	listed, unrecorded := listIssues(issues, phases, slots, in.Claims)
+	listed, unrecorded := listIssues(issues, chains, phases, slots, in.Claims)
 
 	// The wakes the pacing holds, as the state names them beside the claim views that name
 	// their own: one list, set here, so the two readings come from one place.
@@ -244,15 +262,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			Status:        issue.Status,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			// When this root's linger runs out, nil for every issue that is not a lingering
-			// root: it is what a reader of a held issue served no reason reads the suppression
-			// of that reason by (api.Issue.LingerUntil).
-			LingerUntil: issue.LingerUntil,
-			// The parent chain a labelled root is held under, empty for every other record: the
-			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
-			Ancestry: issue.Ancestry,
-			Priority: &priority,
-			Workers:  map[claim.Role]api.PhaseView{},
+			Priority:      &priority,
+			Workers:       map[claim.Role]api.PhaseView{},
 		}
 		// The priority Dispatch resolves the issue to, absent where Dispatch sent none
 		// (api.Issue.ResolvedPriority), and the issue it resolves it from, empty where it is the
@@ -293,21 +304,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// roles ran with, and nothing redraws it. The three memory fields are the answer of the
 		// experiment named `memory` spelled out for the readers that knew it before any
 		// experiment was declared (contract 49).
-		view.Assignments = assignmentViews(assignments, issue.Key, issue.Tree, place)
+		view.Assignments = assignmentViews(assignments, issue.Key, place)
 		view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt = memoryOf(view.Assignments)
-		// An escalation waits on the controller only while its tree runs. A held issue of a tree
-		// that lingers or closed keeps the reason on its record, and shows it again once the tree is
-		// re-admitted, which leaves the issue held.
-		//
-		// The phase the hold took the issue out of is shown whatever the tree is doing, which is
-		// the deliberate difference: the reason is a decision to act on and a lingering tree has
-		// none, while the phase is a fact of the record, so every issue the body shows at
-		// `phase: held` names the phase that stopped.
+		// A held issue shows the phase the hold took it out of and the reason it carries: both
+		// are facts of the issue's own record (R17, R20 of dispatch://INFRA-3320).
 		if issue.Hold != nil {
 			view.HeldFrom = string(issue.Hold.From)
-			if !lingering[issue.Tree] {
-				view.HoldReason = string(issue.Hold.Reason)
-			}
+			view.HoldReason = string(issue.Hold.Reason)
 		}
 
 		rows := phases[issue.Key]
@@ -340,7 +343,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// generation alone (handshakeTimes), so a re-admitted root carries neither until its new
 		// architect entry is queued.
 		handshakeRole := role
-		if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		if chains.HoldsOwnGate(issue.Key) {
 			handshakeRole = claim.RoleArchitect
 		}
 		if handshakeRole != "" {
@@ -377,16 +380,17 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 				ApprovedVersion: gate.ApprovedVersion,
 			}
 		}
-		// The tree's gate as this root stands in it, one entry for each step the tree is gated on
-		// (record.TreeSteps): each step the deployment gates, and criteria where the root's
-		// architect registered its Verification document beside a deployment that gates spec and
-		// not criteria, since that row holds the tree as the spec's does. Only a root holds gate
-		// rows — a child's work is held at its root's steps — so a child answers no entry at all
-		// rather than one unregistered step for each the deployment gates. The entries are the
-		// tree's steps and not the rows: a row of a step the deployment no longer gates is kept in
-		// the record, where a deployment that gates it again reads its true state, and is in no
-		// entry here, since it holds nothing (classify.DesignGatesOpen).
-		if issue.Key == issue.Tree {
+		// The tree's gate as this issue stands in it, one entry for each step its tree is gated
+		// on (record.TreeSteps): each step the deployment gates, and criteria where its architect
+		// registered its Verification document beside a deployment that gates spec and not
+		// criteria, since that row holds the tree as the spec's does. Only an issue that holds its
+		// own gate holds gate rows — the work under it is held at its steps — so an issue under a
+		// gate holder answers no entry at all rather than one unregistered step for each the
+		// deployment gates. The entries are the tree's steps and not the rows: a row of a step the
+		// deployment no longer gates is kept in the record, where a deployment that gates it again
+		// reads its true state, and is in no entry here, since it holds nothing
+		// (classify.DesignGatesOpen).
+		if chains.HoldsOwnGate(issue.Key) {
 			view.GatedSteps = api.GatedStepViewsOf(record.TreeSteps(in.Steps, gates), gates)
 		}
 		if check, ok := checks[issue.Key]; ok {
@@ -410,32 +414,21 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		projected.Issues[key] = view
 	}
 
-	// Each issue's own reading of admission — its place in the waiting line and why it is not
-	// working now — is read over this project's own records. The state lists every project's
-	// issues, for the sake of a claim on an issue of another, while admission reads the project's
-	// own records alone: another project's queued root, and its root a person has answered, would
-	// otherwise read as work this daemon neither runs nor admits. They reach one read at all
-	// because the issues table is one table shared by every daemon of the database (the issue
-	// slots migration, "shared by every daemon of the database").
-	own := make([]record.Issue, 0, len(issues))
-	for _, issue := range issues {
-		if issue.Project == in.Project {
-			own = append(own, issue)
-		}
-	}
 	// The admission block is the one judgement of it (blockers.JudgeAdmission, which builds it with
-	// blockers.AdmissionOf), read in this transaction's snapshot like every other fact here.
-	// The line it judged, the mirror rows it judged the links from and the facts it read are what
-	// each issue's view below is read from, so a member's place and every issue's `why` come from
-	// the judgement whose lists the block serves. The block carries the P0 holders as well, the
-	// count admission's cap readers make (record.HoldersOf), so the number the state gives is the
-	// number the pass admitted under.
-	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
+	// blockers.AdmissionOf), read in this transaction's snapshot like every other fact here, over
+	// this project's own live records alone, as the admission pass judges it. The line it judged,
+	// the mirror rows it judged the links from and the facts it read are what each issue's view
+	// below is read from, so a member's place and every issue's `why` come from the judgement whose
+	// lists the block serves. The block carries the P0 holders as well, the count admission's cap
+	// readers make (record.HoldersOf), so the number the state gives is the number the pass
+	// admitted under, and the roots in Legion's work on the Dispatch chain (R22 of
+	// dispatch://INFRA-3320, record.Chains.IsRoot), read from the judgement's chains.
+	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap)
 	if err != nil {
 		return api.State{}, err
 	}
 	projected.Admission = api.AdmissionOf(judged.Block)
-	rows, facts, line, trees := judged.Rows, judged.Facts, judged.Line, judged.Live
+	rows, line, facts := judged.Rows, judged.Line, judged.Facts
 	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
@@ -475,13 +468,13 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			RootRank:  entry.RootRank,
 			Priority:  &placed,
 		}
-		// The two ranks and the root's key are what placed a member of the starting part, and
-		// that part alone carries them: a member of the returned part was placed by the moment
-		// its work came back and answers neither. The entry carries its tree root's rank, the
-		// one fact it is placed by that its own record does not hold; the other two are read
-		// off that record, which is the entry's own issue (record.LineEntry.RootRank).
+		// The two ranks and the top issue's key are what placed a member of the starting part,
+		// and that part alone carries them: a member of the returned part was placed by the
+		// moment its work came back and answers neither. The entry carries its top issue's key
+		// and rank, the facts it is placed by that its own record does not hold
+		// (record.LineEntry.RootKey, RootRank); its own rank is read off its own issue.
 		if entry.Part == record.PartStarting {
-			view.WaitingLine.OwnRank, view.WaitingLine.RootKey = entry.Issue.Rank, entry.Issue.Tree
+			view.WaitingLine.OwnRank, view.WaitingLine.RootKey = entry.Issue.Rank, entry.RootKey
 		}
 		// The moment the work came back is on a member of the returned part alone, and even
 		// there the record may not know it — a gate approved by a registration that read no
@@ -514,23 +507,23 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// all; where they part and why is written once, with the arm that parts them
 	// (atWorkInSlotlessPhase).
 	//
-	// The running roots are the term that says an issue in accepting, retro or merging is at work: it holds no
-	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
-	// on whether its tree runs at all (whyStates, atWorkInSlotlessPhase). They are read from the
-	// records and the facts this pass already holds, so the reading costs no query, and they
-	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
-	// wider than running, and a parked root's tree is neither.
-	running := record.RunningRoots(own, facts)
+	// The running gate roots are the term that says an issue in accepting, retro or merging is at
+	// work: it holds no slot since dispatch://INFRA-2560, so no list of the three places it and the
+	// answer turns on whether its gate root runs at all (whyStates, atWorkInSlotlessPhase). They
+	// are read from the records, the slot rows and the facts this pass already holds, so the
+	// reading costs no query.
+	running := record.RunningRoots(own, slots, facts)
 	whyStates(&projected, own, running, in.Stranded, rows, facts)
-	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read
-	// from the same running roots, so the state serves the daemon's own rule (record.TreeRuns)
-	// rather than leaving a reader to rebuild it from the fields beside it, which decide it in no
-	// case alone: a root a re-admission left waiting in the line runs nothing whatever its
+	// Every issue of this project's own records that holds its own gate carries whether it runs
+	// (`treeRuns`), read from the same running gate roots, so the state serves the daemon's own
+	// rule (record.TreeRuns) rather than leaving a reader to rebuild it from the fields beside it,
+	// which decide it in no case alone: a root waiting in the line for a slot it does not hold, for
+	// its first start or among the work that came back after a stop, runs nothing whatever its
 	// architect's claim reads, and a root a person answered runs while it waits there for its
-	// resume (dispatch://INFRA-3320, R4). Another project's root carries none, since this pass
-	// reads the lifecycles of this daemon's project alone.
+	// resume (dispatch://INFRA-3320, R4). Another project's issue carries none, since this pass
+	// reads the chains of this daemon's project alone.
 	for _, issue := range own {
-		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+		if !chains.HoldsOwnGate(issue.Key) {
 			continue
 		}
 		_, runs := running[issue.Key]
@@ -540,23 +533,22 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	}
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
-	// it has been still at the instant the rest of this state is measured at. The pair is the
-	// tree's, so every issue of one tree carries the same two values — a child in accepting,
-	// retro or merging, which holds no slot, and a done child recorded under the tree among
-	// them, since what has stopped is the tree and not the issue a reader happens to hold. A
-	// tree that is no longer live is measured for nobody: its root is in no `admission.trees`
-	// entry, there is nothing of the deployment's left to wait on, and each of its issues carries
-	// neither key.
+	// it has been still at the instant the rest of this state is measured at. A tree is a gate
+	// root in Legion's work and the issues in work whose gate root it is (record.TreeMember), so
+	// every issue of one tree carries the same two values — an issue in accepting, retro or
+	// merging, which holds no slot, among them, since what has stopped is the tree and not the
+	// issue a reader happens to hold. An issue that belongs to no live tree carries neither key.
 	//
-	// The measure is read once for the whole state (quietTrees), from the records and the claims
-	// this pass already holds, and a live root is always one of its trees whatever its own
-	// status says (record.QuietTrees), so the lookup below cannot miss.
-	quiet := quietTrees(own, in.Claims, in.Now)
+	// The measure is read once for the whole state (quietTrees), from the records, the chains
+	// and the claims this pass already holds, and every member's gate root is one of its trees,
+	// so the lookup below cannot miss.
+	quiet := quietTrees(chains, own, in.Claims, in.Now)
 	for _, issue := range own {
-		if _, live := trees[issue.Tree]; !live {
+		root, stands := record.TreeMember(chains, issue)
+		if !stands {
 			continue
 		}
-		measure := quiet[issue.Tree]
+		measure := quiet[root]
 		movedAt, hours := measure.MovedAt, measure.Quiet.Hours()
 		view := projected.Issues[issue.Key]
 		view.TreeMovedAt, view.QuietHours = &movedAt, &hours
@@ -595,12 +587,24 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 // the full state (Project). The admission block is the full state's own: the same judgement
 // (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order. The issues are
 // every issue the full state lists, each with the members the definition of the full state's views
-// decides (listIssues), put on by the function that puts them on the full state's issues
-// (putListed), and each claim view as api.ClaimViewOf builds it. Every other member of an issue is
-// empty. It reads the issues, the project's phase rows in one statement, the slots and what the
-// admission judgement reads, and it makes no statement for any one issue.
+// decides (listIssues), its tree read from the same reading of the Dispatch chains as the full
+// state's (record.ReadChains over the project's own records, record.Chains.StateTree), put on
+// by the function that puts them on the full state's issues (putListed), and each claim view as
+// api.ClaimViewOf builds it. Every other member of an issue is empty. It reads the issues, the
+// project's phase rows in one statement, the slots, the chains and what the admission judgement
+// reads, and it makes no statement for any one issue.
 func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
 	issues, err := in.Store.Issues(ctx, in.Tx)
+	if err != nil {
+		return api.State{}, err
+	}
+	ownKeys := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Project == in.Project {
+			ownKeys = append(ownKeys, issue.Key)
+		}
+	}
+	chains, err := record.ReadChains(ctx, in.Tx, in.Store, in.Project, ownKeys)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -612,11 +616,11 @@ func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
-	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
+	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap)
 	if err != nil {
 		return api.State{}, err
 	}
-	listed, _ := listIssues(issues, phases, slots, in.Claims)
+	listed, _ := listIssues(issues, chains, phases, slots, in.Claims)
 	views := make(map[claim.Token]api.ClaimView, len(in.Claims))
 	for _, current := range in.Claims {
 		views[current.Token] = api.ClaimViewOf(current)
@@ -631,12 +635,15 @@ func Observe(ctx context.Context, in ObservedInputs) (api.State, error) {
 }
 
 // listedIssue is one issue the state lists, as both views of the state show what Dispatch observes
-// of it (listIssues): its own record's observation, the slot it holds, and the claims its
-// `architect` and its `workers` show.
+// of it (listIssues): its own record's observation, the tree the Dispatch chain names for it, the
+// slot it holds, and the claims its `architect` and its `workers` show.
 type listedIssue struct {
 	// observed is what Dispatch observes of the issue's own record (record.ObservationOf), and for
 	// an issue the workflow does not record its phase alone, api.Unrecorded.
 	observed record.IssueObservation
+	// tree is the tree the Dispatch chain names for a recorded issue (record.Chains.StateTree, R22
+	// of dispatch://INFRA-3320), "" for an issue the workflow does not record.
+	tree string
 	// slot is the admission slot the issue holds, nil where it holds none. Only an issue the record
 	// holds is given one.
 	slot *record.Slot
@@ -657,13 +664,15 @@ type shownWorker struct {
 
 // listIssues is the one definition of what both views of the state show of each issue Dispatch
 // observes (Project, Observe): every issue of issues, by key, and every issue a claim names that
-// issues does not hold, whose keys unrecorded lists in the order of their first claim. phases is
-// each issue's phases rows (record.Store.AllPhases), slots every slot the store holds and claims the
-// project's claims, all read in the caller's one snapshot.
+// issues does not hold, whose keys unrecorded lists in the order of their first claim. chains is
+// the reading of the project's Dispatch chains each view takes over the project's own records
+// (record.ReadChains), phases each issue's phases rows (record.Store.AllPhases), slots every
+// slot the store holds and claims the project's claims, all read in the caller's one snapshot.
 //
 // The rule, in the order it is applied:
 //
-//   - an issue's own record decides its phase, its tree and its wait (record.ObservationOf);
+//   - an issue's own record decides its phase and its wait (record.ObservationOf), and the chain
+//     its tree (record.Chains.StateTree), never the tree its record stores;
 //   - an issue the record holds shows the slot it holds, and a slot of a key the record does not
 //     hold is shown nowhere;
 //   - a phases row whose claim token names a claim of claims shows that claim: the architect's row
@@ -677,14 +686,14 @@ type shownWorker struct {
 //     whole document at every client;
 //   - a claim on an issue the record does not hold lists that issue at api.Unrecorded, with no
 //     tree, no slot and no wait.
-func listIssues(issues []record.Issue, phases map[string][]record.PhaseRow, slots []record.Slot, claims []supervise.Claim) (map[string]listedIssue, []string) {
+func listIssues(issues []record.Issue, chains *record.Chains, phases map[string][]record.PhaseRow, slots []record.Slot, claims []supervise.Claim) (map[string]listedIssue, []string) {
 	byToken := make(map[claim.Token]*supervise.Claim, len(claims))
 	for i := range claims {
 		byToken[claims[i].Token] = &claims[i]
 	}
 	listed := make(map[string]listedIssue, len(issues))
 	for _, issue := range issues {
-		entry := listedIssue{observed: record.ObservationOf(issue)}
+		entry := listedIssue{observed: record.ObservationOf(issue), tree: chains.StateTree(issue.Key)}
 		rows := phases[issue.Key]
 		for i := range rows {
 			row := &rows[i]
@@ -740,14 +749,14 @@ func (l *listedIssue) showWorker(role claim.Role, worker shownWorker) {
 }
 
 // putListed puts onto view, an issue of either view of the state (Project, Observe), what
-// listIssues decided of it: the phase, the tree and the wait its own record decides, the slot it
-// holds, and the claims its `architect` and its `workers` show (putClaims). It is the one place
-// those members are built from the records, so each member the observed view reads (api's
-// observedOf) is the full view's.
+// listIssues decided of it: the phase and the wait its own record decides, the tree its chain
+// names, the slot it holds, and the claims its `architect` and its `workers` show (putClaims). It
+// is the one place those members are built from the records, so each member the observed view
+// reads (api's observedOf) is the full view's.
 func (l listedIssue) putListed(view *api.Issue, views map[claim.Token]api.ClaimView) {
 	view.Phase, view.WaitingOn = l.observed.Phase, l.observed.WaitingOn
-	if l.observed.Tree != nil {
-		view.Tree = *l.observed.Tree
+	if l.tree != "" {
+		view.Tree = l.tree
 	}
 	if l.slot != nil {
 		view.Slot = &api.SlotView{Index: l.slot.Index, AdmittedAt: l.slot.AdmittedAt}
@@ -833,9 +842,10 @@ func firstRunes(text string, n int) string {
 	return text
 }
 
-// assignmentViews is every experiment answer that applies to the issue key, whose tree's root is
-// tree, in the order the project's file declares the experiments: its tree's tree-unit rows,
-// which every issue of the tree runs under, and its own issue-unit rows. An issue no answer
+// assignmentViews is every experiment answer the issue key holds itself, in the order the
+// project's file declares the experiments: its own rows, of either unit, which is where each
+// issue keeps the assignments it runs under (R17 of dispatch://INFRA-3320: a tree-unit draw stays
+// as it was drawn, and an issue takes its own copy at its first start). An issue no answer
 // applies to gets nil, which leaves the key off the wire.
 //
 // place is one experiment's place in that declared order, and the length of it for an
@@ -844,21 +854,8 @@ func firstRunes(text string, n int) string {
 // the record keys its rows by. The order is put on here rather than on the whole body at the
 // route, because here the rows are built once and sorted once; the record cannot put it on at
 // all, since the file's order is the project's rather than the store's.
-func assignmentViews(assignments map[string][]record.Assignment, key, tree string, place func(string) int) []api.AssignmentView {
+func assignmentViews(assignments map[string][]record.Assignment, key string, place func(string) int) []api.AssignmentView {
 	rows := assignments[key]
-	if key != tree {
-		rows = make([]record.Assignment, 0, len(assignments[tree])+len(rows))
-		for _, row := range assignments[tree] {
-			if row.Unit == string(config.ExperimentTree) {
-				rows = append(rows, row)
-			}
-		}
-		for _, row := range assignments[key] {
-			if row.Unit == string(config.ExperimentIssue) {
-				rows = append(rows, row)
-			}
-		}
-	}
 	if len(rows) == 0 {
 		return nil
 	}
@@ -928,32 +925,24 @@ func memoryOf(views []api.AssignmentView) (string, string, *time.Time) {
 	return "", "", nil
 }
 
-// quietTrees is the state's measure of its trees: how long each tree the state's own records
-// name has been still and whether any claim of it is at work (record.QuietTrees). It makes no
-// query of its own. own is the project's records, the same list the waiting line and the live
-// roots are judged from; claims are the claims Project was handed, read in its one snapshot
-// with those records, which carry each agent's state and step times already
-// (record.TreeClaimsOf), so the state never reads the claims a second time; now is the instant
-// the rest of the state is measured at.
+// quietTrees is the state's measure of its trees: how long each gate root of the project and
+// the issues whose gate root it is have been still and whether any claim of them is at work
+// (record.QuietTrees). It makes no query of its own. chains is the pass's reading of Dispatch's
+// chains, own is the project's records, the same list the waiting line is judged from; claims are
+// the claims Project was handed, read in its one snapshot with those records, which carry each
+// agent's state and step times already (record.TreeClaimsOf), so the state never reads the claims
+// a second time; now is the instant the rest of the state is measured at.
 //
-// Where it is called from: Project, just past the live roots the measure answers for, which
-// writes each live tree's measure onto every issue of that tree (`treeMovedAt`, `quietHours`).
-// It stays a function of its own rather than a line of Project because its three arguments are
-// the three facts the measure may read and no others: a later reader of the same question takes
-// it from here and cannot quietly read a fourth. The admission pass measures the same thing
-// with the same statement, over the claims its own read gives it (admit's quietTrees), so the
-// two read one statement of the measure and neither keeps a rule of its own.
-//
-// One statement is what they share, and not one answer: the records each is handed differ.
-// This one is given `own`, every record of the project the state holds, a done one included,
-// while the pass is given record.Store.LiveIssues, which leaves out a done record holding no
-// slot. A root is a member of its tree whatever its own status says (record.TreeMember), so a
-// tree whose root is done is measured here from that root and is no tree of the pass's at all,
-// and the two can read one tree from different members. Nothing rests on their agreeing: the
-// state reports what it measures, and the pass tells the controller only of the trees it runs
-// (record.RunningRoots), which are trees whose records the live read holds.
-func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
-	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
+// Where it is called from: Project, which writes each tree's measure onto every issue of that tree
+// (`treeMovedAt`, `quietHours`). It stays a function of its own rather than a line of Project
+// because its four arguments are the four facts the measure may read and no others: a later
+// reader of the same question takes it from here and cannot quietly read a fifth. The admission
+// pass measures the same thing with the same statement, over the claims its own read gives it
+// (admit's quietTrees), so the two read one statement of the measure and neither keeps a rule of
+// its own. Nothing rests on their agreeing: the state reports what it measures, and the pass
+// tells the controller only of the gate roots it runs (record.RunningRoots).
+func quietTrees(chains *record.Chains, own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
+	return record.QuietTrees(chains, own, record.TreeClaimsOf(claims), now)
 }
 
 // issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's

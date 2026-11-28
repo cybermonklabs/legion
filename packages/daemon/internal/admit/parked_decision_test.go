@@ -26,12 +26,11 @@ import (
 // scrum is a session outside every tree; alice, the person, is awaiting_person_answers_test.go's.
 var scrum = dispatch.Actor{Kind: "session", ID: "scrum"}
 
-// parkedRoot records LEGION-ROOT as a root a person parked: out of the workflow, lingering.
+// parkedRoot records LEGION-ROOT as a root a person parked: out of the workflow.
 func parkedRoot(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	until := fixedNow.Add(72 * time.Hour)
 	putIssue(t, pool, record.Issue{Key: "LEGION-ROOT", Tree: "LEGION-ROOT", Project: testProject, Title: "root", Phase: phase.Done,
-		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, LingerUntil: &until, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+		Generation: 1, Status: "backlog", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 }
 
 // parkedDecisionNotices is every parked-decision controller notice in the outbox, oldest first.
@@ -150,15 +149,17 @@ func TestAPersonsResolutionAndReplyAreRelayed(t *testing.T) {
 	}
 }
 
-// A person's reply on an ask of a parked child goes to the controller on the child's issue, naming
-// the tree's root.
+// A person's reply on an ask of a parked child — one a person moved out of Legion's work under a
+// parked root — goes to the controller on the child's issue, naming the root above it. A child
+// still in work under a parked root is a root of its own whose architect hears it (R15 and R20 of
+// dispatch://INFRA-3320), so the child here is parked itself.
 func TestAPersonsReplyOnAParkedChildNamesItsRoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
 	parkedRoot(t, pool)
 	root := "LEGION-ROOT"
 	putIssue(t, pool, record.Issue{Key: "LEGION-KID", Tree: root, Parent: &root, Project: testProject, Title: "kid", Phase: phase.Planning,
-		Generation: 1, Status: "in_progress", Rank: "B", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
+		Generation: 1, Status: "backlog", Rank: "B", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "dispatch-61",
 		intake.DispatchAskReply{Key: "LEGION-KID", Ask: "ask-9", WaitingOn: "agent", Actor: alice, Comment: "c-9"}, admission.engine, admission); err != nil {
 		t.Fatalf("apply the reply: %v", err)
@@ -220,7 +221,7 @@ func TestARootReadmittedAfterARelayedDecisionStartsItsArchitectNamingIt(t *testi
 		t.Fatalf("the start's kept record %#v, want the one decision it named, at %s", kept, fixedNow)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		if kept, err := record.NewStore().ParkedDecisions(ctx, tx, "LEGION-ROOT"); err != nil || len(kept) != 1 {
+		if kept, err := record.NewStore().ParkedDecisionsOf(ctx, tx, []string{"LEGION-ROOT"}); err != nil || len(kept) != 1 {
 			t.Fatalf("kept after the start %#v, %v; want the decision still kept until the start is delivered", kept, err)
 		}
 	})
@@ -312,7 +313,7 @@ func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 				t.Fatalf("parked-decision notices = %#v, want none: the tree hears the person itself", got)
 			}
 			inTx(t, pool, func(tx pgx.Tx) {
-				kept, err := record.NewStore().ParkedDecisions(ctx, tx, "LEGION-ROOT")
+				kept, err := record.NewStore().ParkedDecisionsOf(ctx, tx, []string{"LEGION-ROOT"})
 				if err != nil || len(kept) != 0 {
 					t.Fatalf("kept %#v, %v; want nothing kept for a root that waits for no slot", kept, err)
 				}
@@ -382,7 +383,7 @@ func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) 
 
 // The start row claims what it names of what the tree is owed, so a row left for its backoff and
 // run again tells the architect each decision once and no pass composes a second telling
-// (workflow.EnqueueNaming, record.Store.ClaimKeptDecisions): the rows it holds are claimed, so
+// (workflow.EnqueueNaming, record.Store.ClaimKeptDecisionsOf): the rows it holds are claimed, so
 // the next pass finds nothing unclaimed to name.
 func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 	ctx := context.Background()
@@ -435,7 +436,7 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 		t.Fatalf("the row's attempts = %d, %v; want the one retry this test made", attempts, err)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		decisions, _, err := record.NewStore().UnclaimedKept(ctx, tx, "LEGION-ROOT")
+		decisions, _, err := record.NewStore().UnclaimedKeptOf(ctx, tx, "LEGION-ROOT", []string{"LEGION-ROOT"})
 		if err != nil || len(decisions) != 0 {
 			t.Fatalf("unclaimed decisions of the tree = %#v, %v; want none: the retried row holds them all", decisions, err)
 		}
@@ -443,7 +444,7 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 }
 
 // putEarlierRootArchitect records the architect claim LEGION-ROOT's close left, which served the
-// generation before, the run record.Store.ArchitectServed reads. The claim token is written here
+// generation before, the run record.Store.ArchitectServedOf reads. The claim token is written here
 // rather than minted (putWorkerClaim), because LEGION-ROOT is no issue key.
 func putEarlierRootArchitect(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()

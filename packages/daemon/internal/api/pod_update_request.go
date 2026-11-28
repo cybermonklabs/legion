@@ -197,3 +197,10 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 		"issue", req.Issue, "round", answer.Round, "opened", answer.Opened, "reasons", answer.Reasons, "status", http.StatusOK)
 	s.writeAnswer(w, r, AnswerPodUpdate, http.StatusOK, answer)
 }
+
+// ownDispatchIssue says whether key is an issue of the daemon's own Dispatch project, by its key's
+// project as intake's decodeDispatchFact reads it (claim.KeyProject). A server given no Dispatch
+// project (a test's) takes every key as its own.
+func (s *server) ownDispatchIssue(key string) bool {
+	return s.dispatchProject == "" || claim.KeyProject(key) == s.dispatchProject
+}

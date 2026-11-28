@@ -126,7 +126,7 @@ func TestWaitingLineReasonIsPrintedUnderTheAdmissionCounts(t *testing.T) {
 	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
 		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 	}
-	want := "1 waiting; 0 live trees; 1 issues\nwaiting line: 1\n  LEGION-12 1 of 1, returned: " + returned + "\n"
+	want := "1 waiting; 0 roots in work; 1 issues\nwaiting line: 1\n  LEGION-12 1 of 1, returned: " + returned + "\n"
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("legion state printed %q, want the block %q under the admission counts", out.String(), want)
 	}

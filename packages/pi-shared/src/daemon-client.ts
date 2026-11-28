@@ -51,6 +51,7 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionStatusCallResponse,
   LegionTaskStopRequest,
   LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
@@ -180,9 +181,13 @@ export interface LegionDaemonClient {
   readonly handoffComplete: (
     input: z.input<typeof LegionHandoffCompleteRequest>
   ) => Promise<z.output<typeof LegionHandoffCompleteResponse>>;
+  /** The controller's `set_status`: Dispatch's status of `issue` to `todo`, `backlog` or `icebox`,
+   * with the `children` argument a `backlog` or `icebox` takes and the `parent` argument a `todo`
+   * takes where Dispatch's parent rule asks for one (contract 253). The answer names each status
+   * write the call queued. */
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
-  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  ) => Promise<z.output<typeof LegionStatusCallResponse>>;
   /** The controller's `fresh_session`: the agent on `role` of `issue` leaves its recorded session
    * behind and starts again in a new one, the effect
    * `legion claims retry --fresh-session` runs for an operator. The answer comes once the start is
@@ -198,9 +203,10 @@ export interface LegionDaemonClient {
   readonly freshSession: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;
-  /** The root architect's `register_gate`: its document for a design-gate step at a version and,
-   * on a basis, the ancestor's document id (`basisArtifactId`), its `basisVersion` and the
-   * architect's `reason` (entry 20261125161152 (gate-basis)), which the daemon takes together or not at all. */
+  /** The `register_gate` of the architect of an issue that holds its own gate: its document for a
+   * design-gate step at a version and, on a basis, the ancestor's document id (`basisArtifactId`),
+   * its `basisVersion` and the architect's `reason` (entry 20261125161152 (gate-basis)), which the
+   * daemon takes together or not at all. */
   readonly gateRegister: (
     input: z.input<typeof LegionGateRegisterRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
@@ -327,9 +333,12 @@ export interface LegionDaemonClient {
   readonly rootClose: (
     input: z.input<typeof LegionRootCloseRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** An architect's `rerun_child`: a todo on an issue under its own, with the `parent` argument
+   * where the todo would put it in work under a parent that is not (contract 253). The answer
+   * names each status write the call queued. */
   readonly childRerun: (
     input: z.input<typeof LegionChildRequest>
-  ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  ) => Promise<z.output<typeof LegionStatusCallResponse>>;
   /** The owner's `register_plan` (contract 219): the plan in one version of a document of the
    * issue, which the daemon reads from Dispatch at that version. The answer is the plan it took;
    * a plan whose content it does not take is refused `PLAN_REFUSED`, every reason it names in the
@@ -874,7 +883,7 @@ export function createLegionDaemonClient(
         input
       ),
     issueStatus: (input) =>
-      post("/legion/v1/issues/status", LegionIssueStatusRequest, LegionEmptyResponse, input),
+      post("/legion/v1/issues/status", LegionIssueStatusRequest, LegionStatusCallResponse, input),
     freshSession: (input) =>
       post(
         "/legion/v1/claims/fresh-session",
@@ -949,7 +958,7 @@ export function createLegionDaemonClient(
     rootClose: (input) =>
       post("/legion/v1/roots/close", LegionRootCloseRequest, LegionEmptyResponse, input),
     childRerun: (input) =>
-      post("/legion/v1/children/rerun", LegionChildRequest, LegionEmptyResponse, input),
+      post("/legion/v1/children/rerun", LegionChildRequest, LegionStatusCallResponse, input),
     planRegister: (input) =>
       post(
         "/legion/v1/plans/register",

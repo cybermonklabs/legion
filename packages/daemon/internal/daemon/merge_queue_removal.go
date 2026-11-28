@@ -199,14 +199,14 @@ type heldMessage struct {
 // m.claimEnded, once the role's claim has failed or retired, since that launch will not hold its
 // role again. A released merger is held by the rule that holds its start
 // (mergerWaitsForTheDesignGate: the design gate, and the news of the approved design it is owed),
-// and a released role of another kind while the root's design gate is closed (designGateClosed):
-// such a role is neither woken nor told, and the row waits, since a role the gate holds may not
-// know the gate closed, and woken by this message it would work against the gate. A role whose
-// session holds it is told at once, gate or none, and m.delivered is logged. The three other
-// answers of the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a
-// holder that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the
-// delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
+// and a released role of another kind while the gate root's design gate is closed
+// (designGateClosed): such a role is neither woken nor told, and the row waits, since a role the
+// gate holds may not know the gate closed, and woken by this message it would work against the
+// gate. A role whose session holds it is told at once, gate or none, and m.delivered is logged.
+// The three other answers of the confirmed publish route keep the ordinary retry, as they do for a
+// hook prompt: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
+// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
+// grant denies (notify.ErrPublishDenied).
 //
 // Each message is for the session of the role's current launch, and the listener's word is the one
 // evidence of who took it: its 200 names the session it stored the message for
@@ -242,10 +242,10 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 			if err := r.mergerWaitsForTheDesignGate(ctx, m.issue, m.role); err != nil {
 				return err
 			}
-		} else if closed, err := r.designGateClosed(ctx, m.issue); err != nil {
+		} else if root, closed, err := r.designGateClosed(ctx, m.issue); err != nil {
 			return err
 		} else if closed {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
+			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, root, m.role)
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
@@ -290,9 +290,10 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 
 // endUndelivered is the end of row, a held message's, undelivered: the test's hook between the read
 // that ends it and the end (beforeUndeliveredEnd), then end, where the message has one (a
-// merge-forward ask's, endMergeForwardAsk), as undelivered to no launch. Both ways a held message
-// ends undelivered take it: the workflow's rule of a merge-forward message (mergeForwardMessage)
-// and a claim that failed or retired (deliverHeld).
+// merge-forward ask's, endMergeForwardAsk), as undelivered to no launch. Every way a held message
+// ends undelivered takes it: the workflow's rule of a merge-forward message (mergeForwardMessage),
+// a claim that failed or retired (deliverHeld), and the fence that refuses a merge-forward ask of
+// an earlier run or phase entry (lateMergeForwardAsk).
 func (r *outbox) endUndelivered(ctx context.Context, row record.OutboxRow, end func(context.Context, bool, uint64) error) error {
 	if r.beforeUndeliveredEnd != nil {
 		r.beforeUndeliveredEnd(row)

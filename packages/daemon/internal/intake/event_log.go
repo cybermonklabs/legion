@@ -4,17 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 )
 
 // issueEvent is what walkIssueEvents gives of one issue event of an issue's Dispatch event log:
-// its sequence, its type, the kind of its actor (`user`, `session` or `system`), and the issue's
-// status and labels as the event leaves them.
+// its sequence, its type, the kind of its actor (`user`, `session` or `system`), the session that
+// made it by the decoder's rule (dispatchEvent.actorSession, "" for the daemon's own), Dispatch's
+// time of it (zero where the event carries none), and the issue's status and labels as the event
+// leaves them.
 type issueEvent struct {
 	Seq       int64
 	Type      string
 	ActorKind string
+	Session   string
+	At        time.Time
 	Status    string
 	Labels    []string
 }
@@ -53,7 +58,8 @@ func walkIssueEvents(events []json.RawMessage) iter.Seq2[issueEvent, error] {
 					Err: fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), err)})
 				return
 			}
-			if !yield(issueEvent{Seq: event.Seq, Type: event.Type, ActorKind: event.Actor.Kind, Status: issue.Status, Labels: issue.Labels}, nil) {
+			if !yield(issueEvent{Seq: event.Seq, Type: event.Type, ActorKind: event.Actor.Kind, Session: event.actorSession(), At: event.CreatedAt.UTC(),
+				Status: issue.Status, Labels: issue.Labels}, nil) {
 				return
 			}
 		}

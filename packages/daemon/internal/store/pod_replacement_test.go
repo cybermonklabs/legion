@@ -274,17 +274,18 @@ func awaitLockWait(t *testing.T, st *Store) {
 }
 
 // workspaceTaken is the notice a finish asks for: a workspace-taken notice to rootIssue's
-// architect. It keeps in handed, where it is not nil, the records the finish took.
-func workspaceTaken(t *testing.T, handed *[]PodReplacement) func([]PodReplacement) (*IdleReleaseRow, error) {
+// architect, fenced in the finish's own transaction (record.NewFencedRow), as the daemon's is. It
+// keeps in handed, where it is not nil, the records the finish took.
+func workspaceTaken(t *testing.T, handed *[]PodReplacement) func(context.Context, pgx.Tx, []PodReplacement) (*IdleReleaseRow, error) {
 	t.Helper()
-	row, err := record.NewOutboxRow(rootIssue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect,
-		Reason: "The pod is gone."}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return func(took []PodReplacement) (*IdleReleaseRow, error) {
+	return func(ctx context.Context, tx pgx.Tx, took []PodReplacement) (*IdleReleaseRow, error) {
 		if handed != nil {
 			*handed = took
+		}
+		row, err := record.NewFencedRow(ctx, tx, record.NewStore(), rootIssue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect,
+			Reason: "The pod is gone."}, time.Now())
+		if err != nil {
+			return nil, err
 		}
 		return &IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 	}

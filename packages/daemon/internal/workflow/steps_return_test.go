@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 )
 
 // changesBody is the request for changes the review of these tests makes: the reason the review
@@ -134,7 +135,8 @@ func roleStartsOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role)
 }
 
 // noticesOf is every notice of kind key's outbox holds, oldest first: the rows of key alone, so a
-// notice on another issue is not read as key's.
+// notice on another issue is not read as key's. Each is read without the fence it was queued at
+// (fencetest.Unfenced), as noticesOfKind reads it: a case of the fence reads record.FenceOf.
 func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeKind) []record.Notice {
 	t.Helper()
 	var notices []record.Notice
@@ -144,7 +146,7 @@ func noticesOf(t *testing.T, pool *pgxpool.Pool, key string, kind record.NoticeK
 			t.Fatalf("decode notice row %d of %s: %v", row.id, key, err)
 		}
 		if notice, ok := payload.(record.Notice); ok && notice.Kind == kind {
-			notices = append(notices, notice)
+			notices = append(notices, fencetest.Unfenced(notice).(record.Notice))
 		}
 	}
 	return notices

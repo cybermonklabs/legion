@@ -16,7 +16,7 @@ import (
 // names the real gh where a pane's or a pod's own `gh` is the `legion gh` wrapper in front of it.
 // Kept, the operator commands of scripts/e2e/README.md still run under the guard.
 // LEGION_OWED_TIMING gates the owed route's timed reading on a large tree
-// (TestClaimOwedTimingOnAChainOf1024Issues), which a person runs to read the time the suite does
+// (TestClaimOwedTimingOnATreeOf1024Issues), which a person runs to read the time the suite does
 // not hold. LEGION_TEST_PG_DSN and the four LEGION_E2E_*_APP_* inputs the App lib reads need no
 // entry: fixtureenv's own testInput keeps every LEGION_TEST_ and LEGION_E2E name by prefix.
 var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH", owedTimingEnabled}

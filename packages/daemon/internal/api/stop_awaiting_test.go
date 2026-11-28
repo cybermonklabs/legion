@@ -44,6 +44,8 @@ func TestAStopOfATaskWhoseRootWaitsOnAPersonIsRefused(t *testing.T) {
 			h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
 				Project: testProject, Title: root, Phase: phase.AwaitingPerson, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true,
 				LastDispatchSeq: 3, Awaiting: &record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 3, At: since}}})
+			// Who may stop its task is read from its Dispatch chain, so the copy holds its row.
+			moveCopy(t, h, root, "", "in_progress", 3)
 			architect := newLiveClaim(t, h, root, claim.RoleArchitect)
 			if tc.gives {
 				h.handoffs.documents = map[string]string{planDoc: root}

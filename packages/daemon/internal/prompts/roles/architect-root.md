@@ -187,8 +187,7 @@ from there; a root carried in
 `request_backward_move`, once you have read its evidence.
 
 A `catch-up` that says `handed_over` but not `carried` is a child handed over from a tree that had
-no design gate to carry (a root reopened in its linger loses its gate, and its second close hands
-its children over without one). Its workers already run their phases from its carried phase
+no design gate to carry. Its workers already run their phases from its carried phase
 records and pull request, so do not start section 2 of your skill: decompose nothing and release
 no wave. Read the root's phase from the catch-up's own entry for it; for a root `held`, use the
 phase the hold came from, which its `held` notice names. Before `merging`, from the task's first

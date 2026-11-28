@@ -102,10 +102,10 @@ func (s *server) grant(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// claimGrant is the claim form: the claim registered as req's session on its tree and issue,
-// proving its registration secret, mints a grant for that claim.
+// claimGrant is the claim form: the claim registered as req's session on its issue, proving its
+// registration secret, mints a grant for that claim.
 func (s *server) claimGrant(w http.ResponseWriter, r *http.Request, req GrantRequest) {
-	machine, authenticated, err := s.claimForGrant(r.Context(), req.SessionID, req.Secret, req.Tree, req.Issue)
+	machine, authenticated, err := s.claimForGrant(r.Context(), req.SessionID, req.Secret, req.Issue)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: list claims to mint grant")
 		s.writeFailure(w, r, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
@@ -128,16 +128,19 @@ func (s *server) claimGrant(w http.ResponseWriter, r *http.Request, req GrantReq
 	s.writeAnswer(w, r, AnswerGrant, http.StatusOK, GrantResponse{GrantID: grant.ID, ExpiresAt: grant.ExpiresAt.UTC().Format(timeFormat)})
 }
 
-// claimForGrant finds the claim session, tree and issue name and authenticates it with secret, as
-// the claim form of the grants route does; the lenient identity read of an undecodable grants
-// body (grantIdentityCheck) uses it too.
-func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, issue string) (*supervise.Machine, bool, error) {
+// claimForGrant finds the claim of session on issue and authenticates it with secret, as the claim
+// form of the grants route does; the lenient identity read of an undecodable grants body
+// (grantIdentityCheck) uses it too. The request's tree is not matched against the claim: it is
+// what the registration answered, and a registration's tree grants nothing (decision 13 of
+// dispatch://INFRA-4730, R22 of dispatch://INFRA-3320), so a claim relaunched under another gate
+// root mints its grants whichever tree its plugin holds.
+func (s *server) claimForGrant(ctx context.Context, sessionID, secret, issue string) (*supervise.Machine, bool, error) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	for _, current := range claims {
-		if !current.HoldsSession(sessionID) || current.Tree != tree || current.Issue != issue {
+		if !current.HoldsSession(sessionID) || current.Issue != issue {
 			continue
 		}
 		m, _, ok := s.authenticated(current.Token, secret)
@@ -160,7 +163,7 @@ func (s *server) grantIdentityCheck(w http.ResponseWriter, r *http.Request, body
 		if id.SessionID == "" || id.Secret == "" {
 			return false
 		}
-		machine, authenticated, err := s.claimForGrant(r.Context(), id.SessionID, id.Secret, id.Tree, id.Issue)
+		machine, authenticated, err := s.claimForGrant(r.Context(), id.SessionID, id.Secret, id.Issue)
 		if err != nil || !authenticated {
 			return false
 		}

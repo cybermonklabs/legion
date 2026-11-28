@@ -25,19 +25,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// newLeftPodRig is the idle rig (idleRig) over a child of a running tree rather than over a root:
-// the root LEGION-208 stands in the workflow at implementing, and its child LEGION-209 holds one
-// claim, its planner's, the role that worked the child's first phase. With parked false the child
-// stands at implementing and its planner is idle in the child's pod, holding a process, as a
-// planner stays once it has handed its phase on. With parked true the child stands where a park
-// leaves it, at phase done with the status backlog, and its planner is suspended by the daemon
-// with no process, as the park's own stop left it.
+// newLeftPodRig is the idle rig (idleRig) over an issue under a parent at work rather than over a
+// root: LEGION-208 stands in the workflow at implementing, and the issue under it, LEGION-209,
+// holds one claim, its planner's, the role that worked its first phase. Nothing of LEGION-208 is
+// read by any rule here: each issue is decided by its own standing. With parked false LEGION-209
+// stands at implementing and its planner is idle in its pod, holding a process, as a planner stays
+// once it has handed its phase on. With parked true it stands where a park leaves it, at the phase
+// it ran with the status backlog (the workflow's leave keeps the phase), and its planner is
+// suspended by the daemon with no process, as the park's own stop left it.
 //
 // Either way the pod has been quiet for half an hour, its session reported no background work
 // after that, the Envoy listener reports itself ready and the runtime holds the issue's Sandbox,
-// so nothing outside the issue's own standing keeps the pod. The rig's issue and token are the
-// child's and its planner's, which is what idleRig's own readers (drain, queuedBy, rows, records)
-// read.
+// so nothing outside the issue's own standing keeps the pod. The rig's issue and token are
+// LEGION-209's and its planner's, which is what idleRig's own readers (drain, queuedBy, rows,
+// records) read.
 func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 	t.Helper()
 	ctx := context.Background()
@@ -51,11 +52,14 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 		Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Implementing, Generation: 1,
 		Status: "in_progress", Rank: "V", LastDispatchSeq: 1}
 	if parked {
-		child.Phase, child.Status, child.DispatchStatus = phase.Done, "backlog", "backlog"
+		child.Status, child.DispatchStatus = "backlog", "backlog"
 	}
 	putOutboxIssue(t, pool, records, root)
 	putOutboxIssue(t, pool, records, child)
+	// Each issue has a lifecycle of its own, which admission opens and a claim is bound to
+	// (store.Store.AdmitClaim): LEGION-209's as much as LEGION-208's.
 	st := outboxTreeStore(t, pool, root.Key)
+	openIssue(t, st, "legion", child.Key, treelifecycle.AuthorityWorkflow)
 
 	rt := &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -70,7 +74,7 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 	// role claim of the issue (sandbox.SandboxName).
 	rt.sandboxName = sandbox.SandboxName(token)
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: root.Key, Issue: child.Key,
-		Role: claim.RolePlanner, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		Role: claim.RolePlanner, TreeEpoch: 1, IssueEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Session: "ses-planner", SessionFile: "/tmp/planner.jsonl",
 		PluginContract: api.DaemonAPIVersion()}
 	if parked {
@@ -104,7 +108,9 @@ func newLeftPodRig(t *testing.T, parked bool) *idleRig {
 		notices: &outboxPublisher{}, dispatch: &roleHoldersDispatch{}, log: quietLogger(),
 		now: func() time.Time { return time.Now().Add(time.Minute) },
 	}
-	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
+	// A close's rows are fenced by the issue's record (record.NewFencedRow), read through records,
+	// as a release's are.
+	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	rig := &idleRig{pool: pool, st: st, issues: records, runner: runner, sup: sup, rt: rt, w: w,
 		issue: child, token: token, machine: machine}
@@ -128,17 +134,17 @@ func quietPod(t *testing.T, rig *idleRig) {
 	}
 }
 
-// parkChild parks the rig's child as the workflow parks a child moved to backlog (the workflow's
-// leave): the record stands at phase done with the status backlog, and the outbox holds the park's
-// stop — a `suspend` of every role a child can hold, at the child's generation, and the
-// issue_suspend that deletes the child's Sandbox once every role has stopped. The departure's two
-// other rows, the release of the issue's Dispatch claim and the notice to the architect above,
-// reach no role of this pod, and are left out: the stop is what this file reads.
+// parkChild parks the rig's issue as the workflow parks an issue moved to backlog (the workflow's
+// leave): the record keeps the phase it ran with the status backlog, and the outbox holds the
+// park's stop — a `suspend` of every role an issue can hold, at its generation, and the
+// issue_suspend that deletes its Sandbox once every role has stopped. The departure's other rows,
+// the release of the issue's Dispatch claim and the notice to the architect above, reach no role
+// of this pod, and are left out: the stop is what this file reads.
 func parkChild(t *testing.T, rig *idleRig) {
 	t.Helper()
 	ctx := context.Background()
 	parked := rig.issue
-	parked.Phase, parked.Status, parked.DispatchStatus = phase.Done, "backlog", "backlog"
+	parked.Status, parked.DispatchStatus = "backlog", "backlog"
 	payloads := make([]record.OutboxPayload, 0, len(claim.Roles)+1)
 	for _, role := range claim.Roles {
 		payloads = append(payloads, record.SuperviseRequest{Op: "suspend", Tree: parked.Tree, Role: role,
@@ -165,7 +171,7 @@ func parkChild(t *testing.T, rig *idleRig) {
 // resume route posts (the api's resumeEvent) and the controller's fresh session posts after its
 // own suspension (the api's freshSession), then the launch's registration on the daemon's plugin
 // contract and its ready. Neither route reads the standing of the claim's issue, so the planner of
-// a child the workflow has taken out comes back, idle, in a pod built again for it.
+// an issue the workflow has taken out comes back, idle, in a pod built again for it.
 func resumeAsOperator(t *testing.T, rig *idleRig) {
 	t.Helper()
 	ctx := context.Background()
@@ -224,8 +230,8 @@ func holdsOf(t *testing.T, rig *idleRig, reason workflow.IdleHold) []store.PodHo
 	return held
 }
 
-// queuedLeftPodCheck brings the rig's child to the close of a left pod with a live role, as
-// TestALeftPodWithALiveRoleIsReadBeforeItsClose does: the child parked and its stop run, its pod
+// queuedLeftPodCheck brings the rig's issue to the close of a left pod with a live role, as
+// TestALeftPodWithALiveRoleIsReadBeforeItsClose does: the issue parked and its stop run, its pod
 // built again and its planner brought back by an operator, and the idle passes queue the close's
 // workspace check alone. It answers that check as the outbox lists it.
 func queuedLeftPodCheck(t *testing.T, rig *idleRig) (record.OutboxRow, record.IssueWorkspaceCheck) {
@@ -256,19 +262,19 @@ func queuedLeftPodCheck(t *testing.T, rig *idleRig) (record.OutboxRow, record.Is
 	return row, check
 }
 
-// A child a park took out of the workflow while its tree runs on had its one close at that park:
-// the park suspended its claims and deleted its Sandbox, and nothing of its running tree closes
+// An issue a park took out of the workflow had its one close at that park, whatever stands above
+// it: the park suspended its claims and deleted its Sandbox, and nothing above or below it closes
 // it again. A role that runs there after that park runs in a pod built again for it — an
 // operator's resume, an operator's task to the suspended claim, an operator's retry and the
 // controller's fresh session each start a claim without reading its issue's standing — and once
-// its turn ends it stands idle. A deployment's parked child stood so: phase done, status backlog,
-// its one claim, the planner, idle, and its pod running, every idle pass holding that pod as
+// its turn ends it stands idle. A deployment's parked issue stood so: status backlog, its one
+// claim, the planner, idle, and its pod running, every idle pass holding that pod as
 // tree_not_live, a close's to stop, with no close left to stop it.
 //
-// The test parks a finished child whose planner is idle in its running pod, runs the park's stop,
+// The test parks a finished issue whose planner is idle in its running pod, runs the park's stop,
 // and reads what it did: the planner suspended and the Sandbox deleted. The operator's resume then
 // brings the planner back, idle, into a pod built again, which is the state that deployment's
-// child stood in. The idle passes then run the park's stop again themselves
+// issue stood in. The idle passes then run the park's stop again themselves
 // (workflow.LeftPodClose): the planner reads suspended, by the daemon and with its session kept,
 // the Sandbox goes a second time, and no tree_not_live hold is recorded, after that stop or
 // before it.
@@ -293,8 +299,8 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 	if left := rig.rows(t); len(left) != 0 {
 		t.Fatalf("rows of the parked child = %v, want none: the park's stop has finished and nothing else is queued", left)
 	}
-	if record.InWorkflow(rig.issue) || rig.issue.Phase != phase.Done || rig.issue.Status != "backlog" {
-		t.Fatalf("the child = %s at %s, want it parked: phase done, status backlog", rig.issue.Phase, rig.issue.Status)
+	if record.InWorkflow(rig.issue) || rig.issue.Status != "backlog" {
+		t.Fatalf("the issue = %s at %s, want it parked: status backlog", rig.issue.Phase, rig.issue.Status)
 	}
 
 	idlePasses(rig)
@@ -341,16 +347,16 @@ func TestAParkedIssuesIdleClaimIsStoppedSoItsPodIsNotHeldTreeNotLive(t *testing.
 // rule decides only pods with a live claim (store.IdlePods). So such a pod stood, with nobody in
 // it, for as long as its issue did.
 //
-// The test stages that pod — a parked child of a running tree, its one claim suspended by the
-// daemon and recording no process, the runtime still holding its Sandbox, quiet for half an hour
-// — and reads that a pass takes it: the passes queue the close's workspace check, which the pod's
-// launcher reads since no role runs there (R6), and whose clean read queues the Sandbox suspension,
-// which deletes the Sandbox, the pod and the disk, and leaves the claim as it was.
+// The test stages that pod — a parked issue, its one claim suspended by the daemon and recording
+// no process, the runtime still holding its Sandbox, quiet for half an hour — and reads that a
+// pass takes it: the passes queue the close's workspace check, which the pod's launcher reads
+// since no role runs there (R6), and whose clean read queues the Sandbox suspension, which
+// deletes the Sandbox, the pod and the disk, and leaves the claim as it was.
 func TestAPodHeldTreeNotLiveIsTakenOnceItsCloseHasNothingLeftToStop(t *testing.T) {
 	t.Parallel()
 	rig := newLeftPodRig(t, true)
 	if record.InWorkflow(rig.issue) {
-		t.Fatalf("the staged child = %s at %s, want it out of the workflow", rig.issue.Phase, rig.issue.Status)
+		t.Fatalf("the staged issue = %s at %s, want it out of the workflow", rig.issue.Phase, rig.issue.Status)
 	}
 	if _, present := rig.rt.IssueSandbox(rig.issue.Key); !present {
 		t.Fatal("the runtime holds no Sandbox of the staged child, want its pod standing")
@@ -873,7 +879,7 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 func TestALeftPodWithNoLiveClaimKeepsADiskADeclineSaysHoldsWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// failedLeftPod is the parked child of newLeftPodRig whose planner failed rather than being
+	// failedLeftPod is the parked issue of newLeftPodRig whose planner failed rather than being
 	// suspended, recording no process, in a pod the runtime names pod-a.
 	failedLeftPod := func(t *testing.T) *idleRig {
 		t.Helper()

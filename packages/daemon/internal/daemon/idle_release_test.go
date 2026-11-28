@@ -254,8 +254,10 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	rt.sandboxName = sandbox.SandboxName(token)
 	pending := supervise.Delivery{ID: "outbox:7", Task: "implement it", Phase: phase.Implementing,
 		Generation: 1, QueuedAt: time.Now().UTC().Add(-time.Hour)}
+	// The claim is bound as admission binds one: to its tree's epoch and to its issue's, both the
+	// epoch one outboxTreeStore opened (store.Store.AdmitClaim).
 	stored := supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key,
-		Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
+		Role: claim.RoleImplementer, TreeEpoch: 1, IssueEpoch: 1, Generation: 1, ServingGeneration: 1,
 		State: supervise.StateIdle, Locator: &locator, Session: "ses-implementer",
 		SessionFile: "/tmp/implementer.jsonl", PluginContract: api.DaemonAPIVersion(), Pending: &pending}
 	if at == phase.AwaitingChildren {
@@ -302,7 +304,8 @@ func newIdleRigIn(t *testing.T, at phase.Phase) *idleRig {
 	// The rig's issue records carry the Dispatch project key and its claims the claim token's
 	// spelling, as a deployment's do, and the two passes read the two: the candidate answer of
 	// the rule for a pod no claim owns reads issues.project (dispatchProject), everything else
-	// reads the claims' (projectID).
+	// reads the claims' (projectID). A release's rows are fenced by the issue's record
+	// (record.NewFencedRow), read through records.
 	w := &workflowRuntime{pool: pool, records: records, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
 	// The repository hold reads what the daemon's own attach wires it to read

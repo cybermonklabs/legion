@@ -75,12 +75,17 @@ func checkBlockOf(id string, serves ...string) string {
 // p2 is the reference R's one check serves in the world every case starts from.
 const p2 = "dispatch://LEGION-150/spec#b-p2"
 
-// pParagraph is a reference to the paragraph of P's primary document (requirementBlocks' "A
-// paragraph that is no requirement.") by the id Dispatch's tree holds for it: Dispatch mints a UUID
-// for every untyped block, and no version's markdown writes it, since GET /text renders no untyped
-// block's id (pmdoc's carry_block_ids.go). The version register_gate reads holds that paragraph
-// with no id, as requirementBlocks writes it.
-const pParagraph = "dispatch://LEGION-150/spec#b-5d0c2a8e-3f61-4b7a-9e24-7c1d8f0b6a39"
+// pParagraphID is the id Dispatch's tree holds for the paragraph of P's primary document
+// (requirementBlocks' "A paragraph that is no requirement."), and pParagraph a reference to it.
+// Dispatch mints that id for the paragraph, and writes it into no version's text: a stored version
+// names its typed blocks alone by id (pmdoc's pointers.go), and each read of it mints a new id
+// for every other block (docs.VersionBlocks). The version register_gate reads holds the paragraph
+// with no id, as requirementBlocks writes it. This fake holds no tree, since the daemon reads
+// none: the reference stands for Dispatch's, and the daemon reads it as it would read Dispatch's.
+const (
+	pParagraphID = "5d0c2a8e-3f61-4b7a-9e24-7c1d8f0b6a39"
+	pParagraph   = "dispatch://LEGION-150/spec#b-" + pParagraphID
+)
 
 // rViewSpec is R's primary document as a view writes it: no requirement block, and a Delivers:
 // line naming the ancestor's requirement it delivers.
@@ -153,15 +158,30 @@ func basisWorld(seq int64) statusRecorder {
 	}
 }
 
-// liveTextPastApproval gives P's primary document live text past version 3, the version the
-// person approved: the live text adds requirement p5 and drops p2. Dispatch keeps a document's
-// live text ahead of its latest version until that text settles into a version (refs/blocks.go,
-// "a document whose live text stays ahead of its latest version"), so its approval read still
-// shows version 3 approved at its latest. The fake serves that text as version 4, the version it
-// would settle into, so a registration judged at the live text rather than at version 3 would
-// read it.
+// pLiveText is P's primary document's live text past version 3, the version the person approved:
+// it adds requirement p5 and drops p2, so a check of P2 passes at the approved version and fails
+// at the live text, and a check of P5 fails at the approved version and passes at the live text.
+func pLiveText() string { return requirementBlocks("p1", "p3", "p:4", "p5") }
+
+// liveTextPastApproval gives P's primary document pLiveText as its live text. Dispatch keeps a
+// document's live text ahead of its latest version until that text settles into a version
+// (refs/blocks.go, "a document whose live text stays ahead of its latest version"), so its
+// approval read still shows version 3 approved at its latest. The daemon's Dispatch client has no
+// read of a live text (dispatch.Client reads a document's versions alone), so this fake serves
+// none: it keeps the live text as version 4, the version it would settle into, which no approval,
+// listing or call names.
 func liveTextPastApproval(world *statusRecorder) {
-	world.withVersion(pSpec, 4, requirementBlocks("p1", "p3", "p:4", "p5"))
+	world.withVersion(pSpec, 4, pLiveText())
+}
+
+// liveTextAtApprovedVersion is liveTextPastApproval's input shadow: the same world, with the read
+// of P's approved version 3 answering pLiveText's bytes, which is what a registration judged at
+// the live text would read. P's approval, its latest version and the call stay as they are, so a
+// live-text case and its shadow differ in those bytes alone, and the shadow answers as that case
+// would if the daemon judged at the live text.
+func liveTextAtApprovedVersion(world *statusRecorder) {
+	liveTextPastApproval(world)
+	world.withVersion(pSpec, 3, pLiveText())
 }
 
 // withVersion gives a document a version's text.
@@ -375,27 +395,45 @@ func TestBasisGateRefusals(t *testing.T) {
 		}, status: http.StatusConflict, code: "VIEW_CHECK_SERVES_NOTHING", says: []string{"check k2 of LEGION-208's Verification document"}},
 		{name: "a check of R that serves a requirement block of S", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-160/spec#b-s1"))
-		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k1", "serves dispatch://LEGION-160/spec#b-s1", "p1, p2, p3, p:4"}},
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k1", "serves dispatch://LEGION-160/spec#b-s1", "p1, p2, p3, p:4", "it names a block of LEGION-160;"}},
 		{name: "a check that serves a block of P's primary document that is no requirement", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-note"))
-		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/spec#b-note"}},
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/spec#b-note",
+			"LEGION-150's primary document at version 3 (it marks p1, p2, p3, p:4): version 3 holds note as a callout block;"}},
+		// The version register_gate reads holds the paragraph and writes no id for it, so the
+		// daemon reads a reference to it as it reads an id P never held (the next case): what that
+		// version shows of both is that it holds no typed block of that id, beside the callout
+		// case's typed block of another kind.
 		{name: "a check that serves a paragraph block of P's primary document", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", pParagraph))
-		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k1", "serves " + pParagraph, "p1, p2, p3, p:4"}},
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k1", "serves " + pParagraph,
+			"LEGION-150's primary document at version 3 (it marks p1, p2, p3, p:4): version 3 holds no typed block " + pParagraphID +
+				" (its typed blocks are its requirement blocks and callout note), and a stored version writes the id of no other block;"}},
 		{name: "a check that serves a block id P's document does not hold", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p9"))
-		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/spec#b-p9"}},
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/spec#b-p9",
+			"LEGION-150's primary document at version 3 (it marks p1, p2, p3, p:4): version 3 holds no typed block p9 (its typed blocks are its requirement blocks and callout note)"}},
 		{name: "one check serving P2 and another serving only a requirement of S", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", p2)+checkBlockOf("k2", "dispatch://LEGION-160/spec#b-s1"))
 		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k2", "serves dispatch://LEGION-160/spec#b-s1"}},
 		{name: "a check that serves a requirement block of P's decisions document", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/artifact/decisions-md#b-d1"))
-		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/artifact/decisions-md#b-d1"}},
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/artifact/decisions-md#b-d1", "it names a block of LEGION-150's document decisions-md;"}},
+		// P's live text drops p2 and adds p5; the view is judged at the approved version 3, which
+		// marks p2 and not p5, so R's one check of P5 is refused. Its control is the shadow
+		// TestBasisGateOpenings opens: the same world with the read of version 3 answering the live
+		// text's bytes, as a registration judged at the live text would read them.
 		{name: "P's live text past its approved version: a check serving P5, which only the live text holds", change: func(world *statusRecorder, _ map[string]any) {
 			liveTextPastApproval(world)
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p5"))
 		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS",
-			says: []string{"check k1", "serves dispatch://LEGION-150/spec#b-p5", "LEGION-150's primary document at version 3 (it marks p1, p2, p3, p:4)"}},
+			says: []string{"check k1", "serves dispatch://LEGION-150/spec#b-p5", "LEGION-150's primary document at version 3 (it marks p1, p2, p3, p:4)", "version 3 holds no typed block p5 "}},
+		// The control of TestBasisGateOpenings' live-text case, whose check serves P2: judged at
+		// the live text's bytes, that same world refuses the check of P2, which the live text drops.
+		{name: "the control of P's live text: a check serving P2, judged at the live text's bytes", change: func(world *statusRecorder, _ map[string]any) {
+			liveTextAtApprovedVersion(world)
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS",
+			says: []string{"check k1", "serves " + p2, "LEGION-150's primary document at version 3 (it marks p1, p3, p:4, p5)", "version 3 holds no typed block p2 "}},
 
 		// A read Dispatch fails.
 		{name: "a failed read of P's approved version", change: func(world *statusRecorder, _ map[string]any) { delete(world.versions, pSpec) },
@@ -523,11 +561,24 @@ func TestBasisGateOpenings(t *testing.T) {
 				{Version: 2, State: "changes_requested", Actor: basisAlice, Reason: "name the rollback path"},
 			}
 		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
-		// P's live text past the version the person approved drops p2: the view is judged at the
-		// approved version 3, which marks p2, so R's one check of p2 opens the step on it.
+		// P's live text past the version the person approved drops p2 and adds p5: the view is
+		// judged at the approved version 3, which marks p2, so R's one check of p2 opens the step
+		// on it, serving P2 at version 3. Its control is the shadow TestBasisGateRefusals refuses:
+		// the same world with the read of version 3 answering the live text's bytes.
 		{name: "P's live text past its approved version: a check serving P2, which the live text drops", change: func(world *statusRecorder, _ map[string]any) {
 			liveTextPastApproval(world)
 		}, want: func(seq int64) intake.GateRegistered { return basisFact(seq, architect) }},
+		// The control of TestBasisGateRefusals' live-text case, whose check serves P5: judged at the
+		// live text's bytes, that same world opens the step on the check of P5, which the live text
+		// adds, at P's approved version 3.
+		{name: "the control of P's live text: a check serving P5, judged at the live text's bytes", change: func(world *statusRecorder, _ map[string]any) {
+			liveTextAtApprovedVersion(world)
+			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p5"))
+		}, want: func(seq int64) intake.GateRegistered {
+			fact := basisFact(seq, architect)
+			fact.Basis.Serves = served("dispatch://LEGION-150/spec#b-p5@v3")
+			return fact
+		}},
 		{name: "G's approval with P neither reviewed nor requested", change: func(world *statusRecorder, body map[string]any) {
 			gUnderP(world)
 			world.approvals[pSpec] = dispatch.Approval{State: "draft", LatestVersion: 3}

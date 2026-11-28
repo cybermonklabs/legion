@@ -43,7 +43,7 @@ func TestAPendingTaskOfNewsAloneIsNoTaskOfItsPhase(t *testing.T) {
 			}
 
 			uncertain := record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateLaunchUncertain, Tree: silent.root.Key, Pending: &tc.pending}}
-			if got := StartFor(uncertain, silent.root, silent.issue.Generation, silent.issue.Phase); got == tc.works {
+			if got := StartFor(uncertain, silent.issue.Generation, silent.issue.Phase); got == tc.works {
 				t.Errorf("StartFor of a claim whose launch is not known = %t holding %s, want %t: only its phase's task is work its launch carries", got, tc.name, !tc.works)
 			}
 

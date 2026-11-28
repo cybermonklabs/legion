@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  A write that stales the approval of a document a Legion design gate records says what the gate
+  holds: each issue of the gate's tree merges nothing, and starts no newly released child, until
+  that approval comes back, while work in flight goes on. It said every READY was refused, and the
+  daemon has had no READY since migration `20261029120800_drop_the_daemons_merge_rows`.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

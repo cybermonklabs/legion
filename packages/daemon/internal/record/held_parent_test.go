@@ -32,20 +32,21 @@ func TestAParentHeldForItsChildrenIsNotAccepted(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			parent := Issue{Key: parentKey, Tree: parentKey, Project: "LEGION", Phase: tc.phase, Hold: tc.hold, Generation: 1, Status: "retro"}
 			members := []Issue{parent, child}
+			chains := chainsOf(members, copyOf(members...))
 			if got := Accepted(parent); got != tc.accepted {
 				t.Fatalf("Accepted = %v, want %v", got, tc.accepted)
 			}
-			ancestor, want := AcceptedAncestor(child, byKey(members)), ""
+			ancestor, want := AcceptedAncestor(chains, child.Key), ""
 			if tc.accepted {
 				want = parentKey
 			}
 			if ancestor != want {
 				t.Fatalf("the accepted ancestor of %s = %q, want %q", child.Key, ancestor, want)
 			}
-			if held := HeldUnderAccepted(child, byKey(members)); held != tc.accepted {
+			if held := HeldUnderAccepted(chains, child); held != tc.accepted {
 				t.Fatalf("HeldUnderAccepted(%s) = %v, want %v", child.Key, held, tc.accepted)
 			}
-			open, wantOpen := OpenBeneath(parent, members), []string{child.Key}
+			open, wantOpen := OpenBeneath(chains, parentKey), []string{child.Key}
 			if tc.accepted {
 				wantOpen = []string{}
 			}

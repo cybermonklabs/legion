@@ -1,7 +1,6 @@
 package record
 
 import (
-	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -9,41 +8,46 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// The line and the held list read the pass's chain only over the very records it was built over
-// and the same records above them (passOver): a copy of the records, a part of them, facts with
-// other records above or none, and facts no pass read each get a chain of their own, built as the
-// pass builds one, so no walk reads a chain of records it was not handed.
+// The line and the held list read the pass's one chain (LineFacts.Chains) and nothing else of where
+// an issue stands, and that chain answers only for what it was read for. It holds the daemon's
+// record of every key it read (Chains.Record), so a copy of the pass's records, or a part of them,
+// reads from it what the records themselves read, and the line needs no check of which records it
+// was handed. A record the read neither started from nor reached reads an unread chain at its own
+// key (ChainUnread): the line starts nothing for it and the held list holds it chain_unknown,
+// naming itself, as it holds every issue whose chain is unknown (R16 of dispatch://INFRA-3320), so
+// no walk reads a chain of records it was not read for.
 func TestTheLineReadsThePassChainOnlyOverItsOwnRecords(t *testing.T) {
 	root := chainIssue("LEGION-900", "LEGION-900", "", phase.Admitted, "in_progress")
 	child := chainIssue("LEGION-903", "LEGION-900", "LEGION-902", phase.Admitted, "todo")
 	doneParent := chainIssue("LEGION-902", "LEGION-900", "LEGION-900", phase.Done, "done")
+	unread := chainIssue("LEGION-905", "LEGION-900", "LEGION-900", phase.Admitted, "todo")
+	facts := LineFacts{Chains: chainsOf([]Issue{root, child, doneParent}, copyOf(root, child, doneParent))}
 	issues := []Issue{root, child}
-	above := map[string]Issue{doneParent.Key: doneParent}
-	built := &passChain{issues: issues, above: above}
-	facts := LineFacts{Parents: above, pass: built}
-	if passOver(issues, facts) != built {
-		t.Fatalf("the line over the records the pass read and the same records above them walks a chain of its own, want the pass's")
+	// judge is the line and the held list of records under facts, as a pass reads them.
+	judge := func(records []Issue) ([]LineEntry, []HeldIssue) {
+		line, dropped := Waiting(records, nil, facts)
+		return line, HeldList(records, nil, line, dropped, facts)
 	}
-	none, other, unread := facts, facts, LineFacts{Parents: above}
-	none.Parents = nil
-	other.Parents = map[string]Issue{"LEGION-999": chainIssue("LEGION-999", "LEGION-999", "", phase.Done, "done")}
+	_, want := judge(issues)
+	if row := heldRow(want, child.Key); row.Reason != HeldAncestry || !slices.Equal(row.HeldBy, []string{root.Key}) {
+		t.Fatalf("the held row of %s = %+v, want ancestry held by %s past the done parent %s: without the chain's walk this test proves nothing",
+			child.Key, row, root.Key, doneParent.Key)
+	}
 	for _, tc := range []struct {
-		name   string
-		issues []Issue
-		facts  LineFacts
+		name    string
+		records []Issue
 	}{
-		{"a copy of the records", slices.Clone(issues), facts},
-		{"a part of the records", issues[:1], facts},
-		{"no records above", issues, none},
-		{"as many other records above", issues, other},
-		{"facts no pass read", issues, unread},
+		{"a copy of the records", slices.Clone(issues)},
+		{"a part of the records", issues[1:]},
 	} {
-		got := passOver(tc.issues, tc.facts)
-		if got == built {
-			t.Fatalf("%s: the line walks the pass's chain, want one of its own", tc.name)
+		if _, got := judge(tc.records); !reflect.DeepEqual(heldRow(got, child.Key), heldRow(want, child.Key)) {
+			t.Fatalf("%s: the held row of %s = %+v, want %+v, what the records the chain was read for read", tc.name, child.Key,
+				heldRow(got, child.Key), heldRow(want, child.Key))
 		}
-		if want := chainOf(byKey(tc.issues), tc.facts.Parents); !reflect.DeepEqual(got.chain(), want) {
-			t.Fatalf("%s: the line's own chain holds %v, want %v", tc.name, slices.Sorted(maps.Keys(got.chain())), slices.Sorted(maps.Keys(want)))
-		}
+	}
+	line, rows := judge(append(slices.Clone(issues), unread))
+	if row := heldRow(rows, unread.Key); inLine(line, unread.Key) || row.Reason != HeldChainUnknown || !slices.Equal(row.HeldBy, []string{unread.Key}) {
+		t.Fatalf("%s, which the chain was not read for: in the line %t, held as %+v; want it out of the line and held chain_unknown at itself",
+			unread.Key, inLine(line, unread.Key), row)
 	}
 }

@@ -35,8 +35,8 @@ func runningChild(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
 // seedRunningProject records runningTrees slotted roots, each implementing with a live child
 // implementing beside it, stillWaiting labelled todo roots waiting for a slot and stillWaiting
 // children held at admitted in the first trees, the roots and the children all waiting on
-// waitedOn, which Dispatch shows unfinished; and, when finished, finishedTrees done roots, one in
-// four still lingering, each with its done children, every one with a mirror row.
+// waitedOn, which Dispatch shows unfinished; and, when finished, finishedTrees done roots, each
+// with its done children, every one with a mirror row.
 func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -64,10 +64,10 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 			if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: i, AdmittedAt: fixedNow}); err != nil {
 				t.Fatalf("slot %s: %v", root, err)
 			}
-			// The tree's lifecycle, open under the workflow, is what says the tree runs
-			// (record.TreeLive): a slot counts one issue at work now, so a running tree is not
-			// known by its root's slot any more, and a root the net found in no live tree is
-			// taken out of the workflow (releaseUnslotted).
+			// The tree's lifecycle, open under the workflow, is the shadow the release before
+			// reads (R22 of dispatch://INFRA-3320), written as admission's own promotion writes
+			// it; what says this root runs is its standing in Legion's work with the slot above
+			// (record.RunningRoots).
 			seedLifecycleTx(t, tx, root)
 		}
 		for i := range stillWaiting {
@@ -79,14 +79,9 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 		if !finished {
 			return
 		}
-		lingering := fixedNow.Add(time.Hour)
 		for i := range finishedTrees {
 			root := fmt.Sprintf("LEGION-%d", 10000+i*(1+finishedChildren))
-			done := record.Issue{Key: root, Tree: root, Phase: phase.Done, Status: "done"}
-			if i%4 == 0 {
-				done.LingerUntil = &lingering
-			}
-			put(done)
+			put(record.Issue{Key: root, Tree: root, Phase: phase.Done, Status: "done"})
 			for c := 1; c <= finishedChildren; c++ {
 				child := fmt.Sprintf("LEGION-%d", 10000+i*(1+finishedChildren)+c)
 				put(record.Issue{Key: child, Tree: root, Parent: record.ParentOf(root), Phase: phase.Done, Status: "done"})

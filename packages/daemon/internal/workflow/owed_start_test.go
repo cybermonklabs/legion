@@ -184,11 +184,7 @@ func assertNotStranded(t *testing.T, pool *pgxpool.Pool, role claim.Role, token 
 		if err != nil {
 			return err
 		}
-		root, err := store.Issue(t.Context(), tx, returnIssue)
-		if err != nil {
-			return err
-		}
-		if StartFor(runs[token], *root, 1, stands) {
+		if StartFor(runs[token], 1, stands) {
 			t.Fatalf("StartFor says the %s needs a start, want the queued one the slot holds counted", role)
 		}
 		return nil
@@ -238,12 +234,10 @@ func assertTheSlotDeliversOnce(t *testing.T, pool *pgxpool.Pool, role claim.Role
 // which starts a worker on an issue that held a slot before: a red head, the merge queue's
 // failed_checks removal, a push past READY, a backward move and a held worker's retry. A head that
 // conflicts with its base is no return: the issue keeps its phase and owes no start
-// (TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward). The last, a re-admitted tree's
-// mid-phase children, is admission's own start and is proven where it lives (internal/admit's
-// TestAReadmittedTreesMidPhaseChildrenEachWaitForTheirOwnSlot). A sign-off's start into the
+// (TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward). A sign-off's start into the
 // retro waits for no slot, since retro keeps none (record.KeepsSlot), and is proven in
-// internal/admit's TestAcceptingRetroAndMergingRunWithNoSlot; a sign-off into a later step whose phase
-// keeps a slot owes a start that waits for one, as these returns do.
+// internal/admit's TestAcceptingRetroAndMergingRunWithNoSlot; a sign-off into a later step whose
+// phase keeps a slot owes a start that waits for one, as these returns do.
 //
 // Two transitions before the slot start the worker once: the second takes out the pending row
 // and writes its own in its place (record.Store.EnqueueStart), carrying that row's creation time
@@ -255,7 +249,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 		t.Helper()
 		seedIssue(t, pool, record.Issue{Key: returnIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: returnIssue, Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: status, Rank: "U", HandedOver: true})
-		seedTreeLifecycle(t, pool, returnIssue)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: returnIssue, Repo: "sjawhar/legion",
 			Number: 42, Branch: "legion/" + returnIssue, HeadSHA: "head"})
 		seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head", Summary: "READY #42 at head"})
@@ -313,7 +306,6 @@ func TestEveryReturnAppliesAtOnceAndOwesItsWorkerOneStart(t *testing.T) {
 				seedIssue(t, pool, record.Issue{Key: returnIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 					Tree: returnIssue, Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing},
 					Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
-				seedTreeLifecycle(t, pool, returnIssue)
 				seedPhase(t, pool, record.PhaseRow{Issue: returnIssue, Role: claim.RoleTester, Claim: "test-claim", Entry: servedEntry})
 			},
 			fact:   intake.RetryOrEscalate{Issue: returnIssue, Decision: intake.RetryDecision},

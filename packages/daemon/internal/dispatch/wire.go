@@ -237,6 +237,59 @@ type daemonWrite struct {
 	Actor            actor    `json:"actor"`
 }
 
+// statusChangeWrite is the body of a status-change call: the status, the expected sequence and the
+// actor as the PATCH's daemonWrite carries them, and the route's own options, each left out when
+// false. It is a type of its own so that no option can ride a PATCH, which a Dispatch ignores.
+type statusChangeWrite struct {
+	Status           string `json:"status"`
+	ExpectedSequence int64  `json:"expected_sequence,omitempty"`
+	IncludeChildren  bool   `json:"include_children,omitempty"`
+	UnlinkChildren   bool   `json:"unlink_children,omitempty"`
+	IncludeParent    bool   `json:"include_parent,omitempty"`
+	DryRun           bool   `json:"dry_run,omitempty"`
+	Actor            actor  `json:"actor"`
+}
+
+// statusChangeResponse is the status-change route's answer: the named issue as the PATCH answers
+// it and an entry for each issue the call changed.
+type statusChangeResponse struct {
+	Issue   issueResponse               `json:"issue"`
+	Changed []statusChangeEntryResponse `json:"changed"`
+}
+
+// statusChangeEntryResponse is one entry of a status-change answer's changed list, its issue null
+// on a dry run.
+type statusChangeEntryResponse struct {
+	Key             string         `json:"key"`
+	Status          string         `json:"status"`
+	Parent          *string        `json:"parent"`
+	PreviousLastSeq int64          `json:"previous_last_seq"`
+	Issue           *issueResponse `json:"issue"`
+}
+
+// statusChangeEntries is a changed list as StatusChangeEntry values, nil for an empty one.
+func statusChangeEntries(responses []statusChangeEntryResponse) []StatusChangeEntry {
+	var entries []StatusChangeEntry
+	for _, response := range responses {
+		entry := StatusChangeEntry{
+			Key: response.Key, Status: response.Status, Parent: response.Parent, PreviousLastSeq: response.PreviousLastSeq,
+		}
+		if response.Issue != nil {
+			issue := response.Issue.issue()
+			entry.Issue = &issue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// conflictIssueResponse is one issue a PARENT_STATUS_CONFLICT refusal names; its title and its
+// relation to the written issue are left undecoded.
+type conflictIssueResponse struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
+}
+
 // artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
 // all fields Dispatch's JSON upload reads.
 type artifactUpload struct {

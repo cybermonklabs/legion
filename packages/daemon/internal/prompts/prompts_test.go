@@ -75,7 +75,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"gh pr merge <n> --disable-auto", "autoMergeRequest", "dequeuePullRequest(input:{id:$pr})",
 			"The design gate of <tree> closed: version <n> of its <step> document (<id>)",
 			"`HANDOFF_NOT_CURRENT_PHASE`", "`HANDOFF_STALE_GENERATION`", "`HANDOFF_NO_RUN`",
-			"`HANDOFF_ALREADY_RECORDED`", "`TREE_LINGERING`"}},
+			"`HANDOFF_ALREADY_RECORDED`"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parts, err := composer.Compose(tc.role, tc.isRoot)

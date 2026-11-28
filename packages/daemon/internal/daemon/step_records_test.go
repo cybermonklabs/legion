@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -104,13 +105,16 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	})
 }
 
-// Dispatch does not answer while step records are due, and no phase waits for it.
+// Dispatch does not answer while step records are due, and no phase before the close waits for it.
 // The handoff records of planning, implementing and testing are Dispatch's own, which the daemon
 // reads at each of those completions, so Dispatch stops once the issue is in reviewing, with the
 // record of every step from there on still to be written; the review, the acceptance, the retro
-// and the merge then walk the issue to done, and once Dispatch is back on the same database the
-// issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
-// stopped, the outbox holds the issue's step records unfinished and the read finds no server.
+// and the merge then walk the issue to merging with its close queued, where it stays while
+// Dispatch is stopped, since the daemon's close lands only on Dispatch's done (R20 and R24 of
+// dispatch://INFRA-3320). Once Dispatch is back on the same database the close is written, the
+// issue reaches done, and its seven records reach Dispatch, each ended. The control holds the
+// outage real: while Dispatch is stopped, the outbox holds the issue's step records unfinished and
+// the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	t.Parallel()
 	r := newStepRecordsRig(t, 1)
@@ -121,7 +125,8 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	r.review("APPROVED", phase.Accepting)
 	r.accept()
 	r.retro()
-	r.merge()
+	r.mergeQueuesTheClose()
+	r.waitPhase(phase.Merging)
 
 	t.Run("control", func(t *testing.T) {
 		if unfinished := r.unfinishedRows(record.OutboxKindStepRecord); unfinished == 0 {
@@ -133,17 +138,18 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	})
 
 	r.dispatch.start()
+	r.waitPhase(phase.Done)
 	want := stepRecordsSeven
 	// A row Dispatch refused while it was stopped waits out its backoff, at most
 	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
-	// one more lease.
+	// one more lease; the merge's record is queued at the close's landing.
 	within := record.RetryBackoffMost + outboxLease
 	started := time.Now()
 	if !testwait.Holds(within, time.Second, func() bool { got, err := r.readSteps(); return err == nil && stepsHold(got, want) == nil }) {
 		got, err := r.readSteps()
-		t.Fatalf("within %s of Dispatch's start the issue's steps read %+v (%v), and the assertion says: %v", within, got, err, stepsHold(got, want))
+		t.Fatalf("within %s of the close's landing the issue's steps read %+v (%v), and the assertion says: %v", within, got, err, stepsHold(got, want))
 	}
-	t.Logf("the seven records reached Dispatch %s after its start", time.Since(started).Round(time.Second))
+	t.Logf("the seven records reached Dispatch %s after the close landed", time.Since(started).Round(time.Second))
 }
 
 // The daemon restarts in the middle of a step. It stops while the issue is in
@@ -626,7 +632,8 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 	}
 }
 
-// seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
+// seedChildInReviewing records a child of the walk's root, created in Dispatch under the root and
+// shown there in needs_review, so the daemon's copy holds its chain up to the root, and held by the
 // daemon's store in reviewing at generation 1, on an open pull request of its own at
 // stepRecordsHead that GitHub reports clean, with its reviewer's round completed, so a person's
 // approval ends the round (workflow's reviewRound), and answers its key and its pull request's
@@ -635,7 +642,8 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
 	var created createdIssue
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child in the walk's tree"}, http.StatusCreated, &created)
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child in the walk's tree", "parent": r.key}, http.StatusCreated, &created)
+	r.person(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "needs_review"}, http.StatusOK, &created)
 	number := r.number + 1
 	parent := r.key
 	ctx := context.Background()
@@ -651,7 +659,12 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 			HandoffCommit: stepRecordsHead, HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed"}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number))
+		if err := r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number)); err != nil {
+			return err
+		}
+		// The child started its phases, so admission opened its own lifecycle, which each claim of it
+		// binds.
+		return openIssueTx(ctx, tx, r.project, created.Key, treelifecycle.AuthorityWorkflow)
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}

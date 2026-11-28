@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -49,7 +50,6 @@ func stepRoot(t *testing.T, pool *pgxpool.Pool, at phase.Phase) record.Issue {
 	root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 		Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	seedIssue(t, pool, root)
-	seedTreeLifecycle(t, pool, root.Key)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
 	return root
@@ -336,9 +336,11 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
-	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	// The child is recorded once the root's move has landed: an open child of a parent moving
+	// into testing holds that move (R9 of dispatch://INFRA-3320), and this test is about the ends.
+	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		w, err := engine.walk(ctx, tx, issue)
 		if err != nil {
@@ -575,7 +577,9 @@ func TestAcceptingAndAMergeGitHubMadeGetAStart(t *testing.T) {
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
 			Branch: "legion/LEGION-208", HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})
 		seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Entry: 4, EntryRaisedAt: stepClock.Add(-48 * time.Hour)})
-		move(t, pool, stepEngine(nil), "LEGION-208", TriggerRetroCompleted, "", record.PhaseRow{})
+		engine := stepEngine(nil)
+		move(t, pool, engine, "LEGION-208", TriggerRetroCompleted, "", record.PhaseRow{})
+		landClose(t, pool, engine, "LEGION-208")
 		writes := stepWrites(t, pool, "LEGION-208")
 		if len(writes) != 3 {
 			t.Fatalf("step rows = %+v, want the end of the retro, the start of the merge and its end", writes)
@@ -742,10 +746,11 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Entry: 5, EntryRaisedAt: retroCompleted.Add(-time.Hour),
 				CompletedAt: retroCompleted})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Entry: 2, EntryRaisedAt: tc.entry})
-			applyFacts(t, pool, stepEngine(nil))("child-done", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
-				Type: "issue.updated", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"})
+			engine := stepEngine(nil)
+			landClose(t, pool, engine, "LEGION-209")
+			landClose(t, pool, engine, "LEGION-208")
 			if got := issueAt(t, pool, "LEGION-208"); got != phase.Done {
-				t.Fatalf("LEGION-208 stands at %s once its last child left, want done", got)
+				t.Fatalf("LEGION-208 stands at %s once its last child is done and so is its close, want done", got)
 			}
 			writes := stepWrites(t, pool, "LEGION-208")
 			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, placeOf("merge", 0), 0) {

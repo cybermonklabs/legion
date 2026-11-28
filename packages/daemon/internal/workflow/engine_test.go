@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -48,13 +49,11 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "Workflow table", Phase: phase.Admitted,
 		Generation: 1, Status: "in_progress", Rank: "U",
 	})
-	seedTreeLifecycle(t, pool, "LEGION-208")
 
 	engine := New(store, Config{
 		Project:        "LEGION",
 		Steps:          config.DesignGateOff.Steps(),
 		ReviewRoundCap: 3,
-		Linger:         time.Hour,
 		Clock:          func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "gate-registration", intake.GateRegistered{
@@ -96,7 +95,9 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
 // line reaches it, its own architect's start and then its planner's queued behind the row
 // creating the child's branch, which each start waits for, and the in_progress of the phase it
-// enters written over the todo Dispatch shows.
+// enters written over the todo Dispatch shows. The fact reaches the copy of Dispatch's issues
+// first (blockers.Mirror), as the Dispatch consumer applies it: the copy is where the line reads
+// the child's place under its parent.
 func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -106,11 +107,9 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
 
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-todo", intake.DispatchIssue{
+	applyMirrored(t, pool, engine, "child-todo", intake.DispatchIssue{
 		Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 1, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "V",
-	}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact: %v", err)
-	}
+	})
 	startUnblockedChildren(t, pool, engine)
 
 	var tree, gotPhase string
@@ -130,8 +129,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
 		t.Fatalf("read the branch row: %v", err)
 	}
-	if branchIssue != "LEGION-209" || generation != 4 {
-		t.Fatalf("branch row = %s at generation %d, want the child's at the generation it entered, 4", branchIssue, generation)
+	// The child runs its own first generation, not its root's (R17 of dispatch://INFRA-3320: each
+	// issue's run is its own fact).
+	if branchIssue != "LEGION-209" || generation != 1 {
+		t.Fatalf("branch row = %s at generation %d, want the child's at its own first run, 1", branchIssue, generation)
 	}
 }
 
@@ -253,7 +254,7 @@ func TestCapturedArtifactVersionAndApprovalFlowThroughConsume(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "CAPTURE-4", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "CAPTURE-4", Project: "CAPTURE", Title: "captured gate", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"})
-	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
+	engine := New(record.NewStore(), Config{Project: "CAPTURE", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Repositories: testRepositories, Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) }}, nil)
 	if _, err := intake.ApplyFact(ctx, pool, "api", "register-captured-gate", intake.GateRegistered{Issue: "CAPTURE-4", ArtifactID: "0544d460-0931-4374-b20b-790408519edd", Version: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("register gate: %v", err)
 	}
@@ -486,94 +487,6 @@ func TestAPhaseFinishedNoticeCarriesTheWorkersSummaryAndItsVerdict(t *testing.T)
 	}
 }
 
-// A root's merge while a child runs records the merge and waits, so the close is the one its last
-// child's departure brings. That close lingers once: linger suspends, and its expiry stops, every
-// claim the tree holds — the root architect admission started and a worker that never reported a
-// handoff included, neither of which has a phase row. A redelivered merge changes nothing. Every
-// expiry row names the root generation whose linger it expires, a child's too, which keeps the
-// earlier generation of the run that admitted it. The close opens the root's production check,
-// whose first look the tester reports here before the linger ends, since the tree's close
-// waits for an open check (check_test.go). No child of such a tree is left mid-run, so the expiry
-// hands none over; the hand-over of a root a person closed is admit's cover (finished_root_test.go).
-func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testing.T) {
-	t.Parallel()
-	pool := migratedPool(t)
-	ctx := context.Background()
-	now := time.Date(2026, 9, 23, 4, 0, 0, 0, time.UTC)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U"})
-	parent := "LEGION-208"
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Merging, Generation: 3, Status: "retro", Rank: "V", LastDispatchSeq: 1})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger", HandoffCommit: "head"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Repositories: testRepositories, Clock: func() time.Time { return now }}, nil)
-
-	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"}
-	if _, err := intake.ApplyFact(ctx, pool, "github", "merged", merged, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact merged: %v", err)
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "github", "merged-echo", merged, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact merged echo: %v", err)
-	}
-	assertPhase(t, pool, phase.Merging)
-	assertOutboxCount(t, pool, "linger_close", 0)
-	assertOutboxCount(t, pool, "dispatch_status", 0)
-
-	if _, err := intake.ApplyFact(ctx, pool, "github", "child-merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact the child's merge: %v", err)
-	}
-	assertPhase(t, pool, phase.Done)
-	var lingerUntil time.Time
-	if err := pool.QueryRow(ctx, "select linger_until from issues where key = $1", "LEGION-208").Scan(&lingerUntil); err != nil {
-		t.Fatalf("read linger deadline: %v", err)
-	}
-	if !lingerUntil.Equal(now.Add(time.Hour)) {
-		t.Fatalf("LingerUntil = %s, want %s", lingerUntil, now.Add(time.Hour))
-	}
-	everyClaim := map[string]int{}
-	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
-		for _, role := range claim.Roles {
-			everyClaim[issue+"/"+string(role)]++
-		}
-	}
-	// The close suspends every claim once, the merger whose READY the merge ended among them: no
-	// transition suspends a worker of its own.
-	suspended := superviseRequests(t, pool, "suspend")
-	if !sameCounts(suspended, everyClaim) {
-		t.Fatalf("linger suspended %v, want each tree claim once: %v", suspended, everyClaim)
-	}
-	assertOutboxCount(t, pool, "linger_close", 1)
-	assertOutboxCount(t, pool, "dispatch_status", 2)
-	// Both checks the two closes opened are reported before the linger ends: the tree's close waits
-	// for any member's open check (check_test.go).
-	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
-		if result, err := intake.ApplyFact(ctx, pool, "api", "check:"+issue+":1:pass", intake.CheckReport{Issue: issue, Look: 1, Verdict: "pass", Summary: "driven"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
-			t.Fatalf("ApplyFact %s's check pass = %+v, %v", issue, result.Refusal, err)
-		}
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "timer", "linger-current", intake.LingerExpired{Issue: "LEGION-208", Generation: 7}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact current linger expiry: %v", err)
-	}
-	if _, err := intake.ApplyFact(ctx, pool, "timer", "linger-stale", intake.LingerExpired{Issue: "LEGION-208", Generation: 6}, engine, admissionStub{}); err != nil {
-		t.Fatalf("ApplyFact stale linger expiry: %v", err)
-	}
-	if stopped := superviseRequests(t, pool, "tree_close"); !sameCounts(stopped, everyClaim) {
-		t.Fatalf("linger expiry stopped %v, want each tree claim once: %v", stopped, everyClaim)
-	}
-	assertOutboxCount(t, pool, "workspace_remove", 2)
-	var handedOver int
-	if err := pool.QueryRow(ctx, `select count(*) from outbox where kind = 'dispatch_status' and payload->>'kind' = 'hand-over'`).Scan(&handedOver); err != nil || handedOver != 0 {
-		t.Fatalf("hand-over writes = %d, %v; want none: the close waited until no child was running", handedOver, err)
-	}
-	assertOutboxCount(t, pool, "dispatch_status", 2)
-	var other int
-	if err := pool.QueryRow(ctx, `select count(*) from outbox where (kind = 'workspace_remove' or (kind = 'supervise' and payload->>'op' = 'tree_close'))
-		and payload->>'linger' is distinct from '7'`).Scan(&other); err != nil || other != 0 {
-		t.Fatalf("expiry rows naming another linger than the root's generation 7 = %d, %v; want none", other, err)
-	}
-}
-
 // superviseRequests counts the enqueued supervise requests of one operation by issue/role. A
 // phase worker's start is one row, which carries the worker's task (StartOrOwe); a child's own
 // architect's plain start (childArchitectStart) carries none.
@@ -627,8 +540,8 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 
 // Every forward row short of the close applies through intake with its status, start and notice,
 // and none suspends the worker whose phase it ends: a role stays live from its first assignment
-// until its issue closes. (The merge's row is the close itself, which suspends the tree:
-// TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
+// until its issue closes. (The merge's row is the close itself, which closes the issue's own
+// claims: TestAnIssueOutOfWorkGetsNoWorkers.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	t.Parallel()
 	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
@@ -854,6 +767,10 @@ func TestABackwardMoveNoRowServesIsRefused(t *testing.T) {
 	}
 }
 
+// seedIssue writes issue's record and its row of the copy of Dispatch's issues as a reading of
+// Dispatch would show it (seedCopyTx): the copy is what every decision reads the chain from
+// (record.ReadChains), so a fixture that seeds a record seeds the issue's place on Dispatch's
+// chain with it.
 func seedIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
@@ -864,8 +781,39 @@ func seedIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	if err := record.NewStore().PutIssue(t.Context(), tx, issue); err != nil {
 		t.Fatalf("seed issue: %v", err)
 	}
+	seedCopyTx(t, tx, issue)
 	if err := tx.Commit(t.Context()); err != nil {
 		t.Fatalf("commit seed issue: %v", err)
+	}
+}
+
+// seedCopyTx writes the copy's row of issue as a reading of Dispatch does
+// (record.Store.PutDispatchIssue): the parent the record names, the status Dispatch last showed
+// it in (DispatchStatus, else Status) and the legion label every issue Legion records carries on
+// its chain (R26 of dispatch://INFRA-3320), at a sequence above every value the copy holds of it,
+// so the row reads as the record does whatever was written before. A fixture that names no parent
+// but a tree other than the issue's own key states that the issue stands under that tree's root,
+// and its row says so.
+func seedCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
+	t.Helper()
+	var seq int64
+	if err := tx.QueryRow(t.Context(), `select coalesce(max(greatest(status_seq, parent_seq, labels_seq)), 0) from dispatch_issues where key = $1`,
+		issue.Key).Scan(&seq); err != nil {
+		t.Fatalf("read the copy's sequences of %s: %v", issue.Key, err)
+	}
+	status, parent := issue.DispatchStatus, ""
+	if status == "" {
+		status = issue.Status
+	}
+	switch {
+	case issue.Parent != nil:
+		parent = *issue.Parent
+	case issue.Tree != "" && issue.Tree != issue.Key:
+		parent = issue.Tree
+	}
+	if err := record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: issue.Key, Project: issue.Project,
+		Seq: seq + 1, Status: record.Carry(status), Parent: record.Carry(parent), Labels: record.Carry([]string{dispatch.LegionLabel})}); err != nil {
+		t.Fatalf("seed the copy's row of %s: %v", issue.Key, err)
 	}
 }
 
@@ -874,14 +822,10 @@ func seedGate(t *testing.T, pool *pgxpool.Pool, gate record.DesignGate) {
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutGate(t.Context(), tx, gate) })
 }
 
-// seedSlot grants the slot and opens the tree lifecycle of the issue holding it under the
-// workflow's authority, as promotion's own admission does in one transaction. The lifecycle, not
-// the slot row, is what says a tree runs (record.TreeLive), so a fixture that granted a slot and
-// nothing else would describe a tree the daemon reads as never opened.
+// seedSlot grants the slot, as promotion's own admission does.
 func seedSlot(t *testing.T, pool *pgxpool.Pool, slot record.Slot) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutSlot(t.Context(), tx, slot) })
-	seedTreeLifecycle(t, pool, slot.Issue)
 }
 
 func seedPhase(t *testing.T, pool *pgxpool.Pool, row record.PhaseRow) {
@@ -925,7 +869,7 @@ const testReviewApp = "legion-reviewer[bot]"
 // logging to log (the default logger when nil).
 func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 	return New(record.NewStore(), Config{
-		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+		Project: "LEGION", Steps: policy.Steps(), ReviewRoundCap: 3, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 		Clock: func() time.Time { return time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC) },
 	}, log)
 }

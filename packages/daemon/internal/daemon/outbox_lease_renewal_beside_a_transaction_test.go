@@ -21,10 +21,10 @@ import (
 // it is a second caller of the pool and not a second connection of the row's: it must be served
 // its own connection, as it was before the pool refused nested connections (INFRA-3169).
 //
-// Here the row's read of its hand-over (handOverHolds) waits on a lock the test holds, which is
-// the shape INFRA-3169 measured: a transaction that waits while it holds its connection, as a fact
-// that queues on the fact serializer does. A tick that comes in that wait has to move the lease a
-// whole lease ahead, as it does for a row blocked outside any transaction
+// Here the close row's read of its issue's record (closeStands) waits on a lock the test holds,
+// which is the shape INFRA-3169 measured: a transaction that waits while it holds its connection,
+// as a fact that queues on the fact serializer does. A tick that comes in that wait has to move the
+// lease a whole lease ahead, as it does for a row blocked outside any transaction
 // (TestALaneRenewsItsRunningRowsLeaseAndNoSweepClaimsItAgain). A tick refused instead leaves the
 // lease where it was, and three refused ticks in a row lapse it while the database answers, so
 // the sweep runs the row a second time beside the first.
@@ -35,17 +35,17 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	clock := microClock()
 	ctx := context.Background()
 	const issue = "LEGION-208"
-	// The issue the hand-over's read finds first, so the read goes on to the hand-over table the
-	// test locks.
+	// The record the close's read finds once the lock goes: at the generation the close names, so
+	// the close stands and is written.
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, runningRoot(issue, phase.Implementing))
 	}); err != nil {
-		t.Fatalf("record the issue the hand-over's read finds: %v", err)
+		t.Fatalf("record the issue the close's read finds: %v", err)
 	}
 	client := &blockingDispatch{issue: dispatch.Issue{Key: issue, Status: "todo"}}
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, log: quietLogger()}
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue,
-		record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), clock.Now()))
+		record.CloseStatusWrite("done", "todo", "", runningRoot(issue, phase.Implementing).Generation), clock.Now()))
 
 	lock, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -54,12 +54,12 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	var unlocked sync.Once
 	unlock := func() { unlocked.Do(func() { _ = lock.Rollback(context.Background()) }) }
 	t.Cleanup(unlock)
-	if _, err := lock.Exec(ctx, "lock table handovers in access exclusive mode"); err != nil {
-		t.Fatalf("lock the hand-over table against the row's read: %v", err)
+	if _, err := lock.Exec(ctx, "lock table issues in access exclusive mode"); err != nil {
+		t.Fatalf("lock the issues table against the row's read: %v", err)
 	}
 	runLanes(t, runner, clock, unlock)
 
-	awaitOneLockWaiter(t, pool, "the row's read of its hand-over to wait on the test's lock")
+	awaitOneLockWaiter(t, pool, "the close's read of its issue's record to wait on the test's lock")
 	id := outboxIDs(t, pool)[0]
 	claimed := rowStateOf(t, pool, id)
 	if claimed.leaseToken == "" || claimed.leaseUntil == nil {
@@ -103,7 +103,7 @@ func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	rows := []record.OutboxRow{
-		mustOutboxRow(t, "LEGION-208", record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), now),
+		mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("todo", "backlog", ""), now),
 		mustOutboxRow(t, "LEGION-209", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
 			Role: claim.RolePlanner, CloseRoles: []claim.Role{claim.RolePlanner}}, now),
 		mustOutboxRow(t, "LEGION-210", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,

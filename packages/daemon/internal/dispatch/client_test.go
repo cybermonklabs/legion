@@ -1,6 +1,8 @@
 package dispatch
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,7 +11,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -263,6 +267,382 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 		!written.HandedOver || written.ResolvedRepo != "acme/widgets" || len(written.BlockedBy) != 1 || written.Claim != nil || written.ClaimUnread {
 		t.Fatalf("written issue = %#v, want LEGION-4 as the PATCH answered it, at sequence 12", written)
 	}
+}
+
+// A status change posts its status and each option it names to the route, under the daemon's own
+// session as every write of the client goes, fenced on the sequence its caller read, and under the
+// request key its caller gives. An option it does not name and a fence it does not give stay off
+// the wire, and an empty key sends no header, so Dispatch runs that call unkeyed.
+func TestChangeStatusPostsItsOptionsUnderTheDaemonSessionAndItsKey(t *testing.T) {
+	type sent struct {
+		keys []string
+		body map[string]any
+	}
+	var calls []sent
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.EscapedPath() != "/api/v1/issues/LEGION-1/status-change" {
+			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-1/status-change", r.Method, r.URL.EscapedPath())
+		}
+		assertBearer(t, r)
+		var body map[string]any
+		decodeJSON(t, r, &body)
+		calls = append(calls, sent{keys: r.Header.Values("Idempotency-Key"), body: body})
+		writeJSON(t, w, map[string]any{"issue": map[string]any{"key": "LEGION-1", "status": "backlog", "last_seq": 9}, "changed": []any{}})
+	}))
+	defer server.Close()
+
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
+	for _, change := range []StatusChange{
+		{Status: "backlog", ExpectedSequence: 7, IncludeChildren: true, IdempotencyKey: "outbox-12-1"},
+		{Status: "todo", UnlinkChildren: true, IncludeParent: true, DryRun: true},
+	} {
+		if _, err := client.ChangeStatus(context.Background(), "LEGION-1", change); err != nil {
+			t.Fatalf("change status %+v: %v", change, err)
+		}
+	}
+	actor := map[string]any{"kind": "session", "id": "legion-daemon:LEGION"}
+	want := []sent{
+		{keys: []string{"outbox-12-1"}, body: map[string]any{"status": "backlog", "expected_sequence": float64(7), "include_children": true, "actor": actor}},
+		{body: map[string]any{"status": "todo", "unlink_children": true, "include_parent": true, "dry_run": true, "actor": actor}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("status changes sent = %#v, want %#v", calls, want)
+	}
+}
+
+// Each answer Dispatch gives a status change, and each of its request key's answers, as the client
+// reads them: the answers of testdata, each captured from a real Dispatch as its README says.
+// Every file there has its case here, so a capture added there is read too; a directory there
+// holds another test's files (testdata/resolved, resolved_test.go's), and is passed over.
+func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
+	ctx := context.Background()
+	change := StatusChange{Status: "backlog", ExpectedSequence: 7, IncludeChildren: true, IdempotencyKey: "outbox-12-1"}
+	cases := []struct {
+		answer string
+		read   func(t *testing.T, client *HTTPClient)
+	}{
+		{"status_change_no_route.http", func(t *testing.T, client *HTTPClient) {
+			// A Dispatch older than the route: no handler ran, and the write is taken once the
+			// release that serves the route is live.
+			_, err := client.ChangeStatus(ctx, "CORE-1", change)
+			if !NoRoute(err) {
+				t.Fatalf("status change against a Dispatch without the route = %v, want its router's 404 (NoRoute)", err)
+			}
+			if refusal := refusalOf(t, err); refusal.Issues != nil || refusal.Changed != nil {
+				t.Fatalf("the router's 404 = %#v, want no issues and no committed steps", refusal)
+			}
+		}},
+		{"key_reused.http", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "CORE-4", change)
+			assertRefusal(t, err, http.StatusUnprocessableEntity, "KEY_REUSED")
+		}},
+		{"key_in_flight.http", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "CORE-7", change)
+			assertRefusal(t, err, http.StatusConflict, "KEY_IN_FLIGHT")
+		}},
+		{"key_committed.http", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "CORE-1", change)
+			assertRefusal(t, err, http.StatusConflict, "KEY_COMMITTED")
+		}},
+		{"key_replayed.http", func(t *testing.T, client *HTTPClient) {
+			// Captured on the PATCH that answered it, the route it is read from here: a repeat
+			// under its key is answered the first answer again, which reads as that answer did.
+			written, err := client.SetStatusAt(ctx, Issue{Key: "CORE-5", LastSeq: 3}, "todo")
+			if err != nil {
+				t.Fatalf("a replayed answer = %v, want the issue it answered", err)
+			}
+			if written.Key != "CORE-5" || written.Project != "CORE" || written.Status != "todo" || written.LastSeq != 4 ||
+				written.Parent != nil || written.PrimaryArtifactID != "32c04a24-77e7-4e95-877c-a6a424dd7ecb" {
+				t.Fatalf("replayed issue = %#v, want CORE-5 at todo and sequence 4 as the first answer gave it", written)
+			}
+		}},
+		{"status_change_include_children.http", func(t *testing.T, client *HTTPClient) {
+			// The child's step, then the named issue's, each with the issue as its step left it:
+			// the child's step adds its child.status event to the named issue first.
+			result, err := client.ChangeStatus(ctx, "LEGION-41", change)
+			if err != nil {
+				t.Fatalf("status change: %v", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-41 backlog parent=none seq=5" {
+				t.Fatalf("named issue = %s (%#v), want LEGION-41 at backlog and its own step's sequence", got, result.Issue)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-42 backlog parent=LEGION-41 previous=2 issue=LEGION-42 backlog parent=LEGION-41 seq=4",
+				"LEGION-41 backlog parent=none previous=4 issue=LEGION-41 backlog parent=none seq=5")
+		}},
+		{"status_change_replayed.http", func(t *testing.T, client *HTTPClient) {
+			// The same call again under its key, answered from the key's recovery point: each
+			// entry's issue exactly as its step's write answered it, as the first answer gave it.
+			result, err := client.ChangeStatus(ctx, "LEGION-41", change)
+			if err != nil {
+				t.Fatalf("a replayed answer = %v, want the answer the first call had", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-41 backlog parent=none seq=5" {
+				t.Fatalf("replayed named issue = %s, want LEGION-41 as its own step left it", got)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-42 backlog parent=LEGION-41 previous=2 issue=LEGION-42 backlog parent=LEGION-41 seq=4",
+				"LEGION-41 backlog parent=none previous=4 issue=LEGION-41 backlog parent=none seq=5")
+		}},
+		{"status_change_dry_run.http", func(t *testing.T, client *HTTPClient) {
+			dryRun := change
+			dryRun.DryRun = true
+			result, err := client.ChangeStatus(ctx, "LEGION-39", dryRun)
+			if err != nil {
+				t.Fatalf("dry run: %v", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-39 in_progress parent=none seq=3" {
+				t.Fatalf("named issue = %s, want LEGION-39 as it stands", got)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-40 backlog parent=LEGION-39 previous=2 issue=none",
+				"LEGION-39 backlog parent=none previous=3 issue=none")
+		}},
+		{"status_change_unlink_children.http", func(t *testing.T, client *HTTPClient) {
+			// The child unlinked and left at its status, then the named issue.
+			result, err := client.ChangeStatus(ctx, "LEGION-43", StatusChange{Status: "backlog", ExpectedSequence: 4, UnlinkChildren: true})
+			if err != nil {
+				t.Fatalf("unlink_children: %v", err)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-44 in_progress parent=none previous=2 issue=LEGION-44 in_progress parent=none seq=4",
+				"LEGION-43 backlog parent=none previous=4 issue=LEGION-43 backlog parent=none seq=5")
+		}},
+		{"status_change_include_parent.http", func(t *testing.T, client *HTTPClient) {
+			// The parent's step first, moving it into work, then the named child's.
+			result, err := client.ChangeStatus(ctx, "LEGION-46", StatusChange{Status: "todo", ExpectedSequence: 1, IncludeParent: true})
+			if err != nil {
+				t.Fatalf("include_parent: %v", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-46 todo parent=LEGION-45 seq=2" {
+				t.Fatalf("named issue = %s, want LEGION-46 at todo under LEGION-45", got)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-45 in_progress parent=none previous=2 issue=LEGION-45 in_progress parent=none seq=4",
+				"LEGION-46 todo parent=LEGION-45 previous=1 issue=LEGION-46 todo parent=LEGION-45 seq=2")
+		}},
+		{"status_change_stale_sequence.http", func(t *testing.T, client *HTTPClient) {
+			// Read as the PATCH's ISSUE_CHANGED is: the caller reads the issue again.
+			_, err := client.ChangeStatus(ctx, "LEGION-37", change)
+			refusal := assertRefusal(t, err, http.StatusConflict, "ISSUE_CHANGED")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a stale read the caller reads again", err)
+			}
+			assertChanged(t, refusal.Changed)
+		}},
+		{"status_change_no_option.http", func(t *testing.T, client *HTTPClient) {
+			// The rule on: a parent moved out of work while a child of it is in work.
+			_, err := client.ChangeStatus(ctx, "LEGION-33", StatusChange{Status: "backlog", ExpectedSequence: 3})
+			assertParentStatusConflict(t, err, ConflictIssue{Key: "LEGION-34", Status: "in_progress"})
+		}},
+		{"status_change_todo_under_backlog.http", func(t *testing.T, client *HTTPClient) {
+			// The rule on: a child moved into work under a parent that is not.
+			_, err := client.ChangeStatus(ctx, "LEGION-36", StatusChange{Status: "todo", ExpectedSequence: 1})
+			assertParentStatusConflict(t, err, ConflictIssue{Key: "LEGION-35", Status: "backlog"})
+		}},
+		{"status_change_no_option_rule_off.http", func(t *testing.T, client *HTTPClient) {
+			// The rule off: the same move is taken, the named issue's step alone.
+			result, err := client.ChangeStatus(ctx, "LEGION-1", StatusChange{Status: "backlog", ExpectedSequence: 3})
+			if err != nil {
+				t.Fatalf("a move with no option with the rule off = %v, want it taken", err)
+			}
+			assertChanged(t, result.Changed, "LEGION-1 backlog parent=none previous=3 issue=LEGION-1 backlog parent=none seq=4")
+		}},
+		{"status_change_todo_under_backlog_rule_off.http", func(t *testing.T, client *HTTPClient) {
+			result, err := client.ChangeStatus(ctx, "LEGION-4", StatusChange{Status: "todo", ExpectedSequence: 1})
+			if err != nil {
+				t.Fatalf("a child's todo under a parent on the backlog with the rule off = %v, want it taken", err)
+			}
+			assertChanged(t, result.Changed, "LEGION-4 todo parent=LEGION-3 previous=1 issue=LEGION-4 todo parent=LEGION-3 seq=2")
+		}},
+		{"status_change_key_in_flight.http", func(t *testing.T, client *HTTPClient) {
+			// The route's own answer to a repeat while the first run still runs: the same call
+			// again after its Retry-After.
+			_, err := client.ChangeStatus(ctx, "LEGION-47", change)
+			refusal := assertRefusal(t, err, http.StatusConflict, "KEY_IN_FLIGHT")
+			assertChanged(t, refusal.Changed)
+			if refusal.RetryAfter != time.Second {
+				t.Fatalf("Retry-After = %s, want the one second the answer asks for", refusal.RetryAfter)
+			}
+		}},
+		{"status_change_midway_refused.http", func(t *testing.T, client *HTTPClient) {
+			// A person wrote the named issue between two steps: the later step is refused, and the
+			// answer carries the entries of the four steps that committed before it.
+			_, err := client.ChangeStatus(ctx, "LEGION-2", change)
+			refusal := assertRefusal(t, err, http.StatusConflict, "ISSUE_CHANGED")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a stale read the caller reads again", err)
+			}
+			assertChanged(t, refusal.Changed,
+				"LEGION-3 backlog parent=LEGION-2 previous=2 issue=LEGION-3 backlog parent=LEGION-2 seq=4",
+				"LEGION-4 backlog parent=LEGION-2 previous=2 issue=LEGION-4 backlog parent=LEGION-2 seq=4",
+				"LEGION-5 backlog parent=LEGION-2 previous=2 issue=LEGION-5 backlog parent=LEGION-2 seq=4",
+				"LEGION-6 backlog parent=LEGION-2 previous=2 issue=LEGION-6 backlog parent=LEGION-2 seq=4")
+		}},
+		{"status_change_keyed_repeat.http", func(t *testing.T, client *HTTPClient) {
+			// The repeat, under the same key, of a call whose Dispatch process was killed after a
+			// step committed, sent once the killed run's lease on its key lapsed: the route
+			// finishes what the first run left and answers the whole call, every child's step and
+			// the named issue's last.
+			result, err := client.ChangeStatus(ctx, "LEGION-203", change)
+			if err != nil {
+				t.Fatalf("the keyed repeat = %v, want the whole call answered", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-203 backlog parent=none seq=403" {
+				t.Fatalf("named issue = %s, want LEGION-203 at backlog as its own step left it", got)
+			}
+			if len(result.Changed) != 201 {
+				t.Fatalf("entries = %d, want one for each of the 200 children and one for the named issue", len(result.Changed))
+			}
+			for _, entry := range result.Changed[:200] {
+				if entry.Status != "backlog" || parentOf(entry.Parent) != "LEGION-203" || entry.Issue == nil || entry.Issue.LastSeq <= entry.PreviousLastSeq {
+					t.Fatalf("a child's entry = %#v, want it at backlog under LEGION-203, written by its step", entry)
+				}
+			}
+			assertChanged(t, result.Changed[200:], "LEGION-203 backlog parent=none previous=402 issue=LEGION-203 backlog parent=none seq=403")
+		}},
+		{"status_scope_required.http", func(t *testing.T, client *HTTPClient) {
+			// Read off the PATCH that answered it: a Dispatch whose DISPATCH_LEGION_STATUS_SCOPE is
+			// on refuses the status write of a Legion issue on a token that holds neither the
+			// person scope nor legion-status 403 LEGION_STATUS_SCOPE_REQUIRED before it writes, and
+			// the refusal is kept as every 403 is: the same write is taken once the daemon's token
+			// holds the scope (decision 12 of dispatch://INFRA-4730).
+			_, err := client.SetStatusAt(ctx, Issue{Key: "LEGION-1", LastSeq: 2}, "todo")
+			assertRefusal(t, err, http.StatusForbidden, "LEGION_STATUS_SCOPE_REQUIRED")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a 403 the status write keeps and writes again", err)
+			}
+		}},
+		{"role_holders_forbidden.http", func(t *testing.T, client *HTTPClient) {
+			// Read off the role-holder publication's route, which answered it: a publication whose
+			// actor is not the issue's project's daemon is refused 403 ROLE_HOLDER_FORBIDDEN, kept
+			// as every 403 is, and read by the daemon's outbox as a status write's
+			// LEGION_STATUS_SCOPE_REQUIRED (decision 12 of dispatch://INFRA-4730).
+			err := client.PutRoleHolders(ctx, "LEGION-1", nil)
+			assertRefusal(t, err, http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a 403 the publication keeps and writes again", err)
+			}
+		}},
+	}
+	read := map[string]bool{}
+	for _, testCase := range cases {
+		read[testCase.answer] = true
+		t.Run(testCase.answer, func(t *testing.T) {
+			testCase.read(t, New(replayingDispatch(t, testCase.answer).URL, BearerTransport(dispatchToken, nil)))
+		})
+	}
+	saved, err := os.ReadDir("testdata")
+	if err != nil {
+		t.Fatalf("list the saved answers: %v", err)
+	}
+	for _, entry := range saved {
+		if !entry.IsDir() && entry.Name() != "README" && !read[entry.Name()] {
+			t.Errorf("testdata/%s is read by no case", entry.Name())
+		}
+	}
+}
+
+// replayingDispatch is a server that answers every request with the saved answer name of
+// testdata, one whole answer as `curl --include --raw` printed it (or Go's
+// httputil.DumpResponse, which writes the same): the status line, every header and the body as
+// it went on the wire.
+func replayingDispatch(t *testing.T, name string) *httptest.Server {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !strings.HasSuffix(name, ".http") {
+		t.Fatalf("%s is no .http capture", path)
+	}
+	saved, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(data)), nil)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	defer saved.Body.Close()
+	body, err := io.ReadAll(saved.Body)
+	if err != nil {
+		t.Fatalf("read the body of %s: %v", path, err)
+	}
+	header := saved.Header
+	header.Del("Content-Length")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for key, values := range header {
+			w.Header()[key] = values
+		}
+		w.WriteHeader(saved.StatusCode)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// assertParentStatusConflict holds err to Dispatch's 409 PARENT_STATUS_CONFLICT naming exactly
+// want, with no step committed, which PermanentRefusal leaves to its caller to decide on.
+func assertParentStatusConflict(t *testing.T, err error, want ...ConflictIssue) {
+	t.Helper()
+	if !ParentStatusConflict(err) {
+		t.Fatalf("status change = %v, want PARENT_STATUS_CONFLICT", err)
+	}
+	refusal := refusalOf(t, err)
+	if !reflect.DeepEqual(refusal.Issues, want) || len(refusal.Changed) != 0 {
+		t.Fatalf("PARENT_STATUS_CONFLICT = %#v, want it to name %#v with no step committed", refusal, want)
+	}
+	if _, permanent := PermanentRefusal(err); permanent {
+		t.Fatalf("PermanentRefusal(%v) = permanent, want a refusal its caller decides on", err)
+	}
+}
+
+// refusalOf is err as the *Error Dispatch's refusal is, failing the test when it is none.
+func refusalOf(t *testing.T, err error) *Error {
+	t.Helper()
+	var refusal *Error
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %T %v, want Dispatch's refusal (*dispatch.Error)", err, err)
+	}
+	return refusal
+}
+
+// assertRefusal is refusalOf, holding the refusal to its status and code and to a message that
+// says something, and to no issues: only a PARENT_STATUS_CONFLICT names any.
+func assertRefusal(t *testing.T, err error, status int, code string) *Error {
+	t.Helper()
+	refusal := refusalOf(t, err)
+	if refusal.Status != status || refusal.Code != code || refusal.Message == "" || refusal.Issues != nil {
+		t.Fatalf("refusal = %#v, want %d %s with its message and no issues", refusal, status, code)
+	}
+	return refusal
+}
+
+// assertChanged holds a status change's entries, in order, to want, each on one line: its key,
+// status, parent and previous sequence, and its issue as issueSummary writes it.
+func assertChanged(t *testing.T, entries []StatusChangeEntry, want ...string) {
+	t.Helper()
+	var got []string
+	for _, entry := range entries {
+		got = append(got, fmt.Sprintf("%s %s parent=%s previous=%d issue=%s",
+			entry.Key, entry.Status, parentOf(entry.Parent), entry.PreviousLastSeq, issueSummary(entry.Issue)))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("changed = %q, want %q", got, want)
+	}
+}
+
+// issueSummary is an issue's key, status, parent and sequence on one line, "none" for no issue.
+func issueSummary(issue *Issue) string {
+	if issue == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%s %s parent=%s seq=%d", issue.Key, issue.Status, parentOf(issue.Parent), issue.LastSeq)
+}
+
+func parentOf(parent *string) string {
+	if parent == nil {
+		return "none"
+	}
+	return *parent
 }
 
 // A claim release is a DELETE on the issue's claim, under the daemon's own session. It sends a
@@ -1271,6 +1651,14 @@ func clientWrites() []clientWrite {
 				return err
 			},
 			body: `{"status":"in_progress","expected_sequence":12,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
+		},
+		{
+			method: "ChangeStatus", route: "POST /api/v1/issues/OTHER-7/status-change",
+			call: func(ctx context.Context, client *HTTPClient) error {
+				_, err := client.ChangeStatus(ctx, "OTHER-7", StatusChange{Status: "backlog", ExpectedSequence: 12, IncludeChildren: true})
+				return err
+			},
+			body: `{"status":"backlog","expected_sequence":12,"include_children":true,"actor":{"kind":"session","id":"legion-daemon:OTHER"}}`,
 		},
 		{
 			method: "ReleaseClaim", route: "DELETE /api/v1/issues/OTHER-7/claim",

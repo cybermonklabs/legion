@@ -98,7 +98,7 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 			at := record.StandsAt(tc.issue)
 			ask := record.MergeForwardMessage{Role: record.MergeForwardAsker(at), Step: record.MergeForwardAsk, Head: head, Base: "main",
 				Phase: at, PullRequest: 42, Why: got}
-			if _, err := record.NewOutboxRow(tc.issue.Key, ask, time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)); err != nil {
+			if _, err := record.NewOutboxRow(tc.issue.Key, record.Fenced(ask, record.FirstFence), time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)); err != nil {
 				t.Fatalf("the merge forward's ask with why %q cannot be queued: %v", got, err)
 			}
 		})

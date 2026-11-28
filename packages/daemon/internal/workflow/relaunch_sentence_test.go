@@ -28,7 +28,9 @@ func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	sentence := supervise.RelaunchSentence(supervise.EndedWork{Cause: "its pod was replaced", Turn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true})
-	const tree = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says"
+	// Nothing registered the tree's gate, so the reason names its spec step after the tree.
+	const tree = "the tree of LEGION-1 at generation 1 as the daemon records it now; start or resume it as your role says" +
+		"; no document is registered for the spec step of LEGION-1: register the document of that step with register_gate and request the person's approval"
 	reasons := func() []string {
 		t.Helper()
 		got := []string{}

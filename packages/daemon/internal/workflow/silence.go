@@ -49,7 +49,7 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if read.run.Claim.Step.LastStep().After(fact.LastStep) {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.root, read.run, read.row, fact, now)
+	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.run, read.row, fact, now)
 }
 
 // phaseWorkerRecord reads what both silence facts are decided from: the issue, its tree root, the
@@ -72,13 +72,12 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil || !owed {
 		return nil, err
 	}
-	root := issue
-	if issue.Tree != issue.Key {
-		if root, err = e.store.Issue(ctx, tx, issue.Tree); err != nil || root == nil {
-			return nil, err
-		}
+	// The gate the worker works under is its gate root's on the Dispatch chain (gateRootOf).
+	root, err := e.gateRootOf(ctx, tx, *issue)
+	if err != nil {
+		return nil, err
 	}
-	rows, err := e.store.GatesOf(ctx, tx, issue.Tree)
+	rows, err := e.store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +95,7 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	return &phaseWorkerReading{issue: *issue, root: *root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run, row: row}, nil
+	return &phaseWorkerReading{issue: *issue, root: root, gate: record.TreeGate{Steps: e.cfg.Steps, Rows: rows}, run: run, row: row}, nil
 }
 
 // phaseWorkerReading is what phaseWorkerRecord answers.
@@ -141,11 +140,11 @@ type phaseWorkerReading struct {
 // (record.QuietTrees), which is where a recovery is read.
 //
 // The log line goes through warnOnCommit, so a fact that rolls back logs no repair.
-func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root record.Issue, run record.RoleRun, row record.PhaseRow,
+func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue record.Issue, run record.RoleRun, row record.PhaseRow,
 	fact intake.WorkerSilent, now time.Time,
 ) error {
 	given := run.Claim.GivenEntry
-	behind := OwedEntry(run, root, row.Entry)
+	behind := OwedEntry(run, row.Entry)
 	if behind {
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err

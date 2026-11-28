@@ -22,14 +22,14 @@ import (
 //     for such a root once its gate has opened, because no phase worker of it works there; its
 //     own architect still does, since it is the only role at work on the root itself, and the
 //     measured defect is a relaunched architect of such a root (dispatch://INFRA-2614).
-//   - a root a hand-over carried in, in every phase that carries a run (record.Issue.CarriesRun)
-//     at the generation the hand-over opened, which the record states as the hand-over row of
-//     this generation (ArchitectCarried, the reading the catch-up makes). R5 names a root a
+//   - a root a hand-over of the release before carried in, in every phase that carries a run
+//     (record.Issue.CarriesRun) at the generation the hand-over opened, which the issue's own
+//     record states (ArchitectCarried, the reading the catch-up makes). R5 names a root a
 //     hand-over carried in while it stands in the phase that came with it, and this reach is
 //     wider than that because the record holds no fact that says the root still stands in that
-//     phase. The hand-over row names the issue, its generation and whether a gate came with it,
-//     and no phase. The promotion that opens the tree raises the carried phase role's entry and
-//     the architect's in one transaction, each at the engine's own clock, and a later transition
+//     phase: it names the generation the hand-over carried and whether a gate came with it, and no
+//     phase. The promotion that opened the tree raised the carried phase role's entry and the
+//     architect's in one transaction, each at the engine's own clock, and a later transition
 //     raises the next role's entry at a later moment, so no comparison of those moments is exact,
 //     and the architect's own entry moves again with each resume. The issue's movement mark moves
 //     with every fact of the issue, a Dispatch event among them, and neither its run mark
@@ -39,9 +39,7 @@ import (
 //     only what holds in every phase of that run (writeCarriedPhase), and what the reach does
 //     past the carried phase holds of such a root wherever it stands: the sweep sends its
 //     architect an entry the claim was not given, and the first stall arm reads the task of the
-//     entry the row names. The mark on the issue (record.Issue.HandedOverFrom) is no use here:
-//     the promotion that opens the root's own tree clears it, and this is read after that
-//     promotion.
+//     entry the row names.
 //   - a root past phase.Admitted under its own power while the entry its architect's phases row
 //     names (entry) was raised by the resume of a person's answer (record.PhaseEntry.Resumed,
 //     ResumeAwaitedRoot) and its claim has not been given it (run's record.RoleClaim.GivenEntry
@@ -54,36 +52,33 @@ import (
 //     after that resume, and the answer to the new wait raises an entry of its own and queues the
 //     next start of its architect, which admit's architectClaimUnreachable tells the controller.
 //
-// It reaches no wider. Any other root past phase.Admitted holds no hand-over row of its
+// It reaches no wider. Any other root past phase.Admitted was carried in by no hand-over at its
 // generation and stands there under its own power, with a phase role that owns its work; a root
 // in accepting is told by the notice that moved it there, and a root waiting on a person by the
-// resume the daemon composes when the answer lands. A child at phase.Admitted is not its tree's
-// root, so a child's own sub-architect claim is outside the rule, which ArchitectHears answers
-// for again before anything is sent.
+// resume the daemon composes when the answer lands. An issue that holds no gate of its own on the
+// Dispatch chain (holdsGate, record.Chains.HoldsOwnGate, which the caller reads on its pass's
+// chains) is no root, so a child's own sub-architect claim is outside the rule, which
+// ArchitectHears answers for again before anything is sent.
 //
 // Whether that architect can hear what the rule would send is a question of its own
 // (ArchitectHears), and whether a start is already on its way is a third (ArchitectStartPending).
 // entry and run are what the caller read for the whole pass (record.Store.PhaseEntries,
-// record.Store.RoleRuns). The store read is made for a slotted tree root past phase.Admitted that
-// no resume's entry keeps alone: a child, a root at phase.Admitted and a root owed a resume are
-// answered from the record in hand.
-func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, entry record.PhaseEntry,
-	run record.RoleRun,
-) (bool, error) {
-	if !claim.IsTreeRoot(root.Key, root.Tree) {
-		return false, nil
+// record.Store.RoleRuns), so the reach is read from the record in hand and reads nothing.
+func ArchitectAtWork(root record.Issue, holdsGate bool, entry record.PhaseEntry, run record.RoleRun) bool {
+	if !holdsGate {
+		return false
 	}
 	if root.Phase == phase.Admitted {
-		return true, nil
+		return true
 	}
 	if !root.CarriesRun() {
-		return false, nil
+		return false
 	}
 	if resumeOwed(root, entry, run) {
-		return true, nil
+		return true
 	}
-	handed, err := ArchitectCarried(ctx, tx, store, root)
-	return handed != nil, err
+	carried, _ := ArchitectCarried(root)
+	return carried
 }
 
 // resumeOwed is the third root of ArchitectAtWork, asked of a root that stands in a phase that
@@ -104,24 +99,22 @@ func resumeOwed(root record.Issue, entry record.PhaseEntry, run record.RoleRun) 
 	return GivenEntry(run) < entry.Entry
 }
 
-// ArchitectCarried is the record of a hand-over that created root at the generation it stands at
-// (record.Store.HandedOverRoot), nil where none did: the run of that generation is the one the
-// hand-over carried the root into, with the phase records and the pull request it brought and,
-// where the row says so, its design gate (record.HandedOverRoot.GateCarried). A row of an earlier
-// generation belongs to a run that has ended, so it says nothing of this one. The row names no
-// phase, so it does not say the root still stands in the phase that came with it, only that it
-// stands in that run (ArchitectAtWork says why no other fact says more). It is the one reading
-// of that question: the sweep's reach (ArchitectAtWork) and the reader of what a root
+// ArchitectCarried says whether a hand-over of the release before carried root into the run it
+// stands at, and whether that hand-over brought root's design gate with it: the facts the first
+// boot's conversion copied onto root's own record (record.Issue.CarriedGeneration and
+// CarriedGate, R17 of dispatch://INFRA-3320: how a run started is a fact of the issue). A carry of
+// an earlier generation belongs to a run that has ended, so it says nothing of this one. The
+// record names no phase, so it does not say the root still stands in the phase that came with it,
+// only that it stands in that run (ArchitectAtWork says why no other fact says more). It is the
+// one reading of that question: the sweep's reach (ArchitectAtWork) and the reader of what a root
 // architect's task is derived from (ArchitectStartOf) both make it, which is every start of a
-// root architect and the daemon's narrowing of a held task. The mark on the issue
-// (record.Issue.HandedOverFrom) is no such reading: the promotion that opens the root's tree
-// clears it.
-func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue) (*record.HandedOverRoot, error) {
-	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
-	if err != nil || handed == nil || handed.Generation != root.Generation {
-		return nil, err
+// root architect and the daemon's narrowing of a held task, and so does the catch-up
+// (treeCatchUp).
+func ArchitectCarried(root record.Issue) (carried, gate bool) {
+	if root.CarriedGeneration == 0 || root.CarriedGeneration != root.Generation {
+		return false, false
 	}
-	return handed, nil
+	return true, root.CarriedGate
 }
 
 // ArchitectStartPending says whether a start of a root architect is already on its way, and why,
@@ -227,8 +220,8 @@ const (
 // outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
 // start can still cure the claim, and a start that has run against it and left it as it was cannot
 // (the architect's reading of R7 at dispatch://INFRA-2614).
-func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.Time) ArchitectRelaunch {
-	stop := actingStop(run, root)
+func ArchitectRelaunchOf(run record.RoleRun, floor, now time.Time) ArchitectRelaunch {
+	stop := actingStop(run)
 	lastStart := lastStartRow(run)
 	relaunch := RelaunchNone
 	for _, queued := range run.Queued {
@@ -326,14 +319,17 @@ func (e *Engine) StartArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 }
 
 // StartPromotedArchitect is StartArchitect for admission's promotion of a queued root, whose start
-// is marked decided (record.SuperviseRequest.Decided). A root reaches the line only by a person's
-// or the controller's todo on it, which hands it to Legion or opens its tree again — the
-// controller's restart of a tree, a backlog and then a todo on its root, among them — so the start
-// of its architect is theirs, as the held phase's retry is (restart). It is the one start that
-// brings back a root architect held for OpenAI's cyber-policy refusal, which it starts in a new
-// session (supervise's freshSession): an ordinary restart of the tree, which asks nothing of the
-// agent that makes it but the restart. A root admitted for the first time has no claim, and the
-// mark changes nothing for it.
+// is marked decided (record.SuperviseRequest.Decided). A root reaches the line only by a decision
+// on it: a person's todo that hands it to Legion or opens a new run of it (NewRun: a todo on it at
+// done, the reopen of an issue its merge closed), or its architect's rerun_child of an issue that
+// holds its own gate, which starts as a root at its new run (record.Chains.StartsAsRoot). So the
+// start of its architect is theirs, as the held phase's retry is (restart). It is the one start of
+// the promotion that brings back a root architect held for OpenAI's cyber-policy refusal, which it
+// starts in a new session (supervise's freshSession). Which issue is the root and whose architect
+// that is are the Dispatch chain's: the line queues the root the chain answers (record.LineFacts.Queued),
+// and the outbox's start launches the architect under the gate root it reads on that chain, the
+// root's own key (the daemon outbox's launchOf). A root admitted for the first time has no claim,
+// and the mark changes nothing for it.
 func (e *Engine) StartPromotedArchitect(ctx context.Context, tx pgx.Tx, root record.Issue) error {
 	return e.startArchitect(ctx, tx, root, true)
 }
@@ -377,6 +373,6 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
 	kept *record.KeptDecisions, entry int64, decided bool,
 ) error {
-	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
+	return e.EnqueueNaming(ctx, tx, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree,
 		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept, Decided: decided}, kept, e.now())
 }

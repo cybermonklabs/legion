@@ -790,33 +790,33 @@ func boundRanOut(parent, bounded context.Context, bound time.Duration, err error
 // mints bounded by call, and the store reads and launcher frames bounded by their context alone,
 // the try's — counted generously, every retry and rare branch included, since the bound they size
 // (launchBound) must never be shorter than a legitimate try. Per try (relaunchPodCalls):
-// ensureSandbox's Get, its Create or relabel patch and that relabel's store read, and for a Sandbox
-// being deleted the wait's last Get, past its deadline, and the Get and Create after it (6); the
-// suspension patch, or for a Sandbox already Suspended the patch of the reset mark, which a try
-// sends in its place (1); awaitPodGone's confirming Get, which may begin just before its deadline
-// (1); provision's token mint and its Secret upsert's Get, Delete and Create (4), and its
-// repository cache's ensure (cacheEnsureCalls); the Running patch (1); the stop of an earlier
-// generation (1); the address record patch (1); the Start frame (1) — 16, the cache's ensure apart.
-// A try that replaces its Sandbox for another disk shape or a reset of its kept volume
-// (replaceSupersededSandbox) still spends one call more, and so sets the count at 17: its
-// deleteStoredSandbox Get, the fenced Delete, awaitSandboxDeleted's confirming Get and the Create
-// (4) against the 3 of the 6 above that ensureSandbox's wait for a Sandbox being deleted spends.
-// That try never takes that wait: a Sandbox that ensureSandbox waited out is gone, and the one it
-// creates in its place already has the disk shape that the launch renders (sandboxManifest),
-// carries no reset mark and has no pod, so the launch does not replace it.
+// ensureSandbox's Get and its Create, and for a Sandbox being deleted the wait's last Get, past
+// its deadline, and the Get and Create after it (5); the suspension patch, or for a Sandbox
+// already Suspended the patch of the reset mark, which a try sends in its place (1);
+// awaitPodGone's confirming Get, which may begin just before its deadline (1); provision's token
+// mint and its Secret upsert's Get, Delete and Create (4), and its repository cache's ensure
+// (cacheEnsureCalls); the Running patch (1); the stop of an earlier generation (1); the address
+// record patch (1); the Start frame (1) — 15, the cache's ensure apart. A try that replaces its
+// Sandbox for another disk shape or a reset of its kept volume (replaceSupersededSandbox) still
+// spends one call more, and so sets the count at 16: its deleteStoredSandbox Get, the fenced
+// Delete, awaitSandboxDeleted's confirming Get and the Create (4) against the 3 of the 5 above
+// that ensureSandbox's wait for a Sandbox being deleted spends. That try never takes that wait: a
+// Sandbox that ensureSandbox waited out is gone, and the one it creates in its place already has
+// the disk shape that the launch renders (sandboxManifest), carries no reset mark and has no pod,
+// so the launch does not replace it.
 // A try that keeps a Sandbox that a release kept sends one patch more, which removes the
 // release's record that the Secrets are deleted (secretsReleasedAnnotation, annotate).
 // Only a try that does not replace its Sandbox sends it, because the Sandbox that a replacement
 // creates carries no record. And only a try whose Sandbox ensureSandbox found standing sends it,
 // for the same reason, so that try never spends the 3 calls of the wait for a Sandbox being
-// deleted. It thus spends 14 calls at the most, the cache's ensure apart, under the 17.
+// deleted. It thus spends 13 calls at the most, the cache's ensure apart, under the 16.
 // Per launcher role of the pod (relaunchRoleCalls, claim.Roles for an issue pod, the most any pod
 // has): launcherBound's Secret Get (1); writeLauncherSecrets' credential mint and its upsert's Get,
 // Delete and Create (4); bindLauncherSecrets' Get and Update, and both again on a conflict (4).
 var relaunchCalls = relaunchPodCalls + relaunchRoleCalls*len(claim.Roles)
 
 const (
-	relaunchPodCalls  = 17 + cacheEnsureCalls
+	relaunchPodCalls  = 16 + cacheEnsureCalls
 	relaunchRoleCalls = 9
 	// cacheEnsureCalls is one ensure of a repository's cache (ensureRepositoryCache) at its most:
 	// ensureCacheSandbox's Get and Create, the Get after a Create that found the name taken, and
@@ -993,35 +993,24 @@ func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s 
 // first, bounded by the boot timeout; one by the claim's name that is not this project's is a
 // refusal.
 //
-// A Sandbox fits a launch when it carries the tree label the launch's pod carries, none for the
-// controller's pod. It is made for an issue, whose key, so its Sandbox's name, outlives a move to
-// another tree: a child of a closed tree re-admitted as a root of its own finds the Sandbox its old
-// tree left, labelled with that tree. Such a Sandbox is relabelled for this launch's tree and
-// kept, once no stored claim of the issue in another tree may still run a process there
-// (Store.IssueRunsElsewhere); the Running patch rewrites its pod template, labels included, before
-// any pod runs. Of the old tree's work, only a kept volume comes with it. An issue pod's own
-// ephemeral volume (issuePod.disk) went with that pod, so the relabelled Sandbox's first pod
-// brings a disk of its own and provisions the issue's workspace afresh. A kept volume (keptVolume)
-// is the Sandbox's own claim, whose template carries no tree label, so it stays with the Sandbox
-// and its next pod mounts it. One its old tree left Running — the old tree's close suspended every
-// role of it, but the issue's suspension never ran, since the issue had moved — is suspended in the
-// same patch, so the relaunch waits its pod out. One a claim of the old tree may still run in is a
-// refusal, since replacing it would end that claim. An issue Sandbox of another disk shape than
-// the launch renders (supersededDisk) reaches here and is returned as it is: one of the release
-// before the pod-owned disk, or one that a change of keep_volume, the issue's sandbox or the
-// volume's class, size or access modes left behind. The boot census lets it through and names it
-// rather than refusing the daemon (treeVolumeLayout), and the relaunch replaces it, Sandbox and
-// claim together, with or after its pod (replaceSupersededSandbox). Nothing here deletes a
-// Sandbox. One it creates carries the name of the pod a replacement whose own Create failed left
-// stranded (createSandbox), so the roles that replacement ended are read as displaced from it.
+// A Sandbox is made for an issue, whose key, so its Sandbox's name, outlives a change of its
+// parent, and it is used as it is found, whatever tree label it carries: that label is the gate
+// root at the Sandbox's creation and read by no decision, and a running pod is never relabelled,
+// so a change of parent leaves the pod, its disk and every role in it as they were (R17 of
+// dispatch://INFRA-3320, decision 14 of dispatch://INFRA-4730). A role launched into it gets the
+// issue's gate root as its own LEGION_TREE (the spawn spec's Tree), and the pod keeps the label it
+// was made with. A Sandbox made Suspended gets its pod template from the Running patch, labels
+// included, before any pod runs, so the pod it makes carries the gate root of that launch. An
+// issue Sandbox of another disk shape than the launch renders (supersededDisk) reaches here and is
+// returned as it is: one of the release before the pod-owned disk, or one that a change of
+// keep_volume, the issue's sandbox or the volume's class, size or access modes left behind. The
+// boot census lets it through and names it rather than refusing the daemon (treeVolumeLayout), and
+// the relaunch replaces it, Sandbox and claim together, with or after its pod
+// (replaceSupersededSandbox). Nothing here deletes a Sandbox. One it creates carries the name of
+// the pod a replacement whose own Create failed left stranded (createSandbox), so the roles that
+// replacement ended are read as displaced from it.
 func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error) {
 	deadline := r.clock.Now().Add(r.bootTimeout)
-	// refused is the relabel the API server refused as invalid, and refusedAt the resourceVersion its
-	// fence tested: a Sandbox read again still at that resourceVersion has not changed since, so the
-	// refusal was the patch's own, and it is the answer.
-	var refused error
-	var refusedAt string
-	tree := r.labels(l)[labelTree]
 	for {
 		u, err := r.sandboxClient().Get(ctx, l.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
@@ -1045,45 +1034,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 			return nil, fmt.Errorf("sandbox %s exists but is not project %s's (%s=%q)", l.name, r.project, labelProject, s.Labels[labelProject])
 		}
 		if s.DeletionTimestamp == nil {
-			if s.Labels[labelTree] == tree {
-				return s, nil
-			}
-			if refused != nil && s.ResourceVersion == refusedAt {
-				return nil, fmt.Errorf("relabel sandbox %s for tree %s: %w", l.name, tree, refused)
-			}
-			// Fenced to the resourceVersion read, beside the uid patch tests: a relabel, a mode change,
-			// or a delete begun since that read fails the test (422), and this launch reads the Sandbox
-			// again within its deadline; a delete already completed answers 404 and fails the try.
-			ops := []jsonPatchOp{
-				{Op: "test", Path: "/metadata/resourceVersion", Value: s.ResourceVersion},
-				{Op: "add", Path: labelPatchPath(labelTree), Value: tree},
-			}
-			if s.mode() != modeSuspended {
-				running, err := r.store.IssueRunsElsewhere(ctx, r.project, l.spec.Issue, l.spec.Tree)
-				if err != nil {
-					return nil, fmt.Errorf("sandbox %s, made for tree %s: %w", l.name, s.Labels[labelTree], err)
-				}
-				if running != "" {
-					return nil, fmt.Errorf("sandbox %s, made for tree %s, does not fit this launch of tree %s and still runs roles (%s); it is relabelled once they stop",
-						l.name, s.Labels[labelTree], tree, running)
-				}
-				ops = append(ops, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended})
-			}
-			r.log.Info("sandbox runtime: relabelling a sandbox for its issue's new tree, keeping the Sandbox",
-				"sandbox", l.name, "uid", s.UID, "tree", s.Labels[labelTree], "for", tree, "operatingMode", s.mode())
-			relabelled, err := r.patch(ctx, s, ops...)
-			if apierrors.IsInvalid(err) && r.clock.Now().Before(deadline) {
-				// The fence's test failed: the Sandbox changed since the read, or this patch, sent
-				// again after an overloaded answer (resend), was already applied. Read it again and
-				// decide from what it holds now; one still at the tested resourceVersion refused the
-				// patch itself.
-				refused, refusedAt = err, s.ResourceVersion
-				continue
-			}
-			if err != nil {
-				return nil, fmt.Errorf("relabel sandbox %s for tree %s: %w", l.name, tree, err)
-			}
-			return relabelled, nil
+			return s, nil
 		}
 		r.log.Info("sandbox runtime: waiting out a sandbox being deleted", "sandbox", l.name, "uid", s.UID)
 		gone := func(ctx context.Context) (bool, error) {
@@ -1717,15 +1668,6 @@ type jsonPatchOp struct {
 	Op    string `json:"op"`
 	Path  string `json:"path"`
 	Value any    `json:"value"`
-}
-
-// labelPatchEscape escapes a label key as an RFC 6901 JSON pointer token: `~` as `~0`, `/` as `~1`.
-var labelPatchEscape = strings.NewReplacer("~", "~0", "/", "~1")
-
-// labelPatchPath is the JSON pointer of one of a Sandbox's labels, its key escaped as RFC 6901
-// requires (`~` as `~0`, then `/` as `~1`): an `add` there sets the label, replacing its value.
-func labelPatchPath(key string) string {
-	return "/metadata/labels/" + labelPatchEscape.Replace(key)
 }
 
 // displacedAnnotation names, on a Sandbox, the uid of the last live pod of it the daemon replaced

@@ -31,7 +31,7 @@ func TestARootIsDrawnForTheIssueExperimentsWhenItIsFirstRecorded(t *testing.T) {
 	admission.UseExperiments(append(declaring(config.ExperimentOn), planLength))
 	source.next = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	const root = "LEGION-1"
 
 	// A root the daemon holds no record of, handed to Legion in todo: admission records it, and
@@ -127,7 +127,7 @@ func TestADrawRecordsThePlanOfItsArm(t *testing.T) {
 			admission.UseExperiments(append(declaring(""), planningExperiment(tc.mode)))
 			source.next = refusingSource(t)
 			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
-				Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+				Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 			const root = "LEGION-1"
 			apply(t, pool, admission, "root-recorded", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 1,
 				Type: "issue.updated", Status: "todo", Title: root, Rank: "A", HandedOver: handed}, engine)

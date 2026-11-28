@@ -1359,7 +1359,7 @@ describe("a document write that superseded a person's approval", () => {
     const result = await editWithGates([{ issue: "INFRA-1503", step: "spec" }]);
 
     expect(result.text).toEndWith(
-      `${stored} A Legion design gate records this document, so every READY in its tree is refused until that approval comes back: INFRA-1503, step spec. ${nextStep}`
+      `${stored} A Legion design gate records this document, so each issue of its tree merges nothing, and starts no newly released child, until that approval comes back; work in flight goes on: INFRA-1503, step spec. ${nextStep}`
     );
   });
 
@@ -1370,7 +1370,7 @@ describe("a document write that superseded a person's approval", () => {
     ]);
 
     expect(result.text).toEndWith(
-      `${stored} A Legion design gate records this document, so every READY in each tree is refused until that approval comes back: INFRA-1503, step spec; INFRA-2200, step criteria. ${nextStep}`
+      `${stored} A Legion design gate records this document, so each issue of each tree merges nothing, and starts no newly released child, until that approval comes back; work in flight goes on: INFRA-1503, step spec; INFRA-2200, step criteria. ${nextStep}`
     );
   });
 

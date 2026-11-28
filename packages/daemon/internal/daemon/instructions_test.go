@@ -141,22 +141,30 @@ func worker(issue string, role claim.Role) api.SpawnRequest {
 	return api.SpawnRequest{Tree: "LEGION-1", Issue: issue, Role: role, Prompt: "Reply ready and wait."}
 }
 
-// recordTree records key as an issue of cfg's project before its daemon boots, so the operator's
-// spawn of key's architect draws the tree's experiments onto it (api's drawExperiments): a tree the
-// daemon holds no record of is drawn into no arm. No workflow runs in such a daemon, so nothing
-// else reads the record.
-func recordTree(t *testing.T, cfg config.Config, key string) {
+// migratedStore is the store at dsn, migrated and open until the test ends: what a test writes
+// the daemon's records and its copy of Dispatch through before a daemon boots on it, and what it
+// reads a launch's arms over (launchVariants).
+func migratedStore(t *testing.T, dsn string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.PostgresDSN)
+	st, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the store: %v", err)
 	}
-	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	return st
+}
+
+// recordTree records key in st as an issue of cfg's project in Legion's work, before its daemon
+// boots, so the operator's spawn of a claim of key draws the project's tree experiments onto key
+// itself (api's drawExperiments), and each launch of a claim of key reads that draw
+// (launchVariants). No workflow runs in such a daemon, so nothing else reads the record.
+func recordTree(t *testing.T, st *store.Store, cfg config.Config, key string) {
+	t.Helper()
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(ctx, tx, record.Issue{Key: key, Project: cfg.Project, Tree: key, Title: "a tree drawn into memory",
 			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Phase: phase.Implementing, Generation: 1,
 			Status: "in_progress", Rank: "A"})
@@ -209,7 +217,15 @@ func TestAnEditedInstructionsFileReachesTheNextLaunchWithNoRestart(t *testing.T)
 				{Name: "short", Weight: 1, InstructionsPath: mount.path("short.md")},
 			}}},
 	}}
-	recordTree(t, cfg, "LEGION-1")
+	// A launch of a recorded issue reads the arms the issue holds itself (launchVariants, R17 of
+	// dispatch://INFRA-3320): LEGION-1 is recorded, so the architect's spawn draws it into memory
+	// and the long arm. LEGION-2, whose worker launches after the edit, is not recorded and so
+	// holds no row, and the daemon's copy of Dispatch holds it under LEGION-1: its launch takes the
+	// arms of LEGION-1, the nearest issue above it in Legion's work that holds them.
+	st := migratedStore(t, cfg.PostgresDSN)
+	recordTree(t, st, cfg, "LEGION-1")
+	putCopyRow(t, st.Pool(), "LEGION-1", "", "in_progress")
+	putCopyRow(t, st.Pool(), "LEGION-2", "LEGION-1", "in_progress")
 	rt := newComposingRuntime(t)
 	d, logs := startLogging(t, cfg, rt)
 

@@ -42,26 +42,27 @@ func TestStartedParentsAreTheIssuesWhosePhasesStarted(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("StartedParents = %v, want %v", got, want)
 	}
-	// The children-first candidates are a judgement of their own: under every tree's open gate
-	// they are the issues at admitted, LEGION-9 among them, which never started and so is no
-	// started parent, and LEGION-15, whose owed start makes it one; no issue in a started phase is
-	// among them.
+	// The children-first candidates are a judgement of their own: under every open gate they are
+	// the issues at admitted, LEGION-9 among them, which never started and so is no started
+	// parent, and LEGION-15, whose owed start makes it one; no issue in a started phase is among
+	// them.
 	open := TreeGate{Rows: map[DesignStep]DesignGate{DesignStepSpec: {LatestVersion: 1, ApprovedVersion: new(1)}}}
 	gates := make(map[string]TreeGate, len(issues))
 	for _, issue := range issues {
-		gates[issue.Tree] = open
+		gates[issue.Key] = open
 	}
-	if candidates := ChildrenFirstCandidates(issues, gates); !slices.Equal(candidates, []string{"LEGION-15", "LEGION-9"}) {
+	facts := LineFacts{Chains: chainsOf(issues, copyOf(issues...)), Gates: gates}
+	if candidates := ChildrenFirstCandidates(issues, facts); !slices.Equal(candidates, []string{"LEGION-15", "LEGION-9"}) {
 		t.Fatalf("ChildrenFirstCandidates under open gates = %v, want LEGION-15 and LEGION-9, the issues at admitted", candidates)
 	}
 }
 
-// The open children of a started parent are judged from the mirror and the daemon's records as
+// The open children of a started parent are judged from the copy and the daemon's records as
 // the engine judges them (workflow's childrenOpen): a child filed and never released is open, a
-// done one is not, and a child of the parent's own tree that the daemon holds at admitted under an
-// accepted ancestor is left out, since that child starts nothing before the ancestor closes. A
-// started parent with no open child has no entry, and the line's facts carry the judgement
-// (ReadLineFacts) beside a children-first wait that reads none of it.
+// done one is not, and a child the daemon holds at admitted under an accepted issue above it is
+// left out, since that child starts nothing before the accepted issue closes. A started parent
+// with no open child has no entry, and the line's facts carry the judgement (ReadLineFacts)
+// beside a children-first wait that reads none of it.
 func TestStartedParentWaitsReadsTheOpenChildrenOfAStartedParent(t *testing.T) {
 	const (
 		root       = "LEGION-700" // merging: accepted
@@ -90,6 +91,7 @@ func TestStartedParentWaitsReadsTheOpenChildrenOfAStartedParent(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		for _, issue := range issues {
 			must(t, records.PutIssue(ctx, tx, issue))
+			putCopy(t, ctx, tx, issue)
 		}
 		// The root's gate stands open, so the children-first judgement below reads its tree.
 		must(t, records.PutGate(ctx, tx, DesignGate{Issue: root, Step: DesignStepSpec, ArtifactID: "artifact-700", LatestVersion: 1, ApprovedVersion: new(1)}))
@@ -126,15 +128,15 @@ func TestTheAwaitingChildrenWordNamesTheStartedParentsOpenChildren(t *testing.T)
 	waiting := Issue{Key: "LEGION-801", Tree: "LEGION-800", Project: "LEGION", Phase: phase.AwaitingChildren,
 		Status: "in_progress", Parent: ParentOf("LEGION-800")}
 	root := Issue{Key: "LEGION-800", Tree: "LEGION-800", Project: "LEGION", Phase: phase.Admitted, Status: "in_progress", HandedOver: true}
-	byKey := map[string]Issue{root.Key: root, waiting.Key: waiting}
+	chains := chainsOf([]Issue{root, waiting}, copyOf(root, waiting))
 	open := map[string]ChildWait{waiting.Key: {Parent: waiting.Key, Open: []OpenChild{
 		{Key: "LEGION-802", Status: "todo"}, {Key: "LEGION-803", Status: "backlog"}}}}
 
-	word, by := HeldReasonOf(waiting, HeldFacts{ByKey: byKey, Chain: byKey, Facts: LineFacts{StartedParentWaits: open}})
+	word, by := HeldReasonOf(waiting, false, LineFacts{Chains: chains, StartedParentWaits: open})
 	if word != HeldAwaitingChildren || !slices.Equal(by, []string{"LEGION-802", "LEGION-803"}) {
 		t.Fatalf("the held word = %s held by %v, want awaiting_children held by both open children", word, by)
 	}
-	word, by = HeldReasonOf(waiting, HeldFacts{ByKey: byKey, Chain: byKey, Facts: LineFacts{ChildWaits: open}})
+	word, by = HeldReasonOf(waiting, false, LineFacts{Chains: chains, ChildWaits: open})
 	if word != HeldAwaitingChildren || len(by) != 0 {
 		t.Fatalf("the held word over the children-first waits alone = %s held by %v, want awaiting_children held by nobody", word, by)
 	}

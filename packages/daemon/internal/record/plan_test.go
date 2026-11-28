@@ -271,6 +271,15 @@ func TestACarriedPlanKeepsWhereEachTaskStands(t *testing.T) {
 	})
 }
 
+// chainRow writes the copy's row of key under parent ("" for none) at seq, as a reading of
+// Dispatch does (Store.PutDispatchIssue): the chain the owners of key's plans are read on
+// (PlanOwners). A later seq moves the row.
+func chainRow(t *testing.T, tx pgx.Tx, key, parent string, seq int64) {
+	t.Helper()
+	must(t, NewStore().PutDispatchIssue(context.Background(), tx, DispatchReading{Key: key, Project: "LEGION", Seq: seq,
+		Status: Carry("in_progress"), Parent: Carry(parent), Labels: Carry([]string{})}))
+}
+
 // A task keeps the parent its block names (PlanTask.ParentRef) across each write of the record: a
 // version's write reads back with it, a later version of the same task takes the later version's
 // parent, as it takes the rest of its block, and a carry to a new generation copies it, with or
@@ -314,10 +323,11 @@ func TestAPlanTaskKeepsItsParentAcrossAWriteAndACarry(t *testing.T) {
 
 // The owners' newest plan is the newest plan in force that an owner of the issue gave, in any
 // generation, the generation 0 of a plan given before the daemon recorded the issue among them.
-// An owner is an architect of the issue's tree now (ArchitectOfTree): a plan another tree's
-// architect gave is not an owner's, however new, until that architect's issue is a member of the
-// tree, and neither is a plan of the default steps, which nobody gave. An issue of a tree whose
-// architects gave none has none.
+// An owner is an architect that acts on the issue on its Dispatch chain now (PlanOwners): a plan
+// another issue's architect gave is not an owner's, however new, until that issue stands above
+// the issue on the chain, and it is not one again once Dispatch moves the issue from under it.
+// Neither is a plan of the default steps, which nobody gave. An issue whose owners gave none has
+// none.
 func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -327,10 +337,16 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 	defaults := PlanVersion{Issue: planIssue, Generation: 2, Version: 0, Source: PlanSourceDefault, GivenAt: planGivenAt.Add(2 * time.Hour)}
 	defaultTasks := []PlanTask{{Issue: planIssue, Generation: 2, Task: "default", BlockText: "The project's default steps.", State: TaskWaiting}}
 	defaultSteps := []PlanStep{{Issue: planIssue, Generation: 2, Task: "default", Position: 1, Role: planStepOne, Type: "implementation"}}
+	othersOnly, othersTasks, othersSteps := ownersPlan("LEGION-209", 0, 2, otherOwner, planGivenAt)
 	inTx(t, st, func(tx pgx.Tx) {
 		putPlan(t, tx, given, givenTasks, givenSteps)
 		putPlan(t, tx, another, anotherTasks, anotherSteps)
 		putPlan(t, tx, defaults, defaultTasks, defaultSteps)
+		putPlan(t, tx, othersOnly, othersTasks, othersSteps)
+		chainRow(t, tx, planIssue, "", 1)
+		chainRow(t, tx, "LEGION-209", "", 1)
+		chainRow(t, tx, "LEGION-300", "", 1)
+		chainRow(t, tx, "LEGION-400", "", 1)
 	})
 	newest := func(t *testing.T, issue Issue) *StoredPlan {
 		t.Helper()
@@ -344,75 +360,94 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 	}
 
 	if got, want := newest(t, issue), storedOf(given, givenTasks, givenSteps); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the owners' newest plan = %#v, want the one the root's architect gave at generation 0: %#v", got, want)
+		t.Fatalf("the owners' newest plan = %#v, want the one the issue's own architect gave at generation 0: %#v", got, want)
 	}
-	member := issueFixture("LEGION-300")
-	member.Tree = planIssue
-	inTx(t, st, func(tx pgx.Tx) { must(t, NewStore().PutIssue(ctx, tx, member)) })
+	inTx(t, st, func(tx pgx.Tx) { chainRow(t, tx, planIssue, "LEGION-300", 2) })
 	if got, want := newest(t, issue), storedOf(another, anotherTasks, anotherSteps); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the owners' newest plan with LEGION-300 a member = %#v, want the one its sub-architect gave at generation 1: %#v", got, want)
+		t.Fatalf("the owners' newest plan under LEGION-300 = %#v, want the one LEGION-300's architect gave at generation 1: %#v", got, want)
 	}
-	elsewhere := issue
-	elsewhere.Tree = "LEGION-400"
-	if got := newest(t, elsewhere); got != nil {
-		t.Fatalf("the owners' newest plan of %s in tree LEGION-400 = %#v, want none: no architect of that tree gave one", planIssue, got)
+	inTx(t, st, func(tx pgx.Tx) { chainRow(t, tx, planIssue, "LEGION-400", 3) })
+	if got, want := newest(t, issue), storedOf(given, givenTasks, givenSteps); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the owners' newest plan once Dispatch moved %s under LEGION-400 = %#v, want its own architect's again: %#v", planIssue, got, want)
+	}
+	if got := newest(t, issueFixture("LEGION-209")); got != nil {
+		t.Fatalf("the owners' newest plan of LEGION-209 = %#v, want none: only LEGION-300's architect, which stands above nothing of it, gave one", got)
 	}
 }
 
-// An architect of an issue's tree now is the architect of the tree's root, or of a member the
-// record holds in that tree, a sub-architect: the one rule of who owns an issue, which an
-// architect's call on a recorded issue and the giver of a plan at the issue's first step are both
-// held to. The architect of another tree is not, nor the architect of an issue that stood in the
-// tree and now stands in a tree of its own, nor a claim that is no architect's.
-func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
+// The owners of an issue's plans are the architects that act on the issue on its Dispatch chain
+// now (PlanOwners, ArchitectActsOn): the issue's own architect and the architect of each issue
+// above it on the chain, whatever the status of the issues between them, the rule every
+// architect's call on the issue is held to. The architect of a sibling is not, nor the architect
+// of an issue that stood above it before Dispatch moved it, nor a claim that is no architect's.
+// The chain is read from the copy alone, whatever tree the record stores, and on a chain the copy
+// cannot show to its top the read says so.
+func TestPlanOwnersAreTheArchitectsThatActOnTheIssueOnItsChain(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
-	member, moved, issue := issueFixture("LEGION-209"), issueFixture("LEGION-210"), issueFixture("LEGION-211")
-	member.Tree, issue.Tree = planIssue, planIssue
+	issue := issueFixture("LEGION-211")
+	issue.Tree = "LEGION-999"
 	inTx(t, st, func(tx pgx.Tx) {
-		for _, recorded := range []Issue{issueFixture(planIssue), member, moved, issue} {
-			must(t, NewStore().PutIssue(ctx, tx, recorded))
+		chainRow(t, tx, planIssue, "", 1)
+		chainRow(t, tx, "LEGION-209", planIssue, 1)
+		chainRow(t, tx, "LEGION-210", planIssue, 1)
+		chainRow(t, tx, "LEGION-211", "LEGION-209", 1)
+		owns, known, err := PlanOwners(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if !known {
+			t.Fatalf("the chain of LEGION-211 reads unknown, want known: every link has its row")
 		}
 		for architect, want := range map[claim.Token]bool{
-			planOwner:                              true,
+			"legion-legion-legion-211-architect":   true,
 			"legion-legion-legion-209-architect":   true,
+			planOwner:                              true,
 			"legion-legion-legion-210-architect":   false,
 			otherOwner:                             false,
 			"legion-legion-legion-208-implementer": false,
 			"":                                     false,
 		} {
-			got, err := ArchitectOfTree(ctx, NewStore(), tx, architect, issue)
-			must(t, err)
-			if got != want {
-				t.Errorf("ArchitectOfTree(%q, LEGION-211 of the tree %s) = %t, want %t", architect, planIssue, got, want)
+			if got := owns(architect); got != want {
+				t.Errorf("PlanOwners(LEGION-211 under LEGION-209 under %s) owns %q = %t, want %t", planIssue, architect, got, want)
 			}
+		}
+		chainRow(t, tx, "LEGION-211", "LEGION-210", 2)
+		owns, _, err = PlanOwners(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if owns("legion-legion-legion-209-architect") || !owns("legion-legion-legion-210-architect") {
+			t.Errorf("once Dispatch moved LEGION-211 under LEGION-210, LEGION-209's architect owns its plans %t and LEGION-210's %t, want false and true",
+				owns("legion-legion-legion-209-architect"), owns("legion-legion-legion-210-architect"))
+		}
+		chainRow(t, tx, "LEGION-211", "LEGION-777", 3)
+		if _, known, err := PlanOwners(ctx, NewStore(), tx, issue); err != nil || known {
+			t.Errorf("the chain of LEGION-211 under LEGION-777, of which the copy holds no row, reads known %t (%v), want unknown", known, err)
 		}
 	})
 }
 
 // The plans of earlier owners a first step passes over are each plan of the issue in force whose
-// giver is no architect of the issue's tree now (ArchitectOfTree), with its version and its giver,
-// in the order they were given: a plan of the tree root's architect is not among them, nor a plan
-// of a sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in
-// a tree of its own, each of those owners' plans is an earlier owner's. (A first step in a group
-// that takes no plan passes its owner's plans over too, which workflow's passOverOwners reads.)
-func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
+// giver acts on the issue no longer on its Dispatch chain (PlanOwners), with its version and its
+// giver, in the order they were given: a plan of the issue's own architect is not among them, nor
+// a plan of the architect of an issue above it, nor a plan of the default steps, which nobody
+// gave. Once Dispatch moves the issue from under that issue, its architect's plan is an earlier
+// owner's. On a chain the copy cannot show to its top none is passed over, since who owns the
+// issue is not known and a plan passed over is deleted. (A first step in a group that takes no
+// plan passes its owner's plans over too, which workflow's passOverOwners reads.)
+func TestPlansOfEarlierOwnersLeaveOutEachArchitectThatActsOnTheIssue(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	const key = "LEGION-210"
-	member, issue := issueFixture("LEGION-209"), issueFixture(key)
-	member.Tree, issue.Tree = planIssue, planIssue
+	issue := issueFixture(key)
 	earlier, earlierTasks, earlierSteps := ownersPlan(key, 0, 2, otherOwner, planGivenAt)
-	bySub, bySubTasks, bySubSteps := ownersPlan(key, 1, 3, "legion-legion-legion-209-architect", planGivenAt.Add(time.Hour))
-	own, ownTasks, ownSteps := ownersPlan(key, 2, 4, planOwner, planGivenAt.Add(2*time.Hour))
+	byAbove, byAboveTasks, byAboveSteps := ownersPlan(key, 1, 3, "legion-legion-legion-209-architect", planGivenAt.Add(time.Hour))
+	own, ownTasks, ownSteps := ownersPlan(key, 2, 4, "legion-legion-legion-210-architect", planGivenAt.Add(2*time.Hour))
 	defaults := PlanVersion{Issue: key, Generation: 3, Version: 0, Source: PlanSourceDefault, GivenAt: planGivenAt.Add(3 * time.Hour)}
 	defaultTasks := []PlanTask{{Issue: key, Generation: 3, Task: "default", BlockText: "The project's default steps.", State: TaskWaiting}}
 	inTx(t, st, func(tx pgx.Tx) {
-		for _, recorded := range []Issue{issueFixture(planIssue), member, issue} {
-			must(t, NewStore().PutIssue(ctx, tx, recorded))
-		}
+		chainRow(t, tx, planIssue, "", 1)
+		chainRow(t, tx, "LEGION-209", planIssue, 1)
+		chainRow(t, tx, key, "LEGION-209", 1)
 		putPlan(t, tx, earlier, earlierTasks, earlierSteps)
-		putPlan(t, tx, bySub, bySubTasks, bySubSteps)
+		putPlan(t, tx, byAbove, byAboveTasks, byAboveSteps)
 		putPlan(t, tx, own, ownTasks, ownSteps)
 		putPlan(t, tx, defaults, defaultTasks, nil)
 	})
@@ -420,14 +455,19 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 		got, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plans of earlier owners of %s in the tree %s = %#v, want the other tree's alone: %#v", key, planIssue, got, want)
+			t.Fatalf("the plans of earlier owners of %s under LEGION-209 = %#v, want LEGION-300's architect's alone: %#v", key, got, want)
 		}
-		alone := issue
-		alone.Tree = key
-		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, alone)
+		chainRow(t, tx, key, "", 2)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
-		if want := []PlanVersion{earlier, bySub, own}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plans of earlier owners of %s in a tree of its own = %#v, want every owner's: %#v", key, got, want)
+		if want := []PlanVersion{earlier, byAbove}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the plans of earlier owners of %s with no parent = %#v, want every plan but its own architect's: %#v", key, got, want)
+		}
+		chainRow(t, tx, key, "LEGION-777", 3)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
+		must(t, err)
+		if got != nil {
+			t.Fatalf("the plans of earlier owners of %s on an unknown chain = %#v, want none", key, got)
 		}
 	})
 }

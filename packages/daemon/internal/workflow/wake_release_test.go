@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -42,7 +43,7 @@ func markRelease(t *testing.T, st *store.Store) int64 {
 	t.Helper()
 	ctx := context.Background()
 	project := wakeProjectToken(t)
-	marked, err := st.ReleaseIdleIssue(ctx, project, "LEGION-208", func(pods.IdleView) (store.IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, project, "LEGION-208", func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (store.IdleReleaseMark, error) {
 		return store.IdleReleaseMark{Generation: wakeIssueGeneration, Role: claim.RoleImplementer, Rows: []store.IdleReleaseRow{
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"implementer","generation":7}`), Boundary: true},
 			{Kind: "issue_release", Payload: []byte(`{"tree":"LEGION-208","generation":7,"treeGeneration":7}`)},
@@ -66,7 +67,7 @@ func markTwoRoleRelease(t *testing.T, st *store.Store) (implementer, architect, 
 	t.Helper()
 	ctx := context.Background()
 	project := wakeProjectToken(t)
-	marked, err := st.ReleaseIdleIssue(ctx, project, "LEGION-208", func(pods.IdleView) (store.IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, project, "LEGION-208", func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (store.IdleReleaseMark, error) {
 		return store.IdleReleaseMark{Generation: wakeIssueGeneration, Role: claim.RoleImplementer, Rows: []store.IdleReleaseRow{
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"implementer","generation":7}`), Boundary: true},
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"architect","generation":7}`)},
@@ -493,8 +494,8 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 						stop.Act, stop.Cause, err)
 				}
 				stoppedByTheRelease(t, rig.pool, st, claim.RoleArchitect, architect)
-				decision, err := st.IssueRelease(ctx, project, store.IssueReleased{Issue: "LEGION-208", Tree: "LEGION-208",
-					IssueGeneration: wakeIssueGeneration, TreeGeneration: wakeIssueGeneration, Row: teardown}, record.OutOfWorkflow)
+				decision, err := st.IssueRelease(ctx, project, store.IssueReleased{Issue: "LEGION-208",
+					Generation: wakeIssueGeneration, Row: teardown}, record.OutOfWorkflow)
 				if err != nil || decision.Act != store.ReleaseActs {
 					t.Fatalf("the teardown after the wake = %s for %s, %v; want it to act: the wake is of a role the release recorded",
 						decision.Act, decision.Cause, err)

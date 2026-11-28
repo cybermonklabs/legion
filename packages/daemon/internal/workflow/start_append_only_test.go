@@ -62,7 +62,6 @@ func seedAppendOnlyRoot(t *testing.T, pool *pgxpool.Pool, key string, number int
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: key, Project: "LEGION", Title: "root " + key, Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
-	seedTreeLifecycle(t, pool, key)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: number,
 		Branch: "legion/" + key, HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: key, Role: claim.RolePlanner, Claim: claim.Token("plan-claim-" + key)})

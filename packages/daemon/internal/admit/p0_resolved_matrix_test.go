@@ -146,7 +146,7 @@ func lineEntryOf(t *testing.T, pool *pgxpool.Pool, key string) (record.LineEntry
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil, time.Now())
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil)
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -268,9 +268,11 @@ func TestEveryResolvedPriorityUnderARootOfEachPriority(t *testing.T) {
 
 // Every hold on a start but the cap stays for a P0 issue of each kind: a root without the legion
 // label, a root not in todo, a blocked_by link to an open issue, a closed design gate, an
-// ancestor's hold, a lingering tree and a paused project each keep it out of a slot at a cap its
-// holders below P0 fill. Each case holds a free P0 root of the same kind beside the held one, which
-// does start, so a case in which nothing started would read as a pass that never ran.
+// ancestor's hold and a paused project each keep it out of a slot at a cap its holders below P0
+// fill. Each case holds a free P0 root of the same kind beside the held one, which does start, so a
+// case in which nothing started would read as a pass that never ran. A case that names a held
+// reason reads the pass's held list too, which names the held issue with that reason and the issue
+// that holds it.
 func TestEveryHoldButTheCapStaysForAnInheritedP0Issue(t *testing.T) {
 	const held, free = "LEGION-50", "LEGION-60"
 	for _, k := range p0Kinds {
@@ -278,6 +280,10 @@ func TestEveryHoldButTheCapStaysForAnInheritedP0Issue(t *testing.T) {
 			for _, tc := range []struct {
 				name string
 				seed func(t *testing.T, pool *pgxpool.Pool)
+				// reason is the word the held list names the held issue with, and by the issue
+				// that holds it; "" for a case the list is not read in.
+				reason record.HeldReason
+				by     string
 			}{
 				{name: "a root without the legion label", seed: func(t *testing.T, pool *pgxpool.Pool) {
 					p0Queued(t, pool, held, "C", record.NoPriority, func(issue *record.Issue) { k.shape(issue); issue.HandedOver = false })
@@ -296,15 +302,12 @@ func TestEveryHoldButTheCapStaysForAnInheritedP0Issue(t *testing.T) {
 					p0Tree(t, pool, "LEGION-40", "Bz", record.P2, false)
 					matrixMember(t, pool, "LEGION-40", held, "C", phase.Admitted, "todo", k.shape)
 				}},
-				{name: "an ancestor's hold", seed: func(t *testing.T, pool *pgxpool.Pool) {
-					p0Queued(t, pool, held, "C", record.NoPriority, func(issue *record.Issue) { k.shape(issue); issue.Ancestry = []string{"LEGION-1"} })
-				}},
-				{name: "a lingering tree", seed: func(t *testing.T, pool *pgxpool.Pool) {
-					until := fixedNow.Add(time.Hour)
-					putIssue(t, pool, record.Issue{Key: "LEGION-40", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-						Project: testProject, Title: "a lingering root", Tree: "LEGION-40", Phase: phase.Done, Generation: 1, Status: "done",
-						Rank: "Bz", HandedOver: true, LingerUntil: &until, LastDispatchSeq: 1})
-					matrixMember(t, pool, "LEGION-40", held, "C", phase.Admitted, "todo", k.shape)
+				{name: "an ancestor's hold", reason: record.HeldAncestry, by: "LEGION-1", seed: func(t *testing.T, pool *pgxpool.Pool) {
+					// Its Dispatch parent LEGION-41 stands on the backlog, out of Legion's work,
+					// under LEGION-1, which is at work, and the copy of Dispatch's issues shows
+					// that chain: the ancestry hold (record.HeldReasonOf).
+					putIssue(t, pool, chainRecord("LEGION-41", "LEGION-1", phase.Admitted, "backlog"))
+					p0Queued(t, pool, held, "C", record.NoPriority, func(issue *record.Issue) { k.shape(issue); issue.Parent = new("LEGION-41") })
 				}},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
@@ -324,6 +327,11 @@ func TestEveryHoldButTheCapStaysForAnInheritedP0Issue(t *testing.T) {
 					}
 					if !holdsSlot(t, pool, free) {
 						t.Fatalf("%s, an %s P0 with no other hold, holds no slot: the pass started no P0 issue, so this case proves nothing", free, k.name)
+					}
+					if tc.reason != "" {
+						assertNotStarted(t, pool, held)
+						_, rows := passJudgement(t, pool, admission)
+						assertHeldBy(t, rows, held, tc.reason, tc.by)
 					}
 				})
 			}
@@ -670,7 +678,7 @@ func capReadings(t *testing.T, pool *pgxpool.Pool, admission *Admission, candida
 			t.Fatalf("read the line facts: %v", err)
 		}
 		own := record.OwnSlots(issues, slots)
-		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, own, facts, nil, admission.now())
+		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, own, facts, nil)
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -1002,11 +1010,16 @@ func TestAResolvedOnlyUpdateMovesNoTreeClock(t *testing.T) {
 		}
 		var trees map[string]record.TreeQuiet
 		inTx(t, pool, func(tx pgx.Tx) {
-			issues, err := record.NewStore().TreeIssues(context.Background(), tx, root)
+			ctx, keys := context.Background(), []string{root, child}
+			issues, err := record.NewStore().IssuesByKey(ctx, tx, keys)
 			if err != nil {
 				t.Fatalf("read the issues of %s: %v", root, err)
 			}
-			if trees, _, err = admission.quietTrees(context.Background(), tx, issues, admission.now()); err != nil {
+			chains, err := record.ReadChains(ctx, tx, record.NewStore(), testProject, keys)
+			if err != nil {
+				t.Fatalf("read the chains of %s: %v", root, err)
+			}
+			if trees, _, err = admission.quietTrees(ctx, tx, issues, chains, admission.now()); err != nil {
 				t.Fatalf("measure the trees: %v", err)
 			}
 		})
@@ -1113,8 +1126,8 @@ func TestAnOlderEventLeavesEachReadsResolvedPriority(t *testing.T) {
 				pool := migratedPool(t)
 				admission := quiet(t, 1)
 				p0Holder(t, pool, "LEGION-1", "A", record.P1)
-				applyFact(t, pool, admission, "view", intake.ObservedIssue(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C",
-					HandedOver: true, LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served}))
+				apply(t, pool, admission, "view", intake.ObservedIssue(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C",
+					HandedOver: true, LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served}), admission.engine)
 				keeps(t, pool, admission, "LEGION-9")
 			})
 			t.Run("release_children's observed child", func(t *testing.T) {
@@ -1125,7 +1138,10 @@ func TestAnOlderEventLeavesEachReadsResolvedPriority(t *testing.T) {
 				parent := "LEGION-500"
 				child := intake.ObservedIssue(dispatch.Issue{Key: "LEGION-501", Title: "LEGION-501", Status: "todo", Parent: &parent, Rank: "B1",
 					LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served})
-				if _, err := intake.ApplyFact(context.Background(), pool, "api", "waves/release", child, admission.engine, admission); err != nil {
+				// The daemon's own handler order: the mirror writes the child's row of the copy of
+				// Dispatch's issues first, which its chain is read from (applyAsTheDaemon).
+				if _, err := intake.ApplyFact(context.Background(), pool, "api", "waves/release", child,
+					blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission); err != nil {
 					t.Fatalf("apply the released child: %v", err)
 				}
 				keeps(t, pool, admission, "LEGION-501")
@@ -1196,10 +1212,10 @@ func TestTheOrderWithinABandIsKeptForExplicitAndInheritedP0(t *testing.T) {
 }
 
 // The line's reason for a member whose priority Dispatch resolves from an issue above it names
-// that issue, `priority_from`, and never the member's Legion tree root, which stands at another
-// priority: in the part of the issues whose work came back, where no other clause names the root,
-// and in the part of the issues that have not started, where the root is named only as the rank
-// that places the member.
+// that issue, `priority_from`, and never the member's top issue in Legion's work, which stands at
+// another priority: in the part of the issues whose work came back, where no other clause names
+// the top issue, and in the part of the issues that have not started, where the top issue is named
+// only as the rank that places the member.
 func TestTheReasonNamesPriorityFromForAMemberUnderAnotherRoot(t *testing.T) {
 	const root, starting, returning = "LEGION-A", "LEGION-77", "LEGION-78"
 	pool := migratedPool(t)
@@ -1216,12 +1232,12 @@ func TestTheReasonNamesPriorityFromForAMemberUnderAnotherRoot(t *testing.T) {
 	placed := "It waits at P2, the priority of " + outside + ", the nearest issue above it in Dispatch that has one."
 	for _, tc := range []struct {
 		key string
-		// rankClause is the one clause that may name the tree root: the rank that places the
+		// rankClause is the one clause that may name the top issue: the rank that places the
 		// member, "" where none does.
 		rankClause string
 	}{
 		{key: returning},
-		{key: starting, rankClause: "the Dispatch rank of its tree root " + root},
+		{key: starting, rankClause: "the Dispatch rank of its top issue " + root},
 	} {
 		reason, _ := waitingView(t, pool, tc.key)["reason"].(string)
 		if !strings.Contains(reason, placed) {

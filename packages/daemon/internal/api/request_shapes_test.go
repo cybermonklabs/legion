@@ -74,7 +74,7 @@ var frozenPluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/phase/retry":             reflect.TypeFor[PhaseRetryRequest](),
 	"POST /legion/v1/signoff":                 reflect.TypeFor[SignOffRequest](),
 	"POST /legion/v1/roots/close":             reflect.TypeFor[RootCloseRequest](),
-	"POST /legion/v1/children/rerun":          reflect.TypeFor[ChildRequest](),
+	"POST /legion/v1/children/rerun":          reflect.TypeFor[RerunChildRequest](),
 	"POST /legion/v1/project/pause":           reflect.TypeFor[ProjectPauseRequest](),
 	"POST /legion/v1/project/resume":          reflect.TypeFor[ProjectResumeRequest](),
 	"POST /legion/v1/intake/replay":           reflect.TypeFor[IntakeReplayRequest](),

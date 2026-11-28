@@ -195,13 +195,13 @@ func (r *backstopRig) sweep(claims []supervise.Claim) {
 	r.s.backstopStalledTurns(context.Background(), claims)
 }
 
-// settled waits for every event the sweep posted for c to have been decided: a tree close of its
+// settled waits for every event the sweep posted for c to have been decided: an issue close of its
 // own, posted through the same inbox and so behind whatever the sweep put there, which the
 // machine answers by retiring the claim. A case that must see nothing happen reads its
 // assertions after this.
 func (r *backstopRig) settled(c supervise.Claim) {
 	r.t.Helper()
-	r.sup.post(c.Token, supervise.RequestTreeClose{Claim: c.Token})
+	r.sup.post(c.Token, supervise.RequestIssueClose{Claim: c.Token})
 	testwait.Eventually(r.t, "the claim to answer a close posted behind the sweep's own events", func() bool {
 		m, ok := r.sup.Machine(c.Token)
 		return ok && m.Claim().State == supervise.StateRetired
@@ -578,7 +578,7 @@ func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStallOnlyWhenItFaile
 	t.Parallel()
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RolePlanner, "LEGION-220", backstopBound+time.Hour, true)
-	root.Role = claim.RoleArchitect
+	root.Role, root.HoldsGate = claim.RoleArchitect, true
 	rig.s.cfg.WorkerStallBackstops[claim.RoleArchitect] = backstopBound
 	claims := rig.supervising(root)
 
@@ -633,6 +633,9 @@ func failedArchitectStall(t *testing.T, unconfirmed bool) (record.Notice, []reco
 	t.Helper()
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RoleArchitect, "LEGION-233", backstopBound+time.Hour, true)
+	// The architect of an issue that holds its own gate, as its launch marks it from the Dispatch
+	// chain (supervise.Claim.HoldsGate); the tree the claim stores decides nothing.
+	root.HoldsGate = true
 	failed := supervise.StallBackstopStop{Step: root.Step, LastStep: root.Step.LastStep(), Bound: backstopBound,
 		End: supervise.EndFailed, LaunchFailures: 3, StopUnconfirmed: unconfirmed}
 	if told := rig.s.tellStallBackstopped(context.Background(), root, failed); !told {
@@ -735,6 +738,7 @@ func TestARetriedStallNoticeOfATreeArchitectCopiesTheControllerOnlyWhenItFailedT
 			t.Run(fmt.Sprintf("%s, stop unconfirmed %t", end, unconfirmed), func(t *testing.T) {
 				rig := newBackstopRig(t)
 				root := rig.claim(claim.RoleArchitect, "LEGION-232", backstopBound+time.Hour, true)
+				root.HoldsGate = true
 				stop := supervise.StallBackstopStop{Step: root.Step, LastStep: root.Step.LastStep(), Bound: backstopBound,
 					End: end, StopUnconfirmed: unconfirmed}
 				if end == supervise.EndFailed {

@@ -208,7 +208,7 @@
         "spec"
       ]
     },
-    "linger_hours": 72,
+    "linger_hours": 0,
     "production_check_hours": 336,
     "pod_update_grace_minutes": 30,
     "stalled_tree_notice_hours": 6,

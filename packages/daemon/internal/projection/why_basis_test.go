@@ -29,7 +29,7 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 	approvedSpec := record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepSpec, ArtifactID: "artifact-LEGION-100", LatestVersion: 2,
 		ApprovedVersion: new(2), ApprovedMark: record.EventMark{Seq: 30, At: projectedAt}}
 	specAlone := []record.DesignStep{record.DesignStepSpec}
-	const shut = "The design gate of its tree stands shut, and the daemon starts no issue of that tree until it opens."
+	const shut = "A design gate it waits for stands shut, and the daemon starts nothing under it until it opens."
 	for _, tc := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -53,15 +53,14 @@ func TestTheDesignGateWhyGivesAStepOnAnAncestorsApprovalItsOwnWords(t *testing.T
 			shut + " The spec step of LEGION-100 stands open on an ancestor's approval: a person approved version 5 of the primary document of LEGION-90." +
 				" The criteria step of LEGION-100 waits for a person's approval of its Verification document at version 3."},
 		{"a spec step with no basis", nil, shutGate("LEGION-100"),
-			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
+			"A design gate it waits for stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts nothing under it until it opens."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := projectionStore{
 				issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
 					treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
-				slots:      []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
-				lifecycles: []string{"LEGION-100"},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": tc.gates},
+				slots: []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: projectedAt}},
+				gates: map[string]map[record.DesignStep]record.DesignGate{"LEGION-100": tc.gates},
 			}
 			projected, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Steps: tc.steps, Now: projectedAt})
 			if err != nil {

@@ -43,16 +43,14 @@ func TestASettlementOnAWaitingParentWakesNoRoleAndTellsNone(t *testing.T) {
 	}
 }
 
-// A parent waiting in awaiting_children that leaves the workflow takes the start it held with it,
-// as a held issue's hold goes with its leave: the record ties the held start to the phase
-// (record.Issue.ChildrenWait, the shape check of migration 20261114232555), so a leave that wrote
-// the phase done and kept the start would be refused by the database and the person's move would
-// never be recorded. A root a person moves to the backlog lingers at done (it leaves the workflow
-// like any root moved to the backlog), and a child a person closes stands at done. The fact of
-// the run that outlives the phase, the moment of the wait, stays as it was.
-func TestAWaitingParentThatLeavesTheWorkflowTakesItsHeldStartWithIt(t *testing.T) {
+// A parent waiting in awaiting_children that leaves Legion's work keeps its phase and the start it
+// held (R20 of dispatch://INFRA-3320: the leave keeps the phase and the held start, so the return
+// resumes where the stop left it), and nothing lingers: a root a person moves to the backlog and a
+// child a person closes both stand in awaiting_children with the start they held, and the moment
+// of the wait stays as it was.
+func TestAWaitingParentThatLeavesTheWorkflowKeepsItsHeldStart(t *testing.T) {
 	t.Parallel()
-	t.Run("a root a person moves to the backlog lingers", func(t *testing.T) {
+	t.Run("a root a person moves to the backlog", func(t *testing.T) {
 		pool := migratedPool(t)
 		waiting := cwSeedWaiting(t, pool, cwParent, phase.Implementing)
 
@@ -60,8 +58,9 @@ func TestAWaitingParentThatLeavesTheWorkflowTakesItsHeldStartWithIt(t *testing.T
 			intake.DispatchIssue{Key: cwParent, Seq: 2, Type: "issue.updated", Status: "backlog", Title: "parent", Rank: "U"})
 
 		got := storedIssue(t, pool, cwParent)
-		if got.Phase != phase.Done || got.ChildrenWait != nil || got.LingerUntil == nil {
-			t.Fatalf("the root on the backlog = phase %s, held start %+v, linger %v; want done, nothing held, lingering", got.Phase, got.ChildrenWait, got.LingerUntil)
+		if got.Phase != phase.AwaitingChildren || !sameChildrenWait(got.ChildrenWait, waiting.ChildrenWait) || got.Status != "backlog" {
+			t.Fatalf("the root on the backlog = phase %s, status %s, held start %+v; want awaiting_children at backlog holding %+v",
+				got.Phase, got.Status, got.ChildrenWait, waiting.ChildrenWait)
 		}
 		if got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(*waiting.ChildrenWaitedAt) {
 			t.Fatalf("the root on the backlog = waited at %v; want it kept from %v", got.ChildrenWaitedAt, waiting.ChildrenWaitedAt)
@@ -74,18 +73,18 @@ func TestAWaitingParentThatLeavesTheWorkflowTakesItsHeldStartWithIt(t *testing.T
 		cwSeedParent(t, pool, root, phase.Implementing, 41)
 		waited := cwAt.Add(-time.Hour)
 		parent := root
+		held := record.ChildrenWait{Start: phase.Testing, Task: "Continue parent. Issue: LEGION-208. Phase: testing.",
+			Reason: "the implementer completed implementing, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)", Since: waited}
 		seedIssue(t, pool, record.Issue{Key: cwParent, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root,
 			Parent: &parent, Project: "LEGION", Title: "parent", Phase: phase.AwaitingChildren, Generation: 1, Status: "in_progress", Rank: "V",
-			LastDispatchSeq: 1, ChildrenWait: &record.ChildrenWait{Start: phase.Testing, Task: "Continue parent. Issue: LEGION-208. Phase: testing.",
-				Reason: "the implementer completed implementing, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)", Since: waited},
-			ChildrenWaitedAt: &waited})
+			LastDispatchSeq: 1, ChildrenWait: &held, ChildrenWaitedAt: &waited})
 
 		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("closed",
 			intake.DispatchIssue{Key: cwParent, Seq: 2, Type: "issue.closed", Status: "done", Title: "parent", Parent: root, Rank: "V"})
 
 		got := storedIssue(t, pool, cwParent)
-		if got.Phase != phase.Done || got.ChildrenWait != nil {
-			t.Fatalf("the closed child = phase %s, held start %+v; want done with nothing held", got.Phase, got.ChildrenWait)
+		if got.Phase != phase.AwaitingChildren || !sameChildrenWait(got.ChildrenWait, &held) || got.Status != "done" {
+			t.Fatalf("the closed child = phase %s, status %s, held start %+v; want awaiting_children at done holding %+v", got.Phase, got.Status, got.ChildrenWait, held)
 		}
 		if got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waited) {
 			t.Fatalf("the closed child = waited at %v; want it kept from %v", got.ChildrenWaitedAt, waited)

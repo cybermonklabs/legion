@@ -418,7 +418,7 @@ case " $* " in
     fi
     echo PASS
     ;;
-  *" ^${sessionsTest}$ "*)
+  *" ^(${sessionsTest})$ "*)
     key=$APPROVED_VERSION_NEWS_MODEL_KEY_FILE
     seen=$LIVE_DAEMON_STAND_IN_DIR/seen
     mkdir -p "$seen"

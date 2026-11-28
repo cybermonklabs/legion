@@ -884,13 +884,17 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	}
 	records := record.NewStore()
 	held := runningRoot(issue, phase.Held)
-	held.Hold = &record.Hold{From: phase.Implementing}
-	suspend, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
-	}
+	// A hold keeps the status of the phase it holds, which keeps the issue in Legion's work (R20 of
+	// dispatch://INFRA-3320): the retry acts on an issue in work alone.
+	held.Hold, held.Status = &record.Hold{From: phase.Implementing}, workflow.PhaseStatus(phase.Implementing)
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
+			return err
+		}
+		// Its row of the copy: the retry reads the root's own chain (R16 of dispatch://INFRA-3320).
+		seedCopyRow(t, tx, issue, "", held.Status, 1)
+		suspend, err := record.NewFencedRow(ctx, tx, records, issue, record.SuperviseRequest{Op: "suspend", Tree: issue, Role: claim.RolePlanner, Generation: 1}, time.Now().UTC())
+		if err != nil {
 			return err
 		}
 		return records.Enqueue(ctx, tx, suspend)
@@ -1731,8 +1735,8 @@ func TestABootOverARecordOnAMissingRepositoryServes(t *testing.T) {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	kept := storedIssueOf(t, context.Background(), st.Pool(), record.NewStore(), root)
-	if kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
+	kept := readIssue(t, st.Pool(), root)
+	if kept == nil || kept.Repo != "acme/gone" || kept.GitHubRepo != "acme/gone" || kept.DefaultBranch != "main" || kept.Phase != phase.Implementing {
 		t.Fatalf("%s after the boot = %+v, want it unchanged on acme/gone@main in implementing", root, kept)
 	}
 }
@@ -2001,6 +2005,74 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 			t.Fatalf("the GitHub stand-in saw no create of %s's branch", key)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// Each boot fills the copy of Dispatch's issues from a listing of the project before its first
+// decision (R16 of dispatch://INFRA-3320): a listing that names a child the event stream has not
+// applied puts that child in the copy under its parent first, so the parent, at accepting, goes no
+// further: the boot's pass sets it waiting on that open child, it takes no sign_off while the
+// child is open and it starts nothing, though no event of the child has reached the daemon. The
+// child's event log shows the person whose todo the boot reads for its admission.
+func TestABootDecidesWithAChildTheStreamHasNotApplied(t *testing.T) {
+	t.Parallel()
+	const parent, child = "CAPTURE-1", "CAPTURE-2"
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	listedChild := boardSummary(child, "todo", 5, []string{}, "B")
+	listedChild["parent"] = parent
+	w := copyRuntime(t, pool, &copyBoard{listing: []map[string]any{
+		boardSummary(parent, "needs_review", 4, []string{"legion"}, "A"), listedChild,
+	}, logs: map[string][]map[string]any{child: {boardStatusEvent(child, "todo", 5)}}}, 1)
+	w.consumers = bootClaimConsumers(t, pool)
+	seedTickIssue(t, pool, record.Issue{
+		Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
+		Title: parent, Tree: parent, Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "A",
+		HandedOver: true, HoldsGate: true, LastDispatchSeq: 4,
+	})
+	var rows int
+	if err := pool.QueryRow(ctx, `select count(*) from dispatch_issues where key = $1`, child).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the copy holds %d rows of %s before the boot (%v), want none: no event of it has been applied", rows, child, err)
+	}
+
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("the boot's reconcile of the listing: %v", err)
+	}
+	if got := copied(t, pool, child); got.parent != parent || got.status != "todo" {
+		t.Fatalf("the copy holds %s under %q at %q after the boot, want it todo under %s from the listing", child, got.parent, got.status, parent)
+	}
+
+	// The sign-off names the parent's architect, its generation and its run of accepting, as the
+	// route reads them (api's signOff).
+	project, err := claim.ProjectToken("CAPTURE")
+	if err != nil {
+		t.Fatalf("project token: %v", err)
+	}
+	architect, err := claim.NewToken(project, parent, claim.RoleArchitect)
+	if err != nil {
+		t.Fatalf("the architect token of %s: %v", parent, err)
+	}
+	var entry record.StepEntry
+	if err := store.TransactWith(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		entry, err = record.NewStore().OpenStep(ctx, tx, parent)
+		return err
+	}); err != nil {
+		t.Fatalf("read %s's run of accepting: %v", parent, err)
+	}
+	result, err := intake.ApplyFact(ctx, w.pool, "api", "sign-off-"+parent, intake.SignOff{Issue: parent, By: architect, Generation: 1, Entry: entry},
+		w.handlers...)
+	if err != nil {
+		t.Fatalf("apply the sign-off of %s: %v", parent, err)
+	}
+	if result.Refusal == nil || !strings.Contains(result.Refusal.Message, child) {
+		t.Fatalf("the sign-off of %s answered %+v, want it refused naming the open child %s the listing put in the copy", parent, result.Refusal, child)
+	}
+	if issue := readIssue(t, pool, parent); issue == nil || issue.Phase != phase.AwaitingChildren {
+		t.Fatalf("%s after the refused sign-off = %+v, want it waiting on its open child", parent, issue)
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, parent).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the boot queued %d starts for %s (%v), want none while its child is open", rows, parent, err)
 	}
 }
 

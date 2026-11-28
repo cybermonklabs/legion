@@ -45,7 +45,7 @@ func TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory(t *testing.T) {
 	census := loadCodeCensus(t)
 	route := census.reached(t, census.named(t, "api", "registerPlan", "stopTask"))
 	workflow := census.reached(t, census.named(t, "workflow", "planGiven", "taskStopped"))
-	if !slices.Contains(workflow, "TREE_LINGERING") || !slices.Contains(route, "VERSION_NOT_IN_DISPATCH") {
+	if !slices.Contains(workflow, "PLAN_STALE_GENERATION") || !slices.Contains(route, "VERSION_NOT_IN_DISPATCH") {
 		t.Fatalf("the reading of the source found %v in the routes and %v in the workflow, without a code each must hold: the reading itself is broken, and a census of nothing passes nothing",
 			route, workflow)
 	}

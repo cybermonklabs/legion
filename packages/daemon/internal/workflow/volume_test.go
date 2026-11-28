@@ -53,7 +53,7 @@ func newVolumeRig(t *testing.T) *volumeRig {
 	logged := &bytes.Buffer{}
 	clock := &checkClock{now: volumeAt}
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(),
-		Pods: wakePods(t, pool), Linger: time.Hour, Clock: clock.Now},
+		Pods: wakePods(t, pool), Clock: clock.Now},
 		slog.New(slog.NewTextHandler(logged, nil)))
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7,
@@ -394,7 +394,7 @@ func TestTheBoundsHoldAcrossARestartOfTheDaemon(t *testing.T) {
 	// it, and nothing of the first process's memory.
 	restarted := &volumeRig{pool: rig.pool, clock: &checkClock{now: volumeAt.Add(24 * time.Hour)}, logged: &bytes.Buffer{}}
 	restarted.engine = New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(),
-		Pods: wakePods(t, rig.pool), Linger: time.Hour, Clock: restarted.clock.Now},
+		Pods: wakePods(t, rig.pool), Clock: restarted.clock.Now},
 		slog.New(slog.NewTextHandler(restarted.logged, nil)))
 	restarted.apply = applyFacts(t, rig.pool, restarted.engine)
 	restarted.reports = rig.reports + 100
@@ -411,8 +411,8 @@ func TestTheBoundsHoldAcrossARestartOfTheDaemon(t *testing.T) {
 	}
 }
 
-// An issue the daemon does not record, and one whose tree lingers after leaving the workflow,
-// write nothing: there is nobody in such a tree to act on the notice.
+// An issue the daemon does not record, and one out of Legion's work, closed at done, write
+// nothing: there is nobody running the issue to act on the notice.
 func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 	t.Parallel()
 	rig := newVolumeRig(t)
@@ -422,15 +422,14 @@ func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 		t.Fatalf("the outbox holds %d rows for an issue the daemon does not record, want none", rows)
 	}
 
-	// The tree's own linger, as the close writes it: the root is done and holds a linger_until,
-	// which is what record.TreeLingers reads.
-	if _, err := rig.pool.Exec(context.Background(), `update issues set phase = 'done', status = 'done',
-		linger_until = $1 where key = 'LEGION-208'`, volumeAt.Add(time.Hour)); err != nil {
-		t.Fatalf("linger the tree: %v", err)
+	// The issue's own close, as the done of Dispatch leaves its record: at phase done, out of
+	// Legion's work (record.InLegionsWork).
+	if _, err := rig.pool.Exec(context.Background(), `update issues set phase = 'done', status = 'done' where key = 'LEGION-208'`); err != nil {
+		t.Fatalf("close the issue: %v", err)
 	}
 	rig.report(t, fullSweep())
 	if rows := outboxRows(t, rig.pool); rows != 0 {
-		t.Fatalf("the outbox holds %d rows for a lingering tree, want none", rows)
+		t.Fatalf("the outbox holds %d rows for an issue out of Legion's work, want none", rows)
 	}
 }
 

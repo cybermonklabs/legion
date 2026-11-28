@@ -11,7 +11,7 @@
           "dedupe_key": "legion-outbox:1",
           "issued_at": 1795017600001,
           "payload_summary": "LEGION state 1-1",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":1,\"seq\":1,\"at\":\"2026-11-18T16:00:00.001000Z\",\"events\":[{\"seq\":1,\"kind\":\"boot\",\"settings\":{\"bind\":\"127.0.0.1\",\"port\":13370,\"gates\":{\"design\":[\"spec\"]},\"hooks\":[{\"on\":\"work_back\",\"name\":\"work-back\",\"every\":5,\"moves\":[\"any\"],\"roles\":[\"implementer\",\"tester\",\"reviewer\"]}],\"project\":\"LEGION\",\"runtime\":{\"name\":\"tmux\"},\"projects\":{\"LEGION\":{\"memory\":{\"config_files\":[]},\"deploys\":[],\"experiments\":[],\"default_steps\":[\"planner\",\"implementer\",\"tester\",\"reviewer\",\"acceptance:owner\"],\"slack_channels\":[],\"production_check\":\"tester\"}},\"envoy_url\":\"http://envoy-listener.internal.example:9020\",\"nats_urls\":[\"nats://nats.internal.example:4222\"],\"state_dir\":\"/var/lib/legion\",\"controller\":\"operator\",\"daemon_url\":\"http://127.0.0.1:13370\",\"github_apps\":{\"review\":{\"app_id\":\"1002\",\"installations\":{}},\"implement\":{\"app_id\":\"1001\",\"installations\":{}}},\"capabilities\":{\"decided\":{}},\"dispatch_url\":\"https://dispatch.internal.example\",\"linger_hours\":72,\"admission_cap\":1,\"provider_keys\":[],\"worker_backends\":{},\"review_round_cap\":3,\"omp_launch_prefix\":[],\"role_config_files\":{},\"worker_wake_burst\":1,\"repository_renames\":[],\"worker_stream_port\":13371,\"prompt_retire_limit\":2,\"launch_failure_limit\":3,\"prompt_failure_limit\":3,\"probe_interval_seconds\":30,\"production_check_hours\":336,\"worker_silence_minutes\":30,\"worker_background_hours\":4,\"worker_wakes_per_minute\":8,\"pod_update_grace_minutes\":30,\"stalled_tree_notice_hours\":6,\"tree_stop_timeout_seconds\":60,\"pod_update_max_open_rounds\":null,\"worker_rpc_timeout_seconds\":5,\"worker_boot_timeout_seconds\":120,\"worker_stop_timeout_seconds\":10,\"pod_update_rounds_per_minute\":null,\"slow_command_timeout_seconds\":300,\"controller_turn_bound_minutes\":90,\"controller_session_max_age_hours\":72,\"controller_wake_interval_seconds\":3600,\"worker_boot_registration_deadline_intervals\":3},\"schemaVersion\":20261126163320}]}",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":1,\"seq\":1,\"at\":\"2026-11-18T16:00:00.001000Z\",\"events\":[{\"seq\":1,\"kind\":\"boot\",\"settings\":{\"bind\":\"127.0.0.1\",\"port\":13370,\"gates\":{\"design\":[\"spec\"]},\"hooks\":[{\"on\":\"work_back\",\"name\":\"work-back\",\"every\":5,\"moves\":[\"any\"],\"roles\":[\"implementer\",\"tester\",\"reviewer\"]}],\"project\":\"LEGION\",\"runtime\":{\"name\":\"tmux\"},\"projects\":{\"LEGION\":{\"memory\":{\"config_files\":[]},\"deploys\":[],\"experiments\":[],\"default_steps\":[\"planner\",\"implementer\",\"tester\",\"reviewer\",\"acceptance:owner\"],\"slack_channels\":[],\"production_check\":\"tester\"}},\"envoy_url\":\"http://envoy-listener.internal.example:9020\",\"nats_urls\":[\"nats://nats.internal.example:4222\"],\"state_dir\":\"/var/lib/legion\",\"controller\":\"operator\",\"daemon_url\":\"http://127.0.0.1:13370\",\"github_apps\":{\"review\":{\"app_id\":\"1002\",\"installations\":{}},\"implement\":{\"app_id\":\"1001\",\"installations\":{}}},\"capabilities\":{\"decided\":{}},\"dispatch_url\":\"https://dispatch.internal.example\",\"linger_hours\":0,\"admission_cap\":1,\"provider_keys\":[],\"worker_backends\":{},\"review_round_cap\":3,\"omp_launch_prefix\":[],\"role_config_files\":{},\"worker_wake_burst\":1,\"repository_renames\":[],\"worker_stream_port\":13371,\"prompt_retire_limit\":2,\"launch_failure_limit\":3,\"prompt_failure_limit\":3,\"probe_interval_seconds\":30,\"production_check_hours\":336,\"worker_silence_minutes\":30,\"worker_background_hours\":4,\"worker_wakes_per_minute\":8,\"pod_update_grace_minutes\":30,\"stalled_tree_notice_hours\":6,\"tree_stop_timeout_seconds\":60,\"pod_update_max_open_rounds\":null,\"worker_rpc_timeout_seconds\":5,\"worker_boot_timeout_seconds\":120,\"worker_stop_timeout_seconds\":10,\"pod_update_rounds_per_minute\":null,\"slow_command_timeout_seconds\":300,\"controller_turn_bound_minutes\":90,\"controller_session_max_age_hours\":72,\"controller_wake_interval_seconds\":3600,\"worker_boot_registration_deadline_intervals\":3},\"schemaVersion\":20261126163320}]}",
           "trace_id": "f2b37e5cc56fcac3fbb8a963da18b67a"
         }
       ],
@@ -300,7 +300,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -351,8 +351,8 @@
           "topic": "notifications.legion.legion.state",
           "dedupe_key": "legion-outbox:2",
           "issued_at": 1795017660001,
-          "payload_summary": "LEGION state 2-4",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":2,\"seq\":4,\"at\":\"2026-11-18T16:01:00.001000Z\",\"events\":[{\"seq\":2,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"phase\",\"old\":null,\"new\":\"admitted\"},{\"field\":\"tree\",\"old\":null,\"new\":\"LEGION-1\"}]},{\"seq\":3,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":null,\"new\":0}]},{\"seq\":4,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-2\"],\"p0Holders\":0}}]}",
+          "payload_summary": "LEGION state 2-5",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":2,\"seq\":5,\"at\":\"2026-11-18T16:01:00.001000Z\",\"events\":[{\"seq\":2,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"phase\",\"old\":null,\"new\":\"admitted\"}]},{\"seq\":3,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":null,\"new\":0}]},{\"seq\":4,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-2\"],\"p0Holders\":0}},{\"seq\":5,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"tree\",\"old\":null,\"new\":\"LEGION-1\"}]}]}",
           "trace_id": "d2f7a2172bfca9b08ea2fbc43a6cfbe4"
         }
       ],
@@ -363,7 +363,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 4,
+          "stateSeq": 5,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -668,7 +668,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -713,15 +713,15 @@
       "name": "the root's architect claim is launching",
       "messages": [
         {
-          "event_id": "8db47578c822796e846526a346910158",
+          "event_id": "9d364eef0f6e1683ff59948752ccae00",
           "source": "agent",
-          "source_event_id": "0059b1540407f863db03adf0ccc04daa",
+          "source_event_id": "1e4f458a7a954fef411f458c907cc753",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:5",
+          "dedupe_key": "legion-outbox:6",
           "issued_at": 1795017720001,
-          "payload_summary": "LEGION state 5-5",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":5,\"seq\":5,\"at\":\"2026-11-18T16:02:00.001000Z\",\"events\":[{\"seq\":5,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"claim\",\"role\":\"architect\",\"old\":null,\"new\":\"launching\"}]}]}",
-          "trace_id": "d93f2058595b9fd1768e7f972c5c93f4"
+          "payload_summary": "LEGION state 6-6",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":6,\"seq\":6,\"at\":\"2026-11-18T16:02:00.001000Z\",\"events\":[{\"seq\":6,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"claim\",\"role\":\"architect\",\"old\":null,\"new\":\"launching\"}]}]}",
+          "trace_id": "fd58e970864deda47332d9ec8f025574"
         }
       ],
       "state": {
@@ -731,7 +731,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 5,
+          "stateSeq": 6,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -1042,7 +1042,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -1087,15 +1087,15 @@
       "name": "the root's architect claim is working",
       "messages": [
         {
-          "event_id": "9d364eef0f6e1683ff59948752ccae00",
+          "event_id": "072804cc81ff6709a6ffa26515b7859a",
           "source": "agent",
-          "source_event_id": "1e4f458a7a954fef411f458c907cc753",
+          "source_event_id": "08eede6b90ea03fa1e9272beaee7c012",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:6",
+          "dedupe_key": "legion-outbox:7",
           "issued_at": 1795017780001,
-          "payload_summary": "LEGION state 6-6",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":6,\"seq\":6,\"at\":\"2026-11-18T16:03:00.001000Z\",\"events\":[{\"seq\":6,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"claim\",\"role\":\"architect\",\"old\":\"launching\",\"new\":\"working\"}]}]}",
-          "trace_id": "fd58e970864deda47332d9ec8f025574"
+          "payload_summary": "LEGION state 7-7",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":7,\"seq\":7,\"at\":\"2026-11-18T16:03:00.001000Z\",\"events\":[{\"seq\":7,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"claim\",\"role\":\"architect\",\"old\":\"launching\",\"new\":\"working\"}]}]}",
+          "trace_id": "250a2080c53d67a0fb1cbe4ceab1496a"
         }
       ],
       "state": {
@@ -1105,7 +1105,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 6,
+          "stateSeq": 7,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -1416,7 +1416,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -1461,15 +1461,15 @@
       "name": "the root's architect claim is idle",
       "messages": [
         {
-          "event_id": "072804cc81ff6709a6ffa26515b7859a",
+          "event_id": "011ebcc41f7e07265791da9e2eb879b6",
           "source": "agent",
-          "source_event_id": "08eede6b90ea03fa1e9272beaee7c012",
+          "source_event_id": "f4df7fc1126a95645a3fa9e5831c03f3",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:7",
+          "dedupe_key": "legion-outbox:8",
           "issued_at": 1795017840001,
-          "payload_summary": "LEGION state 7-7",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":7,\"seq\":7,\"at\":\"2026-11-18T16:04:00.001000Z\",\"events\":[{\"seq\":7,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"claim\",\"role\":\"architect\",\"old\":\"working\",\"new\":\"idle\"}]}]}",
-          "trace_id": "250a2080c53d67a0fb1cbe4ceab1496a"
+          "payload_summary": "LEGION state 8-8",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":8,\"seq\":8,\"at\":\"2026-11-18T16:04:00.001000Z\",\"events\":[{\"seq\":8,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"claim\",\"role\":\"architect\",\"old\":\"working\",\"new\":\"idle\"}]}]}",
+          "trace_id": "a3d4cbf79968b450ffdb14fc758a7db0"
         }
       ],
       "state": {
@@ -1479,7 +1479,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 7,
+          "stateSeq": 8,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -1790,7 +1790,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -1835,15 +1835,15 @@
       "name": "the root waits on a person",
       "messages": [
         {
-          "event_id": "011ebcc41f7e07265791da9e2eb879b6",
+          "event_id": "c985921f56a53cad6960494858cff951",
           "source": "agent",
-          "source_event_id": "f4df7fc1126a95645a3fa9e5831c03f3",
+          "source_event_id": "6789c5b2ecb0599a461606d55bd5e8cd",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:8",
+          "dedupe_key": "legion-outbox:9",
           "issued_at": 1795017900001,
-          "payload_summary": "LEGION state 8-8",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":8,\"seq\":8,\"at\":\"2026-11-18T16:05:00.001000Z\",\"events\":[{\"seq\":8,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"phase\",\"old\":\"admitted\",\"new\":\"awaiting_person\"},{\"field\":\"waitingOn\",\"old\":null,\"new\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\"}}]}]}",
-          "trace_id": "a3d4cbf79968b450ffdb14fc758a7db0"
+          "payload_summary": "LEGION state 9-9",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":9,\"seq\":9,\"at\":\"2026-11-18T16:05:00.001000Z\",\"events\":[{\"seq\":9,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"phase\",\"old\":\"admitted\",\"new\":\"awaiting_person\"},{\"field\":\"waitingOn\",\"old\":null,\"new\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\"}}]}]}",
+          "trace_id": "d364d62bac27a98a0e659f0775db6824"
         }
       ],
       "state": {
@@ -1853,7 +1853,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 8,
+          "stateSeq": 9,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -2169,7 +2169,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -2214,15 +2214,15 @@
       "name": "the person answers the root",
       "messages": [
         {
-          "event_id": "c985921f56a53cad6960494858cff951",
+          "event_id": "6214ee2b3043d013990dc9a953d572f6",
           "source": "agent",
-          "source_event_id": "6789c5b2ecb0599a461606d55bd5e8cd",
+          "source_event_id": "2707cef898e5a421dc48cf059406706e",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:9",
+          "dedupe_key": "legion-outbox:10",
           "issued_at": 1795017960001,
-          "payload_summary": "LEGION state 9-10",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":9,\"seq\":10,\"at\":\"2026-11-18T16:06:00.001000Z\",\"events\":[{\"seq\":9,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"waitingOn\",\"old\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\"},\"new\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\",\"answeredAt\":\"2026-11-18T16:06:00Z\",\"answeredBy\":\"ask\"}}]},{\"seq\":10,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0}}]}",
-          "trace_id": "d364d62bac27a98a0e659f0775db6824"
+          "payload_summary": "LEGION state 10-11",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":10,\"seq\":11,\"at\":\"2026-11-18T16:06:00.001000Z\",\"events\":[{\"seq\":10,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"waitingOn\",\"old\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\"},\"new\":{\"ask\":\"ask-1\",\"kind\":\"ask\",\"since\":\"2026-11-18T16:05:00Z\",\"answeredAt\":\"2026-11-18T16:06:00Z\",\"answeredBy\":\"ask\"}}]},{\"seq\":11,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0}}]}",
+          "trace_id": "b3e4329741ccaeaca691f4222fa75f9f"
         }
       ],
       "state": {
@@ -2232,7 +2232,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 10,
+          "stateSeq": 11,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -2566,7 +2566,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -2611,15 +2611,15 @@
       "name": "the root's slot is released for a wait and granted again in one transaction",
       "messages": [
         {
-          "event_id": "faa355b21f9c7a24b2d5c2fa2a64a938",
+          "event_id": "45187d486f922b47c45bd58a92c216bf",
           "source": "agent",
-          "source_event_id": "75d9e383df9f6918eca02ad7bf9e8fe2",
+          "source_event_id": "ce6b1ca09933715bbd377cb99ef544df",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:11",
+          "dedupe_key": "legion-outbox:12",
           "issued_at": 1795018020001,
-          "payload_summary": "LEGION state 11-12",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":11,\"seq\":12,\"at\":\"2026-11-18T16:07:00.001000Z\",\"events\":[{\"seq\":11,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":0,\"new\":null}]},{\"seq\":12,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":null,\"new\":0}]}]}",
-          "trace_id": "8b74fad8efe8a08d6e7362cd28abbf86"
+          "payload_summary": "LEGION state 12-13",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":12,\"seq\":13,\"at\":\"2026-11-18T16:07:00.001000Z\",\"events\":[{\"seq\":12,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":0,\"new\":null}]},{\"seq\":13,\"kind\":\"change\",\"issue\":\"LEGION-1\",\"changes\":[{\"field\":\"slot\",\"old\":null,\"new\":0}]}]}",
+          "trace_id": "b368d6487704bccf52db69757ca3aa33"
         }
       ],
       "state": {
@@ -2629,7 +2629,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 12,
+          "stateSeq": 13,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -2963,7 +2963,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -3005,18 +3005,18 @@
       }
     },
     {
-      "name": "the shipped root's tree is cleared",
+      "name": "Dispatch moves the shipped root under the admitted root",
       "messages": [
         {
-          "event_id": "5babeac05d720f346d84b863fef1bad4",
+          "event_id": "11b2bccb666afe1bb126a894d4c567a4",
           "source": "agent",
-          "source_event_id": "61786d64f298ea9ac125d2f626708879",
+          "source_event_id": "734214a0c7cab1e1b9de6d8fa9fb50df",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:13",
+          "dedupe_key": "legion-outbox:14",
           "issued_at": 1795018080001,
-          "payload_summary": "LEGION state 13-13",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":13,\"seq\":13,\"at\":\"2026-11-18T16:08:00.001000Z\",\"events\":[{\"seq\":13,\"kind\":\"change\",\"issue\":\"LEGION-3\",\"changes\":[{\"field\":\"tree\",\"old\":\"LEGION-3\",\"new\":null}]}]}",
-          "trace_id": "4db76e0d573064a42f266a2bd12a9cd9"
+          "payload_summary": "LEGION state 14-14",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":14,\"seq\":14,\"at\":\"2026-11-18T16:08:00.001000Z\",\"events\":[{\"seq\":14,\"kind\":\"change\",\"issue\":\"LEGION-3\",\"changes\":[{\"field\":\"tree\",\"old\":\"LEGION-3\",\"new\":\"LEGION-1\"}]}]}",
+          "trace_id": "9c300c0ee0b8706dfabc40b0abee14f9"
         }
       ],
       "state": {
@@ -3026,7 +3026,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 13,
+          "stateSeq": 14,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -3153,6 +3153,7 @@
             "generation": 1,
             "phase": "done",
             "status": "done",
+            "tree": "LEGION-1",
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "workers": {}
@@ -3351,7 +3352,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -3396,15 +3397,15 @@
       "name": "a claim is launching on an issue the daemon does not record",
       "messages": [
         {
-          "event_id": "11b2bccb666afe1bb126a894d4c567a4",
+          "event_id": "0540542e81b7cbce86198845dc9a03e6",
           "source": "agent",
-          "source_event_id": "734214a0c7cab1e1b9de6d8fa9fb50df",
+          "source_event_id": "42ba93160e360ffe6b09a299422a2c81",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:14",
+          "dedupe_key": "legion-outbox:15",
           "issued_at": 1795018140001,
-          "payload_summary": "LEGION state 14-14",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":14,\"seq\":14,\"at\":\"2026-11-18T16:09:00.001000Z\",\"events\":[{\"seq\":14,\"kind\":\"change\",\"issue\":\"LEGION-7\",\"changes\":[{\"field\":\"phase\",\"old\":null,\"new\":\"unrecorded\"},{\"field\":\"claim\",\"role\":\"architect\",\"old\":null,\"new\":\"launching\"}]}]}",
-          "trace_id": "9c300c0ee0b8706dfabc40b0abee14f9"
+          "payload_summary": "LEGION state 15-15",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":15,\"seq\":15,\"at\":\"2026-11-18T16:09:00.001000Z\",\"events\":[{\"seq\":15,\"kind\":\"change\",\"issue\":\"LEGION-7\",\"changes\":[{\"field\":\"phase\",\"old\":null,\"new\":\"unrecorded\"},{\"field\":\"claim\",\"role\":\"architect\",\"old\":null,\"new\":\"launching\"}]}]}",
+          "trace_id": "b95303371a2ddcbd19504ff63961f34f"
         }
       ],
       "state": {
@@ -3414,7 +3415,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 14,
+          "stateSeq": 15,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -3541,6 +3542,7 @@
             "generation": 1,
             "phase": "done",
             "status": "done",
+            "tree": "LEGION-1",
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "workers": {}
@@ -3752,7 +3754,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,
@@ -3797,15 +3799,15 @@
       "name": "a blocker link moves what the waiting root is blocked by",
       "messages": [
         {
-          "event_id": "0540542e81b7cbce86198845dc9a03e6",
+          "event_id": "c72db0f00019385e523de402a642bc62",
           "source": "agent",
-          "source_event_id": "42ba93160e360ffe6b09a299422a2c81",
+          "source_event_id": "2294b4720e76fda05c47926e19158e9c",
           "topic": "notifications.legion.legion.state",
-          "dedupe_key": "legion-outbox:15",
+          "dedupe_key": "legion-outbox:16",
           "issued_at": 1795018200001,
-          "payload_summary": "LEGION state 15-15",
-          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":15,\"seq\":15,\"at\":\"2026-11-18T16:10:00.001000Z\",\"events\":[{\"seq\":15,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\",\"LEGION-9\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0}}]}",
-          "trace_id": "b95303371a2ddcbd19504ff63961f34f"
+          "payload_summary": "LEGION state 16-16",
+          "payload": "{\"project\":\"LEGION\",\"run\":\"5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80\",\"stateId\":\"3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47\",\"firstSeq\":16,\"seq\":16,\"at\":\"2026-11-18T16:10:00.001000Z\",\"events\":[{\"seq\":16,\"kind\":\"admission\",\"admission\":{\"cap\":1,\"held\":[],\"trees\":[\"LEGION-1\",\"LEGION-2\"],\"active\":[\"LEGION-1\"],\"blocked\":[{\"issue\":\"LEGION-2\",\"blockedBy\":[\"LEGION-8\",\"LEGION-9\"]}],\"waiting\":[\"LEGION-1\",\"LEGION-2\"],\"p0Holders\":0}}]}",
+          "trace_id": "8d84201bf487a746d1bd704d5cc064a1"
         }
       ],
       "state": {
@@ -3815,7 +3817,7 @@
           "boots": 1,
           "firstBootAt": "2026-11-18T16:00:00Z",
           "startedAt": "2026-11-18T16:00:00Z",
-          "stateSeq": 15,
+          "stateSeq": 16,
           "stateId": "3f6b2c8e-91d4-4a7b-b5e0-6c2d8f1a9e47",
           "stateRun": "5f0c7a3e-2b9d-4e61-8c47-1d3a9b6e2f80"
         },
@@ -3943,6 +3945,7 @@
             "generation": 1,
             "phase": "done",
             "status": "done",
+            "tree": "LEGION-1",
             "repo": "acme/widgets",
             "defaultBranch": "main",
             "workers": {}
@@ -4154,7 +4157,7 @@
               "installations": {}
             }
           },
-          "linger_hours": 72,
+          "linger_hours": 0,
           "production_check_hours": 336,
           "pod_update_grace_minutes": 30,
           "stalled_tree_notice_hours": 6,

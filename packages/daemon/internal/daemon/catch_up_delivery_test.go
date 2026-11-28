@@ -124,7 +124,7 @@ func TestACatchUpListsAnIssueItsTreeGainedBeforeItsDelivery(t *testing.T) {
 	d := newCatchUpDelivery(t)
 	keptCatchUp(t, d.pool, d.records, "LEGION-1", 1, d.now)
 	root := "LEGION-1"
-	putOutboxIssue(t, d.pool, d.records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+	putChainIssue(t, d.pool, d.records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: root, Parent: &root, Title: "Joined", Phase: phase.Accepting, Generation: 1, Status: "in_progress"})
 
 	queued, published := d.deliver(t)
@@ -163,7 +163,7 @@ func TestACatchUpKeepsTheRelaunchSentenceItWasQueuedWithWhenItIsDelivered(t *tes
 		return workflow.QueueCatchUp(ctx, tx, d.records, config.DesignGateRootIssues.Steps(), *root, 1, sentence, d.now)
 	})
 	root := "LEGION-1"
-	putOutboxIssue(t, d.pool, d.records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+	putChainIssue(t, d.pool, d.records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: root, Parent: &root, Title: "Joined", Phase: phase.Accepting, Generation: 1, Status: "in_progress"})
 
 	queued, published := d.deliver(t)
@@ -183,36 +183,46 @@ func TestACatchUpKeepsTheRelaunchSentenceItWasQueuedWithWhenItIsDelivered(t *tes
 	}
 }
 
-// Whether a hand-over created the root at its generation (HandedOver) and whether its old root's
-// gate came with it (Carried) are the record's at the delivery, as the gates and the issues are:
-// they tell the architect whether its workers already run their phases and whether it registers a
-// spec of its own, so a catch-up that stated them as they stood at its queueing would send it to
-// decompose a tree that is already running, or to register a gate it carried. Each case moves one
-// of them in the record (handed_over_roots, which workflow.TreeCatchUp reads) between the queueing
-// and the delivery, at the root's own generation, so that nothing supersedes the row.
+// Whether the first boot's conversion carried the root in at its generation from a hand-over of
+// the release before (HandedOver) and whether its old root's gate came with it (Carried) are the
+// record's at the delivery, as the gates and the issues are: they tell the architect whether its
+// workers already run their phases and whether it registers a spec of its own, so a catch-up that
+// stated them as they stood at its queueing would send it to decompose a tree that is already
+// running, or to register a gate it carried. Each case moves one of them in the record
+// (record.Issue.CarriedGeneration and CarriedGate, which workflow.TreeCatchUp reads through
+// workflow.ArchitectCarried) between the queueing and the delivery, at the root's own
+// generation, so that nothing supersedes the row.
 func TestACatchUpStatesTheHandOverItsRootRecordsWhenItIsDelivered(t *testing.T) {
 	t.Parallel()
+	// carry is what the conversion wrote on the root's record: carried in at its generation, with
+	// its old root's gate where gate is set.
+	type carry struct{ gate bool }
 	for _, tc := range []struct {
 		name              string
-		before, after     *record.HandedOverRoot
+		before, after     *carry
 		queued, delivered record.CatchUpTree
 	}{
 		{name: "the root is handed over after the queueing",
-			after:  &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1},
+			after:  &carry{},
 			queued: record.CatchUpTree{}, delivered: record.CatchUpTree{HandedOver: true}},
 		{name: "the handed-over root's gate is carried after the queueing",
-			before: &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1},
-			after:  &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1, GateCarried: true},
+			before: &carry{},
+			after:  &carry{gate: true},
 			queued: record.CatchUpTree{HandedOver: true}, delivered: record.CatchUpTree{HandedOver: true, Carried: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newCatchUpDelivery(t)
-			handOver := func(root *record.HandedOverRoot) {
+			handOver := func(root *carry) {
 				if root == nil {
 					return
 				}
-				d.write(t, "record the hand-over of LEGION-1", func(ctx context.Context, tx pgx.Tx) error {
-					return d.records.PutHandedOverRoot(ctx, tx, *root)
+				d.write(t, "record the carry of LEGION-1", func(ctx context.Context, tx pgx.Tx) error {
+					stored, err := d.records.Issue(ctx, tx, "LEGION-1")
+					if err != nil || stored == nil {
+						return fmt.Errorf("read LEGION-1: %w", err)
+					}
+					stored.CarriedGeneration, stored.CarriedGate = stored.Generation, root.gate
+					return d.records.PutIssue(ctx, tx, *stored)
 				})
 			}
 			handOver(tc.before)

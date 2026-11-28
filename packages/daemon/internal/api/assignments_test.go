@@ -35,12 +35,12 @@ func assignmentsOf(t *testing.T, body []byte, key string) []map[string]any {
 	return assignments
 }
 
-// Every assignment that applies to an issue rides its record: the tree experiment its whole tree
-// was drawn for and the issue experiment drawn for the issue itself, each with the arm, the mode
-// and the instant of the draw, and, for an experiment that sets how its issues are done, the group
-// its arm set (`plan`). A row a hand-over settled carries an empty arm, an empty mode and no
-// instant, which is how a reader tells a unit settled at no arm from a unit never drawn, which
-// carries no row — and no key at all, since the wire never writes an empty list.
+// Every assignment that applies to an issue rides its record: the tree experiment its tree was
+// drawn for, where the issue holds that draw, and the issue experiment drawn for the issue itself,
+// each with the arm, the mode and the instant of the draw, and, for an experiment that sets how its
+// issues are done, the group its arm set (`plan`). A row a hand-over settled carries an empty arm,
+// an empty mode and no instant, which is how a reader tells a unit settled at no arm from a unit
+// never drawn, which carries no row — and no key at all, since the wire never writes an empty list.
 func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 	body := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(DaemonAPIVersion()))
 
@@ -51,10 +51,18 @@ func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 			{"experiment": "memory", "variant": "memory", "mode": "random", "drawnAt": drawn},
 			{"experiment": "plan-length", "variant": "short", "mode": "random", "drawnAt": planned},
 		},
+		// A child of the drawn tree held at admitted: it has not started, so it took no tree draw
+		// and runs under its own issue draws alone (R17 of dispatch://INFRA-3320).
 		"LEGION-209": {
-			{"experiment": "memory", "variant": "memory", "mode": "random", "drawnAt": drawn},
 			{"experiment": "plan-length", "variant": "long", "mode": "random", "drawnAt": planned},
 			{"experiment": "planning", "variant": "b", "mode": "random", "drawnAt": planned, "plan": "default"},
+		},
+		// A child of the drawn tree that has started: its first start took the root's draw as a row
+		// of its own, which it runs under beside its own issue draws.
+		"LEGION-220": {
+			{"experiment": "memory", "variant": "memory", "mode": "random", "drawnAt": drawn},
+			{"experiment": "plan-length", "variant": "short", "mode": "random", "drawnAt": planned},
+			{"experiment": "planning", "variant": "a", "mode": "random", "drawnAt": planned},
 		},
 		// The hand-over's answer: an arm and a mode on the wire, both empty, and no instant.
 		"LEGION-210": {{"experiment": "plan-length", "variant": "", "mode": ""}},

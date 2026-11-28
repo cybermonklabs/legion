@@ -37,8 +37,8 @@ func PlanID(issue string, generation uint64) string {
 // Legion takes (planGiven): Dispatch replaces all four fields for a version above the one it
 // holds. Both read w with its plan rows: the start's first step writes them (planFirstStep), and a
 // version taken is one. A run with no plan rows walks today's line, so its node is the task
-// default of todaysSteps, which needs none: a hand-over's carry of an orphan that ran before plans
-// (WritePlan).
+// default of todaysSteps, which needs none: the run the first boot's conversion of a hand-over of
+// the release before carries in, where that run ran before plans (WritePlan).
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
 	needs := append([]string{}, w.Needs...)
@@ -51,11 +51,14 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 
 // passOverEarlierOwners deletes each plan of issue that only earlier owners gave, before its first
 // step reads its plan, so the walk never takes one, and answers the versions it passed over: the
-// version in force of each generation of which no giver is an architect of the issue's tree now
-// (record.PlansOfEarlierOwners, record.GivenByEarlierOwners), judged through the engine's store,
-// the one a give of a plan before this step judges through too (versionRefusal), so the two read
-// one tree. The rows go in this transaction, so the next first step finds none. An issue with no
-// plan rows, or only its owners', is read and nothing is written.
+// version in force of each generation of which no giver is an architect that acts on the issue now
+// (record.PlansOfEarlierOwners, record.GivenByEarlierOwners, record.ArchitectActsOn over the
+// issue's Dispatch chain, the rule the routes hold every architect's call to), judged through the
+// engine's store, the one a give of a plan before this step judges through too (versionRefusal),
+// so the two read one chain. The owner of an issue changes where Dispatch moves it under another
+// parent, and a plan only earlier owners gave is not the new owner's to run. The rows go in this
+// transaction, so the next first step finds none. An issue with no plan rows, or only its owners',
+// is read and nothing is written.
 func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.PlanVersion, error) {
 	earlier, err := record.PlansOfEarlierOwners(ctx, e.store, tx, issue)
 	if err != nil {
@@ -333,10 +336,10 @@ func listed(words []string, conjunction string) string {
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its
 // walk, where the run's work starts: at the run's move out of admitted (transition's
 // TriggerGateOpened, which queues it on the walk it read, writePlanOn), after the first step has
-// settled the plan (planFirstStep), and at a hand-over's carry, which re-admits an orphan at a new
-// generation in the phase it ran in elsewhere (admit's readmit), so that run never leaves admitted,
-// after the carry has written its plan rows (record.Store.CarryPlan). A record key that is no
-// issue key writes nothing (recordsSteps), and reads no walk.
+// settled the plan (planFirstStep), and at the first boot's conversion of a root a hand-over of the
+// release before made, which carried its run in at the phase it ran in elsewhere (the daemon's tree
+// conversion), so that run never leaves admitted. A record key that is no issue key writes nothing
+// (recordsSteps), and reads no walk.
 func (e *Engine) WritePlan(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !recordsSteps(issue) {
 		return nil
@@ -477,8 +480,8 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 // issue with no plan rows (leftPhaseReported); one of no run; one of a run whose plan rows are
 // gone; one of the retro or the merge; one of a task whose issue left the workflow
 // (HANDOFF_NOT_CURRENT_PHASE); and one of a step other than the one the stop ended. The refusal
-// writes nothing itself: the caller answers it after the lingering tree's and keeps the report's
-// handoff record (spendLateHandoff).
+// writes nothing itself: the caller answers it after its refusal of a completion on an issue out
+// of Legion's work, and keeps the report's handoff record (spendLateHandoff).
 func (e *Engine) lateReport(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase, past pastReport) (*intake.Refusal, error) {
 	if past != stoppedStepReported {
 		return nil, nil

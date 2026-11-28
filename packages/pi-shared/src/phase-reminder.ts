@@ -144,14 +144,15 @@ export interface PhaseReminder {
  * Measured on 2026-11-12. The INFRA daemon answered a cheap route (`GET /healthz`) in 4.4 ms to
  * 6.7 ms, with one first connection at 1.0 s, while its `GET /legion/v1/state` answered in 9.2 s
  * to 9.6 s (4,121,439 bytes), which is why the check reads no whole state. The owed route reads
- * the asking claim, its issue's record and its tree root's, and that issue's own phase, pull
- * request and check rows (`claimOwed` in `packages/daemon/internal/api/owed.go`, `handoffPosition`
- * in `handoff.go`), each by key, so its time does not grow with the deployment: through the real
- * handler over the test PostgreSQL, with 2,300 issues and 300 live claims seeded, 600 requests
- * answered at a median of 1.9 ms to 2.0 ms and a maximum of 9.7 ms to 25.8 ms over two runs. The
- * route has since also come to read, for the architect that owns the claim, the issues of the
- * claim's tree and their architect claims (`owningArchitect` in `owed.go`), which grow with the
- * tree and not with the deployment; that read was not part of the measurement.
+ * the asking claim, its issue's record, and that issue's own phase, pull request and check rows
+ * (`claimOwed` in `packages/daemon/internal/api/owed.go`, `handoffPosition` in
+ * `handoff_position.go`), each by key, so its time does not grow with the deployment: through the
+ * real handler over the test PostgreSQL, with 2,300 issues and 300 live claims seeded, 600
+ * requests answered at a median of 1.9 ms to 2.0 ms and a maximum of 9.7 ms to 25.8 ms over two
+ * runs. The route has since also come to read, for the architect that owns the claim, the issue's
+ * Dispatch chain once per ask, the records it names and their architect claims, and no child of
+ * the issue (`owningArchitect` in `owed.go`, `record.ReadOwnerWalk`), which grow with the chain,
+ * which Dispatch bounds, and not with the deployment; that read was not part of the measurement.
  *
  * The worst answer those numbers predict is about 1.03 s: a first connection of 1.0 s, INFRA's
  * network of about 5 ms, and the route's own 26 ms. 3 s is about three times that, which leaves

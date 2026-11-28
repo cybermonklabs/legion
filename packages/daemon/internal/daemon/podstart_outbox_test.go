@@ -2,7 +2,7 @@ package daemon
 
 // One session load at a time in an issue pod (dispatch://INFRA-5297), as the daemon's own paths
 // meet it: a claim whose start waits at its issue pod's gate while another role of the issue loads
-// is stopped by the outbox's suspend, release, issue_close and tree_close rows and by a pause's
+// is stopped by the outbox's suspend, release and issue_close rows and by a pause's
 // stop, each of which reads the claim before it stops it, and by a stop row queued behind the
 // waiting start on the issue's lifecycle lane. A suspension, a release or a deletion of the pod
 // never waits: each acts within podStopBound of real time while the other role still loads, and
@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -180,10 +182,9 @@ func runsPromptly(t *testing.T, runner *outbox, what string, row record.OutboxRo
 }
 
 // podStopRig is LEGION-208, recorded as issue, on a database of its own with its admission slot
-// held, the outbox runner its stop rows run through, the runtime, and the log of its machines,
-// whose starts go through one pod start gate (podGated). tree is whether its tree's lifecycle is
-// opened, as admission opens it: a tree close of a tree with none reserves no cleanup and is
-// decided on the claim alone (reservedTreeClose), which is the close that reads the claim.
+// held and its lifecycle opened, as admission opens it, the outbox runner its stop rows run
+// through, the runtime, and the log of its machines, whose starts go through one pod start gate
+// (podGated).
 type podStopRig struct {
 	pool   *store.Pool
 	st     *store.Store
@@ -193,7 +194,7 @@ type podStopRig struct {
 	logs   *testlog.Buffer
 }
 
-func newPodStopRig(t *testing.T, issue record.Issue, tree bool) *podStopRig {
+func newPodStopRig(t *testing.T, issue record.Issue) *podStopRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -201,11 +202,7 @@ func newPodStopRig(t *testing.T, issue record.Issue, tree bool) *podStopRig {
 	holdSlot(t, pool, issue.Key)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	logs := podGated(sup)
-	var roots []string
-	if tree {
-		roots = append(roots, issue.Tree)
-	}
-	st := outboxTreeStore(t, pool, roots...)
+	st := outboxTreeStore(t, pool, issue.Tree)
 	runner := &outbox{dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st, tokens: outboxTokens{},
 		project: "legion", stateDir: t.TempDir(), notices: &outboxPublisher{}, now: time.Now, log: quietLogger()}
 	return &podStopRig{pool: pool, st: st, sup: sup, runner: runner, rt: rt, logs: logs}
@@ -228,8 +225,8 @@ func testerSuspendRow(t *testing.T, _ *podStopRig) record.OutboxRow {
 // as the idle tick marks it (idleReleaseRows): the tester's role stop is its boundary.
 func testerReleaseRow(t *testing.T, r *podStopRig) record.OutboxRow {
 	t.Helper()
-	marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now())
+	marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(ctx context.Context, tx pgx.Tx, view pods.IdleView) (store.IdleReleaseMark, error) {
+		return idleReleaseRows(ctx, tx, record.NewStore(), view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now())
 	})
 	if err != nil || !marked {
 		t.Fatalf("mark the release of %s = %t, %v", pauseIssue, marked, err)
@@ -264,8 +261,6 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	// of the package's parallel tests on a 4-CPU runner can take from a row that does not wait.
 	for _, tc := range []struct {
 		name string
-		// lingers is whether the issue's tree lingers at generation 1, which a tree close is for.
-		lingers bool
 		// row is the stop row of the tester, made on the rig.
 		row   func(t *testing.T, r *podStopRig) record.OutboxRow
 		state supervise.ClaimState
@@ -278,19 +273,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 				return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "issue_close", Tree: pauseIssue, Role: claim.RoleTester,
 					Generation: 1}, time.Now())
 			}},
-		{name: "the outbox's tree_close row", lingers: true, state: supervise.StateRetired,
-			row: func(t *testing.T, _ *podStopRig) record.OutboxRow {
-				return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "tree_close", Tree: pauseIssue, Role: claim.RoleTester,
-					Generation: 1, Linger: 1}, time.Now())
-			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			issue := podIssueRecord()
-			if tc.lingers {
-				until := time.Now().Add(24 * time.Hour)
-				issue.Phase, issue.Status, issue.LingerUntil = phase.Done, "done", &until
-			}
-			r := newPodStopRig(t, issue, !tc.lingers)
+			r := newPodStopRig(t, podIssueRecord())
 			pair := parkedBehindALoad(t, r.sup, r.rt, r.logs)
 
 			if err := runsPromptly(t, r.runner, tc.name, tc.row(t, r)); err != nil {
@@ -322,7 +307,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	})
 
 	t.Run("a stop row behind a start row whose launch waits, on the issue's lifecycle lane", func(t *testing.T) {
-		r := newPodStopRig(t, podIssueRecord(), true)
+		r := newPodStopRig(t, podIssueRecord())
 		pair := loadingPair(t, r.sup, supervise.StateSuspended)
 		// The tester's start, then its stop: two rows of the issue's lifecycle lane, which runs them
 		// one at a time in the order they were queued.

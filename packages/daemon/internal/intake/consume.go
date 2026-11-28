@@ -979,7 +979,9 @@ func (l *lagWatch) observe(message jetstream.Msg, metadata *jetstream.MsgMetadat
 //  1. Decode. A message that does not decode is recorded as given up and terminated at once
 //     (consumerRun.undecodable), before anything else starts, so it pays for neither a goroutine
 //     nor a ticker.
-//  2. No fact. Acknowledged at once, and its open failure, where it may have one, deleted after.
+//  2. No fact. An event of one of the project's issues first moves that issue's cursor in a
+//     transaction of its own (seeDropped), and a failure of that write is a failed delivery (6).
+//     Then acknowledged at once, and its open failure, where it may have one, deleted after.
 //  3. A redelivery, before its handling: noted in the record, which says whether the handler runs
 //     at all (consumerRun.noteRedelivery). This is what bounds a message whose handling never
 //     ends, since nothing here recovers a panic: the handler that killed the daemon would kill it
@@ -990,8 +992,9 @@ func (l *lagWatch) observe(message jetstream.Msg, metadata *jetstream.MsgMetadat
 //     returns a messageOutcome, stop() ends the keeper, and only then does the one terminal call
 //     that outcome asks for follow.
 //  5. Acknowledged. An applied fact deleted its open failure in its own transaction
-//     (streamPosition.record), and a duplicate writes its line first (logDuplicate); one
-//     acknowledged with no transaction has its open failure deleted after.
+//     (streamPosition.record), and moved its issue's cursor there (recordSeen), and a duplicate
+//     writes its line first (logDuplicate); one acknowledged with no transaction has its open
+//     failure deleted after.
 //  6. Naked: a failure is recorded, and the message given up where the bound or the stream's
 //     retention says so, a delivery a daemon stop ended written only for the retention
 //     (consumerRun.failed).
@@ -1045,8 +1048,21 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	// events, and decodeMessage answers with no fact for another project's key and for every
 	// event type the workflow does not read. It is also how a message the GitHub consumer's filter
 	// no longer takes ends its open failure: the server delivers it again after the filter moves,
-	// and it decodes to no fact.
+	// and it decodes to no fact. One of the daemon's own issues, a message or a comment on no ask
+	// among them, still moves that issue's cursor (seenEvent), which a queued write to Dispatch
+	// waits on: it is advanced in a transaction of its own, and a failure of that write is a
+	// failed delivery (consumerRun.failed), so the event is delivered again, and one given up at
+	// the bound is kept for a replay that moves the cursor as this does (GiveUps.noFact), rather
+	// than leaving the write waiting for an event already gone.
 	if decoded.Fact == nil {
+		if decoded.Seen != nil {
+			work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
+			err := seeDropped(work, run.pool, *decoded.Seen)
+			cancel()
+			if err != nil {
+				return run.failed(ctx, message, metadata, decoded, nakOutcome("record the issue's newest event seen", "nak the record of the issue's newest event seen", err))
+			}
+		}
 		return acknowledged(ctx, message, metadata, run, mayHaveFailed, false)
 	}
 	if metadata != nil && metadata.NumDelivered >= 2 {
@@ -1187,13 +1203,15 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 type messageLog func(level slog.Level, line string, attributes ...any)
 
 // handleMessage does one decoded message's work — the reads its fact needs, then the fact's
-// transaction, which records position (withStreamPosition) — under work, the deadline context of
-// consumeMessage's handling, and says what should become of the message. It acknowledges, naks
-// and terminates nothing, and reads nothing of a jetstream.Msg: log writes its lines, and a
-// replay runs it with no message and no position (nil). Each read keeps its own AckWait bound,
-// nested under work, so one dependency that is slow to answer is cut while the handling as a
-// whole runs to HandlerLimit. dropped is the memory of the checks settlements whose drop was
-// logged (droppedSettlements): the consumer's for a delivery, the replay's own for a replay.
+// transaction, which records position (withStreamPosition) and moves the cursor of the issue a
+// Dispatch event is on (withSeenEvent), a replay's event as a delivery's — under work, the
+// deadline context of consumeMessage's handling, and says what should become of the message. It
+// acknowledges, naks and terminates nothing, and reads nothing of a jetstream.Msg: log writes its
+// lines, and a replay runs it with no message and no position (nil). Each read keeps its own
+// AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
+// handling as a whole runs to HandlerLimit. dropped is the memory of the checks settlements whose
+// drop was logged (droppedSettlements): the consumer's for a delivery, the replay's own for a
+// replay.
 func handleMessage(work context.Context, log messageLog, position *streamPosition, spec ConsumerSpec, pool store.TxPool, decoded decodedMessage, handlers []Handler, dropped *droppedSettlements) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under, and a replay answers such a message no fact.
@@ -1236,7 +1254,7 @@ func handleMessage(work context.Context, log messageLog, position *streamPositio
 	}
 	decoded.Fact = fact
 
-	result, err := ApplyFact(withStreamPosition(work, position), pool, decoded.Source, decoded.EventID, decoded.Fact, handlers...)
+	result, err := ApplyFact(withSeenEvent(withStreamPosition(work, position), decoded.Seen), pool, decoded.Source, decoded.EventID, decoded.Fact, handlers...)
 	if err != nil {
 		return nakOutcome("retryable intake processing failure", "nak intake processing failure", err)
 	}

@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -89,11 +88,7 @@ func TestTheAcceptingAnswerReadsTheTasksStepsBeforeTheAcceptance(t *testing.T) {
 				if !reflect.DeepEqual(back, tc.want) {
 					t.Errorf("the move back of %s reaches %v, want %v", reconcileChild, back, tc.want)
 				}
-				root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
-				if err != nil {
-					return err
-				}
-				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
+				drafts, err = r.treeMembers(tx)
 				return err
 			})
 			for _, draft := range drafts {

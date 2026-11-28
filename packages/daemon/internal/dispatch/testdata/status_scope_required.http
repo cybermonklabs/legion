@@ -1,0 +1,10 @@
+HTTP/1.1 403 Forbidden
+Content-Length: 467
+Content-Type: application/json
+Date: Fri, 27 Nov 2026 09:23:53 GMT
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+Www-Authenticate: Bearer error="insufficient_scope", scope="legion-status"
+X-Content-Type-Options: nosniff
+
+{"code":"LEGION_STATUS_SCOPE_REQUIRED","error":"LEGION-1 is a Legion issue (it, or an issue above it, carries the legion label): a status write needs a credential that holds the person scope or the legion-status scope, and this request's holds neither. An architect of an issue above writes done, backlog, icebox or triage once its claim is ready: its broker token proves its session, and the Legion daemon has published that session as the architect of that issue"}

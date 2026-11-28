@@ -45,7 +45,7 @@ func newWakeRig(t *testing.T) wakeRig {
 	pool := migratedPool(t)
 	logged := &bytes.Buffer{}
 	clock := &checkClock{now: wakeAt}
-	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Pods: wakePods(t, pool), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: clock.Now},
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Pods: wakePods(t, pool), ProductionCheckRole: claim.RoleTester, Clock: clock.Now},
 		slog.New(slog.NewTextHandler(logged, nil)))
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: wakeIssueGeneration,
@@ -625,18 +625,17 @@ func TestAnArchitectGetsNoBackstop(t *testing.T) {
 	}
 }
 
-// R8: a linger, a park and a close each take the issue out of the workflow or stop its tree, and
-// a wake of any kind then does nothing.
+// R8: a park and a close each take the issue out of the workflow, and a record at phase done stays
+// out of it though Dispatch shows it at work; a wake of any kind then does nothing.
 func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
 	t.Parallel()
-	lingerUntil := wakeAt.Add(time.Hour)
 	for _, tc := range []struct {
 		name  string
 		issue record.Issue
 	}{
 		{name: "a park", issue: record.Issue{Status: "backlog", Phase: phase.Implementing}},
 		{name: "a close", issue: record.Issue{Status: "done", Phase: phase.Done}},
-		{name: "a linger", issue: record.Issue{Status: "in_progress", Phase: phase.Done, LingerUntil: &lingerUntil}},
+		{name: "a record at done shown at work", issue: record.Issue{Status: "in_progress", Phase: phase.Done}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newWakeRig(t)

@@ -82,7 +82,6 @@ func TestAStartIsOneRowThatCarriesItsTask(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: oneStartIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: oneStartIssue, Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
-	seedTreeLifecycle(t, pool, oneStartIssue)
 	seedPhase(t, pool, record.PhaseRow{Issue: oneStartIssue, Role: claim.RolePlanner, Claim: "plan-claim"})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	now := engine.now()

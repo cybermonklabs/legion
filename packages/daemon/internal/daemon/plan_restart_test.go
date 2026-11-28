@@ -16,11 +16,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -38,7 +41,7 @@ import (
 func TestARestartBetweenAStepsStartAndItsCompletion(t *testing.T) {
 	t.Parallel()
 	rig := func(t *testing.T) *ownerStepsRig {
-		return newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
+		return newPlanRig(t, 1, config.Project{})
 	}
 	t.Run("the restart", func(t *testing.T) {
 		r := rig(t)
@@ -153,19 +156,21 @@ func (r *ownerStepsRig) waitBoots(count int) {
 }
 
 // The real boot: a task stopped at testing, whose tester the outbox has suspended
-// (step_stop), and a parent held before its retro for the child beneath it. The daemon stops and a
-// second one boots on the same store: once its boot has applied its resume by rule, neither issue
-// has a start queued or a launch, the tester is still suspended by the daemon, and each hold stands.
-// The control clears the stopped task's hold with SQL before the second boot, and the boot's resume
-// by rule then starts the tester again.
+// (step_stop), and a parent held before its retro for the child beneath it, the hold written while
+// the daemon is down (holdForChildren). The daemon stops and a second one boots on the same store:
+// once its boot has applied its resume by rule, neither issue has a start queued or a launch, the
+// tester is still suspended by the daemon, and each hold stands. The control clears the stopped
+// task's hold with SQL before the second boot, and the boot's resume by rule then starts the tester
+// again.
 func TestABootResumesNoStoppedStepAndNoHeldParent(t *testing.T) {
 	t.Parallel()
 	t.Run("the boot", func(t *testing.T) {
-		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
+		r := newPlanRig(t, 2, config.Project{})
 		stopped := r.stopAtTesting()
 		r.on(r.issues[1].key)
-		parent := r.holdForChildren()
-		r.restartWith(func() {})
+		r.childBeneathAHeldParent()
+		parent := r.key
+		r.restartWith(r.holdForChildren)
 		r.waitBoots(2)
 		for deadline := time.Now().Add(liveSettle); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 			for _, key := range []string{stopped, parent} {
@@ -185,7 +190,7 @@ func TestABootResumesNoStoppedStepAndNoHeldParent(t *testing.T) {
 	})
 
 	t.Run("control: the hold cleared by SQL before the second boot", func(t *testing.T) {
-		r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
+		r := newPlanRig(t, 1, config.Project{})
 		stopped := r.stopAtTesting()
 		r.restartWith(func() {
 			r.exec("update issues set phase = 'testing', held_from = null where key = $1", stopped)
@@ -224,19 +229,39 @@ func (r *ownerStepsRig) stopAtTesting() string {
 	return r.key
 }
 
-// holdForChildren walks the walk's issue on the plan `implementer reviewer`, with a child beneath it
-// in reviewing (seedChildInReviewing), through its implementer and an approving review: it passes
-// its last step, its plan has no acceptance, and the child is still in the workflow, so Legion holds
-// it before its retro. It answers the issue's key.
-func (r *ownerStepsRig) holdForChildren() string {
+// childBeneathAHeldParent gives the walk's issue the plan `implementer reviewer` and a child beneath
+// it in reviewing (seedChildInReviewing), the parent still at admitted: what holdForChildren holds
+// it for.
+func (r *ownerStepsRig) childBeneathAHeldParent() {
 	r.t.Helper()
 	r.givePlan("implementer", "reviewer")
-	r.openGate(phase.Implementing)
 	r.seedChildInReviewing()
-	r.runStep("implementer", answerPass, phase.Reviewing)
-	r.runStep("reviewer", answerPass, phase.Held)
-	r.holds(r.key, record.HoldForChildren)
-	return r.key
+}
+
+// holdForChildren writes the walk's issue held before its retro for the child beneath it
+// (childBeneathAHeldParent), as the pass of its last step with that child in the workflow leaves
+// it (workflow's beneathRetro): issues.phase held, from the retro for its children, with task a at
+// the retro's place. The daemon makes that hold only where the last step passes while the child is
+// in the workflow, and its admission pass moves a parent with an open child into awaiting_children
+// before that step can pass (R9 of dispatch://INFRA-3320), so a running daemon reaches the hold
+// only in the window between the two; the hold is written here while no daemon runs (restartWith).
+// The workflow makes the hold itself in TestAParentWithNoAcceptanceIsHeldBeforeItsRetro.
+func (r *ownerStepsRig) holdForChildren() {
+	t := r.t
+	t.Helper()
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := r.records.Issue(ctx, tx, r.key)
+		if err != nil || issue == nil {
+			return fmt.Errorf("read the record of %s: %v", r.key, err)
+		}
+		issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
+		if err := r.records.PutIssue(ctx, tx, *issue); err != nil {
+			return err
+		}
+		return r.records.MoveTask(ctx, tx, r.key, issue.Generation, "a", record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning)
+	}); err != nil {
+		t.Fatalf("hold %s before its retro for its child: %v", r.key, err)
+	}
 }
 
 // holds fails the test unless key stands held for reason.

@@ -43,7 +43,6 @@ func todaysTable() []Row {
 		{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 		{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
-		{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},
 	}
 	for _, text := range phase.BackwardPairs() {
 		from, to, _ := phase.ParsePair(text)
@@ -284,7 +283,9 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 	case TriggerRetroCompleted:
 		return in(phase.Retro)
 	case TriggerPullRequestMerged:
-		return in(phase.Merging)
+		// The merge queues the close (closeMerged) and moves no row; the issue leaves merging at
+		// Dispatch's done (closeLanded).
+		return false
 	case TriggerSignOff:
 		return in(phase.Accepting)
 	case TriggerBackward:
@@ -296,15 +297,13 @@ func workflowTransitionRequired(line []phase.Phase, from phase.Phase, trigger Tr
 
 // wantTarget is the phase line sends from to on trigger, ok false for a move back, which
 // requiredBackwardTargets holds: the first phase of the line out of admitted, the next phase of the
-// line on a step's own trigger, implementing on a return, and done on the merge.
+// line on a step's own trigger, and implementing on a return.
 func wantTarget(line []phase.Phase, from phase.Phase, trigger TriggerKind) (phase.Phase, bool) {
 	switch trigger {
 	case TriggerGateOpened:
 		return line[0], true
 	case TriggerTesterFailed, TriggerReviewRejected:
 		return phase.Implementing, true
-	case TriggerPullRequestMerged:
-		return phase.Done, true
 	case TriggerBackward:
 		return "", false
 	}

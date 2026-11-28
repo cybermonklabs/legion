@@ -22,7 +22,8 @@ import (
 // told nothing. The move reaches the daemon as a synchronize whose push may arrive before it,
 // after it, or never. The daemon then reads GitHub's merge state of the new head, as it does
 // for any moved head, and a clean answer moves nothing either; in merging, the merge GitHub then
-// reports at the rebased head closes the issue.
+// reports at the rebased head queues the issue's close, which closes it once Dispatch shows it done
+// (closeLanded).
 func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 	t.Parallel()
 	rebase := intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
@@ -82,6 +83,7 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 					return
 				}
 				applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42", HeadSHA: "rebased"})
+				landClose(t, pool, engine, "LEGION-208")
 				if got := issuePhase(t, pool); got != phase.Done {
 					t.Fatalf("after the merge at the rebased head the issue is in %s, want done", got)
 				}

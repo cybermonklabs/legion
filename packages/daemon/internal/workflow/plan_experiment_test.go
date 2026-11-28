@@ -330,11 +330,12 @@ func TestTheGroupDefaultTakesNoPlan(t *testing.T) {
 // went on without the plan of generation 0, which is answered PLAN_STALE_GENERATION. Where the run
 // holds no plan, the plan given would wait at generation 0 for a first step that passes it over,
 // and is answered PLAN_NOT_TAKEN. So is the same version given again where it waits at generation
-// 0 already, given there by the architect of LEGION-209, a child of the tree and so an owner of
-// the issue (record.ArchitectOfTree): it is the owner's version, not one the group stores as its
-// own (record.PlanSourceDefault). None stores or changes anything, at the run's generation or at
-// generation 0. The plans are written as the store keeps them: the run's given by the architect of
-// LEGION-300's tree, which owns nothing of LEGION-208, or by LEGION-208's own architect.
+// 0 already, given there by the architect of LEGION-209, which stands above LEGION-208 on its
+// Dispatch chain and so owns the issue (record.PlanOwners): it is the owner's version, not one the
+// group stores as its own (record.PlanSourceDefault). None stores or changes anything, at the
+// run's generation or at generation 0. The plans are written as the store keeps them: the run's
+// given by the architect of LEGION-300's tree, which owns nothing of LEGION-208, or by
+// LEGION-208's own architect.
 //
 // The faults it catches: a run holding an earlier owner's plan read as having taken it (its
 // control: waitsAtZero keeping every plan of the run, whoever gave it, under which the first row
@@ -379,8 +380,13 @@ func TestAPlanGivenAtGenerationZeroForAnIssueOfTheGroupDefaultIsJudgedByItsRunsP
 				seedVersion(root.Generation, tc.giver)
 			}
 			if tc.waiting != "" {
-				recordedAt(t, pool, tc.waiting, root.Key)
-				seedVersion(0, tc.waiting)
+				// The waiting version's giver acts on the root from above it on its Dispatch
+				// chain, its own issue there.
+				above := tc.waiting
+				recordedAt(t, pool, above, above)
+				root.Parent = &above
+				seedIssue(t, pool, root)
+				seedVersion(0, above)
 			}
 			before := planStandingOf(t, pool, engine, root.Key, root.Generation)
 			atZero := planStandingOf(t, pool, engine, root.Key, 0)
@@ -412,12 +418,15 @@ func TestAnIssueWithNoGroupRunsAsBuilt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The earlier owner's plan is the plan of LEGION-208's architect, given while the child
-			// stood in that tree; the child is then recorded as a root of its own, whose architect
-			// gives its plan at generation 0 (first_step_test.go's earlier owner, as built).
+			// stood under LEGION-208 on its Dispatch chain; Dispatch then moves the child out from
+			// under it, a root of its own, whose architect gives its plan at generation 0
+			// (earlier_owner_plan_test.go's earlier owner, as built). LEGION-208 is recorded first:
+			// who acts on the child is read from its chain.
 			const child = "LEGION-209"
 			pool := migratedPool(t)
 			engine := returnEngine()
 			owner := claim.Token(treeRoleToken(t, child, claim.RoleArchitect))
+			recordedAt(t, pool, "LEGION-208", "LEGION-208")
 			recordedAt(t, pool, child, "LEGION-208")
 			mustTake(t, "the earlier owner's version 1", applyFacts(t, pool, engine)(planID(child, 1, 1),
 				ownersPlan(t, child, 1, 1, givenTask(t, "Build the widget.", "implementer", "tester"))))

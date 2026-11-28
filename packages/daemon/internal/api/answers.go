@@ -199,7 +199,10 @@ var frozenAnswers = []Answer{
 	// OwnerPlanContract's, and the answer it shares is older than it, as the no-content answer is
 	// older than two of its routes. The child route that childRouteRemovedContract removed
 	// answered it too: that route now answers every call with the refusal (removedChildRoute), and
-	// no plugin at that contract calls it.
+	// no plugin at that contract calls it. `issues/status` and `children/rerun` are this frozen
+	// row's as the numbered entries wrote it, and the chain entry's `status-call` answer names them
+	// too: a reader at that entry's contract or above is served `status-call` on them, and one below
+	// it this same empty object (shaping.go's shapeAnswer).
 	{ID: AnswerEmptyObject, Routes: []string{
 		"POST /legion/v1/issues/status",
 		"POST /legion/v1/gates/register",
@@ -310,9 +313,9 @@ type EnumeratedValue struct {
 // at its own field's arrival. An entry writes each value it adds to an older field in its own
 // file (contracts.go's enumeratedValues): the gate-basis entry adds `awaiting_children` to a held
 // row's `reason` and to an issue's `phase`, `heldFrom` and `pendingTask.phase`, and
-// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`. (`suspendedBy` gained
-// `released` at 48 and is no row here: the operator claim answers carry it and no plugin parses
-// them.)
+// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`, and the chain entry adds
+// `chain_unknown` and `awaiting_todo` to a held row's `reason`. (`suspendedBy` gained `released`
+// at 48 and is no row here: the operator claim answers carry it and no plugin parses them.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
@@ -478,11 +481,12 @@ var stateEnumeratedFields = []EnumeratedField{
 	// issue runs (api.HeldIssue, record.HeldReason). It arrived with `admission.held`, which is
 	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
 	// carries a value of it. Its list grew: `children_before_retro` and `task_stopped` arrived
-	// at OwnerPlanContract, after the field, and a row of either word is served as
-	// `unclassified` below that contract (shaping.go's withoutUnadmittedHeldWords); and
-	// `awaiting_children` arrived at gateBasisContract, and a row of it is served as
-	// `children_first` below that contract, the one word the strip stands another in for
-	// (shaping.go's heldReasonStandIn).
+	// at OwnerPlanContract, after the field, and the chain entry's `enumeratedValues` adds
+	// `chain_unknown` and `awaiting_todo` at chainContract, and a row of any of those words is
+	// served as `unclassified` below the contract its word arrived at (shaping.go's
+	// withoutUnadmittedHeldWords); and the gate-basis entry's adds `awaiting_children` at
+	// gateBasisContract, and a row of it is served as `children_first` below that contract, the
+	// one word the strip stands another in for (shaping.go's heldReasonStandIn).
 	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 	// `holdReason` of a held issue, why it is held (api.Issue.HoldReason, record.HoldReason).
 	// Older than the floor, and read with a literal of its one value until OwnerPlanContract,
@@ -636,9 +640,11 @@ var lineKinds = []EnumeratedValue{
 // `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
 // it is written out value by value, sorted by value, as waitAnswers is. The gate-basis entry adds
 // `awaiting_children`, a parent waiting on its open children (record.HeldAwaitingChildren), in its
-// own file. It names each constant rather than
-// reading record.HeldReasons, because a word added to the ladder later arrives at its own
-// contract.
+// own file, and the chain entry adds `chain_unknown`, an issue on a Dispatch chain the copy cannot
+// read to its top (record.HeldChainUnknown), and `awaiting_todo`, a run that starts as a root's
+// does and waits for a person's todo (record.HeldAwaitingTodo), in its own. It names each constant
+// rather than reading record.HeldReasons, because a word added to the ladder later arrives at its
+// own contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},

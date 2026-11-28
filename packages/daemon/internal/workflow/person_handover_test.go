@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 )
 
 // parkedRootView is Dispatch's view of LEGION-208 as the daemon's prepare stage reads it for a
@@ -59,7 +60,7 @@ func statusWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.Statu
 		if err := json.Unmarshal(payload, &write); err != nil {
 			t.Fatalf("decode status write %s: %v", payload, err)
 		}
-		writes = append(writes, write)
+		writes = append(writes, fencetest.Unfenced(write).(record.StatusWrite))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate status writes: %v", err)
@@ -151,15 +152,14 @@ func TestOnlyAPersonsApprovalOfAParkedLabelledRootsPrimaryDocumentQueuesIt(t *te
 	}
 }
 
-// lingeringRoot is LEGION-208 recorded where a root's leaving the workflow leaves it: its phase
-// done, its tree lingering, in status.
-func lingeringRoot(status string) record.Issue {
-	until := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+// closedRoot is LEGION-208 recorded where a root's leaving the workflow leaves it: its phase done,
+// in status.
+func closedRoot(status string) record.Issue {
 	return record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
-		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: status, Rank: "U", HandedOver: true, LingerUntil: &until}
+		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: status, Rank: "U", HandedOver: true}
 }
 
-// A parked labelled root the daemon recorded — one that ran and was parked, its tree lingering —
+// A parked labelled root the daemon recorded — one that ran and was parked —
 // is queued by a person's approval of its spec as an unrecorded one is: the write re-admits it as a
 // new generation, as a person's todo does. The gate its earlier run registered records the approved
 // version and nothing else: no design-approved notice is written for a tree with no architect, and
@@ -168,7 +168,7 @@ func lingeringRoot(status string) record.Issue {
 func TestAPersonsApprovalOfARecordedParkedRootsSpecQueuesItAndRecordsItQuietly(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
-	seedIssue(t, pool, lingeringRoot("backlog"))
+	seedIssue(t, pool, closedRoot("backlog"))
 	gate := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
 	seedGate(t, pool, gate)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
@@ -184,6 +184,46 @@ func TestAPersonsApprovalOfARecordedParkedRootsSpecQueuesItAndRecordsItQuietly(t
 	}
 	if kinds := noticeKinds(t, pool, "LEGION-208"); len(kinds) != 0 {
 		t.Fatalf("notices for a parked root with no architect = %v, want none", kinds)
+	}
+}
+
+// The echo of a person's handover takes the parked root while the handover's own row is still in
+// the outbox: Dispatch publishes the event of the todo before the outbox has finished the row that
+// wrote it, and the consumer can apply that event first. A handover is counted on no record when
+// it is queued (dispatchArtifact), so its own row is no later write the record has passed, as a
+// row the record counted is (dispatchIssue), and nothing else brings the todo to the record: the
+// outbox's answer to a landed write moves only an issue the daemon does not record
+// (applyOwnWrite). The echo is taken as a person's todo is (backInWork): a closed root opens a new
+// run, and a root a stop left at admitted comes back into Legion's work there.
+func TestTheEchoOfAPersonsHandoverTakesTheRootWhileItsRowIsStillQueued(t *testing.T) {
+	t.Parallel()
+	stopped := closedRoot("backlog")
+	stopped.Phase, stopped.HoldsGate, stopped.DispatchStatus = phase.Admitted, true, "backlog"
+	for _, tc := range []struct {
+		name       string
+		recorded   record.Issue
+		generation uint64
+	}{
+		{"a closed root", closedRoot("backlog"), 2},
+		{"a root a stop left at admitted", stopped, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, tc.recorded)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			applyFacts(t, pool, engine)("approval", approvalOf(askPerson, parkedRootView("backlog")))
+			if got, want := statusWrites(t, pool, "LEGION-208"), []record.StatusWrite{personHandoverWrite("backlog")}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("status writes = %#v, want the handover's row %#v still queued as its echo arrives", got, want)
+			}
+
+			applyMirrored(t, pool, engine, "echo", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 10, Type: "issue.updated",
+				Status: "todo", Title: "root", Rank: "U", HandedOver: true, DaemonActor: true})
+			got := storedIssue(t, pool, "LEGION-208")
+			if got.Status != "todo" || got.Phase != phase.Admitted || got.Generation != tc.generation || !record.InLegionsWork(got) {
+				t.Fatalf("the root once Dispatch echoes the handover's todo = phase %s, generation %d, status %s; want it in Legion's work at admitted, generation %d, status todo",
+					got.Phase, got.Generation, got.Status, tc.generation)
+			}
+		})
 	}
 }
 
@@ -211,7 +251,7 @@ func TestAHandoverApprovalTheGateWouldNotTakeLeavesItAsItWas(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedIssue(t, pool, lingeringRoot("backlog"))
+			seedIssue(t, pool, closedRoot("backlog"))
 			seedGate(t, pool, tc.gate)
 			apply := applyFacts(t, pool, testEngine(tc.policy, nil))
 
@@ -245,8 +285,8 @@ func TestAnApprovalOfALiveOrClosedRootsSpecIsAppliedToItsGateAsToday(t *testing.
 				Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true})
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
 		}, parkedRootView("backlog")},
-		{"a lingering root closed as done", func(t *testing.T, pool *pgxpool.Pool) {
-			seedIssue(t, pool, lingeringRoot("done"))
+		{"a recorded root closed as done", func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, closedRoot("done"))
 		}, parkedRootView("done")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,7 +317,7 @@ func TestAnApprovalOfALiveOrClosedRootsSpecIsAppliedToItsGateAsToday(t *testing.
 func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
-	seedIssue(t, pool, lingeringRoot("backlog"))
+	seedIssue(t, pool, closedRoot("backlog"))
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-209", Project: "LEGION",
 		Title: "carried child", Parent: &parent, Phase: phase.Merging, Generation: 2, Status: "retro", Rank: "V", HandedOver: true})
@@ -311,9 +351,9 @@ func TestACarriedCopyOfAParkedRootsGateTakesTheApprovalWhileTheOwnerIsQueued(t *
 // One row of a person's handover at a time: while a marked row is pending for the root, a second
 // approval — the stream's redelivery under another event id, or the person approving again — queues
 // nothing, since the pending row carries the same write, at either status a parked root holds. The
-// workflow's other status rows suppress nothing: a hand-over row, also a todo, pending for the root
-// leaves the person's handover queued beside it.
-func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testing.T) {
+// workflow's other status rows suppress nothing: a re-assertion row pending for the root leaves the
+// person's handover queued beside it.
+func TestAPendingPersonsHandoverSuppressesASecondAndAReassertionRowDoesNot(t *testing.T) {
 	t.Parallel()
 	for _, status := range []string{"backlog", "icebox"} {
 		t.Run("a pending marked row at "+status, func(t *testing.T) {
@@ -328,24 +368,25 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 			}
 		})
 	}
-	t.Run("a pending hand-over row", func(t *testing.T) {
+	t.Run("a pending re-assertion row", func(t *testing.T) {
 		pool := migratedPool(t)
-		handOver := record.HandOverStatusWrite("todo", "backlog", "LEGION-200", 3)
-		row, err := record.NewOutboxRow("LEGION-208", handOver, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
-		if err != nil {
-			t.Fatal(err)
-		}
+		handOver := record.ReassertStatusWrite("todo", "backlog", 2)
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-			return record.NewStore().Enqueue(context.Background(), tx, row)
+			store := record.NewStore()
+			row, err := record.NewFencedRow(context.Background(), tx, store, "LEGION-208", handOver, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+			if err != nil {
+				return err
+			}
+			return store.Enqueue(context.Background(), tx, row)
 		}); err != nil {
-			t.Fatalf("queue the hand-over row: %v", err)
+			t.Fatalf("queue the re-assertion row: %v", err)
 		}
 		apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
 		apply("approval", approvalOf(askPerson, parkedRootView("backlog")))
 
 		if got, want := statusWrites(t, pool, "LEGION-208"), []record.StatusWrite{handOver, personHandoverWrite("backlog")}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("status writes = %#v, want the hand-over row and the person's handover, %#v", got, want)
+			t.Fatalf("status writes = %#v, want the re-assertion row and the person's handover, %#v", got, want)
 		}
 	})
 }
@@ -426,7 +467,7 @@ func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
 		queued bool
 	}{
 		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}, log: parkedAfterTheApproval},
-		{name: "a recorded lingering root parked after the approval", recorded: new(lingeringRoot("backlog")), events: []intake.DispatchIssue{event(10, "root")},
+		{name: "a recorded closed root parked after the approval", recorded: new(closedRoot("backlog")), events: []intake.DispatchIssue{event(10, "root")},
 			log: parkedAfterTheApproval},
 		{name: "a root parked before the approval and renamed after it", events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")},
 			log: renamedAfterTheApproval, queued: true},
@@ -493,7 +534,7 @@ func TestARefusedPersonsHandoverIsWarnedAndRelayedToTheControllerOnce(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			if tc.recorded {
-				seedIssue(t, pool, lingeringRoot("icebox"))
+				seedIssue(t, pool, closedRoot("icebox"))
 				// Closed at the version approved, so applyArtifact would open it and write the
 				// design-approved notice.
 				seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})

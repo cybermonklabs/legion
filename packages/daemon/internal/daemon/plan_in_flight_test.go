@@ -239,10 +239,12 @@ func (r *stepRecordsRig) launchesOf(issue string) []fake.Call {
 
 // newInFlightRig is the store the release before leaves, seeded with the seven issues and the
 // control (seedInFlight), migrated to the branch's schema, with the daemon booted on it at the real
-// Dispatch of this package's tests, and each issue's recorded claims resumed in their sessions.
+// Dispatch of this package's tests, whose events reach the daemon on the broker they share
+// (newPlanRig), and each issue's recorded claims resumed in their sessions.
 func newInFlightRig(t *testing.T) *inFlightRig {
 	t.Helper()
-	proof := newLiveProofOn(t, workflowNATS(t))
+	natsURL := workflowNATS(t)
+	proof := newLiveProofOn(t, natsURL)
 	st, dsn := storeBeforeThePlans(t)
 	proof.st, proof.cfg.PostgresDSN = st, dsn
 	proof.cfg.Project = "IF" + randomSuffix(t)[:6]
@@ -256,7 +258,7 @@ func newInFlightRig(t *testing.T) *inFlightRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &inFlightRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
+	r := &inFlightRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}),
 		github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
@@ -344,7 +346,10 @@ func storeBeforeThePlans(t *testing.T) (*store.Store, string) {
 // issue in reviewing, which had one round that requested changes), the row of the role at work at
 // entry 1, and the claim of that role and of the architect each a launch the release before began
 // in the session it recorded, which the boot resumes. Its phase is the seeded one's but on the
-// control, which stands at admitted.
+// control, which stands at admitted. The release before's consumer applied every event Dispatch
+// logged for the issue up to the seed, under the id it applies a Dispatch event under
+// (processed_events, `dispatch-<id>`), which a status write of this release reads to know the
+// record has seen them (the outbox's awaitSeen, decision 11 of dispatch://INFRA-4730).
 func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, status string, created createdIssue) {
 	t := r.t
 	t.Helper()
@@ -360,6 +365,14 @@ func (r *inFlightRig) seedInFlight(issue *inFlightIssue, seeded phase.Phase, sta
 		handed_over, dispatch_status, repo, default_branch, github_repo)
 		values ($1, $1, $2, $3, $4, 1, $5, $6, $7, true, $5, $8, 'main', $8)`,
 		key, r.cfg.Project, issue.title, string(issue.stands), status, created.Rank, created.LastSeq, liveRepo)
+	var events []struct {
+		ID int64 `json:"id"`
+	}
+	r.person(http.MethodGet, fmt.Sprintf("/api/v1/issues/%s/events?after=0&limit=200", key), nil, http.StatusOK, &events)
+	for _, event := range events {
+		exec(fmt.Sprintf("the application of event %d of %s", event.ID, key), `insert into processed_events (source, event_id) values ('dispatch', $1)`,
+			fmt.Sprintf("dispatch-%d", event.ID))
+	}
 	exec("the tree of "+key, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, 'workflow')`, r.project, key)
 	exec("the design gate of "+key, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
 		values ($1, $2, 1, 1, true, 'spec')`, key, "spec-"+key)

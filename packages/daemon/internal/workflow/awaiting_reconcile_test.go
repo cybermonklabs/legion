@@ -11,16 +11,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// awaitRootView is an admitted root holding its admission slot whose architect handed a question
-// back at 5, with its architect's claim working and its task taken: the view decideAwait would
-// enter on.
+// awaitRootView is an admitted root holding its own gate and its admission slot whose architect
+// handed a question back at 5, with its architect's claim working and its task taken: the view
+// decideAwait would enter on.
 func awaitRootView() awaitView {
 	root := askRoot()
 	root.DeclaredSeq, root.DeclaredAt = 5, time.Date(2026, 9, 22, 23, 0, 0, 0, time.UTC)
 	return awaitView{
-		Root:    root,
-		Slotted: true,
-		Run:     record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateWorking}},
+		Root:      root,
+		HoldsGate: true,
+		Slotted:   true,
+		Run:       record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateWorking}},
 		Asks: []record.RootAsk{
 			{Issue: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, Open: true, Seq: 5, WaitingOn: "human", WaitingOnSeq: 5, ByTree: true},
 		},
@@ -58,7 +59,7 @@ func TestDecideAwaitsTable(t *testing.T) {
 	}{
 		{"a root in a phase of its own", func(v *awaitView) { v.Root.Phase = phase.Planning }, actStay, "not an admitted root"},
 		{"a root that left the workflow", func(v *awaitView) { v.Root.Status = "backlog" }, actStay, "not an admitted root"},
-		{"a child", func(v *awaitView) { v.Root.Tree = "LEGION-1" }, actStay, "not an admitted root"},
+		{"an issue under a parent that holds no gate of its own", func(v *awaitView) { v.HoldsGate = false }, actStay, "not an admitted root"},
 		{"an architect that handed nothing back", func(v *awaitView) { v.Root.DeclaredSeq = 0 }, actStay, "handed nothing"},
 		{"nothing left with the person", func(v *awaitView) { v.Asks[0].WaitingOn = "agent" }, actTakeIn, "still with the person"},
 		{"a question the root's tree did not open", func(v *awaitView) { v.Asks[0].ByTree = false }, actTakeIn, "still with the person"},

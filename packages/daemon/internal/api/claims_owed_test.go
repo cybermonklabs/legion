@@ -67,8 +67,9 @@ func (c liveClaim) owesNothing(t *testing.T) {
 func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	ctx := context.Background()
-	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
-		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
+	// LEGION-208 and its row of the copy of Dispatch's issues, as the mirror of a running daemon
+	// holds it: the daemon reads the chain there (R15 of dispatch://INFRA-3320).
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
@@ -282,8 +283,8 @@ func TestClaimOwedReadsTheRelaunchDeliveryAsNoWork(t *testing.T) {
 // A phase task leaves the look a claim served in place (supervise's ServingCheck), and the
 // completion route takes a phase's completion from such a claim unless its report names its check
 // (checkOpenedAt). So a tester that served a look of a check that has since closed, and holds a
-// confirmed testing task in testing again, a root reopened in its linger, owes the testing phase,
-// not nothing; while the check still holds its served look open, it owes that look.
+// confirmed testing task in testing again, a merged issue reopened into a new run, owes the
+// testing phase, not nothing; while the check still holds its served look open, it owes that look.
 func TestClaimOwedIsThePhaseOnceTheCheckHasLeftTheLookItsTesterServed(t *testing.T) {
 	opened := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
 	closed := opened.Add(2 * time.Hour)
@@ -378,11 +379,12 @@ func TestClaimOwedResponseGolden(t *testing.T) {
 }
 
 // The answer names the architect that owns the claim now, the end of the owner walk the daemon's
-// own notices about the claim's issue take (record.OwnerWalk.Architect from the issue itself): a
-// child's worker is owned by the child's own architect while that claim holds its role, and once
-// the child's architect is retired, by the nearest architect above it whose claim does, here the
-// tree root's. It is named whether or not the claim owes. An architect's own ask names none, and
-// neither does a worker on an issue the workflow does not record, which has no tree to walk.
+// own notices about the claim's issue take (record.OwnerWalk.Architect from the issue itself, over
+// its Dispatch chain): a child's worker is owned by the child's own architect while that claim
+// holds its role, and once the child's architect is retired, by the nearest architect above it
+// whose claim does, here the root's. It is named whether or not the claim owes. An architect's own
+// ask names none, and neither does a worker on an issue the workflow does not record, which has no
+// record to start the walk from.
 func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	seedTree(t, h, "LEGION-208", "LEGION-209")
@@ -425,5 +427,27 @@ func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 	stray := newLiveClaim(t, h, "LEGION-999", claim.RoleImplementer)
 	if got := stray.owed(t); got != (OwedResponse{}) {
 		t.Fatalf("a worker on an unrecorded issue is told %+v, want nothing at all", got)
+	}
+}
+
+// A worker whose issue stands on a Dispatch chain the copy cannot show to its top — the copy
+// holds no row of its parent (R16 of dispatch://INFRA-3320) — is told what it owes all the same,
+// and the architect named is its own issue's, where the owner walk starts, as its launch names it
+// (workflowRuntime.owningArchitect in internal/daemon/specs.go). Which architect above it owns it
+// is not known until the daemon has read Dispatch again (record.ErrChainUnknown), and a failure
+// would read to the reminder as an answer that did not arrive.
+func TestClaimOwedNamesTheIssuesOwnArchitectOnAnUnknownChain(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	workingIssue(t, h, phase.Testing)
+	parent := "LEGION-208"
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return seedCopy(tx, "LEGION-209", parent, "in_progress")
+	}); err != nil {
+		t.Fatalf("write LEGION-209's row of the copy: %v", err)
+	}
+	tester := newLiveClaimIn(t, h, parent, "LEGION-209", claim.RoleTester)
+	own := freshSessionToken(t, "LEGION-209", claim.RoleArchitect)
+	if got, want := tester.owed(t), (OwedResponse{Owes: true, Work: "the testing phase of LEGION-209", Architect: own}); got != want {
+		t.Fatalf("the tester on a chain the copy cannot show to its top is told %+v, want %+v", got, want)
 	}
 }

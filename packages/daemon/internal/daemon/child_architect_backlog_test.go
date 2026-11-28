@@ -5,7 +5,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -23,17 +23,20 @@ func launchesSince(rt *fake.Runtime, token claim.Token, after int) []fake.Call {
 	return launches
 }
 
-// A child's architect leaves the workflow with its child and comes back with it. The architect
+// A child's architect leaves Legion's work with its child and comes back with it. The architect
 // above the child writes backlog on it in Dispatch, and the daemon takes that write's event, whose
-// actor is that architect's session, as it takes a person's move: the child leaves the workflow,
-// which suspends every claim of the child (the workflow's leave), the child's architect's among
-// them. The claim stays the child's, suspended by the daemon with the session its agent
-// registered, and its process is stopped once. The rerun_child of the architect above (its own
-// write of todo on the child in backlog) starts the child's first phase again, and that start
-// resumes the child's architect's claim in its session: the runtime is asked to resume the
-// process from the session file the claim recorded, and no fresh one is spawned. Its ready tells
-// it the child at the generation the rerun opened.
-func TestAChildsArchitectIsSuspendedByTheOwnersBacklogAndItsRerunResumesItsSession(t *testing.T) {
+// actor is that architect's session, as it takes a person's move: the child leaves Legion's work
+// where it stands, its phase kept (R20 of dispatch://INFRA-3320), which suspends every claim of the
+// child (the workflow's leave), the child's architect's among them. The claim stays the child's,
+// suspended by the daemon with the session its agent registered, and its process is stopped once.
+// The daemon's own write of todo on the child in backlog — the echo of a todo the architect above
+// queued, applied as the daemon's own status write (intake.OwnStatusWrite) — returns the child to
+// the phase it stood in, in the same run (the workflow's ReturnToWork), and that return resumes
+// the child's architect's claim in its session: the runtime is asked to resume the process from
+// the session file the claim recorded, and no fresh one is spawned. Its ready tells it the child
+// at the run's generation. A rerun_child, which opens a new run, is not this test's
+// (basis_stays_scratch_dispatch_test.go's rerunFromAbove).
+func TestAChildsArchitectIsSuspendedByTheOwnersBacklogAndItsTodoReturnResumesItsSession(t *testing.T) {
 	t.Parallel()
 	rig := newChildArchitectRig(t)
 	rig.written("release", childAt("todo", 2))
@@ -52,8 +55,8 @@ func TestAChildsArchitectIsSuspendedByTheOwnersBacklogAndItsRerunResumesItsSessi
 	rig.apply("owner-backlog", intake.DispatchIssue{Key: doorChild, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "backlog",
 		Title: doorChild, Parent: doorRoot, Rank: "V", ActorSession: "ses-root-architect"})
 	rig.drain()
-	if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Done || got.Status != "backlog" {
-		t.Fatalf("the child after its owning architect's backlog = %s, %s; want it out of the workflow, done and in backlog", got.Phase, got.Status)
+	if got := readIssue(t, rig.pool, doorChild); got.Phase != started.Phase || got.Status != "backlog" {
+		t.Fatalf("the child after its owning architect's backlog = %s, %s; want it out of Legion's work in backlog, its phase %s kept", got.Phase, got.Status, started.Phase)
 	}
 	suspended := rig.machine(doorChild, claim.RoleArchitect).Claim()
 	if suspended.State != supervise.StateSuspended || suspended.SuspendedBy != supervise.SuspendedByDaemon ||
@@ -71,22 +74,22 @@ func TestAChildsArchitectIsSuspendedByTheOwnersBacklogAndItsRerunResumesItsSessi
 	}
 
 	called := len(rig.rt.Calls())
-	rig.written("rerun", childAt("todo", 4))
+	rig.written("todo-return", childAt("todo", 4))
 	rig.drain()
 	child := readIssue(t, rig.pool, doorChild)
-	if child.Phase != phase.Planning || child.Generation <= started.Generation {
-		t.Fatalf("the rerun child = %s at generation %d, want planning at a generation past %d", child.Phase, child.Generation, started.Generation)
+	if child.Phase != started.Phase || child.Generation != started.Generation || !record.InLegionsWork(*child) {
+		t.Fatalf("the returned child = %s, %s at generation %d, want it back in Legion's work in its phase %s at generation %d", child.Phase, child.Status, child.Generation, started.Phase, started.Generation)
 	}
 	if again := rig.machine(doorChild, claim.RoleArchitect); again != machine {
-		t.Fatal("the rerun made the child's architect a new claim, want the claim the backlog suspended")
+		t.Fatal("the return made the child's architect a new claim, want the claim the backlog suspended")
 	}
 	launches := launchesSince(rig.rt, token, called)
 	if len(launches) != 1 || launches[0].Method != "Resume" || launches[0].Spec.ResumeSessionFile != before.SessionFile {
-		t.Fatalf("the rerun launched the child's architect %+v, want one resume of the session file %s", launches, before.SessionFile)
+		t.Fatalf("the return launched the child's architect %+v, want one resume of the session file %s", launches, before.SessionFile)
 	}
 	resumed := machine.Claim()
 	if resumed.Session != before.Session || resumed.SessionFile != before.SessionFile || resumed.State == supervise.StateSuspended {
-		t.Fatalf("the child's architect after the rerun = %+v, want it resumed on its session %s", resumed, before.Session)
+		t.Fatalf("the child's architect after the return = %+v, want it resumed on its session %s", resumed, before.Session)
 	}
 
 	rig.boot(doorChild, claim.RoleArchitect, before.Session)

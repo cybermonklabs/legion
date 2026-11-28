@@ -77,6 +77,11 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(runningStepContract)"),
 	}},
+	// The chain entry's answers of the status calls: shapeAnswer serves the wave release without
+	// `queued`, and the status call as the empty object, to a caller below that entry's number.
+	{row: "The status calls' queued writes", compares: []comparisonSite{
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(chainContract)"),
+	}},
 	// The replaces entry's two rows of shapeAnswer (contract_20261125170509_replaces.go), which take
 	// `replaces` off both registration answers; the Design's table predates the entry.
 	{row: "The registrations' replaced session", compares: []comparisonSite{

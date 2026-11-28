@@ -51,7 +51,8 @@ func TestTheAncestorsCopyOfABasisChangesRequestIsToldOnlyWhileItStands(t *testin
 	approved := intake.DispatchArtifact{Key: basisSeedAncestor, ArtifactID: basisSeedDoc, Kind: intake.DispatchArtifactApproved, Version: 4,
 		Actor: basisSeedPerson, Mark: record.EventMark{Seq: 51, At: asked.Add(2 * time.Hour)}}
 	// Every copy names version 3 of the ancestor's document, the person, the review's mark and the
-	// document reviewed; the reason, which names the root's step, is other tests' to read.
+	// document reviewed; the reason, which names the root's step, and the run and the phase entry
+	// each row is queued for (record.Fence) are other tests' to read.
 	want := record.Notice{Kind: "basis-changes-requested", Role: claim.RoleArchitect, Version: 3, Actor: "user:alice",
 		Ref: "dispatch://LEGION-100/spec", Review: changes.Mark, Artifact: basisSeedDoc}
 	const supersededAtDelivery = "outbox changes request finished without publishing: the person's approval followed it"
@@ -98,7 +99,7 @@ func TestTheAncestorsCopyOfABasisChangesRequestIsToldOnlyWhileItStands(t *testin
 			queued := slices.Concat(root, ancestor)
 			for _, row := range queued {
 				got := row.notice
-				got.Reason = ""
+				got.Reason, got.Generation, got.Entry = "", 0, 0
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("the workflow queued row %d naming version %d, actor %q, ref %q, review %+v and document %q, want %d, %q, %q, %+v and %q",
 						row.id, got.Version, got.Actor, got.Ref, got.Review, got.Artifact, want.Version, want.Actor, want.Ref, want.Review, want.Artifact)

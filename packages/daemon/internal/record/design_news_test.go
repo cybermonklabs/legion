@@ -3,7 +3,6 @@ package record
 import (
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
@@ -72,17 +71,14 @@ func criteriaNews(from *int, to int) NewsItem {
 // OwedNews is the one rule for what a tree owes of its approved design, and each row of this table
 // is one of its conditions: the step must be one the tree is gated on, the standing gate open, the
 // approved version above what the holder took or a version the record does not know, the step one
-// that concerns the member, the member in the workflow with a phase someone holds in a tree that
-// does not linger, and its pull request not merged. A row that owes the opening while the gate
-// stands open is owed that opening, with no item where it is owed none. The root architect's row is
-// weighed on its own rule beside the members'. Each member owed nothing is named with the first
-// reason that holds (UntoldReason), the hold of the gate or the linger last.
+// that concerns the member, the member in the workflow with a phase someone holds, and its pull
+// request not merged. A row that owes the opening while the gate stands open is owed that opening,
+// with no item where it is owed none. The root architect's row is weighed on its own rule beside
+// the members'. Each member owed nothing is named with the first reason that holds (UntoldReason),
+// the hold of the gate last. Every row stands on the tree of the gate root newsRoot (NewsFacts.Root).
 func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 	specOnly := []DesignStep{DesignStepSpec}
 	child, sibling, third := "LEGION-101", "LEGION-102", "LEGION-103"
-	until := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
-	lingering := newsMember(newsRoot, phase.Merging)
-	lingering.LingerUntil = &until
 	heldImplementing := newsMember(sibling, phase.Held)
 	heldImplementing.Hold = &Hold{From: phase.Implementing}
 	heldFromMerging := newsMember(child, phase.Held)
@@ -225,14 +221,6 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Untold: map[string]UntoldReason{newsRoot: UntoldMerged, child: UntoldNotConcerned}},
 		},
 		{
-			name: "a lingering tree owes nothing, its architect included",
-			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
-				Members: []Issue{lingering, newsMember(child, phase.Implementing)},
-				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
-					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
-			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldHeldBack, child: UntoldHeldBack}},
-		},
-		{
 			name: "an unknown baseline owes, with no version to start from",
 			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
 				Members: []Issue{newsMember(newsRoot, phase.Admitted), newsMember(child, phase.Implementing), newsMember(sibling, phase.Testing)},
@@ -280,6 +268,7 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.facts.Root = newsRoot
 			if got := OwedNews(tc.facts); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("OwedNews = %+v, want %+v", got, tc.want)
 			}

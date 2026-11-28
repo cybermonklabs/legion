@@ -367,11 +367,17 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 		return len(r.publisher.publishes()) == 4 && len(r.stateRows(t)) == 0
 	})
 	stop()
+	// The first write records the issue, so its transaction names the issue's tree too, after its
+	// phase (record.Postgres's watchTrees, at the transaction's end): its message carries
+	// sequences 1 and 2, and each later message its own one sequence, one above the last.
 	for i, state := range statesPublished(t, r.publisher, 0) {
-		seq := int64(i + 1)
-		if state.key != record.OutboxKey(heads[i]) || state.message.FirstSeq != seq || state.message.Seq != seq {
-			t.Fatalf("message %d went out under %q carrying %d-%d, want %q carrying %d alone: the sequence runs on across transactions with no gap",
-				i, state.key, state.message.FirstSeq, state.message.Seq, record.OutboxKey(heads[i]), seq)
+		first, last := int64(i+2), int64(i+2)
+		if i == 0 {
+			first = 1
+		}
+		if state.key != record.OutboxKey(heads[i]) || state.message.FirstSeq != first || state.message.Seq != last {
+			t.Fatalf("message %d went out under %q carrying %d-%d, want %q carrying %d-%d: the sequence runs on across transactions with no gap",
+				i, state.key, state.message.FirstSeq, state.message.Seq, record.OutboxKey(heads[i]), first, last)
 		}
 		if state.message.Project != "LEGION" || state.message.Run != stateTestRun {
 			t.Fatalf("message %d names project %q and run %q, want LEGION and %s", i, state.message.Project, state.message.Run, stateTestRun)
@@ -385,13 +391,13 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 	held := one(r.commit(t, r.records, moveTo(phase.Reviewing)))
 	r.drain(t)
 	attempts := statesPublished(t, r.publisher, 4)
-	if len(attempts) != 1 || attempts[0].key != record.OutboxKey(failing) || attempts[0].message.FirstSeq != 5 || attempts[0].message.Seq != 5 {
-		t.Fatalf("the failing publish's attempts = %+v, want one attempt of sequence 5 alone under %q", attempts, record.OutboxKey(failing))
+	if len(attempts) != 1 || attempts[0].key != record.OutboxKey(failing) || attempts[0].message.FirstSeq != 6 || attempts[0].message.Seq != 6 {
+		t.Fatalf("the failing publish's attempts = %+v, want one attempt of sequence 6 alone under %q", attempts, record.OutboxKey(failing))
 	}
 	rows := r.stateRows(t)
-	if len(rows) != 2 || rows[0].id != failing || rows[0].seq != 5 || rows[0].attempts != 1 || rows[0].leaseToken != "" ||
-		rows[1].id != held || rows[1].seq != 6 || rows[1].attempts != 0 || rows[1].leaseToken != "" {
-		t.Fatalf("the state rows after the failed publish = %+v, want row %d at sequence 5 tried once and row %d at sequence 6 untried", rows, failing, held)
+	if len(rows) != 2 || rows[0].id != failing || rows[0].seq != 6 || rows[0].attempts != 1 || rows[0].leaseToken != "" ||
+		rows[1].id != held || rows[1].seq != 7 || rows[1].attempts != 0 || rows[1].leaseToken != "" {
+		t.Fatalf("the state rows after the failed publish = %+v, want row %d at sequence 6 tried once and row %d at sequence 7 untried", rows, failing, held)
 	}
 	// Until its backoff has passed the failed row is not due, and the row after it may not run.
 	r.drain(t)
@@ -402,9 +408,9 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 	clock.advance(time.Minute)
 	r.drain(t)
 	retried := statesPublished(t, r.publisher, 5)
-	if len(retried) != 2 || retried[0].key != record.OutboxKey(failing) || retried[0].message.FirstSeq != 5 || retried[0].message.Seq != 5 ||
-		retried[1].key != record.OutboxKey(held) || retried[1].message.FirstSeq != 6 || retried[1].message.Seq != 6 {
-		t.Fatalf("the publishes after the backoff = %+v, want sequence 5 again under its own key, then 6", retried)
+	if len(retried) != 2 || retried[0].key != record.OutboxKey(failing) || retried[0].message.FirstSeq != 6 || retried[0].message.Seq != 6 ||
+		retried[1].key != record.OutboxKey(held) || retried[1].message.FirstSeq != 7 || retried[1].message.Seq != 7 {
+		t.Fatalf("the publishes after the backoff = %+v, want sequence 6 again under its own key, then 7", retried)
 	}
 	if rows := r.stateRows(t); len(rows) != 0 {
 		t.Fatalf("state rows left after the retry = %+v, want none", rows)
@@ -428,16 +434,16 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 			t.Fatalf("after %v the state rows = %+v, want the refused row finished: it would hold the lane for ever", refusal, rows)
 		}
 		lines := loggedLines(t, r.logged.String(), "outbox state event refused by the listener and dropped")
-		if len(lines) != i+1 || lines[i]["level"] != "ERROR" || lines[i]["row"] != float64(dropped) || lines[i]["seq"] != float64(7+i) ||
+		if len(lines) != i+1 || lines[i]["level"] != "ERROR" || lines[i]["row"] != float64(dropped) || lines[i]["seq"] != float64(8+i) ||
 			!strings.Contains(lines[i]["error"].(string), refusal.Error()) {
-			t.Fatalf("the refusal lines = %v, want an ERROR naming row %d, sequence %d and %v", lines, dropped, 7+i, refusal)
+			t.Fatalf("the refusal lines = %v, want an ERROR naming row %d, sequence %d and %v", lines, dropped, 8+i, refusal)
 		}
 	}
 	r.publisher.refuseWith(nil)
 	next := one(r.commit(t, r.records, moveTo(phase.Done)))
 	r.drain(t)
-	if after := statesPublished(t, r.publisher, 9); len(after) != 1 || after[0].key != record.OutboxKey(next) || after[0].message.FirstSeq != 9 || after[0].message.Seq != 9 {
-		t.Fatalf("the publishes after the refusals = %+v, want sequence 9 alone under %q, above the two refused rows' gap", after, record.OutboxKey(next))
+	if after := statesPublished(t, r.publisher, 9); len(after) != 1 || after[0].key != record.OutboxKey(next) || after[0].message.FirstSeq != 10 || after[0].message.Seq != 10 {
+		t.Fatalf("the publishes after the refusals = %+v, want sequence 10 alone under %q, above the two refused rows' gap", after, record.OutboxKey(next))
 	}
 	if failed := loggedLines(t, r.logged.String(), `"msg":"outbox row failed"`); len(failed) != 1 {
 		t.Fatalf("logged %d failed rows, want the refusals logged as refusals and not as failures", len(failed))
@@ -454,8 +460,8 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 			StateID  string `json:"stateId"`
 		} `json:"daemon"`
 	}
-	if body := r.getState(t); json.Unmarshal(body, &served) != nil || served.Daemon.StateID == "" || served.Daemon.StateSeq == nil || *served.Daemon.StateSeq != 9 {
-		t.Fatalf("the state serves %s, want daemon.stateSeq 9 and the store's daemon.stateId", body)
+	if body := r.getState(t); json.Unmarshal(body, &served) != nil || served.Daemon.StateID == "" || served.Daemon.StateSeq == nil || *served.Daemon.StateSeq != 10 {
+		t.Fatalf("the state serves %s, want daemon.stateSeq 10 and the store's daemon.stateId", body)
 	}
 	for i, state := range statesPublished(t, r.publisher, 0) {
 		if state.message.StateID != served.Daemon.StateID {
@@ -467,8 +473,9 @@ func TestStateEventsArePublishedOnTheProjectsStateSubjectInSequence(t *testing.T
 // The state events one transaction commits go out as one message, in the order the transaction
 // wrote them and with the one time it committed at: a pass that takes an issue's slot away and
 // grants it another, and moves its phase, in one fact is one message of three events, so Dispatch
-// holds only the slot that committed, and a release of a tree's two slots (the re-admission of its
-// root, record.Store.ReleaseTreeSlots) is one message of two events, in the slots' order. A
+// holds only the slot that committed, and a release of two issues' slots in one transaction (the
+// admission pass's releases, record.Store.ReleaseSlot) is one message of two events, in the order
+// they ran. A
 // transaction whose events would pass stateMessageBound as the listener's envelope carries them
 // goes out as consecutive messages, split between its events, each under the bound and with no
 // gap between them.
@@ -530,7 +537,7 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 		}
 	})
 
-	t.Run("a tree's two slots released together", func(t *testing.T) {
+	t.Run("two slots released together", func(t *testing.T) {
 		r := newStateRig(t)
 		root, member := stateIssue(), stateIssue()
 		member.Key, member.Title = "LEGION-2", "member"
@@ -546,8 +553,12 @@ func TestTheStateEventsOfOneTransactionArePublishedAsOneMessage(t *testing.T) {
 			return nil
 		})
 		ids := r.commit(t, r.records, func(ctx context.Context, tx pgx.Tx, records record.Store) error {
-			_, err := records.ReleaseTreeSlots(ctx, tx, root.Tree)
-			return err
+			for _, released := range []record.Issue{member, root} {
+				if err := records.ReleaseSlot(ctx, tx, released.Key); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 		rows := r.stateRows(t)
 		if len(ids) != 2 || len(rows) != 2 {
@@ -687,8 +698,8 @@ func (r *admissionStateRig) waiting(t *testing.T, key, rank string) {
 	})
 }
 
-// running records key as a root at work: its record, the cap's one slot and its tree lifecycle,
-// open under the workflow, as promotion writes them.
+// running records key as a root at work: its record, the cap's one slot and its own issue
+// lifecycle, open under the workflow, as promotion writes them.
 func (r *admissionStateRig) running(t *testing.T, key, rank string) {
 	t.Helper()
 	r.seed(t, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
@@ -698,7 +709,7 @@ func (r *admissionStateRig) running(t *testing.T, key, rank string) {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
-		_, err := records.OpenTreeLifecycle(ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow)
+		_, err := records.OpenIssueLifecycle(ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow)
 		return err
 	})
 }

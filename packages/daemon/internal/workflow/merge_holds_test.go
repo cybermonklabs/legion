@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,30 +22,20 @@ import (
 // it writes two deliveries: a merge-holds-changed notice on the accepting issue, which reaches its
 // tree's architect, and a merge-holds row on the merging issue, which reaches its merger. Each
 // carries the one text that names the document and says to read it again. It writes nothing for
-// an issue in another phase, for one out of the workflow, or for one whose tree lingers. The same
-// event delivered again writes nothing more, since ApplyFact records the event's id, and an event
-// of another project writes nothing.
+// an issue in another phase or for one out of the workflow by its own status (no tree lingers:
+// R20 of dispatch://INFRA-3320). The same event delivered again writes nothing more, since
+// ApplyFact records the event's id, and an event of another project writes nothing.
 func TestAMergeHoldsChangeTellsTheArchitectInAcceptingAndTheMergerInMerging(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
-	seed := func(key, tree string, at phase.Phase, status string, lingers bool) {
-		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: tree,
-			Project: "LEGION", Title: key, Phase: at, Generation: 1, Status: status, Rank: "U"}
-		if key != tree {
-			issue.Parent = &tree
-		}
-		if lingers {
-			until := time.Date(2026, 9, 24, 0, 0, 0, 0, time.UTC)
-			issue.LingerUntil = &until
-		}
-		seedIssue(t, pool, issue)
+	seed := func(key string, at phase.Phase, status string) {
+		seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key,
+			Project: "LEGION", Title: key, Phase: at, Generation: 1, Status: status, Rank: "U"})
 	}
-	seed("LEGION-208", "LEGION-208", phase.Accepting, "needs_review", false)
-	seed("LEGION-209", "LEGION-209", phase.Merging, "retro", false)
-	seed("LEGION-210", "LEGION-210", phase.Implementing, "in_progress", false)
-	seed("LEGION-211", "LEGION-211", phase.Merging, "backlog", false)
-	seed("LEGION-212", "LEGION-212", phase.Done, "done", true)
-	seed("LEGION-213", "LEGION-212", phase.Merging, "retro", false)
+	seed("LEGION-208", phase.Accepting, "needs_review")
+	seed("LEGION-209", phase.Merging, "retro")
+	seed("LEGION-210", phase.Implementing, "in_progress")
+	seed("LEGION-211", phase.Merging, "backlog")
 
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := func(id string, fact intake.Fact) {

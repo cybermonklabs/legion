@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
-	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -316,8 +315,8 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // queued, and the attempt wakes it in the same pod.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
-// notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
-// the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
+// notice that backs off for ten minutes resumes the claim once. A claim of an issue out of
+// Legion's work is not woken (wakeableIssue): that pod is a stop's or a close's to end. An outbox
 // with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to
 // read a claim's state from.
 //
@@ -358,9 +357,9 @@ type claimWake struct {
 
 // claimWakeOf reads the claim of token from its machine's View and decides whether a wake of it
 // is to be made or is under way: a released claim of a wakeable issue, or a launch the wake pacing
-// parked. A claim of an issue that has left the workflow, or whose tree lingers, is not woken:
-// that pod is a close's to stop. An outbox with no supervisor — a test's, which supervises
-// nothing — reads no claim: there is no machine to read a claim's state from.
+// parked. A claim of an issue that has left the workflow is not woken: that pod is a close's to
+// stop. An outbox with no supervisor — a test's, which supervises nothing — reads no claim: there
+// is no machine to read a claim's state from.
 func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake, error) {
 	if r.supervisor == nil {
 		return claimWake{}, nil
@@ -388,10 +387,9 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 // over no process; or a launch under a resume of the role that has had no first turn yet
 // (store.Store.OpenPodResume), which a wake opened. The first two are claimWakeOf's, the decision
 // deliveryWake acts on, so the two cannot disagree. A released claim of an issue that has left the
-// workflow, or whose tree lingers, gets no wake, and a launch no wake opened is the role starting
-// as any role starts, so the hour holds for both: without it, a row of an issue moved out of the
-// workflow would be tried about once a minute for as long as the issue stayed out, and its end
-// would never come.
+// workflow gets no wake, and a launch no wake opened is the role starting as any role starts, so
+// the hour holds for both: without it, a row of an issue moved out of the workflow would be tried
+// about once a minute for as long as the issue stayed out, and its end would never come.
 func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (bool, error) {
 	if wake.resume || wake.parked {
 		return true, nil
@@ -469,19 +467,15 @@ func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claim
 }
 
 // wakeableIssue is the record of issue key, and whether a released claim of it can be woken: the
-// issue is in the workflow and its tree does not linger (pods.InWorkflowNotLingering). A claim of
-// an issue that has left the workflow, or whose tree lingers, is a close's to stop, not a wake's
-// to bring back. An issue the daemon keeps no record of is an error, as outbox.issue says.
+// issue is in Legion's work (record.InLegionsWork, its own record and no other issue's). A claim of
+// an issue out of it is a leave's to stop, not a wake's to bring back. An issue the daemon keeps no
+// record of is an error, as outbox.issue says.
 func (r *outbox) wakeableIssue(ctx context.Context, key string) (record.Issue, bool, error) {
 	issue, err := r.issue(ctx, key)
 	if err != nil {
 		return record.Issue{}, false, err
 	}
-	root, err := r.root(ctx, issue)
-	if err != nil {
-		return record.Issue{}, false, err
-	}
-	return issue, root != nil && pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow), nil
+	return issue, record.InLegionsWork(issue), nil
 }
 
 // parkedLaunch is whether view's launch is parked by the wake pacing over no process, and that
@@ -613,11 +607,11 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // was released: it drops the open backstops the path has taken over, so no later backstop acts on
 // a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
 // (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
-// nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
-// (forgetIdleRelease), and drop every backstop of the issue, since the issue's work is over. The
-// claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
-// is what takes it out of every released-claim read; this drops what is left behind in the
-// record.
+// nothing but its own backstop to bring it back. An issue's close and the end of its retention
+// name no role (forgetIdleRelease), and drop every backstop of the issue, since the issue's work
+// is over. The claim's own suspension source is re-stamped by the machine (supervise's
+// suspendedAgain), which is what takes it out of every released-claim read; this drops what is
+// left behind in the record.
 //
 // A runner with no tree store does nothing here. Every runner the daemon builds has one
 // (newOutbox), so this is the test that builds a runner by hand for a path of its own, as the
@@ -633,13 +627,13 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 }
 
 // forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
-// of it (store.ForgetIdleDecline): the issue is done, or its tree is closing, so no idle release of
-// its pod is coming. It deletes the record of the disks of the issue's pods too
-// (store.DeleteIssuePodDisks), which the issue's update rounds read (workOnRoundPod): no round of
-// the issue's pods is left to name a role by it. Both records expire together, at the end of the
-// issue's work, which is the one event of every caller, so a change to the idle release here must
-// keep the delete of the disks' record. A linger and a park keep both, because their issue comes
-// back. A runner with no tree store does nothing, as takeOverRelease says.
+// of it (store.ForgetIdleDecline): the issue is done, or the retention a linger of the release
+// before left it has ended, so no idle release of its pod is coming. It deletes the record of the
+// disks of the issue's pods too (store.DeleteIssuePodDisks), which the issue's update rounds read
+// (workOnRoundPod): no round of the issue's pods is left to name a role by it. Both records expire
+// together, at the end of the issue's work, which is the one event of every caller, so a change to
+// the idle release here must keep the delete of the disks' record. A stop keeps both, because its
+// issue comes back. A runner with no tree store does nothing, as takeOverRelease says.
 func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {

@@ -22,8 +22,13 @@
 #     of the daemon's client, each answered 2xx; with a token of another project every write on
 #     the first project's objects is accepted too, but the daemon script's step record, its rating
 #     and its plan are refused 403 STEP_WRITER and its role holders 403 ROLE_HOLDER_FORBIDDEN,
-#     since that token's session is no daemon's, and an upload into another session's
-#     conversation 403 SESSION_SCOPE.
+#     since that token's session is no daemon's, its status writes on the daemon's issue 403
+#     LEGION_STATUS_SCOPE_REQUIRED, and an upload into another session's conversation 403
+#     SESSION_SCOPE. Its Dispatch runs with DISPATCH_LEGION_STATUS_SCOPE on and the daemon's issue
+#     is labelled legion, so each status write and role-holder publication of the daemon's client
+#     carries the daemon's DPoP token; under the shared token each is refused 403
+#     LEGION_STATUS_SCOPE_REQUIRED or ROLE_HOLDER_FORBIDDEN, and each is taken once Dispatch
+#     restarts with the setting off.
 #   - K3, TestEveryClientRenewsAndStopsOnARefusal, with LEGION_E2E_TOKEN_RENEWAL=1 and in place of
 #     the two above: the three long-lived clients write over three lifetimes of a 420 s token,
 #     renewing it with no restart, and stop with the broker's refusal once their pod's token is

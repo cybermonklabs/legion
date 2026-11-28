@@ -72,6 +72,10 @@ type Store struct {
 	// roleHoldersQueued is PublishRoleHolders' wake, read at each claim write. It is nil until the
 	// daemon turns the publication on, and while it is nil no claim write queues one.
 	roleHoldersQueued atomic.Pointer[func(issue string)]
+	// gateRoots is ReadGateRootsWith's reader of the gate root each issue stands under, which the
+	// fold of a delivery's final credit reads (settleDesignNews). It is nil until the daemon wires
+	// it.
+	gateRoots atomic.Pointer[GateRoots]
 	// leftSessionsQueued is ReleaseLeftSessionClaims' wake, read at each claim write. It is nil
 	// until the daemon turns the release on, and while it is nil no claim write queues one.
 	leftSessionsQueued atomic.Pointer[func(issue string)]

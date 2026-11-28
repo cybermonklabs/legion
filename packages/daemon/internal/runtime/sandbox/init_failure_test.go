@@ -256,7 +256,7 @@ func TestAKeptVolumeWhoseInitContainerFailedIsReplaced(t *testing.T) {
 		}, nil},
 		{"ReleaseIssue", func(t *testing.T, g *rig, _ runtime.Locator) {
 			t.Helper()
-			if _, err := g.r.ReleaseIssue(g.ctx, testTree, testTree, authorized, nil); err != nil {
+			if _, err := g.r.ReleaseIssue(g.ctx, testTree, "", authorized, nil); err != nil {
 				t.Fatalf("ReleaseIssue: %v", err)
 			}
 		}, []string{secretsReleasedAnnotation}},

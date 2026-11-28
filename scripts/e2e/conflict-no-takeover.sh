@@ -38,7 +38,7 @@
 # run's work directory, the driver binary among it, is under TMPDIR too, since a pod's own disk is
 # small and its TMPDIR names the issue's volume. It needs no kube context, no tmux and no agent, so
 # it runs in a Legion pod, in CI and on a devbox alike. The run around the driver is
-# lib/live-daemon-proof.sh's, which child-adoption.sh makes too.
+# lib/live-daemon-proof.sh's, which sub-architect.sh makes too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

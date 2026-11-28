@@ -57,7 +57,7 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // It answers the roles it queued a resume for (ReleaseCancelled.Resumed): the claims this release
 // suspended that are still suspended as `released`, less a role whose stop the mark does not
 // record that a queued start already brings back (below). A claim another path took over — a
-// close, a linger, an operator — is left to that path, which is what the source on the suspension
+// close, a stop, an operator — is left to that path, which is what the source on the suspension
 // says; one an earlier release left `released` is no business of this release, which is why the
 // mark's own set and this release's own stops are read and never every released claim of the
 // issue.
@@ -86,7 +86,7 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // Two kinds of role that this release stopped keep the start of their wake. Each such start says
 // that the release took the pod, and the release took none, so the cancel tells it in the words of
 // a release that did not finish (ReleaseCancelPause.TakenOverWakeTask, retellWakesOf), paused or
-// not. The first is a role of the mark's set whose claim a close, a linger or an operator took
+// not. The first is a role of the mark's set whose claim a close, a stop or an operator took
 // over after its wake: its start is that path's (dropTakenOverWakes), and no cancel resumes it.
 // The second is a role whose stop suspended its claim as `released` and did not record it on the
 // mark (unrecordedStops): the stop records the role in a transaction of its own after the
@@ -99,7 +99,7 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // the project is paused (below): nothing else brings it back, since its stop's row, run again,
 // reads the release over, and a pod that stayed arms no backstop. While the claim is still
 // `released`, the cancel keeps that wake's resume and makes it pair with release 0, since no
-// release took the pod (pairUnrecordedWakesWithNoRelease). Where a close, a linger or an operator
+// release took the pod (pairUnrecordedWakesWithNoRelease). Where a close, a stop or an operator
 // took that claim over too, its start is that path's, as for a role of the set, and the cancel
 // deletes the wake's resume by the same rule (dropTakenOverWakes). A role this release did not
 // stop is not told again: one an earlier release left `released` and a wake brought back while
@@ -137,10 +137,10 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // (holdWakesUnderPause): its resume names the pause and release 0, as the resume of a wake taken
 // while the project is paused does (decision 15).
 //
-// An issue the record no longer holds, one that has left the workflow, and one whose tree
-// lingers are given no resume at all, and the mark goes all the same: those claims are a close's
-// to end. The gate is the one every path that acts on a released pod reads
-// (pods.InWorkflowNotLingering), read here inside the cancel's own transaction, because the
+// An issue the record no longer holds and one that has left the workflow by its own standing,
+// whatever stands above it, are given no resume at all, and the mark goes all the same: those
+// claims are a close's to end. The gate is the one every path that acts on a released pod reads
+// (pods.Standing.InWorkflow), read here inside the cancel's own transaction, because the
 // cancel of a release whose issue left the workflow runs beside that issue's close — the close's
 // rows are queued above the release's and the teardown answers Unauthorized for the same leave —
 // and a resume queued above them supersedes the close: the close's own suspension then finishes
@@ -373,7 +373,7 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 //
 // TakenOverWakeTask is the workflow's rule for the task of a wake's start that every cancel keeps,
 // paused or not, for a role this release stopped and no cancel resumes: a role whose claim a
-// close, a linger or an operator took over after the wake, and a role whose stop the mark does not
+// close, a stop or an operator took over after the wake, and a role whose stop the mark does not
 // record (workflow.TakenOverWakeTask, CancelIssueRelease). It answers, from the wake kind, the
 // detail and the task the start carries, the task that start carries from now on. nil rewrites
 // no task.
@@ -514,34 +514,28 @@ func retellWakesOf(ctx context.Context, tx pgx.Tx, project, issue string, roles 
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
 // the generation the resume names, the phase whose worker a paused cancel arms a backstop for,
-// and whether the issue and its tree root are both still the workflow's to run
-// (pods.InWorkflowNotLingering).
+// and whether the issue is still the workflow's to run by its own standing
+// (pods.Standing.InWorkflow).
 type issueStanding struct {
 	generation uint64
 	phase      phase.Phase
 	live       bool
 }
 
-// resumeStanding is issue's standing as a cancel reads it. An issue or a root the record no
-// longer holds is not live.
+// resumeStanding is issue's standing as a cancel reads it. An issue the record no longer holds
+// is not live.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
 	var generation int64
-	var issuePhase, status, rootPhase, rootStatus string
-	var lingering, rootLingering bool
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
-		root.phase, root.status, root.linger_until is not null
-		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
+	var issuePhase, status string
+	err := tx.QueryRow(ctx, `select generation, phase, status from issues where key = $1`, issue).Scan(
+		&generation, &issuePhase, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
 	if err != nil {
 		return issueStanding{}, fmt.Errorf("read %s for the resumes of its cancelled release: %w", issue, err)
 	}
-	live := pods.InWorkflowNotLingering(
-		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
-		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
-		outOfWorkflow)
+	live := pods.Standing{Phase: phase.Phase(issuePhase), Status: status}.InWorkflow(outOfWorkflow)
 	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
 }
 
@@ -594,7 +588,7 @@ func releasedRoleNames(roles []releasedRole) []string {
 // dropTakenOverWakes deletes the resumes of the wakes taken under the mark (above wake, the mark's
 // wake_row) of each of takenOver: the roles this release stopped whose claim is not suspended as
 // `released` (CancelIssueRelease). One rule holds for the roles of the mark's suspended set and
-// for the roles whose stop the mark does not record (unrecordedStops). A close, a linger or an
+// for the roles whose stop the mark does not record (unrecordedStops). A close, a stop or an
 // operator took such a claim over after the wake. A role whose stop has not run yet is among them
 // too, but its claim is live, so no wake of it was taken and the delete finds nothing of it. The
 // release did not finish, so no pod of it went away, and such a resume is no pod's return. Left
@@ -602,7 +596,7 @@ func releasedRoleNames(roles []releasedRole) []string {
 // count a pod return for a release that did not take that pod. With no first turn it would also be
 // warned and recorded stuck, and it would refuse the role's next wake until a later release closed
 // it. The wake's own start stays: it is the start of the path that took the claim over. It
-// finishes without acting under a close or a linger (decision 10 of dispatch://INFRA-3759), and it
+// finishes without acting under a close or a stop (decision 10 of dispatch://INFRA-3759), and it
 // waits for an operator's resume under an operator's suspension. The cancel has already told that
 // start in the words of a release that did not finish (retellWakesOf), which read this resume as
 // the wake taken under the mark before this delete.
@@ -638,7 +632,7 @@ func dropTakenOverWakes(ctx context.Context, tx pgx.Tx, project, issue string, t
 // it out (UnfinishedPodResumesTx). A held wake already pairs with release 0, and this leaves it as
 // it is. A cancel calls this whether the project runs or is paused (CancelIssueRelease).
 //
-// A role whose stop the mark does not record and whose claim a close, a linger or an operator
+// A role whose stop the mark does not record and whose claim a close, a stop or an operator
 // took over is not one of paired. Its wake's start finishes without acting, or waits for an
 // operator's resume, so the role takes no first turn from it. A kept resume would then be warned
 // and recorded stuck, and it would refuse the role's next wake. The cancel deletes that resume

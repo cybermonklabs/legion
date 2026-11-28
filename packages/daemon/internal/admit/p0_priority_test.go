@@ -54,7 +54,7 @@ func TestEveryPathFromDispatchStoresEachPriority(t *testing.T) {
 				p0Holder(t, pool, "LEGION-1", "A", record.P1)
 				detail := dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9", Status: "todo", Rank: "C", HandedOver: true, LastSeq: 1,
 					ResolvedRepo: "acme/widgets", Priority: level(priority)}
-				applyFact(t, pool, admission, "detail", intake.ObservedIssue(detail))
+				apply(t, pool, admission, "detail", intake.ObservedIssue(detail), admission.engine)
 				if got := issue(t, pool, "LEGION-9").Priority; got != priority {
 					t.Fatalf("the detail's %s stored as %s", priorityName(priority), priorityName(got))
 				}

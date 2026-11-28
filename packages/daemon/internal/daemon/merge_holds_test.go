@@ -36,7 +36,9 @@ func TestAMergeHoldsChangeReachesTheArchitectInAcceptingAndTheMergerInMerging(t 
 		{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 			Tree: "LEGION-209", Title: "Merging", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "V"},
 	} {
-		putOutboxIssue(t, pool, records, issue)
+		// Each issue's row of the copy too, so it stands on a known Dispatch chain and its notice
+		// routes to its own architect (R16, R18 of dispatch://INFRA-3320).
+		putChainIssue(t, pool, records, issue)
 	}
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	trees := outboxTreeStore(t, pool, "LEGION-208", "LEGION-209")

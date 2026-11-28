@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -53,10 +52,11 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 // says nothing may: not to a claim owed its phase start (that start carries the news), not to a
 // retired or failed claim (the phase's own repair revives it with a start that carries the news),
 // not to an agent a suspension that holds is over (the operator's or the controller's, which no
-// start the daemon queues gets past), and not into a tree that lingers or to an issue not at work,
-// which are owed nothing. The reconcile queues none for such a claim, and a
-// news-only start that meets one when it runs finishes without acting. The live claim is the
-// control: the same reconcile queues its start, and the same start hands it the news.
+// start the daemon queues gets past), and not to an issue out of Legion's work (main's lingering
+// tree, which this branch does not keep: a person's done is a leave that keeps the phase) or not at
+// work, which are owed nothing. The reconcile queues none for such a claim, and a news-only start
+// that meets one when it runs finishes without acting. The live claim is the control: the same
+// reconcile queues its start, and the same start hands it the news.
 func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -64,9 +64,9 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 		state supervise.ClaimState
 		by    supervise.SuspendSource
 		given int64
-		// lingers puts the tree in its linger, and held stands the member in held.
-		lingers, held bool
-		queued        bool
+		// out leaves the issue out of Legion's work, and held stands the member in held.
+		out, held bool
+		queued    bool
 	}{
 		{name: "a live claim", state: supervise.StateIdle, given: 1, queued: true},
 		{name: "a claim owed its phase start", state: supervise.StateIdle, given: 0},
@@ -74,7 +74,7 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 		{name: "a failed claim", state: supervise.StateFailed, given: 1},
 		{name: "an operator-suspended claim", state: supervise.StateSuspended, by: supervise.SuspendedByOperator, given: 1},
 		{name: "an agent the controller suspended", state: supervise.StateSuspended, by: supervise.SuspendedByController, given: 1},
-		{name: "a lingering tree", state: supervise.StateIdle, given: 1, lingers: true},
+		{name: "an issue out of Legion's work", state: supervise.StateIdle, given: 1, out: true},
 		{name: "an issue not at work", state: supervise.StateIdle, given: 1, held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,10 +82,9 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 			root := r.member(reconcileRoot, "", phase.Reviewing)
 			r.told(reconcileRoot, record.AudienceHolder, 4)
 			r.holder(reconcileRoot, claim.RoleReviewer, tc.state, tc.by, tc.given)
-			if tc.lingers {
-				lingers := time.Now().Add(time.Hour)
-				root.LingerUntil = &lingers
-				putOutboxIssue(t, r.pool, r.records, root)
+			if tc.out {
+				root.Status, root.DispatchStatus = record.DoneStatus, record.DoneStatus
+				putChainIssue(t, r.pool, r.records, root)
 			}
 			if tc.held {
 				root.Phase, root.Hold = phase.Held, &record.Hold{From: phase.Reviewing}
@@ -99,7 +98,7 @@ func TestNoNewsOnlyStartGoesWhereTheRecordSaysNoNewsMay(t *testing.T) {
 			if queued := len(starts) == 1; queued != tc.queued || len(starts) > 1 {
 				t.Fatalf("the news-only starts = %v, want one queued: %t", startsTo(starts), tc.queued)
 			}
-			if _, recorded := r.recorded(reconcilePair); recorded == (tc.lingers || tc.held) {
+			if _, recorded := r.recorded(reconcilePair); recorded == (tc.out || tc.held) {
 				t.Fatalf("the pair recorded = %t, want it recorded only where a member is owed it", recorded)
 			}
 
@@ -176,11 +175,8 @@ func TestNoNewsOnlyStartIsQueuedBehindATaskTheHolderHasNotTaken(t *testing.T) {
 			}
 			var drafts []memberDraft
 			r.inTx(func(tx pgx.Tx) error {
-				root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
-				if err != nil {
-					return err
-				}
-				drafts, err = readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, nil))
+				var err error
+				drafts, err = r.treeMembers(tx)
 				return err
 			})
 			want := workflow.NewsWaitsForTask
@@ -361,7 +357,7 @@ func TestAnAcceptingChildsOwnArchitectIsToldItsNewsAndTheRootsSummaryNamesIt(t *
 	if strings.Contains(summary, accepting) {
 		t.Fatalf("the root architect's task = %q, want no holder form of %s: its own architect holds it", summary, reconcileChild)
 	}
-	if want := []record.DeliveryNewsItem{newsItem(reconcileRoot, record.AudienceArchitect, record.DesignStepSpec, reconcileDoc, 4, 5)}; !reflect.DeepEqual(carried.Items, want) {
+	if want := []record.DeliveryNewsItem{reconcileItem(reconcileRoot, record.AudienceArchitect, record.DesignStepSpec, reconcileDoc, 4, 5)}; !reflect.DeepEqual(carried.Items, want) {
 		t.Fatalf("the root architect's task carries %+v, want its own item alone: %+v", carried.Items, want)
 	}
 	const prefix = "- LEGION-601, in accepting: "

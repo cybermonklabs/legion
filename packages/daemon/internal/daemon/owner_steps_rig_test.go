@@ -103,6 +103,17 @@ func newOwnerStepsRig(t *testing.T, proof liveProof, dispatch *scratchDispatch, 
 	return r
 }
 
+// newPlanRig is newOwnerStepsRig over issues issues of a project that runs as project, the daemon
+// and Dispatch on one broker of the run's own, so Dispatch's events reach the daemon as
+// newStepRecordsRig wires them: a status write waits until the record has seen them (decision 11
+// of dispatch://INFRA-4730), and a close lands only on Dispatch's done (R20 and R24 of
+// dispatch://INFRA-3320).
+func newPlanRig(t *testing.T, issues int, project config.Project) *ownerStepsRig {
+	t.Helper()
+	natsURL := workflowNATS(t)
+	return newOwnerStepsRig(t, newLiveProofOn(t, natsURL), startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), issues, project)
+}
+
 // seedAdmitted records the walk's issue as the daemon holds a root its architect has just begun:
 // handed to Legion at admitted, its lifecycle under the workflow, no design gate registered, no
 // pull request, and its architect's claim a launch a previous daemon began and never recorded,
@@ -123,6 +134,7 @@ func (r *ownerStepsRig) seedAdmitted(rank string, seq int64) {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
+	openIssue(t, r.st, r.project, r.key, treelifecycle.AuthorityWorkflow)
 	architect := r.token(claim.RoleArchitect)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: architect, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleArchitect,

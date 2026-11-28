@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  The `legion` tool's `set_status` takes `children` (`include` or `unlink`) and `parent`
+  (`include`), and `rerun_child` takes `parent`; the tool refuses a word or a pairing the daemon
+  would refuse before it asks for a grant, and returns the daemon's answer, the status rows it
+  queued.
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

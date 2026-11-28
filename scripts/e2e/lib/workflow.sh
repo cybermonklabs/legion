@@ -221,8 +221,12 @@ issue_worker_live() {
     | ($claim.session // "") != "" and ($claim.state | IN("ready", "working", "idle"))
       and ($not_pane == "" or ($claim.locator.tmux.pane // "") != $not_pane)'
 }
-# tree_suspended ISSUE: the lingering tree's root architect is suspended, its session kept.
-tree_suspended() { issue_worker_state "$1" architect suspended; }
+# architect_closed ISSUE: ISSUE's architect claim is retired with its session kept, which is what the
+# close of an issue as done leaves of each of its own claims: the issue's own stop, since no tree
+# lingers (R20 of dispatch://INFRA-3320).
+architect_closed() {
+  daemon_state | jq -e --arg issue "$1" '.issues[$issue].architect | .state == "retired" and (.session // "") != ""'
+}
 # claims_list prints `legion claims list --json` as the operator shell reads it: every claim of the
 # project with its issue, role, tree and state (retired, suspended, working, idle, ready, …).
 claims_list() { "$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token"; }

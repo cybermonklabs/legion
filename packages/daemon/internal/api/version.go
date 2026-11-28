@@ -591,7 +591,7 @@ package api
 // so `api.Admission` on GET /legion/v1/state changes shape with it. `active` and `waiting` name
 // issues, a child as much as a root: a tree with three working children holds three slots, and a
 // tree whose issues only wait holds none. `trees` is new, the root of every live tree
-// (record.TreeLive), always emitted and never null, because a running tree may now hold no slot
+// (record.Chains.IsRoot), always emitted and never null, because a running tree may now hold no slot
 // and `active` alone no longer says which trees run — the controller reads it where it read
 // `active` as the running trees. Each issue record gains `tree`, the root of its tree, absent only
 // on an issue the workflow does not record, so a reader tells a child from a root and finds the
@@ -3845,30 +3845,11 @@ package api
 // out.
 //
 // 250: the admission waiting line is ordered by Dispatch priority first. `GET /legion/v1/state`
-// and `GET /legion/v1/issues/{key}/record` gain two keys: each issue the workflow records carries
-// `priority`, its own Dispatch priority as Dispatch sends it, a number from 0 for P0 to 3 for P3
-// or null for none; and each member's `waitingLine` carries `priority`, the priority that placed
-// it in the line (its own, else its tree root's), null for a member neither it nor its root has a
-// priority for, whose band stands after P3. The records of 250 hold `issues.*.priority` and
-// `issues.*.waitingLine.priority`, and no record below 250 does: a caller whose contract (the one
-// it states, else its pod's) is below 250 is served every issue without either key (the band of
-// shaping.go's stateNarrowings, `withoutPriority`). Two values change meaning at every contract
-// and move no shape: `waitingLine.partPlace` and `partLength` count within the member's priority
-// band and part rather than within the part across the whole line, and `admission.waiting` and
-// each member's `place` follow the new order, which no reader enumerates. (This entry took 221
-// when main declared 220, with no reading of the other open pull requests. A reading of `const
-// DaemonAPIVersion` at the head commit of each open pull request that changes this file or whose
-// file list GitHub cut short (138 of 500), made between 2026-11-24T09:14:34Z and 09:17:00Z, found
-// every number from 221 to 243 declared and nothing above, so this entry moved to 244. The
-// forward merge of 2026-11-24 that brought in e14345bfc8 brought main's 228 (#4590's entry
-// above). A second reading (137 of 498), made between 09:35:23Z and 09:40:15Z, found 221 to 227,
-// 229 to 231 and 233 to 243 declared and nothing above 243, so this entry kept 244. Then #3831
-// took 244, the numbers from 245 to 249 were given to other changes, and this entry moved to 250.
-// The forward merge of 2026-11-24 that brought in 3dbaa2b23a brought main's 232 (#5271's entry
-// above), below 250, so this entry kept 250. The forward merge of 2026-11-24 that brought in
-// 7e75126fae brought main's 246 (#4960's entry above), below 250, so this entry kept 250. Read
-// main's own number and every open pull request again at the next merge rather than from this
-// line.)
+// and `GET /legion/v1/issues/{key}/record` gain two keys: each recorded issue's own `priority`
+// and the effective `waitingLine.priority`. Both are numbers from 0 for P0 to 3 for P3, or null
+// for none. A caller below 250 gets neither key. Waiting line `partPlace` and `partLength`
+// count within the member's priority band and part. `admission.waiting` and `place` follow
+// the new order at every contract.
 //
 // Correction: the daemon serves `issues.*.architect.locator.sandbox` with its `container`,
 // `generation`, `name`, `namespace` and `podUid`, `issues.*.architect.updateReasons`, and

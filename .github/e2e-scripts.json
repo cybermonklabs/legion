@@ -40,17 +40,6 @@
       "jj": true
     },
     {
-      "script": "child-adoption.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "omp": false,
-      "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
-      "jj": true
-    },
-    {
       "script": "conflict-merger.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -315,6 +304,28 @@
       "jj": true
     },
     {
+      "script": "tree-cutover.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "omp": false,
+      "evidence_variable": "TREE_CUTOVER_EVIDENCE_DIR",
+      "timeout_minutes": 60,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, tar, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/tree-cutover.sh; CI's pgvector service is the server it needs, the driver builds and starts a scratch Dispatch and both daemons itself, the lib installs the nats-server it needs with go install, a shallow checkout fetches its history and origin/main from the public repository to find the release before (the merge base, or once main carries this release's conversion, main before the commit that added it) and the oldest contract's commit, whose root lib/old-plugin-root.sh unpacks and installs with bun, and it starts no container; it first runs member-becomes-root.sh (up to eight minutes), whose CI home this job is, and its own run takes five to fifteen minutes, most of it building the two daemons and Dispatch",
+      "jj": true
+    },
+    {
+      "script": "tree-rollback.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": ["postgresql-client"],
+      "bun": true,
+      "omp": false,
+      "evidence_variable": "TREE_ROLLBACK_EVIDENCE_DIR",
+      "timeout_minutes": 40,
+      "why_hosted": "Run it from a checkout on a Linux host with go, git, tar, psql, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/tree-rollback.sh; CI's pgvector service is the server it needs, psql runs the rollback step's two blocks, the driver builds and starts a scratch Dispatch and both daemons itself, the lib installs the nats-server it needs with go install, a shallow checkout fetches its history and origin/main from the public repository to find the release before (the merge base, or once main carries this release's conversion, main before the commit that added it) and the oldest contract's commit, whose root lib/old-plugin-root.sh unpacks and installs with bun, and it starts no container; a run takes five to fifteen minutes, most of it building the two daemons and Dispatch",
+      "jj": true
+    },
+    {
       "script": "verification-results.sh",
       "go_version_file": "packages/envoy/go.mod",
       "apt": ["postgresql-client"],
@@ -414,6 +425,10 @@
     {
       "script": "pack-memory-probe.sh",
       "needs": "the worker image and the Job pack-memory-job.sh creates: it is that measurement's probe, not a proof of its own, and the harness writes it and lib/pack-memory-peak.py into the Job's command because a Job holds no checkout to read them from; it runs the image's own cache and provision on the Job's disk volume and judges nothing a runner could give it"
+    },
+    {
+      "script": "member-becomes-root.sh",
+      "needs": "the job of tree-cutover.sh, which runs it first and is its CI home: it is that proof's first part, not a job of its own, so dispatch tree-cutover to run it; by hand it runs from a checkout on a Linux host with go, git, jj 0.38 or later, awk, python3, bun with this repository's node_modules and a loopback PostgreSQL carrying pgvector (LEGION_TEST_PG_DSN)"
     },
     {
       "script": "repository-cache-burst-job.sh",

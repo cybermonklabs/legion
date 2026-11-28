@@ -107,13 +107,20 @@ func newLiveProof(t *testing.T, script string) liveProof {
 	return newLiveProofOn(t, natsURL)
 }
 
-// newLiveProofOn readies workflowConfig over natsURL for a driver to seed and boot: Dispatch and
-// Envoy's listener answered by the run's own stand-ins, the stream the daemon's intake consumes,
-// and the store opened and migrated. A driver whose proof needs more of the configuration sets it
-// on cfg before it boots: nothing here reads more of it than the project and the store.
+// newLiveProofOn readies workflowConfig over natsURL for a driver to seed and boot (liveProofOf).
 func newLiveProofOn(t *testing.T, natsURL string) liveProof {
 	t.Helper()
-	cfg := workflowConfig(t, natsURL)
+	return liveProofOf(t, workflowConfig(t, natsURL))
+}
+
+// liveProofOf readies cfg, a workflowConfig, for a driver to seed and boot: Dispatch and Envoy's
+// listener answered by the run's own stand-ins, the stream the daemon's intake consumes on cfg's
+// broker, and the store opened and migrated on cfg's database. A driver whose proof needs more of
+// the configuration sets it on cfg before it boots, or before this call where the store must
+// see it (the database): nothing here reads more of it than the project, the broker and the store.
+func liveProofOf(t *testing.T, cfg config.Config) liveProof {
+	t.Helper()
+	natsURL := cfg.NatsURLs[0]
 	p := liveProof{t: t, cfg: cfg, board: newLiveDispatch(t, cfg.Project), notices: newNoticeListener(), records: record.NewStore()}
 	p.cfg.DispatchURL = p.board.url
 	envoyServer := httptest.NewServer(p.notices)

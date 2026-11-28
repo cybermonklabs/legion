@@ -464,9 +464,9 @@ func (r *Runtime) ReplacePod(context.Context, runtime.Known, func(context.Contex
 	return nil
 }
 
-// CleanupTree holds nothing per tree: each pane is one claim's process, ended by its Release, and
-// each workspace is the outbox's to remove (workspace_remove).
-func (r *Runtime) CleanupTree(context.Context, string) error { return nil }
+// CleanupIssue holds nothing per issue: each pane is one claim's process, ended by its Release,
+// and each workspace is the outbox's to remove (the retention_end row's removal of it).
+func (r *Runtime) CleanupIssue(context.Context, string) error { return nil }
 
 // result is one tmux invocation's outcome. timedOut is the budget the client was killed at, zero
 // when it returned on its own; signal is the words of the signal that ended the client

@@ -174,6 +174,9 @@ func TestALastStartFailureCarriesItsTimeUntilReady(t *testing.T) {
 	if _, err := h.store.OpenTreeLifecycle(h.ctx, testProject, "LEGION-209", treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of LEGION-209: %v", err)
 	}
+	if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, "LEGION-209", treelifecycle.AuthorityWorkflow); err != nil {
+		t.Fatalf("open the issue lifecycle of LEGION-209: %v", err)
+	}
 	m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
 		Token: token, Project: testProject, Tree: "LEGION-209", Issue: "LEGION-209", Role: claim.RoleImplementer, State: supervise.StateQueued,
 	}, "role prompt")

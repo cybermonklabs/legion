@@ -7,7 +7,6 @@ import (
 	"flag"
 	"io"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,14 +103,15 @@ func TestLegionTreeGolden(t *testing.T) {
 		}
 	})
 	t.Run("issue status sets the status through the daemon", func(t *testing.T) {
-		daemon := newControllerDaemon(t)
+		const queued = `{"queued":[{"issue":"DEMO-1","status":"todo","row":1}]}`
+		daemon := statusDaemon(t, queued)
 		tokenFile := writeFile(t, "operator-token", controllerOperatorToken+"\n")
 		code, stdout, stderr := legionRun(t, "issue", "status", "DEMO-1", "todo", "--operator-token-file", tokenFile, "--port", strconv.Itoa(daemon.port))
-		if code != 0 {
-			t.Fatalf("legion issue status DEMO-1 todo = %d, stdout %q, stderr %q; want 0", code, stdout, stderr)
+		if code != 0 || stdout != queued+"\n" {
+			t.Fatalf("legion issue status DEMO-1 todo = %d, stdout %q, stderr %q; want 0 and the daemon's answer", code, stdout, stderr)
 		}
-		if got := daemon.dispatch.writes; !slices.Equal(got, []string{"DEMO-1=todo"}) {
-			t.Fatalf("Dispatch was asked for %v, want one write of DEMO-1=todo", got)
+		if _, sent := statusRequest(t, daemon); sent.Issue != "DEMO-1" || sent.Status != "todo" {
+			t.Fatalf("the status request was %+v, want DEMO-1 todo", sent)
 		}
 	})
 	t.Run("status <issue> <status> names issue status", func(t *testing.T) {

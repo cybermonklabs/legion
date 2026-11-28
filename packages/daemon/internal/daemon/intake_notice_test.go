@@ -19,8 +19,9 @@ import (
 // here), and the outbox executor publishes that row as it publishes every controller notice: on the
 // role topic of the daemon's own project's controller, once the registered controller session
 // holds that role live, under the row's own key, with the count of the give-ups it took and the
-// id, consumer and subject of each. The two give-ups come from two of the project's consumers, so
-// the row they join is the project's, not one consumer's.
+// id, consumer and subject of each, and the fence the notice was opened with (record.FirstFence),
+// as every row carries one. The two give-ups come from two of the project's consumers, so the row
+// they join is the project's, not one consumer's.
 func TestTheIntakeGaveUpNoticeReachesTheControllersRoleTopic(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -87,7 +88,7 @@ func TestTheIntakeGaveUpNoticeReachesTheControllersRoleTopic(t *testing.T) {
 	want := record.Notice{Kind: record.IntakeGaveUpNotice, Count: 2, GiveUps: []record.NoticeGiveUp{
 		{ID: given[0].ID, Consumer: given[0].Consumer, Subject: given[0].Subject},
 		{ID: given[1].ID, Consumer: given[1].Consumer, Subject: given[1].Subject},
-	}}
+	}, Generation: record.FirstFence.Generation, Entry: record.FirstFence.Entry}
 	if !reflect.DeepEqual(got.payload, want) {
 		t.Errorf("the notice's payload = %+v, want %+v: the count and each give-up's id, consumer and subject", got.payload, want)
 	}

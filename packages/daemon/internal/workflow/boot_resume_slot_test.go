@@ -59,7 +59,6 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 	seedIssue(t, pool, record.Issue{Key: unslotted, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: unslotted, Project: "LEGION", Title: "waiting for a slot", Phase: phase.Implementing, Generation: 1,
 		Status: "in_progress", Rank: "U"})
-	seedTreeLifecycle(t, pool, unslotted)
 	seedIssue(t, pool, record.Issue{Key: merging, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: merging, Project: "LEGION", Title: "merging its reviewed head", Phase: phase.Merging, Generation: 1,
 		Status: "retro", Rank: "V"})
@@ -67,9 +66,6 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 	seedRuleSuspendedOwner(t, pool, project, merging, claim.RoleMerger)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	now := engine.now()
-	// The issue in merging holds no row: merging keeps none (record.KeepsSlot), so the lifecycle
-	// of its tree is opened on its own rather than by a slot of the cap's.
-	seedTreeLifecycle(t, pool, merging)
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("apply the boot: %v", err)
@@ -131,7 +127,6 @@ func TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting(t *
 		seedIssue(t, pool, record.Issue{Key: seeded.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: seeded.key, Project: "LEGION", Title: "a root in " + string(seeded.stand), Phase: seeded.stand, Generation: 1,
 			Status: "in_progress", Rank: seeded.key})
-		seedTreeLifecycle(t, pool, seeded.key)
 		seedRuleSuspendedOwner(t, pool, project, seeded.key, seeded.role)
 	}
 	engine := testEngine(config.DesignGateRootIssues, nil)

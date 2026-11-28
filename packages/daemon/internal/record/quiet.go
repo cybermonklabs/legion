@@ -85,10 +85,12 @@ type TreeQuiet struct {
 	AtWork  bool
 }
 
-// TreeMember says whether issue belongs to the tree its record names, for the quiet measure and
-// for every rule written over it: its tree's root, whatever that root's own status says, or an
-// issue under it the workflow still runs (InWorkflow). A child the record shows as done is no
-// member.
+// TreeMember is the gate root whose tree issue belongs to, for the quiet measure and for every
+// rule written over it, and whether it belongs to one: an issue in Legion's work (InLegionsWork)
+// belongs to the tree of its gate root (Chains.GateRoot), the nearest issue at or above it in work
+// that holds its own gate (R15 of dispatch://INFRA-3320: "a live tree" is a gate root in Legion's
+// work with the issues whose gate root it is). An issue the record shows as done, or that Dispatch
+// shows out of work, is no member, and neither is one on an unknown chain with no gate root.
 //
 // It is the one statement of that membership, and the three readers that must never differ take
 // it: the measure itself (QuietTrees, where a claim of an issue that is no member moves
@@ -96,39 +98,36 @@ type TreeQuiet struct {
 // them (admit's tellStalledTrees and stalledTreeReason). A tree told to a controller as stopped
 // must be made of exactly the issues whose stillness was measured, which is what one predicate
 // gives.
-func TreeMember(issue Issue) bool {
-	return claim.IsTreeRoot(issue.Key, issue.Tree) || InWorkflow(issue)
+func TreeMember(chains *Chains, issue Issue) (string, bool) {
+	if !InLegionsWork(issue) {
+		return "", false
+	}
+	root := chains.GateRoot(issue.Key)
+	return root, root != ""
 }
 
-// QuietTrees measures, for every tree the given records name, how long that tree has been still
-// and whether it is at work, keyed by the tree's root key. It is the one statement of both
-// questions, and every reader takes it: the admission pass, over the records and the claims it
-// reads once for the whole pass, and the state's projection, over the records and claims it
-// already holds. Neither may read per tree — both judge every tree of the project in one pass —
-// so the measure answers them all from one walk of the records and one of the claims.
+// QuietTrees measures, for every gate root the pass's chains name over the given records, how long
+// its tree has been still and whether it is at work, keyed by the gate root's key. It is the one
+// statement of both questions, and every reader takes it: the admission pass, over the records
+// and the claims it reads once for the whole pass, and the state's projection, over the records
+// and claims it already holds. Neither may read per tree — both judge every tree of the project in
+// one pass — so the measure answers them all from one walk of the records and one of the claims.
 //
-// One statement is what the two readers share, and not one answer: each is handed its own
-// records. The pass is given the project's live ones (Store.LiveIssues, which leaves out a done
-// record holding no slot) and the state every record it holds, a done one included; a root is a
-// member of its tree whatever its own status says (TreeMember), so a tree whose root is done is
-// measured by the state and by no pass. The rule never varies between them — what it is asked
-// about does.
-//
-// The tree of a root is that root and the issues under it the workflow still runs (TreeMember),
-// and nothing else. A child the record shows as done is no member: its pull request goes on
-// drawing GitHub events — a comment, a deployment, a late check run — long after the work
-// stopped, and each of those stamps that child's record (Store.MarkIssueMoved). Counted, they
-// would keep a finished tree's quiet time at zero for as long as anyone kept writing on an old
-// pull request. The root itself is a member whatever its own status says, because a tree is
-// measured from its root even when that root alone is left.
+// The tree of a gate root is the issues in Legion's work whose gate root it is (TreeMember), and
+// nothing else. An issue the record shows as done is no member: its pull request goes on drawing
+// GitHub events — a comment, a deployment, a late check run — long after the work stopped, and
+// each of those stamps that issue's record (Store.MarkIssueMoved). Counted, they would keep a
+// finished tree's quiet time at zero for as long as anyone kept writing on an old pull request.
+// The stored tree (Issue.Tree) is read by no part of it: an issue whose parent moved is measured
+// with the gate root it stands under now.
 //
 // A tree's movement is the newest of two kinds of fact: the MovedAt of each member — when the
 // daemon last saw that issue move (Issue.MovedAt) — and the step times of the claims of those
 // members, which are what moves while an agent works without the record changing at all: a turn
 // that has begun (TurnStartedAt) and each call the daemon has seen it make (StepAt). One issue
-// moving moves the whole tree, since the roles of a tree work for the root and a tree with one
-// role still stepping has not stopped. A claim of an issue that is no member — of a done child,
-// of another tree, of no issue at all — moves nothing and is at work for nobody.
+// moving moves the whole tree, since the roles of a tree work for its gate root and a tree with
+// one role still stepping has not stopped. A claim of an issue that is no member — of a done
+// issue, of an issue out of work, of no issue at all — moves nothing and is at work for nobody.
 //
 // Quiet is the caller's own now less that movement, and never negative: a fact can carry a time
 // from another clock (Dispatch's, GitHub's), so a movement can stand ahead of the reader's now,
@@ -138,21 +137,22 @@ func TreeMember(issue Issue) bool {
 // names the four that are not). It is the second question because the first cannot answer it: an
 // agent in a long turn that makes no tool call steps nothing, and its tree's quiet time grows
 // while the work is going on.
-func QuietTrees(issues []Issue, claims []TreeClaim, now time.Time) map[string]TreeQuiet {
+func QuietTrees(chains *Chains, issues []Issue, claims []TreeClaim, now time.Time) map[string]TreeQuiet {
 	trees := make(map[string]TreeQuiet, len(issues))
 	// The tree each issue the measure counts stands in, which is also the membership test the
 	// claims are read through: a claim of an issue absent here is a claim of no tree measured.
 	member := make(map[string]string, len(issues))
 	for _, issue := range issues {
-		if !TreeMember(issue) {
+		root, stands := TreeMember(chains, issue)
+		if !stands {
 			continue
 		}
-		member[issue.Key] = issue.Tree
-		measure := trees[issue.Tree]
+		member[issue.Key] = root
+		measure := trees[root]
 		if issue.MovedAt.After(measure.MovedAt) {
 			measure.MovedAt = issue.MovedAt
 		}
-		trees[issue.Tree] = measure
+		trees[root] = measure
 	}
 	for _, held := range claims {
 		tree, stands := member[held.Issue]

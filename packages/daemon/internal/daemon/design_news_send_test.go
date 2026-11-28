@@ -25,9 +25,10 @@ const (
 	newsAdmitted = "LEGION-503"
 )
 
-// newsRig is one tree on the record store of a database of its own, gated on its spec by the
-// deployment and on its Verification document by its root's registration, and the daemon's answer
-// to supervise's Deps.DesignNews over it (workflowRuntime.designNews).
+// newsRig is one tree on the record store of a database of its own, each issue with its row of the
+// copy of Dispatch's issues (putChainIssue), so its gate root is newsRoot on the Dispatch chain,
+// gated on its spec by the deployment and on its Verification document by its root's registration,
+// and the daemon's answer to supervise's Deps.DesignNews over it (workflowRuntime.designNews).
 type newsRig struct {
 	t       *testing.T
 	ctx     context.Context
@@ -49,11 +50,11 @@ func newNewsRig(t *testing.T) *newsRig {
 	}{{newsRoot, phase.Implementing}, {newsReviewed, phase.Reviewing}, {newsTested, phase.Testing}, {newsAdmitted, phase.Admitted}} {
 		issue := record.Issue{Key: member.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Project: heldTaskProject, Tree: newsRoot, Title: member.key, Phase: member.phase, Generation: 1, Status: "in_progress",
-			Rank: string(rune('A' + i)), LastDispatchSeq: 1}
+			Rank: string(rune('A' + i)), HandedOver: true, LastDispatchSeq: 1}
 		if member.key != newsRoot {
 			issue.Parent = &root
 		}
-		putOutboxIssue(t, pool, records, issue)
+		putChainIssue(t, pool, records, issue)
 	}
 	// The spec stands approved at version 5, the version Dispatch recorded last, and the
 	// Verification document at version 4.
@@ -144,10 +145,10 @@ func (r *newsRig) sendAs(issue string, role claim.Role, news record.DeliveryNews
 
 // newsItem is the news of version to of step's document to issue's audience, which took from,
 // rendered in the run every rig here records its issues in: generation 1 of the issue and of its
-// tree's root.
+// tree's gate root, newsRoot.
 func newsItem(issue string, audience record.DesignAudience, step record.DesignStep, artifact string, from, to int) record.DeliveryNewsItem {
 	return record.DeliveryNewsItem{Issue: issue, Audience: audience, Step: step, Artifact: artifact, From: new(from), To: to,
-		Generation: 1, TreeGeneration: 1}
+		Generation: 1, Root: newsRoot, TreeGeneration: 1}
 }
 
 // The text of a task carrying news is rendered at its send from the record as it stands then.
@@ -306,7 +307,7 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 	const testerText = "Test the change. Issue: LEGION-502. Phase: testing."
 	const reason = "Dispatch failed 3 reads of the document's review history, the last with: dispatch: 502 BAD_GATEWAY"
 	attached := record.DeliveryNewsItem{Issue: newsTested, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", To: 5,
-		Generation: 1, TreeGeneration: 1,
+		Generation: 1, Root: newsRoot, TreeGeneration: 1,
 		HistoryUnread: &record.DeliveryHistoryUnread{Reason: reason, ReadAt: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}}
 	tester := record.DeliveryNews{Task: testerText, Items: []record.DeliveryNewsItem{attached}}
 	unreadWords := "The version your phase last took could not be read: " + strconv.Quote(reason) + "."
@@ -384,10 +385,13 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 	}
 }
 
-// A member whose Dispatch status a person moved out of the workflow is owed nothing
-// (record.UntoldOutOfWorkflow), whatever version its holder took, and the root architect's summary
-// names it told nothing for that reason.
-func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *testing.T) {
+// A member whose Dispatch status a person moved out of the workflow leaves Legion's work, and with
+// it the tree of its gate root, which is the issues in Legion's work under that root on the
+// Dispatch chain (record.Chains.GateTree, R15 of dispatch://INFRA-3320): it is owed nothing,
+// whatever version its holder took, and the root architect's summary, which names each issue of
+// the tree, does not name it. Main named such a member told nothing for that reason
+// (record.UntoldOutOfWorkflow), which in this branch only the root itself can be.
+func TestTheRootArchitectsSummaryLeavesOutAMemberOutOfLegionsWork(t *testing.T) {
 	t.Parallel()
 	r := newNewsRig(t)
 	r.inTx(func(tx pgx.Tx) error {
@@ -400,8 +404,8 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 	})
 
 	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
-	if want := "- LEGION-502, in testing: told nothing: its status takes it out of the workflow."; !strings.Contains(task, want) {
-		t.Fatalf("summary = %q, want it to say %q", task, want)
+	if !strings.Contains(task, "- "+newsReviewed+", in reviewing") || strings.Contains(task, newsTested) {
+		t.Fatalf("summary = %q, want it to name %s, a member in Legion's work, and not %s, which left it", task, newsReviewed, newsTested)
 	}
 }
 
@@ -531,26 +535,5 @@ func TestTheRootArchitectsSummarySentAfterTheGateClosedAgainTellsOwedMembersNoth
 	}
 	if carried == nil || len(carried.Items) != 1 {
 		t.Fatalf("the summary still carries %+v, want its one standing item", carried)
-	}
-}
-
-// Linger holds every member of a tree where it stood, and nothing goes to a lingering tree: a
-// summary queued for its news alone and sent once the root lingers has nothing to say, and the
-// machine retires it rather than sends it.
-func TestALingeringTreesSummaryIsLeftWithNothingToSay(t *testing.T) {
-	t.Parallel()
-	r := newNewsRig(t)
-	var root *record.Issue
-	r.inTx(func(tx pgx.Tx) error {
-		var err error
-		root, err = r.records.Issue(r.ctx, tx, newsRoot)
-		return err
-	})
-	lingers := time.Now().Add(time.Hour)
-	root.LingerUntil = &lingers
-	putOutboxIssue(t, r.pool, r.records, *root)
-
-	if task, carried := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary()); task != "" || carried != nil {
-		t.Fatalf("the lingering tree's summary = %q carrying %+v, want nothing left to say", task, carried)
 	}
 }

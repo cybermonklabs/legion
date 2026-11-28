@@ -21,7 +21,7 @@ func unownedIssue() pods.IdleView {
 	return pods.IdleView{
 		Issue: "LEGION-310", Tree: "LEGION-310", Found: true,
 		Phase: phase.Implementing, Status: "in_progress", Generation: 4,
-		Root: pods.IdleRoot{Phase: phase.Implementing, Status: "in_progress", Generation: 4},
+		TreeGeneration: 4,
 		Claims: []pods.IdleClaim{
 			{
 				Role: claim.RoleArchitect, State: supervise.StateFailed,
@@ -99,11 +99,6 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		{
 			name:    "the issue has left the workflow",
 			view:    func() pods.IdleView { v := unownedIssue(); v.Status = "backlog"; return v }(),
-			sandbox: true, want: IdleHoldUnownedTreeNotLive,
-		},
-		{
-			name:    "the tree lingers after its close",
-			view:    func() pods.IdleView { v := unownedIssue(); v.Root.LingerUntil = &idleNow; return v }(),
 			sandbox: true, want: IdleHoldUnownedTreeNotLive,
 		},
 		{
@@ -358,8 +353,8 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 	}
 }
 
-// leftChild is idleChild once the child left the workflow while its tree runs on: its phase done
-// and its status done, its root still in the workflow, and its implementer still live and quiet.
+// leftChild is idleChild once the issue left the workflow: its phase done and its status done, its
+// lifecycle the workflow's and its cleanup not started, and its implementer still live and quiet.
 // That is the pod a close takes (LeftPodClose), and each row below changes one thing about it.
 func leftChild() pods.IdleView {
 	v := idleChild()
@@ -395,6 +390,52 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 		roles []claim.Role
 	}{
 		{name: "every condition holds", view: leftChild(), roles: []claim.Role{claim.RoleImplementer}},
+		{
+			// A stop keeps the issue's phase (the workflow's leave): its own status is what takes
+			// it out of the workflow, and its departure was its close all the same.
+			name: "an issue parked at the phase it ran",
+			view: func() pods.IdleView {
+				v := leftChild()
+				v.Phase, v.Status = phase.Implementing, "backlog"
+				return v
+			}(),
+			roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			// No issue above or below is read: an issue that is its own stored tree's root is
+			// closed as any other.
+			name:  "an issue that is its stored tree's root",
+			view:  func() pods.IdleView { v := leftChild(); v.Tree = v.Issue; return v }(),
+			roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "the issue is back in the workflow",
+			view: func() pods.IdleView {
+				v := leftChild()
+				v.Phase, v.Status = phase.Implementing, "in_progress"
+				return v
+			}(),
+			want: IdleHoldTreeNotLive,
+		},
+		{
+			// The operator's claims and pod are the operator's to stop: the departure queued
+			// nothing of them.
+			name: "the operator holds the issue's lifecycle",
+			view: func() pods.IdleView { v := leftChild(); v.OperatorHolds = true; return v }(),
+			want: IdleHoldTreeNotLive,
+		},
+		{
+			// The issue's own cleanup deletes the Sandbox, and a suspension finishes there without
+			// acting.
+			name: "the issue's own cleanup has started",
+			view: func() pods.IdleView { v := leftChild(); v.CleanupStarted = true; return v }(),
+			want: IdleHoldTreeNotLive,
+		},
+		{
+			name: "a role stop of the issue is still queued",
+			view: func() pods.IdleView { v := leftChild(); v.RoleStopQueued = true; return v }(),
+			want: IdleHoldTreeNotLive,
+		},
 		{
 			name: "the close's workspace check is still queued",
 			view: func() pods.IdleView { v := leftChild(); v.WorkspaceCheckQueued = true; return v }(),

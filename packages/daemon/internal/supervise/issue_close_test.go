@@ -1,7 +1,7 @@
 package supervise
 
 // A child issue closed as done releases its volume at once (workflow's leave), so its claims are
-// closed rather than suspended: each ends as a tree close ends it. The session each recorded is
+// closed rather than suspended: each claim is released and retires. The session each recorded is
 // kept whole — the id and the resume path both — because a done issue is reopened, a person moving
 // it back or a production check failing, and its roles are then started again on the same issue; a
 // session dropped here would start each as a fresh agent that has read none of the work it is
@@ -38,7 +38,7 @@ func closingHarness(t *testing.T) *harness {
 	return h
 }
 
-// The claim is released as a tree close releases it — with its process where one runs, with no
+// The claim is released — with its process where one runs, with no
 // locator where none does — and retires with the session it recorded, in memory and in the store.
 func TestAnIssueCloseRetiresTheClaimAndKeepsItsSessionForAReopen(t *testing.T) {
 	for _, state := range []ClaimState{StateRegistered, StateReady, StateWorking, StateIdle, StateSuspended} {
@@ -73,7 +73,7 @@ func TestAnIssueCloseRetiresTheClaimAndKeepsItsSessionForAReopen(t *testing.T) {
 }
 
 // A release the runtime refuses changes nothing — the claim keeps its state and its session — so
-// the close can be asked again, as a tree close can.
+// the close can be asked again.
 func TestAnIssueCloseWhoseReleaseFailsKeepsTheClaimForTheRetry(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -95,17 +95,17 @@ func TestAnIssueCloseWhoseReleaseFailsKeepsTheClaimForTheRetry(t *testing.T) {
 	}
 }
 
-// A claim a tree close already retired keeps its session for a re-admission to resume, and the
-// issue's close reaching it has nothing left to do: it asks the runtime nothing and writes
-// nothing, since the session it would once have dropped is the session a reopen resumes. A second
+// A claim an issue close already retired keeps its session for a new run to resume, and a second
+// close of the issue reaching it has nothing left to do: it asks the runtime nothing and writes
+// nothing, since the session it would once have dropped is the session a reopen resumes. A third
 // close finds the same.
 func TestAnIssueCloseOfARetiredClaimKeepsItsSessionAndWritesNothing(t *testing.T) {
 	h := closingHarness(t)
 	h.reach(StateIdle)
-	h.must(RequestTreeClose{Claim: testToken})
+	h.must(RequestIssueClose{Claim: testToken})
 	h.wantState(StateRetired)
 	if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
-		t.Fatalf("claim %+v after the tree close, want its session kept", c)
+		t.Fatalf("claim %+v after the first close, want its session kept", c)
 	}
 	calls := len(h.rt.Calls())
 	puts := len(h.store.history())

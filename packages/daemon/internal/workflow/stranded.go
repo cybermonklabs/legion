@@ -71,8 +71,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 }
 
 // Stranded is every claim of s's issues that nothing will wake, by issue and then role. A claim
-// is stranded when its issue's tree runs — its lifecycle stands open under the workflow, the root
-// does not linger and the root is not itself waiting in the line, the rule record.TreeRuns applies
+// is stranded when its issue's tree runs — the root is in Legion's work and is not itself
+// waiting in the line, the rule record.TreeRuns applies
 // — nothing will wake it, and it is suspended, failed or retired and one of:
 //
 //   - A worker of its issue's phase: the role phase.RoleFor gives the phase its worker works
@@ -130,8 +130,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // (StartFirstPhase, reviveArchitect); others come from elsewhere, an operator's retry or the
 // controller's fresh_session among them. One that its own exit retired gets no worker-died, and
 // nothing reports it, this report included.
-// A tree that is not running is a lingering tree — a root that leaves the workflow, closed or
-// moved out by a person, always lingers first (leave) — whose members its re-admission starts
+// A tree that is not running is one whose root is out of Legion's work — closed, or moved out
+// by a person (leave) — whose claims its return to work starts
 // again, and a root that never ran, whose architect receives its first task only when the line
 // reaches it. A claim of a running tree whose issue waits for a slot is not stranded: its start is
 // already queued, held unclaimable until the issue's slot comes
@@ -161,14 +161,16 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 	for _, issue := range issues {
 		recorded[issue.Key] = issue
 	}
-	running, err := record.ReadRunningRoots(ctx, tx, s, project, issues, steps)
+	// Each claim's issue stands under its gate root on the Dispatch chain (record.Chains.StateTree),
+	// not the tree its record stores. The running roots' read names every recorded issue, so its
+	// chains answer that for each claim of a recorded issue, the only claims asked below.
+	running, chains, err := record.ReadRunningRoots(ctx, tx, s, project, issues, steps)
 	if err != nil {
 		return nil, err
 	}
 	type candidate struct {
 		claim   supervise.Claim
 		issue   record.Issue
-		root    record.Issue
 		current phase.Phase
 	}
 	candidates := make([]candidate, 0, len(claims))
@@ -180,19 +182,19 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		if !ok {
 			continue
 		}
-		root, ok := recorded[issue.Tree]
+		gateRoot := chains.StateTree(issue.Key)
+		root, ok := recorded[gateRoot]
 		if !ok || root.AwaitingPerson() {
 			continue
 		}
 		// The tree must be running — this generation of it, by the one rule every reader of that
-		// question asks (record.TreeRuns): the workflow has opened its lifecycle and not closed
-		// it, the root does not linger, and the root is not itself waiting in the line for the
-		// tree to be opened. A root that waits there — one that never ran, a re-admitted one, one
-		// reopened inside its own linger, whose readmit cleared the linger while the ended run's
-		// lifecycle still stands open — is live for the ancestry hold's purposes (record.TreeLive)
-		// but runs nothing yet, and its architect's task comes with its promotion, so nothing of it
-		// is stranded. Nor is anything of a root waiting on a person, whose architect its answer
-		// resumes.
+		// question asks (record.TreeRuns, R4 of dispatch://INFRA-3320): the root is in Legion's
+		// work and is not itself waiting in the line for a slot it does not hold. A root that
+		// waits there — one whose first start has still to come, or one whose work came back
+		// after a stop and waits for its slot — has started (record.TreeStarted) but runs nothing
+		// yet: its architect's task comes with its promotion, and its phase worker's start is
+		// queued already, held until the slot comes, so nothing of it is stranded. Nor is anything
+		// of a root waiting on a person, whose architect its answer resumes.
 		if _, runs := running[root.Key]; !runs {
 			continue
 		}
@@ -215,7 +217,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// that its own exit retired is reported nowhere, as Stranded's comment says.
 		var current phase.Phase
 		switch {
-		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):
+		case claim.IsTreeArchitect(c.Role, issue.Key, gateRoot):
 		case c.Role != claim.RoleArchitect && phase.RoleFor(issue.WorkingPhase()) == c.Role:
 			if c.State == supervise.StateSuspended && c.SuspendedBy.ByRule() {
 				continue
@@ -224,7 +226,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		default:
 			continue
 		}
-		candidates = append(candidates, candidate{claim: c, issue: issue, root: root, current: current})
+		candidates = append(candidates, candidate{claim: c, issue: issue, current: current})
 	}
 
 	var stranded []supervise.Claim
@@ -241,7 +243,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		}
 		for _, candidate := range batch {
 			run := runs[candidate.claim.Token]
-			if candidate.claim.RuleHolds() || StartFor(run, candidate.root, candidate.issue.Generation, candidate.current) {
+			if candidate.claim.RuleHolds() || StartFor(run, candidate.issue.Generation, candidate.current) {
 				stranded = append(stranded, candidate.claim)
 			}
 		}

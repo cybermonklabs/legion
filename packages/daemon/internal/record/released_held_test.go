@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // A started issue that gave its slot back to wait on another issue stands in the waiting line
@@ -28,7 +27,7 @@ func TestAnIssueReleasedForAWaitTakesNoHeldRow(t *testing.T) {
 		working, admitted, control,
 	}
 	facts := LineFacts{
-		Lifecycles: map[string]treelifecycle.Lifecycle{"LEGION-10": {Tree: "LEGION-10", Authority: treelifecycle.AuthorityWorkflow}},
+		Chains: chainsOf(issues, copyOf(issues...)),
 		Gates: map[string]TreeGate{"LEGION-10": {Rows: map[DesignStep]DesignGate{DesignStepSpec: {
 			Issue: "LEGION-10", Step: DesignStepSpec, LatestVersion: 1, ApprovedVersion: &approved,
 			ApprovedMark: EventMark{Seq: 7, At: released.Add(-time.Hour)}, EverOpened: true}}}},

@@ -44,7 +44,6 @@ type silenceRecord struct {
 	phase      phase.Phase
 	// generation is the issue's, which the fact's own generation is held against.
 	generation uint64
-	lingers    bool
 	// entry is the entry the phase row names (record.PhaseRow.Entry) and entryTask the work it
 	// was raised with; given is the entry the claim was last given work of (claims.given_entry,
 	// record.RoleClaim.GivenEntry). A given equal to entry is a claim level with its row, one
@@ -106,18 +105,12 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	issue := record.Issue{Key: silenceIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: silenceIssue, Project: "LEGION", Title: "a worker that stopped taking turns", Phase: rec.phase,
 		Generation: rec.generation, Status: "in_progress", Rank: "U"}
-	if rec.lingers {
-		until := silenceClock().Add(time.Hour)
-		issue.LingerUntil = &until
-	}
 	if rec.unrecorded {
 		return issue
 	}
 	seedIssue(t, pool, issue)
 	if record.KeepsSlot(issue) {
 		seedSlot(t, pool, record.Slot{Issue: silenceIssue, Index: 0, AdmittedAt: silenceClock()})
-	} else {
-		seedTreeLifecycle(t, pool, silenceIssue)
 	}
 	token := silenceToken(t, claim.RoleTester)
 	seedPhase(t, pool, record.PhaseRow{Issue: silenceIssue, Role: claim.RoleTester, Claim: token,
@@ -398,11 +391,6 @@ func TestASilenceTheRecordAnswersForChangesNothing(t *testing.T) {
 		{name: "the claim is retired", rec: func() silenceRecord {
 			rec := aSilentTester()
 			rec.state = supervise.StateRetired
-			return rec
-		}()},
-		{name: "the tree lingers", rec: func() silenceRecord {
-			rec := aSilentTester()
-			rec.lingers = true
 			return rec
 		}()},
 	} {

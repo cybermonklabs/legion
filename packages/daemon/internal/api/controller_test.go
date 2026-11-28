@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -312,7 +313,16 @@ func TestTheRegisteredControllerMintsControllerGrants(t *testing.T) {
 // the first capability no longer registers, the first registration no longer mints grants, and a
 // grant the first minted before the rotation no longer redeems.
 func TestASecondControllerSecretRevokesTheFirst(t *testing.T) {
-	h, _, statuses := newArchitectHarness(t, nil, nil)
+	h, facts, _ := newArchitectHarness(t, nil, nil)
+	setStatusCalls := func() []intake.StatusCallIssue {
+		var issues []intake.StatusCallIssue
+		for _, fact := range facts.recorded() {
+			if call, ok := fact.(intake.StatusCall); ok && call.Op == intake.SetStatusCall {
+				issues = append(issues, call.Issues...)
+			}
+		}
+		return issues
+	}
 	first := h.mintedSecret()
 	registration := h.registeredController(first, "ses_first")
 	recorder := h.controllerSessionGrant("ses_first", registration.Secret)
@@ -329,8 +339,8 @@ func TestASecondControllerSecretRevokesTheFirst(t *testing.T) {
 	status := h.request(http.MethodPost, "/legion/v1/issues/status",
 		IssueStatusRequest{GrantID: earlier.GrantID, Issue: "LEGION-208", Status: "backlog"}, nil)
 	refused(t, status, http.StatusForbidden, "GRANT_UNAVAILABLE")
-	if len(statuses.writes) != 0 {
-		t.Fatalf("Dispatch writes = %+v, want none from a revoked controller grant", statuses.writes)
+	if calls := setStatusCalls(); len(calls) != 0 {
+		t.Fatalf("set_status calls applied = %+v, want none from a revoked controller grant", calls)
 	}
 
 	replacement := h.registeredController(second, "ses_second")
@@ -348,8 +358,8 @@ func TestASecondControllerSecretRevokesTheFirst(t *testing.T) {
 	if status.Code != http.StatusOK {
 		t.Fatalf("issue status with the second controller's grant = %d; body %s", status.Code, status.Body)
 	}
-	if len(statuses.writes) != 1 || statuses.writes[0] != (statusWrite{issue: "LEGION-208", status: "backlog"}) {
-		t.Fatalf("Dispatch writes = %+v, want LEGION-208 backlog", statuses.writes)
+	if calls := setStatusCalls(); len(calls) != 1 || calls[0].Key != "LEGION-208" || calls[0].Status != "backlog" {
+		t.Fatalf("set_status calls applied = %+v, want LEGION-208 backlog", calls)
 	}
 }
 

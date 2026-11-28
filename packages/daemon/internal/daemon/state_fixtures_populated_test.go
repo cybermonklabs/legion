@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -72,9 +73,9 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 // populatedRecord is the populated record's issues. Each comment says what the case is there for
 // and which writer of the daemon leaves such a record.
 //
-//   - LEGION-207 merged and closed; its tree lingers until 10:10:12, its production check is open
-//     at its second look, and its spec stands open on a person's approval of its ancestor
-//     LEGION-200's.
+//   - LEGION-207 merged and closed; the release before's deadline on its tree, 10:10:12, is its
+//     retention (record.Issue.RetainedUntil), its production check is open at its second look,
+//     and its spec stands open on a person's approval of its ancestor LEGION-200's.
 //   - LEGION-208, the tree root at work in implementing, carries every optional a claim view has
 //     between its architect, planner and implementer, a plan task's counts, a pull request with
 //     changes requested, an approved design gate, the memory draw and the handshake of its
@@ -87,18 +88,23 @@ func populatedPodLocator(token claim.Token, issue string, generation uint64) *ru
 //     nothing will wake, no architect claim, and a spec whose architect registered a version after
 //     its approval. Dispatch corrected its repository from acme/widgets to zeta/tools, and the
 //     pull request it opened before the correction is open on acme/widgets still.
-//   - LEGION-211, a P1 root another tree (LEGION-200) handed over whose own tree has not been
-//     opened, waiting in the line's starting part of its band; its implementer is released in
-//     LEGION-200's tree with two failed sends. It carries a run, so no Dispatch link holds it
-//     (blockers.Exempt).
+//   - LEGION-211, a P1 root a hand-over of the release before carried in out of LEGION-200's tree,
+//     whose own tree has not been opened, waiting in the line's starting part of its band; its
+//     implementer is released with two failed sends. It carries a run, so no Dispatch link holds
+//     it (blockers.Exempt).
 //   - LEGION-212, a P0 root a person answered, holding its slot and waiting in the line's returned
 //     part of its band, its spec sent back with changes, a tester retired in its tree. Dispatch
 //     named acme/gadgets for it, a change the daemon has not applied.
-//   - LEGION-214, a root whose Legion label is off, so it holds no slot and stands in no live tree.
-//     Its architect registered its spec on its ancestor LEGION-200's version 6 while a person's
-//     approval of that version was still asked for, so the step waits on that open request.
+//   - LEGION-214, a root whose Legion label is off, so it holds no slot. Its record is still in
+//     Legion's work and no issue above it is, so the state names it among the roots of
+//     `admission.trees` (blockers.AdmissionOf, R22 of dispatch://INFRA-3320) and it carries its
+//     own tree's quiet time. Its architect registered its spec on its ancestor LEGION-200's
+//     version 6 while a person's approval of that version was still asked for, so the step waits
+//     on that open request.
 //   - LEGION-215, a labelled root under LEGION-217, a child of LEGION-208 its architect has not
-//     released and the daemon keeps no record of: its chain reaches LEGION-208's live tree.
+//     released and the daemon keeps no record of. Its chain, read from the copy, reaches
+//     LEGION-208, so the state names LEGION-208 as its tree and holds it as that tree's unreleased
+//     work (`ancestry`); it has never run, so it holds no gated step.
 //   - LEGION-216, a root that has never run, queued behind LEGION-211 and blocked by LEGION-210.
 //   - LEGION-218 and LEGION-219, reviewing roots whose rounds wait on GitHub's merge state: the
 //     first for GitHub's first answer, its architect suspended by the operator; the second held
@@ -126,11 +132,11 @@ func populatedRecord(s *seeding) {
 		return reading
 	}
 
-	// LEGION-207: merged, its tree lingering; a todo on it before the deadline takes the tree back
-	// without a re-admission. The close that lingered it (workflow's leave) set LingerUntil.
+	// LEGION-207: merged and closed. The first boot's conversion made the deadline the release
+	// before left on its tree its retention (record.RetainLingers, record.Issue.RetainedUntil).
 	merged := issue("LEGION-207", "LEGION-207", phase.Done, "done", "acme/widgets", 2, 3)
-	lingerUntil := at(22, 10, 10, 12)
-	merged.LingerUntil = &lingerUntil
+	retainedUntil := at(22, 10, 10, 12)
+	merged.RetainedUntil = &retainedUntil
 	// LEGION-207 has no priority of its own, and Dispatch resolves it to P2 from OTHER-5, an
 	// ancestor in another project (record.Resolved, which intake's dispatchResolved writes).
 	merged.Resolved = record.Resolved{Priority: record.P2, From: "OTHER-5", Known: true}
@@ -149,12 +155,14 @@ func populatedRecord(s *seeding) {
 	escalated := issue("LEGION-210", "LEGION-210", phase.Held, "in_progress", "acme/widgets", 1, 6)
 	escalated.Hold = &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated}
 
-	// LEGION-211: a root LEGION-200's tree handed over with the phase it ran there (admit's
-	// hand-over, admit.go's HandedOverFrom). Its own tree has not been opened. Dispatch shows it at
-	// P1, which the record keeps from the observation that carried its rank (admit's
+	// LEGION-211: a root a hand-over of the release before carried in with the phase it ran in
+	// LEGION-200's tree, at the generation the first boot's conversion copied onto its record with
+	// its old root's gate (record.CarryHandedOverRoots). Its own tree has not been opened. Dispatch
+	// shows it at P1, which the record keeps from the observation that carried its rank (admit's
 	// recordObservation).
 	handed := issue("LEGION-211", "LEGION-211", phase.Implementing, "todo", "acme/widgets", 2, 7)
-	handed.Rank, handed.HandedOverFrom, handed.Priority = "00011", "LEGION-200", record.P1
+	handed.Rank, handed.Priority = "00011", record.P1
+	handed.CarriedGeneration, handed.CarriedGate = 2, true
 	// Dispatch resolves LEGION-211 to its own P1, so the resolution names no issue it comes from.
 	handed.Resolved = record.Resolved{Priority: record.P1, Known: true}
 
@@ -177,12 +185,11 @@ func populatedRecord(s *seeding) {
 	// leaves it, with none resolved at all, so the state holds every reading of the field.
 	labelOff.Resolved = record.Resolved{Priority: record.NoPriority, Known: true}
 
-	// LEGION-215: a labelled root under LEGION-217, which Dispatch shows under LEGION-208: admission
-	// records the chain with the parent it starts at (admit's record, admit.go; intake/facts.go's
-	// Ancestry; record.Issue.Ancestry), since LEGION-217 is a child of a live tree its architect has
-	// not released.
+	// LEGION-215: a labelled root under LEGION-217, which Dispatch shows under LEGION-208. Its chain
+	// is read from the copy of Dispatch's issues (record.Chains): LEGION-217, whose copy row is
+	// written below, is a child of LEGION-208's live tree its architect has not released.
 	chained := issue("LEGION-215", "LEGION-215", phase.Admitted, "todo", "sjawhar/legion", 1, 12)
-	chained.Rank, chained.Parent, chained.Ancestry = "00015", new("LEGION-217"), []string{"LEGION-217", "LEGION-208"}
+	chained.Rank, chained.Parent = "00015", new("LEGION-217")
 
 	// LEGION-216: a root that has never run, queued in the line's starting part behind LEGION-211,
 	// which Dispatch says waits on LEGION-210.
@@ -236,11 +243,6 @@ func populatedRecord(s *seeding) {
 			Pending: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets",
 		})
 	})
-	// LEGION-211 is the root a hand-over created at its generation (admit's hand-over,
-	// record.Store.PutHandedOverRoot), carrying its old root's gate.
-	s.in("the hand-over of LEGION-211", func(ctx context.Context, tx pgx.Tx) error {
-		return s.records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: "LEGION-211", Generation: 2, GateCarried: true})
-	})
 
 	// The issues the daemon has started hold the cap's slots (admit's promotion, record.Store.PutSlot):
 	// LEGION-211's tree has not been opened, LEGION-209 waits at admitted, LEGION-207 closed and
@@ -255,26 +257,31 @@ func populatedRecord(s *seeding) {
 	} {
 		s.in("the slot of "+slot.Issue, func(ctx context.Context, tx pgx.Tx) error { return s.records.PutSlot(ctx, tx, slot) })
 	}
-	// The promotion of each root it started opened that root's tree (record.Store.OpenTreeLifecycle).
-	// LEGION-207's stays open while its tree lingers: the outbox reserves its cleanup when the linger
-	// ends (outbox's reservedTreeClose).
+	// The promotion of each root it started opened that root's tree and its own issue lifecycle
+	// (record.Store.OpenTreeLifecycle, OpenIssueLifecycle). LEGION-207's stays open while its
+	// implementer works its production check in the pod the daemon keeps.
 	s.openTrees("LEGION", "LEGION-207", "LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219")
+	// Admission opened the own lifecycle of the child it started in a slot of its own, LEGION-220,
+	// and of LEGION-211, whose implementer runs the phase its hand-over carried.
+	s.openIssues("LEGION", "LEGION-211", "LEGION-220")
 	// LEGION-200's tree, which an operator opened for a root the daemon keeps no record of
-	// (store.Store.OpenOperatorTreeLifecycle, the operator's spawn), handed LEGION-210 and LEGION-211
-	// over; its lifecycle stands open while a claim of it does.
-	_, err := s.st.OpenOperatorTreeLifecycle(s.ctx, "legion", "LEGION-200", func(context.Context, pgx.Tx) error { return nil })
+	// (store.Store.OpenTreeLifecycle under the operator's authority, the operator's spawn), was
+	// the tree LEGION-210 and LEGION-211 were handed over out of; its lifecycle stands open while a
+	// claim of it does.
+	_, err := s.st.OpenTreeLifecycle(s.ctx, "legion", "LEGION-200", treelifecycle.AuthorityOperator)
 	s.must("LEGION-200's operator tree", err)
-	// LEGION-210's hand-over settled it at no arm of `plan-length`, the issue experiment the
-	// project declared then and LEGION-200's tree held no row of (record.Store.CarryAssignments).
+	// LEGION-210's hand-over out of LEGION-200's tree, under the release before, settled it at no
+	// arm of `plan-length`, the issue experiment the project declared then: a row with no variant,
+	// no mode and no draw, marked carried, which this release keeps as that release wrote it
+	// (record.Assignment.Carried).
 	s.in("LEGION-210's hand-over answers", func(ctx context.Context, tx pgx.Tx) error {
-		_, err := s.records.CarryAssignments(ctx, tx, "legion", "LEGION-210", "LEGION-200",
-			[]record.DeclaredExperiment{{Experiment: "plan-length", Unit: string(config.ExperimentIssue)}})
+		_, err := s.records.PutAssignments(ctx, tx, "LEGION-210",
+			[]record.Assignment{{Experiment: "plan-length", Unit: string(config.ExperimentIssue), Carried: true}})
 		return err
 	})
-	// LEGION-208's tree was drawn into the memory group when it was opened, a tree experiment every
-	// issue of the tree shows; `plan-length` and `planning` are drawn for each issue on its own, so
-	// a root and its child stand in different arms (internal/experiment's DrawAndRecord,
-	// record.Store.PutAssignments).
+	// LEGION-208 was drawn into the memory group, a tree experiment, at its first start;
+	// `plan-length` and `planning` are drawn for each issue on its own, so a root and its child
+	// stand in different arms (internal/experiment's DrawAndRecord, record.Store.PutAssignments).
 	for key, rows := range map[string][]record.Assignment{
 		"LEGION-208": {
 			{Experiment: config.MemoryExperimentName, Unit: string(config.ExperimentTree), Variant: config.MemoryVariantMemory, Mode: string(config.ExperimentRandom), DrawnAt: &populatedMemoryDrawnAt},
@@ -294,6 +301,14 @@ func populatedRecord(s *seeding) {
 			return err
 		})
 	}
+	// LEGION-220's first start took the memory draw from the nearest issue above it in Legion's
+	// work, LEGION-208, as a row of its own marked carried (admit's takeTreeDraw,
+	// record.Store.CarryAssignments). LEGION-209, held at admitted, has not started, so it holds
+	// no tree draw.
+	s.in("LEGION-220's carried draws", func(ctx context.Context, tx pgx.Tx) error {
+		_, err := s.records.CarryAssignments(ctx, tx, "LEGION-220", []string{"LEGION-208"})
+		return err
+	})
 
 	// The design gates (workflow/gate.go's registration and the approvals Dispatch carries,
 	// record.Store.PutGate). The deployment gates `root-issues`, the one step spec. LEGION-208's,
@@ -614,6 +629,13 @@ func populatedDeployment(s *seeding) composition {
 		_, err := s.st.RecordBoot(s.ctx, "LEGION", booted)
 		s.must("a boot", err)
 	}
+	// The first boot on this release finished converting what the release before left 44 seconds
+	// in, and recorded when at the conversion's last step (record.RecordTreeConversionStep at
+	// convertRecord), which the state serves as daemon.convertedAt.
+	convertedAt := at(18, 14, 4, 11)
+	s.in("the conversion's record", func(ctx context.Context, tx pgx.Tx) error {
+		return record.RecordTreeConversionStep(ctx, tx, "LEGION", convertRecord, &convertedAt)
+	})
 	// The daemon minted the controller's capability and its session registered with it
 	// (store.Store.MintController, RegisterController).
 	generation, err := s.st.MintController(s.ctx, "legion", []byte("controller-capability-hash"))

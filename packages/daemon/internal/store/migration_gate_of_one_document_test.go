@@ -52,10 +52,23 @@ func TestAGateOfOneDocumentSurvivesTheUpgrade(t *testing.T) {
 
 	steps := []record.DesignStep{record.DesignStepSpec}
 	records := record.NewStore()
+	// The daemon reads the tree on the Dispatch chain, its copy of Dispatch's issues, which the
+	// first boot fills from Dispatch: the root, and the member under it.
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		for key, parent := range map[string]string{root: "", member: root} {
+			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+				Status: record.Carry("in_progress"), Parent: record.Carry(parent)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
+	}
 	var facts record.NewsFacts
 	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		facts, err = record.TreeNewsFacts(ctx, records, tx, steps, root)
+		facts, _, err = record.ReadTreeNewsFacts(ctx, records, tx, steps, "LEGION", root)
 		return err
 	}); err != nil {
 		t.Fatalf("read the tree as the daemon reads it: %v", err)

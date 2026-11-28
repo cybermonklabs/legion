@@ -88,7 +88,7 @@ func TestAwaitingChildrenHoldsNoSlotIsNotAtWorkAndCarriesItsRun(t *testing.T) {
 	if KeepsSlot(waiting) {
 		t.Errorf("KeepsSlot = true, want false: the phase keeps none of the cap's slots")
 	}
-	if AtWork(waiting, TreeGate{}) {
+	if AtWork(waiting, true, TreeGate{}) {
 		t.Errorf("AtWork(awaiting_children) = true, want false: no worker of it has work in the phase")
 	}
 	if !waiting.CarriesRun() {

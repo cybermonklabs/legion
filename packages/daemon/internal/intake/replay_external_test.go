@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -26,24 +25,21 @@ import (
 
 // An old event of a child the daemon has never recorded, given up and replayed long after,
 // records the child as Dispatch shows it now, never as the event said. The workflow records such
-// a child on the path before its sequence fence (recordChildUnderLiveTree), and what keeps that
-// path from writing an old state is the live handling the replay runs: the issue's preparation
-// replaces the event with Dispatch's present view of the issue (the daemon's prepareIssue, played
-// here by a stand-in that answers that view), and ApplyFact applies the view while the issue is
-// unrecorded (settleObserved). A replay that skipped the preparation would record the event's old
-// title at its old sequence, which this test refuses.
+// a child on the path before its sequence fence (recordChildUnderParentAtWork), and what keeps
+// that path from writing an old state is the live handling the replay runs: the issue's
+// preparation replaces the event with Dispatch's present view of the issue (the daemon's
+// prepareIssue, played here by a stand-in that answers that view), and ApplyFact applies the view
+// while the issue is unrecorded (settleObserved). A replay that skipped the preparation would
+// record the event's old title at its old sequence, which this test refuses.
 func TestAReplayOfAnUnrecordedChildsOldEventRecordsItAsDispatchShowsItNow(t *testing.T) {
 	t.Parallel()
 	const project, root, child, repo = "LEGION", "LEGION-7", "LEGION-8", "acme/widgets"
 	ctx := context.Background()
 	pool := testpg.ClonePool(t, "legion_intake_replay_test")
 	records := record.NewStore()
-	token, err := claim.ProjectToken(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The root's tree runs: its record, the slot its work holds and its open lifecycle, as
-	// promotion writes them, so a todo child under it is recorded into it.
+	// The root is in Legion's work: its record, the slot its work holds, and the copy's row of it
+	// (R15 and R16 of dispatch://INFRA-3320: the chain is read from the daemon's copy of Dispatch's
+	// issues), so a todo child Dispatch shows under it is recorded beneath it.
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: root, Tree: root, Project: project, Title: "the root", Phase: phase.Implementing,
 			Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "M", HandedOver: true, LastDispatchSeq: 1,
@@ -53,10 +49,10 @@ func TestAReplayOfAnUnrecordedChildsOldEventRecordsItAsDispatchShowsItNow(t *tes
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, 'workflow')`, token, root)
-		return err
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: root, Project: project, Seq: 1,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Labels: record.Carry([]string{dispatch.LegionLabel})})
 	}); err != nil {
-		t.Fatalf("seed the running tree of %s: %v", root, err)
+		t.Fatalf("seed %s in Legion's work: %v", root, err)
 	}
 
 	// The event Dispatch wrote at sequence 3, given up and kept whole; Dispatch has run to 9 since,
@@ -123,10 +119,14 @@ func TestAReplayOfAnUnrecordedChildsOldEventRecordsItAsDispatchShowsItNow(t *tes
 		t.Fatalf("read %s: %v", child, err)
 	}
 	if recorded == nil {
-		t.Fatalf("%s is not recorded after the replay, want it recorded under %s's running tree", child, root)
+		t.Fatalf("%s is not recorded after the replay, want it recorded beneath %s, which is in Legion's work", child, root)
 	}
-	if recorded.Title != "the title Dispatch shows now" || recorded.LastDispatchSeq != 9 || recorded.Tree != root {
-		t.Fatalf("%s is recorded with title %q at sequence %d in tree %s, want Dispatch's title now at sequence 9 in %s: the old event's state must not reach the record",
-			child, recorded.Title, recorded.LastDispatchSeq, recorded.Tree, root)
+	parent := ""
+	if recorded.Parent != nil {
+		parent = *recorded.Parent
+	}
+	if recorded.Title != "the title Dispatch shows now" || recorded.LastDispatchSeq != 9 || parent != root {
+		t.Fatalf("%s is recorded with title %q at sequence %d under %q, want Dispatch's title now at sequence 9 under %s: the old event's state must not reach the record",
+			child, recorded.Title, recorded.LastDispatchSeq, parent, root)
 	}
 }

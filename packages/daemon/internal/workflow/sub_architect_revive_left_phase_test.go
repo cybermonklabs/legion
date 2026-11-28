@@ -17,7 +17,7 @@ import (
 // A start already queued for a failed child architect stands in for the revive only when the
 // outbox will act on it. A tree's re-admission brings back each role of a mid-phase child that has
 // a claim, a failed architect among them, with a start that names the phase the child stood in
-// (admit's startMidPhaseMembers), and the outbox finishes, without acting, a start that serves a
+// (admit's promotion), and the outbox finishes, without acting, a start that serves a
 // phase the issue has left. So when the child's next phase start comes while that start still
 // waits (behind its branch row, say), the start it would count is one the outbox will drop, and
 // the child's next phase start must queue the plain start of its failed architect all the same:

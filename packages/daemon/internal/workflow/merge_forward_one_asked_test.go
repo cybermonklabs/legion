@@ -30,7 +30,7 @@ func TestTheMergersAskEndsTheImplementersAskOfTheSameHead(t *testing.T) {
 	left := func(t *testing.T, pool *pgxpool.Pool, role claim.Role) string {
 		t.Helper()
 		pr := recordedPR(t, pool, "LEGION-208")
-		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, role, record.MergeForwardAsk, conflictHead)
+		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), &pr, role, record.MergeForwardAsk, conflictHead)
 	}
 	retroCompletes := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()

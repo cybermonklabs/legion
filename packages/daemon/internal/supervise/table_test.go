@@ -132,6 +132,7 @@ func samples(t *testing.T) map[string][]Event {
 		"PodUpdateOpen":        {PodUpdateOpen{}},
 		"PodUpdateEnded":       {PodUpdateEnded{}},
 		"StalePlugin":          {StalePlugin{}},
+		"GateRootMoved":        {GateRootMoved{}},
 		"RecordedDeath":        {RecordedDeath{}},
 		"StallBackstop":        {StallBackstop{}},
 		"TurnPastBound":        {TurnPastBound{}},
@@ -143,7 +144,6 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestResume":        {RequestResume{}},
 		"RequestRuleResume":    {RequestRuleResume{}},
 		"RequestStop":          {RequestStop{}},
-		"RequestTreeClose":     {RequestTreeClose{}},
 		"RequestIssueClose":    {RequestIssueClose{}},
 		"RequestOperatorClose": {RequestOperatorClose{}},
 		"RequestRetry":         {RequestRetry{}},
@@ -326,6 +326,8 @@ func fenced(ev Event, c Claim) Event {
 		return Timer{Claim: c.Token, Kind: ev.Kind, Generation: c.Generation, Seq: 7777, DeliveryID: c.Pending.ID}
 	case StalePlugin:
 		return StalePlugin{Claim: c.Token}
+	case GateRootMoved:
+		return GateRootMoved{Claim: c.Token, Tree: "LEGION-300"}
 	case RecordedDeath:
 		return RecordedDeath{Claim: c.Token, Generation: c.Generation}
 	case StallBackstop:

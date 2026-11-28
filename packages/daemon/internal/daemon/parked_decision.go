@@ -170,20 +170,15 @@ func diskNotice(kind record.NoticeKind) bool {
 // queues nothing more. The undelivered row then finishes.
 //
 // It does nothing for a kind that is no disk notice, as parkDecision does nothing for a kind that
-// is no spec decision, so every place a notice finishes undelivered because nobody will hold its
-// architect's role calls both, before its own line: an architect that will not hold its role
-// again (noticeAnswered), and one that stopped with its finished tree, found before a publish
-// (deliverNotice, the Legion reviewer's point 3 on R6's review fixes) or before a re-hold
-// (reholdNotice). Every outcome logs one line that pairs the undelivered row with what became of
-// its notice, sent or handed over before under the same key, once the transaction has committed.
+// is no spec decision, so the place a notice finishes undelivered because nobody will hold its
+// architect's role calls both, before its own line: an architect whose claim failed, retired or is
+// not supervised (noticeAnswered, claimEnded). A re-held copy reaches that place when it runs. Every
+// outcome logs one line that pairs the undelivered row with what became of its notice, sent or
+// handed over before under the same key, once the transaction has committed.
 func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row int64, notice record.Notice, key string,
 	architect claim.Token, why string) error {
 	if !diskNotice(notice.Kind) {
 		return nil
-	}
-	copied, err := record.NewOutboxRow(issue, record.ControllerNotice(notice), r.now().UTC())
-	if err != nil {
-		return fmt.Errorf("the controller's copy of the %s notice of %s is a row the outbox refuses: %w", notice.Kind, issue, err)
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "architect", architect, "because", why, "key", key}
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -201,6 +196,13 @@ func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row 
 		if !fresh {
 			return nil
 		}
+		// The copy keeps the run and the phase entry its notice names (record.Notice.Published),
+		// and a notice a release before this one queued, which names none, takes the fence its
+		// issue stands at now (record.NewFencedRow).
+		copied, err := record.NewFencedRow(ctx, tx, r.records, issue, record.ControllerNotice(notice), r.now().UTC())
+		if err != nil {
+			return fmt.Errorf("the controller's copy of the %s notice of %s is a row the outbox refuses: %w", notice.Kind, issue, err)
+		}
 		return r.records.Enqueue(ctx, tx, copied)
 	}); err != nil {
 		return fmt.Errorf("send the controller the %s notice of %s: %w", notice.Kind, issue, err)
@@ -217,7 +219,7 @@ func (r *outbox) tellControllerOfKeptPod(ctx context.Context, issue string, row 
 // the write that records the delivery's confirmation tells them — or, if the delivery was retired
 // first, left them KEPT for the next start or catch-up of each one's own tree to name.
 //
-// A row neither says reached no claim — an earlier generation, a phase left, a lingering tree, a
+// A row neither says reached no claim — an earlier generation, a phase left, an issue out of Legion's work, a
 // claim that never took the task — and hands what it claimed over (workflow.HandOverKept), so no
 // release leaves a decision unclaimed while the tree it is owed to has an architect to tell.
 //
@@ -231,7 +233,9 @@ func (r *outbox) settleKept(ctx context.Context, row record.OutboxRow, payload r
 	if payload.Kept == nil {
 		return nil
 	}
-	root := payload.Tree
+	// The start row is queued on the issue whose architect it starts, the gate holder its kept
+	// decisions are owed to, so that issue names the claim, never the tree the row stores.
+	root := row.Issue
 	token, err := claim.NewToken(r.project, root, claim.RoleArchitect)
 	if err != nil {
 		return fmt.Errorf("derive the architect of %s: %w", root, err)
@@ -300,16 +304,17 @@ func (r *outbox) toldKept(ctx context.Context, root, key string) error {
 	return nil
 }
 
-// settleTold tells what outbox row's catch-up named of what its tree is owed, once the row has run
+// settleTold tells what outbox row's catch-up named of what its root is owed, once the row has run
 // and told it (toldKept), however that run ended: the publish that told it, a newer catch-up that
 // superseded the row since, a holder that refused it, a grant that denied it, an architect that
 // will not hold its role again, or the row's own deletion under its lease. The telling is held to
-// the one validity rule (record.Store.ForgetKeptDecisions): a row whose issue has left this tree
-// since the catch-up was composed is not deleted but left KEPT, for the tree it stands in now to
-// name. Only a row that told nothing is left to settle another way — the hand-over of a superseded
-// catch-up (supersededKept), and otherwise the architect's next ready, which names every unclaimed
-// decision. A failure returns an error, so the row retries and tells again; a telling of what is
-// already gone deletes nothing.
+// the one validity rule (record.Store.ForgetKeptDecisionsOf over record.KeptMembers): a row whose
+// issue the Dispatch chain no longer shows under this root since the catch-up was composed is not
+// deleted but left KEPT, for the gate root it stands under now to name. Only a row that told
+// nothing is left to settle another way — the hand-over of a superseded catch-up (supersededKept),
+// and otherwise the architect's next ready, which names every unclaimed decision. A failure
+// returns an error, so the row retries and tells again; a telling of what is already gone deletes
+// nothing.
 func (r *outbox) settleTold(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if payload.CatchUp == nil || payload.CatchUp.Kept == nil {
 		return nil
@@ -325,25 +330,15 @@ func (r *outbox) settleTold(ctx context.Context, row record.OutboxRow, payload r
 		if err != nil || !told {
 			return err
 		}
-		tree, err := r.treeOfIssue(ctx, tx, root)
+		members, err := record.KeptMembers(ctx, tx, r.records, root)
 		if err != nil {
 			return err
 		}
-		return r.records.ForgetKeptDecisions(ctx, tx, tree, *payload.CatchUp.Kept, row.ID)
+		return r.records.ForgetKeptDecisionsOf(ctx, tx, root, members, *payload.CatchUp.Kept, row.ID)
 	}); err != nil {
 		return fmt.Errorf("tell the decisions the catch-up of %s named: %w", root, err)
 	}
 	return nil
-}
-
-// treeOfIssue is the tree issue stands in now, which is the tree a row of that issue tells for: a
-// root the record no longer holds, or one that is its own tree, answers itself.
-func (r *outbox) treeOfIssue(ctx context.Context, tx pgx.Tx, issue string) (string, error) {
-	stored, err := r.records.Issue(ctx, tx, issue)
-	if err != nil || stored == nil {
-		return issue, err
-	}
-	return stored.Tree, nil
 }
 
 // supersededKept hands what outbox row's catch-up named over to a fresh catch-up once a newer one
@@ -367,7 +362,7 @@ func (r *outbox) supersededKept(ctx context.Context, root string, row int64, key
 // row still running that claims them (the receipt timeout the notice executor answers), whose
 // claims go to a fresh catch-up of the launch the architect stands at (workflow.HandOverKept); 0
 // is an earlier listener's report after the row finished and its deletion released them, and then
-// a fresh catch-up names what the tree is owed and nothing claims, when there is any. A telling
+// a fresh catch-up names what the root is owed and nothing claims, when there is any. A telling
 // one of the catch-up's rows already made hands nothing over: settleTold tells it.
 func (r *outbox) spentKept(ctx context.Context, root string, claims int64, key string) error {
 	return r.writeSettlement(ctx, root, claims, func(ctx context.Context, tx pgx.Tx) error {
@@ -378,14 +373,14 @@ func (r *outbox) spentKept(ctx context.Context, root string, claims int64, key s
 		if claims != 0 {
 			return workflow.HandOverKept(ctx, tx, r.records, r.gatedSteps, claims, r.now().UTC())
 		}
-		tree, err := r.treeOfIssue(ctx, tx, root)
+		members, err := record.KeptMembers(ctx, tx, r.records, root)
 		if err != nil {
 			return err
 		}
-		decisions, approval, err := r.records.UnclaimedKept(ctx, tx, tree)
+		decisions, approval, err := r.records.UnclaimedKeptOf(ctx, tx, root, members)
 		if err != nil || len(decisions) == 0 && approval.Approved == 0 {
 			return err
 		}
-		return workflow.CatchUpTheTreesOwed(ctx, tx, r.records, r.gatedSteps, []string{tree}, r.now().UTC())
+		return workflow.CatchUpTheTreesOwed(ctx, tx, r.records, r.gatedSteps, []string{root}, r.now().UTC())
 	})
 }

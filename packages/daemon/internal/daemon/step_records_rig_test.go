@@ -86,7 +86,13 @@ type walkIssue struct {
 // newStepRecordsRigWith themselves, through newStepRecordsLive (step_records_live_test.go).
 func newStepRecordsRig(t *testing.T, issues int) *stepRecordsRig {
 	t.Helper()
-	return newStepRecordsRigWith(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), issues)
+	natsURL := workflowNATS(t)
+	cfg := workflowConfig(t, natsURL)
+	// Dispatch's events reach the daemon: a status write waits for them, and a close lands on
+	// Dispatch's done. A scratch Dispatch numbers its events from one, so the daemon's database is
+	// its own (blockersDatabase), or it would take them for events another test's daemon processed.
+	cfg.PostgresDSN = blockersDatabase(t)
+	return newStepRecordsRigWith(t, liveProofOf(t, cfg), startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}), issues)
 }
 
 // newStepRecordsRigWith sets up dispatch, a running Dispatch, with the run's project, its
@@ -199,6 +205,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
 	}
+	openIssue(t, r.st, r.project, r.key, treelifecycle.AuthorityWorkflow)
 	architect := r.token(claim.RoleArchitect)
 	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
 		Token: architect, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleArchitect,
@@ -415,13 +422,35 @@ func (r *stepRecordsRig) signOff(issue string) {
 }
 
 // merge waits for the merger's launch and publishes GitHub's merge of the pull request
-// (publishMergeOf), which ends the walk at done.
+// (publishMergeOf), which ends the walk at done once Dispatch shows the close the merge queued.
 func (r *stepRecordsRig) merge() {
+	r.t.Helper()
+	r.mergeQueuesTheClose()
+	r.waitPhase(phase.Done)
+}
+
+// mergeQueuesTheClose is merge up to the close it queues: the issue stands in merging with its
+// close queued (record.PendingClose) until Dispatch shows it done, since the daemon's close lands
+// only on Dispatch's done (R20 and R24 of dispatch://INFRA-3320), and is then at done with no close
+// queued. With Dispatch stopped the walk stays in merging, and reaches done once Dispatch is back
+// (waitPhase).
+func (r *stepRecordsRig) mergeQueuesTheClose() {
 	r.t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
 	r.github.merged(r.number)
 	r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
-	r.waitPhase(phase.Done)
+	var last string
+	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
+		issue := readIssue(r.t, r.st.Pool(), r.key)
+		if issue == nil {
+			last = "no record"
+			return false
+		}
+		last = fmt.Sprintf("phase %s, close queued %t", issue.Phase, issue.PendingClose != nil)
+		return issue.Phase == phase.Merging && issue.PendingClose != nil || issue.Phase == phase.Done
+	}) {
+		r.t.Fatalf("after GitHub's merge %s stands at %s, want its close queued or landed", r.key, last)
+	}
 }
 
 // waitPhase waits for the issue to stand in want.

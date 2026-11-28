@@ -4,7 +4,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -31,10 +30,11 @@ const (
 // ends it alone (Postgres.TreeTold reads the row as its credits make it). So it says what the
 // session holding the issue's phase was given, never what the daemon meant to give it. Its first
 // value is the baseline: the approved versions the issue's first working phase of its generation
-// started from (workflow's Engine.enter), and for a tree root's architect row those its tree's
-// first opening released (workflow's putGateTold), or the gate a hand-over carried to it (admit's
-// readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the next
-// generation takes its own baseline.
+// started from (workflow's Engine.enter), and for a gate root's architect row those its tree's
+// first opening released (workflow's putGateTold). The rows go with the issue's generation
+// (Postgres.ClearGeneration), so the next generation takes its own baseline, and a holder row goes
+// when its issue's gate root on the Dispatch chain changes (Postgres.ForgetTold), since its
+// versions are of the documents of the gate it stood under.
 type DesignTold struct {
 	Issue    string
 	Audience DesignAudience
@@ -191,12 +191,15 @@ type BlockChange struct {
 	Change string `json:"change"`
 }
 
-// NewsFacts is what one tree's owed news is read from (OwedNews): the deployment's steps (Steps,
-// as `gates.design` names them), the tree root's gate rows by step (Gates), every member of the
-// tree with the root among them (Members), the tree's told rows (Told), and the members whose
-// pull request has merged (Merged), which the caller reads from each pull request's own state
-// (PullRequestMerged) whatever phase the member stands in.
+// NewsFacts is what one tree's owed news is read from (OwedNews): the tree's gate root (Root, the
+// issue that holds the gate its members wait on, record.Chains.GateRoot), the deployment's steps
+// (Steps, as `gates.design` names them), the gate root's rows by step (Gates), every member of the
+// tree with the gate root among them (Members: the gate root and the issues in Legion's work whose
+// gate root it is on the Dispatch chain, Chains.GateTree), the tree's told rows (Told), and the
+// members whose pull request has merged (Merged), which the caller reads from each pull request's
+// own state (PullRequestMerged) whatever phase the member stands in.
 type NewsFacts struct {
+	Root    string
 	Steps   []DesignStep
 	Gates   map[DesignStep]DesignGate
 	Members []Issue
@@ -311,13 +314,14 @@ func (i NewsItem) Question() DesignHistoryQuestion {
 	return DesignHistoryQuestion{ArtifactID: i.ArtifactID, To: i.To}
 }
 
-// stepConcerns says whether step concerns issue, a member of tree: spec and decisions concern
-// every member, and criteria the tree root alone, since its checks are the root's to prove. It is
-// the one statement of that rule, read by what a member is owed and by why it is owed nothing
-// (OwedNews, UntoldNotConcerned), which the opened message's clause and the root architect's
-// summary read in turn, so a holder is never told that nothing changed while it is owed news.
-func stepConcerns(step DesignStep, issue, tree string) bool {
-	return step != DesignStepCriteria || claim.IsTreeRoot(issue, tree)
+// stepConcerns says whether step concerns issue, a member of the tree of the gate root root: spec
+// and decisions concern every member, and criteria the gate root alone, since its checks are the
+// root's to prove. It is the one statement of that rule, read by what a member is owed and by why
+// it is owed nothing (OwedNews, UntoldNotConcerned), which the opened message's clause and the
+// root architect's summary read in turn, so a holder is never told that nothing changed while it
+// is owed news.
+func stepConcerns(step DesignStep, issue, root string) bool {
+	return step != DesignStepCriteria || issue == root
 }
 
 // OwedNews is the one rule for what a tree owes of its approved design. A member is owed news of
@@ -330,9 +334,8 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 //   - the step's approved version is above the version the member's holder took, or the record
 //     does not know that version (DesignTold.Took);
 //   - the step concerns the member (stepConcerns): spec and decisions concern every member, and
-//     criteria the tree root alone, since its checks are the root's to prove;
-//   - the member is in the workflow (InWorkflow), its tree does not linger (Issue.Lingers on the
-//     tree's root, as TreeLingers reads it), and its phase has a holder, a phase whose work
+//     criteria the gate root alone, since its checks are the root's to prove;
+//   - the member is in the workflow (InWorkflow), and its phase has a holder, a phase whose work
 //     phase.RoleFor names a role for: not awaiting_person, done, held or awaiting_children, which a
 //     restart or the return from the children moves back into its phase, and not admitted, which
 //     phase.RoleFor names the tree's architect for
@@ -348,9 +351,9 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 // approved version.
 //
 // A member whose holder row owes the opening (DesignTold.OpeningOwed) while the standing gate is
-// open and the tree does not linger is owed that opening, with no item where it is owed none, on
-// the same rule of its own record. The opening became owed because the holder was owed news when
-// the gate opened, and the task that carried that news can be confirmed without it. Either the
+// open is owed that opening, with no item where it is owed none, on the same rule of its own
+// record. The opening became owed because the holder was owed news when the gate opened, and the
+// task that carried that news can be confirmed without it. Either the
 // prompt whose turn confirms the task was rendered before the opening became owed (the turn after
 // a restart, or the late turn of a prompt whose resend Oh My Pi answered busy), or that prompt
 // carried an earlier opening, which a close and a reopening before its turn replaced. So no role
@@ -358,37 +361,31 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 //
 // Every member owed nothing is named in Untold with the reason, the first that holds of those
 // UntoldReason lists: what its holder took, then its own record, then the hold of the standing
-// gate or the tree's linger. The hold is read last, so only a member that would be owed news with
-// the gate open and the tree running is named for it (UntoldHeldBack).
+// gate. The hold is read last, so only a member that would be owed news with the gate open is
+// named for it (UntoldHeldBack).
 //
-// The root architect's row is owed on its own rule: while the standing gate is open and the tree
-// does not linger, each step the tree is gated on whose approved version is above the version
-// that row took, or whose version that row does not know, whatever its members are owed, and the
-// opening where the row owes it (ArchitectOpening). So a change to the checks alone on a merged
-// root, which owes no member, still reaches the architect.
+// The root architect's row is owed on its own rule: while the standing gate is open, each step the
+// tree is gated on whose approved version is above the version that row took, or whose version
+// that row does not know, whatever its members are owed, and the opening where the row owes it
+// (ArchitectOpening). So a change to the checks alone on a merged root, which owes no member,
+// still reaches the architect.
 //
 // It is pure, and lives here beside the other rules over the record (Waiting, AtWork), so that
 // the store's upgrade test can call it and the daemon, the outbox and the send all read the one
 // rule.
 func OwedNews(facts NewsFacts) TreeNews {
-	tree, lingers := "", false
-	for _, member := range facts.Members {
-		tree = member.Tree
-		if claim.IsTreeRoot(member.Key, member.Tree) {
-			lingers = member.Lingers()
-		}
-	}
-	if tree == "" {
+	root := facts.Root
+	if root == "" || len(facts.Members) == 0 {
 		return TreeNews{}
 	}
-	heldBack := lingers || !(TreeGate{Steps: facts.Steps, Rows: facts.Gates}).Open()
+	heldBack := !(TreeGate{Steps: facts.Steps, Rows: facts.Gates}).Open()
 	holders := make(map[string]DesignTold, len(facts.Told))
 	var architect DesignTold
 	for _, told := range facts.Told {
 		switch {
 		case told.Audience == AudienceHolder:
 			holders[told.Issue] = told
-		case told.Audience == AudienceArchitect && told.Issue == tree:
+		case told.Audience == AudienceArchitect && told.Issue == root:
 			architect = told
 		}
 	}
@@ -399,7 +396,7 @@ func OwedNews(facts NewsFacts) TreeNews {
 		// DeleteFunc rewrites untaken's elements in place, so how many there were is read first.
 		owedAll := len(untaken)
 		items := slices.DeleteFunc(untaken, func(item NewsItem) bool {
-			return !stepConcerns(item.Step, member.Key, member.Tree)
+			return !stepConcerns(item.Step, member.Key, root)
 		})
 		other := len(items) < owedAll
 		owes := len(items) > 0 || (!heldBack && holders[member.Key].OpeningOwed)

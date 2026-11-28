@@ -73,6 +73,7 @@ func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree: %v", err)
 	}
+	openIssue(t, st, "legion", issue.Key, treelifecycle.AuthorityWorkflow)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
 	sup.deps.ClaimActivity = st.ClaimActivity

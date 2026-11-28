@@ -4,7 +4,6 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -16,34 +15,48 @@ import (
 // whichever hold it noticed first.
 type HeldReason string
 
-// The words of C1. The order they are read in is the order of the ladder's own body and
-// is written there alone; this block is the vocabulary, one constant per word.
+// The words of C1, R16 and R20. The order they are read in is the order of the ladder's own body
+// and is written there alone; this block is the vocabulary, one constant per word.
 const (
-	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close, or a
-	// member of a tree whose re-admitted root waits in the line, its design gate open, for the
-	// promotion that opens its tree again (reopensAtPromotion): the daemon starts no issue of such a
-	// tree, and in that last case the root's promotion is what ends the hold.
+	// HeldChainUnknown is an issue whose Dispatch chain the daemon's copy cannot show to its top
+	// (Chain.Known: a row the copy lacks, a loop, more than 32 links): the daemon starts nothing
+	// on it until the chain is read right (R16 of dispatch://INFRA-3320).
+	HeldChainUnknown HeldReason = "chain_unknown"
+	// HeldTreeClosed is an issue of a tree whose root had finished or lingered after its close.
+	// The ladder no longer answers it (R20 of dispatch://INFRA-3320: the daemon acts on each
+	// issue's own status, and no tree lingers); the word stays in the vocabulary because the
+	// contracts before that release name it (api's stateNarrowings).
 	HeldTreeClosed HeldReason = "tree_closed"
-	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox: the
-	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
+	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox. The
+	// ladder no longer answers it, for the reason HeldTreeClosed gives.
 	HeldTreeParked HeldReason = "tree_parked"
-	// HeldLabelOff is a root of its own tree whose record says the Legion label is off
+	// HeldLabelOff is a root (Chains.IsRoot) whose record says the Legion label is off
 	// (Issue.HandedOver): nothing hands it to the daemon.
 	HeldLabelOff HeldReason = "label_off"
-	// HeldAncestry is a root whose Dispatch chain names a live root that is not itself: it
-	// stands as that tree's unreleased work (the ancestry hold of Waiting).
+	// HeldAncestry is an issue whose Dispatch parent is not in Legion's work while an issue above
+	// that parent is (R19): it is that issue's unreleased work, held under its parent.
 	HeldAncestry HeldReason = "ancestry"
-	// HeldRootAwaitingPerson is an issue of a tree whose root has handed work to a person
-	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
-	// that root resumes.
+	// HeldRootAwaitingPerson is an issue whose top issue (Chains.TopIssue) has handed work to a
+	// person (Issue.AwaitingPerson, answered or not): the daemon starts nothing under it before
+	// that issue resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
 	// HeldAwaitingChildren is a parent that holds a phase start because a Dispatch child of it is
 	// still open (Issue.Phase awaiting_children): the daemon runs no phase of the parent's own
 	// work and holds the start it had while a child of it is open.
 	HeldAwaitingChildren HeldReason = "awaiting_children"
-	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
-	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
-	// registered beside a deployment that gates spec and not criteria.
+	// HeldAwaitingTodo is an issue whose run starts as a root's does (Chains.StartsAsRoot),
+	// standing at admitted while Dispatch shows it in work at a status other than todo
+	// (LineFacts.AwaitsTodo): a root a person moved from todo to in_progress before its first
+	// promotion, or a new run that R20 of dispatch://INFRA-3320 opens at the status a person moved
+	// the issue to, as when a person reopens an issue the merge of its pull request closed straight
+	// to in_progress. Only a person's todo queues such a run, whose promotion starts its architect
+	// (R19's handover). No issue holds it.
+	HeldAwaitingTodo HeldReason = "awaiting_todo"
+	// HeldDesignGate is an issue a design gate it waits for holds where it stands: the gate of an
+	// issue at or above it in Legion's work that holds its own gate, or a gate step it holds
+	// itself, stands shut at a step that holds it (LineFacts.ShutGates, whose TreeGate.Open reads
+	// TreeSteps): a step the deployment gates, or a criteria step the gate holder registered beside
+	// a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).
@@ -51,21 +64,22 @@ const (
 	// HeldChildrenFirst is a parent whose own Dispatch children are still open: none of its own
 	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
-	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
-	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
+	// HeldAcceptedAncestor is an issue beneath an issue the daemon has already accepted, one in
+	// its retro or its merge: nothing of it starts while that issue stands in retro or merging
+	// (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance,
 	// held before its retro while a hold on its acceptance holds it (HoldForChildren,
-	// HeldForChildren): issues beneath it still in the workflow, roots that rest on its approval
-	// still in the workflow, or open Dispatch children of it. heldBy names each issue of the first
-	// of them that holds it, in R8's order (retroHeldBy), as the retro-held notice and the refusal
-	// of a retry name them. Once none of them holds it in a tree that runs, the hold ends and the
-	// daemon starts the retro itself (workflow's StartHeldRetro). It stands below every
-	// word that speaks of the issue's tree, a Dispatch link or an ancestor, because each of those
-	// holds the issue whatever its own hold is, and above at_work and unclassified, which it read
-	// before it had a word of its own: at_work's sentence, that the issue's workers run, is false
-	// of an issue its hold stopped, and unclassified says that no rule names what the issue waits
-	// for, where this word names it.
+	// HeldForChildren): issues beneath it on its Dispatch chain still in the workflow, roots that
+	// rest on its approval still in the workflow, or open Dispatch children of it. heldBy names
+	// each issue of the first of them that holds it, in R8's order (retroHeldBy), as the
+	// retro-held notice and the refusal of a retry name them. Once none of them holds it in a tree
+	// that runs, the hold ends and the daemon starts the retro itself (workflow's StartHeldRetro).
+	// It stands below every word that speaks of the issue's chain, a Dispatch link or an issue
+	// above it, because each of those holds the issue whatever its own hold is, and above at_work
+	// and unclassified, which it read before it had a word of its own: at_work's sentence, that
+	// the issue's workers run, is false of an issue its hold stopped, and unclassified says that no
+	// rule names what the issue waits for, where this word names it.
 	HeldChildrenBeforeRetro HeldReason = "children_before_retro"
 	// HeldTaskStopped is an issue whose task was stopped, by its owner or by a failed step with no
 	// step to return to (HoldTaskStopped), and that keeps no slot where it stands: one held from
@@ -79,15 +93,16 @@ const (
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)` for an issue not standing in held: an issue
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
-	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
+	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only candidates in Legion's work, so the
 	// issues that read this word are the ones in accepting, retro or merging (InSlotlessPhase), whose
 	// sign-off, retro and merge run on no slot at all. An issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
 	// a parent held there for its children reads children_before_retro, a stopped task reads
 	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
-	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
-	// atWorkInSlotlessPhase), so `why` serves this word's sentence only to a member in accepting, retro or merging of
-	// a tree that runs nothing. This is the one statement of that; every other reader points here.
+	// clause). Of the issues that read it, one whose gate root runs is served no `why`
+	// (projection's atWorkInSlotlessPhase), so `why` serves this word's sentence only to an issue
+	// in accepting, retro or merging whose gate root runs nothing. This is the one statement of
+	// that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
 	// HeldUnclassified is an issue none of the words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
@@ -104,14 +119,18 @@ const (
 // body, and this list must follow that body's cases exactly, since a reorder here moves the
 // words that test requires of the table; a word added there is added here, to
 // `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`, and as a row of the table in
-// `skills/legion-controller/references/admission.md`.
+// `skills/legion-controller/references/admission.md`. tree_closed and tree_parked keep their
+// place though the ladder answers neither any more, so the words an older contract knows keep
+// their order.
 var HeldReasons = []HeldReason{
+	HeldChainUnknown,
 	HeldTreeClosed,
 	HeldTreeParked,
 	HeldLabelOff,
 	HeldAncestry,
 	HeldRootAwaitingPerson,
 	HeldAwaitingChildren,
+	HeldAwaitingTodo,
 	HeldDesignGate,
 	HeldDispatchBlocker,
 	HeldChildrenFirst,
@@ -138,89 +157,22 @@ func HeldBefore(word, other HeldReason) bool {
 // the state's admission.held and the controller's tick notice carry one shape rather than two
 // that could drift.
 //
-// heldBy is absent where no issue holds the one that waits — a root whose label is off, an issue
-// whose task was stopped, or an issue none of the other words is true of — so the field carries
-// omitempty and this row gets no MarshalJSON writing an empty array for it. That is the one way
-// the row differs from BlockedIssue, whose MarshalJSON writes [] for blockedBy because every row
-// of that list names at least one blocker and a reader of it would have to answer for a null.
+// heldBy is absent where no issue holds the one that waits — a root whose label is off, a run that
+// waits for a person's todo, an issue whose task was stopped, or an issue none of the other words
+// is true of — so the field carries omitempty and this row gets no MarshalJSON writing an empty
+// array for it. That is the one way the row differs from BlockedIssue, whose MarshalJSON writes []
+// for blockedBy because every row of that list names at least one blocker and a reader of it would
+// have to answer for a null.
 type HeldIssue struct {
 	Issue  string     `json:"issue"`
 	Reason HeldReason `json:"reason"`
 	HeldBy []string   `json:"heldBy,omitempty"`
 }
 
-// HeldFacts is everything the ladder reads beside the issue itself, built once by whoever
-// classifies: the pass that builds the line builds it at the top (Waiting) and the assembly
-// builds the same thing from the same calls (HeldList), so a drop site and the backstop that
-// answers for a candidate no drop site saw read one set of facts and give one answer.
-type HeldFacts struct {
-	// ByKey is the pass's own records by key, built over the whole issue list the pass was
-	// given rather than over the candidates, so that a parked or closed root among those
-	// records is found here and its tree's members read tree_parked or tree_closed.
-	ByKey map[string]Issue
-	// Live is the live roots (liveRoots), which the ancestry word reads: LineFacts carries no
-	// such set, and the word must be read against the same trees the line's own ancestry hold
-	// is read against.
-	Live map[string]struct{}
-	// Chain is the records the accepted-ancestor walk reads, chainOf(ByKey, LineFacts.Parents):
-	// the pass's one chain (passChain), the same map Waiting walks, so the word and the hold that
-	// caused it answer alike about one chain.
-	Chain map[string]Issue
-	// Facts is the pass's own facts, for the gates, the Dispatch blockers, the children-first
-	// rows and the moment the pass read the record (LineFacts.Now), which the tree_closed word
-	// reads a root's linger against.
-	Facts LineFacts
-}
-
-// treeRoot is the record of an issue's tree root as the ladder reads it: the pass's own records
-// first, then the roots its read leaves out (LineFacts.Roots, the roots a live read holds no
-// record of), so one lookup answers for both and no word has to know which of the two holds a
-// given root. A root neither map holds reads as not recorded, and the words that need the
-// root's own record pass over it.
-func (f HeldFacts) treeRoot(tree string) (Issue, bool) {
-	if root, recorded := f.ByKey[tree]; recorded {
-		return root, true
-	}
-	root, recorded := f.Facts.Roots[tree]
-	return root, recorded
-}
-
-// liveAncestry is the live roots an issue's Dispatch chain names that are not the issue itself
-// (Issue.Ancestry): the issues holding a root the ancestry word names. It is written over the
-// same clause as the ancestry skip of Waiting's queued-root loop, which is what puts such a root
-// out of the line, so a change to that hold moves this word with it.
-func liveAncestry(issue Issue, live map[string]struct{}) []string {
-	var under []string
-	for _, key := range issue.Ancestry {
-		if _, above := live[key]; above && key != issue.Key {
-			under = append(under, key)
-		}
-	}
-	return under
-}
-
-// reopensAtPromotion says whether root waits in the line for the promotion that opens its tree
-// while its design gate stands open: a re-admitted root whose tree's lifecycle is not open under
-// the workflow, which the gate leaves queued (ran, dispatch://INFRA-5471), or a root another tree
-// handed over carrying an open gate. Such a tree is closed until that promotion opens it, and its
-// members wait for it: Waiting's hold of an unopened tree's members (its unopened set, over
-// AwaitsPromotion) offers none of them a phase. It is written over QueuedRoot with no slot term,
-// and the two name the same roots wherever the gate is open: a queued root whose gate is open
-// holds no row the daemon granted it in this tree, since a promotion that granted one opened its
-// tree's lifecycle, after which an open gate makes the tree run, and the re-admission frees every
-// row of its tree from the generation before (admit's releaseTreeSlots); a root handed over
-// awaits its promotion whatever row it carries. Without this the ladder's gate word would pass
-// over them, the gate being open, and leave each at at_work or unclassified, which say that its
-// workers run or that no rule names its wait. A queued root whose gate is shut answers false, and
-// its members read design_gate as they always have.
-func reopensAtPromotion(root Issue, facts LineFacts) bool {
-	gate := facts.Gates[root.Key]
-	return gate.Open() && QueuedRoot(root, facts.Lifecycles[root.Key], gate)
-}
-
 // openChildren is the keys of the open Dispatch children of one wait on them — a children-first
-// wait (childWaits) or a started parent's (LineFacts.StartedParentWaits) — in the order that
-// judgement lists them (ChildWait.Open, Dispatch key order).
+// wait (childWaits), a started parent's (LineFacts.StartedParentWaits) or a parent's held before
+// its retro (RetroHolds.Open, retroHoldsOf) — in the order that judgement lists them
+// (ChildWait.Open, Dispatch key order).
 func openChildren(wait ChildWait) []string {
 	children := make([]string, len(wait.Open))
 	for i, child := range wait.Open {
@@ -229,31 +181,13 @@ func openChildren(wait ChildWait) []string {
 	return children
 }
 
-// openBeneathIn is the issues beneath a parent held before its retro that are still in the
-// workflow (OpenBeneath), the issues the release of its hold waits for, and nothing where none
-// is. They are read over the members of its tree among the records the pass walks its chains
-// over (chainOf): the pass's own records and the done ones above them, so a grandchild under a
-// child already done is beneath the parent here as it is in the workflow's read of the whole
-// tree, and the word names what the hold waits for.
-func openBeneathIn(issue Issue, chain map[string]Issue) []string {
-	members := make([]Issue, 0, len(chain))
-	for _, member := range chain {
-		if member.Tree == issue.Tree {
-			members = append(members, member)
-		}
-	}
-	if open := OpenBeneath(issue, members); len(open) > 0 {
-		return open
-	}
-	return nil
-}
-
 // RetroHolds is what a pass's facts show of the three holds on the acceptance of a parent held
-// before its retro (HoldForChildren), each by key: the issues beneath it still in the workflow
-// (Beneath, openBeneathIn), the roots still in the workflow that rest on its approval (Resting,
-// RestingRootsOn), and its open Dispatch children (Open, readChildWaits), the same three the
-// workflow reads to hold the parent and to release it (workflow's acceptanceHeld). ReadLineFacts
-// puts them together once for each such parent (LineFacts.RetroHolds, retroHoldsOf).
+// before its retro (HoldForChildren), each by key: the issues beneath it on its Dispatch chain
+// still in the workflow (Beneath, OpenBeneath over the pass's chains), the roots still in the
+// workflow that rest on its approval (Resting, RestingRootsOn), and its open Dispatch children
+// (Open, readChildWaits), the same three the workflow reads to hold the parent and to release it
+// (workflow's acceptanceHeld). ReadLineFacts puts them together once for each such parent
+// (LineFacts.RetroHolds, retroHoldsOf).
 type RetroHolds struct {
 	Beneath, Resting, Open []string
 }
@@ -264,32 +198,30 @@ func (h RetroHolds) None() bool {
 }
 
 // retroHoldsOf is the RetroHolds of each parent of held, the parents among the pass's own records
-// held before their retro (RetroHeldParents), by key: the issues beneath each, read over the
-// records the pass walks its chains over (pass, passChain: the pass's own records and the records
-// above them its read leaves out, LineFacts.Parents), the roots that rest on each (resting,
-// RestingRootsOn) and its open Dispatch children (children, readChildWaits). It builds nothing
-// where no parent is held so.
-func retroHoldsOf(pass *passChain, held []string, children map[string]ChildWait, resting map[string][]RestingRoot) map[string]RetroHolds {
+// held before their retro (RetroHeldParents), by key: the issues beneath each on its Dispatch
+// chain, read over chains, the pass's one chain (LineFacts.Chains), the roots that rest on each
+// (resting, RestingRootsOn) and its open Dispatch children (children, readChildWaits). It builds
+// nothing where no parent is held so.
+func retroHoldsOf(chains *Chains, held []string, children map[string]ChildWait, resting map[string][]RestingRoot) map[string]RetroHolds {
 	if len(held) == 0 {
 		return nil
 	}
-	own, chain := pass.own(), pass.chain()
 	holds := make(map[string]RetroHolds, len(held))
 	for _, key := range held {
 		roots := make([]string, len(resting[key]))
 		for i, root := range resting[key] {
 			roots[i] = root.Key
 		}
-		holds[key] = RetroHolds{Beneath: openBeneathIn(own[key], chain), Resting: roots, Open: openChildren(children[key])}
+		holds[key] = RetroHolds{Beneath: OpenBeneath(chains, key), Resting: roots, Open: openChildren(children[key])}
 	}
 	return holds
 }
 
 // retroHeldBy is what holds issue, a parent held before its retro (HoldForChildren), as heldBy
 // names it: the first of the three holds on its acceptance that holds it (LineFacts.RetroHolds),
-// in R8's order, as the workflow reads them (acceptanceHeld) — the issues beneath it, then the
-// roots that rest on its approval, then its open Dispatch children — each by key, and nothing
-// where none holds it, as in a tree that runs nothing yet.
+// in R8's order, as the workflow reads them (acceptanceHeld) — the issues beneath it on its
+// Dispatch chain, then the roots that rest on its approval, then its open Dispatch children — each
+// by key, and nothing where none holds it, as in a tree that runs nothing yet.
 func retroHeldBy(issue Issue, facts LineFacts) []string {
 	switch holds := facts.RetroHolds[issue.Key]; {
 	case len(holds.Beneath) > 0:
@@ -302,78 +234,94 @@ func retroHeldBy(issue Issue, facts LineFacts) []string {
 	return nil
 }
 
-// HeldReasonOf is the ladder of C1: the words read in one order, the first that is true of
-// the issue being its word, with the issues that clause names beside it and nothing where the
-// clause names none. The order is the whole of the rule — a member of a closed tree is
-// tree_closed and not design_gate, though its gate is shut too — and this body is the one
-// statement of it, so that the drop sites of the waiting line (Waiting) and the backstop that
-// answers for a candidate none of them saw (HeldList) cannot give one issue two words. A reader
-// that must walk the words in this order, or ask whether one word is read before another, reads
-// HeldReasons or HeldBefore, which is this body's order written out (HeldReasons says who reads
-// it and why the list must follow this body).
+// HeldReasonOf is the ladder of C1: the words read in one order, the first that is true of the
+// issue being its word, with the issues that clause names beside it and nothing where the clause
+// names none. The order is the whole of the rule — an issue whose chain is unknown is
+// chain_unknown and not design_gate, though a gate above it may be shut too — and this body is
+// the one statement of it, so that the drop sites of the waiting line (Waiting) and the backstop
+// that answers for a candidate none of them saw (HeldList) cannot give one issue two words. A
+// reader that must walk the words in this order, or ask whether one word is read before another,
+// reads HeldReasons or HeldBefore, which is this body's order written out (HeldReasons says who
+// reads it and why the list must follow this body).
 //
 // The state and the controller's tick both read it, over the same candidates and the same facts,
-// so one issue reads one word wherever it is read.
+// so one issue reads one word wherever it is read. Every word that speaks of where the issue
+// stands reads the pass's chains (LineFacts.Chains) and nothing of the daemon's stored tree (R15
+// of dispatch://INFRA-3320): chain_unknown first, since R16 lists an issue on an unknown chain
+// held with that word whatever else holds it, and the chain is what every later word reads; then
+// the three holds of an issue under a parent that R19 names, each with the issue that holds it.
+// Where an issue above it stands in its retro or its merge, the issue reads accepted_ancestor
+// even when its parent is out of work too: R21 reads an issue under a done parent under an issue
+// in merging as held accepted_ancestor (INFRA-500 under INFRA-430) and one under a done parent
+// under an issue at work as held ancestry (INFRA-1238 under INFRA-7), so the ancestry word stands
+// aside for the stronger hold and the words keep their order.
 //
-// Status is the daemon's own status field throughout, never DispatchStatus: it is what
-// OutOfWorkflow reads, and what the linger's hand-over of a closed tree's members reads, so a
-// word that says a tree is closed and a release that acts on it agree. The linger the first word
-// reads is the one still running at the moment the pass read the record (Lingering,
-// LineFacts.Now), never Issue.Lingers, which stays true for ever once a deadline was armed: every
-// park arms one (workflow's beginLinger) and nothing but a re-admission clears it, so the broader
-// reading would give every parked tree's member tree_closed and leave tree_parked unreachable.
-func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
-	root, recorded := facts.treeRoot(issue.Tree)
-	// Each of these is read where its own word is, and not before it: the ancestry scan, the
-	// chain walk and the two map reads cost nothing for an issue an earlier word answers for,
-	// which on a project of hundreds of records is most of them.
+// holds says whether the issue holds a slot row of the pass, which only awaiting_todo reads: a run
+// whose promotion has started its architect holds its row, and waits for no todo.
+func HeldReasonOf(issue Issue, holds bool, facts LineFacts) (HeldReason, []string) {
+	chains := facts.Chains
+	chain := chains.Chain(issue.Key)
+	if !chain.Known() {
+		return HeldChainUnknown, []string{chain.At}
+	}
+	// Each of these is read where its own word is, and not before it: the chain is walked once
+	// and kept (Chains), and an issue an earlier word answers for, which on a project of hundreds
+	// of records is most of them, reads nothing more of it. The accepted issue above is read once,
+	// for the ancestry word and for its own (acceptedAncestorHolding).
+	above := chains.Above(issue.Key)
+	accepted := acceptedAncestorHolding(chains, issue)
 	switch {
-	case recorded && (root.Status == DoneStatus || Lingering(root, facts.Facts.Now) ||
-		(!claim.IsTreeRoot(issue.Key, issue.Tree) && reopensAtPromotion(root, facts.Facts))):
-		return HeldTreeClosed, []string{issue.Tree}
-	case recorded && (root.Status == "backlog" || root.Status == "icebox"):
-		return HeldTreeParked, []string{issue.Tree}
-	case claim.IsTreeRoot(issue.Key, issue.Tree) && !issue.HandedOver:
+	case len(above) == 0 && !issue.HandedOver:
 		return HeldLabelOff, nil
+	case len(above) > 0 && above[0] != chain.Links[0] && accepted == "":
+		// The issue that holds it is the nearest one above it in Legion's work, past the parent
+		// out of work (R21 of dispatch://INFRA-3320: INFRA-1238 held ancestry under INFRA-7).
+		return HeldAncestry, []string{above[0]}
 	}
-	if ancestry := liveAncestry(issue, facts.Live); len(ancestry) > 0 {
-		return HeldAncestry, ancestry
+	top := chains.TopIssue(issue.Key)
+	if record, recorded := chains.Record(top); recorded && record.AwaitingPerson() {
+		return HeldRootAwaitingPerson, []string{top}
 	}
-	// Both words speak of the issue's tree root's own record, so both ask that the record is
-	// held: a root the pass's issues leave out is read by ReadTreeRoots into LineFacts.Roots,
-	// and one neither map holds is a root nothing records at all. Unguarded, the gate word
-	// answered for such an issue whatever its tree says — the pass reads a gate for the roots
-	// among its own issues and for the roots it read beside them (ReadLineFacts), so a root
-	// nothing records has none, and TreeGate.Open() over no rows is false — so the issue read
-	// design_gate, held by a key no record holds, where C2 puts it under unclassified. Only
-	// these two are guarded: tree_closed and tree_parked ask the same of the record above, and
-	// every word below reads facts of the issue itself, so an issue with no recorded root that
-	// a Dispatch link holds still reads dispatch_blocker, which is C1's order (the architect's
-	// ruling of 2026-11-12T07:28Z on dispatch://INFRA-3107).
-	switch {
-	case recorded && root.AwaitingPerson():
-		return HeldRootAwaitingPerson, []string{issue.Tree}
 	// A parent that held a phase start because a child of it is still open stands here on its own
-	// phase (awaiting_children), not on its tree's: it reads before design_gate, since its wait is
-	// its open children and not its gate. The children that hold it are the started parents'
-	// judgement (LineFacts.StartedParentWaits), the one the admission pass moves it and brings it
-	// back by; a parent whose last open child has gone since stands with no issue beside it until
-	// the pass takes it back to the step its return takes (ReturnStep).
-	case issue.Phase == phase.AwaitingChildren:
-		return HeldAwaitingChildren, openChildren(facts.Facts.StartedParentWaits[issue.Key])
-	case recorded && !facts.Facts.Gates[issue.Tree].Open():
-		return HeldDesignGate, []string{issue.Tree}
+	// phase (awaiting_children), not on a gate: it reads before design_gate, since its wait is its
+	// open children and not a gate. The children that hold it are the started parents' judgement
+	// (LineFacts.StartedParentWaits), the one the admission pass moves it and brings it back by; a
+	// parent whose last open child has gone since stands with no issue beside it until the pass
+	// takes it back to the step its return takes (ReturnStep).
+	if issue.Phase == phase.AwaitingChildren {
+		return HeldAwaitingChildren, openChildren(facts.StartedParentWaits[issue.Key])
 	}
-	if blockedBy := facts.Facts.Held[issue.Key]; len(blockedBy) > 0 {
+	// A run that starts as a root's does waits for a person's todo (LineFacts.AwaitsTodo) before
+	// its gate: its own design gate stands shut, since no architect has designed it yet or a new run
+	// cleared it, and the architect that designs it starts only once a todo queues the run, so the
+	// todo is read before design_gate and before the links and children read after it. The words
+	// read before it stay before it: an unknown chain, which every word after it reads; a root
+	// whose label is off, which a todo does not hand over; and R19's holds of an issue under a
+	// parent. An issue the chain holds where it stands, by those holds or by accepted_ancestor read
+	// below, is no queued root at todo either (LineFacts.Queued), so it never reads this word: what
+	// it waits for is its hold. It stands after awaiting_children, which no issue at admitted
+	// reads.
+	if facts.AwaitsTodo(issue, holds) {
+		return HeldAwaitingTodo, nil
+	}
+	// The gates above an issue and its own hold its first start (R19 of dispatch://INFRA-3320), so
+	// they hold an issue at admitted alone: an issue already at work started past them, and a gate
+	// that shut above it later, as one above a root that got a parent at work, holds none of it.
+	if issue.Phase == phase.Admitted {
+		if shut := facts.ShutGates(issue.Key); len(shut) > 0 {
+			return HeldDesignGate, shut
+		}
+	}
+	if blockedBy := facts.Held[issue.Key]; len(blockedBy) > 0 {
 		return HeldDispatchBlocker, blockedBy
 	}
-	if children := facts.Facts.ChildWaits[issue.Key]; len(children.Open) > 0 {
+	if children := facts.ChildWaits[issue.Key]; len(children.Open) > 0 {
 		return HeldChildrenFirst, openChildren(children)
 	}
-	// The ancestor is read through the rule that holds such an issue where it stands
-	// (acceptedAncestorHolding, which HeldUnderAccepted answers yes or no with), so the word
-	// and the hold that caused it name one ancestor and the chain is walked once.
-	if accepted := acceptedAncestorHolding(issue, facts.Chain); accepted != "" {
+	// The ancestor is the one the rule that holds such an issue where it stands names
+	// (acceptedAncestorHolding, which HeldUnderAccepted answers yes or no with), read above, so
+	// the word and the hold that caused it name one ancestor.
+	if accepted != "" {
 		return HeldAcceptedAncestor, []string{accepted}
 	}
 	// The two holds an owner's plan makes stand here, below every word above, each of which holds
@@ -382,7 +330,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 	// one that holds no slot row there is the gap unclassified reports.
 	switch {
 	case HeldForChildren(issue):
-		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts.Facts)
+		return HeldChildrenBeforeRetro, retroHeldBy(issue, facts)
 	case HeldFor(issue, HoldTaskStopped) && !KeepsSlot(issue):
 		return HeldTaskStopped, nil
 	}
@@ -402,32 +350,31 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // nor the waiting line, with the word for why. It is the one assembly, and the state and the
 // tick both call it, so the two lists are built alike from the two readers' own records.
 //
-// issues is the same list the caller gave Waiting, and the candidates are the records of it the
-// daemon holds in the workflow (InWorkflow, its own name for that): the facts are built over
-// the whole list, so a closed or parked root among the records is found, and only a candidate
-// takes a row. Both callers ask the same of their candidates, so the filter is read here and
-// neither has to remember it. dropped is what the pass left behind (Waiting's second answer),
-// and line is the line it built.
+// issues is the same list the caller gave Waiting, and the candidates are the records of it in
+// Legion's work (InLegionsWork, R21 of dispatch://INFRA-3320: every issue in Legion's work has one
+// place). Both callers ask the same of their candidates, so the filter is read here and neither
+// has to remember it. dropped is what the pass left behind (Waiting's second answer), and line
+// is the line it built.
 //
 // A key a slot row names and a key the line names take no row: the active set and the waiting
 // line already hold them, and a deferral the other loop went on to place is dropped here. The
 // first row dropped holds for a key is the one kept, so an issue two loops passed over keeps the
 // word of the first site that left it behind. A candidate dropped names nowhere reads the ladder
-// here (HeldReasonOf) over the same facts the drop sites read — the pass's one chain (passChain),
-// one queuedRoots and one liveRoots, as Waiting makes them — which is what gives an issue the pass
-// never saw as a candidate its place, the unclassified row of C2 among them.
+// here (HeldReasonOf) over the same facts the drop sites read, the pass's one chain
+// (LineFacts.Chains) among them, holding no slot row since a slot holder takes no row, which is
+// what gives an issue the pass never saw as a candidate its place, the unclassified row of C2
+// among them.
+//
+// An issue the daemon records nothing of, which the copy shows todo on a chain that is unknown,
+// takes a row too, with chain_unknown and the link the chain stopped at (R16 of
+// dispatch://INFRA-3320): nothing records it, since no root and no issue under a parent can be
+// told apart on such a chain, and the held list is where a reader sees that it waits for the
+// daemon to read Dispatch again. A todo issue on a known chain takes no row here: the admission
+// pass records it, as a root or under its parent, and the list names it once it does.
 //
 // The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
 // order.
 func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
-	pass := passOver(issues, facts)
-	queued := queuedRoots(issues, facts)
-	held := HeldFacts{
-		ByKey: pass.own(),
-		Live:  liveRoots(issues, facts, queued),
-		Chain: pass.chain(),
-		Facts: facts,
-	}
 	placed := make(map[string]struct{}, len(slots)+len(line))
 	for _, slot := range slots {
 		placed[slot.Issue] = struct{}{}
@@ -443,7 +390,7 @@ func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssu
 	}
 	rows := make([]HeldIssue, 0, len(issues))
 	for _, issue := range issues {
-		if !InWorkflow(issue) {
+		if !InLegionsWork(issue) {
 			continue
 		}
 		if _, stands := placed[issue.Key]; stands {
@@ -451,10 +398,15 @@ func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssu
 		}
 		row, named := reported[issue.Key]
 		if !named {
-			reason, heldBy := HeldReasonOf(issue, held)
+			reason, heldBy := HeldReasonOf(issue, false, facts)
 			row = HeldIssue{Issue: issue.Key, Reason: reason, HeldBy: heldBy}
 		}
 		rows = append(rows, row)
+	}
+	for _, key := range facts.Chains.unrecordedTodo() {
+		if chain := facts.Chains.Chain(key); !chain.Known() {
+			rows = append(rows, HeldIssue{Issue: key, Reason: HeldChainUnknown, HeldBy: []string{chain.At}})
+		}
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Issue < rows[j].Issue })
 	return rows

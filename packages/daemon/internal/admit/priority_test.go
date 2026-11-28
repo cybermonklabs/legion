@@ -19,7 +19,7 @@ import (
 // every fact before admission, as the daemon's own chain does.
 func priorityEngine() *workflow.Engine {
 	return workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+		Clock: func() time.Time { return fixedNow }}, nil)
 }
 
 // A root admission records and a child its tree records each take the issue's own Dispatch
@@ -67,6 +67,11 @@ func TestAPriorityOnlyEventIsRecordedAtTheSameStatus(t *testing.T) {
 	if got := issue(t, pool, "LEGION-2"); got.Priority != record.NoPriority || got.LastDispatchSeq != 3 {
 		t.Fatalf("the record after the priority was taken off carries %v at sequence %d, want none at 3", got.Priority, got.LastDispatchSeq)
 	}
+	apply(t, pool, admission, "old-priority", intake.DispatchIssue{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
+		Title: "LEGION-2", Rank: "B", Priority: record.P0, HandedOver: handed}, engine)
+	if got := issue(t, pool, "LEGION-2"); got.Priority != record.NoPriority || got.LastDispatchSeq != 3 {
+		t.Fatalf("the older fact replaced the newer null: %+v", got)
+	}
 }
 
 // The boot listing carries each issue's priority too: an unrecorded root it admits is recorded
@@ -91,19 +96,17 @@ func TestTheBootListingRecordsTheIssuesPriority(t *testing.T) {
 	}
 }
 
-// A lingering root a person sets back to todo is re-admitted as a new generation that takes the
-// priority its todo shows, as it takes the todo's rank.
-func TestAReadmittedRootTakesThePriorityItsTodoShows(t *testing.T) {
+// A closed root's next run takes the priority on the todo that opens it.
+func TestANewRunTakesThePriorityItsTodoShows(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	engine := priorityEngine()
-	const key = "LEGION-LINGER"
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering",
-		Tree: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", Priority: record.P2, LingerUntil: &until, LastDispatchSeq: 1})
+	const key = "LEGION-CLOSED"
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "closed",
+		Tree: key, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: "A", Priority: record.P2, LastDispatchSeq: 1})
 
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
-		Title: "lingering", Rank: "A", Priority: record.P0, HandedOver: handed}, engine)
+		Title: "closed", Rank: "A", Priority: record.P0, HandedOver: handed}, engine)
 	readmitted := issue(t, pool, key)
 	if readmitted.Generation != 2 || readmitted.Priority != record.P0 {
 		t.Fatalf("the re-admitted root is at generation %d carrying %v, want generation 2 at P0", readmitted.Generation, readmitted.Priority)

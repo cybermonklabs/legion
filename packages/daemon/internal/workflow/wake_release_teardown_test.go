@@ -64,8 +64,8 @@ func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
 	}
 	teardownDecision := func(t *testing.T, st *store.Store, teardown int64) store.ReleaseDecision {
 		t.Helper()
-		decision, err := st.IssueRelease(context.Background(), wakeProjectToken(t), store.IssueReleased{Issue: "LEGION-208", Tree: "LEGION-208",
-			IssueGeneration: wakeIssueGeneration, TreeGeneration: wakeIssueGeneration, Row: teardown}, record.OutOfWorkflow)
+		decision, err := st.IssueRelease(context.Background(), wakeProjectToken(t), store.IssueReleased{Issue: "LEGION-208",
+			Generation: wakeIssueGeneration, Row: teardown}, record.OutOfWorkflow)
 		if err != nil {
 			t.Fatalf("the release's teardown decision: %v", err)
 		}

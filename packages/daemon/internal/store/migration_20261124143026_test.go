@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
@@ -89,7 +91,7 @@ func TestAReleaseMarkNotesItsTeardownWith20261124143026(t *testing.T) {
 	// rootIssue stands above.
 	fresh := migratedStore(t)
 	openRunningTree(t, fresh)
-	if marked, err := fresh.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	if marked, err := fresh.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: []IdleReleaseRow{{Kind: "issue_release",
 			Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`), Boundary: true}}}, nil
 	}); err != nil || !marked {

@@ -213,8 +213,9 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 // ancestor has left R1's first condition, that leave first. The step stays closed, registered on
 // the root's own document with no basis and resting on nothing, the root's architect gets a
 // basis-ended notice that names the act and who made it, and the ancestor's architect a
-// resting-root notice of the end: also where the ancestor is the root of its own tree, set done,
-// whose tree lingers once the seed reads. An ancestor the daemon records no tree of is told
+// resting-root notice of the end: also where the ancestor, set done, has left Legion's work by
+// the time the seed reads, as a root or as a child of another issue, since the daemon still
+// records it on a known chain (ancestorRecorded). An ancestor the daemon does not record is told
 // nothing, of the registration or of the end.
 func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 	t.Parallel()
@@ -243,11 +244,11 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 		actor   string
 		version int
 		changes int
-		// member records LEGION-100 as a member issue of another live tree, LEGION-090, rather
-		// than as the root of its own.
+		// member records LEGION-100 as a child of another issue in Legion's work, LEGION-090, on
+		// its Dispatch chain, rather than as a root.
 		member bool
-		// unrecorded leaves LEGION-100 an issue the daemon does not record, so it records no tree
-		// of it, from before the registration.
+		// unrecorded leaves LEGION-100 an issue the daemon does not record, so its chain is
+		// unknown, from before the registration.
 		unrecorded bool
 	}{
 		{name: "a changes request on the ancestor's version", fact: changes, read: new(currentRead(changes)),
@@ -265,10 +266,10 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 		{name: "the ancestor's close, which withdraws the request, read after its reopen", fact: closed(basisPerson),
 			read: new(closedBy(basisPerson, ancestorAtWork)), act: closedSentence("user:alice"), actor: "user:alice"},
 		{name: "the ancestor done", fact: ancestorAt("done", true), read: shown("done", true), act: "Dispatch shows LEGION-100 done"},
-		{name: "the ancestor done, a member issue of another live tree", fact: intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated",
+		{name: "the ancestor done, a child of another issue at work", fact: intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated",
 			Status: "done", Title: "ancestor", Rank: "T", HandedOver: true, Parent: "LEGION-090"}, read: shown("done", true),
 			act: "Dispatch shows LEGION-100 done", member: true},
-		{name: "the ancestor done, with no tree the daemon records", fact: ancestorAt("done", true), read: shown("done", true),
+		{name: "the ancestor done, an issue the daemon does not record", fact: ancestorAt("done", true), read: shown("done", true),
 			act: "Dispatch shows LEGION-100 done", unrecorded: true},
 		{name: "the ancestor in Dispatch's retro", fact: ancestorAt("retro", true), read: shown("retro", true), act: "Dispatch shows LEGION-100 retro"},
 		{name: "the ancestor without the legion label", fact: ancestorAt("in_progress", false), read: shown("in_progress", false),
@@ -298,7 +299,6 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 				seedIssue(t, pool, record.Issue{Key: "LEGION-090", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 					Tree: "LEGION-090", Project: "LEGION", Title: "tree", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "S",
 					HandedOver: true, LastDispatchSeq: 1})
-				seedTreeLifecycle(t, pool, "LEGION-090")
 				seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 					Tree: "LEGION-090", Parent: new("LEGION-090"), Project: "LEGION", Title: "ancestor", Phase: phase.Planning, Generation: 1,
 					Status: "in_progress", Rank: "T", HandedOver: true, LastDispatchSeq: 1})
@@ -393,7 +393,6 @@ func TestTheAncestorsMoveIntoMergingEndsAPendingBasis(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "T",
 		HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "claim"})
 	waiting := pendingBasis()
 	waiting.RegisteredAt = basisEngineNow
@@ -788,12 +787,15 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 		accept func(t *testing.T, pool *pgxpool.Pool)
 		act    string
 	}{
+		// The daemon moved it into retro while the board still shows needs_review: the record is
+		// what answers.
 		{"the daemon records it in retro", func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "T",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", DispatchStatus: "needs_review", Rank: "T",
 				HandedOver: true, LastDispatchSeq: 1})
 		}, "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
-		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { seedMirror(t, pool, basisAncestor, "done") },
+		// Above the sequence of the copy row the live ancestor's seed wrote.
+		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { mirrorChild(t, pool, basisAncestor, "", "done", 5) },
 			"Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -815,6 +817,62 @@ func TestThePendingBasisReadOpensNoStepOnAnAcceptedAncestor(t *testing.T) {
 	}
 }
 
+// The pending-basis seed that ends a wait on an ancestor that has left Legion's work since the
+// registration (it closed as done, or went to the backlog and lost the legion label) runs after
+// that ancestor's own leave. The end of the wait is still told to the ancestor's architect as a
+// resting-root notice, which the outbox delivers by the owner walk and finishes undelivered where
+// no architect holds its role; a wait on an ancestor the daemon does not record tells nobody.
+func TestTheEndOfAPendingWaitIsToldToAnAncestorThatLeftLegionsWork(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		leave    func(t *testing.T, pool *pgxpool.Pool)
+		ancestor intake.AncestorRead
+		told     int
+	}{
+		{"the ancestor closed as done", func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Done, Generation: 1, Status: "done", Rank: "T",
+				HandedOver: true, LastDispatchSeq: 2})
+		}, intake.AncestorRead{Status: record.DoneStatus, HandedOver: true}, 2},
+		{"the ancestor on the backlog without the legion label", func(t *testing.T, pool *pgxpool.Pool) { seedAncestorOnTheBacklog(t, pool) },
+			intake.AncestorRead{Status: "backlog", HandedOver: false}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool, _, apply := registeredPending(t)
+			tc.leave(t, pool)
+
+			apply("read", seedRead(requestOpen(), tc.ancestor))
+
+			ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
+			if len(ended) != 1 {
+				t.Fatalf("basis-ended notices = %#v, want the one that ended the wait", ended)
+			}
+			resting := noticesOfKind(t, pool, basisAncestor, "resting-root")
+			if len(resting) != tc.told || !strings.HasPrefix(resting[tc.told-1].Reason, ended[0].Reason) {
+				t.Fatalf("resting-root notices = %#v, want the registration's and an end that tells %q", resting, ended[0].Reason)
+			}
+		})
+	}
+
+	t.Run("an ancestor the daemon does not record", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		apply := applyFacts(t, pool, engine)
+		seedGatedTree(t, pool)
+		apply("register-pending", onBasis(pendingBasis(), 6))
+
+		apply("read", closedBy(basisPerson, ancestorAtWork))
+
+		if got := noticesOfKind(t, pool, gatedRoot, "basis-ended"); len(got) != 1 {
+			t.Fatalf("basis-ended notices = %#v, want the one that ended the wait", got)
+		}
+		if got := noticesOfKind(t, pool, basisAncestor, "resting-root"); len(got) != 0 {
+			t.Fatalf("resting-root notices = %#v, want none for an ancestor the daemon does not record", got)
+		}
+	})
+}
+
 // The person's approval of the ancestor's version a step waits on, arriving as its live event,
 // queues the step's pending-basis seed, whose read opens no step on an ancestor that has left R1's
 // first condition: as the daemon's own store shows it, recorded in its retro or shown done by the
@@ -829,12 +887,15 @@ func TestAnApprovalEventOpensNoPendingStepOnAnAncestorThatLeftR1(t *testing.T) {
 		ancestor intake.AncestorRead
 		act      string
 	}{
+		// The daemon moved it into retro while the board still shows needs_review: the record is
+		// what answers.
 		{"the daemon records it in retro", func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "T",
+				Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Retro, Generation: 1, Status: "retro", DispatchStatus: "needs_review", Rank: "T",
 				HandedOver: true, LastDispatchSeq: 1})
 		}, ancestorAtWork, "The daemon records LEGION-100 in retro, so LEGION-100 is accepted."},
-		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { seedMirror(t, pool, basisAncestor, "done") },
+		// Above the sequence of the copy row the live ancestor's seed wrote.
+		{"the mirror of Dispatch shows it done", func(t *testing.T, pool *pgxpool.Pool) { mirrorChild(t, pool, basisAncestor, "", "done", 5) },
 			ancestorAtWork, "Dispatch shows LEGION-100 done, so LEGION-100 is accepted."},
 		{"the read shows it without the legion label", func(*testing.T, *pgxpool.Pool) {}, intake.AncestorRead{Status: "in_progress"},
 			"LEGION-100 no longer carries the legion label."},

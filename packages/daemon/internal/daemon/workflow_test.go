@@ -22,14 +22,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
 
-// linger_hours and production_check_hours reach the workflow engine as the durations they name, a
-// decimal included: the Stage 4b proof lingers 0.3 hours so a tree closes inside one run, and an
-// hour count truncated to zero would reach the engine as no linger at all, closing a finished tree
-// the moment it ends, or as no check bound, which the engine's default would then stand in for.
-func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
+// A decimal production_check_hours reaches the engine as the duration it names
+// (engineConfig): the bound of a production check's look is the file's, not a default.
+func TestProductionCheckHoursReachesTheEngineAsItsDuration(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
-	body := "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nlinger_hours: 0.3\nproduction_check_hours: 0.1\n"
+	body := "project: DEMO\nstate_dir: /var/lib/legion\npostgres_dsn: postgres://legion@127.0.0.1:5432/legion\nproduction_check_hours: 0.1\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,12 +35,7 @@ func TestLingerHoursReachesTheEngineAsItsDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadForValidation: %v", err)
 	}
-
-	engine := engineConfig(cfg, "legion-reviewer[bot]", nil)
-	if engine.Linger != 18*time.Minute {
-		t.Errorf("the engine's linger = %s, want 18m0s", engine.Linger)
-	}
-	if engine.ProductionCheckBound != 6*time.Minute {
+	if engine := engineConfig(cfg, "legion-reviewer[bot]", nil); engine.ProductionCheckBound != 6*time.Minute {
 		t.Errorf("the engine's production check bound = %s, want 6m0s", engine.ProductionCheckBound)
 	}
 }
@@ -121,7 +114,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 		"no review login":        {appauth.Implement: "legion-implementer[bot]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", dispatch.BearerTransport("dispatch-token", nil), nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, time.Now, nil, nil)
+			_, err := openWorkflow(context.Background(), cfg, nil, "project-id", dispatch.BearerTransport("dispatch-token", nil), nil, newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, github, nil, nil, time.Now, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "the workflow needs two different Apps") {
 				t.Fatalf("openWorkflow = %v, want the two-Apps refusal", err)
 			}

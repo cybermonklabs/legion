@@ -12,11 +12,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// An issue's memory group is its tree's, read off the assignment of the experiment named
-// `memory` recorded against the tree's root, and only where that row records a draw: the root
-// and every issue of its tree are shown the group, the mode it was drawn under and the instant
-// of the draw, a done issue included, and an issue of a tree no draw has reached is shown none
-// of the three. There is no ancestor walk: a record's Tree is its root's key.
+// An issue's memory group is read off the assignment of the experiment named `memory` the issue
+// holds itself, and only where that row records a draw (R17 of dispatch://INFRA-3320: a tree-unit
+// draw stays as it was drawn, and an issue takes its own copy of the draw it runs under at its
+// first start). A root and every issue that took its copy are shown the group, the mode it was
+// drawn under and the instant of the draw, a done issue included, and an issue that holds no row
+// is shown none of the three, whatever stands above it: the state walks no chain for it.
 //
 // The two classes the old issues.memory_* columns told apart are told apart by the instant. A
 // row that records a draw fills all three whatever arm it drew: the control arm `none` and the
@@ -25,7 +26,7 @@ import (
 // read. A row with no instant — a hand-over settling a tree at no arm — fills none of the
 // three, as the empty memory_group of such a tree filled none of them: a tree that answered
 // nothing goes on answering nothing, and its assignment carries the settled row all the same.
-func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
+func TestProjectShowsEveryIssueItsOwnMemoryDraw(t *testing.T) {
 	drawnAt := projectedAt.Add(-48 * time.Hour)
 	issue := func(key, tree string, at phase.Phase, status, rank string) record.Issue {
 		return record.Issue{
@@ -33,23 +34,29 @@ func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
 			Phase: at, Status: status, Rank: rank, HandedOver: true,
 		}
 	}
+	drawn := []record.Assignment{{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt}}
 	store := projectionStore{
 		issues: []record.Issue{
 			issue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "A"),
-			// A child of that tree, and a done child of it: both run with what their root was
-			// drawn into, and neither holds a row of its own.
+			// A child of that root, and a done child of it: each took its own copy of the draw
+			// at its first start.
 			issue("LEGION-209", "LEGION-208", phase.Admitted, "in_progress", "B"),
 			issue("LEGION-210", "LEGION-208", phase.Done, "done", "C"),
-			// A tree first opened before the setting existed: no row, so no group.
+			// A root first opened before the setting existed: no row, so no group.
 			issue("LEGION-211", "LEGION-211", phase.Implementing, "in_progress", "D"),
-			// A tree the mode drew the other way, one an experiment at mode off drew no arm
+			// A root the mode drew the other way, one an experiment at mode off drew no arm
 			// for, and one a hand-over settled at no arm at all.
 			issue("LEGION-212", "LEGION-212", phase.Implementing, "in_progress", "E"),
 			issue("LEGION-213", "LEGION-213", phase.Implementing, "in_progress", "F"),
 			issue("LEGION-214", "LEGION-214", phase.Implementing, "in_progress", "G"),
+			// A child of LEGION-212 that holds no row of its own: it is shown nothing of the
+			// draw above it.
+			issue("LEGION-215", "LEGION-212", phase.Admitted, "in_progress", "H"),
 		},
 		assignments: map[string][]record.Assignment{
-			"LEGION-208": {{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt}},
+			"LEGION-208": drawn,
+			"LEGION-209": drawn,
+			"LEGION-210": drawn,
 			"LEGION-212": {{Experiment: "memory", Unit: "tree", Variant: "none", Mode: "random", DrawnAt: &drawnAt}},
 			"LEGION-213": {{Experiment: "memory", Unit: "tree", Mode: "off", DrawnAt: &drawnAt}},
 			"LEGION-214": {{Experiment: "memory", Unit: "tree", Carried: true}},
@@ -64,13 +71,17 @@ func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
 		view := got.Issues[key]
 		if view.MemoryGroup != "memory" || view.MemoryDrawMode != "random" ||
 			view.MemoryDrawnAt == nil || !view.MemoryDrawnAt.Equal(drawnAt) {
-			t.Errorf("%s = group %q drawn as %q at %v, want its root's memory, random, %s",
+			t.Errorf("%s = group %q drawn as %q at %v, want the memory, random, %s it holds",
 				key, view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt, drawnAt)
 		}
 	}
 	if view := got.Issues["LEGION-211"]; view.MemoryGroup != "" || view.MemoryDrawMode != "" || view.MemoryDrawnAt != nil {
-		t.Errorf("the undrawn tree's root = group %q drawn as %q at %v, want none of the three",
+		t.Errorf("the undrawn root = group %q drawn as %q at %v, want none of the three",
 			view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt)
+	}
+	if view := got.Issues["LEGION-215"]; view.MemoryGroup != "" || view.MemoryDrawMode != "" || view.MemoryDrawnAt != nil || view.Assignments != nil {
+		t.Errorf("the child that holds no row = group %q drawn as %q at %v under %+v, want none of them: the state reads the issue's own rows",
+			view.MemoryGroup, view.MemoryDrawMode, view.MemoryDrawnAt, view.Assignments)
 	}
 	if view := got.Issues["LEGION-212"]; view.MemoryGroup != "none" || view.MemoryDrawMode != "random" ||
 		view.MemoryDrawnAt == nil || !view.MemoryDrawnAt.Equal(drawnAt) {
@@ -99,10 +110,11 @@ func TestProjectShowsEveryIssueItsTreeRootsMemoryDraw(t *testing.T) {
 // The three memory fields of a tree of a project that writes no `memory` block and declares no
 // experiment of its own — the deployment this fleet runs. Such a project declares the memory
 // experiment at mode off (config.Project.ExperimentsDeclared), so admission records each new
-// tree at no arm under the word `off` with the instant of the draw, and this is the row's own
-// shape. The state answers the group `none` under the mode `off` with that instant, for the
-// root and for every issue of its tree, which is what it answered for such a tree before any
-// experiment was declared: a reader counting the trees a group reached counts the same trees.
+// root at no arm under the word `off` with the instant of the draw, and each issue that starts
+// under it takes its own copy of that row (R17 of dispatch://INFRA-3320). The state answers the
+// group `none` under the mode `off` with that instant, for the root and for each issue holding
+// the copy, which is what it answered for such a tree before any experiment was declared: a
+// reader counting the trees a group reached counts the same trees.
 func TestProjectAnswersTheMemoryFieldsOfAProjectThatDeclaresNothing(t *testing.T) {
 	drawnAt := projectedAt.Add(-48 * time.Hour)
 	issue := func(key, tree, rank string) record.Issue {
@@ -116,10 +128,12 @@ func TestProjectAnswersTheMemoryFieldsOfAProjectThatDeclaresNothing(t *testing.T
 			issue("LEGION-208", "LEGION-208", "A"),
 			issue("LEGION-209", "LEGION-208", "B"),
 		},
-		// The row admission writes for such a tree: the experiment named memory, for the unit
-		// tree, at no variant, under the word off, at the instant of the draw.
+		// The row admission writes for such a root: the experiment named memory, for the unit
+		// tree, at no variant, under the word off, at the instant of the draw; and the child's
+		// own copy of it.
 		assignments: map[string][]record.Assignment{
 			"LEGION-208": {{Experiment: config.MemoryExperimentName, Unit: "tree", Mode: string(config.ExperimentOff), DrawnAt: &drawnAt}},
+			"LEGION-209": {{Experiment: config.MemoryExperimentName, Unit: "tree", Mode: string(config.ExperimentOff), DrawnAt: &drawnAt}},
 		},
 	}
 
@@ -137,11 +151,11 @@ func TestProjectAnswersTheMemoryFieldsOfAProjectThatDeclaresNothing(t *testing.T
 	}
 }
 
-// Every assignment that applies to an issue is on its view: its tree's, for an experiment whose
-// unit is the tree, and its own, for one whose unit is the issue. A root's own key holds both
-// kinds and every row of it applies to the root itself; a child takes its root's tree rows and
-// its own issue rows, and no issue row of its root's and no tree row of a sibling's. An issue no
-// row applies to carries none, which leaves the key off the wire.
+// Every assignment an issue holds is on its view, of either unit: the tree-unit rows an issue
+// took its own copy of at its first start (R17 of dispatch://INFRA-3320) and the issue-unit rows
+// drawn for it. A root's own key holds both kinds; a child shows its own copies and its own issue
+// rows, and no issue row of its root's. An issue that holds no row carries none, which leaves the
+// key off the wire.
 func TestProjectShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 	drawnAt := projectedAt.Add(-48 * time.Hour)
 	issue := func(key, tree string, rank string) record.Issue {
@@ -157,15 +171,19 @@ func TestProjectShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 			issue("LEGION-210", "LEGION-208", "C"),
 			issue("LEGION-211", "LEGION-211", "D"),
 		},
-		// The root's key holds the tree experiment its whole tree runs under and the issue
-		// experiment drawn for the root itself; each child holds its own issue row, and
-		// LEGION-210 holds none, so it runs under the tree row alone.
+		// The root's key holds the tree experiment it was drawn into and the issue experiment
+		// drawn for the root itself; LEGION-209 holds its copy of the tree row and its own issue
+		// row, and LEGION-210 its copy of the tree row alone.
 		assignments: map[string][]record.Assignment{
 			"LEGION-208": {
 				{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt},
 				{Experiment: "plan-length", Unit: "issue", Variant: "short", Mode: "random", DrawnAt: &drawnAt},
 			},
-			"LEGION-209": {{Experiment: "plan-length", Unit: "issue", Variant: "long", Mode: "random", DrawnAt: &drawnAt}},
+			"LEGION-209": {
+				{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt},
+				{Experiment: "plan-length", Unit: "issue", Variant: "long", Mode: "random", DrawnAt: &drawnAt},
+			},
+			"LEGION-210": {{Experiment: "memory", Unit: "tree", Variant: "memory", Mode: "random", DrawnAt: &drawnAt}},
 		},
 	}
 
@@ -207,12 +225,13 @@ func TestProjectOrdersEveryIssuesAssignmentsAsTheProjectDeclaresThem(t *testing.
 	row := func(experiment, unit, variant string) record.Assignment {
 		return record.Assignment{Experiment: experiment, Unit: unit, Variant: variant, Mode: "random", DrawnAt: &drawnAt}
 	}
-	// As record.Store.Assignments answers them: by the experiments' names.
+	// As record.Store.Assignments answers them: by the experiments' names. The child holds its
+	// own copies of the root's tree rows, taken at its first start, beside its own issue row.
 	store := projectionStore{
 		issues: []record.Issue{root, child},
 		assignments: map[string][]record.Assignment{
 			"LEGION-208": {row("dropped", "tree", "on"), row("memory", "tree", "memory"), row("review-depth", "tree", "deep")},
-			"LEGION-209": {row("plan-length", "issue", "long")},
+			"LEGION-209": {row("dropped", "tree", "on"), row("memory", "tree", "memory"), row("plan-length", "issue", "long"), row("review-depth", "tree", "deep")},
 		},
 	}
 	memory := config.Experiment{
@@ -254,6 +273,6 @@ func TestProjectOrdersEveryIssuesAssignmentsAsTheProjectDeclaresThem(t *testing.
 		t.Errorf("the root serves %v, want %v: the file's order, with the experiment it no longer names last", got, want)
 	}
 	if got, want := named(t, got.Issues["LEGION-209"].Assignments), []string{"memory", "review-depth", "plan-length", "dropped"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("the child serves %v, want %v: its tree's rows and its own, in the file's order", got, want)
+		t.Errorf("the child serves %v, want %v: its own copies and its own row, in the file's order", got, want)
 	}
 }

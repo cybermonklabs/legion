@@ -15,12 +15,15 @@ import (
 )
 
 // keptRig is a store with the records a kept decision's claim and hold read: issues and their
-// trees, outbox rows that claim, and root-architect claims whose deliveries hold.
+// places on the Dispatch chain (the copy's rows), outbox rows that claim, and root-architect
+// claims whose deliveries hold. A composer of the rig reads the members it names on the chain
+// (record.KeptMembers), as the workflow's does.
 type keptRig struct {
 	t     *testing.T
 	ctx   context.Context
 	store *Store
 	at    time.Time
+	seq   int64
 }
 
 func newKeptRig(t *testing.T) *keptRig {
@@ -35,12 +38,19 @@ func (r *keptRig) exec(sql string, args ...any) {
 	}
 }
 
-// issue records key standing in tree.
-func (r *keptRig) issue(key, tree string) {
+// issue records key at work, standing under parent on the Dispatch chain ("" for none): the copy
+// holds its row there at a sequence above every earlier reading, so a second call moves it.
+func (r *keptRig) issue(key, parent string) {
 	r.t.Helper()
 	r.exec(`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-		values ($1, $2, 'LEGION', $1, 'admitted', 1, 'in_progress', 'A', 1)
-		on conflict (key) do update set tree = excluded.tree`, key, tree)
+		values ($1, $1, 'LEGION', $1, 'admitted', 1, 'in_progress', 'A', 1) on conflict (key) do nothing`, key)
+	r.seq++
+	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: r.seq,
+			Status: record.Carry("in_progress"), Parent: record.Carry(parent)})
+	}); err != nil {
+		r.t.Fatalf("put the copy's row of %s: %v", key, err)
+	}
 }
 
 // startRow enqueues a root-architect start of tree and returns its id.
@@ -116,7 +126,7 @@ func TestADeliveryWrittenBackUnconfirmedHoldsWhatItsConfirmationTold(t *testing.
 	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-300", "dispatch://LEGION-300/ask/ask-1"
-	r.issue(tree, tree)
+	r.issue(tree, "")
 	start := r.startRow(tree)
 	r.keep(tree, ref, start)
 	architect := r.architect(tree, start)
@@ -197,7 +207,7 @@ func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
 	t.Parallel()
 	r := newKeptRig(t)
 	const old, moved, ref = "LEGION-310", "LEGION-311", "dispatch://LEGION-311/ask/ask-1"
-	r.issue(old, old)
+	r.issue(old, "")
 	r.issue(moved, old)
 	oldStart := r.startRow(old)
 	r.keep(moved, ref, oldStart)
@@ -207,12 +217,12 @@ func TestADeliveryRewriteDoesNotTakeARowAnotherTreeHolds(t *testing.T) {
 		t.Fatalf("queue the old tree's task: %v", err)
 	}
 
-	// The issue leaves for a tree of its own, whose start names the decision (the old hold is void
-	// there) and whose architect holds it.
-	r.issue(moved, moved)
+	// The issue leaves for no parent, a root of its own, whose start names the decision (the old
+	// hold is void there) and whose architect holds it.
+	r.issue(moved, "")
 	newStart := r.startRow(moved)
 	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClaimKeptDecisions(r.ctx, tx, moved, record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at}}}, newStart)
+		return record.NewStore().ClaimKeptDecisionsOf(r.ctx, tx, moved, r.members(tx, moved), record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at}}}, newStart)
 	}); err != nil {
 		t.Fatalf("claim the decision for the new tree's start: %v", err)
 	}
@@ -242,7 +252,7 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 	t.Parallel()
 	r := newKeptRig(t)
 	const old, moved, ref = "LEGION-320", "LEGION-321", "dispatch://LEGION-321/ask/ask-1"
-	r.issue(old, old)
+	r.issue(old, "")
 	r.issue(moved, old)
 	oldStart := r.startRow(old)
 	r.keep(moved, ref, oldStart)
@@ -252,10 +262,10 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 		t.Fatalf("queue the old tree's task: %v", err)
 	}
 
-	r.issue(moved, moved)
+	r.issue(moved, "")
 	catchUp := r.startRow(moved)
 	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClaimKeptDecisions(r.ctx, tx, moved, record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at}}}, catchUp)
+		return record.NewStore().ClaimKeptDecisionsOf(r.ctx, tx, moved, r.members(tx, moved), record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: ref, At: r.at}}}, catchUp)
 	}); err != nil {
 		t.Fatalf("claim the decision for the new tree: %v", err)
 	}
@@ -278,12 +288,14 @@ func TestAHoldReleaseLeavesAClaimThatCounts(t *testing.T) {
 }
 
 // compose is what a composer of a start or catch-up of tree does in tx (workflow's
-// ParkedDecisionTask, then EnqueueNaming): it reads what tree is owed and nothing claims, enqueues
-// a row naming it and claims it for that row. It returns what the row names and the row's own id,
-// which is what a later telling of that row forgets (record.Store.ForgetKeptDecisions).
+// ParkedDecisionTask, then EnqueueNaming): it reads what tree's architect is owed and nothing
+// claims, enqueues a row naming it and claims it for that row. It returns what the row names and
+// the row's own id, which is what a later telling of that row forgets
+// (record.Store.ForgetKeptDecisionsOf).
 func (r *keptRig) compose(tx pgx.Tx, tree string) (record.KeptDecisions, int64, error) {
 	store := record.NewStore()
-	decisions, _, err := store.UnclaimedKept(r.ctx, tx, tree)
+	members := r.members(tx, tree)
+	decisions, _, err := store.UnclaimedKeptOf(r.ctx, tx, tree, members)
 	if err != nil || len(decisions) == 0 {
 		return record.KeptDecisions{}, 0, err
 	}
@@ -291,7 +303,7 @@ func (r *keptRig) compose(tx pgx.Tx, tree string) (record.KeptDecisions, int64, 
 	for _, d := range decisions {
 		kept.Decisions = append(kept.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor})
 	}
-	row, err := record.NewOutboxRow(tree, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect,
+	row, err := record.NewFencedRow(r.ctx, tx, store, tree, record.Notice{Kind: "catch-up", Role: claim.RoleArchitect,
 		CatchUp: &record.CatchUp{Generation: 1, Launch: 1, Kept: &kept}}, r.at)
 	if err != nil {
 		return record.KeptDecisions{}, 0, err
@@ -300,7 +312,18 @@ func (r *keptRig) compose(tx pgx.Tx, tree string) (record.KeptDecisions, int64, 
 	if err != nil {
 		return record.KeptDecisions{}, 0, err
 	}
-	return kept, id, store.ClaimKeptDecisions(r.ctx, tx, tree, kept, id)
+	return kept, id, store.ClaimKeptDecisionsOf(r.ctx, tx, tree, members, kept, id)
+}
+
+// members is the issues whose kept rows are owed to root's architect as tx reads the chain
+// (record.KeptMembers).
+func (r *keptRig) members(tx pgx.Tx, root string) []string {
+	r.t.Helper()
+	members, err := record.KeptMembers(r.ctx, tx, record.NewStore(), root)
+	if err != nil {
+		r.t.Fatalf("read the members of %s: %v", root, err)
+	}
+	return members
 }
 
 // keptRefs is the references a composed row names, for a failure to print.
@@ -321,7 +344,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-330", "dispatch://LEGION-330/ask/ask-1"
-	r.issue(tree, tree)
+	r.issue(tree, "")
 	r.keep(tree, ref, 0)
 
 	first, err := r.store.Pool().BeginTx(r.ctx, pgx.TxOptions{})
@@ -405,9 +428,9 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 // task was queued as having been retired, which left the row KEPT for the catch-up to name. A
 // write of that delivery afterwards must leave the row gone: the architect has been told, and a
 // row standing again is one the tree's next start or catch-up names and tells a second time
-// (dispatch://INFRA-2339). It is not what made seed 24 of the daemon's
-// TestADecisionHeldInTheOldArchitectsTaskAtAHandOverReachesTheChild tell a decision twice at
-// random: in that schedule the put-back inserts no row, and the second telling came from the
+// (dispatch://INFRA-2339). It is not what made seed 24 of the daemon's kept-decision model
+// (kept_decision_property_test.go) tell a decision twice at random: in that schedule the put-back
+// inserts no row, and the second telling came from the
 // kept-decision model's own lease, written inside a drop of the root's catch-ups, so the drop
 // deleted a row it had read unleased (dispatch://INFRA-2836). The put-back is for one case alone,
 // which the first test of this file holds: this delivery's own confirmation told the row and the
@@ -424,7 +447,7 @@ func TestADeliveryWrittenOverNoConfirmationDoesNotPutBackADecisionAnotherRowTold
 	t.Parallel()
 	r := newKeptRig(t)
 	const tree, ref = "LEGION-340", "dispatch://LEGION-340/ask/ask-1"
-	r.issue(tree, tree)
+	r.issue(tree, "")
 	start := r.startRow(tree)
 	r.keep(tree, ref, start)
 	architect := r.architect(tree, start)
@@ -449,7 +472,7 @@ func TestADeliveryWrittenOverNoConfirmationDoesNotPutBackADecisionAnotherRowTold
 		t.Fatalf("the catch-up named %v, want %s: the retired task left it KEPT", keptRefs(told), ref)
 	}
 	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ForgetKeptDecisions(r.ctx, tx, tree, told, catchUp)
+		return record.NewStore().ForgetKeptDecisionsOf(r.ctx, tx, tree, r.members(tx, tree), told, catchUp)
 	}); err != nil {
 		t.Fatalf("tell what the catch-up named: %v", err)
 	}

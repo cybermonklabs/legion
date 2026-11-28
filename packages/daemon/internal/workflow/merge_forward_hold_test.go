@@ -330,7 +330,7 @@ func TestAWorkerSentItsWorkAgainWhileTheMergeIsOpenIsHeld(t *testing.T) {
 		send func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error
 	}{
 		{name: "the silence repair", send: func(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, row record.PhaseRow) error {
-			return e.repairSilence(ctx, tx, issue, issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
+			return e.repairSilence(ctx, tx, issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleTester, Generation: 1, LastStep: e.now().Add(-2 * time.Hour), Bound: time.Hour},
 				e.now())
 		}},

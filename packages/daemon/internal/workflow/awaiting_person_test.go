@@ -744,8 +744,12 @@ func reconcileGateOff(t *testing.T, pool *pgxpool.Pool) bool {
 	engine := testEngine(config.DesignGateOff, nil)
 	changed := false
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		_, changed, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", []record.Issue{recordedRoot(t, pool)}, nil)
+		root := recordedRoot(t, pool)
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), "LEGION", []string{root.Key})
+		if err != nil {
+			return err
+		}
+		_, changed, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", chains, []record.Issue{root}, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("reconcile the wait with the gate off: %v", err)

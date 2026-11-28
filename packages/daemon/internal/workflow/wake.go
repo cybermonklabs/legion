@@ -33,10 +33,10 @@ import (
 // to a suspended claim already resumes it (supervise's deliverResuming) and the delivery is its
 // own account of why the pod came back.
 //
-// Every wake acts only on a claim that is still `released`, of an issue still in the workflow
-// whose tree is live, and a role comes back once while its pod is on its way: the role's one open
-// resume is what says so, so one head that settles again as each of its checks finishes wakes the
-// pod once.
+// Every wake acts only on a claim that is still `released`, of an issue that has not left the
+// workflow by its own standing, and a role comes back once while its pod is on its way: the role's
+// one open resume is what says so, so one head that settles again as each of its checks finishes
+// wakes the pod once.
 //
 // The listener's report of a message is also a mark on the claim it names, whatever that claim's
 // state (listenerWake, dispatch://INFRA-5682 R1): a wake of that claim that waits in the daemon's
@@ -372,11 +372,11 @@ func ReleasedWakeTask(kind, detail, task string) string {
 
 // TakenOverWakeTask is the task of a wake's start that a cancel of an idle release keeps, paused
 // or not, for a role that release stopped and no cancel resumes (store.CancelIssueRelease,
-// store.ReleaseCancelPause.TakenOverWakeTask): a role whose claim a close, a linger or an operator
+// store.ReleaseCancelPause.TakenOverWakeTask): a role whose claim a close, a stop or an operator
 // took over after the wake, and a role whose stop suspended its claim as `released` without the
 // record of that on the release's mark. kind and detail are the wake's, as its start records them,
 // and task is the task the start carries. That start brings the role back: it finishes without
-// acting under a close or a linger, it runs when an operator resumes the claim, and it resumes a
+// acting under a close or a stop, it runs when an operator resumes the claim, and it resumes a
 // claim that is still `released` in the pod that stayed. WakeTask wrote its task for a session an
 // idle release stopped (StoppedByRelease), and it says that the pod was released. The cancel made
 // that false: the release did not finish, and the pod never went away. So the answer is the same
@@ -697,10 +697,10 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // wakeReleased is the one act every wake of this file performs. issue is the issue of released,
 // which the caller read and hands in. It reads every gate of a wake, on that one issue: the claim
 // the caller read is released, its issue is one this daemon records (the caller reads no record of
-// another project's issue, and then does not call this), its tree is live — neither the issue nor
-// its root has left the workflow and neither lingers (pods.InWorkflowNotLingering) — and the role
-// is not already coming back on a start the outbox holds (Pods.StartQueued). A pod in any other
-// state is a close's to stop or an operator's to resume, never a wake's.
+// another project's issue, and then does not call this), the issue itself has not left the
+// workflow (pods.Standing.InWorkflow), whatever stands above it (R20 of dispatch://INFRA-3320),
+// and the role is not already coming back on a start the outbox holds (Pods.StartQueued). A pod
+// in any other state is a close's to stop or an operator's to resume, never a wake's.
 //
 // The start the outbox holds is read for every kind of wake: a listener's report, a CI settlement
 // and a backstop. A cancelled release queues a start for each claim it suspended, and the claim
@@ -768,11 +768,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // since such a resume was itself written after every release there is, or dated to the give-up of
 // the release it was taken under.
 func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issue, released supervise.Claim, kind, detail string) (bool, error) {
-	root, err := e.store.Issue(ctx, tx, issue.Tree)
-	if err != nil || root == nil {
-		return false, err
-	}
-	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
+	if !issue.Standing().InWorkflow(record.OutOfWorkflow) {
 		return false, nil
 	}
 	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)

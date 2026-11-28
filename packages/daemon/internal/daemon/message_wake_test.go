@@ -77,7 +77,8 @@ func (r *priorityWakeRig) open() {
 	}
 }
 
-// seed records the next issue of the rig, a root of its own tree in implementing, and creates its
+// seed records the next issue of the rig, a root of its own tree in implementing, with its tree's
+// lifecycle and its own issue's lifecycle open, as admission opens both, and creates its
 // implementer's claim in state: released for suspended, with no process for queued and launching,
 // and with a live one for every other.
 func (r *priorityWakeRig) seed(state supervise.ClaimState) supervise.Claim {
@@ -91,6 +92,7 @@ func (r *priorityWakeRig) seed(state supervise.ClaimState) supervise.Claim {
 	if _, err := r.st.OpenTreeLifecycle(r.t.Context(), "legion", issue, "workflow"); err != nil {
 		r.t.Fatal(err)
 	}
+	openIssue(r.t, r.st, "legion", issue, "workflow")
 	c := liveClaim(r.issue, token, r.sup.deps.PluginContract)
 	c.Token, c.Project, c.Tree, c.Issue, c.Role = token, "legion", issue, issue, claim.RoleImplementer
 	c.State, c.ServingGeneration = state, 1

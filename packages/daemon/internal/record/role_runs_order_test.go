@@ -61,7 +61,7 @@ func (r *startMidRead) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tra
 // writer commits between them. The rows are read first and the claims last, so every claim in
 // the answer is at least as new as the rows beside it. Every rule that weighs the two together
 // stands on that order, admission's start repair among them (workflow.StartFor, for admit's
-// resumeSlottedWorkers and startMidPhaseMembers): a claim read before those rows could report a
+// resumeSlottedWorkers and its promotion): a claim read before those rows could report a
 // state older than the read that said a row of it was queued, which would read a worker the
 // daemon has just started as one nothing is starting. The stop rule weighs the same pair across
 // two reads of its own, the owed rows first and RoleClaims after them (admit's

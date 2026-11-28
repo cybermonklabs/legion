@@ -479,14 +479,6 @@ control_compat() {
       note "wrote $daemon_dir/$file: the base's package daemon defines no $fn, which part one's driver $use"
     fi
   done
-  # Only the copied driver's calls change. The control still runs the base's worker start code.
-  if grep -q -E '^func .*StartPromotedWorker\(.*role claim\.Role\) error \{' \
-    "$tree/packages/daemon/internal/workflow/effects.go" 2>/dev/null; then
-    local copied_seed=$daemon_dir/approved_version_news_seed_live_test.go
-    sed -i -E 's/if _, err := (engine\.StartPromotedWorker\(.*), false\);/if err := \1);/' "$copied_seed" ||
-      fail "could not adapt StartPromotedWorker calls in $copied_seed"
-    note "adapted the copied seed's StartPromotedWorker calls to the base's signature"
-  fi
 }
 
 # jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload

@@ -206,7 +206,7 @@ func TestAStopRowStopsTheClaimARetryInFlightLaunches(t *testing.T) {
 		// The retry's launch parks at the pod's gate behind the load (supervise's askPod), so the
 		// stop takes it out of the gate.
 		t.Run(tc.name, func(t *testing.T) {
-			r := newPodStopRig(t, podIssueRecord(), true)
+			r := newPodStopRig(t, podIssueRecord())
 			held := holdingLaunch(t, r.sup, mustClaimToken(t, pauseIssue, claim.RoleTester))
 			pair := loadingPair(t, r.sup, supervise.StateFailed)
 

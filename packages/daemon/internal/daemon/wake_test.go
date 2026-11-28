@@ -233,7 +233,7 @@ func TestADueBackstopWakesItsPodsLifecycleLaneOnce(t *testing.T) {
 			}
 			logs := &syncBuffer{}
 			records := projectRecords{Store: record.NewStore(), project: "LEGION", wake: w.wakeOutbox, log: quietLogger()}
-			w.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Pods: podRecords, Linger: time.Hour},
+			w.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Pods: podRecords},
 				slog.New(slog.NewTextHandler(logs, nil)))}
 			wakes := recordLaneWakes(w, pauseIssue)
 			starts := func() int {

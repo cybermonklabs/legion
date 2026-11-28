@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -122,10 +123,17 @@ func newNewsPathRig(t *testing.T, approved int, members ...pathMember) *newsPath
 			LatestVersion: approved, ApprovedVersion: new(approved), ApprovedMark: record.EventMark{Seq: r.marks}, EverOpened: true})
 	})
 	holdSlot(t, pool, keys...)
-	// The daemon's store, with the tree's lifecycle open under the workflow as admission opens it.
+	// The daemon's store, with the tree's lifecycle open under the workflow as admission opens it
+	// and each member's own issue lifecycle open as admission opens it for every issue it admits,
+	// so a start of any member's role can bind its work, and its fold of a final credit reading
+	// each issue's gate root as the daemon wires it.
 	st := outboxTreeStore(t, pool, r.root)
+	for _, key := range keys {
+		openIssue(t, st, "legion", key, treelifecycle.AuthorityWorkflow)
+	}
 	r.sup, r.rt = newOutboxSupervisor(t, "legion", t.TempDir())
 	answers := &workflowRuntime{pool: pool, records: records, gatedSteps: steps, dispatchProject: "LEGION", log: quietLogger()}
+	st.ReadGateRootsWith(answers.gateRootsOf)
 	r.sup.deps.Store = st
 	r.sup.deps.PhaseHolds, r.sup.deps.RootHears = answers.phaseHolds, answers.rootHears
 	r.sup.deps.RootTask, r.sup.deps.DesignNews = answers.rootTask, answers.designNews
@@ -152,18 +160,19 @@ func (r *newsPathRig) inTx(write func(pgx.Tx) error) {
 // pathHead is the head of key's pull request.
 func pathHead(key string) string { return "head-" + strings.ToLower(key) }
 
-// member records m, the i-th member of the tree, with its pull request open and mergeable at its
-// head, and the phases row of the role its phase names: a reviewer's holding its approval of that
-// head, so that its completion ends the round.
+// member records m, the i-th member of the tree, with its row of the copy of Dispatch's issues
+// (putChainIssue), its pull request open and mergeable at its head, and the phases row of the role
+// its phase names: a reviewer's holding its approval of that head, so that its completion ends the
+// round.
 func (r *newsPathRig) member(m pathMember, i int) {
 	r.t.Helper()
 	issue := record.Issue{Key: m.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: r.root, Title: m.key, Phase: m.at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
-		Rank: fmt.Sprintf("A%d", i), LastDispatchSeq: 1}
+		Rank: fmt.Sprintf("A%d", i), HandedOver: true, LastDispatchSeq: 1}
 	if m.parent != "" {
 		issue.Parent = &m.parent
 	}
-	putOutboxIssue(r.t, r.pool, r.records, issue)
+	putChainIssue(r.t, r.pool, r.records, issue)
 	r.inTx(func(tx pgx.Tx) error {
 		if err := r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: m.key, Repo: "acme/widgets",
 			Number: 800 + i, Branch: "legion/" + m.key, HeadSHA: pathHead(m.key), CheckedHead: pathHead(m.key),
@@ -200,12 +209,13 @@ func raisedTo(versions map[record.DesignStep]int) []record.NewsItem {
 	return items
 }
 
-// toldOf is issue's audience row as the record holds it, the zero row where there is none.
+// toldOf is issue's audience row as the record holds it, read as a member of the rig's tree, the
+// zero row where there is none.
 func (r *newsPathRig) toldOf(issue string, audience record.DesignAudience) record.DesignTold {
 	r.t.Helper()
 	var found record.DesignTold
 	r.inTx(func(tx pgx.Tx) error {
-		rows, err := r.records.TreeTold(r.ctx, tx, r.root)
+		rows, err := r.records.TreeTold(r.ctx, tx, r.root, []string{issue})
 		for _, row := range rows {
 			if row.Issue == issue && row.Audience == audience {
 				found = row

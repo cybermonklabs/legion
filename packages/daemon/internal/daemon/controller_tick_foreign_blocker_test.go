@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,7 +127,7 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 	t.Run("a failed read of the foreign key ends no wait", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{err: errors.New("dispatch is unreachable")}
-		w := tickRuntime(t, pool, client)
+		w, logs := rereadRuntime(t, pool, client)
 		seedStartedWaiter(t, pool, "CAPTURE-50", foreignBlocker)
 		seedForeignMirror(t, pool, foreignBlocker, "in_progress", 5)
 
@@ -139,7 +140,105 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 		if slotted := tickSlotted(t, pool); len(slotted) != 0 {
 			t.Fatalf("slots = %v, want none: a failed read tells the daemon nothing new about the wait", slotted)
 		}
+		// The read's one line says why it failed and names the row the copy keeps.
+		want := fmt.Sprintf(`blocker=%s waiting=[CAPTURE-50] error="dispatch is unreachable" copy="read failed" copy_status=in_progress copy_seq=5`, foreignBlocker)
+		if lines := foreignReadLines(logs); !slices.Equal(lines, []string{want}) {
+			t.Fatalf("the turn logged %q of its failed read of %s, want exactly %q", lines, foreignBlocker, want)
+		}
 	})
+}
+
+// A root that waits on an issue of another project that is already done is held for at most one
+// turn (item 51 of dispatch://INFRA-3320's open items: OSSV-551 stood more than six hours on
+// INFRA-4737, done for days). Both kinds of waiting root are read: one waiting for its first start
+// (seedWaitingRoot) and one the daemon started that gave its slot back for the wait
+// (seedStartedWaiter), as OSSV-551 had. The copy holds no row of the blocker, or a row of it from a
+// reading before its close. The waiter's own row stands at a sequence of its own log far above
+// the blocker's, as an issue at work for weeks does (1511 against 70): each value of a row is
+// fenced by the sequences of that one issue's log alone (record.Store.PutDispatchIssue), so the
+// waiter's sequence decides nothing of the blocker's row. The turn reads the blocker, writes its
+// row at its own sequence and project, and the root takes the slot in that same turn. The control
+// serves the blocker open, and the root stays held.
+//
+// A third copy holds the blocker open at the very sequence Dispatch serves, the shape a sequence
+// of another log would leave: the fence keeps the copy's value at an equal sequence, so the root
+// stays held whatever Dispatch serves. Every turn leaves one line of its read of the blocker
+// (workflowRuntime.logForeignRead): the issue waiting on it, what Dispatch served, and whether the
+// copy applied the reading or kept the row it held, which that line then names.
+func TestARootWaitingOnADoneIssueOfAnotherProjectIsHeldForOneTurnAtMost(t *testing.T) {
+	t.Parallel()
+	const waiter = "CAPTURE-60"
+	for _, kind := range []struct {
+		name string
+		seed func(t *testing.T, pool *store.Pool)
+	}{
+		{"a root waiting for its first start", func(t *testing.T, pool *store.Pool) {
+			seedWaitingRoot(t, pool, waiter, "A")
+			seedTickMirror(t, pool, waiter, "todo", 1511, foreignBlocker)
+		}},
+		{"a started root that gave its slot back for the wait", func(t *testing.T, pool *store.Pool) {
+			seedStartedWaiter(t, pool, waiter, foreignBlocker)
+			seedTickMirror(t, pool, waiter, "in_progress", 1511, foreignBlocker)
+		}},
+	} {
+		for _, copied := range []struct {
+			name string
+			// status and seq are the copy's row of the blocker before the turn; "" is no row.
+			status string
+			seq    int64
+		}{
+			{"with no row of the blocker in the copy", "", 0},
+			{"with a row of the blocker from before its close", "in_progress", 65},
+			{"with a row of the blocker at the sequence Dispatch serves", "in_progress", 70},
+		} {
+			for _, served := range []string{"done", "in_progress"} {
+				t.Run(kind.name+", "+copied.name+", served "+served, func(t *testing.T) {
+					t.Parallel()
+					pool := isolatedOutboxPool(t)
+					client := &tickDispatch{issues: map[string]dispatch.Issue{
+						foreignBlocker: {Key: foreignBlocker, Project: foreignProject, Status: served, LastSeq: 70},
+					}}
+					w, logs := rereadRuntime(t, pool, client)
+					kind.seed(t, pool)
+					if copied.status != "" {
+						seedForeignMirror(t, pool, foreignBlocker, copied.status, copied.seq)
+					}
+					if slotted := tickSlotted(t, pool); len(slotted) != 0 {
+						t.Fatalf("slots = %v before the turn, want %s waiting", slotted, waiter)
+					}
+
+					w.applyControllerTick(context.Background(), time.Now())
+
+					// The copy takes the reading where it held no row of the blocker or one at a lower
+					// sequence, and keeps the value it held at an equal one (record.Store.PutDispatchIssue).
+					holds := served
+					line := fmt.Sprintf("blocker=%s waiting=[%s] served_status=%s served_seq=70 copy=applied", foreignBlocker, waiter, served)
+					if copied.status != "" && copied.seq >= 70 {
+						holds = copied.status
+						line = fmt.Sprintf("blocker=%s waiting=[%s] served_status=%s served_seq=70 copy=kept copy_status=%s copy_seq=%d",
+							foreignBlocker, waiter, served, copied.status, copied.seq)
+					}
+					if asked := client.asked(); !slices.Contains(asked, foreignBlocker) {
+						t.Fatalf("the turn read %v singly, want %s among them", asked, foreignBlocker)
+					}
+					if row := foreignMirrored(t, pool)[foreignBlocker]; row.Project != foreignProject || row.Status != holds || row.Seq != 70 {
+						t.Fatalf("the copy holds %s as project %q at %q seq %d, want (%s, %s, 70)",
+							foreignBlocker, row.Project, row.Status, row.Seq, foreignProject, holds)
+					}
+					slotted := tickSlotted(t, pool)
+					if holds == "done" && !slices.Equal(slotted, []string{waiter}) {
+						t.Fatalf("slots = %v after one turn, want %s admitted: the copy holds its one blocker done", slotted, waiter)
+					}
+					if holds != "done" && len(slotted) != 0 {
+						t.Fatalf("slots = %v after one turn, want %s still held: the copy holds its one blocker open", slotted, waiter)
+					}
+					if lines := foreignReadLines(logs); !slices.Equal(lines, []string{line}) {
+						t.Fatalf("the turn logged %q of its read of %s, want exactly %q", lines, foreignBlocker, line)
+					}
+				})
+			}
+		}
+	}
 }
 
 // seedStartedWaiter records key as an issue the daemon has started that waits on blocker: it took
@@ -206,6 +305,22 @@ func foreignMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchI
 		rows[row.Key] = row
 	}
 	return rows
+}
+
+// foreignReadLine is the message of the one line a turn writes of each read of a key of another
+// project (workflowRuntime.logForeignRead).
+const foreignReadLine = "the controller tick re-read a blocker of another project"
+
+// foreignReadLines is each line of logs, rereadRuntime's text log, that is foreignReadLine at
+// info, from its first value on: what comes before the level is the clock's.
+func foreignReadLines(logs *syncBuffer) []string {
+	var lines []string
+	for line := range strings.Lines(logs.String()) {
+		if _, values, found := strings.Cut(strings.TrimSuffix(line, "\n"), ` level=INFO msg="`+foreignReadLine+`" `); found {
+			lines = append(lines, values)
+		}
+	}
+	return lines
 }
 
 // ownBlocker is the key seedBlockedRoots gives the i-th root to wait on.

@@ -516,7 +516,7 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 // below it where the claim was never relaunched, whatever the tree has run. Each case is a root
 // re-admitted at generation 3, at admitted with no design gate row and no run of its own phase,
 // read from the record through ArchitectStartOf, which reads the claim's serving_generation and
-// served_entry (record.Store.ArchitectServed):
+// served_entry (record.Store.ArchitectServedOf):
 //   - a claim that launched five times and last served generation 2 ran the tree at an earlier
 //     generation, so the task is of the fourth rule's shape;
 //   - a claim that served nothing took no task of any run, so the tree is one nobody has
@@ -578,7 +578,7 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 }
 
 // Whether a member of the tree runs is read from the record (ArchitectStartOf, through
-// record.Store.TreeMembersRun): an issue of the root's tree other than the root, standing past
+// record.Store.MembersRunOf): an issue of the root's tree other than the root, standing past
 // phase.Admitted in the workflow. Each case is the root of architectEntryRoot at admitted, at
 // generation 2, whose architect claim served nothing, beside one other issue:
 //   - a child in planning, in the workflow, runs, so the tree ran at an earlier generation;
@@ -639,9 +639,9 @@ func TestTheArchitectStartReadsWhetherAMemberOfTheTreeRuns(t *testing.T) {
 }
 
 // A root a hand-over carried into merging whose pull request has already merged stands in a phase
-// the merge itself ended (PhaseFinished), so the promotion that opens its tree starts no merger
-// (admit's startMidPhaseMembers), and its architect's task says so rather than that the daemon
-// starts that phase's worker. The reader reads it from the record (ArchitectStartOf), over the
+// the merge itself ended (PhaseFinished), so the promotion that starts it starts no merger
+// (StartCarriedRun), and its architect's task says so rather than that the daemon starts that
+// phase's worker. The reader reads it from the record (ArchitectStartOf), over the
 // same pull request the promotion reads. The control is the same root whose pull request is still
 // open, whose merger the promotion does start.
 func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged(t *testing.T) {
@@ -660,10 +660,8 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 			pool := migratedPool(t)
 			root := architectEntryRoot()
 			root.Phase, root.Generation, root.Status = phase.Merging, 2, "retro"
+			root.CarriedGeneration = root.Generation
 			seedIssue(t, pool, root)
-			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: root.Key, Generation: root.Generation})
-			})
 			seedPR(t, pool, record.PullRequest{State: tc.state, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
 				Branch: "legion/" + root.Key, HeadSHA: "head", Failing: []string{}})
 			var start ArchitectStart
@@ -686,13 +684,13 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 }
 
 // What a carried root's task says of the phase it stands in and of its design gate, read from the
-// record (ArchitectStartOf). The hand-over row names the issue, its generation and whether a gate
-// came with it, and no phase, so it does not say whether the root still stands in the phase that
+// record (ArchitectStartOf). The issue's own carried facts name its generation and whether a gate
+// came with it, and no phase, so they do not say whether the root still stands in the phase that
 // came with it: the task names the phase it stands in now and the run the hand-over carried it
 // into, which holds of a root still in its carried phase and of one that has moved on in that
-// same run (dispatch://INFRA-2614 R3, R5). The gate clause is the row's own
-// (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
-// its linger comes with none, and a task that said a gate came with it would be false of it.
+// same run (dispatch://INFRA-2614 R3, R5). The gate clause is the issue's own
+// (record.Issue.CarriedGate): a child the release before handed over from a tree whose root was
+// reopened in its linger came with none, and a task that said a gate came with it would be false of it.
 func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -722,11 +720,8 @@ func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *test
 			pool := migratedPool(t)
 			root := architectEntryRoot()
 			root.Phase, root.Generation = tc.stands, 2
+			root.CarriedGeneration, root.CarriedGate = root.Generation, tc.gateCarried
 			seedIssue(t, pool, root)
-			seedRecord(t, pool, func(tx pgx.Tx) error {
-				return record.NewStore().PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: root.Key,
-					Generation: root.Generation, GateCarried: tc.gateCarried})
-			})
 			var start ArchitectStart
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 				var err error

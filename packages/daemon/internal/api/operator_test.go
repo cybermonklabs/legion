@@ -567,17 +567,17 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerWithNoRecordsRelaunchesIt(t *testi
 }
 
 // heldRetrier stands in for the workflow's retry_or_escalate: a retry decision on a held issue
-// restores the phase it was held from, unless lingers says the tree lingers, where the workflow
-// does nothing. Every fact is recorded first.
+// restores the phase it was held from, unless outOfWork says the issue is out of Legion's work,
+// where the workflow does nothing (workflow's retryOrEscalate). Every fact is recorded first.
 type heldRetrier struct {
 	factRecorder
-	lingers bool
+	outOfWork bool
 }
 
 func (r *heldRetrier) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	result, err := r.factRecorder.Apply(ctx, tx, fact)
 	retry, ok := fact.(intake.RetryOrEscalate)
-	if err != nil || result.Refusal != nil || !ok || retry.Decision != intake.RetryDecision || r.lingers {
+	if err != nil || result.Refusal != nil || !ok || retry.Decision != intake.RetryDecision || r.outOfWork {
 		return result, err
 	}
 	records := record.NewStore()
@@ -666,16 +666,16 @@ func TestTheOperatorsRetryOfAFailedPhaseWorkerOnAHeldIssueRetriesThePhase(t *tes
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict, "LEGION-209 is not held")
 }
 
-// A retry the workflow applies but that leaves the issue held relaunched nothing — a lingering
-// tree's members stay where they stood — so the operator is answered 409 naming the issue, the
-// phase and the claim, never 202.
+// A retry the workflow applies but that leaves the issue held relaunched nothing — the workflow
+// retries no phase of an issue out of Legion's work — so the operator is answered 409 naming the
+// issue, the phase and the claim, never 202.
 func TestTheOperatorsRetryOfAHeldPhaseThatStaysHeldIsRefused(t *testing.T) {
-	facts := &heldRetrier{lingers: true}
+	facts := &heldRetrier{outOfWork: true}
 	h, workerToken := failedPhaseWorker(t, facts, claim.RoleImplementer)
 	heldIssue(t, h, phase.Implementing)
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(workerToken)+"/retry", nil), http.StatusConflict,
-		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": its tree lingers, and a lingering tree's members stay where they stood")
+		"LEGION-209 is still held after the retry of its phase implementing, so nothing relaunched "+string(workerToken)+": the issue is out of Legion's work, where a retry starts nothing, and a todo on LEGION-209 brings it back and releases its hold")
 	if applied := facts.recorded(); len(applied) != 1 {
 		t.Errorf("the retry applied %#v, want the held phase's retry alone", applied)
 	}
@@ -1062,20 +1062,21 @@ func TestTheOperatorClosesATreeNoWorkflowIssueBacks(t *testing.T) {
 }
 
 // A tree without a workflow issue has no outbox row. Once every claim stopped, the operator route
-// reserves the tree's cleanup, has the runtime release the tree and confirms the reservation; it
-// never invents a workflow record merely to get cleanup.
-func TestOperatorCloseReleasesTheTreeAndConfirmsItsCleanupWithoutAWorkflowRecord(t *testing.T) {
+// reserves the cleanup of each issue the tree's claims name, has the runtime release each by its
+// own identity and confirms each reservation; it never invents a workflow record merely to get
+// cleanup.
+func TestOperatorCloseReleasesEachIssueAndConfirmsItsCleanupWithoutAWorkflowRecord(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("close = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
-	if cleanups := h.runtime.CallsOf("CleanupTree"); len(cleanups) != 1 || cleanups[0].Tree != "LEGION-208" {
-		t.Fatalf("tree releases = %+v, want LEGION-208 released once", cleanups)
+	if cleanups := h.runtime.CallsOf("CleanupIssue"); len(cleanups) != 1 || cleanups[0].Issue != "LEGION-208" {
+		t.Fatalf("issue releases = %+v, want LEGION-208 released once", cleanups)
 	}
-	if started, confirmed := h.treeCleanup("LEGION-208"); !started || !confirmed {
-		t.Fatalf("tree cleanup started %t, confirmed %t; want it confirmed", started, confirmed)
+	if started, confirmed := h.issueCleanup("LEGION-208"); !started || !confirmed {
+		t.Fatalf("issue cleanup started %t, confirmed %t; want it confirmed", started, confirmed)
 	}
 }
 
@@ -1084,37 +1085,38 @@ func TestOperatorCloseReleasesTheTreeAndConfirmsItsCleanupWithoutAWorkflowRecord
 func TestOperatorCloseSurfacesAFailedReleaseAndItsRetryResumesIt(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
-	h.runtime.FailCleanupTree(errors.New("foreground Sandbox delete conflicted"))
+	h.runtime.FailCleanupIssue(errors.New("foreground Sandbox delete conflicted"))
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil)
-	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "durable resource cleanup is pending") {
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "durable resource cleanup of issue LEGION-208 is pending") {
 		t.Fatalf("close after a failed release = %d %s, want 500 naming durable cleanup pending", recorder.Code, recorder.Body)
 	}
-	if started, confirmed := h.treeCleanup("LEGION-208"); !started || confirmed {
+	if started, confirmed := h.issueCleanup("LEGION-208"); !started || confirmed {
 		t.Fatalf("after the failed release: cleanup started %t, confirmed %t; want reserved and unconfirmed", started, confirmed)
 	}
-	h.runtime.FailCleanupTree(nil)
+	h.runtime.FailCleanupIssue(nil)
 	recorder = h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("retried close = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
-	if started, confirmed := h.treeCleanup("LEGION-208"); !started || !confirmed {
+	if started, confirmed := h.issueCleanup("LEGION-208"); !started || !confirmed {
 		t.Fatalf("after the retried close: cleanup started %t, confirmed %t; want it confirmed", started, confirmed)
 	}
 }
 
-// While the tree's cleanup is reserved, nothing of the tree is admitted or launched: a new operator
-// root is refused naming the cleanup, and a worker of the tree is never stored.
-func TestOperatorSpawnsWaitForTheirTreesReservedCleanup(t *testing.T) {
+// While an issue's cleanup is reserved, nothing of that issue is admitted or launched: a new
+// operator root of it is refused naming the cleanup, and a worker of it is never stored. The
+// reservation is the issue's own (R17 of dispatch://INFRA-3320), so it bars no other issue.
+func TestOperatorSpawnsWaitForTheirIssuesReservedCleanup(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
-	h.runtime.FailCleanupTree(errors.New("foreground Sandbox delete conflicted"))
+	h.runtime.FailCleanupIssue(errors.New("foreground Sandbox delete conflicted"))
 	h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil)
 	spawns := len(h.runtime.CallsOf("Spawn"))
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "waiting for durable cleanup") {
 		t.Fatalf("root spawn during the reserved cleanup = %d %s, want 409 naming the cleanup", recorder.Code, recorder.Body)
 	}
-	worker := SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer, Prompt: "Reply ready and wait."}
+	worker := SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer, Prompt: "Reply ready and wait."}
 	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", worker); recorder.Code/100 == 2 {
 		t.Fatalf("worker spawn during the reserved cleanup = %d, want it refused; body %s", recorder.Code, recorder.Body)
 	}
@@ -1122,7 +1124,7 @@ func TestOperatorSpawnsWaitForTheirTreesReservedCleanup(t *testing.T) {
 		t.Fatalf("spawns during the reserved cleanup = %d, want none", now-spawns)
 	}
 	var stored int
-	if err := h.store.Pool().QueryRow(h.ctx, `select count(*) from claims where token = 'legion-legion-legion-209-implementer'`).Scan(&stored); err != nil || stored != 0 {
+	if err := h.store.Pool().QueryRow(h.ctx, `select count(*) from claims where token = 'legion-legion-legion-208-implementer'`).Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("the refused worker left %d claim rows (err %v)", stored, err)
 	}
 }
@@ -1145,8 +1147,8 @@ func TestOperatorSpawnOfATreeTheWorkflowHoldsIsNotAWaitForCleanup(t *testing.T) 
 	}
 }
 
-// A close asked again after its tree's cleanup confirmed reserves nothing and releases nothing: it
-// answers as the finished close it is.
+// A close asked again after its issues' cleanup confirmed reserves nothing and releases nothing:
+// it answers as the finished close it is.
 func TestOperatorCloseAfterConfirmedCleanupAnswersWithoutCleaning(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
@@ -1155,8 +1157,30 @@ func TestOperatorCloseAfterConfirmedCleanupAnswersWithoutCleaning(t *testing.T) 
 			t.Fatalf("close = %d, want 200; body %s", recorder.Code, recorder.Body)
 		}
 	}
-	if cleanups := h.runtime.CallsOf("CleanupTree"); len(cleanups) != 1 {
-		t.Fatalf("tree releases = %d, want the first close's one", len(cleanups))
+	if cleanups := h.runtime.CallsOf("CleanupIssue"); len(cleanups) != 1 {
+		t.Fatalf("issue releases = %d, want the first close's one", len(cleanups))
+	}
+}
+
+// The operator's close applies the confirmation of each issue cleanup it confirms as a fact
+// (intake.IssueCleanedUp), which an admission pass waiting for that cleanup reads at once; the
+// close asked again, after the confirmation, confirms nothing and applies none.
+func TestTheOperatorsCloseAppliesEachCleanupItConfirms(t *testing.T) {
+	r := newAwaitRig(t)
+	r.h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	for range 2 {
+		if recorder := r.h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil); recorder.Code != http.StatusOK {
+			t.Fatalf("close = %d, want 200; body %s", recorder.Code, recorder.Body)
+		}
+	}
+	var cleaned []intake.IssueCleanedUp
+	for _, fact := range r.facts.recorded() {
+		if fact, ok := fact.(intake.IssueCleanedUp); ok {
+			cleaned = append(cleaned, fact)
+		}
+	}
+	if want := []intake.IssueCleanedUp{{Issue: "LEGION-208", Epoch: 1}}; !slices.Equal(cleaned, want) {
+		t.Fatalf("the closes applied %+v, want %+v: the one cleanup they confirmed", cleaned, want)
 	}
 }
 
@@ -1281,9 +1305,9 @@ func TestTheOperatorsCloseNamesAClaimItSupervisesNoMachineFor(t *testing.T) {
 	}
 }
 
-// The operator closes only a tree no workflow issue backs, and only through its root claim: a
-// workflow issue's tree closes when its linger expires, and a worker's claim is stopped. Each
-// refusal changes nothing.
+// The operator closes only an issue's lifecycle no workflow issue backs, and only through its root
+// claim: a workflow issue's lifecycle ends with its issue's close, and a worker's claim is stopped.
+// Each refusal changes nothing.
 func TestTheOperatorsCloseRefusesAWorkflowTreeAndAWorker(t *testing.T) {
 	h := newHarness(t)
 	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
@@ -1296,7 +1320,7 @@ func TestTheOperatorsCloseRefusesAWorkflowTreeAndAWorker(t *testing.T) {
 
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"})
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil),
-		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which closes when its linger expires")
+		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which ends with its issue's close")
 
 	if releases := h.runtime.CallsOf("Release"); len(releases) != 0 {
 		t.Errorf("a refused close reached the runtime: %+v", releases)
@@ -1340,7 +1364,7 @@ func TestAClosedWorkersRetiredClaimStillRefusesAndStopsNothing(t *testing.T) {
 	}
 }
 
-// A workflow issue's tree closes when its linger expires, whatever state its root claim is in: a
+// A workflow issue's lifecycle ends with its issue's close, whatever state its root claim is in: a
 // root that has already retired is not a way past TreeClosable.
 func TestACloseOfARetiredRootStillAsksWhetherAWorkflowIssueBacksTheTree(t *testing.T) {
 	h := newHarness(t)
@@ -1351,7 +1375,7 @@ func TestACloseOfARetiredRootStillAsksWhetherAWorkflowIssueBacksTheTree(t *testi
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/close", nil),
-		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which closes when its linger expires")
+		http.StatusConflict, "close refused: LEGION-208 is a workflow issue's tree, which ends with its issue's close")
 }
 
 func TestListAnswersEveryClaim(t *testing.T) {

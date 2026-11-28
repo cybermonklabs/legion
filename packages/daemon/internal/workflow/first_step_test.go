@@ -190,7 +190,9 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 	t.Run("a plan passed over at the child's generation names the carried plan it runs", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
-		earlier, owner := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
+		earlier, owner := architectOf(t, "LEGION-208"), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
+		// LEGION-208 is recorded too: who acts on LEGION-209 is read from its Dispatch chain.
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
 		recordedAt(t, pool, "LEGION-209", "LEGION-208")
 		mustTake(t, "the earlier owner's version 1", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1),
 			ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "tester"))))

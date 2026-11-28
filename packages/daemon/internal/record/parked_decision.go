@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // RelayOutcome is what RelayParkedDecision did with one decision, which is what its caller logs.
@@ -32,35 +30,51 @@ const (
 	// RelayNoPersonWaiting is a decision no person made on a tree whose root waits for its slot:
 	// nothing is kept, since only a person decides, and nobody is told.
 	RelayNoPersonWaiting
-	// RelayNotParked is a decision on a lingering root someone has since moved to a status of the
-	// workflow (admission's releaseUnslotted leaves one at in_progress): it is nobody's parked
-	// tree, so nothing is kept and nobody is told.
+	// RelayNotParked is a decision on a root out of Legion's work that someone has since moved to a
+	// status of the workflow, a root at phase done (admission's releaseUnslotted leaves one at
+	// in_progress): it is nobody's parked tree, so nothing is kept and nobody is told.
 	RelayNotParked
 )
 
-// WaitsForSlot says whether root is a root handed to Legion that waits in the line for its tree
-// to be opened, with no architect running for it yet: the one queued-root rule (QueuedRoot),
-// read with the root's own design gate and its tree's lifecycle (RootFacts), not lingering, and
-// holding no slot of its own. steps are the design-gate steps the deployment gates.
+// WaitsForSlot says whether root is a root a person handed to Legion that waits in the line for
+// its first start, with no architect running for it yet: in Legion's work, an issue whose run
+// starts as a root's on Dispatch's chain as the copy shows it now (Chains.StartsAsRoot), the one
+// queued-root rule (QueuedRoot) read with its own design gate, and holding no slot of its own.
+// steps are the design-gate steps the deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
 // thing and no longer does: a running root can hold no row while it waits on another issue, and a
-// root handed over in accepting carries the row it held in the tree it left (Waiting's
-// queued-root loop states why), so a person's todo on such a root read here as a root with no
-// architect, and every decision a person made on its tree was kept for a start that is never
-// queued instead of reaching the architect that is running (RelayParkedDecision, workflow's
-// CatchUpTheTreesOwed). The slot is still asked, after the rule rather than instead of it: a
-// root at admitted whose gate has never opened is a queued root by its record and holds the
-// slot its architect is writing the design in, and that architect hears a decision itself.
+// root handed over in accepting carries the row it held before (Waiting's queued-root loop states
+// why), so a person's todo on such a root read here as a root with no architect, and every
+// decision a person made on it was kept for a start that is never queued instead of reaching the
+// architect that is running (RelayParkedDecision, workflow's CatchUpTheTreesOwed). The slot is
+// still asked, after the rule rather than instead of it: a root at admitted whose gate has never
+// opened is a queued root by its record and holds the slot its architect is writing the design
+// in, and that architect hears a decision itself.
+//
+// The chain is root's own (ReadChainsOf): StartsAsRoot is a question of root alone.
 func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps []DesignStep) (bool, error) {
-	if root.Lingers() || !claim.IsTreeRoot(root.Key, root.Tree) {
+	if !InLegionsWork(root) {
 		return false, nil
 	}
-	lifecycle, gate, err := RootFacts(ctx, store, tx, root, steps)
+	chains, err := ReadChainsOf(ctx, tx, store, root.Project, []string{root.Key})
 	if err != nil {
 		return false, err
 	}
-	if !QueuedRoot(root, lifecycle, gate) {
+	return WaitsForSlotOn(ctx, tx, store, chains, root, steps)
+}
+
+// WaitsForSlotOn is WaitsForSlot over chains a caller has already read with root's chain in them,
+// for a root in Legion's work (workflow's ArchitectHears, which asks root's gate of the same read).
+func WaitsForSlotOn(ctx context.Context, tx pgx.Tx, store Store, chains *Chains, root Issue, steps []DesignStep) (bool, error) {
+	if !chains.StartsAsRoot(root.Key) {
+		return false, nil
+	}
+	rows, err := store.GatesOf(ctx, tx, root.Key)
+	if err != nil {
+		return false, err
+	}
+	if !QueuedRoot(root, TreeGate{Steps: steps, Rows: rows}) {
 		return false, nil
 	}
 	slots, err := store.Slots(ctx, tx)
@@ -79,16 +93,16 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //
 //   - A root that waits for its slot (WaitsForSlot) keeps a person's decision for the start its
 //     admission will queue, and the controller is told nothing: the tree already runs again.
-//   - A tree that runs hears the decision itself (RelayNone), and a lingering root someone has
-//     moved back into the workflow is nobody's parked tree (RelayNotParked): either keeps nothing.
+//   - A tree that runs hears the decision itself (RelayNone), and a root out of Legion's work that
+//     someone moved back into a status of the workflow is nobody's parked tree (RelayNotParked):
+//     either keeps nothing.
 //   - Only a person decides (PersonActor): a session's write, the daemon's own included, is no
 //     decision to relay (RelayNoPerson).
 //   - What is kept is kept under issue, the issue it was decided on, never under a root: the tree
 //     that owes the person an answer is the tree that issue stands in whenever a start or a
-//     catch-up names it, so a child handed over into a tree of its own, a parked child a person
-//     orphans and a queued root adopted into a live tree take what was decided on them with them,
-//     with nothing to move. It is kept until the start or catch-up that named it reached an
-//     architect of that tree (Store.ForgetKeptDecisions, or the confirmation of the delivery
+//     catch-up names it, so an issue whose Dispatch parent changed takes what was decided on it
+//     with it, and nothing has to move. It is kept until the start or catch-up that named it reached an
+//     architect of that tree (Store.ForgetKeptDecisionsOf, or the confirmation of the delivery
 //     holding it); one that reached none hands it over to a fresh catch-up
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to
 //     tell. The root is read for the two answers that are the root's own: whether it waits for its
@@ -116,7 +130,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 		if !nobodyHears {
 			return RelayNone, nil
 		}
-		if root.Lingers() && !OutOfWorkflow(root.Status) {
+		if !InLegionsWork(root) && !OutOfWorkflow(root.Status) {
 			return RelayNotParked, nil
 		}
 	}
@@ -133,7 +147,7 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	if waiting {
 		return RelayKept, nil
 	}
-	row, err := NewOutboxRow(issue, ControllerNotice{Kind: ParkedDecisionNotice,
+	row, err := NewFencedRow(ctx, tx, store, issue, ControllerNotice{Kind: ParkedDecisionNotice,
 		Decision: decision.Decision, Root: root.Key, Ref: decision.Ref, Actor: decision.Actor,
 		Version: spec.Version, Reason: spec.Reason, Review: spec.Review, Artifact: spec.Artifact},
 		decision.At)
@@ -170,14 +184,14 @@ type DecisionMark struct {
 }
 
 // KeptForget deletes in tx what a clear of a generation would otherwise leave to be asked of no
-// gate, once it is no longer the person's word: the row of each decision of owed, decisions kept
-// on issues of tree, and each changes request of queued, the ones the outbox holds on the issues
-// the clear covers. The record holds no rule of its own for that: the workflow's forget is the one
-// rule (workflow.ForgetSuperseded, which a start, a ready and a send each run before they name
-// what a tree is owed, and workflow.SupersedingApproval for a queued request, which its delivery
-// asks), and a clear of a generation is handed it (Store.ClearGeneration), because the clear
-// deletes the gates the rule reads.
-type KeptForget func(ctx context.Context, tx pgx.Tx, tree string, owed KeptDecisions,
+// gate, once it is no longer the person's word: the row of each decision of owed, the decisions
+// kept on issue, the issue the clear covers, and each changes request of queued, the ones the
+// outbox holds on it. The record holds no rule of its own for that: the workflow's forget is the
+// one rule (workflow.ForgetSuperseded, which a start, a ready and a send each run before they name
+// what a gate root is owed, and workflow.SupersedingApproval for a queued request, which its
+// delivery asks), and a clear of a generation is handed it (Store.ClearGeneration), because the
+// clear deletes the gates the rule reads.
+type KeptForget func(ctx context.Context, tx pgx.Tx, issue string, owed KeptDecisions,
 	queued []QueuedChanges) error
 
 // QueuedChanges is a person's changes request the outbox still holds, a row a runner has leased
@@ -216,7 +230,7 @@ type KeptApproval struct {
 // latest versions of the document a person approved when it named one. It travels with the task
 // (SuperviseRequest.Kept, CatchUp.Kept) and is persisted with the delivery a claim queues it as,
 // which is what says which rows that delivery holds. A published catch-up tells exactly what it
-// named (Store.ForgetKeptDecisions), and a queued start's task tells it at its delivery's
+// named (Store.ForgetKeptDecisionsOf), and a queued start's task tells it at its delivery's
 // confirmation. A start whose task reached no claim, and a catch-up a newer one supersedes, hand
 // every row over instead (workflow.HandOverKept): a fresh catch-up names them while the tree each
 // is owed to has an architect to tell, and otherwise they wait, KEPT, for the next start or

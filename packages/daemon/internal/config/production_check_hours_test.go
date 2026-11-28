@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-// production_check_hours is read as linger_hours is: a positive number of hours, a decimal among
-// them, so a proof can drive the check's bound inside one run; 14 days when the file names none.
+// production_check_hours is a positive number of hours, a decimal among them, so a proof can
+// drive the check's bound inside one run; 14 days when the file names none.
 func TestProductionCheckHoursTakesAPositiveDecimalAndDefaultsToFourteenDays(t *testing.T) {
 	cfg, err := LoadForValidation(writeConfigFile(t, minimalFile), noEnv)
 	if err != nil {
@@ -31,9 +31,6 @@ func TestProductionCheckHoursTakesAPositiveDecimalAndDefaultsToFourteenDays(t *t
 			}
 			if cfg.ProductionCheckBound != tc.want {
 				t.Errorf("ProductionCheckBound = %s, want %s", cfg.ProductionCheckBound, tc.want)
-			}
-			if cfg.Linger != 72*time.Hour {
-				t.Errorf("Linger = %s, want its own default untouched by production_check_hours", cfg.Linger)
 			}
 		})
 	}

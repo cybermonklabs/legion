@@ -384,7 +384,10 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	}
 	registerProjectController(t, store, "LEGION")
 	at := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
-	tick, err := record.NewOutboxRow("LEGION", record.ControllerNotice{Kind: record.TickNotice}, at)
+	// Every controller notice names its run and phase entry, a project key's the fence of a key the
+	// record holds nothing of (record.FirstFence), as the tick's writer stamps it.
+	tickNotice := record.Fenced(record.ControllerNotice{Kind: record.TickNotice}, record.FirstFence)
+	tick, err := record.NewOutboxRow("LEGION", tickNotice, at)
 	if err != nil {
 		t.Fatalf("queue the tick: %v", err)
 	}
@@ -424,7 +427,7 @@ func TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		if err := releaseBeforeDecodes(notice.Payload); err != nil {
 			t.Errorf("the release before refuses the notice %s after the way back, and retries it at every attempt: %v", notice.Payload, err)
 		}
-		if decoded, err := record.DecodeOutboxPayload(notice); err != nil || !reflect.DeepEqual(decoded, record.ControllerNotice{Kind: record.TickNotice}) {
+		if decoded, err := record.DecodeOutboxPayload(notice); err != nil || !reflect.DeepEqual(decoded, tickNotice) {
 			t.Errorf("this release reads the notice left as %#v, %v; want the tick as it was queued", decoded, err)
 		}
 	}

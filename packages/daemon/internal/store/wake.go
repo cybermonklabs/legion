@@ -23,7 +23,7 @@ const wakeClaimSelect = `select token, project, tree, issue, role, session, serv
 // releasedClaimSelect reads the released claims among them: suspended with the source `released`
 // (supervise.Claim.Released), which is the one state a wake acts on. Every other suspended claim
 // is somebody else's to resume — an operator's, a close's — and a path that takes a released
-// claim over (an operator's suspend, a linger) re-stamps its source, which takes it out of every
+// claim over (an operator's suspend, a stop) re-stamps its source, which takes it out of every
 // read of it.
 const releasedClaimSelect = wakeClaimSelect + ` and state = $2 and suspended_by = $3`
 
@@ -746,9 +746,12 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 // defers and a dead lane's lease delays, so it brings no worker back; a backstop it silenced
 // would leave the released worker with nothing to wake it once that row goes. Phase and
 // generation are the whole fence here although finishFencedStarts also finishes a row whose
-// issue left the workflow or whose tree lingers, and one a retired claim's stop outlived: the
-// backstop's wake refuses the first two itself (the workflow's wakeReleased reads
-// InWorkflowNotLingering), and a retired claim is never the released claim the backstop wakes.
+// issue is out of Legion's work, which keeps its phase and generation (R20 of
+// dispatch://INFRA-3320), and one a retired claim's stop outlived: the backstop's wake refuses the
+// first itself (the workflow's wakeReleased reads the issue's own standing, pods.Standing's
+// InWorkflow, which refuses the four statuses out of the workflow, record.OutOfWorkflowStatuses,
+// every status of Dispatch's that is out of Legion's work), and a retired claim is never the
+// released claim the backstop wakes.
 func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var waits bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`

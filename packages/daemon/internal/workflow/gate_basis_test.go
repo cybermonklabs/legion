@@ -61,18 +61,16 @@ func seedLiveAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "T",
 		HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 }
 
-// seedAncestorOnTheBacklog records LEGION-100 as a move to the backlog leaves a root (workflow's
-// leave, beginLinger): at phase done with its tree lingering, and with the status Dispatch showed,
-// backlog. R1 counts such an ancestor as not accepted.
+// seedAncestorOnTheBacklog records LEGION-100 as a root a person moved to the backlog after its
+// run closed: at phase done, with the status Dispatch showed, backlog. R1 counts such an ancestor
+// as not accepted.
 func seedAncestorOnTheBacklog(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	until := basisEngineNow.Add(time.Hour)
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
-		Rank: "T", HandedOver: true, LastDispatchSeq: 1, LingerUntil: &until})
+		Rank: "T", HandedOver: true, LastDispatchSeq: 1})
 }
 
 // pendingSeeds is every pending-basis seed the outbox holds for issue, in order.
@@ -270,13 +268,14 @@ func refusedRegistrationLeftNothing(t *testing.T, pool *pgxpool.Pool, event stri
 }
 
 // register_gate reads the ancestor open outside any transaction, so the ancestor's close_root can
-// commit between that read and the registration's commit. close_root writes the ancestor's record
-// done and queues Dispatch's status write, so the daemon's mirror of Dispatch and the status the
-// record last read from Dispatch both show the ancestor open until Dispatch's event of the close
-// comes back. The registration reads the record's own status in its transaction, finds the close,
-// and is refused as a registration on an ancestor accepted since its read is: nothing is recorded,
-// and its event is left unmarked. TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused is
-// the same race with the ancestor's sign-off.
+// commit between that read and the registration's commit. close_root queues Dispatch's status
+// write and marks the close on the ancestor's record (record.PendingClose), which keeps its phase
+// and its status until Dispatch shows it done, so the daemon's mirror of Dispatch and the status
+// the record last read from Dispatch both show the ancestor open until Dispatch's event of the
+// close comes back. The registration reads the queued close in its transaction and is refused as
+// a registration on an ancestor accepted since its read is: nothing is recorded, and its event is
+// left unmarked. TestARegistrationOnAnAncestorAcceptedSinceItsReadIsRefused is the same race with
+// the ancestor's sign-off.
 func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -286,16 +285,15 @@ func TestARegistrationOnAnAncestorClosedSinceItsReadIsRefused(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress",
 		DispatchStatus: "in_progress", Rank: "T", HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	if result := closeRootNow(t, pool, "close", basisAncestor); result.Refusal != nil {
 		t.Fatalf("the ancestor's close_root = %+v, want it closed", result.Refusal)
 	}
-	if closed := storedIssue(t, pool, basisAncestor); closed.Status != record.DoneStatus || closed.DispatchStatus != "in_progress" {
-		t.Fatalf("the ancestor after its close_root has status %q and Dispatch status %q, want done and in_progress: Dispatch's event of the close has not come back",
-			closed.Status, closed.DispatchStatus)
+	if closed := storedIssue(t, pool, basisAncestor); closed.PendingClose == nil || closed.Status != "in_progress" || closed.DispatchStatus != "in_progress" {
+		t.Fatalf("the ancestor after its close_root has status %q, Dispatch status %q and pending close %+v, want in_progress, in_progress and a close queued: Dispatch's event of the close has not come back",
+			closed.Status, closed.DispatchStatus, closed.PendingClose)
 	}
 
-	refusedWith(t, apply("register-on-basis", onBasis(approvedBasis(), 6)), "BASIS_ACCEPTED", "The daemon records "+basisAncestor+" done")
+	refusedWith(t, apply("register-on-basis", onBasis(approvedBasis(), 6)), "BASIS_ACCEPTED", "The daemon has queued the close of "+basisAncestor+" as done")
 
 	refusedRegistrationLeftNothing(t, pool, "register-on-basis")
 }

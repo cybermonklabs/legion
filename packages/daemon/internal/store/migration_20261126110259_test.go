@@ -14,17 +14,19 @@ const mergeHoldsChangedVersion = 20261126110259
 // merge holds document changed (record.MergeHoldsChanged). The outbox refuses a kind its
 // constraint does not name, so the row could not be queued before this migration, and the
 // transaction that applied the document's event would fail with it: the negative control is that
-// refusal, read before the migration, on a database that already carries the basis seeds' list
-// (20261122154643), which this version stands above. After it the row is queued, and so is every
-// kind the constraint already named, thirty-three in all, conflict_confirm, merge_forward,
-// design_changes, phase_ended, pending_basis_seed and reparent_seed among them, since the migration
-// rewrites the list whole and a kind left out would stop its own effect. A kind that is none is
-// still refused, and so is a kind of the merge the daemon no longer submits.
+// refusal, read before the migration, on a database that carries the basis seeds' list
+// (20261122154643), which this version stands above. dispatch://INFRA-4730's 20261122154645, which
+// stands between the two, names the kind as well (its file says why), so the control is read
+// before it. After the migration the row is queued, and so is every kind the constraint already
+// named, thirty-four in all, conflict_confirm, merge_forward, design_changes, phase_ended,
+// pending_basis_seed, reparent_seed and 20261122154645's retention_end among them, since the
+// migration rewrites the list whole and a kind left out would stop its own effect. A kind that is
+// none is still refused, and so is a kind of the merge the daemon no longer submits.
 func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
-	migrateThrough(t, store, mergeHoldsChangedVersion-1)
+	migrateThrough(t, store, basisSeedsVersion)
 	queue := func(kind string) error {
 		_, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
@@ -45,10 +47,10 @@ func TestTheOutboxTakesTheMergeHoldsKindWith20261126110259(t *testing.T) {
 		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
 		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record", "plan_record",
 		"conflict_confirm", "merge_forward", "design_changes", "pending_basis_seed", "reparent_seed",
-		"merge_holds_changed",
+		"merge_holds_changed", "retention_end",
 	}
-	if len(kinds) != 33 {
-		t.Fatalf("the list names %d kinds, want the 33 the migration writes", len(kinds))
+	if len(kinds) != 34 {
+		t.Fatalf("the list names %d kinds, want the 34 the migration writes", len(kinds))
 	}
 	for _, kind := range kinds {
 		if err := queue(kind); err != nil {

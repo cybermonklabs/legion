@@ -17,13 +17,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// The operator's spawn of a root draws the tree-unit experiments the project declares, in the
-// transaction that creates the tree's lifecycle row, under each experiment's own mode, from the
-// source the deployment hands in and at the instant its clock reads (Options.Now). The answers
-// reach the tree's root record where the daemon has one — a root the workflow recorded, which an
-// operator spawned a session on — and nothing at all is written where it has none, the ordinary
-// operator case: a tree the operator opens for work Dispatch never filed is not refused, no row
-// is written for it and no issue record is invented.
+// The operator's spawn draws the tree-unit experiments the project declares for the issue its
+// claim binds, in the transaction that creates that issue's lifecycle row, under each
+// experiment's own mode, from the source the deployment hands in and at the instant its clock
+// reads (Options.Now): the issue, not its tree, is the unit (decision 16 of
+// dispatch://INFRA-4730). The answers reach the issue's record where the daemon has one — a root
+// the workflow recorded, which an operator spawned a session on, and a worker the operator
+// spawned on a recorded issue of that root's tree, which draws its own — and nothing at all is
+// written where it has none, the ordinary operator case: a tree the operator opens for work
+// Dispatch never filed is not refused, no row is written for it and no issue record is invented.
 func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -64,6 +66,26 @@ func TestTheOperatorsSpawnDrawsTheMemoryGroupOfTheTreeItOpens(t *testing.T) {
 	want := []string{`memory/tree: variant "memory" drawn as "random" at ` + drawnAt.Format(time.RFC3339Nano)}
 	if len(drawn) != len(want) || drawn[0] != want[0] {
 		t.Fatalf("the spawned root holds %v, want %v: the tree's experiments and no other", drawn, want)
+	}
+
+	// A worker on a recorded issue of that tree opens that issue's own lifecycle and draws its own.
+	worker := spawnBody()
+	worker.Issue, worker.Role = "LEGION-209", claim.RoleImplementer
+	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		parent := recorded.Tree
+		return records.PutIssue(ctx, tx, record.Issue{
+			Key: worker.Issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Tree: recorded.Tree, Parent: &parent, Project: testDispatchProject, Title: worker.Issue, Phase: phase.Admitted,
+			Generation: 1, Status: "todo", Rank: "B", HandedOver: true,
+		})
+	}); err != nil {
+		t.Fatalf("seed the worker's issue: %v", err)
+	}
+	if code := h.operator(http.MethodPost, "/legion/v1/operator/claims", worker).Code; code != http.StatusCreated {
+		t.Fatalf("spawn of a worker on a recorded issue = %d, want 201", code)
+	}
+	if drawn := readAssignments(t, h, worker.Issue); len(drawn) != len(want) || drawn[0] != want[0] {
+		t.Fatalf("the worker's issue holds %v, want %v: its own draw of the tree-unit experiments", drawn, want)
 	}
 
 	// A tree the daemon has no record of: the spawn opens it, draws nothing, and answers as it

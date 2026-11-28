@@ -46,7 +46,11 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if err := engine.StartFirstPhase(ctx, tx, *issue, nil); err != nil {
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), issue.Project, []string{issue.Key})
+		if err != nil {
+			return err
+		}
+		if err := engine.StartFirstPhase(ctx, tx, *issue, chains, nil); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)

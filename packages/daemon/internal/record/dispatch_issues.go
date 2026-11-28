@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store/precommit"
 )
 
 func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading DispatchReading) error {
@@ -20,6 +24,23 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	// what Dispatch says.
 	if reading.Seq == 0 {
 		return nil
+	}
+	// A row the copy does not hold yet, and a parent the reading moves, can move the trees of the
+	// project (watchTrees), which are read before the write. The row is probed for that
+	// (copyRowMovesTrees) only where watchTrees would read them: in a transaction that runs settles
+	// and has not read them yet (precommit.Scoped, which writes nothing).
+	if s.state.Load() != nil {
+		if scoped, registered := precommit.Scoped(ctx, treeWatch{store: s, project: reading.Project}); scoped && !registered {
+			moves, err := copyRowMovesTrees(ctx, tx, reading)
+			if err != nil {
+				return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+			}
+			if moves {
+				if err := s.watchTrees(ctx, tx, reading.Project); err != nil {
+					return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+				}
+			}
+		}
 	}
 	// A value the reading does not carry goes into a new row as its column's default, and a nil
 	// list it carries as the empty list, since neither list column takes null; a parent of none
@@ -101,6 +122,11 @@ func (s *Postgres) TakeDispatchRefill(ctx context.Context, tx pgx.Tx, project st
 	if tag.RowsAffected() == 0 {
 		return nil, false, nil
 	}
+	// The copy is emptied and filled again in this transaction, so the trees are read before it
+	// empties (watchTrees) and compared with the trees the refill leaves when it ends.
+	if err := s.watchTrees(ctx, tx, project); err != nil {
+		return nil, false, fmt.Errorf("empty the Dispatch copy of %s: %w", project, err)
+	}
 	rows, err := tx.Query(ctx, `with removed as (delete from dispatch_issues where project = $1 returning key)
 		select key from removed order by key`, project)
 	if err != nil {
@@ -174,8 +200,8 @@ func (s *Postgres) DispatchIssues(ctx context.Context, tx pgx.Tx, project string
 // cannot read counts as unfinished for ever (blockers.Blocked), which would hold its slot back
 // for good. The table is keyed by the issue alone, so a key names one row and project is the
 // row's own. DispatchIssues and DispatchChildren keep their project term: the first is the
-// daemon's listing of its own project, and a parent link cannot cross a project, so a child of
-// one is of that project too.
+// daemon's listing of its own project, and a child of another project is no child the second
+// answers, as a parent of another project is no link of a chain (inProjectParentSQL).
 func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error) {
 	if len(keys) == 0 {
 		return nil, nil
@@ -196,6 +222,11 @@ func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []strin
 // later step reads it to decide whether a parent's own first phase waits for a child of its own
 // that is still open, which is a question about every child Dispatch knows of, recorded here or
 // not, so it is the mirror that answers it rather than the daemon's records.
+//
+// It answers the children of project alone: a child of another project is no open child of a
+// wait, as a parent of another project is no link of that child's chain (inProjectParentSQL, R19
+// of dispatch://INFRA-3320). The hold such a child puts on its parent's acceptance is Dispatch's
+// (FOREIGN_CHILD_OPEN, in packages/envoy/internal/dispatch/api/issue_parent.go), not this wait's.
 func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project string, parents []string) (map[string][]DispatchIssueRow, error) {
 	children := make(map[string][]DispatchIssueRow, len(parents))
 	if len(parents) == 0 {
@@ -211,6 +242,98 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 		children[row.Parent] = append(children[row.Parent], row)
 	}
 	return children, nil
+}
+
+// ChainRows walks the parent chains a decision pass reads in the database, in one recursive
+// statement whatever their number and depth: a read per link would
+// cost a round trip per level on every pass (R16 of dispatch://INFRA-3320). The walk starts from
+// every record of project not at phase done, which the issues_live index serves, every row of the
+// project's copy at todo and each of extra, and carries each walk's path, so a key it has passed
+// ends that walk however the copy loops, and its depth, so no walk climbs more than
+// MaxChainLinks+1 links: one more than Dispatch allows, which is what tells a chain a stale row
+// made too long from the longest Dispatch keeps. A link the copy holds no row of is read as a row
+// that is not Present, which ends its walk, so a missing row is a fact of the answer rather than
+// a gap in it. A parent of another project ends the walk as a parent of none does
+// (inProjectParentSQL): the row reads with no parent, so its chain is known and ends there, and no
+// walk climbs from a row of one project to a row of another. The walk is the copy's alone:
+// nothing of the daemon's records decides a link.
+//
+// Each key is answered once, whichever walks reached it, with the fewest links above a start it
+// stands at, 0 for a key a walk started from. The rows of every walk together are the chain of
+// each start up to the bound, and the chain of each link above a start as far as those walks
+// reached (Chains.Chain, ChainUnread).
+func (s *Postgres) ChainRows(ctx context.Context, tx pgx.Tx, project string, extra []string) ([]ChainRow, error) {
+	read, err := chainRows(ctx, tx, `select key from issues where project = $1 and phase <> 'done'
+			union select key from dispatch_issues where project = $1 and status = 'todo'
+			union select unnest($2::text[])`, project, extra)
+	if err != nil {
+		return nil, fmt.Errorf("read the chains of %s: %w", project, err)
+	}
+	return read, nil
+}
+
+// ChainRowsOf walks the chain of each of keys as ChainRows walks every chain of a pass, from keys
+// alone: the statement reads each key's chain and no other row of the copy.
+func (s *Postgres) ChainRowsOf(ctx context.Context, tx pgx.Tx, keys []string) ([]ChainRow, error) {
+	read, err := chainRows(ctx, tx, `select unnest($1::text[])`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the chains of %v: %w", keys, err)
+	}
+	return read, nil
+}
+
+// inProjectParentSQL is the parent the walk climbs to from the copy's row d: d's parent where that
+// parent is of d's own project, and null, a parent of none, where it is of another. It is the
+// statement of the project boundary every chain the daemon reads from the copy stops at (R19 of
+// dispatch://INFRA-3320): a parent of another project is no issue above, as Dispatch's own walk
+// climbs only to a parent of the issue's project (legionWalkSQL, in
+// packages/envoy/internal/dispatch/api/issue_parent.go). The parent's project is its row's where
+// the copy holds one, and otherwise its key's: the part before the one `-` a Dispatch key holds
+// (claim.KeyProject). It reads d alone, not the walk that reached it, so each key reads with one
+// parent whichever walk reached it; and since no walk climbs past the boundary, every row a walk
+// reaches is of the project of the row it started from. InProjectParent is the same rule in Go,
+// for a parent the copy holds no link to.
+const inProjectParentSQL = `case when coalesce((select p.project from dispatch_issues p where p.key = d.parent),
+		split_part(d.parent, '-', 1)) = d.project then d.parent end`
+
+// InProjectParent is parent as a link of key's chain: parent where its key is of key's own
+// project (claim.KeyProject), and "", a parent of none, where it is of another. It is the chain
+// walk's project boundary (inProjectParentSQL) for a parent the copy holds no link to: the old
+// parent of a change of parent, whose link the copy has already replaced (workflow's reparent
+// reads), and a parent Dispatch answers while the daemon reads a chain again (the daemon's
+// rereadChain) or reads the chains a status call names (api's dispatchReads.readings). It reads
+// the parent's key where the walk reads the parent's row first, and the two agree: Dispatch never
+// moves an issue to another project, so a row's project is its key's.
+func InProjectParent(key, parent string) string {
+	if parent == "" || claim.KeyProject(parent) != claim.KeyProject(key) {
+		return ""
+	}
+	return parent
+}
+
+// chainRows is the one walk ChainRows and ChainRowsOf make, from the keys starts selects with
+// args, up each row's parent of its own project (inProjectParentSQL) to MaxChainLinks+1 links,
+// each key once at the fewest links above a start it stands at.
+func chainRows(ctx context.Context, tx pgx.Tx, starts string, args ...any) ([]ChainRow, error) {
+	rows, err := tx.Query(ctx, `with recursive starts (key) as (`+starts+`
+		), walk (key, depth, parent, status, labels, present, path) as (
+			select s.key, 0, `+inProjectParentSQL+`, d.status, d.labels, d.key is not null, array[s.key]
+			from starts s left join dispatch_issues d on d.key = s.key
+			union all
+			select w.parent, w.depth + 1, `+inProjectParentSQL+`, d.status, d.labels, d.key is not null, w.path || w.parent
+			from walk w left join dispatch_issues d on d.key = w.parent
+			where w.present and w.parent is not null and w.depth < `+strconv.Itoa(MaxChainLinks+1)+` and w.parent <> all(w.path)
+		)
+		select key, min(depth), coalesce(parent, ''), coalesce(status, ''), coalesce(labels, '{}'), present
+		from walk group by key, parent, status, labels, present order by key`, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (ChainRow, error) {
+		var chained ChainRow
+		err := row.Scan(&chained.Key, &chained.Depth, &chained.Parent, &chained.Status, &chained.Labels, &chained.Present)
+		return chained, err
+	})
 }
 
 // HasDispatchChildren answers whether the mirror holds a child of parent, with the project term

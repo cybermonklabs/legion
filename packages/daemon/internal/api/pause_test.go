@@ -57,6 +57,8 @@ type pauseHarness struct {
 	clock    *pauseClock
 	logs     *testlog.Buffer
 	statuses *statusRecorder
+	// facts is every fact the routes applied, which the server's one handler records.
+	facts *factRecorder
 }
 
 // pauseCapable is a configuration that can hold a pause: runtime: kubernetes with the idle release
@@ -72,7 +74,7 @@ func pauseCapable() config.Config {
 func newPauseHarness(t *testing.T, cfg config.Config) *pauseHarness {
 	t.Helper()
 	h := &pauseHarness{harness: newHarness(t), clock: &pauseClock{at: pauseStartsAt}, logs: &testlog.Buffer{},
-		statuses: &statusRecorder{issues: map[string]dispatch.Issue{}}}
+		statuses: &statusRecorder{issues: map[string]dispatch.Issue{}}, facts: &factRecorder{}}
 	svc, err := pause.New(pause.Options{Store: h.store, Records: record.NewStore(), Project: testDispatchProject, Config: cfg,
 		Log: slog.New(slog.NewJSONHandler(h.logs, nil)), Now: h.clock.Now})
 	if err != nil {
@@ -99,7 +101,7 @@ func (h *pauseHarness) pauseOptions(svc PauseService) Options {
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Log: quiet,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{&factRecorder{}}, Dispatch: h.statuses, Pause: svc,
+		Handlers: []intake.Handler{h.facts}, Dispatch: h.statuses, Pause: svc,
 	}
 }
 
@@ -516,8 +518,16 @@ func TestPauseRoutes(t *testing.T) {
 				t.Fatalf("set_status while paused = %d, want 200; body %s", recorder.Code, recorder.Body)
 			}
 		}
-		if len(h.statuses.writes) != 2 {
-			t.Fatalf("Dispatch took %d status writes while paused, want 2: %+v", len(h.statuses.writes), h.statuses.writes)
+		// Each call is applied, as a status call whose write the outbox makes (decision 5 of
+		// dispatch://INFRA-4730): the pause holds no status write.
+		applied := 0
+		for _, fact := range h.facts.recorded() {
+			if call, ok := fact.(intake.StatusCall); ok && call.Op == intake.SetStatusCall && len(call.Issues) == 1 && call.Issues[0].Key == "LEGION-213" {
+				applied++
+			}
+		}
+		if applied != 2 {
+			t.Fatalf("the routes applied %d set_status calls of LEGION-213 while paused, want 2: %+v", applied, h.facts.recorded())
 		}
 		if recorder := h.request(http.MethodGet, "/healthz", nil, nil); recorder.Code != http.StatusOK {
 			t.Fatalf("healthz while paused = %d; body %s", recorder.Code, recorder.Body)

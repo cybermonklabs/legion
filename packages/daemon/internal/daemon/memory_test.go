@@ -135,8 +135,10 @@ func underProject(variants []runtime.Variant, project string) []runtime.Variant 
 }
 
 // memorySpecs is a spec builder for a project whose memory instructions boot materialized, over
-// a reader that gives the tree LEGION-1 the memory arm alone. The mode is no part of a launch's
-// decision, so it is no part of this builder either.
+// a reader that gives the memory arm alone to the root LEGION-1 and its child LEGION-2, each of
+// which holds the arm in its own row (the child's copied from the root's at its first start, as
+// admit's takeTreeDraw does). The mode is no part of a launch's decision, so it is no part of this
+// builder either.
 func memorySpecs(t *testing.T, instructions string) specs {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
@@ -146,8 +148,8 @@ func memorySpecs(t *testing.T, instructions string) specs {
 	return specs{
 		stateDir: t.TempDir(), project: "test", prompts: composer, appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md",
-		variants: func(_ context.Context, tree, _ string, _ claim.Role) (experiment.Arms, error) {
-			if tree != "LEGION-1" {
+		variants: func(_ context.Context, issue string, _ claim.Role) (experiment.Arms, error) {
+			if issue != "LEGION-1" && issue != "LEGION-2" {
 				return experiment.Arms{}, nil
 			}
 			arms := experiment.Arms{Variants: []runtime.Variant{{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles}}}
@@ -232,7 +234,7 @@ func TestAMemoryTreeKeepsItsFilesAfterTheProjectMovesToModeOff(t *testing.T) {
 		t.Errorf("a recorded memory tree at mode off: variants = %+v, instructions = %q; want the memory arm and %q",
 			drawn.Variants, drawn.Prompt.VariantInstructionsPaths, instructions)
 	}
-	undrawn := memorySpawn(t, off, "LEGION-2", "LEGION-2", claim.RoleTester)
+	undrawn := memorySpawn(t, off, "LEGION-7", "LEGION-7", claim.RoleTester)
 	if len(undrawn.Variants) != 0 || len(undrawn.Prompt.VariantInstructionsPaths) != 0 {
 		t.Errorf("a tree with no draw at mode off: variants = %+v, instructions = %q; want neither",
 			undrawn.Variants, undrawn.Prompt.VariantInstructionsPaths)
@@ -252,7 +254,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 	}
 
 	refused := memorySpecs(t, "/state/memory-instructions.md")
-	refused.variants = func(context.Context, string, string, claim.Role) (experiment.Arms, error) {
+	refused.variants = func(context.Context, string, claim.Role) (experiment.Arms, error) {
 		return experiment.Arms{}, errors.New("the store is down")
 	}
 	token, err := claim.NewToken("test", "LEGION-2", claim.RoleTester)

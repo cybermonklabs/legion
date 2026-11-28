@@ -6,7 +6,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A member's sentence says the priority that placed it and whose it is: its own, its tree root's
+// A member's sentence says the priority that placed it and whose it is: its own, its top issue's
 // for a member with none of its own, and, where neither has one,
 // that it waits after every issue at P0 to P3. The counts name the band it waits in: `at P0`, or
 // `with no priority`.
@@ -17,11 +17,11 @@ func TestWaitingLineReasonSaysThePriorityThatPlacedTheMember(t *testing.T) {
 		want  string
 	}{
 		{
-			name: "a child placed at its tree root's P0",
-			entry: record.LineEntry{Issue: record.Issue{Key: "LEGION-11", Tree: "LEGION-10"},
+			name: "a child placed at its top issue's P0",
+			entry: record.LineEntry{Issue: record.Issue{Key: "LEGION-11", Tree: "LEGION-12"}, RootKey: "LEGION-10",
 				Kind: record.LineFirstPhase, Priority: record.P0, Part: record.PartStarting, PartPlace: 1},
-			want: "It has not started. It waits at P0, the priority of its tree root LEGION-10. " +
-				"It is 1st of 2 issues at P0 that have not started, by the Dispatch rank of its tree root LEGION-10, " +
+			want: "It has not started. It waits at P0, the priority of its top issue LEGION-10. " +
+				"It is 1st of 2 issues at P0 that have not started, by the Dispatch rank of its top issue LEGION-10, " +
 				"and 1 issue at P0 whose work came back stands ahead of all of them.",
 		},
 		{
@@ -34,9 +34,9 @@ func TestWaitingLineReasonSaysThePriorityThatPlacedTheMember(t *testing.T) {
 		},
 		{
 			name: "a child whose root has no priority either",
-			entry: record.LineEntry{Issue: record.Issue{Key: "LEGION-31", Tree: "LEGION-30"},
+			entry: record.LineEntry{Issue: record.Issue{Key: "LEGION-31"}, RootKey: "LEGION-30",
 				Kind: record.LineReturning, Part: record.PartReturned, PartPlace: 1},
-			want: "Its work came back. Neither it nor its tree root LEGION-30 has a priority, so it waits after every issue at P0 to P3. " +
+			want: "Its work came back. Neither it nor its top issue LEGION-30 has a priority, so it waits after every issue at P0 to P3. " +
 				"It is 1st of 2 issues with no priority whose work came back, " +
 				"and they take the free slots before the issues with no priority that have not started.",
 		},

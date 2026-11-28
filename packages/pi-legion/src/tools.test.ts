@@ -213,10 +213,10 @@ const EVERY_SESSION: readonly LegionToolSession[] = [
   { kind: "controller", sessionID: "ses_controller" },
 ];
 
-const toolFor = (active: LegionToolSession) =>
+const toolFor = (active: LegionToolSession, daemon = recordingDaemon({}).daemon) =>
   createLegionTool({
     pi,
-    daemon: recordingDaemon({}).daemon,
+    daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
     handoffReport: noHandoffReport,
@@ -241,6 +241,24 @@ test("the legion tool's description carries the daemon's rules for ending a chil
   const { description } = toolFor(claimSession("architect"));
   expect(description).toContain(rule);
   expect(description).toContain(notTakenYet);
+});
+
+// Dispatch closes an issue only once each issue under it is done, and moves an issue out of work
+// with the open issues under it only when the write says so (R24 of INFRA-3320). So the rules for
+// ending a child say to close each open child of it done first, from the bottom, and that a backlog
+// or icebox of it takes include_children (spec v12 of INFRA-4730), in the daemon's rule
+// (record.EndChildRule, through end-child-rule.json) and in the description alike.
+test("end child rule closes children first", () => {
+  const { rule } = daemonFixture("end-child-rule.json") as { readonly rule: string };
+  const closesChildrenFirst =
+    "Dispatch closes an issue only once each issue under it is done, so when the child has open children, close each of them done first, from the bottom. ";
+  const parksWithChildren =
+    "A backlog or icebox of a child that has open children takes include_children, which moves those children with it. ";
+  const { description } = toolFor(claimSession("architect"));
+  for (const sentence of [closesChildrenFirst, parksWithChildren]) {
+    expect(rule).toContain(sentence);
+    expect(description).toContain(sentence);
+  }
 });
 
 /** The `legion` tool's parameter schema as Oh My Pi agents are given it, serialized whole but for
@@ -320,6 +338,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     return_to: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
     round: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
+    children: { type: "string", enum: ["include", "unlink"] },
+    parent: { type: "string", enum: ["include"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
     role: {
@@ -356,6 +376,16 @@ const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
     "replay_give_up",
     "rerun_child",
     "issue",
+    "parent",
+  ],
+  children: ["set_status", "backlog", "icebox", "include", "unlink", "CHILDREN_ARGUMENT_REQUIRED"],
+  parent: [
+    "set_status",
+    "rerun_child",
+    "todo",
+    "include",
+    "in_progress",
+    "PARENT_ARGUMENT_REQUIRED",
   ],
   giveUp: ["replay_give_up", "discard_give_up", "consumer", "throughSeq"],
   consumer: ["replay_give_up", "discard_give_up", "read_state", "throughSeq"],
@@ -680,20 +710,11 @@ test("retry_or_escalate takes a reason", async () => {
 // fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
 test("rerun_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
-  const tool = createLegionTool({
-    pi,
-    daemon,
-    controllerGrant: noControllerGrant,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("architect"),
-  });
+  const tool = toolFor(claimSession("architect"), daemon);
   const refusals = [
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
-      'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
+      'rerun_child does not accept field "reason"; it takes issue, parent. Say why in a dispatch comment on the child',
     ],
     // Every field the operation does not take is named, as a phase op's refusal names them.
     [
@@ -2488,6 +2509,141 @@ test("the controller reads the state without a grant and sets an issue's status 
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
 });
 
+/** The refusal a tool call answers with, as `toolFailure` writes it. */
+const refusal = (text: string) => ({
+  content: [{ type: "text" as const, text }],
+  details: {},
+  isError: true,
+});
+
+// k41 of dispatch://INFRA-4730 (R24 of dispatch://INFRA-3320): a backlog or icebox that would
+// leave a child in work under the issue takes set_status's children argument, include or unlink,
+// which the tool sends in the daemon's own words, and the answer is the daemon's own, the status
+// writes the call queued. A children argument the daemon would refuse — a word outside the two,
+// or one beside a todo, which moves no issue out of work — is refused before the controller's
+// grant is minted, and nothing reaches the daemon.
+test("set_status children", async () => {
+  const queued = { queued: [{ issue: "LEGION-208", status: "backlog", row: 41 }] };
+  const minted: string[] = [];
+  const { calls, daemon } = recordingDaemon({ answers: { issueStatus: queued } });
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  for (const [status, children] of [
+    ["backlog", "include"],
+    ["icebox", "unlink"],
+  ] as const) {
+    await expect(run({ op: "set_status", issue: "LEGION-208", status, children })).resolves.toEqual(
+      { content: [{ type: "text", text: JSON.stringify(queued) }], details: queued }
+    );
+    expect(calls.at(-1)).toEqual([
+      "issueStatus",
+      { grantId: "controller-grant-1", issue: "LEGION-208", status, children },
+    ]);
+  }
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [
+      { op: "set_status", issue: "LEGION-208", status: "backlog", children: "keep" },
+      "set_status's children must be include or unlink",
+    ],
+    [
+      { op: "set_status", issue: "LEGION-208", status: "todo", children: "include" },
+      "set_status's children goes with backlog or icebox, which move an issue out of work",
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual(refusal(text));
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toHaveLength(2);
+});
+
+// k41 of dispatch://INFRA-4730: a todo that would put the issue in work under a parent that is not
+// takes set_status's parent argument, include, which the tool sends as it is named, and a todo
+// that names none sends none, so the daemon judges it by the rule (PARENT_ARGUMENT_REQUIRED). A
+// parent argument the daemon would refuse — a word other than include, or one beside a backlog or
+// icebox, which moves no issue into work — is refused before the grant is minted.
+test("set_status parent", async () => {
+  const queued = { queued: [{ issue: "LEGION-209", status: "todo", row: 42 }] };
+  const minted: string[] = [];
+  const { calls, daemon } = recordingDaemon({ answers: { issueStatus: queued } });
+  const tool = controllerTool(daemon, minted);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context("ses_controller"));
+
+  await expect(
+    run({ op: "set_status", issue: "LEGION-209", status: "todo", parent: "include" })
+  ).resolves.toEqual({
+    content: [{ type: "text", text: JSON.stringify(queued) }],
+    details: queued,
+  });
+  expect(calls.at(-1)).toEqual([
+    "issueStatus",
+    { grantId: "controller-grant-1", issue: "LEGION-209", status: "todo", parent: "include" },
+  ]);
+  await run({ op: "set_status", issue: "LEGION-209", status: "todo" });
+  const [, plain] = calls.at(-1) ?? [];
+  expect(Object.keys(plain ?? {}).sort()).toEqual(["grantId", "issue", "status"]);
+  expect(minted).toEqual(["ses_controller", "ses_controller"]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [
+      { op: "set_status", issue: "LEGION-209", status: "todo", parent: "unlink" },
+      "set_status's parent must be include",
+    ],
+    [
+      { op: "set_status", issue: "LEGION-209", status: "icebox", parent: "include" },
+      "set_status's parent goes with todo, which moves an issue into work",
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual(refusal(text));
+  }
+  expect(calls).toHaveLength(before);
+  expect(minted).toHaveLength(2);
+});
+
+// k41 of dispatch://INFRA-4730: an architect's rerun_child takes the parent argument as set_status
+// does, since its todo may put the child in work under a parent that is not, and answers the
+// daemon's own answer, the todo it queued. A parent other than include, and a children argument,
+// which no todo takes, are refused before the claim's grant is minted.
+test("rerun_child parent", async () => {
+  const queued = { queued: [{ issue: "LEGION-209", status: "todo", row: 42 }] };
+  const { calls, daemon } = recordingDaemon({ answers: { childRerun: queued } });
+  const tool = toolFor(claimSession("architect"), daemon);
+  const run = (parameters: Record<string, unknown>) =>
+    tool.execute("", parameters, undefined, undefined, context());
+
+  await expect(run({ op: "rerun_child", issue: "LEGION-209", parent: "include" })).resolves.toEqual(
+    { content: [{ type: "text", text: JSON.stringify(queued) }], details: queued }
+  );
+  expect(calls.slice(-2)).toEqual([
+    [
+      "grant",
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    ["childRerun", { grantId: "grant-208", issue: "LEGION-209", parent: "include" }],
+  ]);
+
+  const before = calls.length;
+  for (const [parameters, text] of [
+    [
+      { op: "rerun_child", issue: "LEGION-209", parent: "unlink" },
+      "rerun_child's parent must be include",
+    ],
+    [
+      { op: "rerun_child", issue: "LEGION-209", children: "include" },
+      'rerun_child does not accept field "children"; it takes issue, parent',
+    ],
+  ] as const) {
+    await expect(run(parameters)).resolves.toEqual(refusal(text));
+  }
+  expect(calls).toHaveLength(before);
+});
+
 test("the controller stops, retries, suspends and resumes an agent it names by issue and role", async () => {
   const minted: string[] = [];
   // What the daemon answers each action (agent-*.json): the claim's state after it, and who
@@ -3516,7 +3672,7 @@ test("read_state's summary names the live trees and each held issue with its rea
   expect(admissionLines(golden)).toEqual([
     "active LEGION-208 LEGION-210 LEGION-212 LEGION-218 LEGION-219 LEGION-220",
     "waiting LEGION-212 LEGION-211 LEGION-216",
-    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-215 LEGION-216 LEGION-218 LEGION-219",
+    "trees LEGION-208 LEGION-210 LEGION-211 LEGION-212 LEGION-214 LEGION-216 LEGION-218 LEGION-219",
     "blocked LEGION-209 on LEGION-210 LEGION-213",
     "blocked LEGION-216 on LEGION-210",
     "held LEGION-209 dispatch_blocker by LEGION-210 LEGION-213",

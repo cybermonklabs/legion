@@ -42,7 +42,7 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //
 // A worker's issue can close, or an operator suspend it, while it is in a turn: the production
 // check's sign-off, say, arriving while the implementer's report of the check is still a tool call
-// inside that turn, or an architect's own sign-off moving its tree into linger. Stopping the
+// inside that turn, or a person's move of its issue out of Legion's work. Stopping the
 // process at once would cut that call off before Oh My Pi writes its result, and a session resumed
 // from that transcript holds a report with no answer. So the suspension is held:
 //
@@ -50,11 +50,11 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     (TimerSuspend, suspendAtTimeout). The operator's suspension and the controller's each have
 //     one at the stop timeout from its arrival: an operator stopping the process — to drain the
 //     daemon, say — needs the stop bounded. The daemon's own suspension has none unless it names
-//     one (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's
-//     linger close or the child's close as done ends the process otherwise. Asked again
-//     meanwhile, it is the same hold, under one rule: a request can only move the deadline
-//     earlier, and one that holds (SuspendSource.Holds: an operator's or the controller's) also
-//     takes over a hold it outranks (suspensionRank), from then on its own. Until the deadline the
+//     one (RequestSuspend.Deadline), and waits for the turn however long it takes: the issue's
+//     close as done ends the process otherwise. Asked again meanwhile, it is the same hold, under
+//     one rule: a request can only move the deadline earlier, and one that holds
+//     (SuspendSource.Holds: an operator's or the controller's) also takes over a hold it outranks
+//     (suspensionRank), from then on its own. Until the deadline the
 //     agent keeps its process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
@@ -151,7 +151,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 
 // holdSuspendUntilReady retains a suspend that reaches a rule-resuming launch after the rule
 // changed the claim to launching. The old table ignored it, returning a conflict to an operator and
-// dropping a daemon's linger or leave row. The hold survives launch and is run as soon as the agent
+// dropping a daemon's leave row. The hold survives launch and is run as soon as the agent
 // says ready (ready), before the claim is published ready or takes a task. It answers
 // ErrSuspendHeld so the operator sees 202 and a daemon row retries across a restart, except to a
 // suspension that may not be held (RequestSuspend.NeverHold), which it refuses before it records
@@ -261,9 +261,9 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // agent the daemon suspended, so the rule resumes it no more until a resume lifts it, an
 // operator's suspend of an agent the controller suspended, so the controller's resume_agent lifts
 // it no more, and a daemon's, the controller's or an operator's suspend of an agent whose idle pod
-// was released, so the linger, park, close, hand-over or hold that asked for it owns the agent and no
-// later wake acts on it. Anything else changes nothing, and the controller's suspend of an agent
-// the operator holds is refused before it gets here (suspendRequest, Claim.HeldAgainst).
+// was released, so the stop, close or hold that asked for it owns the agent and no later wake acts
+// on it. Anything else changes nothing, and the controller's suspend of an agent the operator holds
+// is refused before it gets here (suspendRequest, Claim.HeldAgainst).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -280,11 +280,11 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released
 // claim's suspension is the weakest, because the release ended no phase and every wake may
-// resume it; the daemon's is stronger, since it is a park, a linger, a close or a carry; the
-// controller's is stronger again, since it holds against every rule (SuspendSource.Holds) and is
-// project-wide work no rule lifts; the operator's is strongest and nothing takes it over. An
-// exit's, and one recorded before sources existed, are the daemon's own and rank with its
-// suspension, so that suspension leaves them where they are.
+// resume it; the daemon's is stronger, since it is a stop or a close; the controller's is stronger
+// again, since it holds against every rule (SuspendSource.Holds) and is project-wide work no rule
+// lifts; the operator's is strongest and nothing takes it over. An exit's, and one recorded before
+// sources existed, are the daemon's own and rank with its suspension, so that suspension leaves
+// them where they are.
 func suspensionRank(source SuspendSource) int {
 	switch source {
 	case SuspendedByReleased:
@@ -374,9 +374,9 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	}
 	// A held suspension that holds — an operator's or the controller's — wins everywhere —
 	// launching, registered, ready while its stop retries, and working — over every request it
-	// outranks, until it completes. A later daemon linger or leave, or a project pause's stop, must
-	// use that hold's source rather than change a deliberate hold into a rule-resumable daemon
-	// suspension or a released one.
+	// outranks, until it completes. A later daemon leave, or a project pause's stop, must use that
+	// hold's source rather than change a deliberate hold into a rule-resumable daemon suspension or
+	// a released one.
 	if m.held != nil && m.held.By.Holds() && suspensionRank(request.By) < suspensionRank(m.held.By) {
 		return *m.held, nil
 	}

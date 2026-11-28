@@ -26,13 +26,13 @@ func TestTheArchitectStalledWakeIsOneOfTheControllerOnlyNoticeKinds(t *testing.T
 	}
 	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 	reason := ArchitectTookNothing.Words() + ": the task of phase entry 3 was first queued to the architect's claim of LEGION-208"
-	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err != nil {
+	if _, err := unrecordedRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err != nil {
 		t.Fatalf("the wake the daemon writes is refused: %v", err)
 	}
-	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, at); err == nil {
+	if _, err := unrecordedRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, at); err == nil {
 		t.Fatalf("a wake carrying no reason is taken, and a controller reading it would learn nothing of which arm raised it")
 	}
-	if _, err := NewOutboxRow("LEGION-208", Notice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err == nil {
+	if _, err := unrecordedRow("LEGION-208", Notice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err == nil {
 		t.Fatalf("the wake is taken as an architect's notice, which is the one reader that cannot act on it")
 	}
 }

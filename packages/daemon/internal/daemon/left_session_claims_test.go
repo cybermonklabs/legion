@@ -20,6 +20,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -31,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -329,10 +331,10 @@ func (s *leftSpecs) SpawnSpec(_ context.Context, c supervise.Claim) (runtime.Spa
 
 // leftRig is the daemon of one project over a database of its own: the real store, with the claim
 // writes of a daemon that has a workflow (PublishRoleHolders and ReleaseLeftSessionClaims), the
-// supervisor writing every claim through it, the workflow engine and admission the facts are
-// applied through, the outbox that runs what they queue, the operator's and the controller's API
-// routes beside the record route a role reads, the fake runtime, and the Dispatch stand-in. The
-// outbox is drained by hand, and its log captured.
+// supervisor writing every claim through it, the copy of Dispatch's issues, the workflow engine and
+// admission the facts are applied through, the outbox that runs what they queue, the operator's and
+// the controller's API routes beside the record route a role reads, the fake runtime, and the
+// Dispatch stand-in. The outbox is drained by hand, and its log captured.
 type leftRig struct {
 	t         *testing.T
 	ctx       context.Context
@@ -344,13 +346,17 @@ type leftRig struct {
 	sup       *supervisor
 	rt        *fake.Runtime
 	specs     *leftSpecs
-	runner    *outbox
-	clock     *leftClock
-	dispatch  *leftDispatch
-	api       http.Handler
-	logs      *syncBuffer
-	seq       int64
-	tick      int
+	// handlers are the daemon's own, in its order (workflow.go's openWorkflow): the mirror of
+	// Dispatch's issues, which writes the copy the engine and admission read each issue's chain
+	// from (record.Chains, R18 of dispatch://INFRA-3320), then the engine and admission.
+	handlers []intake.Handler
+	runner   *outbox
+	clock    *leftClock
+	dispatch *leftDispatch
+	api      http.Handler
+	logs     *syncBuffer
+	seq      int64
+	tick     int
 	// ran is the newest start row run of each issue and role, and suspended every suspend row
 	// run.
 	ran       map[string]int64
@@ -366,7 +372,7 @@ func newLeftRig(t *testing.T) *leftRig {
 	clock := &leftClock{}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Clock: clock.Now}, quietLogger())
 	admission := admit.New(records, engine, 4, "LEGION", quietLogger())
-	handlers := []intake.Handler{engine, admission}
+	handlers := []intake.Handler{blockers.NewMirror(records, "LEGION"), engine, admission}
 	// The daemon's store as a daemon with a workflow runs it (daemon.go): a claim write that
 	// changes a role holder queues its publication, and one that leaves a session behind queues
 	// that session's claim release. The test drains the outbox itself, so the wake that would
@@ -386,8 +392,8 @@ func newLeftRig(t *testing.T) *leftRig {
 	sup.OnDurableState(w.terminal)
 	logs := &syncBuffer{}
 	client := newLeftDispatch(t)
-	r := &leftRig{t: t, ctx: ctx, pool: pool, records: records, st: st, engine: engine, admission: admission, sup: sup, rt: rt,
-		specs: specs, clock: clock, dispatch: client, logs: logs, seq: 10,
+	r := &leftRig{t: t, ctx: ctx, pool: pool, records: records, st: st, engine: engine, admission: admission, handlers: handlers,
+		sup: sup, rt: rt, specs: specs, clock: clock, dispatch: client, logs: logs, seq: 10,
 		ran: map[string]int64{}, suspended: map[int64]bool{}, conns: map[claim.Token]*leftConn{}}
 	client.running = r.runningRelease
 	workspaceDir := t.TempDir()
@@ -414,11 +420,11 @@ func newLeftRig(t *testing.T) *leftRig {
 	return r
 }
 
-// apply is one fact as the daemon applies it: through the engine and admission, in one transaction
-// keyed by its id.
+// apply is one fact as the daemon applies it: through the mirror, the engine and admission, in one
+// transaction keyed by its id.
 func (r *leftRig) apply(id string, fact intake.Fact) {
 	r.t.Helper()
-	result, err := intake.ApplyFact(r.ctx, r.pool, "test", id, fact, r.engine, r.admission)
+	result, err := intake.ApplyFact(r.ctx, r.pool, "test", id, fact, r.handlers...)
 	if err != nil || result.Refusal != nil {
 		r.t.Fatalf("apply %s = %#v, %v", id, result, err)
 	}
@@ -436,9 +442,13 @@ func (r *leftRig) nextSeq() int64 {
 	return r.seq
 }
 
+// put records issue as the daemon's own record of it, with its row of the copy of Dispatch's
+// issues (putChainIssue): the boot fills the copy of every issue the daemon records before its
+// first decision (R16 of dispatch://INFRA-3320), and a recorded issue with no row reads an unknown
+// chain, which is no root and is judged in no gate root's tree.
 func (r *leftRig) put(issue record.Issue) {
 	r.t.Helper()
-	putOutboxIssue(r.t, r.pool, r.records, issue)
+	putChainIssue(r.t, r.pool, r.records, issue)
 }
 
 func (r *leftRig) issue(key string) record.Issue {
@@ -454,13 +464,29 @@ func (r *leftRig) issue(key string) record.Issue {
 // engine and admission.
 func (r *leftRig) move(key, status string) {
 	r.t.Helper()
+	r.statusEvent("move", key, status, false)
+}
+
+// echo is Dispatch's event of a status write the daemon queued for key landing (status), which
+// names the daemon's own session as its actor (intake.DispatchIssue.DaemonActor).
+func (r *leftRig) echo(key, status string) {
+	r.t.Helper()
+	r.statusEvent("echo", key, status, true)
+}
+
+// statusEvent is Dispatch's event of key set to status, by the daemon's own session where daemon
+// holds and by a person otherwise, as it reaches the engine and admission.
+func (r *leftRig) statusEvent(what, key, status string, daemon bool) {
+	r.t.Helper()
 	recorded := r.issue(key)
+	// The event names no claim (ClaimKnown false), as a move's does, so it leaves the claim the
+	// rig's Dispatch holds as the mirror read it.
 	fact := intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: r.nextSeq(), Type: "issue.updated", Status: status,
-		Title: recorded.Title, Rank: recorded.Rank, HandedOver: recorded.HandedOver}
+		Title: recorded.Title, Rank: recorded.Rank, HandedOver: recorded.HandedOver, DaemonActor: daemon}
 	if recorded.Parent != nil {
 		fact.Parent = *recorded.Parent
 	}
-	r.apply(fmt.Sprintf("move:%s:%s:%d", key, status, fact.Seq), fact)
+	r.apply(fmt.Sprintf("%s:%s:%s:%d", what, key, status, fact.Seq), fact)
 }
 
 // token is the claim token of issue's role, with a connection registered for the agent the claim
@@ -724,23 +750,24 @@ func (r *leftRig) runningRelease(issue string) string {
 	return running[0]
 }
 
-// leftQueued is one claim release row the outbox still holds: its issue, the session it names (""
-// for a move's) and how often it has run.
+// leftQueued is one claim release row the outbox still holds: its id, its issue, the session it
+// names ("" for a move's) and how often it has run.
 type leftQueued struct {
+	id             int64
 	issue, session string
 	attempts       int
 }
 
 func (r *leftRig) queuedReleases() []leftQueued {
 	r.t.Helper()
-	rows, err := r.pool.Query(r.ctx, `select issue, coalesce(payload->>'session', ''), attempts from outbox where kind = $1 order by id`,
+	rows, err := r.pool.Query(r.ctx, `select id, issue, coalesce(payload->>'session', ''), attempts from outbox where kind = $1 order by id`,
 		string(record.OutboxKindClaimRelease))
 	if err != nil {
 		r.t.Fatalf("read the queued claim releases: %v", err)
 	}
 	queued, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (leftQueued, error) {
 		var q leftQueued
-		return q, row.Scan(&q.issue, &q.session, &q.attempts)
+		return q, row.Scan(&q.id, &q.issue, &q.session, &q.attempts)
 	})
 	if err != nil {
 		r.t.Fatalf("read the queued claim releases: %v", err)
@@ -907,7 +934,9 @@ func (r *leftRig) admitRoot(session string) claim.Token {
 }
 
 // addChild records leftChild in the root's running tree, in planning at generation 1 and holding
-// its slot, and launches the child's own architect (dispatch://INFRA-3915), up on session.
+// its slot, opens its own lifecycle under the workflow, as admission opens it for every issue it
+// starts and which each claim of the issue binds (store.Store.AdmitClaim), and launches the
+// child's own architect (dispatch://INFRA-3915), up on session.
 func (r *leftRig) addChild(session string) claim.Token {
 	r.t.Helper()
 	parent := leftRoot
@@ -915,6 +944,7 @@ func (r *leftRig) addChild(session string) claim.Token {
 		Tree: leftRoot, Parent: &parent, Title: "child", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "B",
 		LastDispatchSeq: 5})
 	holdSlot(r.t, r.pool, leftChild)
+	openIssue(r.t, r.st, "legion", leftChild, treelifecycle.AuthorityWorkflow)
 	token := r.launch(leftChild, leftRoot, claim.RoleArchitect)
 	r.bringUp(token, session)
 	return token
@@ -1025,21 +1055,64 @@ func (tr *leftTree) moveOut(status string) {
 	tr.rig.dispatch.ends(tr.session)
 }
 
-// readmit is a person setting the issue back to todo, the admission pass that re-admits it at the
-// next generation, and the start of its architect that queues, which resumes the session the
-// architect records.
-func (tr *leftTree) readmit() {
+// rerun is rerun_child on the child, out of the workflow in backlog or icebox, from the root's
+// architect above it on the Dispatch chain (intake.RerunChildCall): one of the three returns R20 of
+// dispatch://INFRA-3320 opens a new run by. The child's next run (generation 2) opens in the call's
+// own fact, the promotion of its first phase starts its own architect with it (workflow's
+// gateOpened), and that start resumes the session the architect records. The call queues the
+// child's todo for Dispatch, and Dispatch's event of that write comes back as the daemon's own
+// (echo): until it does, Dispatch still shows the child where the move left it, and a person's
+// later move to that same status is no change. A person's todo opens no run: R20 keeps the
+// generation on a return, which resumes the run at a new phase entry (wantReturned).
+func (tr *leftTree) rerun() {
 	r := tr.rig
 	r.t.Helper()
 	before := r.issue(tr.issue).Generation
-	r.move(tr.issue, "todo")
+	r.apply(fmt.Sprintf("rerun-child:%s:%d", tr.issue, r.nextSeq()), intake.StatusCall{Op: intake.RerunChildCall,
+		Architect: mustClaimToken(r.t, leftRoot, claim.RoleArchitect), Issues: []intake.StatusCallIssue{{Key: tr.issue, Status: "todo"}}})
 	r.admitPass()
+	r.echo(tr.issue, "todo")
 	if got := r.issue(tr.issue); got.Generation != before+1 || record.Stopped(got) {
-		r.t.Fatalf("%s set back to todo = %+v, want generation %d in the workflow", tr.issue, got, before+1)
+		r.t.Fatalf("%s after rerun_child = %+v, want the run the rerun opens, generation %d, in the workflow", tr.issue, got, before+1)
 	}
 	r.runStarts(tr.issue, claim.RoleArchitect)
 	r.bringUp(tr.token, tr.session)
 	r.takeTask(tr.token)
+}
+
+// reruns says whether a move out of the workflow to status leaves the issue one rerun_child can
+// open a new run of: a child, in backlog or icebox (R20 of dispatch://INFRA-3320).
+func (tr *leftTree) reruns(status string) bool {
+	return tr.issue == leftChild && (status == "backlog" || status == "icebox")
+}
+
+// fence is the fence key stands at as the store holds it now (record.ReadFence): the run and the
+// phase entry a fenced row queued now names, and against which a fenced row queued earlier is late.
+func (r *leftRig) fence(key string) record.Fence {
+	r.t.Helper()
+	var fence record.Fence
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		fence, err = record.ReadFence(ctx, tx, r.records, key, false)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the fence of %s: %v", key, err)
+	}
+	return fence
+}
+
+// wantReturned holds key back in Legion's work after a person set it to todo, in the run it stood
+// in when it stopped, at stopped: R20 of dispatch://INFRA-3320 keeps the generation on a return
+// and resumes the issue at a new phase entry, so key stands at stopped's generation and at a later
+// entry, and a fenced row queued at stopped is late. A claim release carries no fence
+// (record.FenceOf), so it is late at no entry.
+func (r *leftRig) wantReturned(key string, stopped record.Fence) {
+	r.t.Helper()
+	got, at := r.issue(key), r.fence(key)
+	if record.Stopped(got) || got.Generation != stopped.Generation || at.Generation != stopped.Generation || at.Entry <= stopped.Entry {
+		r.t.Fatalf("%s set back to todo = %+v at %+v, want it in the workflow again in its run, generation %d, at an entry after %d: R20 keeps the generation on a return",
+			key, got, at, stopped.Generation, stopped.Entry)
+	}
 }
 
 // leftHolder is who holds the Dispatch claim of the issue when it moves out of the workflow: a
@@ -1112,17 +1185,24 @@ var leftHolders = []leftHolder{
 }
 
 // R1 of dispatch://INFRA-3144: a move of an issue to backlog, icebox or triage takes it out of the
-// workflow, and releases the Dispatch claim its own tree's session holds, in every generation of
-// that tree. Its own tree's session is the issue's own architect in three ways: the claim's current
-// session; a session a fresh session left behind earlier in that generation, whose own release
-// Dispatch refused while it read that session live, so the move's release meets it once Dispatch
-// reads it gone; and a session claim_sessions holds for a claim of the tree with no release queued
-// for it, as a session left behind before this change was deployed is held (departure D1). Each
-// holds the claim of a root, and of a child, where the child's own architect holds it
-// (dispatch://INFRA-3915). The tree runs a second generation after the first move, through a
-// person's todo and the admission pass that re-admits it, and the same move releases the claim of
-// that generation's session. No release leaves a claim as one the daemon cannot attribute.
-func TestAMoveOutOfTheWorkflowReleasesTheClaimOfItsOwnTreesSessionInEveryGeneration(t *testing.T) {
+// workflow, and releases the Dispatch claim its own tree's session holds, in the run it stood in
+// and in the run a rerun_child opens of it after. Its own tree's session is the issue's own
+// architect in three ways: the claim's current session; a session a fresh session left behind
+// earlier in that run, whose own release Dispatch refused while it read that session live, so the
+// move's release meets it once Dispatch reads it gone; and a session claim_sessions holds for a
+// claim of the tree with no release queued for it, as a session left behind before this change was
+// deployed is held (departure D1). Each holds the claim of a root, and of a child, where the child's
+// own architect holds it (dispatch://INFRA-3915). No release leaves a claim as one the daemon
+// cannot attribute.
+//
+// A second run comes only by one of R20's three returns that open a new run
+// (dispatch://INFRA-3320): R20 keeps the generation on a return, so a person's todo resumes the run
+// the issue stood in at a new phase entry and opens none. A child moved to backlog or icebox runs a
+// second run through rerun_child (rerun), and the same move releases the claim of that run's
+// session. A child moved to triage, which rerun_child does not take, and a root, whose one new-run
+// return is the reopen of an issue its pull request's merge closed and which never leaves
+// admitted here, run the one run.
+func TestAMoveOutOfTheWorkflowReleasesTheClaimOfItsOwnTreesSessionInItsRunAndTheRunARerunOpens(t *testing.T) {
 	t.Parallel()
 	for _, status := range []string{"backlog", "icebox", "triage"} {
 		for _, issue := range []string{leftRoot, leftChild} {
@@ -1135,16 +1215,20 @@ func TestAMoveOutOfTheWorkflowReleasesTheClaimOfItsOwnTreesSessionInEveryGenerat
 					t.Parallel()
 					r := newLeftRig(t)
 					tr := leftTreeOf(r, issue)
-					for generation := uint64(1); generation <= 2; generation++ {
+					runs := uint64(1)
+					if tr.reruns(status) {
+						runs = 2
+					}
+					for generation := uint64(1); generation <= runs; generation++ {
 						if generation == 2 {
-							tr.readmit()
+							tr.rerun()
 						}
 						held := holder.moveOut(tr, status)
 						if got := r.issue(tr.issue).Generation; got != generation {
-							t.Fatalf("the move out of generation %d left %s at generation %d", generation, tr.issue, got)
+							t.Fatalf("the move out of run %d left %s at generation %d", generation, tr.issue, got)
 						}
 						if got := r.dispatch.holder(tr.issue); got != "" {
-							t.Fatalf("generation %d: Dispatch shows %s claimed by %s, which %s held, after the release rows ran; want no claim",
+							t.Fatalf("run %d: Dispatch shows %s claimed by %s, which %s held, after the release rows ran; want no claim",
 								generation, tr.issue, got, held)
 						}
 					}
@@ -1221,10 +1305,14 @@ var leftArms = map[record.ClaimLeftReason][]leftArm{
 		r.dispatch.takes(claimIssue, claimTreeSession)
 		r.queueRelease(record.ClaimRelease{})
 	}, holder: "session:" + claimTreeSession}},
-	record.ClaimLeftIssueRuns: {{name: "the move's row runs after the issue is in the workflow again", set: func(r *leftRig) {
-		readmitted := parkedIssue()
-		readmitted.Status, readmitted.Phase, readmitted.Generation = "todo", phase.Admitted, 2
-		r.put(readmitted)
+	// R20 of dispatch://INFRA-3320 keeps the generation on a return: the issue is back in the
+	// workflow in the run and the phase it stopped in. The move's row carries no fence
+	// (record.FenceOf), so it runs at whatever entry the issue stands, and judges the issue on its
+	// record then.
+	record.ClaimLeftIssueRuns: {{name: "a move's row runs while the issue is in the workflow again, in its run", set: func(r *leftRig) {
+		returned := parkedIssue()
+		returned.Status = "in_progress"
+		r.put(returned)
 		r.dispatch.takes(claimIssue, claimTreeSession)
 		r.queueRelease(record.ClaimRelease{})
 	}, holder: "session:" + claimTreeSession}},
@@ -1355,9 +1443,10 @@ func wantLeftAt(t *testing.T, left map[string]any, before, after time.Time) {
 // the claim lane runs at once, as the daemon's log shows the move's release running 41 ms after
 // the move and 3 seconds before the person's todo; there that release left S1's claim as one the
 // daemon could not attribute to the root's tree. The root moves to todo 4 seconds later on the
-// rig's clock, which re-admits it at generation 2, and the rest of the rows run as the lanes run
-// them. When the generation-2 architect's first task is sent, Dispatch holds no claim of S1, and
-// the release that took it was the left session's own row, naming S1, queued by the fresh
+// rig's clock, which returns it to Legion's work in its run at a new phase entry (R20 of
+// dispatch://INFRA-3320 keeps the generation on a return), and the rest of the rows run as the
+// lanes run them. When the returned architect's first task is sent, Dispatch holds no claim of S1,
+// and the release that took it was the left session's own row, naming S1, queued by the fresh
 // session's write before the move's and so run before it. No release says it could not attribute
 // a holder.
 func TestAMoveToBacklogReleasesTheClaimOfTheArchitectSessionAFreshSessionReplaced(t *testing.T) {
@@ -1384,13 +1473,12 @@ func TestAMoveToBacklogReleasesTheClaimOfTheArchitectSessionAFreshSessionReplace
 	if got := r.issue(leftRoot); !record.Stopped(got) {
 		t.Fatalf("the root moved to backlog = %+v, want it out of the workflow", got)
 	}
+	stopped := r.fence(leftRoot)
 	r.releases()
 	r.clock.advance(4 * time.Second)
 	r.move(leftRoot, "todo")
 	r.admitPass()
-	if got := r.issue(leftRoot); got.Generation != 2 || record.Stopped(got) {
-		t.Fatalf("the root set back to todo = %+v, want generation 2 in the workflow", got)
-	}
+	r.wantReturned(leftRoot, stopped)
 
 	var heldAtTheTask *string
 	r.conns[architect].beforeNextPrompt(func() {
@@ -1400,11 +1488,11 @@ func TestAMoveToBacklogReleasesTheClaimOfTheArchitectSessionAFreshSessionReplace
 	r.drain()
 	r.bringUp(architect, s2)
 	if heldAtTheTask == nil {
-		t.Fatalf("the generation-2 architect was sent no task; prompts %+v", r.conns[architect].Prompts())
+		t.Fatalf("the returned architect was sent no task; prompts %+v", r.conns[architect].Prompts())
 	}
 	if *heldAtTheTask == "session:"+s1 {
 		lines := loggedLines(t, r.logs.String(), claimUnattributedLine)
-		t.Fatalf("Dispatch still showed %s claimed by %s when the generation-2 architect's first task was sent; the executor logged %q %d times: %v",
+		t.Fatalf("Dispatch still showed %s claimed by %s when the returned architect's first task was sent; the executor logged %q %d times: %v",
 			leftRoot, *heldAtTheTask, claimUnattributedLine, len(lines), lines)
 	}
 	r.wantReleasedBy(leftRoot, "session:"+s1, s1)
@@ -1412,28 +1500,30 @@ func TestAMoveToBacklogReleasesTheClaimOfTheArchitectSessionAFreshSessionReplace
 }
 
 // R4 of dispatch://INFRA-3144: a claim held by the session that works a claim of the issue's tree
-// now stays, and no claim release takes it; Dispatch is sent no DELETE at all. The move's row that
-// runs after a re-admission leaves its holder's claim, since the issue is in the workflow again,
-// and records why (`issue-runs`). The left session's row acts only on the session it names: a
-// claim the new session took is another holder, which that row judges nothing of, so the record
-// keeps the entry it had. And a left session whose name is a claim of the tree's current session
-// again, which an operator's release of its names freed and another claim took, is that claim's,
-// and the row leaves it (`works-now`).
+// now stays, and no claim release takes it; Dispatch is sent no DELETE at all. A person's todo
+// returns the root to Legion's work before the move's row runs, in its run at a new phase entry
+// (R20 of dispatch://INFRA-3320 keeps the generation on a return). The move's row carries no fence
+// (record.FenceOf), so it runs after the return all the same: it finds the issue in the workflow
+// again, leaves its holder's claim and records why (`issue-runs`), which INFRA-3144's R2 owes and a
+// fence would drop. The left session's row acts only on the session it names: a claim the new
+// session took is another holder, which that row judges nothing of, so the record keeps the entry
+// it had. And a left session whose name is a claim of the tree's current session again, which an
+// operator's release of its names freed and another claim took, is that claim's, and the row
+// leaves it (`works-now`).
 func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.T) {
 	t.Parallel()
 
-	t.Run("the issue is re-admitted before the move's row runs, and its architect works in the session that holds the claim", func(t *testing.T) {
+	t.Run("the issue returns to the workflow before the move's row runs, which leaves the claim of the session its architect works in and says why", func(t *testing.T) {
 		t.Parallel()
 		r := newLeftRig(t)
 		tr := leftTreeOf(r, leftRoot)
 		r.dispatch.forbid()
 		r.dispatch.takes(leftRoot, tr.session)
 		r.move(leftRoot, "backlog")
+		stopped := r.fence(leftRoot)
 		r.move(leftRoot, "todo")
 		r.admitPass()
-		if got := r.issue(leftRoot); got.Generation != 2 || record.Stopped(got) {
-			t.Fatalf("the root set back to todo = %+v, want generation 2 in the workflow", got)
-		}
+		r.wantReturned(leftRoot, stopped)
 		r.drain()
 		r.bringUp(tr.token, tr.session)
 		if got := r.dispatch.holder(leftRoot); got != "session:"+tr.session {
@@ -1441,7 +1531,11 @@ func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.
 		}
 		left := r.claimLeft(leftRoot)
 		if left == nil || left["reason"] != string(record.ClaimLeftIssueRuns) || left["holder"] != "session:"+tr.session {
-			t.Fatalf("the record of %s names claimLeft %v, want %s left with the reason %s", leftRoot, left, tr.session, record.ClaimLeftIssueRuns)
+			t.Fatalf("the record of %s names claimLeft %v, want %s left with the reason %s: the move's row runs after the return and finds the issue in the workflow",
+				leftRoot, left, tr.session, record.ClaimLeftIssueRuns)
+		}
+		if queued := r.queuedReleases(); len(queued) != 0 {
+			t.Fatalf("the claim releases %+v are still queued after the rows ran, want the move's row run and finished", queued)
 		}
 		if n := r.dispatch.deleted(); n != 0 {
 			t.Fatalf("Dispatch was sent %d claim releases, want none", n)
@@ -1504,6 +1598,151 @@ func TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow(t *testing.
 			t.Fatalf("Dispatch was sent %d claim releases, want none", n)
 		}
 	})
+}
+
+// moveReleases is each claim release row of issue that names no session, oldest first.
+func (r *leftRig) moveReleases(issue string) []leftQueued {
+	r.t.Helper()
+	var moves []leftQueued
+	for _, q := range r.queuedReleases() {
+		if q.issue == issue && q.session == "" {
+			moves = append(moves, q)
+		}
+	}
+	return moves
+}
+
+// claimStates is each claim of issue as the store holds it, in token order: its token, its state,
+// its session and its launch generation.
+func (r *leftRig) claimStates(issue string) []string {
+	r.t.Helper()
+	rows, err := r.pool.Query(r.ctx, `select token || ' ' || state || ' ' || session || ' ' || generation from claims
+		where issue = $1 order by token`, issue)
+	if err != nil {
+		r.t.Fatalf("read the claims of %s: %v", issue, err)
+	}
+	states, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		r.t.Fatalf("read the claims of %s: %v", issue, err)
+	}
+	return states
+}
+
+// The architect's ruling of 2026-11-28 on dispatch://INFRA-4730 (item 2): the row a move out of
+// Legion's work queues (record.ClaimRelease{}) carries no fence, since its executor judges the
+// issue's record when it runs (#5908's releaseClaim), so a return before it runs neither drops it
+// nor lets it harm the run that returned (R20 of dispatch://INFRA-3320). The issue's own architect
+// claims it on Dispatch in its session. A person moves the issue to backlog, which queues the
+// move's row; the person's todo returns the issue to its run at a later phase entry, the row still
+// unrun, and its architect comes back up in that session; a second move to backlog queues a second
+// row. Then the rows run, oldest first. The first finds the issue out of work and the architect's
+// session gone, and takes the claim from that session: Dispatch is sent one DELETE. The second
+// finds no claim and clears the issue's claimLeft, here an entry an earlier release wrote. Neither
+// changes the issue's run, phase, status or phase entry, or any claim of it; and a child's rows
+// leave the root's claim, which the root architect's live session holds. A move's row that runs
+// while the issue is back in work leaves the claim and records `issue-runs`: that is the first
+// subtest of TestAClaimReleaseLeavesTheClaimOfTheSessionThatWorksTheIssueNow.
+func TestAMovesClaimReleaseQueuedBeforeAReturnRunsAfterASecondStopAndReleasesTheClaimOnce(t *testing.T) {
+	t.Parallel()
+	const rootArchitect = "ses-root-architect"
+	for _, issue := range []string{leftRoot, leftChild} {
+		t.Run(issue, func(t *testing.T) {
+			t.Parallel()
+			r := newLeftRig(t)
+			tr := leftTreeOf(r, issue)
+			if issue == leftChild {
+				r.dispatch.takes(leftRoot, rootArchitect)
+			}
+			r.dispatch.takes(issue, tr.session)
+
+			tr.moveOut("backlog")
+			stopped := r.fence(issue)
+			first := r.moveReleases(issue)
+			if len(first) != 1 || first[0].attempts != 0 {
+				t.Fatalf("the move of %s to backlog queued the claim releases %+v, want one, unrun", issue, first)
+			}
+
+			r.move(issue, "todo")
+			r.admitPass()
+			r.wantReturned(issue, stopped)
+			r.runStarts(issue, claim.RoleArchitect)
+			r.bringUp(tr.token, tr.session)
+			r.takeTask(tr.token)
+			if got := r.moveReleases(issue); !slices.Equal(got, first) {
+				t.Fatalf("the move's claim releases of %s after the return are %+v, want %+v, the first move's row still queued and unrun", issue, got, first)
+			}
+
+			tr.moveOut("backlog")
+			rows := r.moveReleases(issue)
+			if len(rows) != 2 || rows[0] != first[0] || rows[1].attempts != 0 {
+				t.Fatalf("after the second move of %s to backlog the move's claim releases are %+v, want the first move's row %+v and the second's, unrun", issue, rows, first[0])
+			}
+			run, fence, claims := r.issue(issue), r.fence(issue), r.claimStates(issue)
+			if run.Generation != stopped.Generation || fence.Generation != stopped.Generation || fence.Entry <= stopped.Entry {
+				t.Fatalf("%s stopped again at generation %d, %+v, want the run that returned, generation %d, at an entry after %d",
+					issue, run.Generation, fence, stopped.Generation, stopped.Entry)
+			}
+
+			// The first move's row runs alone, oldest as its lane takes it.
+			due, err := r.runner.listDue(r.ctx, issue, []record.OutboxKind{record.OutboxKindClaimRelease}, r.clock.Now().UTC())
+			if err != nil {
+				t.Fatalf("list the due claim releases of %s: %v", issue, err)
+			}
+			if len(due) == 0 || due[0].ID != first[0].id {
+				t.Fatalf("the due claim releases of %s are %+v, want the first move's row %d first", issue, due, first[0].id)
+			}
+			if err := r.runner.runRow(r.ctx, due[0]); err != nil {
+				t.Fatalf("run the first move's claim release of %s: %v", issue, err)
+			}
+			released := []leftRelease{{issue: issue, holder: "session:" + tr.session}}
+			if got := leftReleasesOf(r, issue); !slices.Equal(got, released) {
+				t.Fatalf("Dispatch released %+v of %s after the first move's row ran, want %+v: the issue is out of work again and its architect's session is gone", got, issue, released)
+			}
+			if got := r.dispatch.holder(issue); got != "" {
+				t.Fatalf("Dispatch shows %s claimed by %q after the first move's row ran, want no claim", issue, got)
+			}
+			if got := r.moveReleases(issue); !slices.Equal(got, rows[1:]) {
+				t.Fatalf("the move's claim releases of %s after the first ran are %+v, want the second move's row %+v alone, unrun", issue, got, rows[1])
+			}
+
+			earlier := record.ClaimLeft{Holder: "user:alice", Reason: record.ClaimLeftPerson, At: time.Now().Add(-time.Hour).UTC()}
+			r.recordClaimLeft(issue, earlier)
+			if left := r.claimLeft(issue); left == nil {
+				t.Fatalf("the record of %s names no claimLeft after the earlier entry was written", issue)
+			}
+			r.releases()
+			if got := r.moveReleases(issue); len(got) != 0 {
+				t.Fatalf("the move's claim releases %+v of %s are still queued after both ran, want them finished", got, issue)
+			}
+			if left := r.claimLeft(issue); left != nil {
+				t.Fatalf("the record of %s names claimLeft %v after the second move's row ran, want it cleared: that row found no claim", issue, left)
+			}
+			if n := r.dispatch.deleted(); n != 1 {
+				t.Fatalf("Dispatch was sent %d claim releases, want the first move's one: %+v", n, r.dispatch.releases())
+			}
+
+			after := r.issue(issue)
+			if after.Generation != run.Generation || after.Phase != run.Phase || after.Status != run.Status {
+				t.Errorf("%s after the rows ran stands at generation %d, phase %s, status %s, want generation %d, phase %s, status %s as the second move left it",
+					issue, after.Generation, after.Phase, after.Status, run.Generation, run.Phase, run.Status)
+			}
+			if got := r.fence(issue); got != fence {
+				t.Errorf("%s after the rows ran stands at %+v, want %+v, the run and the phase entry the return opened", issue, got, fence)
+			}
+			if got := r.claimStates(issue); !slices.Equal(got, claims) {
+				t.Errorf("the claims of %s after the rows ran are %q, want %q: a claim release changes no claim", issue, got, claims)
+			}
+			if issue == leftChild {
+				if got := r.dispatch.holder(leftRoot); got != "session:"+rootArchitect {
+					t.Errorf("Dispatch shows %s claimed by %q, want the claim of %s, the root architect's live session, kept", leftRoot, got, rootArchitect)
+				}
+				if of := leftReleasesOf(r, leftRoot); len(of) != 0 {
+					t.Errorf("Dispatch released the claim of %s: %+v, want none: its holder %s works the root now", leftRoot, of, rootArchitect)
+				}
+			}
+			r.wantNoUnattributedLine()
+		})
+	}
 }
 
 // leftPath is one path of the plan's "Which paths leave a session behind" that has an issue: leave

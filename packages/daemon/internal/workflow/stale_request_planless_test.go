@@ -58,8 +58,8 @@ func TestAnArchitectsRequestOnARunWithNoPlanRowsIsJudgedOnTheRecordItsFactReads(
 	for _, request := range architectsRequests {
 		windows := []window{
 			{name: "control: the request of the record its route read"},
-			{"the root left and was admitted again, and its work came back to the same place", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				readmitRoot(t, pool, engine, "LEGION-208")
+			{"the root's next run opened, and its work came back to the same place", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+				newRunOf(t, pool, engine, "LEGION-208", "")
 				walkTodaysLineTo(t, pool, engine, "LEGION-208", request.at)
 			}, codes[request.name].generation, func(fact intake.Fact, now record.Issue, _ record.StepEntry) *intake.Refusal {
 				return fact.(intake.ArchitectRequest).StaleGeneration(now.Generation)

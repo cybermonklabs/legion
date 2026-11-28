@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/legion/daemon/internal/intake"
+
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -34,7 +33,6 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key, Project: "LEGION",
 			Title: name, Phase: row.From, Generation: 1, Status: PhaseStatus(row.From), Rank: "U", LastDispatchSeq: 1}
 		seedIssue(t, pool, issue)
-		seedTreeLifecycle(t, pool, key)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 400 + i,
 			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
 		target := phase.Phase("")
@@ -100,7 +98,6 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key, Project: "LEGION",
 			Title: name, Phase: row.From, Generation: 1, Status: PhaseStatus(row.From), Rank: "U", LastDispatchSeq: 1}
 		seedIssue(t, pool, issue)
-		seedTreeLifecycle(t, pool, key)
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 600 + i,
 			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
 		seedMirrorChild(t, pool, child, "todo", key)
@@ -133,36 +130,4 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 	if held < 8 {
 		t.Fatalf("an open child held %d moves of the table out of a step, want every move into planning through accepting", held)
 	}
-}
-
-// A hand-over fence an earlier linger of the tree left can stand beside a member whose merge waits
-// in the tree's linger now (record.Handover outlives its linger). It is that earlier linger's, so
-// it hands the member to no readmit: the unmerged close of the member's pull request after this
-// linger's deadline ends the merge stopped. Only a fence of this tree at the generation of the
-// linger the merge waits in keeps the merge open (mergeCanLand).
-func TestAnUnmergedCloseEndsAMergeWhoseFenceIsAnEarlierLingers(t *testing.T) {
-	t.Parallel()
-	pool := migratedPool(t)
-	root := stepRoot(t, pool, phase.Reviewing)
-	root.Generation = 2
-	seedIssue(t, pool, root)
-	engine := stepEngine(nil)
-	mergingChild(t, pool, engine)
-	apply := applyFacts(t, pool, engine)
-	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
-		Status: "backlog", Title: "root", Rank: "U"})
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return engine.store.PutHandover(t.Context(), tx, record.Handover{Issue: "LEGION-209", Tree: root.Tree, Generation: root.Generation - 1})
-	})
-	if _, end := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0); isEnd(end) {
-		t.Fatalf("the park ended LEGION-209's merge %+v; a merge that awaits its landing in the linger stays open", end)
-	}
-	parked := issueRecord(t, pool, root.Key)
-	engine.cfg.Clock = func() time.Time { return parked.LingerUntil.Add(time.Second) }
-	apply("close-unmerged", intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"})
-	start, end := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0)
-	if !isEnd(end) || end.ID != start.ID {
-		t.Fatalf("after the unmerged close past the deadline LEGION-209's merge is %+v then %+v, want its start and its end", start, end)
-	}
-	assertEnd(t, end, "merge", 0, 3, "stopped", nil)
 }

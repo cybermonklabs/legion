@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
@@ -317,7 +318,7 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 
 // A root's re-admission is not its members' runs ending: a member awaiting its merge keeps its
 // merge step open through the linger (workflow's beginLinger) and the root's readmit, and only the
-// promotion that starts its merger again ends that run (admit's startMidPhaseMembers), which raises
+// promotion that starts its merger again ends that run (admit's promotion), which raises
 // the merger's entry. So where the earlier release re-admits the root and starts no merger, the
 // member's run stands open at the roll forward, with its count and its record, for its next end
 // to end: a merger the promotion does not start, and a held merger, whose hold starts none. Where

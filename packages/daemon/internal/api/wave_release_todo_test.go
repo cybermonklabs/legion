@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -43,7 +44,9 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
+		// The daemon's own handler order: the copy of Dispatch's issues first, so the engine reads
+		// the child's row release_children's view of it writes.
+		Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 	}).Handler
 	root, child := "LEGION-208", "LEGION-209"
 	approved := 1
@@ -57,6 +60,9 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 		t.Fatalf("seed the live tree: %v", err)
 	}
 	h.openTree(t, testProject, root)
+	// The copy of Dispatch's issues holds the root as Dispatch shows it, as the daemon's does from
+	// the root's own events: the engine reads the child's chain up to its recorded parent there.
+	seedMirrorRow(t, h, root, "in_progress")
 	statuses.issues = map[string]dispatch.Issue{
 		root:  {Key: root, ResolvedRepo: "acme/widgets", Status: "in_progress"},
 		child: {Key: child, ResolvedRepo: "acme/widgets", Title: "the child", Status: "todo", Parent: &root, LastSeq: 7},
@@ -115,7 +121,7 @@ func TestWaveReleaseNamesTheRepositoryReadThatFailed(t *testing.T) {
 				Steps:      config.DesignGateRootIssues.Steps(),
 				Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 				Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-				Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
+				Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 				PrepareRepository: func(_ context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
 					return issue, tc.failure
 				},
@@ -184,7 +190,7 @@ func newUnreadRelease(t *testing.T, issues ...dispatch.Issue) *unreadRelease {
 		Steps:      config.DesignGateOff.Steps(),
 		Supervisor: u.h.supervisor, BootTokens: u.h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: u.h.store, Grants: credential.New(nil), Pool: u.h.store.Pool(), Record: u.records,
-		Handlers: []intake.Handler{u.engine, admit.New(u.records, u.engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: u.statuses,
+		Handlers: []intake.Handler{blockers.NewMirror(u.records, testProject), u.engine, admit.New(u.records, u.engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: u.statuses,
 		RepositoryUnread: func(resolved string) bool { return resolved == "zeta/tools" && u.unread.Load() },
 		AwaitRecovery: func(repo, tree, child, _ string) bool {
 			if u.refuse.Load() {
@@ -272,12 +278,12 @@ func on(key, repo, status string, parent string, seq int64) dispatch.Issue {
 // child it leaves unrecorded for it: the wave goes on, and each such child is answered by what the
 // daemon's recovery of the repository will do. P (backlog, zeta) holds C (todo, zeta), and C holds
 // G (backlog, acme); Q (backlog, acme) holds D (todo, acme). Released together while zeta is
-// unread, Q is written and recorded and D recorded under it, after C in the wave's order; C is
-// left to the recovery and its architect told at once that P must be released first, since the
-// recovery records no child under a backlog parent; G, under C, is not written, and its architect
-// told to release it again once C is recorded. Neither has a release-retry record: they are no
-// unrecorded parent that has not reached the daemon. Before, C's answer, REPOSITORY_READ_FAILED,
-// ended the wave: D was never recorded and nothing told the architect when zeta was answered.
+// unread, Q's todo is queued and Q recorded, and D recorded under it, after C in the wave's order;
+// C is left to the recovery and its architect told at once that P must be released first, since
+// the recovery records no child under a backlog parent; G, under C, has its todo queued and is not
+// recorded, and its architect is told to release it again once C is recorded, when the release
+// records a child Dispatch shows todo. Neither has a release-retry record: they are no unrecorded
+// parent that has not reached the daemon.
 func TestWaveReleaseGoesOnPastAChildLeftForAnUnreadRepository(t *testing.T) {
 	const p, c, q, d, g = "LEGION-220", "LEGION-221", "LEGION-222", "LEGION-223", "LEGION-224"
 	u := newUnreadRelease(t,
@@ -298,8 +304,8 @@ func TestWaveReleaseGoesOnPastAChildLeftForAnUnreadRepository(t *testing.T) {
 			t.Fatalf("%s has a release-retry record, want none", key)
 		}
 	}
-	if want := []statusWrite{{issue: q, status: "todo"}}; !slices.Equal(u.statuses.writes, want) {
-		t.Fatalf("Dispatch writes = %#v, want only %s's: %s waits for %s", u.statuses.writes, q, g, c)
+	if want := []string{q, g}; !slices.Equal(queuedTodos(t, u.h), want) || len(u.statuses.writes) != 0 {
+		t.Fatalf("queued todos = %v and Dispatch writes = %#v, want %v queued and none written in the request", queuedTodos(t, u.h), u.statuses.writes, want)
 	}
 	if want := []string{"zeta/tools " + unreadRoot + " " + c, "zeta/tools " + unreadRoot + " " + g}; !slices.Equal(u.awaited, want) {
 		t.Fatalf("children left to the recovery = %q, want %q", u.awaited, want)
@@ -307,7 +313,7 @@ func TestWaveReleaseGoesOnPastAChildLeftForAnUnreadRepository(t *testing.T) {
 	notices := u.notices(t)
 	if len(notices) != 2 ||
 		!strings.Contains(notices[0], c+" is todo but not recorded") || !strings.Contains(notices[0], p+", on its parent chain, is backlog") || !strings.Contains(notices[0], "Release "+p+" first, then release "+c+" again") ||
-		!strings.Contains(notices[1], g+" was not written todo: it is under "+c) || !strings.Contains(notices[1], "Release "+g+" again once "+c+" is recorded") {
+		!strings.Contains(notices[1], g+"'s todo is queued, but it is not recorded") || !strings.Contains(notices[1], "Release "+g+" again once "+c+" is recorded") {
 		t.Fatalf("notices to %s's architect = %q, want one for %s naming %s and one for %s naming %s", unreadRoot, notices, c, p, g, c)
 	}
 }
@@ -460,11 +466,11 @@ func recordedChild(t *testing.T, h *harness, key string) *record.Issue {
 }
 
 // A todo child whose parent the same wave releases out of triage is recorded in that one request,
-// in whichever order the wave names the two: the release records the parent from its own todo write
-// first, and the workflow, which records a child only under a recorded parent, then records the
-// child under it. Before, the parent was recorded only once its write's todo event came back
-// through the Dispatch consumer, so the release answered CHILD_NOT_RECORDED and the child waited for
-// the architect's retry after that event.
+// in whichever order the wave names the two: the call counts the parent's queued todo on a record
+// it makes from the copy's reading of the parent (R16 of dispatch://INFRA-3320), and the workflow,
+// which records a child only under a recorded parent, then records the child under it. The
+// parent's record still shows the triage Dispatch shows, at the read's sequence, until its todo's
+// event arrives.
 func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 	root, parent, child := "LEGION-208", "LEGION-209", "LEGION-210"
 	for _, wave := range [][]string{{parent, child}, {child, parent}} {
@@ -477,7 +483,7 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 				Steps:      config.DesignGateRootIssues.Steps(),
 				Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 				Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-				Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
+				Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 			}).Handler
 			h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})
 			if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -497,14 +503,14 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("wave release = %d: %s", recorder.Code, recorder.Body)
 			}
-			if got := recordedChild(t, h, parent); got == nil || got.Tree != root || got.LastDispatchSeq != 3 {
-				t.Fatalf("the parent after the release = %#v, want it recorded in %s's tree at its write's sequence 3", got, root)
+			if got := recordedChild(t, h, parent); got == nil || got.Tree != root || got.LastDispatchSeq != 2 || got.Status != "todo" || got.DispatchStatus != "triage" {
+				t.Fatalf("the parent after the release = %#v, want it recorded in %s's tree at todo, Dispatch still shown triage at the read's sequence 2", got, root)
 			}
 			if got := recordedChild(t, h, child); got == nil || got.Tree != root || got.LastDispatchSeq != 5 {
 				t.Fatalf("the child after the release = %#v, want it recorded in %s's tree at Dispatch's sequence 5", got, root)
 			}
-			if want := []statusWrite{{issue: parent, status: "todo"}}; len(statuses.writes) != 1 || statuses.writes[0] != want[0] {
-				t.Fatalf("Dispatch writes = %#v, want only the parent's release", statuses.writes)
+			if want := []string{parent}; !slices.Equal(queuedTodos(t, h), want) || len(statuses.writes) != 0 {
+				t.Fatalf("queued todos = %v and Dispatch writes = %#v, want only the parent's release queued", queuedTodos(t, h), statuses.writes)
 			}
 		})
 	}
@@ -522,7 +528,7 @@ func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testi
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
+		Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admit.New(records, engine, 8, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))}, Dispatch: statuses,
 	}).Handler
 	root, parent, child := "LEGION-208", "LEGION-209", "LEGION-210"
 	h.recordIssue(record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true})

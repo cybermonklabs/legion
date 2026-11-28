@@ -1,11 +1,9 @@
 package workflow
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -217,7 +215,8 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 
 	// An issue with plan rows refuses a report of a task whose issue left the workflow as a report
 	// of a phase no role works (HANDOFF_NOT_CURRENT_PHASE), and a report of another run as stale
-	// (HANDOFF_STALE_GENERATION).
+	// (HANDOFF_STALE_GENERATION). A person's backlog keeps the issue's run where it stood and stops
+	// its running task there, its reason the leave (stopTaskAtLeave).
 	t.Run("a task whose issue left the workflow is not current, and another run is stale", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -234,20 +233,19 @@ func TestALateReportIsTakenAfterAnEventAndRefusedAfterAStop(t *testing.T) {
 		assertLateReport(t, pool, engine, claim.RoleTester, apply("another-run", stale), "HANDOFF_STALE_GENERATION",
 			"LEGION-208 is on generation 1 and this completion is generation 2's; the run it reports is over", "", before)
 
-		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			issue, err := engine.store.Issue(ctx, tx, root.Key)
-			if err != nil {
-				return err
-			}
-			return engine.leave(ctx, tx, *issue, "backlog")
-		})
+		backlog := personsTodo(root.Key)
+		backlog.Status = "backlog"
+		if result := apply("backlog", backlog); result.Refusal != nil {
+			t.Fatalf("the person's backlog was refused: %+v", result.Refusal)
+		}
 
-		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft {
-			t.Fatalf("task a after its issue left is %s, want left", task.State)
+		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != "LEGION-208 is backlog" ||
+			task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 2}) {
+			t.Fatalf("task a after its issue left is %s (%q) at %+v, want stopped at step 2 by the leave", task.State, task.StoppedReason, task.Place)
 		}
 		before = reportedOf(t, pool, engine, root.Key, claim.RoleTester, true)
 		assertLateReport(t, pool, engine, claim.RoleTester, apply("left", reportOf(claim.RoleTester, tester, "test-1")), "HANDOFF_NOT_CURRENT_PHASE",
-			"the tester does not run phase done of LEGION-208; this completion changed nothing", "", before)
+			"the tester does not run phase testing of LEGION-208; this completion changed nothing", "", before)
 	})
 
 	t.Run("the twins with no plan rows answer the same", func(t *testing.T) {

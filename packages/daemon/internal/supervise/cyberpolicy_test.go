@@ -147,13 +147,13 @@ func (h *harness) wantStartedInANewSession(retry Event) {
 }
 
 // No retry the daemon makes by itself launches again the agent of a claim held for a cyber-policy
-// refusal: the next start of its role, a re-admission of its tree, a production check's look, the
+// refusal: the next start of its role, a return to work's start, a production check's look, the
 // controller keeper (RequestRetry with no decision behind it). Each is refused with
 // ErrHeldForCyberPolicy, and the claim stays failed with its record, its session and its task. A
 // retry someone decided launches the agent again: the held phase's retry, which the architect's
-// retry_or_escalate, the operator's `legion claims retry` of a phase worker and a person's todo on
-// a held root each start (RequestRetry.Decided), and the retry the operator or the controller asks
-// (RequestAskedRetry). Each of those starts the agent in a new session, asked for or not: the
+// retry_or_escalate, the operator's `legion claims retry` of a phase worker and a todo on a held
+// issue in Legion's work each start (RequestRetry.Decided), and the retry the operator or the
+// controller asks (RequestAskedRetry). Each of those starts the agent in a new session, asked for or not: the
 // recorded session would send the refused content again. A claim an operator stopped after it
 // failed keeps the record, so a retired one is held the same way.
 func TestOnlyADecidedRetryLaunchesTheAgentOfAHeldClaimAgain(t *testing.T) {

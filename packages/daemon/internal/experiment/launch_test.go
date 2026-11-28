@@ -26,11 +26,11 @@ func declaredPair() []config.Experiment {
 	}
 }
 
-// The keys a launch reads are the unit keys its declaration draws for: the tree's alone where
-// every experiment draws for the tree, the issue's beside it where one draws for the issue, and
-// none at all where no arm names a file, which is the declaration a launch can do nothing with.
-func TestTheKeysReadAreTheUnitsTheDeclarationDrawsFor(t *testing.T) {
-	const tree, issue = "LEGION-1", "LEGION-2"
+// The key a launch reads is its issue's own, whatever unit its experiments draw for, since a tree
+// experiment's answer is the issue's own row too (admit's takeTreeDraw), and none at all where no
+// arm names a file, which is the declaration a launch can do nothing with.
+func TestTheKeysReadAreTheIssuesOwn(t *testing.T) {
+	const issue = "LEGION-2"
 	for _, tc := range []struct {
 		name     string
 		declared []config.Experiment
@@ -39,32 +39,27 @@ func TestTheKeysReadAreTheUnitsTheDeclarationDrawsFor(t *testing.T) {
 		{"an empty declared list, which no project the loader reads produces", nil, nil},
 		{"a declaration no arm of which names a file",
 			config.Project{}.ExperimentsDeclared("projects.TEST"), nil},
-		{"a tree experiment naming a file", declaredPair()[:1], []string{tree}},
-		{"an issue experiment beside it", declaredPair(), []string{tree, issue}},
+		{"a tree experiment naming a file", declaredPair()[:1], []string{issue}},
+		{"an issue experiment beside it", declaredPair(), []string{issue}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ForLaunch(tc.declared, "/state").Keys(tree, issue); !reflect.DeepEqual(got, tc.want) {
+			if got := ForLaunch(tc.declared, "/state").Keys(issue); !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("Keys = %q, want %q", got, tc.want)
 			}
 		})
 	}
-	// A root's own launch reads its key once, since its issue is its tree.
-	if got := ForLaunch(declaredPair(), "/state").Keys(tree, tree); !reflect.DeepEqual(got, []string{tree}) {
-		t.Errorf("a root's Keys = %q, want %q alone", got, tree)
-	}
 }
 
-// The arms are the rows the record holds for each unit, in the order the project's file declares
-// the experiments: the tree's row for the tree experiment, the issue's own for the issue
-// experiment, each arm carrying the overlays and the key the operator wrote them under, and each
-// arm that names an instructions file carrying the daemon's copy of it under the state directory.
+// The arms are the rows the record holds for the issue itself, in the order the project's file
+// declares the experiments: its row of the tree experiment and its row of the issue experiment,
+// each arm carrying the overlays and the key the operator wrote them under, and each arm that
+// names an instructions file carrying the daemon's copy of it under the state directory.
 func TestTheArmsAreTheRecordedRowsInTheDeclaredOrder(t *testing.T) {
-	const tree, issue = "LEGION-1", "LEGION-2"
+	const issue = "LEGION-2"
 	recorded := map[string][]record.Assignment{
-		tree:  {{Experiment: "alpha", Variant: "on"}},
-		issue: {{Experiment: "beta", Variant: "on"}},
+		issue: {{Experiment: "alpha", Variant: "on"}, {Experiment: "beta", Variant: "on"}},
 	}
-	arms := ForLaunch(declaredPair(), "/state").Arms(recorded, tree, issue, claim.RoleImplementer)
+	arms := ForLaunch(declaredPair(), "/state").Arms(recorded, issue, claim.RoleImplementer)
 	wantVariants := []runtime.Variant{
 		{Experiment: "alpha", Name: "on", ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"},
 			ConfigFilesField: "projects.TEST.experiments.alpha.variants.on.config_files"},
@@ -97,7 +92,7 @@ func TestTheMemoryBlocksArmReadsTheBlocksOwnInstructionsCopy(t *testing.T) {
 		{"experiments.memory", keyed, "/state/experiments/memory/memory.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			arms := ForLaunch(tc.project.ExperimentsDeclared("projects.TEST"), "/state").Arms(recorded, tree, tree, claim.RoleImplementer)
+			arms := ForLaunch(tc.project.ExperimentsDeclared("projects.TEST"), "/state").Arms(recorded, tree, claim.RoleImplementer)
 			if want := []string{tc.want}; !reflect.DeepEqual(arms.Instructions, want) {
 				t.Errorf("Instructions = %q, want %q", arms.Instructions, want)
 			}
@@ -105,8 +100,10 @@ func TestTheMemoryBlocksArmReadsTheBlocksOwnInstructionsCopy(t *testing.T) {
 	}
 }
 
-// A unit runs in no arm of an experiment it holds no row for, and in none of an arm the
-// project's file no longer names: the launch names the files the file still holds.
+// An issue runs in no arm of an experiment it holds no row for, and in none of an arm the
+// project's file no longer names: the launch names the files the file still holds. A row another
+// issue holds, its tree root's included, gives it none either: its own row is what its first start
+// copied or drew (R17 of dispatch://INFRA-3320).
 func TestAnUnrecordedUnitAndAnArmTheFileDroppedRunInNoArm(t *testing.T) {
 	const tree, issue = "LEGION-1", "LEGION-2"
 	launch := ForLaunch(declaredPair(), "/state")
@@ -116,14 +113,14 @@ func TestAnUnrecordedUnitAndAnArmTheFileDroppedRunInNoArm(t *testing.T) {
 	}{
 		{"no row at all", nil},
 		{"a row at no arm, which a mode-off draw and a hand-over leave",
-			map[string][]record.Assignment{tree: {{Experiment: "alpha"}}}},
+			map[string][]record.Assignment{issue: {{Experiment: "alpha"}}}},
 		{"an arm the file no longer names",
-			map[string][]record.Assignment{tree: {{Experiment: "alpha", Variant: "gone"}}}},
-		{"the issue's own row against the tree's key",
-			map[string][]record.Assignment{tree: {{Experiment: "beta", Variant: "on"}}}},
+			map[string][]record.Assignment{issue: {{Experiment: "alpha", Variant: "gone"}}}},
+		{"the tree root's rows and none of the issue's own",
+			map[string][]record.Assignment{tree: {{Experiment: "alpha", Variant: "on"}, {Experiment: "beta", Variant: "on"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if arms := launch.Arms(tc.recorded, tree, issue, claim.RoleImplementer); arms.Variants != nil || arms.Instructions != nil {
+			if arms := launch.Arms(tc.recorded, issue, claim.RoleImplementer); arms.Variants != nil || arms.Instructions != nil {
 				t.Errorf("Arms = %+v, want none", arms)
 			}
 		})
@@ -134,10 +131,9 @@ func TestAnUnrecordedUnitAndAnArmTheFileDroppedRunInNoArm(t *testing.T) {
 // reviewer's launch takes no arm of the tree experiment that names only the implementer, and
 // still takes its arm of the issue experiment that names no roles, in the declared order.
 func TestARoleAnExperimentLeavesOutTakesNoArmOfThatExperimentAlone(t *testing.T) {
-	const tree, issue = "LEGION-1", "LEGION-2"
+	const issue = "LEGION-2"
 	recorded := map[string][]record.Assignment{
-		tree:  {{Experiment: "alpha", Variant: "on"}},
-		issue: {{Experiment: "beta", Variant: "on"}},
+		issue: {{Experiment: "alpha", Variant: "on"}, {Experiment: "beta", Variant: "on"}},
 	}
 	declared := declaredPair()
 	declared[0].Roles = []claim.Role{claim.RoleImplementer}
@@ -153,7 +149,7 @@ func TestARoleAnExperimentLeavesOutTakesNoArmOfThatExperimentAlone(t *testing.T)
 		{claim.RoleReviewer, []runtime.Variant{beta}},
 		{claim.RoleTester, []runtime.Variant{beta}},
 	} {
-		if arms := launch.Arms(recorded, tree, issue, tc.role); !reflect.DeepEqual(arms.Variants, tc.want) {
+		if arms := launch.Arms(recorded, issue, tc.role); !reflect.DeepEqual(arms.Variants, tc.want) {
 			t.Errorf("the %s's Variants = %+v, want %+v", tc.role, arms.Variants, tc.want)
 		}
 	}

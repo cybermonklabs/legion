@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -145,14 +144,16 @@ func TestAProductionCheckRoleFailedForCyberPolicyIsPromisedNoLook(t *testing.T) 
 	}
 }
 
-// A person's todo on a held child opens a new run of it (ReenterChild), and the new run's starts
-// are the daemon's own, so the start of the phase whose worker is held for OpenAI's cyber-policy
-// refusal carries no decision (record.SuperviseRequest.Decided) and the outbox refuses it. The
-// refusal tells the workflow of the failure again, built from the claim as it stands
-// (intake.ClaimFailedOf, the daemon outbox's heldStartRefused): the child is held at that phase and
-// its architect is told, as for any failure, and the architect's retry of the held phase is then a
-// decided start, which starts the agent in a new session (supervise's freshSession). Without the
-// refusal's fact the child would stand in the phase with no worker and nobody told.
+// A person's todo on a held child that a stop took out of Legion's work returns it to work and
+// releases its hold (ReturnToWork, releaseHeldRoot): the held phase's worker is started at a new
+// phase entry, as every return's worker is, and that start is the daemon's own, so the start of
+// the planner held for OpenAI's cyber-policy refusal carries no decision
+// (record.SuperviseRequest.Decided) and the outbox refuses it. The refusal tells the workflow of
+// the failure again, built from the claim as it stands (intake.ClaimFailedOf, the daemon outbox's
+// heldStartRefused): the child is held at that phase and its architect is told, as for any
+// failure, and the architect's retry of the held phase is then a decided start, which starts the
+// agent in a new session (supervise's freshSession). Without the refusal's fact the child would
+// stand in the phase with no worker and nobody told.
 func TestAHeldChildsTodoHoldsItAgainAtTheHeldWorkersPhaseAndTellsItsArchitect(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -164,24 +165,20 @@ func TestAHeldChildsTodoHoldsItAgainAtTheHeldWorkersPhaseAndTellsItsArchitect(t 
 	parent := "LEGION-208"
 	const child = "LEGION-209"
 	seedIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: "LEGION",
-		Title: "child", Parent: &parent, Phase: phase.Held, Hold: &record.Hold{From: phase.Planning}, Generation: 1, Status: "in_progress", Rank: "V", LastDispatchSeq: 4})
+		Title: "child", Parent: &parent, Phase: phase.Held, Hold: &record.Hold{From: phase.Planning}, Generation: 1, Status: "backlog", DispatchStatus: "backlog",
+		Rank: "V", LastDispatchSeq: 4})
 	seedPhase(t, pool, record.PhaseRow{Issue: child, Role: claim.RolePlanner, Claim: "child-planner", Rounds: 1})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyRefusingNothing(t, pool, engine, intake.DispatchIssue{Key: child, ResolvedRepo: "acme/widgets", Seq: 5, Type: "issue.updated", Status: "todo",
 		Title: "child", Parent: parent, Rank: "V"})
-	if got := storedIssue(t, pool, child); got.Phase != phase.Admitted || got.Generation != 2 {
-		t.Fatalf("the child after its todo stands in %s at generation %d, want a new run at admitted", got.Phase, got.Generation)
-	}
-	// Admission's promotion starts the new run's first phase (admit's LineFirstPhase).
-	admitted := issueOf(t, pool, engine, child)
-	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error { return engine.StartFirstPhase(ctx, tx, admitted, nil) })
-	if got := storedIssue(t, pool, child); got.Phase != phase.Planning {
-		t.Fatalf("the child's first phase is %s, want planning: the held planner's phase is the one this case is about", got.Phase)
+	if got := storedIssue(t, pool, child); got.Phase != phase.Planning || got.Hold != nil || got.Generation != 1 {
+		t.Fatalf("the child after its todo stands in %s (%+v) at generation %d, want its hold released into planning at generation 1: the held planner's phase is the one this case is about",
+			got.Phase, got.Hold, got.Generation)
 	}
 	start := lastStartOf(t, pool, child, claim.RolePlanner)
-	if start.Decided {
-		t.Fatalf("the new run's planner start = %+v, want it the daemon's own: nobody decided to start the held planner again", start)
+	if start.Decided || start.Phase != phase.Planning {
+		t.Fatalf("the return's planner start = %+v, want a start of planning that is the daemon's own: nobody decided to start the held planner again", start)
 	}
 
 	// The outbox's refusal of that start, for a planner held for OpenAI's cyber-policy refusal.

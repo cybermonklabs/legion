@@ -121,8 +121,25 @@ func (r *newsReconcileRig) inTx(write func(pgx.Tx) error) {
 	}
 }
 
+// treeMembers is the root architect's summary of the rig's tree as tx finds the record, read as a
+// send reads it for the root's own architect (readNewsAtSend): the root's record and one reading of
+// the Dispatch chains named from it, over which the summary names every member and its holder
+// (newsClaims, readTreeMembers).
+func (r *newsReconcileRig) treeMembers(tx pgx.Tx) ([]memberDraft, error) {
+	root, err := r.records.Issue(r.ctx, tx, reconcileRoot)
+	if err != nil {
+		return nil, err
+	}
+	chains, err := record.ReadChains(r.ctx, tx, r.records, root.Project, []string{root.Key})
+	if err != nil {
+		return nil, err
+	}
+	return readTreeMembers(r.ctx, tx, r.records, config.DesignGateRootIssues.Steps(), newNewsClaims(*root, chains))
+}
+
 // member records key in the tree in phase at, the tree's root when it is reconcileRoot, the child
-// of parent otherwise.
+// of parent otherwise, with its row of the copy of Dispatch's issues (putChainIssue): the tree is
+// the gate root's on the Dispatch chain (record.Chains.GateTree), which the news reads.
 func (r *newsReconcileRig) member(key, parent string, at phase.Phase) record.Issue {
 	r.t.Helper()
 	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
@@ -130,7 +147,7 @@ func (r *newsReconcileRig) member(key, parent string, at phase.Phase) record.Iss
 	if key != reconcileRoot {
 		issue.Parent = &parent
 	}
-	putOutboxIssue(r.t, r.pool, r.records, issue)
+	putChainIssue(r.t, r.pool, r.records, issue)
 	return issue
 }
 
@@ -239,12 +256,13 @@ func (r *newsReconcileRig) historyUnread(question record.DesignHistoryQuestion) 
 	return unread, held
 }
 
-// toldOf is issue's audience row as the record holds it, the zero row where there is none.
+// toldOf is issue's audience row as the record holds it, read as a member of reconcileRoot's tree,
+// the zero row where there is none.
 func (r *newsReconcileRig) toldOf(issue string, audience record.DesignAudience) record.DesignTold {
 	r.t.Helper()
 	var found record.DesignTold
 	r.inTx(func(tx pgx.Tx) error {
-		rows, err := r.records.TreeTold(r.ctx, tx, reconcileRoot)
+		rows, err := r.records.TreeTold(r.ctx, tx, reconcileRoot, []string{issue})
 		for _, row := range rows {
 			if row.Issue == issue && row.Audience == audience {
 				found = row
@@ -315,7 +333,14 @@ func pendingNews(t *testing.T, machine *supervise.Machine) (string, record.Deliv
 
 // heldItem is the news of the spec from version from to version 5 to issue's holder.
 func heldItem(issue string, from int) record.DeliveryNewsItem {
-	return newsItem(issue, record.AudienceHolder, record.DesignStepSpec, reconcileDoc, from, 5)
+	return reconcileItem(issue, record.AudienceHolder, record.DesignStepSpec, reconcileDoc, from, 5)
+}
+
+// reconcileItem is newsItem rendered under the reconcile rig's gate root, reconcileRoot.
+func reconcileItem(issue string, audience record.DesignAudience, step record.DesignStep, artifact string, from, to int) record.DeliveryNewsItem {
+	item := newsItem(issue, audience, step, artifact, from, to)
+	item.Root = reconcileRoot
+	return item
 }
 
 // The reconcile reads each pair of versions it needs once, whoever is owed it: two members that

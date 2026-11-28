@@ -587,7 +587,7 @@ func TestTheOrphanSweepKeepsTheSandboxOfAControllerLaunchedSinceItsClaimsWereRea
 }
 
 // The sweep's read of the controller's claim before the pod's launch turn is only its fast path, as
-// the issue path's first TreeLive is: a claim stored unretired while the sweep waits for the turn —
+// the issue path's first IssueLive is: a claim stored unretired while the sweep waits for the turn —
 // the keeper's retry of a retired controller, written launching before its launch begins — is read
 // again under the turn, and the Sandbox stays though nothing has written it since the listing.
 func TestTheOrphanSweepReadsTheControllersClaimAgainUnderThePodsLaunchTurn(t *testing.T) {

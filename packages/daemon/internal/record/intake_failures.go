@@ -459,7 +459,10 @@ func (s *Postgres) countGiveUps(ctx context.Context, tx pgx.Tx, project string, 
 // leased row is being published, and a row the outbox gave back to retry may have reached the
 // controller in the attempt that failed, while its retry publishes under the same key (OutboxKey),
 // which Envoy does not deliver twice. So with no row left to join it opens one on the project
-// key, due giveUpNoticeDelay after now, counting and naming giveUp.
+// key, due giveUpNoticeDelay after now, counting and naming giveUp. The project key is no issue
+// the daemon records a run of, so the notice names the fence of a key the record holds nothing
+// of (FirstFence), as every controller notice names its run and entry (Notice.Generation); a
+// notice it joins keeps the fence it was opened with (Fenced).
 func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project string, giveUp NoticeGiveUp, now time.Time) (int64, error) {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.intake_give_up_notice:' || $1::text))`, project); err != nil {
 		return 0, fmt.Errorf("lock %s's intake-gave-up notice: %w", project, err)
@@ -468,7 +471,7 @@ func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 		where kind = $1 and split_part(issue, '-', 1) = $2 and payload->>'kind' = $3 and lease_until is null and attempts = 0
 		order by id limit 1 for update`, string(OutboxKindControllerNotice), project, string(IntakeGaveUpNotice)))
 	if errors.Is(err, pgx.ErrNoRows) {
-		opened, err := NewOutboxRow(project, ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{giveUp}}, now.Add(giveUpNoticeDelay))
+		opened, err := NewOutboxRow(project, Fenced(ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1, GiveUps: []NoticeGiveUp{giveUp}}, FirstFence), now.Add(giveUpNoticeDelay))
 		if err != nil {
 			return 0, fmt.Errorf("open %s's intake-gave-up notice: %w", project, err)
 		}
@@ -486,7 +489,7 @@ func (s *Postgres) countIntakeGiveUp(ctx context.Context, tx pgx.Tx, project str
 	if len(notice.GiveUps) < giveUpNoticeNames {
 		notice.GiveUps = append(notice.GiveUps, giveUp)
 	}
-	counted, err := NewOutboxRow(row.Issue, notice, row.NextAt)
+	counted, err := NewOutboxRow(row.Issue, Fenced(notice, FirstFence), row.NextAt)
 	if err != nil {
 		return 0, fmt.Errorf("count a give-up in %s's intake-gave-up notice %d: %w", project, row.ID, err)
 	}

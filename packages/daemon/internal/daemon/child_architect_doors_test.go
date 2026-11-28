@@ -3,8 +3,10 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -72,7 +75,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 	records := record.NewStore()
 	root := record.Issue{Key: doorRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: doorRoot,
 		Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true, LastDispatchSeq: 1}
-	putOutboxIssue(t, pool, records, root)
+	putChainIssue(t, pool, records, root)
 	approved := 1
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutGate(ctx, tx, record.DesignGate{Issue: doorRoot, ArtifactID: "artifact-1", LatestVersion: 1, ApprovedVersion: &approved})
@@ -95,7 +98,7 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 			t.Fatalf("seed the claim %s: %v", c.Token, err)
 		}
 	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 3, "LEGION", quietLogger())
 	handlers := []intake.Handler{blockers.NewMirror(records, "LEGION"), engine, admission}
 	answers := &workflowRuntime{pool: pool, records: records, handlers: handlers, log: quietLogger()}
@@ -121,11 +124,12 @@ func newChildArchitectRig(t *testing.T) *childArchitectRig {
 	}
 }
 
-// put records each issue as the workflow holds it.
+// put records each issue as the workflow holds it, with its row of the copy (putChainIssue), so
+// the issue stands on a known Dispatch chain under the rig's root.
 func (r *childArchitectRig) put(issues ...record.Issue) {
 	r.t.Helper()
 	for _, issue := range issues {
-		putOutboxIssue(r.t, r.pool, r.records, issue)
+		putChainIssue(r.t, r.pool, r.records, issue)
 	}
 }
 
@@ -147,7 +151,7 @@ func (r *childArchitectRig) apply(id string, fact intake.Fact) {
 
 // written is a route of the daemon's own write of the child's status in Dispatch — an architect's
 // release_children or rerun_child — as Dispatch answered it (issue), and the fact the route then
-// applies (api's recordOwnStatusWrite): Dispatch's view of the issue, which applies to an issue the
+// applies (api's ApplyOwnStatusWrite): Dispatch's view of the issue, which applies to an issue the
 // record does not hold, carrying the write's own event, which applies to one it holds.
 func (r *childArchitectRig) written(id string, issue dispatch.Issue) {
 	r.t.Helper()
@@ -281,7 +285,8 @@ func (r *childArchitectRig) wantChildsArchitectToldItsIssues(want []string) {
 // the rows they write through the real outbox runner, and the architect's launch through its
 // claim's machine: the start creates and spawns the child's architect claim, on the child and in
 // the root's tree, and the first notice published to that architect is its catch-up, naming the
-// child and every issue under it. A child that waits for the issue it is held by gets no architect
+// child and every issue under it in Legion's work, the issues that architect acts on (R18 of
+// dispatch://INFRA-3320). A child that waits for the issue it is held by gets no architect
 // while it waits: the architect starts with the child's first phase and not with its entry.
 func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 	t.Parallel()
@@ -295,7 +300,9 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 		rig := newChildArchitectRig(t)
 		rig.put(rig.member(doorChild, doorRoot, phase.Done, "done", "V"), rig.member(doorGrandchild, doorChild, phase.Done, "done", "W"))
 		rig.written("rerun", childAt("todo", 2))
-		rig.wantChildsArchitectToldItsIssues([]string{doorChild, doorGrandchild})
+		// The grandchild stays done, out of Legion's work, so the child's architect does not act
+		// on it and its catch-up does not name it.
+		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})
 
 	t.Run("a person's todo under a live tree", func(t *testing.T) {
@@ -315,19 +322,50 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 			t.Fatalf("the held child's entry queued %d architect starts, want none until its first phase starts", starts)
 		}
 		rig.drain()
-		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Admitted {
-			t.Fatalf("the held child stands at %s while %s works, want admitted", got.Phase, doorBlocker)
+		if got := readIssue(t, rig.pool, doorChild); got == nil || got.Phase != phase.Admitted {
+			t.Fatalf("the held child is recorded as %+v while %s works, want it at admitted", got, doorBlocker)
 		}
 		if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
 			t.Fatal("the held child has an architect claim while it waits, want none until its first phase starts")
 		}
 		rig.apply("blocker-done", intake.DispatchIssue{Key: doorBlocker, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done",
 			Title: doorBlocker, Rank: "Z"})
-		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Planning {
-			t.Fatalf("the child stands at %s once %s is done, want planning", got.Phase, doorBlocker)
+		if got := readIssue(t, rig.pool, doorChild); got == nil || got.Phase != phase.Planning {
+			t.Fatalf("the child is recorded as %+v once %s is done, want it in planning", got, doorBlocker)
 		}
 		rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 	})
+}
+
+// A start queued for news alone (record.SuperviseRequest.News) of a child's own architect has the
+// shape of that architect's first start: the architect's role on a child, with no phase and no
+// task. It carries news to a claim that already holds its role, and one that reaches no claim
+// finishes (newsOnlyRefusal), since the start that creates or revives the claim carries the news:
+// it neither creates the child's architect claim nor waits on its backoff for one, its tree
+// running or not.
+func TestANewsOnlyStartOfAChildsArchitectWithNoClaimFinishes(t *testing.T) {
+	t.Parallel()
+	rig := newChildArchitectRig(t)
+	var logged testlog.Buffer
+	// The outbox reads the news under the design-gate steps the daemon gates, as the daemon wires
+	// it.
+	rig.runner.log, rig.runner.gatedSteps = slog.New(slog.NewTextHandler(&logged, nil)), config.DesignGateRootIssues.Steps()
+	rig.put(rig.member(doorChild, doorRoot, phase.Accepting, "needs_review", "V"))
+	row, err := record.NewOutboxRow(doorChild, record.SuperviseRequest{Op: "start", Tree: doorRoot, Role: claim.RoleArchitect,
+		Generation: 1, News: true}, time.Now())
+	if err != nil {
+		t.Fatalf("build the news-only start of %s's architect: %v", doorChild, err)
+	}
+
+	if err := rig.runner.execute(rig.ctx, row); err != nil {
+		t.Fatalf("the news-only start of %s's architect, with no claim, = %v, want it finished without acting", doorChild, err)
+	}
+	if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
+		t.Fatalf("the news-only start of %s's architect created its claim, want none created", doorChild)
+	}
+	if says := "outbox news-only start reaches no claim; finished without acting"; !strings.Contains(logged.String(), says) {
+		t.Fatalf("the outbox logged %q, want %q", logged.String(), says)
+	}
 }
 
 // A child's first phase start tells the architect above the child of the start once, with the
@@ -345,7 +383,9 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 // architect. The child's architect starts while the notices wait, and the attempt after the
 // backoff walks the owner again and finds that architect launching: the notices still go to the
 // parent's architect. A failed claim holds no role, so the notices go on up to the root's
-// architect.
+// architect. The rig's root is itself in implementing, and the parent is an open child under it on
+// the Dispatch chain, so the root waits in awaiting_children too and its own architect is told of
+// its hold: that architect, the one above the child when the parent's failed, hears both holds.
 func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 	t.Parallel()
 	const parent = "LEGION-5"
@@ -355,15 +395,25 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 		by       supervise.SuspendSource
 		released bool
 		above    string
+		// holds is the number of awaiting-children notices the architect above the child hears:
+		// the parent's, and the root's own where that architect is the root's.
+		holds int
 	}{
-		{name: "the parent's architect works", state: supervise.StateWorking, above: parent},
-		{name: "the parent's architect is released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, released: true, above: parent},
-		{name: "the parent's architect failed", state: supervise.StateFailed, above: doorRoot},
+		{name: "the parent's architect works", state: supervise.StateWorking, above: parent, holds: 1},
+		{name: "the parent's architect is released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, released: true, above: parent, holds: 1},
+		{name: "the parent's architect failed", state: supervise.StateFailed, above: doorRoot, holds: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newChildArchitectRig(t)
 			rig.put(rig.member(parent, doorRoot, phase.Implementing, "in_progress", "T"))
 			holdSlot(t, rig.pool, parent)
+			// Admission opened the parent's own lifecycle when it started the parent (admit's
+			// OpenIssueLifecycle), and its architect's claim binds it (store.Store.AdmitClaim).
+			if err := store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return openIssueTx(ctx, tx, "legion", parent, treelifecycle.AuthorityWorkflow)
+			}); err != nil {
+				t.Fatalf("open the lifecycle of %s: %v", parent, err)
+			}
 			held, _, err := rig.sup.Create(rig.ctx, supervise.Claim{Token: mustClaimToken(t, parent, claim.RoleArchitect), Project: "legion",
 				Tree: doorRoot, Issue: parent, Role: claim.RoleArchitect, Generation: 1, ServingGeneration: 1,
 				State: tc.state, SuspendedBy: tc.by, Session: "ses-parent-architect", SessionFile: doorSessionFile("ses-parent-architect")}, "")
@@ -390,6 +440,9 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			want := workflow.ChildStartedNotice(doorChild, doorRoot, phase.Planning, nil)
 			var started, waiting []record.Notice
 			for _, notice := range rig.noticesTo(tc.above) {
+				// The run and the phase entry the row names are its fence (record.Fence), which
+				// TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing reads; this case reads what it says.
+				notice.Generation, notice.Entry = 0, 0
 				if notice.Kind == want.Kind {
 					started = append(started, notice)
 				} else {
@@ -397,10 +450,16 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 				}
 			}
 			if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
-				t.Fatalf("the architect of %s was published %+v of the child-status kind, want the one notice %+v of %s's start", tc.above, started, want, doorChild)
+				t.Fatalf("the architect of %s was published %#v of the child-status kind, want the one notice %#v of %s's start", tc.above, started, want, doorChild)
 			}
-			if len(waiting) != 1 || waiting[0].Kind != workflow.AwaitingChildrenNoticeKind {
-				t.Fatalf("the architect of %s was published %+v beside the child's start, want the one awaiting-children notice of %s", tc.above, waiting, parent)
+			holds := 0
+			for _, notice := range waiting {
+				if notice.Kind == workflow.AwaitingChildrenNoticeKind {
+					holds++
+				}
+			}
+			if len(waiting) != tc.holds || holds != tc.holds {
+				t.Fatalf("the architect of %s was published %+v beside the child's start, want %d awaiting-children notices and nothing else", tc.above, waiting, tc.holds)
 			}
 			for _, notice := range rig.noticesTo(doorChild)[1:] {
 				if notice.Kind == "child-status" || notice.Phase == phase.Admitted {

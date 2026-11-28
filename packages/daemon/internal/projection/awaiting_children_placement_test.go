@@ -49,10 +49,9 @@ func TestAWaitingParentStandsInBlockedWithItsOpenChildrenAlone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := projectionStore{
-				issues:     []record.Issue{waiting},
-				lifecycles: []string{parent},
-				gates:      map[string]map[record.DesignStep]record.DesignGate{parent: openGate(parent, projectedAt.Add(-3*time.Hour))},
-				mirror:     tc.mirror,
+				issues: []record.Issue{waiting},
+				gates:  map[string]map[record.DesignStep]record.DesignGate{parent: openGate(parent, projectedAt.Add(-3*time.Hour))},
+				mirror: tc.mirror,
 			}
 			projected, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
 			if err != nil {

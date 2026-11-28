@@ -50,15 +50,18 @@ func decodedBeforeTheSequence(payload []byte) error {
 
 // The way back of the release that lets the owning architect's status stand takes the key
 // observedSeq off each status row of the project that rolls back, and changes nothing else. The
-// rows are pending writes of two projects as this release queues them (record.NewOutboxRow), as the
-// daemon stops for the rollback: the set-back of a worker's backlog, which Dispatch refused twice
+// rows are pending writes of two projects as the release that adds this migration queues them, as
+// the daemon stops for the rollback: the set-back of a worker's backlog, which Dispatch refused twice
 // and which waits on its backoff with its last error, a set-back an earlier release queued with no
 // sequence, a phase status write, a close with its reason and a message of LEGION, and another
-// project's set-back. The block runs for LEGION as the migration's header carries it, as one exec
-// (the simple protocol a psql run uses). Then LEGION's set-back is the same write without its
-// sequence, every other row reads as it was queued, and each row keeps its retry state. Each status
-// row of LEGION takes the strict decode of the release before, and OTHER's set-back keeps its key:
-// a daemon of OTHER that stays on this release still checks its own set-backs.
+// project's set-back. Each is encoded with none of the run and entry fence keys (record.Fence) that
+// the later 20261122154645 of dispatch://INFRA-4730 adds, since a rollback runs the way back of each
+// later migration before this one's, and this test holds this one alone. The block runs for LEGION
+// as the migration's header carries it, as one exec (the simple protocol a psql run uses). Then
+// LEGION's set-back is the same write without its sequence, every other row reads as it was
+// queued, and each row keeps its retry state. Each status row of LEGION takes the strict decode of
+// the release before, and OTHER's set-back keeps its key: a daemon of OTHER that stays on this
+// release still checks its own set-backs.
 //
 // The control comes first, on the same rows: the strict decode of the release before refuses each
 // set-back that carries a sequence, and takes every other status row.
@@ -102,10 +105,11 @@ func TestTheSetBackSequenceWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) 
 	ids := make([]int64, len(queued))
 	inserted := make([]retryState, len(queued))
 	for i, q := range queued {
-		row, err := record.NewOutboxRow(q.issue, q.payload, stopped)
+		payload, err := json.Marshal(q.payload)
 		if err != nil {
 			t.Fatalf("queue %s: %v", q.name, err)
 		}
+		row := record.OutboxRow{Kind: q.payload.OutboxKind(), Issue: q.issue, Payload: payload}
 		state := retryState{attempts: q.attempts, nextAt: stopped, lastError: q.lastError}
 		for attempt := range q.attempts {
 			state.nextAt = state.nextAt.Add(record.RetryBackoff(attempt))

@@ -134,7 +134,7 @@
       "workers": {},
       "why": {
         "state": "blocked",
-        "reason": "The design gate of its tree stands shut: LEGION-208 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."
+        "reason": "A design gate it waits for stands shut: LEGION-208 waits for a person's approval of each gated step's document at its current version, and the daemon starts nothing under it until it opens."
       },
       "treeMovedAt": "2126-10-06T18:03:01Z",
       "quietHours": 0.002777777777777778
@@ -556,7 +556,7 @@
         }
       }
     },
-    "linger_hours": 1.5,
+    "linger_hours": 0,
     "production_check_hours": 240,
     "pod_update_grace_minutes": 30,
     "stalled_tree_notice_hours": 6,

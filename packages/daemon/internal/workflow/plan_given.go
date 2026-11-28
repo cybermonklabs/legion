@@ -26,10 +26,12 @@ import (
 // but adds its giver to the givers of that version where the version names another
 // (record.Store.AddPlanGiver). So a second delivery of a give taken writes nothing.
 //
-// Apply judged the plan already on the record as the fact reads it, since the route read the
-// record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no
-// longer is refused ISSUE_OUTSIDE_TREE there, and a plan of a run the issue has left
-// PLAN_STALE_GENERATION.
+// Apply judged the plan already on the record and the Dispatch chain as the fact reads them, since
+// the route read the record, or Dispatch, before the fact lock (requestRefusal): a giver that acts
+// on the issue on its chain no longer is refused ISSUE_NOT_OWNED there, naming the architect that
+// does, and a plan of a run the issue has left PLAN_STALE_GENERATION. A plan for an issue the
+// daemon has not recorded is the route's to judge alone, and its first step passes over a plan
+// whose giver acts on it no longer (passOverEarlierOwners).
 func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (intake.Result, error) {
 	given, refusal, err := e.versionRefusal(ctx, tx, fact)
 	if err != nil || refusal != nil {
@@ -122,9 +124,10 @@ func (g givenVersion) retakesDefault() bool {
 // the generation's first plan, and planGiven deletes that version before it writes (passedOver).
 // The version in force as the judgement then reads it is the one the generation runs or the first
 // step will run, and a give of that very version is answered taken (taken), whoever gave it
-// before: it is no later version, and nothing of it is written but its giver (addGiver). An issue
-// the daemon has not recorded has no tree to judge an earlier owner by, so its plan at generation
-// 0 is judged as it stands, and its first step judges the givers once the issue is recorded.
+// before: it is no later version, and nothing of it is written but its giver (addGiver). A plan
+// for an issue the daemon has not recorded is the route's to judge alone, so its plan at
+// generation 0 is judged as it stands, and its first step judges the givers once the issue is
+// recorded.
 //
 // A later version is compared, task by task, with the version in force as its owner gave it
 // (heldPlan, plan.ChangedTasks). A version of another document than the one the version in force
@@ -132,8 +135,7 @@ func (g givenVersion) retakesDefault() bool {
 // so is a version below it (laterVersionRefusal). A task the version changes or removes must wait
 // or be stopped, but for a running task whose text alone it changes, which it takes
 // (plan.RunningChange): every other change of a running task is refused, one reason for each, and
-// so is any change of a task that is done or left the workflow. A plan given in a lingering tree
-// is refused too, the version in force among them.
+// so is any change of a task that is done or left the workflow.
 //
 // A recorded issue whose group runs the project's default steps (groupOf, takesNoPlan) takes one
 // kind of version from its owner: a later version that changes nothing but the text of a running
@@ -181,12 +183,6 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	}
 	if refusal != nil {
 		return givenVersion{}, refusal, nil
-	}
-	if issue != nil {
-		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
-		if err != nil || lingers {
-			return givenVersion{}, refusalUnless(err, refusedLingering(*issue, fmt.Sprintf("version %d of the owner's plan", fact.Plan.Version)).Refusal), err
-		}
 	}
 	return given, nil, nil
 }
@@ -340,11 +336,11 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
 // the route read it unrecorded, still waits there for the issue's first step: the issue stands
 // before that step (beforeItsWork), and its generation holds no plan the step keeps — none, or
-// only one earlier owners gave (record.GivenByEarlierOwners), which the step passes over
-// (passOverEarlierOwners) — so the step takes the newest plan its owner gave, or passes it over
-// too for an issue whose group takes none (planFirstStep). Once a plan of the generation is the
-// one its run walks, the default steps the step wrote or a plan of its owner's, the run went on
-// without the one given at generation 0.
+// only one earlier owners gave (record.GivenByEarlierOwners, by the rule of record.PlanOwners on
+// the issue's Dispatch chain), which the step passes over (passOverEarlierOwners) — so the step
+// takes the newest plan its owner gave, or passes it over too for an issue whose group takes none
+// (planFirstStep). Once a plan of the generation is the one its run walks, the default steps the
+// step wrote or a plan of its owner's, the run went on without the one given at generation 0.
 // versionRefusal reads the group only after this judgement, so a plan given at generation 0 for an
 // issue whose group takes none is answered PLAN_STALE_GENERATION once its run went on, and
 // PLAN_NOT_TAKEN while it still waits.

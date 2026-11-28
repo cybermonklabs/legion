@@ -24,8 +24,9 @@ import (
 )
 
 // The tree of the test below (dispatch://INFRA-3178, the plan's list L2): a root and one child. The
-// root's architect owns the child, and the child's implementer is a phase worker of it. A write in
-// Dispatch names its session, and the daemon finds the writer's claim by that session alone.
+// root's architect is the architect above the child, and the child's implementer is a phase worker
+// of it. A write in Dispatch names its session, and the daemon finds the writer's claim by that
+// session alone, among the claims it publishes as role holders (record.Store.RoleHolders).
 const (
 	ownerMoveRoot      = "LEGION-1"
 	ownerMoveChild     = "LEGION-2"
@@ -49,14 +50,16 @@ type issueLogEntry struct {
 	changed []string
 }
 
-// issueLogDispatch is the child as Dispatch shows it, from one event log. GetIssue answers the
-// status of the last event and its sequence. SetStatusAt writes only at the sequence of the read it
+// issueLogDispatch is the child as Dispatch shows it, from one event log, and its parent, the root,
+// at in_progress as the rig records it. GetIssue answers the child at the status of the last event
+// and its sequence, and the root to a read of the root, such as a set-back's read of the parent it
+// waits on (the outbox's awaitParentInWork). SetStatusAt writes only at the sequence of the read it
 // is given, and refuses a write at any other sequence with ISSUE_CHANGED, as Dispatch does.
 // EventsAfter serves the log after a sequence in Dispatch's own shape. Each write the daemon makes
-// is an event of its own session. onRead runs once, before the first GetIssue answers, and onWrite
-// once, before the first SetStatusAt reads its sequence. A row sets one of them to add the owner's
-// events while a set-back is in flight, its lease taken: before its read, or between its read and
-// its write.
+// is an event of its own session. onRead runs once, before the first read of the child answers, and
+// onWrite once, before the first SetStatusAt reads its sequence. A row sets one of them to add the
+// owner's events while a set-back is in flight, its lease taken: before its read, or between its
+// read and its write.
 type issueLogDispatch struct {
 	outboxDispatch
 	log             []issueLogEntry
@@ -107,7 +110,11 @@ func (d *issueLogDispatch) raw(entry issueLogEntry) json.RawMessage {
 	return raw
 }
 
-func (d *issueLogDispatch) GetIssue(context.Context, string) (dispatch.Issue, error) {
+func (d *issueLogDispatch) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+	if key == ownerMoveRoot {
+		return dispatch.Issue{Key: ownerMoveRoot, Status: "in_progress", Title: ownerMoveRoot, Rank: "A", Labels: []string{dispatch.LegionLabel},
+			ResolvedRepo: "acme/widgets", LastSeq: 1}, nil
+	}
 	if read := d.onRead; read != nil {
 		d.onRead = nil
 		read()
@@ -156,9 +163,11 @@ type ownerMoveRig struct {
 }
 
 // newOwnerMoveRig records the root and the child in implementing at in_progress, each holding its
-// slot and the root's tree running, with the root's architect and the child's implementer claimed.
-// Dispatch shows the child at in_progress, the daemon's own write at sequence 1, which the record
-// took.
+// slot and the root's tree running, with the root's architect and the child's implementer claimed,
+// each working with its session held, as a registration holds it. The copy of Dispatch's issues
+// holds the chain the engine judges a write on: the child under the root, which carries the legion
+// label (R18 and R26 of dispatch://INFRA-3320). Dispatch shows the child at in_progress, the
+// daemon's own write at sequence 1, which the record took.
 func newOwnerMoveRig(t *testing.T) *ownerMoveRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -172,7 +181,21 @@ func newOwnerMoveRig(t *testing.T) *ownerMoveRig {
 	} {
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, issue.Project, issue.Title = "acme/widgets", "main", "acme/widgets", "LEGION", issue.Key
 		issue.Phase, issue.Generation, issue.Status, issue.DispatchStatus, issue.LastDispatchSeq = phase.Implementing, 1, "in_progress", "in_progress", 1
+		issue.SeenSeq = 1
 		putOutboxIssue(t, pool, records, issue)
+		labels, copyParent := []string{}, ""
+		if issue.HandedOver {
+			labels = []string{dispatch.LegionLabel}
+		}
+		if issue.Parent != nil {
+			copyParent = *issue.Parent
+		}
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+			return records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue.Key, Project: issue.Project, Seq: 1,
+				Status: record.Carry(issue.Status), Parent: record.Carry(copyParent), Labels: record.Carry(labels)})
+		}); err != nil {
+			t.Fatalf("write the copy row of %s: %v", issue.Key, err)
+		}
 	}
 	holdSlot(t, pool, ownerMoveRoot, ownerMoveChild)
 	openTree(t, pool, "LEGION", ownerMoveRoot)
@@ -195,6 +218,10 @@ func newOwnerMoveRig(t *testing.T) *ownerMoveRig {
 			string(token), project, ownerMoveRoot, c.issue, string(c.role), c.session); err != nil {
 			t.Fatalf("record the %s claim of %s: %v", c.role, c.issue, err)
 		}
+		if _, err := pool.Exec(context.Background(), `insert into claim_sessions (project, kind, name, claim) values ($1, 'session', $2, $3)`,
+			project, c.session, string(token)); err != nil {
+			t.Fatalf("hold the session of the %s claim of %s: %v", c.role, c.issue, err)
+		}
 	}
 	fake := &issueLogDispatch{log: []issueLogEntry{{seq: 1, typ: "issue.updated",
 		actor: dispatch.Actor{Kind: "session", ID: dispatch.DaemonSession(ownerMoveChild)}, status: "in_progress", changed: []string{"status"}}}}
@@ -214,7 +241,9 @@ func (r *ownerMoveRig) write(session, status string) int64 {
 }
 
 // catchUp applies each event of the log after the last one the handlers took, oldest first,
-// decoded as the daemon's consumer decodes it, so the daemon's own writes come back with its actor.
+// decoded as the daemon's consumer decodes it, so the daemon's own writes come back with its actor,
+// and under the event id the consumer applies it under ("dispatch-" and the event's id), which a
+// status row reads to know the record has seen the events up to its read (the outbox's awaitSeen).
 func (r *ownerMoveRig) catchUp() {
 	r.t.Helper()
 	for _, entry := range r.dispatch.log {
@@ -225,7 +254,7 @@ func (r *ownerMoveRig) catchUp() {
 		if err != nil {
 			r.t.Fatalf("decode event %d: %v", entry.seq, err)
 		}
-		result, err := intake.ApplyFact(context.Background(), r.pool, "dispatch", fmt.Sprintf("%s-%d", ownerMoveChild, entry.seq), fact, r.engine, r.admission)
+		result, err := intake.ApplyFact(context.Background(), r.pool, "dispatch", fmt.Sprintf("dispatch-%d", entry.seq), fact, r.engine, r.admission)
 		if err != nil || result.Refusal != nil {
 			r.t.Fatalf("apply event %d (%s of %s by %s) = %+v, %v", entry.seq, entry.typ, entry.status, entry.actor.Name(), result.Refusal, err)
 		}
@@ -303,9 +332,10 @@ func (r *ownerMoveRig) daemonWritesAfter(seq int64) []string {
 }
 
 // holds is the owner's status standing over its move at seq: the daemon wrote no status on the
-// child after the move, Dispatch ends at the owner's status, the record reads it at phase done, and
-// the outbox holds no status row that writes another status. Dispatch is read first, so a write
-// over the move is named as the write, before the record that took its event back.
+// child after the move, Dispatch ends at the owner's status, the record reads it out of Legion's
+// work at that status, its phase kept short of done (R20 of dispatch://INFRA-3320), and the outbox
+// holds no status row that writes another status. Dispatch is read first, so a write over the move
+// is named as the write, before the record that took its event back.
 func (r *ownerMoveRig) holds(status string, move int64) {
 	r.t.Helper()
 	if writes := r.daemonWritesAfter(move); len(writes) != 0 {
@@ -316,8 +346,8 @@ func (r *ownerMoveRig) holds(status string, move int64) {
 		r.t.Fatalf("Dispatch ends with the child at %s, want the owner's %s", shown, status)
 	}
 	child := storedIssueOf(r.t, context.Background(), r.pool, r.records, ownerMoveChild)
-	if child.Phase != phase.Done || child.Status != status {
-		r.t.Fatalf("the child's record = phase %s, status %s, want the owner's %s at phase done", child.Phase, child.Status, status)
+	if record.InLegionsWork(*child) || child.Phase == phase.Done || child.Status != status {
+		r.t.Fatalf("the child's record = phase %s, status %s, want the owner's %s out of Legion's work, its phase kept", child.Phase, child.Status, status)
 	}
 	for _, write := range r.statusWritesLeft() {
 		if write.Status != status {
@@ -348,7 +378,7 @@ func (r *ownerMoveRig) restored(after int64) {
 		r.t.Fatalf("Dispatch ends with the child at %s, want the record's in_progress", shown)
 	}
 	child := storedIssueOf(r.t, context.Background(), r.pool, r.records, ownerMoveChild)
-	if !workflow.InWorkflow(*child) || child.Phase != phase.Implementing || child.Status != "in_progress" {
+	if !record.InWorkflow(*child) || child.Phase != phase.Implementing || child.Status != "in_progress" {
 		r.t.Fatalf("the child's record = phase %s, status %s, want it still implementing at in_progress", child.Phase, child.Status)
 	}
 	if left := r.statusWritesLeft(); len(left) != 0 {
@@ -384,7 +414,7 @@ func TestTheOwningArchitectsDoneStandsOverAStatusWriteTheDaemonQueuedOrHasInFlig
 				if err := r.records.PutIssue(ctx, tx, *child); err != nil {
 					return err
 				}
-				queued, err := record.NewOutboxRow(ownerMoveChild, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now())
+				queued, err := record.NewFencedRow(context.Background(), tx, r.records, ownerMoveChild, record.OrdinaryStatusWrite("testing", "in_progress", ""), time.Now())
 				if err != nil {
 					return err
 				}
@@ -460,4 +490,23 @@ func TestTheOwningArchitectsDoneStandsOverAStatusWriteTheDaemonQueuedOrHasInFlig
 			row.run(newOwnerMoveRig(t))
 		})
 	}
+}
+
+// storedIssueOf is the issue as the record holds it, failing the test when the record has none:
+// every caller here is asking where the issue stands, and a nil would read as "not in the
+// workflow", which is one of the answers under test.
+func storedIssueOf(t *testing.T, ctx context.Context, pool *store.Pool, records record.Store, key string) *record.Issue {
+	t.Helper()
+	var stored *record.Issue
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		stored, err = records.Issue(ctx, tx, key)
+		return err
+	}); err != nil {
+		t.Fatalf("read the recorded issue %s: %v", key, err)
+	}
+	if stored == nil {
+		t.Fatalf("%s is not recorded at all, want it recorded", key)
+	}
+	return stored
 }

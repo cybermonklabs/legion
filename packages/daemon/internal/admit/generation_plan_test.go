@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -29,8 +30,8 @@ const (
 // order: today's line up to the owner's acceptance.
 var todaysDefaultRoles = []string{"planner", "implementer", "tester", "reviewer", "acceptance"}
 
-// architectClaim is the claim of the architect of the tree of root, the owner who gives every plan
-// of these tests (record.ArchitectOfTree).
+// architectClaim is the claim of the architect of root, the owner who gives every plan of these
+// tests: it acts on root and on each issue under root on the Dispatch chain (record.PlanOwners).
 func architectClaim(t *testing.T, root string) claim.Token {
 	t.Helper()
 	project, err := claim.ProjectToken(testProject)
@@ -44,21 +45,31 @@ func architectClaim(t *testing.T, root string) claim.Token {
 	return token
 }
 
-// rootArchitectsRead is what an architect route reads of key for the architect of key's tree
-// root (api's architectForIssue and openStep): that architect's claim, the issue's generation and
-// the run of the step it stands in, which sign_off and request_backward_move name on their facts.
+// rootArchitectsRead is what an architect route reads of key for the architect of key's gate root
+// on its Dispatch chain (record.Chains.StateTree; api's ownsOnChain and openStep): that
+// architect's claim, the issue's generation and the run of the step it stands in, which sign_off
+// and request_backward_move name on their facts.
 func rootArchitectsRead(t *testing.T, pool *pgxpool.Pool, key string) (claim.Token, uint64, record.StepEntry) {
 	t.Helper()
 	recorded := issue(t, pool, key)
 	var entry record.StepEntry
+	var root string
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		ctx, records := context.Background(), record.NewStore()
 		var err error
-		entry, err = record.NewStore().OpenStep(context.Background(), tx, key)
-		return err
+		if entry, err = records.OpenStep(ctx, tx, key); err != nil {
+			return err
+		}
+		chains, err := record.ReadChainsOf(ctx, tx, records, recorded.Project, []string{key})
+		if err != nil {
+			return err
+		}
+		root = chains.StateTree(key)
+		return nil
 	}); err != nil {
-		t.Fatalf("read the open step of %s: %v", key, err)
+		t.Fatalf("read the open step and the chain of %s: %v", key, err)
 	}
-	return architectClaim(t, recorded.Tree), recorded.Generation, entry
+	return architectClaim(t, root), recorded.Generation, entry
 }
 
 // ownersPlanRows is the plan `implementer reviewer` that the architect of root gave for key at
@@ -231,7 +242,8 @@ func rerunChild(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 
 // ownTodoOnChild is the daemon's own todo on pathsChild, which rerun_child and release_children
 // make: the route writes todo on the child in Dispatch and applies the event its own write makes
-// in the request (api's recordOwnStatusWrite).
+// in the request (api's recordOwnStatusWrite), through the daemon's handlers, the copy of
+// Dispatch's issues first (blockers.Mirror): an unrecorded child's chain is read from its row there.
 func ownTodoOnChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, route string) {
 	t.Helper()
 	parent := pathsRoot
@@ -240,7 +252,8 @@ func ownTodoOnChild(t *testing.T, pool *pgxpool.Pool, admission *Admission, rout
 	event := intake.OwnStatusWrite(written)
 	fact := intake.ObservedIssue(written)
 	fact.Delivered = &event
-	if _, err := intake.ApplyFact(context.Background(), pool, "api", "status/own-write/"+route, fact, admission.engine, admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), pool, "api", "status/own-write/"+route, fact,
+		blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission); err != nil {
 		t.Fatalf("apply the %s of %s: %v", route, pathsChild, err)
 	}
 }
@@ -252,109 +265,72 @@ func personsTodo(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 		Status: "todo", Title: "child", Parent: pathsRoot, Rank: "B"}, admission.engine)
 }
 
-// assertChildStarted fails unless the tree's architect was told the child runs again and that it
-// starts its first step, first.
+// assertChildStarted fails unless the tree's architect was told the child opens a new run, its
+// second, and that it starts its first step, first.
 func assertChildStarted(t *testing.T, pool *pgxpool.Pool, first phase.Phase) {
 	t.Helper()
-	want := []string{pathsChild + " is todo; it runs again under " + pathsRoot,
+	want := []string{pathsChild + " is todo; it opens a new run, generation 2, from its first phase",
 		fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", pathsChild, first, pathsRoot) + childStartedOwnership}
-	if got := joinedNotices(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
+	if got := childStatusReasons(t, pool, pathsChild); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the child-status notices of %s = %q, want %q", pathsChild, got, want)
 	}
 }
 
-// lingeringRoot records pathsRoot done at generation 1, lingering after its close, holding no slot.
-func lingeringRoot(t *testing.T, pool *pgxpool.Pool) {
+// childStartedOwnership is how every child-status notice of a child's start ends, after its
+// reason: the child's own architect starts with it and owns it while that architect holds its
+// role, so the architect it tells hears only what goes above that architect
+// (workflow.ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
+	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
+	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
+	"holdsRole decides"
+
+// childStatusReasons is the reason of each child-status notice queued on key, oldest first: what
+// the architect above key is told of its runs.
+func childStatusReasons(t *testing.T, pool *pgxpool.Pool, key string) []string {
 	t.Helper()
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: pathsRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: pathsRoot,
-		Project: testProject, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", HandedOver: true, LingerUntil: &until, LastDispatchSeq: 1})
+	var reasons []string
+	for _, got := range effects(t, pool) {
+		if notice, ok := got.payload.(record.Notice); ok && got.issue == key && notice.Kind == "child-status" {
+			reasons = append(reasons, notice.Reason)
+		}
+	}
+	return reasons
 }
 
-// readmitAndOpen is a person's todo on the lingering or closed pathsRoot, which re-admits it as
-// generation 2 with its architect started (readmit, not carried), and then the opening of its
-// design gate, which starts its first step (the workflow's gateOpened).
+// closedRoot records pathsRoot done at generation 1, its run ended, holding no slot.
+func closedRoot(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	putIssue(t, pool, record.Issue{Key: pathsRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: pathsRoot,
+		Project: testProject, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
+}
+
+// readmitAndOpen is a person's todo on the closed pathsRoot, which opens its next run at
+// generation 2 (NewRun, decision 8 of dispatch://INFRA-4730) with its architect started, and then
+// the opening of its design gate, which starts its first step (the workflow's gateOpened).
 func readmitAndOpen(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	apply(t, pool, admission, "root-todo", intake.DispatchIssue{Key: pathsRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "todo", Title: "root", Rank: "A", HandedOver: handed}, admission.engine)
-	if got := issue(t, pool, pathsRoot); got.Generation != 2 || got.Phase != phase.Admitted || got.LingerUntil != nil {
-		t.Fatalf("re-admitted %s = %#v, want generation 2 at admitted with no linger: the fixture must re-admit the root", pathsRoot, got)
+	if got := issue(t, pool, pathsRoot); got.Generation != 2 || got.Phase != phase.Admitted {
+		t.Fatalf("%s after the todo = %#v, want generation 2 at admitted: the fixture must open its next run", pathsRoot, got)
 	}
 	applyFact(t, pool, admission, "root-gate", intake.GateRegistered{Issue: pathsRoot, ArtifactID: "artifact-root", Version: 3, ApprovedVersion: 3,
 		ApprovedMark: record.EventMark{Seq: 9, At: reviewedAt}})
 }
 
-// orphanOfLingeringTree records pathsChild at generation 1 of the lingering pathsRoot's tree,
-// standing as shape says, with its open pull request and its hand-over, and answers the event of
-// the hand-over that carries its run to a root of its own (readmit with carry).
-func orphanOfLingeringTree(t *testing.T, pool *pgxpool.Pool, shape func(*record.Issue)) intake.DispatchIssue {
-	t.Helper()
-	lingeringRoot(t, pool)
-	parent := pathsRoot
-	child := record.Issue{Key: pathsChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: pathsRoot, Project: testProject,
-		Title: pathsChild, Parent: &parent, Phase: phase.Reviewing, Generation: 1, Status: "in_progress", Rank: "B", LastDispatchSeq: 1}
-	shape(&child)
-	inTx(t, pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		for _, put := range []error{
-			records.PutIssue(ctx, tx, child),
-			records.PutGate(ctx, tx, record.DesignGate{Issue: pathsRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 2, ApprovedVersion: new(2)}),
-			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: pathsChild, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42",
-				Generation: 1, State: record.PullRequestOpen}),
-			records.PutHandover(ctx, tx, record.Handover{Issue: pathsChild, Tree: pathsRoot, Generation: 1}),
-		} {
-			if put != nil {
-				t.Fatalf("seed: %v", put)
-			}
-		}
-	})
-	return intake.DispatchIssue{Key: pathsChild, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: pathsChild,
-		Parent: pathsRoot, Rank: "B", HandedOver: true, DaemonActor: true}
-}
-
-// assertCarriedOrphan fails unless pathsChild is a root of its own at generation 2 that still
-// stands where its run stood, at want, with the hold it had.
-func assertCarriedOrphan(t *testing.T, pool *pgxpool.Pool, want phase.Phase, hold *record.Hold) {
-	t.Helper()
-	if got := issue(t, pool, pathsChild); got.Tree != pathsChild || got.Generation != 2 || got.Phase != want || !reflect.DeepEqual(got.Hold, hold) {
-		t.Fatalf("handed-over %s = tree %s, generation %d, %s (hold %+v), want its own tree at generation 2, still %s (hold %+v)",
-			pathsChild, got.Tree, got.Generation, got.Phase, got.Hold, want, hold)
-	}
-}
-
-// carriedPlan is stored as it stands at generation 1, copied to generation 2 with each task where
-// it stood (record.Store's CarryPlan with carried).
-func carriedPlan(stored *record.StoredPlan) *record.StoredPlan {
-	carried := &record.StoredPlan{Version: stored.Version, Steps: map[string][]record.PlanStep{}}
-	carried.Version.Generation = 2
-	for _, task := range stored.Tasks {
-		task.Generation = 2
-		carried.Tasks = append(carried.Tasks, task)
-	}
-	for task, steps := range stored.Steps {
-		for _, step := range steps {
-			step.Generation = 2
-			carried.Steps[task] = append(carried.Steps[task], step)
-		}
-	}
-	return carried
-}
-
 // Each path that opens a generation of an issue says what happens to its plan, and each
 // subtest asserts the first step that starts. A rerun of a child (rerun_child), a person's move
-// of a done child to todo and the re-admission of a root that carries no run open a run whose
-// first step takes the newest plan its owner gave, of any generation, from its start: generation
-// 2 starts at implementing, the first step of `implementer reviewer`, with every count 0, and no
+// of a done child to todo and a person's todo on a closed root open a new run (NewRun) whose first
+// step takes the newest plan its owner gave, of any generation, from its start: generation 2
+// starts at implementing, the first step of `implementer reviewer`, with every count 0, and no
 // planner starts (the workflow's planFirstStep, at StartFirstPhase and gateOpened). Each one's
 // control is the same path for an issue whose last run took the default steps, because its owner
-// gave no plan: generation 2 starts planning on the default steps. A carried orphan, handed over
-// with its run, goes on at the step it stood at: generation 2 stands at reviewing with the task
-// at the same place and counts (CarryPlan with carried, in readmit), and the reviewer is the step
-// that starts; its control is a carried orphan held for its stopped task, which stays held with
-// its task stopped and starts no step. The twin: an issue that ran before the release has no
-// plan rows, and each path goes on as today: a new run starts planning, and a carried orphan
-// carries no plan rows and goes on at its phase.
+// gave no plan: generation 2 starts planning on the default steps. The twin: an issue that ran
+// before the release has no plan rows, and each path goes on as today: a new run starts planning.
+// A run that a hand-over of the release before carries in is the first boot's conversion's to
+// carry with its plan (the daemon's TestALandedHandOverCarriesItsPlanIntoItsNewRun): no path of
+// this release hands an issue over.
 func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 	childPaths := []struct {
 		name string
@@ -388,10 +364,10 @@ func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 		})
 	}
 
-	t.Run("a re-admission of a root, not carried, takes its owner's newest plan from its start", func(t *testing.T) {
+	t.Run("a new run of a closed root takes its owner's newest plan from its start", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		lingeringRoot(t, pool)
+		closedRoot(t, pool)
 		old := seedOwnersPlan(t, pool, pathsRoot, pathsRoot, 1, record.PlanTask{State: record.TaskDone,
 			Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Counts: record.ReturnCounts{Pass: 1, Rounds: 1}})
 
@@ -400,53 +376,15 @@ func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 		assertTakesOwnersPlan(t, pool, pathsRoot, pathsRoot, 2)
 		assertPlanUnchanged(t, pool, pathsRoot, 1, old)
 	})
-	t.Run("a re-admission of a root, control: a root whose last run took the default steps starts planning on them", func(t *testing.T) {
+	t.Run("a new run of a closed root, control: a root whose last run took the default steps starts planning on them", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		lingeringRoot(t, pool)
+		closedRoot(t, pool)
 		seedDefaultPlan(t, pool, pathsRoot, 1)
 
 		readmitAndOpen(t, pool, admission)
 
 		assertTakesDefaultSteps(t, pool, pathsRoot, 2)
-	})
-
-	t.Run("a carried orphan goes on at the step it stood at, with the same place and counts", func(t *testing.T) {
-		pool := migratedPool(t)
-		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		handover := orphanOfLingeringTree(t, pool, func(*record.Issue) {})
-		old := seedOwnersPlan(t, pool, pathsChild, pathsRoot, 1, record.PlanTask{State: record.TaskRunning,
-			Place:  record.TaskPlace{Kind: record.PlaceStep, Position: 2},
-			Counts: record.ReturnCounts{Pass: 2, Rounds: 1, ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 1}, CapTold: 1}})
-
-		apply(t, pool, admission, "handover", handover, admission.engine)
-
-		assertCarriedOrphan(t, pool, phase.Reviewing, nil)
-		if got, want := storedPlanAt(t, pool, pathsChild, 2), carriedPlan(old); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plan of the carried orphan at generation 2 = %+v, want its task where it stood, with its place and counts: %+v", got, want)
-		}
-		assertPlanUnchanged(t, pool, pathsChild, 1, old)
-		if got, want := workerStarts(t, pool, pathsChild), []string{"reviewer/reviewing@2"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("the worker starts of the carried orphan = %v, want %v: the step it stood at, and no first step", got, want)
-		}
-	})
-	t.Run("a carried orphan, control: one held for its stopped task stays held and starts no step", func(t *testing.T) {
-		pool := migratedPool(t)
-		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		hold := &record.Hold{From: phase.Implementing, Reason: record.HoldTaskStopped}
-		handover := orphanOfLingeringTree(t, pool, func(child *record.Issue) { child.Phase, child.Hold = phase.Held, hold })
-		old := seedOwnersPlan(t, pool, pathsChild, pathsRoot, 1, record.PlanTask{State: record.TaskStopped, StoppedReason: "The owner stopped it.",
-			Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}})
-
-		apply(t, pool, admission, "handover", handover, admission.engine)
-
-		assertCarriedOrphan(t, pool, phase.Held, hold)
-		if got, want := storedPlanAt(t, pool, pathsChild, 2), carriedPlan(old); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the plan of the held orphan at generation 2 = %+v, want its task stopped where it stood: %+v", got, want)
-		}
-		if got := workerStarts(t, pool, pathsChild); len(got) != 0 {
-			t.Fatalf("the worker starts of the held orphan = %v, want none", got)
-		}
 	})
 
 	t.Run("an issue that ran before the release goes on as today on each path", func(t *testing.T) {
@@ -464,41 +402,27 @@ func TestEachPathThatOpensAGenerationSaysItsPlan(t *testing.T) {
 				}
 			})
 		}
-		t.Run("a re-admission of a root starts planning on the default steps", func(t *testing.T) {
+		t.Run("a new run of a closed root starts planning on the default steps", func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			lingeringRoot(t, pool)
+			closedRoot(t, pool)
 
 			readmitAndOpen(t, pool, admission)
 
 			assertTakesDefaultSteps(t, pool, pathsRoot, 2)
 		})
-		t.Run("a carried orphan carries no plan rows and goes on at its phase", func(t *testing.T) {
-			pool := migratedPool(t)
-			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			handover := orphanOfLingeringTree(t, pool, func(*record.Issue) {})
-
-			apply(t, pool, admission, "handover", handover, admission.engine)
-
-			assertCarriedOrphan(t, pool, phase.Reviewing, nil)
-			if got := storedPlanAt(t, pool, pathsChild, 2); got != nil {
-				t.Fatalf("the carried orphan that ran before the release holds the plan %+v at generation 2, want none", got)
-			}
-			if got, want := workerStarts(t, pool, pathsChild), []string{"reviewer/reviewing@2"}; !reflect.DeepEqual(got, want) {
-				t.Fatalf("the worker starts of the carried orphan = %v, want %v", got, want)
-			}
-		})
 	})
 }
 
-// A plan given at generation 0 for an issue the daemon never recorded waits through its giver's
-// tree leaving the workflow: the root closes, its linger ends, and a person sets it todo
-// again. The rows at generation 0 are still there, because the token of a tree's architect comes
-// from the key of its root and a re-admitted root has the same one, and the re-admitted root's
-// release of the issue starts it at implementing, the first step of that plan, with no notice of
-// a plan not taken. The control: the same release of an issue its owner gave no plan starts
-// planning on the default steps.
-func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsReadmission(t *testing.T) {
+// A plan given at generation 0 for an issue the daemon never recorded waits through the end of
+// its giver's run: the root closes, and a person's todo opens its next run (NewRun). The rows at
+// generation 0 are still there, because the token of the root's architect comes from the root's
+// key, which the new run keeps, and the root's release of the issue starts it at implementing, the
+// first step of that plan, with no notice of a plan not taken. The released issue runs at its own
+// first generation, 1, whatever run its root is in (R17 of dispatch://INFRA-3320: an issue's own
+// facts). The control: the same release of an issue its owner gave no plan starts planning on the
+// default steps.
+func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsNextRun(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		given bool
@@ -509,23 +433,10 @@ func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsReadmission(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			lingeringRoot(t, pool)
+			closedRoot(t, pool)
 			var waiting *record.StoredPlan
 			if tc.given {
 				waiting = seedOwnersPlan(t, pool, pathsChild, pathsRoot, 0, record.PlanTask{State: record.TaskWaiting})
-			}
-			if _, err := intake.ApplyFact(context.Background(), pool, "timer", "linger-ends", intake.LingerExpired{Issue: pathsRoot, Generation: 1},
-				admission.engine, admission); err != nil {
-				t.Fatalf("apply the end of the linger: %v", err)
-			}
-			closes := 0
-			for _, got := range effects(t, pool) {
-				if request, ok := got.payload.(record.SuperviseRequest); ok && got.issue == pathsRoot && request.Op == "tree_close" && request.Linger == 1 {
-					closes++
-				}
-			}
-			if closes != len(claim.Roles) {
-				t.Fatalf("the end of the linger of %s queued %d tree closes, want one for each role (%d): the fixture must close the tree", pathsRoot, closes, len(claim.Roles))
 			}
 			readmitAndOpen(t, pool, admission)
 			assertPlanUnchanged(t, pool, pathsChild, 0, waiting)
@@ -537,10 +448,10 @@ func TestAPlanGivenBeforeTheIssueIsRecordedWaitsThroughTheRootsReadmission(t *te
 			ownTodoOnChild(t, pool, admission, "release")
 
 			if !tc.given {
-				assertTakesDefaultSteps(t, pool, pathsChild, 2)
+				assertTakesDefaultSteps(t, pool, pathsChild, 1)
 				return
 			}
-			assertTakesOwnersPlan(t, pool, pathsChild, pathsRoot, 2)
+			assertTakesOwnersPlan(t, pool, pathsChild, pathsRoot, 1)
 			assertPlanUnchanged(t, pool, pathsChild, 0, waiting)
 			for _, got := range effects(t, pool) {
 				if notice, ok := got.payload.(record.Notice); ok && notice.Kind == "plan-not-taken" {

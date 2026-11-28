@@ -132,6 +132,7 @@ packages/daemon:
       - internal/pods
       - internal/runtime/sandbox/rolegitconfig
       - internal/stateevent
+      - internal/store/precommit
       - internal/supervise/supervisetest
       - internal/testbinary
       - internal/testbuild
@@ -141,6 +142,7 @@ packages/daemon:
       - internal/testtypes
       - internal/tlsalert
       - internal/treelifecycle
+      - internal/record/fencetest
       - internal/yamlerr
       - internal/repocache/fakegcs
       - internal/repocache/fakegcs/cmd/fakegcs

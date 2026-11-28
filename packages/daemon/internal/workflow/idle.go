@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -18,12 +17,12 @@ type IdleHold int
 const (
 	// IdleHoldNone: nothing held the pod and it is released.
 	IdleHoldNone IdleHold = iota
-	// IdleHoldTreeNotLive: the issue or its tree root has left the workflow, or the root lingers,
-	// and a close of the pod is still to come or still running (LeftPodClose). Such a pod is that
-	// close's to stop, not a release's.
+	// IdleHoldTreeNotLive: the issue itself has left the workflow (R20 of
+	// dispatch://INFRA-3320: nothing above it is read), and a close of the pod is still to come or
+	// still running (LeftPodClose). Such a pod is that close's to stop, not a release's.
 	IdleHoldTreeNotLive
-	// IdleHoldAwaitingPerson: the pod is a root's, and the root waits on an answer a person has
-	// not given. Its children's pods are not held by it.
+	// IdleHoldAwaitingPerson: the issue itself waits on an answer a person has not given. The
+	// pods of the issues under it are not held by it.
 	IdleHoldAwaitingPerson
 	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
 	// image could not be read at all.
@@ -88,8 +87,8 @@ const (
 	// it is one thing that happened (store.ReleaseCauseOvertaken).
 	IdleHoldOvertaken
 	// IdleHoldUnauthorized: the store no longer authorized the teardown when it asked — the run
-	// the release was taken against has moved on, the issue has left the workflow, its tree
-	// lingers or its cleanup is reserved — so the teardown cancelled the release instead of
+	// the release was taken against has moved on, the issue has left the workflow, or its
+	// cleanup is reserved — so the teardown cancelled the release instead of
 	// deleting the pod (store.ReleaseCauseUnauthorized).
 	IdleHoldUnauthorized
 	// IdleHoldNoLiveClaim: the record holds the issue, and every claim of it has failed, been
@@ -134,8 +133,8 @@ const (
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
-	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow, or one of
-	// them lingers. Such a pod is a close's to stop, as it is for the idle rule
+	// IdleHoldUnownedTreeNotLive: the issue itself has left the workflow. Such a pod is a close's
+	// to stop, as it is for the idle rule
 	// (IdleHoldTreeNotLive).
 	IdleHoldUnownedTreeNotLive
 	// IdleHoldUnownedReleasing: a release of this pod is already in progress, so this rule's own
@@ -167,7 +166,7 @@ const (
 	// of a left pod with no live claim (LeftPodClose). No role runs in the pod to read it again, so
 	// the decline on record is the one word the daemon has of that disk, and the pod stays with the
 	// work until a claim of the issue is started or runs a turn and the launcher's read after it
-	// finds the work gone, or the pod is replaced, or the issue or its tree closes or lingers.
+	// finds the work gone, or the pod is replaced, or the issue leaves the workflow.
 	// The same hold keeps such a pod after the pod's launcher read its disk and found work there
 	// (IdleDecision.Read), since that read records the same decline.
 	IdleHoldUnownedUnpushedWork
@@ -275,19 +274,19 @@ func (d IdleDecision) TurnsOnKeptVolume() bool {
 // A pod is released only when all of these hold, and the first that does not is the hold the
 // decision reports:
 //
-//   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
-//     the workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
-//     close's to stop, and LeftPodClose decides it: it is held while that close is still to come
-//     or still running (IdleHoldTreeNotLive), and closed where nothing else will close it;
+//   - the issue is in the workflow by its own standing (pods.Standing.InWorkflow), whatever stands
+//     above it (R20 of dispatch://INFRA-3320). A pod in that state is a close's to stop, and
+//     LeftPodClose decides it: it is held while that close is still to come or still running
+//     (IdleHoldTreeNotLive), and closed where nothing else will close it;
 //
 //   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
 //     (IdleHoldPauseHeld). A pause keeps every pod of its project and starts no release, and a
 //     pod it held stays after the resume until a role of it is ready again (decision 12 of
 //     dispatch://INFRA-3759);
 //
-//   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
-//     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
-//     person qualify whatever their root is waiting for;
+//   - the issue does not itself wait on an answer a person has not given. An issue whose answer
+//     has come waits only for the pass that resumes it on its slot and qualifies, and the issues
+//     under one that waits on a person qualify whatever it is waiting for;
 //
 //   - the pod runs the image the configuration names: a released pod comes back as a fresh pod on
 //     the configured image, so a pod already behind is a relaunch's to replace, not a release's to
@@ -351,7 +350,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	if !view.Standing().InWorkflow(record.OutOfWorkflow) {
 		return LeftPodClose(view, now, idle)
 	}
 	if view.Paused {
@@ -360,7 +359,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.PauseHeld {
 		return IdleDecision{Hold: IdleHoldPauseHeld}
 	}
-	if view.IsRoot() && view.Root.AwaitingPerson && !view.Root.Answered {
+	if view.AwaitingPerson && !view.Answered {
 		return IdleDecision{Hold: IdleHoldAwaitingPerson}
 	}
 	var roles []claim.Role
@@ -429,28 +428,27 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	return IdleDecision{Release: true, Roles: roles}
 }
 
-// LeftPodClose decides the pod of an issue the workflow has taken out: one whose issue or tree
-// root has left the workflow, or lingers (pods.InWorkflowNotLingering is false). IdleRelease hands
-// it every such pod that has a live claim, and the daemon's close pass every such pod whose claims
-// have all stopped (store.LeftPods). It is pure, as the two release rules are.
+// LeftPodClose decides the pod of an issue the workflow has taken out: one whose own standing is
+// out of the workflow (pods.Standing.InWorkflow is false), whatever stands above or below it.
+// IdleRelease hands it every such pod that has a live claim, and the daemon's close pass every
+// such pod whose claims have all stopped (store.LeftPods). It is pure, as the two release rules
+// are.
 //
-// Such a pod is a close's to stop, and in every shape but one that close is still to come or
-// still running, so the rule keeps the pod for it (IdleHoldTreeNotLive). A tree that lingers is
-// closed when its linger ends, by the linger's close of every member and the cleanup that takes
-// their pods. A root out of the workflow that does not linger has had its tree's close already,
-// or is a root the operator runs a tree under, whose claims and pod are the operator's
-// (leaveUnderOperator).
+// Such a pod's close was its issue's own departure (leave): it suspended or closed each of the
+// issue's claims and deleted its Sandbox with the pod and the disk (record.IssueSuspend), and
+// nothing above or below the issue closes it again. Two shapes have a close of their own still to
+// come or still running, so the rule keeps the pod for it (IdleHoldTreeNotLive): an issue whose
+// lifecycle the operator holds, whose claims and pod are the operator's, so its departure queued
+// nothing of them (pods.IdleView.OperatorHolds), and an issue whose own lifecycle cleanup has
+// started, which deletes the Sandbox itself (pods.IdleView.CleanupStarted).
 //
-// The one shape no close reaches again is a child that left the workflow while its tree runs on
-// (leftUnderRunningTree): parked in backlog, icebox or triage, or closed as done, under a root
-// still in the workflow. Its departure was its one close (leave): it suspended or closed each of
-// its claims and deleted its Sandbox with the pod and the disk (record.IssueSuspend), and nothing
-// of its running tree closes it again. A claim that runs there after that close runs in a pod
-// built again for it, because an operator's resume, an operator's task to a suspended claim, an
-// operator's retry and the controller's fresh session each start a claim without reading its
-// issue's standing (the api's resumeEvent, deliverEvent, machineRetry and freshSession). Once its
-// turns end nothing stops it. Held as IdleHoldTreeNotLive, that pod stood for as long as its
-// issue did, and every pass recorded a close that was not coming.
+// Every other such pod is one no close reaches again (leftWorkflow). A claim that runs there after
+// the departure's close runs in a pod built again for it, because an operator's resume, an
+// operator's task to a suspended claim, an operator's retry and the controller's fresh session
+// each start a claim without reading its issue's standing (the api's resumeEvent, deliverEvent,
+// machineRetry and freshSession). Once its turns end nothing stops it. Held as
+// IdleHoldTreeNotLive, that pod stood for as long as its issue did, and every pass recorded a
+// close that was not coming.
 //
 // So that pod is decided by what still works in it, as an idle pod is, and where nothing does the
 // rule finishes the close the departure made (IdleDecision.Close): each live claim is suspended
@@ -582,7 +580,7 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !leftUnderRunningTree(view) || view.RoleStopQueued || view.CheckLookOpen {
+	if !leftWorkflow(view) || view.RoleStopQueued || view.CheckLookOpen {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
 	var roles []claim.Role
@@ -632,14 +630,14 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 	return IdleDecision{Close: true, Roles: roles}
 }
 
-// leftUnderRunningTree is whether the pod's issue is a child that left the workflow while its tree
-// runs on: its phase done and its status one that takes it out of the workflow, neither it nor its
-// root lingering, and its root in the workflow. It is the shape in which store.IssueSuspension
-// authorizes a child's close, so the suspension LeftPodClose decides is one that acts.
-func leftUnderRunningTree(view pods.IdleView) bool {
-	return !view.IsRoot() && view.Phase == phase.Done && record.OutOfWorkflow(view.Status) &&
-		view.LingerUntil == nil && view.Root.LingerUntil == nil &&
-		view.RootStanding().InWorkflow(record.OutOfWorkflow)
+// leftWorkflow is whether the pod's issue left the workflow by its own standing, whatever stands
+// above or below it: its phase done or its status one that takes it out of the workflow
+// (pods.Standing.InWorkflow), its lifecycle not the operator's (pods.IdleView.OperatorHolds) and
+// its own cleanup not started (pods.IdleView.CleanupStarted). It is the shape whose departure
+// wrote the issue's close (leave) and in which store.IssueSuspension authorizes that close, so the
+// suspension LeftPodClose decides is one that acts.
+func leftWorkflow(view pods.IdleView) bool {
+	return !view.Standing().InWorkflow(record.OutOfWorkflow) && !view.OperatorHolds && !view.CleanupStarted
 }
 
 // UnownedPodRelease decides whether an issue's pod may be released because no claim of the issue
@@ -656,8 +654,8 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 // armed in a phase worker's session — and this rule acts only where there is no live role to
 // have one. A role's process makes the idle release's read (runtime.WorkspaceWorkReader), and a
 // pod this rule reads runs none, so the pod's launcher makes this release's read
-// (IdleDecision.Read, below). Nor is the idle rule's hold for a root waiting on a
-// person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
+// (IdleDecision.Read, below). Nor is the idle rule's hold for an issue waiting on a person
+// (IdleHoldAwaitingPerson): that hold keeps the pod of an issue whose architect is live and
 // idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
 // live architect to answer in any pod. The answer promotes the root and the daemon queues the
 // architect's start, which builds the Sandbox, the pod and the workspace again.
@@ -675,8 +673,8 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 //   - no release of this Sandbox is already under way, which is this rule's own release already
 //     running on the lane (IdleHoldUnownedReleasing);
 //
-//   - the issue and its tree are the workflow's: neither the issue nor its root has left the
-//     workflow, and neither lingers (pods.InWorkflowNotLingering). A pod in that state is a
+//   - the issue is the workflow's by its own standing (pods.Standing.InWorkflow), whatever stands
+//     above it. A pod in that state is a
 //     close's to stop, exactly as it is for the idle rule (IdleHoldUnownedTreeNotLive);
 //
 //   - the runtime holds the issue's Sandbox. Where it does not, the pod this rule would release
@@ -756,7 +754,7 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldUnownedReleasing}
 	}
-	if !pods.InWorkflowNotLingering(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	if !view.Standing().InWorkflow(record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldUnownedTreeNotLive}
 	}
 	if !sandboxPresent {

@@ -142,12 +142,14 @@ type PodReplacementFinish struct {
 // notice, where it is not nil, is asked for the act's notice in the same transaction, with every
 // record the finish took (PodReplacementFinish.Took), so the notice is built from the reads of all
 // of them and not only of the record the caller finishes (internal/daemon's tellingRecord; the
-// Legion reviewer's item 2 on #5285 at 69e00593). It answers nil where the act owes nobody a
-// notice: every read it took found nothing that origin does not hold. Its error is the finish's,
-// which then takes nothing. The notice is queued exactly when the records go, so a store that refuses either
-// keeps them all as they were, and a later finish of any of those records finds nothing and asks
-// for no notice. A notice of an issue of another project than project is queued by no daemon of
-// this one, so the records go with no row queued, and Told says so.
+// Legion reviewer's item 2 on #5285 at 69e00593). It is handed that transaction, in which it reads
+// the fence the notice carries (record.NewFencedRow), as IdleReleaseDecide is. It answers nil
+// where the act owes nobody a notice: every read it took found nothing that origin does not hold.
+// Its error is the finish's, which then takes nothing. The notice is queued exactly when the
+// records go, so a store that refuses either keeps them all as they were, and a later finish of
+// any of those records finds nothing and asks for no notice. A notice of an issue of another
+// project than project is queued by no daemon of this one, so the records go with no row queued,
+// and Told says so.
 //
 // yield, where it is not nil, is a finish whose caller's own call took nothing of the record's
 // target: the runtime found the target taken already, and answered without asking the act's last
@@ -168,7 +170,7 @@ type PodReplacementFinish struct {
 // the act took, as every other finish does.
 func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operation string,
 	yield func(onto PodReplacement, both []PodReplacement) ([]byte, error),
-	notice func(took []PodReplacement) (*IdleReleaseRow, error)) (PodReplacementFinish, error) {
+	notice func(ctx context.Context, tx pgx.Tx, took []PodReplacement) (*IdleReleaseRow, error)) (PodReplacementFinish, error) {
 	var finish PodReplacementFinish
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		finish = PodReplacementFinish{}
@@ -220,7 +222,7 @@ func (s *Store) FinishPodReplacement(ctx context.Context, project, issue, operat
 		if notice == nil {
 			return nil
 		}
-		row, err := notice(finish.Took)
+		row, err := notice(ctx, tx, finish.Took)
 		if err != nil {
 			return err
 		}

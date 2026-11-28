@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runJq } from "./run-jq.ts";
@@ -195,10 +195,14 @@ describe("parked-decision-verdict.jq", () => {
 describe("the texts the verdict counts are the daemon's own", () => {
   test("the outbox writes each line the verdict matches, with the text it matches", () => {
     const daemon = join(root, "packages", "daemon", "internal", "daemon");
-    const outbox = readFileSync(join(daemon, "outbox.go"), "utf8");
     const jq = readFileSync(program, "utf8");
     const prefix = "outbox notice finished undelivered: its architect";
-    expect(outbox).toContain(`"${prefix}`);
+    // The outbox's notice runner writes the undelivered line, from whichever file of the package
+    // holds that part of the runner (notice_exceptions.go, as it stands).
+    const written = readdirSync(daemon)
+      .filter((name) => name.endsWith(".go") && !name.endsWith("_test.go"))
+      .some((name) => readFileSync(join(daemon, name), "utf8").includes(`"${prefix}`));
+    expect(written).toBe(true);
     expect(jq).toContain(JSON.stringify(prefix));
     const parked = readFileSync(join(daemon, "parked_decision.go"), "utf8");
     const notRelayedLines = [notRelayed, notParked, treeHears, noRecord];

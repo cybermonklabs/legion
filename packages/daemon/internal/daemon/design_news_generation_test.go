@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,14 +18,17 @@ import (
 )
 
 // The cases here hold to one rule: what a prompt told counts, and folds, only in the run it was
-// rendered in. A clear of a generation deletes what the holders of each issue it covers took
-// (record.Postgres.clearGeneration), and the write beside it raises the issue's generation (a child
-// set back to todo, an issue moved into another tree) or its tree root's (a root set back to todo).
-// A delivery's copy of what its prompt carried outlives that clear: the claim is kept, and the turn
-// of a prompt sent before the clear can start, or end, after it. Counted by issue, audience, step
-// and version alone, that copy would tell the next run news nothing told it, write the next run's
-// row before its own baseline, and clear an opening the next run owes under a number its row holds
-// again. Each case runs through the daemon's own parts, as the newsPathRig cases do.
+// rendered in, under the gate root it was rendered under. A clear of a generation deletes what the
+// holders of the issue it covers took (record.Postgres.clearGeneration), and the write beside it
+// raises that issue's generation (a new run, workflow's NewRun: here a child the backlog took out of
+// work and its architect's rerun_child ran again); a change of Dispatch parent that moves an issue
+// under another gate root forgets what its holder took (record.Store.ForgetTold). A delivery's copy
+// of what its prompt carried outlives either: the claim is kept, and the turn of a prompt sent
+// before can start, or end, after it. Counted by issue, audience, step and version alone, that copy
+// would tell the next run news nothing told it, write the next run's row before its own baseline,
+// and clear an opening the next run owes under a number its row holds again. A leave and a return
+// to work end no run, so a credit stands across them. Each case runs through the daemon's own
+// parts, as the newsPathRig cases do.
 
 // generationRig is a tree of a root in implementing and a child whose reviewer holds its phase
 // between turns, every audience having taken version 4 of the spec, which stands approved.
@@ -62,16 +66,30 @@ func (r *newsPathRig) statusEvent(key, status string) {
 	applyFact(r.t, r.pool, "dispatch", fmt.Sprintf("status-%s-%s-%d", key, status, fact.Seq), fact, r.engine, r.admission)
 }
 
-// reenter is a person setting key, a child of the rig's live tree, back to todo: its run starts
-// again as its next generation, and the clear of the last one empties what its holders took
-// (workflow's ReenterChild).
+// reenter is a new run of key, a child of the rig's live tree, as this branch opens one (decision 8
+// of dispatch://INFRA-4730, workflow's NewRun): a person moves it to the backlog, which takes it
+// out of Legion's work and keeps its phase, and the root's architect runs it again (rerun_child),
+// which opens its next generation in the call's own fact, and the clear of the last one empties
+// what its holders took. A person's todo on a child in work opens no run (R20 of
+// dispatch://INFRA-3320, workflow's backInWork). Dispatch then takes the call's todo, which moves
+// nothing more.
 func (r *newsPathRig) reenter(key string) {
 	r.t.Helper()
 	before := readIssue(r.t, r.pool, key)
+	parent := ""
+	if before.Parent != nil {
+		parent = *before.Parent
+	}
+	putCopyRow(r.t, r.pool, key, parent, "backlog")
+	r.statusEvent(key, "backlog")
+	applyFact(r.t, r.pool, "api", fmt.Sprintf("rerun-%s-%d", key, before.Generation), intake.StatusCall{Op: intake.RerunChildCall,
+		Architect: mustClaimToken(r.t, r.root, claim.RoleArchitect), Issues: []intake.StatusCallIssue{{Key: key, Status: "todo"}}},
+		r.engine, r.admission)
+	putCopyRow(r.t, r.pool, key, parent, "todo")
 	r.statusEvent(key, "todo")
-	if after := readIssue(r.t, r.pool, key); after.Generation != before.Generation+1 || after.Tree != before.Tree {
-		r.t.Fatalf("%s = %+v after its todo, want generation %d in the tree of %s: the re-entry this case is about never happened",
-			key, after, before.Generation+1, before.Tree)
+	if after := readIssue(r.t, r.pool, key); after.Generation != before.Generation+1 {
+		r.t.Fatalf("%s = %+v after its backlog and rerun_child, want generation %d: the new run this case is about never happened",
+			key, after, before.Generation+1)
 	}
 }
 
@@ -223,17 +241,20 @@ func TestAnOpeningTheLastRunCarriedClearsNoOpeningOfTheNextRunUnderTheSameNumber
 	r.wantTold("after the old run's turn ended", pathChild, record.AudienceHolder, 4, true)
 }
 
-// A root set back to todo starts a new generation of its whole tree: the clear empties what the
-// holders of every issue of it took, and raises the root's generation alone. The reviewer of a
-// child is in the turn that confirmed the news of version 5 when a person closes the root and
-// sets it back to todo inside the linger, before the suspension the linger queued has stopped
-// that turn. The child keeps its own generation, so its tree root's is what says the credit is of
-// the run that ended: the child's holder reads as having taken nothing. The tree's next run then
-// learns from the review history that its holder stood on version 4 (record.Store.FillTold, the
-// reconcile's write), and that is what it took: version 5 is owed to it, while the old credit
-// stands and after the old turn's result. Counted by the child's own generation alone, the old
-// credit would have reached from version 4 and told that run version 5.
-func TestAMembersCreditCountsNothingOnceItsTreesRootIsSetBackToTodo(t *testing.T) {
+// Main's case of a root set back to todo, as this branch runs it (R15 and R20 of
+// dispatch://INFRA-3320). A person's done and then todo on a root in Legion's work is a leave and a
+// return to work in the same run (workflow's ReturnToWork): the root keeps its phase and its
+// generation, and nothing is cleared. But while the root is out of work its child is a root (no
+// issue above it is in work), and the pass that finds it so marks it as holding its own gate
+// (record.Store.MarkHoldsGate), a mark nothing clears: after the root's return the child's gate
+// root on the Dispatch chain is the child itself. The reviewer of the child is in the turn that
+// confirmed the news of version 5, rendered under the root's gate, when a person closes the root
+// and sets it back to todo: read under the child's own gate root, that credit counts nothing, and
+// the turn's result folds nothing of it (the claim store's fold holds each item to the gate root
+// its issue stands under now), so the child's own row keeps version 4 and the opening it owed.
+// Counted without its gate root, the credit would have told the child version 5 of a document of a
+// gate it no longer stands under.
+func TestAMembersCreditCountsNothingOnceItHoldsItsOwnGate(t *testing.T) {
 	t.Parallel()
 	r, reviewer, _, token := generationRig(t)
 	r.approve(5)
@@ -242,89 +263,116 @@ func TestAMembersCreditCountsNothingOnceItsTreesRootIsSetBackToTodo(t *testing.T
 	r.startTurn(reviewer)
 	r.wantTold("after the reviewer's turn confirmed the news of version 5", pathChild, record.AudienceHolder, 5, false)
 
+	putCopyRow(t, r.pool, pathRoot, "", record.DoneStatus)
 	r.statusEvent(pathRoot, record.DoneStatus)
-	if root := readIssue(t, r.pool, pathRoot); !root.Lingers() {
-		t.Fatalf("%s = %+v after a person closed it, want its tree lingering: the case's own premise", pathRoot, root)
-	}
+	putCopyRow(t, r.pool, pathRoot, "", "todo")
 	r.statusEvent(pathRoot, "todo")
 	root, child := readIssue(t, r.pool, pathRoot), readIssue(t, r.pool, pathChild)
-	if root.Generation != 2 || child.Generation != 1 || child.Tree != pathRoot {
-		t.Fatalf("after the root's todo %s is on generation %d and %s on generation %d in the tree of %s, want 2 and 1 in the tree of %s: the case's own premise",
-			pathRoot, root.Generation, pathChild, child.Generation, child.Tree, pathRoot)
+	if root.Generation != 1 || child.Generation != 1 || !record.InLegionsWork(*root) || !child.HoldsGate {
+		t.Fatalf("after the root's done and todo %s = %+v and %s = %+v, want both on generation 1, the root back in Legion's work and the child holding its own gate: the case's own premise",
+			pathRoot, root, pathChild, child)
 	}
-	r.wantUntold("after the root's re-admission, the old run's credit standing", pathChild)
-
-	r.inTx(func(tx pgx.Tx) error {
-		return r.records.FillTold(r.ctx, tx, pathChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 4}, time.Now())
-	})
-	r.wantTold("after the next run read the version its holder stood on, the old run's credit standing", pathChild, record.AudienceHolder, 4, false)
+	ownGate := func(when string) {
+		t.Helper()
+		var rows []record.DesignTold
+		r.inTx(func(tx pgx.Tx) error {
+			var err error
+			rows, err = r.records.TreeTold(r.ctx, tx, pathChild, []string{pathChild})
+			return err
+		})
+		for _, row := range rows {
+			if row.Issue != pathChild || row.Audience != record.AudienceHolder {
+				continue
+			}
+			if took, known := row.Took(record.DesignStepSpec); !known || took != 4 || !row.OpeningOwed {
+				t.Fatalf("%s: %s's holder, read under its own gate root, took version %d (known %t) owing the opening %t, want version 4 owing it: the credit rendered under %s counts nothing there",
+					when, pathChild, took, known, row.OpeningOwed, pathRoot)
+			}
+			return
+		}
+		t.Fatalf("%s: no holder row of %s under its own gate root among %+v", when, pathChild, rows)
+	}
+	ownGate("after the root returned to work, the credit standing")
 
 	endTurn(r.ctx, t, reviewer, token)
-	r.wantTold("after the old run's turn ended", pathChild, record.AudienceHolder, 4, false)
+	ownGate("after the turn ended")
 }
 
-// An issue moved into another tree takes that tree's documents, and its next generation. Here a
-// delivery of the tree it left still holds, confirmed and its turn's result not come, a copy that
-// told the issue's holder version 7 of that tree's spec with no earlier version. The tree that
-// takes the issue stands approved at version 4 of a spec of its own. After the adoption the issue's
-// holder has taken nothing of it, while that credit stands and after its turn's result: the issue's
-// first phase in its new tree takes that tree's baseline, and every version approved after it is
-// news to it. Counted by the step and the version numbers alone, the copy would have said the
-// holder took version 7 of a document the new tree has approved only to version 4, and the news of
-// versions 5, 6 and 7 of it would never be owed.
+// An issue whose Dispatch parent moves it under another gate root takes that gate's documents.
+// Here a delivery of the gate it left still holds, confirmed and its turn's result not come, a copy
+// that told the issue's holder version 7 of that gate's spec with no earlier version. The gate it
+// moves under stands approved at version 4 of a spec of its own and open, so the issue's first
+// phase starts under it at the move and takes that gate's baseline, version 4, and every version
+// approved after it is news to it. That is all its holder has taken, while that credit stands and
+// after its turn's result. Counted by the step and the version numbers alone, the copy would have
+// said the holder took version 7 of a document the new gate has approved only to version 4, and
+// the news of versions 5, 6 and 7 of it would never be owed. The issue's own generation and the
+// old gate root's still stand, so the run alone does not stop the fold: the gate root the daemon
+// reads for the issue on the Dispatch chain does (store.ReadGateRootsWith,
+// workflowRuntime.gateRootsOf).
 //
-// No flow of this daemon leaves such a copy standing where an adoption can take the issue: the two
-// routes take a member that never started a phase, or the tree of a root that never ran (workflow's
-// AdoptionRefusal). So the copy is written through the claim store, as a confirmed prompt's is, and
-// the adoption is the real one, an architect's release applied through admission. The rule is held
-// at the read all the same, since nothing else stands between a copy and the row of an issue
-// another tree took.
+// The copy is written through the claim store, as a confirmed prompt's is, and the move is the
+// real one, Dispatch's new parent in the copy of its issues and its event applied through the
+// engine and admission.
 func TestACreditOfTheTreeAnIssueLeftCountsNothingInTheTreeThatTakesIt(t *testing.T) {
 	t.Parallel()
-	const closedRoot, member = "LEGION-900", "LEGION-901"
+	const leftRoot, member = "LEGION-900", "LEGION-901"
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)
-	// The closed tree: its root finished, on its third generation, with no linger left to run, and
-	// a member that never started a phase.
-	ended := time.Now().Add(-time.Hour)
-	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: closedRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Title: closedRoot, Tree: closedRoot, Phase: phase.Done, Generation: 3, LingerUntil: &ended,
-		Status: record.DoneStatus, DispatchStatus: record.DoneStatus, Rank: "C", HandedOver: true, LastDispatchSeq: 1})
-	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		Project: "LEGION", Title: member, Tree: closedRoot, Parent: record.ParentOf(closedRoot), Phase: phase.Admitted, Generation: 1,
+	// The gate the issue leaves: a root in Legion's work on its third generation, and a member
+	// under it that never started a phase.
+	putChainIssue(t, r.pool, r.records, record.Issue{Key: leftRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Title: leftRoot, Tree: leftRoot, Phase: phase.Implementing, Generation: 3,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "C", HandedOver: true, LastDispatchSeq: 1})
+	putChainIssue(t, r.pool, r.records, record.Issue{Key: member, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Title: member, Tree: leftRoot, Parent: record.ParentOf(leftRoot), Phase: phase.Admitted, Generation: 1,
 		Status: "todo", DispatchStatus: "todo", Rank: "D", HandedOver: true, LastDispatchSeq: 1})
 	st, ok := r.sup.deps.Store.(*store.Store)
 	if !ok {
 		t.Fatalf("the rig's claim store is %T, want the daemon's", r.sup.deps.Store)
 	}
-	holder := supervise.Claim{Token: mustClaimToken(t, closedRoot, claim.RoleArchitect), Project: "legion", Tree: closedRoot,
-		Issue: closedRoot, Role: claim.RoleArchitect, Generation: 1, State: supervise.StateWorking}
-	// The copy as the render wrote it in the tree the issue left: the member on generation 1, its
-	// tree's root on generation 3.
+	holder := supervise.Claim{Token: mustClaimToken(t, leftRoot, claim.RoleArchitect), Project: "legion", Tree: leftRoot,
+		Issue: leftRoot, Role: claim.RoleArchitect, Generation: 3, State: supervise.StateWorking}
+	// The copy as the render wrote it under the gate the issue leaves: the member on generation 1,
+	// its gate root on generation 3.
 	copied := []byte(`{"task":"Read the design.","items":[{"issue":"` + member + `","audience":"holder","step":"spec",` +
-		`"artifact":"artifact-900","from":null,"to":7,"generation":1,"tree_generation":3}]}`)
+		`"artifact":"artifact-900","from":null,"to":7,"generation":1,"root":"` + leftRoot + `","tree_generation":3}]}`)
 	at := time.Now().UTC()
 	confirmed := supervise.Delivery{ID: "outbox:900", Task: "Read the design.\n\nThe approved design changed.", QueuedAt: at,
 		News: copied, Carried: copied, ConfirmedAt: at}
 	if err := st.PutClaimAndDelivery(r.ctx, holder, confirmed); err != nil {
-		t.Fatalf("write the confirmed task of the tree the issue left: %v", err)
+		t.Fatalf("write the confirmed task of the gate the issue leaves: %v", err)
+	}
+	// The negative control: under the gate it was rendered under, the credit counts.
+	var before []record.DesignTold
+	r.inTx(func(tx pgx.Tx) error {
+		var err error
+		before, err = r.records.TreeTold(r.ctx, tx, leftRoot, []string{member})
+		return err
+	})
+	if !slices.ContainsFunc(before, func(row record.DesignTold) bool {
+		took, known := row.Took(record.DesignStepSpec)
+		return row.Issue == member && row.Audience == record.AudienceHolder && known && took == 7
+	}) {
+		t.Fatalf("the told rows of %s under %s = %+v before the move, want its holder to have taken version 7: the credit this case is about never stood", member, leftRoot, before)
 	}
 
-	applyFact(t, r.pool, "api", "release-"+member, intake.ChildAdoption{Tree: pathRoot,
-		Children: []intake.AdoptedChild{{Issue: member, Parent: pathRoot}}}, r.engine, r.admission)
-	if adopted := readIssue(t, r.pool, member); adopted.Tree != pathRoot || adopted.Generation != 2 {
-		t.Fatalf("%s = %+v after the release, want generation 2 in the tree of %s: the adoption this case is about never happened", member, adopted, pathRoot)
+	putCopyRow(t, r.pool, member, pathRoot, "todo")
+	issue := readIssue(t, r.pool, member)
+	applyFact(t, r.pool, "dispatch", "reparent-"+member, intake.DispatchIssue{Key: member, ResolvedRepo: issue.Repo,
+		Seq: issue.LastDispatchSeq + 1, Type: "issue.updated", Status: "todo", Title: issue.Title, Rank: issue.Rank,
+		HandedOver: true, Parent: pathRoot}, r.engine, r.admission)
+	if moved := readIssue(t, r.pool, member); moved.Parent == nil || *moved.Parent != pathRoot || moved.Generation != 1 || moved.Phase == phase.Admitted {
+		t.Fatalf("%s = %+v after the move, want generation 1 under %s with its first phase started: the move this case is about never happened", member, moved, pathRoot)
 	}
-	r.wantUntold("after the adoption, the credit of the tree the issue left standing", member)
+	r.wantTold("after the move, the credit of the gate the issue left standing", member, record.AudienceHolder, 4, false)
 
 	final := confirmed
 	final.Ran = true
 	if err := st.PutDelivery(r.ctx, holder.Token, final); err != nil {
-		t.Fatalf("record that the old tree's turn ran: %v", err)
+		t.Fatalf("record that the old gate's turn ran: %v", err)
 	}
-	if rows := r.toldRows(member); rows != 0 {
-		t.Errorf("the told table holds %d rows of %s after the old tree's turn ended, want none: its credit folds into no row of the tree that took the issue", rows, member)
-	}
-	r.wantUntold("after the old tree's turn ended", member)
+	r.wantTold("after the old gate's turn ended, its credit folding into no row under the gate root that took the issue", member,
+		record.AudienceHolder, 4, false)
 }

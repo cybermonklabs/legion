@@ -30,9 +30,11 @@ import (
 
 // The tests of this file give plans through register_plan to the daemon's own workflow
 // (newWorkflowHarness), and read what the store holds after each give. The tree root LEGION-208
-// stands at admitted; LEGION-209, the issue whose plan is given, and LEGION-211 and LEGION-212,
-// whose architects are sub-architects of the tree while their issues stand in it, are members of
-// it at generation 1 where a case records them. Dispatch holds childDoc, LEGION-209's document, at
+// stands at admitted; on the Dispatch chain as the daemon's copy holds it, LEGION-211 stands under
+// LEGION-208, LEGION-212 under LEGION-211, and LEGION-209, the issue whose plan is given, under
+// LEGION-212, so the architects of LEGION-211 and LEGION-212 act on LEGION-209 while their issues
+// stand above it (record.PlanOwners). LEGION-211 and LEGION-212 are recorded at generation 1, and
+// LEGION-209 too where a case records it. Dispatch holds childDoc, LEGION-209's document, at
 // versions 1 to 3, each the one task a with the steps implementer and reviewer.
 
 // planWorld is the harness of these tests: the server, the engine it applies facts with, and the
@@ -43,9 +45,9 @@ type planWorld struct {
 	root, sub, third liveClaim
 }
 
-// newPlanWorld is the world of these tests, with LEGION-211 and LEGION-212 members of the tree
-// LEGION-208 at generation 1, and LEGION-209 too where recorded, before the architects' claims are
-// made (seedMember); LEGION-209 not recorded is a backlog child of LEGION-208 in Dispatch.
+// newPlanWorld is the world of these tests, with LEGION-211 and LEGION-212 recorded on LEGION-209's
+// chain at generation 1, and LEGION-209 too where recorded, before the architects' claims are made
+// (seedUnder); LEGION-209 not recorded is a backlog child of LEGION-212 in Dispatch and its copy.
 func newPlanWorld(t *testing.T, recorded bool) planWorld {
 	t.Helper()
 	h, engine, _ := newWorkflowHarness(t, workflow.Config{Project: testProject, Repositories: testRepositories,
@@ -54,7 +56,7 @@ func newPlanWorld(t *testing.T, recorded bool) planWorld {
 	h.handoffs.documents = map[string]string{childDoc: "LEGION-209"}
 	h.handoffs.approvals = map[string]dispatch.Approval{childDoc: {State: "none", LatestVersion: 3}}
 	h.handoffs.plans = map[string]dispatch.DocumentVersion{}
-	parent := "LEGION-208"
+	parent := "LEGION-212"
 	h.handoffs.issues = map[string]dispatch.Issue{
 		"LEGION-208": {Key: "LEGION-208", Status: "todo", LastSeq: 7},
 		"LEGION-209": {Key: "LEGION-209", Status: "backlog", Parent: &parent},
@@ -62,15 +64,57 @@ func newPlanWorld(t *testing.T, recorded bool) planWorld {
 	for version := 1; version <= 3; version++ {
 		h.handoffs.givePlan(childDoc, version, taskBlock("a", "implementer reviewer"))
 	}
-	members := []string{"LEGION-211", "LEGION-212"}
+	seedUnder(t, h, "LEGION-211", "LEGION-208")
+	seedUnder(t, h, "LEGION-212", "LEGION-211")
+	w := planWorld{h: h, engine: engine}
 	if recorded {
-		members = append(members, "LEGION-209")
+		seedUnder(t, h, "LEGION-209", "LEGION-212")
+	} else {
+		w.standUnder(t, "LEGION-209", "LEGION-212", "backlog")
 	}
-	for _, key := range members {
-		seedMember(t, h, key, "LEGION-208")
+	w.root = newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	w.sub = newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect)
+	w.third = newLiveClaimIn(t, h, "LEGION-208", "LEGION-212", claim.RoleArchitect)
+	return w
+}
+
+// seedUnder records key at admitted in its first run, under parent, with its row of the copy of
+// Dispatch's issues under parent, so the daemon reads its chain from the copy (R15 of
+// dispatch://INFRA-3320).
+func seedUnder(t *testing.T, h *harness, key, parent string) {
+	t.Helper()
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutIssue(ctx, tx, record.Issue{
+			Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: key,
+			Parent: &parent, Phase: phase.Admitted, Generation: 1, Status: "in_progress",
+		})
+	}); err != nil {
+		t.Fatalf("seed %s under %s: %v", key, parent, err)
 	}
-	return planWorld{h: h, engine: engine, root: newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect),
-		sub: newLiveClaimIn(t, h, "LEGION-208", "LEGION-211", claim.RoleArchitect), third: newLiveClaimIn(t, h, "LEGION-208", "LEGION-212", claim.RoleArchitect)}
+	planWorld{h: h}.standUnder(t, key, parent, "in_progress")
+}
+
+// standUnder writes key's row of the copy of Dispatch's issues under parent ("" for none) at
+// status, as a reading of Dispatch does once a person moves the issue (moveCopy), at a sequence
+// above every one the copy holds of key.
+func (w planWorld) standUnder(t *testing.T, key, parent, status string) {
+	t.Helper()
+	var seq int64
+	if err := w.h.store.Pool().QueryRow(context.Background(), `select coalesce(max(greatest(status_seq, parent_seq, labels_seq)), 0)
+		from dispatch_issues where key = $1`, key).Scan(&seq); err != nil {
+		t.Fatalf("read the copy's sequences of %s: %v", key, err)
+	}
+	moveCopy(t, w.h, key, parent, status, seq+1)
+}
+
+// copyRow is key's parent ("" for none) and status in the copy of Dispatch's issues.
+func (w planWorld) copyRow(t *testing.T, key string) (parent, status string) {
+	t.Helper()
+	if err := w.h.store.Pool().QueryRow(context.Background(), `select coalesce(parent, ''), status from dispatch_issues where key = $1`,
+		key).Scan(&parent, &status); err != nil {
+		t.Fatalf("read the copy's row of %s: %v", key, err)
+	}
+	return parent, status
 }
 
 // planAnswer is register_plan's answer to version of childDoc, as the route answers a give it took
@@ -112,16 +156,33 @@ func (w planWorld) takenAnswer(t *testing.T, giver liveClaim, version int, want,
 	}
 }
 
-// leaves makes key a root of its own, so its architect owns no issue of the tree LEGION-208 any
-// more (record.ArchitectOfTree).
+// leaves has Dispatch move key out from under LEGION-208, a root of its own, and the issue right
+// under key move up to stand where key stood, so key's architect acts on LEGION-209 no more
+// (record.PlanOwners) and every other architect above LEGION-209 still does.
 func (w planWorld) leaves(t *testing.T, key string) {
 	t.Helper()
-	seedIssueAt(t, w.h, key, phase.Admitted)
+	var under string
+	if err := w.h.store.Pool().QueryRow(context.Background(), `select key from dispatch_issues where parent = $1`, key).Scan(&under); err != nil {
+		t.Fatalf("read the issue under %s in the copy: %v", key, err)
+	}
+	above, _ := w.copyRow(t, key)
+	_, status := w.copyRow(t, under)
+	w.standUnder(t, under, above, status)
+	_, status = w.copyRow(t, key)
+	w.standUnder(t, key, "", status)
+}
+
+// record records LEGION-209 at admitted in its first run, under the parent its row of the copy
+// names, as release_children records a child, and moves that row to in_progress.
+func (w planWorld) record(t *testing.T) {
+	t.Helper()
+	parent, _ := w.copyRow(t, "LEGION-209")
+	seedUnder(t, w.h, "LEGION-209", parent)
 }
 
 // firstStep starts the first step of LEGION-209 as admission's line does (workflow's
-// StartFirstPhase), under the fact lock, in a transaction of its own with the commit scope a fact's
-// application gives the engine (Engine.OpenFact, Engine.SettleFact).
+// StartFirstPhase), on the chains the copy holds, under the fact lock, in a transaction of its own
+// with the commit scope a fact's application gives the engine (Engine.OpenFact, Engine.SettleFact).
 func (w planWorld) firstStep(t *testing.T) {
 	t.Helper()
 	if err := store.Transact(context.Background(), w.h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
@@ -132,8 +193,12 @@ func (w planWorld) firstStep(t *testing.T) {
 		if err != nil || issue == nil {
 			return errors.Join(err, errors.New("LEGION-209 is not recorded"))
 		}
+		chains, err := record.ReadChainsOf(ctx, tx, record.NewStore(), issue.Project, []string{issue.Key})
+		if err != nil {
+			return err
+		}
 		ctx = w.engine.OpenFact(ctx)
-		if err := w.engine.StartFirstPhase(ctx, tx, *issue, nil); err != nil {
+		if err := w.engine.StartFirstPhase(ctx, tx, *issue, chains, nil); err != nil {
 			return err
 		}
 		return w.engine.SettleFact(ctx, tx)
@@ -228,10 +293,10 @@ func (w planWorld) notTaken(t *testing.T) []string {
 // A version that a first step passed over is no duplicate of the give that was passed over, though
 // a give of it again has that give's id: the store no longer holds the version, so the give is
 // judged as any version is and stored, with its task a in place of the default steps' task. Here
-// the sub-architect gives version 1 for LEGION-209, its own issue then stands in a tree of its own,
-// so LEGION-209's first step passes the version over and runs the default steps, and the default
-// task is stopped; then version 1 is given again at the same generation by the root's architect, or
-// by the sub-architect once its issue is in the tree again.
+// the architect of LEGION-211 gives version 1 for LEGION-209, Dispatch then moves LEGION-211 out
+// from above it, so LEGION-209's first step passes the version over and runs the default steps,
+// and the default task is stopped; then version 1 is given again at the same generation by the
+// root's architect, or by LEGION-211's architect once its issue stands above LEGION-209 again.
 //
 // The fault it catches is a give answered as taken for its id alone, which stores nothing (its
 // control: intake.ApplyFact answering a PlanGiven whose id is marked as a duplicate, under which the
@@ -256,7 +321,8 @@ func TestAPlanVersionPassedOverIsStoredWhenGivenAgain(t *testing.T) {
 				t.Fatalf("premise: after its first step LEGION-209 holds %+v, want the default steps alone", got)
 			}
 			if tc.back {
-				seedMember(t, w.h, "LEGION-211", "LEGION-208")
+				w.standUnder(t, "LEGION-211", "LEGION-208", "in_progress")
+				w.standUnder(t, "LEGION-212", "LEGION-211", "in_progress")
 			}
 			giver := tc.giver(w)
 			if stopped := stopTask(w.h, giver.grant(t), "LEGION-209", plan.DefaultTask); stopped.Code != http.StatusOK {
@@ -309,7 +375,7 @@ func TestAGiveOfTheVersionInForceStoresNothing(t *testing.T) {
 	t.Run("given at generation 0 and carried to the issue's generation by its first step", func(t *testing.T) {
 		w := newPlanWorld(t, false)
 		w.taken(t, w.root, 1, "premise: version 1 given before the daemon recorded LEGION-209")
-		seedMember(t, w.h, "LEGION-209", "LEGION-208")
+		w.record(t)
 		w.firstStep(t)
 		if got := w.versionsOf(t, 1); !reflect.DeepEqual(got, []versionRow{ownersVersion(1, w.root)}) {
 			t.Fatalf("premise: after its first step LEGION-209 holds %+v at generation 1, want version 1 carried from generation 0", got)
@@ -340,11 +406,11 @@ func TestAGiveOfAVersionBelowThePlanInForceIsRefusedWhateverItsID(t *testing.T) 
 		{"carried from generation 0, under an id never marked", func(t *testing.T, w planWorld) {
 			w.taken(t, w.root, 1, "premise: version 1 at generation 0")
 			w.taken(t, w.root, 2, "premise: version 2 at generation 0")
-			seedMember(t, w.h, "LEGION-209", "LEGION-208")
+			w.record(t)
 			w.firstStep(t)
 		}},
 		{"taken at the issue's generation, under the id of its own take", func(t *testing.T, w planWorld) {
-			seedMember(t, w.h, "LEGION-209", "LEGION-208")
+			w.record(t)
 			w.taken(t, w.root, 1, "premise: version 1 at generation 1")
 			w.taken(t, w.root, 2, "premise: version 2 at generation 1")
 		}},
@@ -365,8 +431,9 @@ func TestAGiveOfAVersionBelowThePlanInForceIsRefusedWhateverItsID(t *testing.T) 
 // Before LEGION-209's first step, a version in force that only an earlier owner gave is passed over
 // at the give, by the rule its first step reads (record.GivenByEarlierOwners): the owner's give is
 // judged as the generation's first plan, stored as the owner's, and run by the first step, which
-// tells nobody that a plan was not taken. Here the sub-architect gives a version, its issue then
-// stands in a tree of its own, and the root's architect gives the same version, or a lower one.
+// tells nobody that a plan was not taken. Here the architect of LEGION-211 gives a version,
+// Dispatch then moves LEGION-211 out from above LEGION-209, and the root's architect gives the
+// same version, or a lower one.
 //
 // The faults it catches: the same version answered as taken while it stays the earlier owner's, so
 // the first step passes it over and runs the default steps, and the lower version refused
@@ -403,10 +470,10 @@ func TestAnOwnersGiveOverAnEarlierOwnersVersionIsStoredAndRuns(t *testing.T) {
 
 // A version that one of its givers gave while it owned the issue is that giver's while it owns the
 // issue, whoever else gave it (record.GivenByOwner): the root's architect gives version 1, the
-// sub-architect gives it again, which the version then names as its last giver, and the
-// sub-architect's issue stands in a tree of its own before LEGION-209's first step. The first step
-// runs version 1 and tells nobody that a plan was not taken: the root's architect still owns the
-// issue, and was told version 1 was taken.
+// architect of LEGION-211 gives it again, which the version then names as its last giver, and
+// Dispatch moves LEGION-211 out from above LEGION-209 before LEGION-209's first step. The first
+// step runs version 1 and tells nobody that a plan was not taken: the root's architect still owns
+// the issue, and was told version 1 was taken.
 //
 // The fault it catches is a version judged by its last giver alone (its control: record.GivenByOwner
 // reading given_by alone, as a release before this one does, under which the first step passes the
@@ -432,8 +499,8 @@ func TestAVersionRunsWhileOneOfItsGiversOwnsTheIssue(t *testing.T) {
 // A version every giver of which owns the issue no more is passed over: at LEGION-209's first
 // step, which runs the default steps and tells the root's architect in one notice that names the
 // version and every one of its givers; or at the root's architect's give of that version before the
-// first step, which stores it as the root's architect's alone. The sub-architects of LEGION-211 and
-// LEGION-212 each give version 1, and both issues then stand in trees of their own.
+// first step, which stores it as the root's architect's alone. The architects of LEGION-211 and
+// LEGION-212 each give version 1, and Dispatch then moves both issues out from above LEGION-209.
 //
 // The faults it catches: a notice that names one giver of the version (its control: giversOf
 // naming the last giver alone), and a version passed over at the give that keeps the givers who left
@@ -474,9 +541,10 @@ func TestAVersionEveryGiverOfWhichLeftIsPassedOver(t *testing.T) {
 
 // The givers of a version of a plan given for LEGION-209 before the daemon recorded it, at
 // generation 0, are the owners the route judged by Dispatch's chain (planOwner): a give by another
-// owner adds that owner, and a give by a giver writes nothing. Here the sub-architect gives version
-// 1, the root's architect gives it, and the sub-architect's give is delivered again: it is a
-// giver, so nothing is written and the version names the root's architect as its last giver still.
+// owner adds that owner, and a give by a giver writes nothing. Here the architect of LEGION-211
+// gives version 1, the root's architect gives it, and the give of LEGION-211's architect is
+// delivered again: it is a giver, so nothing is written and the version names the root's architect
+// as its last giver still.
 //
 // The fault it catches is a give that writes its giver again on a second delivery (its control:
 // record.Store.AddPlanGiver without its guard, adding a giver the version names already, under
@@ -500,10 +568,12 @@ func TestAGiversGiveAgainAtGenerationZeroWritesNothing(t *testing.T) {
 	}
 }
 
-// handedOver writes LEGION-209 as a hand-over writes it (admit's readmit): a root of its own, at
-// generation 2, recorded as having left the tree LEGION-208. With its run, it stands in the phase
-// it ran in, and its plan of generation 1 is carried to generation 2 with each task where it stood
-// (record.Store.CarryPlan, carried); without, it stands at admitted and nothing is carried.
+// handedOver writes LEGION-209 as a hand-over of the release before left it (that release's
+// admit's readmit), which this release's first boot converts and hands over no more: a root of its
+// own on its Dispatch chain, at generation 2, recorded as having left the tree LEGION-208. With its
+// run, it stands in the phase it ran in, and its plan of generation 1 is carried to generation 2
+// with each task where it stood (record.Store.CarryPlan, carried); without, it stands at admitted
+// and nothing is carried.
 func (w planWorld) handedOver(t *testing.T, run bool) {
 	t.Helper()
 	at := phase.Admitted
@@ -523,16 +593,17 @@ func (w planWorld) handedOver(t *testing.T, run bool) {
 	}); err != nil {
 		t.Fatalf("hand LEGION-209 over: %v", err)
 	}
+	w.standUnder(t, "LEGION-209", "", "in_progress")
 }
 
-// The plan of a hand-over that carries its run is the plan that run walks (admit's readmit carries
-// it with each task where it stood), so the new owner's give of its version in force is answered
-// as taken, stores no plan row, and adds the new owner to the version's givers, the one change of
-// the store beside the mark of its id (testdb.TableRows). A hand-over that
-// carries no run carries no plan, so the new owner's give of the same version is the new
-// generation's first plan, and is stored. The root's architect gives version 1 for LEGION-209 at
-// generation 1, the run starts there or does not, and LEGION-209 is then handed over as a root of
-// its own at generation 2, whose owner is its own architect.
+// The plan of a hand-over of the release before that carried its run is the plan that run walks
+// (that release's readmit carried it with each task where it stood), so the new owner's give of its
+// version in force is answered as taken, stores no plan row, and adds the new owner to the
+// version's givers, the one change of the store beside the mark of its id (testdb.TableRows). A
+// hand-over that carried no run carried no plan, so the new owner's give of the same version is the
+// new generation's first plan, and is stored. The root's architect gives version 1 for LEGION-209
+// at generation 1, the run starts there or does not, and LEGION-209 is then handed over as a root
+// of its own at generation 2, whose owner is its own architect.
 //
 // The fault it catches is the carried version refused PLAN_VERSION_OLD to the owner of the run
 // that walks it (its control: versionRefusal taking no give as the version in force, sameVersion

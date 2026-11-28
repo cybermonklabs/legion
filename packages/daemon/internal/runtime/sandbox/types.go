@@ -159,19 +159,10 @@ type ProvisionTokens interface {
 // Store is the durable state the runtime reads: the daemon's store (store.Store), or a test's
 // fake.
 type Store interface {
-	// TreeLive is whether tree's lifecycle is open, or its cleanup reserved and unconfirmed: the
-	// tree's issue Sandboxes are then its cleanup's alone, never the orphan sweep's.
-	TreeLive(ctx context.Context, project, tree string) (bool, error)
-	// IssueRunsElsewhere names a stored claim of issue whose tree is not tree and that may hold a
-	// process now, a locator or a state with one (token:state), or "" when none does: a Sandbox
-	// labelled for another tree is then this tree's to relabel (ensureSandbox).
-	IssueRunsElsewhere(ctx context.Context, project, issue, tree string) (string, error)
-	// IssueSandboxHome is the tree issue's Sandbox belongs to now, or "" when none: the issue's own
-	// key while a live hand-over of it is pending, else its record's tree while that tree's lifecycle
-	// is open or releasing, or, for a tree never opened, while the issue waits for admission or
-	// lingers after its own close. The orphan sweep keeps a Sandbox whose home is the tree it is
-	// labelled with (sweep); the tree cleanup deletes every Sandbox of the tree it cleans.
-	IssueSandboxHome(ctx context.Context, project, issue string) (string, error)
+	// IssueLive is whether issue's own lifecycle is open, or its cleanup reserved and unconfirmed:
+	// the issue's Sandbox is then its own close's and cleanup's alone, never the orphan sweep's
+	// (store.Store.IssueLive).
+	IssueLive(ctx context.Context, project, issue string) (bool, error)
 	// ClaimUnretired is whether the store holds token's claim in any state but retired: a claim the
 	// daemon's orphan sweep still knows, suspended and failed ones included. The sweep reads it under
 	// the controller's pod turn, since the known set it was handed was read before it listed.

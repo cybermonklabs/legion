@@ -516,7 +516,7 @@ func pendingID(p *Delivery) string {
 // them (the claim store's releaseKeptDecisions), so they are the tree's again, and the catch-up of
 // the architect's next ready names them, as does the one the root's start writes for an architect
 // it finds running (the daemon's outbox, workflow's claimReady). The daemon's
-// TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect follows one such decision to the
+// TestADecisionASupersededTaskNamedIsToldToTheReturnedArchitect follows one such decision to the
 // catch-up that tells it.
 //
 // The replaced task's row ends as any other retirement ends it, and the question a restart armed
@@ -1118,7 +1118,7 @@ func (m *Machine) askFirstNeverTakes(d Delivery) bool { return m.asksRoot(d) || 
 // rootHears asks whether the root of this claim's tree has an architect to hear the task now
 // (Deps.RootHears). Only a root architect's task of a run is put to the answer (asksRoot): it names
 // no phase, so the phase check never drops it, and the decisions it names are told at its own
-// confirmation, so a prompt while the tree is parked, lingering or waiting for its slot would tell
+// confirmation, so a prompt while the root is out of Legion's work or waiting for its slot would tell
 // them to an architect no run of the root owns. Every other delivery — a phase worker's, an
 // operator's, a production check's look, the controller's start message — is sent as it always was,
 // and a daemon with no workflow configured supplies no answer, where every delivery is sent.

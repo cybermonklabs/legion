@@ -21,11 +21,8 @@ import (
 // list an array, never null (MarshalJSON). The route's `p0Bound` is no key of it: the bound in
 // force is read beside the judgement (api.P0BoundStateTx) and is nothing Dispatch reads. P0Holders
 // is the count of the holders admission treats as P0 (record.HoldersOf), which the Dispatch
-// board's header copies (dispatch://INFRA-5636), 0 included. No field holds a time, so a block
-// judged twice over the same records encodes the same. One word of the held list does read the
-// clock: HeldTreeClosed asks whether a root's linger still runs at the pass's moment
-// (LineFacts.Now), so a member of a parked tree moves from tree_closed to tree_parked when that
-// linger runs out, with no write (admit's queueAdmissionBlock says when that change is written).
+// board's header copies (dispatch://INFRA-5636), 0 included. No field holds a time, and no word of
+// the held list reads the clock, so a block judged twice over the same records encodes the same.
 type AdmissionBlock struct {
 	Cap       int            `json:"cap"`
 	P0Holders int            `json:"p0Holders"`

@@ -377,23 +377,23 @@ func TestACatchUpWhoseReholdsAreSpentHandsOverWhatItNamed(t *testing.T) {
 // An earlier listener reports the spent copy's failed forward after the row has finished: its
 // deletion released what it claimed, and no row is left to hand over from (spentKept's claims of
 // 0). What the tree is owed and nothing claims is named by a fresh catch-up while the root has an
-// architect to hear it, and waits KEPT, with nothing written, while it has none — a lingering
-// root's next start or ready names it.
+// architect to hear it, and waits KEPT, with nothing written, while it has none — a closed root's
+// next run names it at its start or its ready.
 func TestALateReportOfASpentCatchUpNamesWhatItsRowReleased(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name    string
-		lingers bool
-		want    int
+		name   string
+		closed bool
+		want   int
 	}{
-		{name: "the root hears", lingers: false, want: 1},
-		{name: "the root lingers", lingers: true, want: 0},
+		{name: "the root hears", closed: false, want: 1},
+		{name: "the root is closed", closed: true, want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			noticeTree(t, pool, records, tc.lingers)
+			noticeTree(t, pool, records, tc.closed)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			token := architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
 			ask := "dispatch://LEGION-1/ask/ask-2"

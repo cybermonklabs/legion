@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -44,20 +45,6 @@ const phaseEntryMigration = 20261111225552
 // beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
-// appliedWithTheFixture are the migrations above olderReleasesNewestMigration that preEntryStore
-// applies with the fixture's own rather than withholding them for the upgrade under test: the tree
-// is recorded through this release's PutIssue, so each migration that adds a column PutIssue
-// writes must stand before the tree is seeded. Each adds a column of issues, which no statement of
-// the phase entry reads or writes, so it changes nothing the upgrade under test reads.
-// 20261112215432_delivery_resume adds the four answered-document columns
-// (awaiting_answered_version, awaiting_answered_document_at, awaiting_answered_artifact and
-// awaiting_answered_step), and none of the other columns it adds, which its header names, is one
-// the phase entry reads or writes; 20261124060500_issue_priority adds issues.priority, and
-// 20261125181828_p0_bound adds issues.resolved_known, issues.resolved_priority and
-// issues.priority_from (it also makes the table project_p0_bound_changes, which the phase entry
-// does not read).
-var appliedWithTheFixture = []int{20261112215432, 20261124060500, 20261125181828}
-
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -70,16 +57,17 @@ const (
 // embedded migration up to that release's newest, each applied as Store.Migrate applies one — the
 // migration's SQL, the widening of schema_version for a timestamped version, and the version row
 // — and phaseEntryMigration itself withheld, for the test's own Store.Migrate to run. The
-// migrations above it up to that release's newest are the fixture's too, and two stand there.
+// migrations above it up to that release's newest are the fixture's too, and three stand there.
 // 20261112180548_claim_leak_check_cause is the contract 87 release's own, so a database that
 // release migrated holds its row and its claims.leak_check_cause before the phase entry runs.
-// 20261112070503_pull_request_state_read_at (dispatch://INFRA-3027) is applied first as well,
-// though that release records no such version, because its version stands below that release's
-// newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
-// touches no pull_requests column. Neither column is one any statement of the phase entry reads
-// or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
-// each migration on its own row, applies the phase entry and those it withheld.
+// 20261112012123_issue_repository_correction (#3712) and 20261112070503_pull_request_state_read_at
+// (dispatch://INFRA-3027) are applied first as well, though that release records neither version,
+// because each version stands below that release's newest; that is harmless here, since the one
+// adds the issues' repository correction columns and the claims' update and working repository
+// columns, the other pull_requests.state_read_at, and no statement of the phase entry reads or
+// writes any of those columns, nor the leak check's. Every version above that release's newest
+// (olderReleasesNewestMigration) is withheld with the phase entry, so Migrate applies them after
+// the fixture is seeded.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -123,11 +111,11 @@ func preEntryStore(t *testing.T) *store.Store {
 }
 
 // withheldByFixture says whether preEntryStore withholds the migration of version beside the
-// phase entry: every one above the older release's newest but those appliedWithTheFixture names,
-// which the fixture applies. The fixture and the count of what the upgrade applies read this one
-// rule, so the two cannot disagree on which migrations the upgrade under test runs.
+// phase entry: every one above the older release's newest. The fixture and the count of what the
+// upgrade applies read this one rule, so the two cannot disagree on which migrations the upgrade
+// under test runs.
 func withheldByFixture(version int) bool {
-	return version > olderReleasesNewestMigration && !slices.Contains(appliedWithTheFixture, version)
+	return version > olderReleasesNewestMigration
 }
 
 // migrationsAbove is how many embedded migrations preEntryStore withheld beside the phase entry
@@ -364,7 +352,9 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err
 		}
-		if err := openTreeTx(ctx, tx, upgradeProject, root.Key); err != nil {
+		// That release had no issue lifecycles: the upgrade's own 20261122154645 opens one for each
+		// issue a live claim names, so the tree's lifecycle alone is written here.
+		if _, err := records.OpenTreeLifecycle(ctx, tx, project, root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 			return err
 		}
 		for index, shape := range shapes {
@@ -468,6 +458,18 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	if want := 1 + migrationsAbove(t); applied != want {
 		t.Fatalf("the upgrade applied %d migrations, want the phase entry and the %d above the older release's newest: every other migration is the fixture's own",
 			applied, want-1)
+	}
+	// The copy of Dispatch's issues the first boot fills from a listing (R16 of
+	// dispatch://INFRA-3320): the root and each issue under it, as Dispatch shows them. Every
+	// decision of the sweep reads its chains from it.
+	if err := store.Transact(ctx, pool, func(_ context.Context, tx pgx.Tx) error {
+		seedCopyRow(t, tx, root.Key, "", root.DispatchStatus, 1)
+		for _, shape := range shapes {
+			seedCopyRow(t, tx, shape.key, root.Key, issues[shape.key].DispatchStatus, 1)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
 	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had

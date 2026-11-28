@@ -332,7 +332,7 @@ func newOwnerStepsClientLive(t *testing.T) *ownerStepsClientLive {
 	// the run names the default the loader would.
 	proof.cfg.ReviewRoundCap = config.DefaultReviewRoundCap
 	root := liveCLICheckout(t)
-	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root).scratchDispatch, 4, config.Project{DefaultSteps: steps})
+	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root, "").scratchDispatch, 4, config.Project{DefaultSteps: steps})
 	return &ownerStepsClientLive{ownerStepsRig: rig, root: root}
 }
 

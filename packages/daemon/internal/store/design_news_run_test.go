@@ -9,20 +9,20 @@ import (
 )
 
 // A delivery's copy counts, and folds, only while the record still holds the run it was rendered
-// in: the generation of each item's issue and of its tree's root (the SQL function
-// design_news_current, record.DeliveryNewsItem.Generation and TreeGeneration). The reviewer's task
-// told the child's holder version 5 of the spec and the opening, and the root's architect version 2
-// of the Verification document, each rendered in generation 1 of its issue under a root on
-// generation 1, and its turn confirmed it.
+// in: the generation of each item's issue and of its gate root (the SQL function
+// design_news_counts, record.DeliveryNewsItem.Generation, Root and TreeGeneration). The reviewer's
+// task told the child's holder version 5 of the spec and the opening, and the root's architect
+// version 2 of the Verification document, each rendered in generation 1 of its issue under the
+// gate root toldRoot on generation 1, and its turn confirmed it.
 //
-// Each case then moves the record as a clear of a generation leaves it, or holds a copy that never
-// named a run. Where the child's own generation moved (a child set back to todo, an issue moved
-// into another tree), what the copy told the child counts nothing, and what it told the root's
-// architect still counts: the root stands in the run that item was rendered in. Where the root's
-// generation moved (a root set back to todo), nothing of the copy counts: the root's own item by
-// its generation, and the child's by its tree's. A copy whose items and opening name no run counts
-// nothing, since no run is the one it was told to. In every case the fold of the turn's result
-// writes what the read counted and no more, so the rows stand as the read left them.
+// Each case then moves the record as a new run leaves it (workflow's NewRun), or holds a copy that
+// never named a run. Where the child's own generation moved (a child set back to todo), what the
+// copy told the child counts nothing, and what it told the root's architect still counts: the root
+// stands in the run that item was rendered in. Where the root's generation moved (a root set back
+// to todo), nothing of the copy counts: the root's own item by its generation, and the child's by
+// its gate root's. A copy whose items and opening name no run counts nothing, since no run is the
+// one it was told to. In every case the fold of the turn's result writes what the read counted and
+// no more, so the rows stand as the read left them.
 func TestACopyCountsAndFoldsOnlyWhileTheRecordHoldsTheRunItWasRenderedIn(t *testing.T) {
 	t.Parallel()
 	childSeed := map[record.DesignStep]int{record.DesignStepSpec: 3}

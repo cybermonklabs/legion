@@ -24,12 +24,14 @@ import (
 // same decision, and admission calls it on every pass (Admission.promoteHolds): a guard that
 // clears on any path — a member leaving, a claim released, the label put back, the architect's
 // start taken — is seen at the next fact. issues is the caller's snapshot of project's records
-// (admission's LiveIssues, which names the project), and held names each root the caller still
-// holds for the Dispatch consumer to catch up (nil holds none): a root whose listing is ahead of
-// the record decides nothing until the consumer has reached it, so a question already answered on
-// Dispatch does not start a wait here first. It returns the roots that entered awaiting_person,
-// which keep the slots they hold, and whether it wrote any issue of the snapshot, which the caller
-// then reads again.
+// (admission's LiveIssues, which names the project), chains the caller's reading of the Dispatch
+// chains with each of issues named (the pass's own, record.LineFacts.Chains), and held names each
+// root the caller still holds for the Dispatch consumer to catch up (nil holds none): a root whose
+// listing is ahead of the record decides nothing until the consumer has reached it, so a question
+// already answered on Dispatch does not start a wait here first. It returns the roots that entered
+// awaiting_person, which keep the slots they hold, and whether it wrote any issue of the snapshot,
+// which the caller then reads again. Nothing it writes moves an issue into or out of Legion's work
+// or changes which issue holds its own gate, so every answer chains gives stands through it.
 //
 // It reads the slot rows once for the pass, because a root waits on a person only while the
 // daemon has started it, which is what its slot row says (record.CanWaitOnPerson,
@@ -37,18 +39,19 @@ import (
 // root the work it hands over is the architect writing the spec, before
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
 // the roots this pass can move (the daemon's catchesUp) by that same predicate.
-func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
-	changed, err := e.answerOpenGates(ctx, tx, issues, held)
+func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, chains *record.Chains, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
+	changed, err := e.answerOpenGates(ctx, tx, chains, issues, held)
 	if err != nil {
 		return nil, false, err
 	}
+	// A root here is an issue that holds its own design gate on Dispatch's chain as the copy shows
+	// it (record.Chains.HoldsOwnGate), and its tree the issues in Legion's work under it.
 	var roots []record.Issue
 	for _, issue := range issues {
 		if held != nil && held(issue.Key) {
 			continue
 		}
-		if claim.IsTreeRoot(issue.Key, issue.Tree) &&
-			issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 {
+		if issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 && chains.HoldsOwnGate(issue.Key) {
 			roots = append(roots, issue)
 		}
 	}
@@ -95,17 +98,18 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if err != nil {
 			return nil, false, err
 		}
-		unresumable, err := Unresumable(ctx, e.store, tx, project, root)
+		unresumable, err := Unresumable(ctx, e.store, tx, project, chains, root)
 		if err != nil {
 			return nil, false, err
 		}
 		_, holds := slotted[root.Key]
-		view := awaitView{Root: root, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
+		// Every root here holds its own gate (the filter above), and every issue under it on the
+		// chain is one the read records (record.Chains.Under).
+		view := awaitView{Root: root, HoldsGate: true, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
 			Steps: e.cfg.Steps, Gates: gates}
-		for _, member := range issues {
-			if member.Tree == root.Key && member.Key != root.Key {
-				view.Members = append(view.Members, member)
-			}
+		for _, under := range chains.Under(root.Key) {
+			member, _ := chains.Record(under)
+			view.Members = append(view.Members, member)
 		}
 		decision := decideAwait(view)
 		switch decision.Act {
@@ -150,12 +154,13 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 // waited on it) whose gate is not open is decided in the same pass, since no approval request
 // counts then (gateRequestArtifact): the wait moves to a question of the tree still with the
 // person, and is otherwise answered, so the architect resumes and registers its spec, which
-// opens the gate. It reports whether it answered or moved any root's wait.
-func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record.Issue, held func(string) bool) (bool, error) {
+// opens the gate. It reports whether it answered or moved any root's wait. chains is the caller's
+// reading of the Dispatch chains with each of issues named, which says which of them hold their
+// own gate (record.Chains.HoldsOwnGate).
+func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, chains *record.Chains, issues []record.Issue, held func(string) bool) (bool, error) {
 	answered := false
 	for _, root := range issues {
-		if (held != nil && held(root.Key)) || !claim.IsTreeRoot(root.Key, root.Tree) ||
-			!root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
+		if (held != nil && held(root.Key)) || !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil || !chains.HoldsOwnGate(root.Key) {
 			continue
 		}
 		gates, err := e.store.GatesOf(ctx, tx, root.Key)
@@ -295,15 +300,17 @@ const (
 	actTakeIn
 )
 
-// awaitView is what decideAwait reads of one root: its record, whether it holds an admission slot
-// (Slotted, read from the slot rows by ReconcileAwaiting), the other members of its tree, why it
-// could not resume (Unresumable, "" when it could), its architect's run at the root's
+// awaitView is what decideAwait reads of one root: its record, whether it holds its own design
+// gate (HoldsGate, the chain's answer, record.Chains.HoldsOwnGate), whether it holds an admission
+// slot (Slotted, read from the slot rows by ReconcileAwaiting), the other members of its tree, why
+// it could not resume (Unresumable, "" when it could), its architect's run at the root's
 // generation, its asks' mirror rows, the design-gate steps the deployment gates (Steps) and the
 // gates the root holds by step (Gates). A gate's document names its approval requests — every
 // approval row of that document — and their answer is a review rather than a person's act on an
 // ask (RootAsk.PersonActSeq).
 type awaitView struct {
 	Root        record.Issue
+	HoldsGate   bool
 	Slotted     bool
 	Members     []record.Issue
 	Unresumable string
@@ -325,7 +332,7 @@ type awaitDecision struct {
 
 // decideAwait is the rule for whether a root waits on a person, checked cheapest first:
 //
-//  0. a root not at admitted, lingering, out of the workflow, or one that holds no admission
+//  0. a root not at admitted, out of Legion's work, or one that holds no admission
 //     slot — one the daemon has not started, or one that gave its slot back to wait on another
 //     issue (record.CanWaitOnPerson) — stays;
 //  1. one whose architect handed nothing back since it was last given work (DeclaredSeq) stays;
@@ -349,7 +356,7 @@ type awaitDecision struct {
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
 // its first slot holds none, so it starts no wait however its architect's hand-back stands —
-// a re-admitted root the old architect declared on again before the linger's suspend ran is
+// a root back from a stop whose architect declared again before the stop's suspend ran is
 // kept out by this rule, not by rule 1. The boot's catch-up of the roots this pass can move
 // calls the same predicate (the daemon's catchesUp).
 //
@@ -362,7 +369,7 @@ type awaitDecision struct {
 func decideAwait(v awaitView) awaitDecision {
 	root := v.Root
 	switch {
-	// Rule 0 is record.CanWaitOnPerson alone: it tests the phase, the linger and the workflow,
+	// Rule 0 is record.CanWaitOnPerson alone: it tests the phase and Legion's work,
 	// and through AtWork that the issue is a tree root whose design gate has never opened, so
 	// every standing a second case here could reject it rejects already. Only what to say of a
 	// rejection is decided here, and whether the daemon started the root is what divides the
@@ -375,7 +382,8 @@ func decideAwait(v awaitView) awaitDecision {
 	// row it gave back, and an owed start is a start its worker still waits to be given, not a
 	// standing. A root at admitted that owes one and holds neither reads the never-started reason;
 	// the decision is actStay either way, so only the reason could differ.
-	case !record.CanWaitOnPerson(root, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
+	// Whether the root holds its own gate is the chain's answer the view carries (HoldsGate).
+	case !record.CanWaitOnPerson(root, v.HoldsGate, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
 		if !v.Slotted && root.ReleasedForWaitAt == nil {
 			return awaitDecision{Why: "the daemon has not started it, so it holds no admission slot"}
 		}

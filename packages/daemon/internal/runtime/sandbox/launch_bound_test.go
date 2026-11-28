@@ -172,21 +172,21 @@ func TestALaunchTryItsContextEndsIsChargedNothing(t *testing.T) {
 // 10 (config), and ProvisionBound's 295 minutes (workspace.FetchBudget, whose terms hold the
 // fetch's 15-minute attempt on the repository cache's bucket, workspace.BucketFetchTimeout, +
 // workspace.CloneTimeout + workspace.CheckoutTimeout) — the start bound is the boot timeout, and
-// the sum is 6 h 4 min 41 s with relaunchCalls at 85: well past the 295-minute floor a
+// the sum is 6 h 4 min 11 s with relaunchCalls at 84: well past the 295-minute floor a
 // provisioning pod's rightful wait sets, and never under the boot timeout, ProvisionBound and the
 // grace together. With keep_volume on, the start bound is the kept-volume bound of 7 minutes
-// (keptVolumeAttachWait), and the sum is 5 minutes more, 6 h 9 min 41 s. The rig's runtime answers
+// (keptVolumeAttachWait), and the sum is 5 minutes more, 6 h 9 min 11 s. The rig's runtime answers
 // the same arithmetic over its own options.
 func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	t.Parallel()
 	boot, provision, grace := 120*time.Second, 295*time.Minute, 10*time.Second
-	if relaunchCalls != 85 || cacheEnsureCalls != 14 {
-		t.Fatalf("relaunchCalls = %d, want 85: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls, relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
+	if relaunchCalls != 84 || cacheEnsureCalls != 14 {
+		t.Fatalf("relaunchCalls = %d, want 84: %d per try (%d of them the repository cache's ensure) and %d per each of %d roles", relaunchCalls, relaunchPodCalls, cacheEnsureCalls, relaunchRoleCalls, len(claim.Roles))
 	}
 	cache := 5*boot + 14*apiTimeout
 	waits := 3*boot + cache + (boot + boot + provision + 2*recheckInterval) + grace
-	if got, want := launchBound(boot, boot, provision, grace), waits+85*apiTimeout; got != want || want != 6*time.Hour+4*time.Minute+41*time.Second {
-		t.Fatalf("launchBound = %s, want %s (6h4m41s)", got, want)
+	if got, want := launchBound(boot, boot, provision, grace), waits+84*apiTimeout; got != want || want != 6*time.Hour+4*time.Minute+11*time.Second {
+		t.Fatalf("launchBound = %s, want %s (6h4m11s)", got, want)
 	}
 	production := testOptions()
 	production.BootTimeout, production.TerminationGrace = boot, grace
@@ -202,8 +202,8 @@ func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 	if r, err = configure(kept); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace); got != want || want != 6*time.Hour+9*time.Minute+41*time.Second {
-		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (6h9m41s)", got, want)
+	if got, want := r.LaunchBound(), launchBound(boot, keptVolumeAttachWait, provision, grace); got != want || want != 6*time.Hour+9*time.Minute+11*time.Second {
+		t.Fatalf("LaunchBound with keep_volume on = %s, want %s (6h9m11s)", got, want)
 	}
 	g := newRig(t, nil)
 	if got, want := g.r.LaunchBound(), launchBound(g.opts.BootTimeout, g.opts.BootTimeout, g.r.ProvisionBound(), g.opts.TerminationGrace); got != want {
@@ -219,32 +219,20 @@ func (c countingTokens) Token(ctx context.Context, repo ghrepo.Repository) (stri
 	return staticTokens{}.Token(ctx, repo)
 }
 
-// countingStore counts the store reads a launch makes (ensureSandbox, provision) over the rig's
-// store.
-type countingStore struct {
-	Store
-	reads *atomic.Int32
-}
-
-func (s countingStore) IssueRunsElsewhere(ctx context.Context, project, issue, tree string) (string, error) {
-	s.reads.Add(1)
-	return s.Store.IssueRunsElsewhere(ctx, project, issue, tree)
-}
-
 // relaunchCalls never undercounts a replacing try: one that reads every launcher binding of a live
 // pod, finds it unbound and replaces it — the longest path a try takes — makes no more bounded
 // calls than relaunchCalls counts, every request through the fakes (the informers' lists and
-// watches aside), every mint, every store read and every launcher frame together.
+// watches aside), every mint and every launcher frame together. A launch reads nothing of the
+// store: a Sandbox under another tree label is used as it is (ensureSandbox).
 func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	t.Parallel()
-	var mints, renders, reads atomic.Int32
+	var mints, renders atomic.Int32
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Tokens = countingTokens{&mints}
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			renders.Add(1)
 			return staticCredential(ctx, role, repo)
 		}
-		o.Store = countingStore{Store: o.Store, reads: &reads}
 	}))
 	tester := g.spawn(workerSpec(t))
 	// The merger's Secret, the last of the pod's six a start reads (launcherBound), binds another
@@ -255,7 +243,6 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	g.clearActions()
 	mints.Store(0)
 	renders.Store(0)
-	reads.Store(0)
 
 	reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
 	loc := g.spawn(reviewer)
@@ -264,9 +251,9 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	}
 	requests := g.requests()
 	frames := len(g.sent(reviewer.Claim))
-	calls := len(requests) + int(mints.Load()) + int(renders.Load()) + int(reads.Load()) + frames
-	t.Logf("the replacing try made %d calls: %d requests, %d mints, %d credential renders, %d store reads, %d launcher frames; relaunchCalls is %d",
-		calls, len(requests), mints.Load(), renders.Load(), reads.Load(), frames, relaunchCalls)
+	calls := len(requests) + int(mints.Load()) + int(renders.Load()) + frames
+	t.Logf("the replacing try made %d calls: %d requests, %d mints, %d credential renders, %d launcher frames; relaunchCalls is %d",
+		calls, len(requests), mints.Load(), renders.Load(), frames, relaunchCalls)
 	if calls > relaunchCalls {
 		var listed []string
 		for _, a := range requests {

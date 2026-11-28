@@ -1,23 +1,11 @@
 package workflow
 
 import (
-	"context"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
-
-// openBeneath is OpenBeneath over the tree issue belongs to, read here.
-func (e *Engine) openBeneath(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]string, error) {
-	members, err := e.treeMembers(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	return record.OpenBeneath(issue, members), nil
-}
 
 // ChildUnderAcceptedParentNotice is what the architect above the child is told when a person
 // moves an issue to todo beneath an ancestor whose head the daemon has already accepted
@@ -34,4 +22,18 @@ func ChildUnderAcceptedParentNotice(child, ancestor string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"%[1]s is beneath %[2]s, whose head the last step of its task passed and the daemon has already accepted, so %[1]s is recorded at admitted and nothing starts it while %[2]s stands in retro or merging.",
 		child, ancestor)}
+}
+
+// ChildUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
+// ancestor the daemon has already accepted (CHILD_UNDER_ACCEPTED_PARENT), naming the ancestor and
+// what undoes the refusal. Both calls say one sentence, because they refuse for one reason: a
+// parent is accepted only once no issue beneath it is still in the workflow, so nothing enters the
+// workflow beneath an issue already accepted. The head is the one the last step of the ancestor's
+// task passed, which is what record.Accepted means for every plan (a plan with no reviewer step has
+// no reviewed head). operation is what the caller would do again once the ancestor has closed. The
+// rule exempts no ancestor, the chain's gate root included (record.AcceptedAncestor walks every
+// issue of Chains.Above), so the sentence names none.
+func ChildUnderAcceptedParent(child, ancestor, operation string) string {
+	return fmt.Sprintf("%[1]s is beneath %[2]s, whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed",
+		child, ancestor, operation)
 }

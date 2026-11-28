@@ -82,7 +82,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if _, blocked, _, err = admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
+		if _, blocked, _, err = admission.tickRows(context.Background(), tx, func() (*lineJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
 			t.Fatalf("read what is blocked: %v", err)
 		}
 	})
@@ -268,10 +268,38 @@ func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	}
 }
 
-// A5. One children-first notice per parent per run: every pass (the pass rule, Admission.Apply)
-// and boot runs the admission pass again, and a child filed later during one wait is no second
-// telling, while a run the tree has not had yet — the one a re-admission opens, and the one a
-// hand-over gives a sub-parent in a tree of its own — is.
+// A5. A child of another project holds no children-first wait (R9 of dispatch://INFRA-3320): a
+// parent's children are those of its own project, as a chain stops at its project's boundary, so a
+// root whose one open Dispatch child is of another project, at work in that project's daemon's
+// records, starts planning at its gate's opening on the slot it holds and is told of no wait, as
+// the root with no children above does.
+func TestAChildOfAnotherProjectHoldsNoChildrenFirstWait(t *testing.T) {
+	pool := migratedPool(t)
+	admission := cfTree(t, pool, 3)
+	const child = "OTHER-2"
+	parent := cfRoot
+	putIssue(t, pool, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: otherProject, Title: child, Tree: child, Parent: &parent, Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", DispatchStatus: "in_progress", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+
+	openGate(t, pool, admission, "gate-approved")
+
+	if got := issue(t, pool, cfRoot); got.Phase != phase.Planning {
+		t.Fatalf("the root whose one open child %s is of another project, at its gate's opening = %#v, want it planning", child, got)
+	}
+	assertSlots(t, pool, []record.Slot{{Issue: cfRoot, Index: 0, AdmittedAt: fixedNow}})
+	if told := childrenFirstNotices(t, pool, cfRoot); len(told) != 0 {
+		t.Fatalf("children-first notices = %+v, want none: %s is no child of the wait", told, child)
+	}
+	if blocked := blockedNow(t, pool, admission); len(blocked) != 0 {
+		t.Fatalf("blocked = %#v, want nothing", blocked)
+	}
+}
+
+// A5. One children-first notice per parent per run of its own: every pass (the pass rule,
+// Admission.Apply) and boot runs the admission pass again, and a child filed later during one wait
+// is no second telling, nor is a new run of the issue above it, while a run the parent has not had
+// yet is (R17 of dispatch://INFRA-3320: each issue's run is its own fact).
 func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
@@ -316,36 +344,24 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 		t.Fatalf("the sub-parent's children-first notices = %+v, want exactly one", told)
 	}
 
-	// Its tree is re-admitted, which raises the root's generation and leaves every member's
-	// where it stands: the new run's architect has heard nothing, so the wait is told again
-	// though nothing of the sub-parent's own record changed.
-	readmitted := issue(t, pool, cfRoot).Generation + 1
-	if _, err := pool.Exec(context.Background(), "update issues set generation = $2 where key = $1", cfRoot, int64(readmitted)); err != nil {
-		t.Fatalf("open the tree's next run: %v", err)
+	// The root's next run says nothing of the sub-parent's: the mark is the sub-parent's own
+	// run's, so the wait is not told again.
+	if _, err := pool.Exec(context.Background(), "update issues set generation = generation + 1 where key = $1", cfRoot); err != nil {
+		t.Fatalf("open the root's next run: %v", err)
 	}
 	tick(t, pool, admission, "tick-5")
-	if told := childrenFirstNotices(t, pool, cfFirst); len(told) != 2 {
-		t.Fatalf("the sub-parent's children-first notices after its tree's re-admission = %+v, want a second: this run's architect has not heard what holds it", told)
+	if told := childrenFirstNotices(t, pool, cfFirst); len(told) != 1 {
+		t.Fatalf("the sub-parent's children-first notices after its root's next run = %+v, want still exactly one", told)
 	}
 
-	// The tree finishes and hands the sub-parent over as a root of its own, whose run is
-	// numbered from its own record (readmit), which here is the number the tree it left is on.
-	// Keyed on the generation alone the old tree's mark would answer for this tree's first run
-	// and its architect would never be told. Its own architect has written that tree's spec and a
-	// person has approved it, which is what puts a root's own children-first wait in the line at
-	// all (record.ChildrenFirstCandidates).
-	handedOver := issue(t, pool, cfFirst).Generation + 1
-	if handedOver != readmitted {
-		t.Fatalf("the handed-over sub-parent's run = %d and the tree it left is on %d, want the fixture's own premise: the two numbers collide", handedOver, readmitted)
+	// The sub-parent's own next run is one no architect has been told of, so its wait is told
+	// again though nothing else changed.
+	if _, err := pool.Exec(context.Background(), "update issues set generation = generation + 1 where key = $1", cfFirst); err != nil {
+		t.Fatalf("open the sub-parent's next run: %v", err)
 	}
-	if _, err := pool.Exec(context.Background(), "update issues set tree = key, generation = $2, handed_over_from = $3 where key = $1",
-		cfFirst, int64(handedOver), cfRoot); err != nil {
-		t.Fatalf("hand the sub-parent over as a root of its own: %v", err)
-	}
-	seedGate(t, pool, record.DesignGate{Issue: cfFirst, ArtifactID: "artifact-2", LatestVersion: 1, ApprovedVersion: new(1), EverOpened: true})
 	tick(t, pool, admission, "tick-6")
-	if told := childrenFirstNotices(t, pool, cfFirst); len(told) != 3 {
-		t.Fatalf("the children-first notices of the handed-over sub-parent = %+v, want a third: the run of its own tree is one no architect has been told of", told)
+	if told := childrenFirstNotices(t, pool, cfFirst); len(told) != 2 {
+		t.Fatalf("the sub-parent's children-first notices after its own next run = %+v, want a second: this run's architect has not heard what holds it", told)
 	}
 }
 

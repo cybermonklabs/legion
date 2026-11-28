@@ -323,7 +323,7 @@ worker_wakes_per_minute: 0
 # wake_at starts, since a look open at the bound defers the bound by the look's own two-hour bound:
 # 30 minutes, against two looks that took up to 10 minutes each from the task to the report in
 # acceptance runs and the three minutes the fixture tells the first look to ask for.
-# linger_hours keeps its default (72 h): the tree's close at its expiry is Stage 4b's proof.
+# No tree lingers (R20 of dispatch://INFRA-3320): an issue's close closes its own claims at once.
 production_check_hours: 0.5
 instructions: $work/instructions.md
 $(<"$work/github-apps.yaml")
@@ -600,23 +600,23 @@ assert_held_snapshot() {
     .issues[$issue].phase == "held" and .issues[$issue].workers.implementer.claim.state == "failed"
   ' "$file" >/dev/null
 }
-# await_tree_suspended ISSUE WHAT waits for ISSUE's tree architect to be suspended once its tree
-# lingers. The daemon holds that suspension for the architect's turn and names it no deadline
-# (packages/daemon/internal/supervise/suspend.go, holdSuspension), so the wait's bound is the
-# proof's turn budget, phase_seconds. A timeout prints the claim as `legion claims list` shows it:
-# working with its suspension held is a turn still running; idle and held, a stop the runtime keeps
-# refusing; neither suspended nor held, no suspension held for it (a start dropped the hold, or a
-# daemon restart forgot it before the outbox asked again).
-suspension_issue=
-await_tree_suspended() {
-  suspension_issue=$1
-  timeout_hook=report_architect_suspension
-  until_true "$phase_seconds" "$2" tree_suspended "$1"
+# await_architect_closed ISSUE WHAT waits for ISSUE's architect claim to be retired, its session
+# kept, once ISSUE closes as done: the close closes each claim of the issue itself, and no tree
+# lingers (R20 of dispatch://INFRA-3320). The daemon holds that close for the architect's turn and
+# names it no deadline, so the wait's bound is the proof's turn budget, phase_seconds. A timeout
+# prints the claim as `legion claims list` shows it: working with a stop held is a turn still
+# running; idle and held, a stop the runtime keeps refusing; neither retired nor held, no stop held
+# for it (a start dropped the hold, or a daemon restart forgot it before the outbox asked again).
+closed_issue=
+await_architect_closed() {
+  closed_issue=$1
+  timeout_hook=report_architect_close
+  until_true "$phase_seconds" "$2" architect_closed "$1"
   timeout_hook=
 }
-report_architect_suspension() {
-  note "the architect of $suspension_issue in legion claims list: $("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" |
-    jq -c --arg issue "$suspension_issue" '[.claims[] | select(.issue == $issue and .role == "architect")
+report_architect_close() {
+  note "the architect of $closed_issue in legion claims list: $("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" |
+    jq -c --arg issue "$closed_issue" '[.claims[] | select(.issue == $issue and .role == "architect")
       | {state, suspensionHeld: (.suspensionHeld // false), suspendedBy: (.suspendedBy // null), pending: (.pending.id // null)}]')"
 }
 
@@ -1051,10 +1051,10 @@ primary_issue() {
   hold_smoke_main
   await_merger_merge "$repo" "$pr_number" --delete-branch
   # The merge closes the issue: the daemon's read of the merged pull request writes done, its one
-  # status write after retro. A root's close frees any slot its tree's issues still hold and lingers the tree, every member's
-  # claims suspended, and opens the production check on the merge commit, whose first look the
-  # daemon hands the tester — the role this project's `production_check` names — in its live pane:
-  # its claim alone comes back, resumed on its kept session, while the other five stay suspended.
+  # status write after retro. The close frees the slot the issue holds and closes each claim of the
+  # issue itself, its session kept, since no tree lingers (R20 of dispatch://INFRA-3320), but the
+  # tester's, the role this project's `production_check` names: the close opens the production
+  # check on the merge commit, whose first look the daemon hands the tester in its live pane.
   wait_for_phase "$root_issue" "done" 300
   phase_change_logged "$root_issue" merging "done" pull_request_merged ||
     fail "the daemon log has no \"workflow: phase changed\" line moving $root_issue from merging to done on pull_request_merged"
@@ -1062,11 +1062,11 @@ primary_issue() {
   check_opened_on "$root_issue" "$merge_when_clean_commit" ||
     fail "$root_issue's production check reads $(daemon_state | jq -c --arg issue "$root_issue" '.issues[$issue].check'), want it open on merge commit $merge_when_clean_commit at its first look, woken by the merge"
   state_file check-opened
-  await_tree_suspended "$root_issue" "the lingering tree's architect to be suspended"
-  # The tester is live at its first look, the five other claims suspended; a tester that
-  # reported the look before this read is suspended again already, which the next wait judges.
-  first_look_handed() { claim_states_are "$root_issue" tester "ready working idle" suspended || check_look_reported "$root_issue" 1; }
-  until_true 300 "the close to leave the tester live at its first look, the five other claims of $root_issue suspended" first_look_handed
+  await_architect_closed "$root_issue" "the closed root's architect to be closed, its session kept"
+  # The tester is live at its first look, the five other claims retired with their sessions kept; a
+  # tester that reported the look before this read is suspended already, which the next wait judges.
+  first_look_handed() { claim_states_are "$root_issue" tester "ready working idle" retired || check_look_reported "$root_issue" 1; }
+  until_true 300 "the close to leave the tester live at its first look, the five other claims of $root_issue retired" first_look_handed
   first_look_claims=$(issue_claim_states "$root_issue" | paste -sd ',' -)
   # The first look. The task the daemon handed the tester is the whole instruction: the proof
   # sends it nothing, and the fixture's instructions say a check task waits for no message. The smoke
@@ -1076,14 +1076,14 @@ primary_issue() {
   # read from the daemon's state below.
   # A look took up to 10 minutes from its task to its report in acceptance runs.
   until_true 600 "the tester's pending report on the first look of $root_issue's production check" check_look_reported "$root_issue" 1
-  until_true 300 "the pending report to suspend the tester's claim beside the five suspended claims of $root_issue" claim_states_are "$root_issue" tester suspended suspended
+  until_true 300 "the pending report to suspend the tester's claim beside the five retired claims of $root_issue" claim_states_are "$root_issue" tester suspended retired
   [ -n "$(issue_worker_session "$root_issue" tester)" ] || fail "the tester's claim lost its session at its suspension between looks"
   state_file check-look-1
   # The report's own wake_at is what starts the next look: the daemon names that row and wakes
   # nothing of its own, so without it only the bound would look again.
   check_wake_named "$root_issue" 1 ||
     fail "the daemon log records no wake named at the first look of $root_issue's production check: $(jq -R -c 'fromjson? | select(.msg | startswith("workflow: production check"))' "$evidence/logs/daemon.log" | tail -3 | tr '\n' ' ')"
-  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed merging → done on pull_request_merged; the board done) and opened its production check on that commit; the close suspended the architect, planner, implementer, reviewer and merger and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
+  note "$repo#$pr_number merged by $merge_when_clean_by at $merge_when_clean_commit, which closed $root_issue (phase changed merging → done on pull_request_merged; the board done) and opened its production check on that commit; the close retired the architect, planner, implementer, reviewer and merger, their sessions kept, and handed the tester the first look in its live pane (claims at the look: $first_look_claims); its pending report left the check open ($(jq -c --arg issue "$root_issue" '.issues[$issue].check | {role, looks, lookOpen, lastWake: .lastWake.kind, nextWakeAt}' "$evidence/check-look-1.json")), named the wake its next look comes from and suspended its claim, session kept"
   pass
 
   begin smoke-main-clean
@@ -1127,9 +1127,9 @@ primary_issue() {
     fail "the daemon log records no last look of $root_issue's production check woken by the bound: $(jq -R -c 'fromjson? | select(.msg == "workflow: production check look started")' "$evidence/logs/daemon.log" | tail -3 | tr '\n' ' ')"
   check_closed_as "$root_issue" not_run ||
     fail "the daemon log records no close of $root_issue's production check as not_run: $(jq -R -c 'fromjson? | select(.msg == "workflow: production check closed")' "$evidence/logs/daemon.log" | tail -1)"
-  until_true 120 "the check's close to retire the tester's claim beside the five suspended claims of $root_issue" claim_states_are "$root_issue" tester retired suspended
+  until_true 120 "the check's close to retire the tester's claim beside the five retired claims of $root_issue" claim_states_are "$root_issue" tester retired retired
   state_file check-closed
-  note "the wake the first look named started look 2 of $root_issue's production check, and the bound started its last look (the state at the bound's wake: $(jq -c --arg issue "$root_issue" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last); its pending closed the check as not_run, the state omits it, and the tester's claim is retired while the five others stay suspended: $(issue_claim_states "$root_issue" | paste -sd ',' -)"
+  note "the wake the first look named started look 2 of $root_issue's production check, and the bound started its last look (the state at the bound's wake: $(jq -c --arg issue "$root_issue" '.issues[$issue].check | if . == null then "already closed" else {role, looks, lookOpen, lastWake: .lastWake.kind, last} end' "$evidence/check-look-2.json"); the daemon log: cause bound, last); its pending closed the check as not_run, the state omits it, and the tester's claim is retired beside the five others: $(issue_claim_states "$root_issue" | paste -sd ',' -)"
   pass
 }
 
@@ -1190,7 +1190,7 @@ else
   begin "development-run-from-$from"
   # The proof human closes the first root, which frees its admission slot as the merge's close would.
   set_status "$root_issue" "done"
-  await_tree_suspended "$root_issue" "the closed tree's architect to be suspended"
+  await_architect_closed "$root_issue" "the closed root's architect to be closed, its session kept"
   pr_number=${STAGE3_PR:-$(gh -R "$repo" pr list --state all --limit 1 --json number --jq '.[0].number')}
   [ -n "$pr_number" ] || fail "no smoke pull request for the credential check; set STAGE3_PR"
   note "STAGE3_FROM=$from is a development run, never the proof: $root_issue closed by the proof human, credential check against $repo#$pr_number"
@@ -1211,7 +1211,7 @@ fi
 # the tree's close is one journal line.
 no_change_close() {
   begin architect-closes-a-no-change-root
-  local artifact reason token
+  local artifact reason
   architect_registers_gate "$nochange_issue" "Stage 3 no-change proof"
   await_gate_wait "$nochange_issue" "Stage 3 no-change proof"
   artifact=$(daemon_state | jq -er --arg issue "$nochange_issue" '.issues[$issue].designGate.artifactId')
@@ -1231,31 +1231,26 @@ no_change_close() {
     | (map(.payload.status) | unique) == ["done", "in_progress"] and all(.actor.id == $daemon)' "$evidence/nochange-events.json" >/dev/null ||
     fail "a status write on $nochange_issue was not the daemon's; see $evidence/nochange-events.json"
   session_contains "$nochange_issue" architect '"close_root"' || fail "the architect of $nochange_issue did not call close_root"
-  token=$(claim_token "$nochange_issue" architect)
-  await_tree_suspended "$nochange_issue" "the no-change tree's architect to be suspended"
+  await_architect_closed "$nochange_issue" "the no-change root's architect to be closed, its session kept"
   # daemon.log carries the daemon's stderr too, so each line is parsed on its own, as every other
   # reader of it does: one line that is not JSON must not end the run. The root is admitted once
   # and its row goes once, at the close: it keeps the row through its wait on the person.
-  jq -R -c --arg issue "$nochange_issue" --arg token "$token" 'fromjson? | select(
+  jq -R -c --arg issue "$nochange_issue" 'fromjson? | select(
       (.msg == "workflow: root waits on a person and keeps its admission slot" and .issue == $issue)
       or (.msg == "workflow: design gate changes requested" and .issue == $issue)
-      or (.msg == "workflow: issue left the workflow" and .issue == $issue)
-      or (.msg == "workflow: tree lingers" and .tree == $issue)
+      or (.msg == "workflow: issue left Legion'"'"'s work" and .issue == $issue)
       or (.msg == "admission: slot released" and .issue == $issue)
-      or (.msg == "admission: slot taken" and .issue == $issue)
-      or (.msg == "supervise: suspended" and .claim == $token))
+      or (.msg == "admission: slot taken" and .issue == $issue))
     | {msg, issue, tree, status, reason, slots, cap}' "$evidence/logs/daemon.log" >"$evidence/nochange-journal.txt"
-  for line in "root waits on a person and keeps its admission slot" "design gate changes requested" "issue left the workflow" "tree lingers" "admission: slot released" "supervise: suspended"; do
+  for line in "root waits on a person and keeps its admission slot" "design gate changes requested" "issue left Legion's work" "admission: slot released"; do
     grep -qF "$line\"" "$evidence/nochange-journal.txt" || fail "the journal has no \"$line\" line for $nochange_issue; see $evidence/nochange-journal.txt"
   done
   [ "$(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt")" -eq 1 ] ||
     fail "the journal of $nochange_issue has $(grep -cF '"admission: slot released"' "$evidence/nochange-journal.txt") slot releases, want the one at its close; see $evidence/nochange-journal.txt"
   [ "$(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt")" -eq 1 ] ||
     fail "the journal of $nochange_issue has $(grep -cF '"admission: slot taken"' "$evidence/nochange-journal.txt") slot takes, want the one at its admission; see $evidence/nochange-journal.txt"
-  grep -F '"workflow: issue left the workflow"' "$evidence/nochange-journal.txt" | grep -qF '"status":"done"' ||
+  grep -F "\"workflow: issue left Legion's work\"" "$evidence/nochange-journal.txt" | grep -qF '"status":"done"' ||
     fail "the close line of $nochange_issue does not name done"
-  grep -F '"supervise: suspended"' "$evidence/nochange-journal.txt" | grep -qF "\"reason\":\"the tree of $nochange_issue lingers\"" ||
-    fail "the architect's suspension line does not name the linger as its reason"
   note "$nochange_issue: the architect called close_root; its reason was posted before the close, every status write was the daemon's, and the journal has: $(jq -r .msg "$evidence/nochange-journal.txt" | sort -u | tr '\n' ';')"
   pass
 }

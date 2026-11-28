@@ -265,15 +265,15 @@ func (r *Runtime) cacheSecretMeta(s *sandbox, repo ghrepo.Repository) metav1.Obj
 }
 
 // cacheSandboxShape is why object is not a cache Sandbox this runtime builds, following its name,
-// or "" when it is one: its repository annotation parses, it is labelled for no tree or issue, it
-// runs one container, cacheContainer, and it owns one claim template, cacheVolume.
+// or "" when it is one: its repository annotation parses, it is labelled for no issue, it runs one
+// container, cacheContainer, and it owns one claim template, cacheVolume. A tree label decides
+// nothing: it is a pod's creation's and read by no decision (decision 14 of dispatch://INFRA-4730).
 func cacheSandboxShape(object unstructured.Unstructured) string {
 	if _, err := cacheRepository(object.GetAnnotations()); err != nil {
 		return ": " + err.Error()
 	}
-	labels := object.GetLabels()
-	if labels[labelIssue] != "" || labels[labelTree] != "" {
-		return fmt.Sprintf(" is labelled for issue %q of tree %q, which no cache is", labels[labelIssue], labels[labelTree])
+	if issue := object.GetLabels()[labelIssue]; issue != "" {
+		return fmt.Sprintf(" is labelled for issue %q, which no cache is", issue)
 	}
 	if names := nestedNames(object, "spec", "podTemplate", "spec", "containers"); !slices.Equal(names, []string{cacheContainer}) {
 		return fmt.Sprintf(" runs containers %v, not the one %s", names, cacheContainer)

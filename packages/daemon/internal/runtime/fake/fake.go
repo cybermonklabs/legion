@@ -47,9 +47,7 @@ type Call struct {
 	Known    []runtime.Known
 	Grace    time.Duration
 	Identity runtime.GitIdentity
-	// Tree is CleanupTree's tree.
-	Tree string
-	// Issue is IssuePod's, WorkspaceWork's and ReplaceIssuePod's issue.
+	// Issue is IssuePod's, WorkspaceWork's, ReplaceIssuePod's and CleanupIssue's issue.
 	Issue string
 	// PodUID is ReplaceIssuePod's pod, and the pod a launch replaced as its round's own
 	// replacement (ReplaceRoundPodAtLaunch, whose Spec is the launch's).
@@ -252,8 +250,8 @@ func (r *Runtime) FailReconcileOrphans(err error) { r.fail("ReconcileOrphans", e
 // FailAdoptWorkingCopy makes every later AdoptWorkingCopy return err.
 func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", err) }
 
-// FailCleanupTree makes every later CleanupTree return err; nil clears it.
-func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
+// FailCleanupIssue makes every later CleanupIssue return err; nil clears it.
+func (r *Runtime) FailCleanupIssue(err error) { r.fail("CleanupIssue", err) }
 
 // ScriptPodDrift makes every later PodDrift of token's claim answer reasons, as the Sandbox
 // runtime answers a pod built from a configuration the runtime has since moved on from, until a
@@ -788,12 +786,12 @@ func (r *Runtime) LaunchBound() time.Duration {
 	return r.TryBound
 }
 
-// CleanupTree records its call and answers what FailCleanupTree set, nil by default.
-func (r *Runtime) CleanupTree(_ context.Context, tree string) error {
+// CleanupIssue records its call and answers what FailCleanupIssue set, nil by default.
+func (r *Runtime) CleanupIssue(_ context.Context, issue string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "CleanupTree", Tree: tree})
-	return r.failures["CleanupTree"]
+	r.calls = append(r.calls, Call{Method: "CleanupIssue", Issue: issue})
+	return r.failures["CleanupIssue"]
 }
 
 // mint is the locator an unscripted spawn or resume hands back: tmux-shaped, because that is a

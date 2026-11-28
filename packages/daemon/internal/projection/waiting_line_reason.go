@@ -84,9 +84,9 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 		case record.LineQueuedRoot:
 			rank = "its own Dispatch rank"
 		case record.LineFirstPhase:
-			// The key of the tree root whose rank placed this member, read off the entry's own
-			// issue, which is where the line leaves it (record.LineEntry.RootRank).
-			rank = "the Dispatch rank of its tree root " + entry.Issue.Tree
+			// The key of the top issue whose rank placed this member, which the line leaves on
+			// the entry (record.LineEntry.RootKey).
+			rank = "the Dispatch rank of its top issue " + entry.RootKey
 		}
 		started := "have"
 		if partLength == 1 {
@@ -116,9 +116,8 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 	return ""
 }
 
-// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`, or
-// `with no priority` for an entry Dispatch resolves no priority for, or, with an older Dispatch
-// that resolves none, one that neither it nor its tree root has a priority for.
+// bandWords names the band an entry waits in, as the counts of its sentence read it: `at P1`,
+// or `with no priority`.
 func bandWords(priority record.Priority) string {
 	if priority == record.NoPriority {
 		return "with no priority"
@@ -129,9 +128,8 @@ func bandWords(priority record.Priority) string {
 // priorityPlaced is the sentence that says which priority placed entry in the line and whose it
 // is (record.LineEntry.Priority). Where Dispatch resolves the issue's priority
 // (record.Resolved.Known) it is the issue's own, or the one of the issue Dispatch names in
-// `priority_from`, the nearest above it on its Dispatch parent chain that has one, never the Legion
-// tree root; else, on a Dispatch release that resolves none, the issue's own, its tree root's, or
-// none on either. An entry with none waits after P3.
+// `priority_from`, the nearest above it on its Dispatch parent chain that has one; else, on a
+// Dispatch release that resolves none, the issue's own, its top issue's, or none.
 func priorityPlaced(entry record.LineEntry) string {
 	if resolved := entry.Issue.Resolved; resolved.Known {
 		switch {
@@ -148,11 +146,11 @@ func priorityPlaced(entry record.LineEntry) string {
 	case entry.Issue.Priority != record.NoPriority:
 		return "It waits at " + entry.Priority.String() + ", its own priority."
 	case entry.Priority != record.NoPriority:
-		return "It waits at " + entry.Priority.String() + ", the priority of its tree root " + entry.Issue.Tree + "."
-	case entry.Issue.Key == entry.Issue.Tree:
+		return "It waits at " + entry.Priority.String() + ", the priority of its top issue " + entry.RootKey + "."
+	case entry.RootKey == "" || entry.Issue.Key == entry.RootKey:
 		return "It has no priority, so it waits after every issue at P0 to P3."
 	}
-	return "Neither it nor its tree root " + entry.Issue.Tree + " has a priority, so it waits after every issue at P0 to P3."
+	return "Neither it nor its top issue " + entry.RootKey + " has a priority, so it waits after every issue at P0 to P3."
 }
 
 // holdsItsSlot is the last clause of every member that already holds one of the cap's slots: it

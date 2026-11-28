@@ -9,13 +9,10 @@ import (
 )
 
 // lineEntry is one entry of this test's line: the part it stands in, the kind that put it
-// there, its place within that part, whether it holds a slot and the issue it is of, which is
-// the record every clause that names a key reads (record.LineEntry). The sentence is rendered
-// from the entry and the two part lengths and from nothing else (waitingLineReason), so the
-// entries are built here and no database is read.
-func lineEntry(part record.LinePart, kind record.LineKind, place int, holds bool, tree string) record.LineEntry {
-	return record.LineEntry{Issue: record.Issue{Key: "LEGION-1", Tree: tree, Rank: "N", Priority: record.P1},
-		Kind: kind, Priority: record.P1, Part: part, PartPlace: place, Holds: holds}
+// there, its place in that priority and part, and the top issue whose rank placed it.
+func lineEntry(part record.LinePart, kind record.LineKind, place int, holds bool, top string) record.LineEntry {
+	return record.LineEntry{Issue: record.Issue{Key: "LEGION-1", Rank: "N", Priority: record.P1},
+		Kind: kind, Priority: record.P1, Part: part, PartPlace: place, Holds: holds, RootKey: top}
 }
 
 // Every member of the waiting line is given the reason for its place in words
@@ -61,7 +58,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 				"It waits at P1, its own priority. It is 3rd of 7 issues at P1 whose work came back, and they take the free slots before the issues at P1 that have not started.",
 		},
 		{
-			name:       "a tree root's own first phase in the returned part",
+			name:       "a root's own first phase in the returned part",
 			entry:      since(lineEntry(record.PartReturned, record.LineFirstPhase, 1, false, "LEGION-10"), cameBack),
 			partLength: 7,
 			otherPart:  18,
@@ -77,12 +74,12 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 				"and 7 issues at P1 whose work came back stand ahead of all of them.",
 		},
 		{
-			name:       "a child's first phase in the starting part",
+			name:       "the first phase of an issue under a parent in the starting part",
 			entry:      lineEntry(record.PartStarting, record.LineFirstPhase, 5, false, "LEGION-10"),
 			partLength: 18,
 			otherPart:  7,
 			want: "It has not started. It waits at P1, its own priority. It is 5th of 18 issues at P1 that have not started, " +
-				"by the Dispatch rank of its tree root LEGION-10, and 7 issues at P1 whose work came back stand ahead of all of them.",
+				"by the Dispatch rank of its top issue LEGION-10, and 7 issues at P1 whose work came back stand ahead of all of them.",
 		},
 		// A member that gave its slot back to wait on another issue is passed over while it
 		// waits, so it is told when it takes a slot again rather than that it takes them first.
@@ -220,16 +217,16 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 // do (englishOrdinal).
 func TestWaitingLineReasonCountsNothingBeyondItsOwnEntry(t *testing.T) {
 	cameBack := time.Date(2026, 11, 10, 15, 11, 32, 0, time.UTC)
-	returned := record.LineEntry{Issue: record.Issue{Key: "LEGION-12", Tree: "LEGION-10", Rank: "O", Priority: record.P1},
+	returned := record.LineEntry{Issue: record.Issue{Key: "LEGION-12", Rank: "O", Priority: record.P1},
 		Kind: record.LineReturning, Priority: record.P1, Part: record.PartReturned, PartPlace: 2, Since: cameBack}
-	starting := record.LineEntry{Issue: record.Issue{Key: "LEGION-11", Tree: "LEGION-10", Rank: "N", Priority: record.P1},
-		Kind: record.LineFirstPhase, Priority: record.P1, Part: record.PartStarting, PartPlace: 1, RootRank: "M"}
+	starting := record.LineEntry{Issue: record.Issue{Key: "LEGION-11", Rank: "N", Priority: record.P1},
+		Kind: record.LineFirstPhase, Priority: record.P1, Part: record.PartStarting, PartPlace: 1, RootRank: "M", RootKey: "LEGION-10"}
 	if got, want := waitingLineReason(returned, 3, 2), "Its work came back at 2026-11-10T15:11:32Z. "+
 		"It waits at P1, its own priority. It is 2nd of 3 issues at P1 whose work came back, and they take the free slots before the issues at P1 that have not started."; got != want {
 		t.Fatalf("the returned member's reason = %q, want %q", got, want)
 	}
 	if got, want := waitingLineReason(starting, 2, 3), "It has not started. It waits at P1, its own priority. It is 1st of 2 issues at P1 that have not started, "+
-		"by the Dispatch rank of its tree root LEGION-10, and 3 issues at P1 whose work came back stand ahead of all of them."; got != want {
+		"by the Dispatch rank of its top issue LEGION-10, and 3 issues at P1 whose work came back stand ahead of all of them."; got != want {
 		t.Fatalf("the starting member's reason = %q, want %q", got, want)
 	}
 	// The same two members with every number moved: the sentence moves with them and with

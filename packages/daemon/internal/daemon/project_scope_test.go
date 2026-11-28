@@ -79,7 +79,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		}
 		// Due a minute ago, so an outbox that claimed across projects would run it before any row
 		// this daemon's admission enqueues.
-		row, err := record.NewOutboxRow(running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
+		row, err := record.NewFencedRow(ctx, tx, records, running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
 		if err != nil {
 			return err
 		}
@@ -113,7 +113,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]map[string]any{{"key": own, "title": "This project's root", "status": "todo", "parent": nil, "rank": "m", "labels": []string{dispatch.LegionLabel}, "resolved_repo": "acme/widgets"}}); err != nil {
+		if err := json.NewEncoder(w).Encode([]map[string]any{{"key": own, "title": "This project's root", "status": "todo", "parent": nil, "rank": "m", "labels": []string{dispatch.LegionLabel}, "resolved_repo": "acme/widgets", "last_seq": 1}}); err != nil {
 			t.Errorf("write Dispatch issues: %v", err)
 		}
 	}))
@@ -274,41 +274,11 @@ func TestTheProjectsRecordsReadNoRecordOfAnotherProjectsIssue(t *testing.T) {
 			return nil
 		})
 	})
-	t.Run("TreeIssues", func(t *testing.T) {
-		read(t, func(tx pgx.Tx) error {
-			theirs, err := raw.TreeIssues(ctx, tx, "OTHERPROJECT-1")
-			if err != nil || !reflect.DeepEqual(keysOf(theirs), []string{"OTHERPROJECT-1", "OTHERPROJECT-2"}) {
-				t.Fatalf("the raw store's tree of OTHERPROJECT-1 = %v, %v; want OTHERPROJECT's two records", keysOf(theirs), err)
-			}
-			got, err := records.TreeIssues(ctx, tx, "OTHERPROJECT-1")
-			if err != nil || len(got) != 0 {
-				t.Errorf("the project's tree of OTHERPROJECT-1 = %v, %v; want no member: the tree is OTHERPROJECT's", keysOf(got), err)
-			}
-			own, err := records.TreeIssues(ctx, tx, "LEGION-1")
-			if want := []string{"LEGION-1", "LEGION-2"}; err != nil || !reflect.DeepEqual(keysOf(own), want) {
-				t.Errorf("the project's tree of LEGION-1 = %v, %v; want %v", keysOf(own), err, want)
-			}
-			return nil
-		})
-	})
 	t.Run("Issues", func(t *testing.T) {
 		read(t, func(tx pgx.Tx) error {
 			got, err := records.Issues(ctx, tx)
 			if want := []string{"LEGION-1", "LEGION-2", "LEGION-3"}; err != nil || !reflect.DeepEqual(keysOf(got), want) {
 				t.Errorf("the project's records = %v, %v; want %v, none of OTHERPROJECT's", keysOf(got), err, want)
-			}
-			return nil
-		})
-	})
-	t.Run("QueuedRootsUnder", func(t *testing.T) {
-		read(t, func(tx pgx.Tx) error {
-			theirs, err := raw.QueuedRootsUnder(ctx, tx, "LEGION-1")
-			if err != nil || !slices.Contains(keysOf(theirs), "OTHERPROJECT-3") {
-				t.Fatalf("the raw store's queued roots under LEGION-1 = %v, %v; want OTHERPROJECT-3 among them", keysOf(theirs), err)
-			}
-			got, err := records.QueuedRootsUnder(ctx, tx, "LEGION-1")
-			if want := []string{"LEGION-3"}; err != nil || !reflect.DeepEqual(keysOf(got), want) {
-				t.Errorf("the project's queued roots under LEGION-1 = %v, %v; want %v, none of OTHERPROJECT's", keysOf(got), err, want)
 			}
 			return nil
 		})
@@ -573,43 +543,31 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		})
 		return stands
 	}
-	for _, generation := range []struct {
-		name        string
-		theirs, own string
-		clear       func(tx pgx.Tx, key string) ([]string, error)
-	}{
-		{"ClearGeneration", "OTHERPROJECT-8", "LEGION-8", func(tx pgx.Tx, key string) ([]string, error) {
-			return records.ClearGeneration(ctx, tx, record.Issue{Key: key, Tree: key}, forgetNothing)
-		}},
-		{"ClearTreeGeneration", "OTHERPROJECT-9", "LEGION-9", func(tx pgx.Tx, key string) ([]string, error) {
-			return records.ClearTreeGeneration(ctx, tx, key, forgetNothing)
-		}},
-	} {
-		t.Run(generation.name, func(t *testing.T) {
-			gated(t, "OTHERPROJECT", generation.theirs)
-			var emptied []string
-			write(t, func(tx pgx.Tx) error {
-				var err error
-				emptied, err = generation.clear(tx, generation.theirs)
-				return err
-			})
-			refused(t, record.OutboxKindDesignGatesPublish, generation.theirs, nil)
-			if len(emptied) != 0 || !gateStands(t, generation.theirs) {
-				t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want nothing emptied and OTHERPROJECT's gate standing",
-					generation.theirs, emptied, gateStands(t, generation.theirs))
-			}
-			gated(t, "LEGION", generation.own)
-			write(t, func(tx pgx.Tx) error {
-				var err error
-				emptied, err = generation.clear(tx, generation.own)
-				return err
-			})
-			if !slices.Equal(emptied, []string{generation.own}) || gateStands(t, generation.own) {
-				t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want its own gate emptied and named",
-					generation.own, emptied, gateStands(t, generation.own))
-			}
+	t.Run("ClearGeneration", func(t *testing.T) {
+		const theirs, own = "OTHERPROJECT-8", "LEGION-8"
+		gated(t, "OTHERPROJECT", theirs)
+		var emptied []string
+		write(t, func(tx pgx.Tx) error {
+			var err error
+			emptied, err = records.ClearGeneration(ctx, tx, record.Issue{Key: theirs}, forgetNothing)
+			return err
 		})
-	}
+		refused(t, record.OutboxKindDesignGatesPublish, theirs, nil)
+		if len(emptied) != 0 || !gateStands(t, theirs) {
+			t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want nothing emptied and OTHERPROJECT's gate standing",
+				theirs, emptied, gateStands(t, theirs))
+		}
+		gated(t, "LEGION", own)
+		write(t, func(tx pgx.Tx) error {
+			var err error
+			emptied, err = records.ClearGeneration(ctx, tx, record.Issue{Key: own}, forgetNothing)
+			return err
+		})
+		if !slices.Equal(emptied, []string{own}) || gateStands(t, own) {
+			t.Errorf("the project's clear of %s answered %q and left its gate standing = %t, want its own gate emptied and named",
+				own, emptied, gateStands(t, own))
+		}
+	})
 }
 
 // The boot's sweep closes every issue of the project that awaits a merge GitHub already reported
@@ -617,7 +575,9 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 // record of another project's (projectRecords): on a shared database another project's daemon
 // records its own issue awaiting a merge that GitHub reported, and this daemon's boot leaves it
 // where that daemon stands it — still merging, lingering nowhere, with no production check
-// opened and no row queued keyed by it — while it closes its own.
+// opened and no row queued keyed by it — while it closes its own. The close of its own is the
+// status write of done (R24 of dispatch://INFRA-3320, workflow's closeMerged): the issue stays in
+// merging with its close pending until Dispatch shows it done.
 func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -625,7 +585,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	raw := record.NewStore()
 	records := projectRecords{Store: raw, project: "LEGION"}
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
-		Linger: time.Hour, ProductionCheckBound: time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
+		ProductionCheckBound: time.Hour, ProductionCheckRole: claim.RoleTester}, quietLogger())
 	merging := func(project, key, repo string, number int) (record.Issue, record.PullRequest) {
 		return record.Issue{Key: key, Repo: repo, DefaultBranch: "main", GitHubRepo: repo, Tree: key, Project: project, Title: key,
 				Phase: phase.Merging, Generation: 1, Status: "retro", Rank: key},
@@ -642,6 +602,11 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 			if err := raw.PutIssue(ctx, tx, seed.issue); err != nil {
 				return err
 			}
+			// Every decision reads the issue's chain from the copy of Dispatch's issues.
+			if err := raw.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: seed.issue.Key, Project: seed.issue.Project, Seq: 1,
+				Status: record.Carry(seed.issue.Status), Parent: record.Carry("")}); err != nil {
+				return err
+			}
 			if err := raw.PutPullRequest(ctx, tx, seed.pr); err != nil {
 				return err
 			}
@@ -656,7 +621,7 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 	}
 	var own, theirs *record.Issue
 	var check *record.ProductionCheck
-	var rows int
+	var rows, closes int
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if own, err = raw.Issue(ctx, tx, ownIssue.Key); err != nil {
@@ -668,15 +633,20 @@ func TestTheBootSweepLeavesAMergedIssueOfAnotherProjectWhereItStands(t *testing.
 		if check, err = raw.ProductionCheck(ctx, tx, theirIssue.Key); err != nil {
 			return err
 		}
+		if err := tx.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = $2 and payload->>'kind' = $3 and payload->>'status' = 'done'`,
+			ownIssue.Key, string(record.OutboxKindDispatchStatus), string(record.CloseStatusRow)).Scan(&closes); err != nil {
+			return err
+		}
 		return tx.QueryRow(ctx, `select count(*) from outbox where issue = $1`, theirIssue.Key).Scan(&rows)
 	}); err != nil {
 		t.Fatalf("read the records after the boot: %v", err)
 	}
-	if own == nil || own.Phase != phase.Done {
-		t.Fatalf("%s after the boot = %+v, want it closed: its merge was reported", ownIssue.Key, own)
+	if own == nil || own.Phase != phase.Merging || own.PendingClose == nil || closes != 1 {
+		t.Fatalf("%s after the boot = %+v with %d close rows queued, want it in merging with its close pending and its done queued once: its merge was reported",
+			ownIssue.Key, own, closes)
 	}
-	if theirs == nil || theirs.Project != "OTHER" || theirs.Phase != phase.Merging || theirs.Status != "retro" || theirs.LingerUntil != nil {
-		t.Errorf("%s after the boot = %+v, want OTHER's record merging and lingering nowhere, as OTHER's daemon left it", theirIssue.Key, theirs)
+	if theirs == nil || theirs.Project != "OTHER" || theirs.Phase != phase.Merging || theirs.Status != "retro" {
+		t.Errorf("%s after the boot = %+v, want OTHER's record merging, as OTHER's daemon left it", theirIssue.Key, theirs)
 	}
 	if check != nil {
 		t.Errorf("%s's production check after the boot = %+v, want none: the issue is OTHER's", theirIssue.Key, check)

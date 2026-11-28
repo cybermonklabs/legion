@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The merger of an issue that holds its own design gate and has never had a step of it open now
+  waits on each gated step with no registered document, as the issue's start does. This is an
+  issue the release before kept in another issue's tree that has no Dispatch parent now. The
+  merger's wait names the step, and the architect's catch-up tells it to register the document of
+  that step and to request the person's approval. A root that the release before handed over
+  without its gate keeps the old merge hold, and so does an issue whose gate opened: a step added
+  to the deployment's list later holds that issue's next start but not its merge.
+time: 2026-11-24T01:44:42Z
+custom:
+    Issue: pr4596

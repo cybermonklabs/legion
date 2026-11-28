@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -350,6 +351,16 @@ func (h *harness) treeCleanup(tree string) (started, confirmed bool) {
 	return started, confirmed
 }
 
+// issueCleanup is whether issue's own cleanup was reserved, and whether it was confirmed.
+func (h *harness) issueCleanup(issue string) (started, confirmed bool) {
+	h.t.Helper()
+	if err := h.store.Pool().QueryRow(h.ctx, `select cleanup_started, cleanup_confirmed_at is not null from issue_lifecycles
+		where project = $1 and issue = $2`, testProject, issue).Scan(&started, &confirmed); err != nil {
+		h.t.Fatalf("read the lifecycle of issue %s: %v", issue, err)
+	}
+	return started, confirmed
+}
+
 // launch creates a claim the way the spawn route does and launches it, returning its token and
 // the boot token its launch minted.
 func (h *harness) launch(issue string, role claim.Role) (claim.Token, string) {
@@ -359,9 +370,9 @@ func (h *harness) launch(issue string, role claim.Role) (claim.Token, string) {
 
 // launchIn is launch for an issue of tree: a sub-architect or a worker on a child. The tree's
 // lifecycle is opened first under the workflow's own authority, as admission's promotion of the
-// root opens it: that row is what says the tree runs (record.TreeLive), so a fixture whose tree
-// must be live opens it the way the daemon does. A test about a tree the operator holds opens
-// its own row under that authority instead.
+// root opens it, and so is the issue's own, which admission opens for every issue it starts and
+// which each claim of the issue binds (store.Store.AdmitClaim). A test about a tree the operator
+// holds opens its own row under that authority instead.
 func (h *harness) launchIn(tree, issue string, role claim.Role) (claim.Token, string) {
 	h.t.Helper()
 	token, err := claim.NewToken(testProject, issue, role)
@@ -371,8 +382,14 @@ func (h *harness) launchIn(tree, issue string, role claim.Role) (claim.Token, st
 	if _, err := h.store.OpenTreeLifecycle(h.ctx, testProject, tree, treelifecycle.AuthorityWorkflow); err != nil {
 		h.t.Fatalf("open the lifecycle of %s: %v", tree, err)
 	}
+	if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, issue, treelifecycle.AuthorityWorkflow); err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		h.t.Fatalf("open the lifecycle of issue %s: %v", issue, err)
+	}
+	// The architect of a tree's own root holds the root's gate, as admission's start of a root
+	// marks its claim (supervise.Claim.HoldsGate) and the operator's spawn of one does.
 	m, _, err := h.supervisor.Create(h.ctx, supervise.Claim{
 		Token: token, Project: testProject, Tree: tree, Issue: issue, Role: role, State: supervise.StateQueued,
+		HoldsGate: role == claim.RoleArchitect && tree == issue,
 	}, "role prompt")
 	if err != nil {
 		h.t.Fatalf("create %s: %v", token, err)
@@ -555,9 +572,9 @@ func sortedTokens(claims []OperatorClaim) []string {
 }
 
 // openTree opens tree's lifecycle under the workflow's authority, as admission's promotion of a
-// root does. That row, and not a slot, is what says a tree runs (record.TreeLive) now that a
-// slot counts one issue at work, so every fixture that seeds a running tree opens it. project is
-// the Dispatch project key the tree's issues are recorded under.
+// root does. The row is the shadow the release before reads (R22 of dispatch://INFRA-3320), so
+// every fixture that seeds a running tree opens it and stands where a promoted root stands.
+// project is the Dispatch project key the tree's issues are recorded under.
 func (h *harness) openTree(t *testing.T, project, tree string) {
 	t.Helper()
 	token, err := claim.ProjectToken(project)

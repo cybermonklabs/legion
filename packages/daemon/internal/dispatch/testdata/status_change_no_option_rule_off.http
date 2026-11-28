@@ -1,0 +1,10 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Idempotency-Key: capture-no-option-off-1795261832
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Sat, 21 Nov 2026 11:50:33 GMT
+Content-Length: 1510
+
+{"issue":{"key":"LEGION-1","project":"LEGION","number":1,"title":"no option off parent","status":"backlog","priority":null,"rank":"U","labels":[],"parent":null,"blocked_by":[],"advances":[],"advances_revision":0,"assignee":"alice","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"2026-11-21T11:50:32.815489Z","updated_at":"2026-11-21T11:50:33.24837Z","closed_at":null,"primary_artifact_id":"1b110229-aff7-4fc1-8ba6-83e680d760ae","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":4},"changed":[{"key":"LEGION-1","status":"backlog","parent":null,"previous_last_seq":3,"issue":{"key":"LEGION-1","project":"LEGION","number":1,"title":"no option off parent","status":"backlog","priority":null,"rank":"U","labels":[],"parent":null,"blocked_by":[],"advances":[],"advances_revision":0,"assignee":"alice","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"2026-11-21T11:50:32.815489Z","updated_at":"2026-11-21T11:50:33.24837Z","closed_at":null,"primary_artifact_id":"1b110229-aff7-4fc1-8ba6-83e680d760ae","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":4}}]}

@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // holderIssue is the issue every claim of this file works, in its own tree.
@@ -81,14 +80,6 @@ func publishingStore(t *testing.T) *Store {
 	return s
 }
 
-// openHolderTree opens the lifecycle of holderIssue's tree, which an admission binds to.
-func openHolderTree(t *testing.T, s *Store) {
-	t.Helper()
-	if _, err := s.OpenTreeLifecycle(context.Background(), "legion", holderIssue, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("open the lifecycle of %s: %v", holderIssue, err)
-	}
-}
-
 // The publication of an issue's role sessions is queued in the transaction of the claim write
 // that changes the session holding a role: the row the write replaces named one holder and the
 // row it writes names another. A claim's session holds its role in the states and suspension
@@ -104,7 +95,7 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
-	openHolderTree(t, s)
+	openIssueLifecycle(t, s, holderIssue)
 	step := func(name string, write func() error, want []string) {
 		t.Helper()
 		if err := write(); err != nil {
@@ -228,7 +219,7 @@ func TestAClaimOfAnotherProjectsIssueQueuesNoPublication(t *testing.T) {
 		}
 	}
 
-	openHolderTree(t, s)
+	openIssueLifecycle(t, s, holderIssue)
 	if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
 		t.Fatalf("admit the claim of %s: %v", holderIssue, err)
 	}
@@ -252,7 +243,7 @@ func TestAStoreThatDoesNotPublishQueuesNothing(t *testing.T) {
 		if publishes {
 			s.PublishRoleHolders(nil)
 		}
-		openHolderTree(t, s)
+		openIssueLifecycle(t, s, holderIssue)
 		if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
 			t.Fatalf("admit the claim: %v", err)
 		}
@@ -362,7 +353,7 @@ func TestTheStoreTellsTheIssueOnceItsQueuedPublicationCommits(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
-	openHolderTree(t, s)
+	openIssueLifecycle(t, s, holderIssue)
 	if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
 		t.Fatalf("admit the claim: %v", err)
 	}
@@ -426,7 +417,7 @@ func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	s := publishingStore(t)
-	openHolderTree(t, s)
+	openIssueLifecycle(t, s, holderIssue)
 	idle := holderClaim(supervise.StateIdle, "ses-1")
 	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), DeliveredAt: at(2), ConfirmedAt: at(3), Generation: 1}
 	if err := s.PutClaimAndDelivery(ctx, idle, task); err != nil {

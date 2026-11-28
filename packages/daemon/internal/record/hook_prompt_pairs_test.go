@@ -23,7 +23,9 @@ func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 		{Hook: "work-back", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1,
 			Counts: map[string]int{"reviewing-implementing": 1}, Prompt: "Say what is in your way."},
 	} {
-		row, err := NewOutboxRow("LEGION-208", prompt, now)
+		// A writer of this release names the run and the phase entry it queues the row for (Fenced).
+		want := Fenced(prompt, Fence{Generation: 1, Entry: 1})
+		row, err := NewOutboxRow("LEGION-208", want, now)
 		if err != nil {
 			t.Fatalf("NewOutboxRow(%s to %s): %v", prompt.From, prompt.To, err)
 		}
@@ -31,8 +33,8 @@ func TestAHookPromptOfAMoveOfAnyOrderIsWritten(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DecodeOutboxPayload(%s to %s): %v", prompt.From, prompt.To, err)
 		}
-		if !reflect.DeepEqual(decoded, prompt) {
-			t.Fatalf("the row of a hook prompt of %s to %s decodes to %#v, want %#v", prompt.From, prompt.To, decoded, prompt)
+		if !reflect.DeepEqual(decoded, want) {
+			t.Fatalf("the row of a hook prompt of %s to %s decodes to %#v, want %#v", prompt.From, prompt.To, decoded, want)
 		}
 		pair := phase.Pair(prompt.From, prompt.To)
 		if message := decoded.(HookPrompt).Message("LEGION-208"); !strings.Contains(message, "Counts by move: "+pair+"=1.") {

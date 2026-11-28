@@ -206,24 +206,25 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 }
 
-// thisBranchsMigrationsMainLacks are the versions of this branch that main has not recorded: main
-// recorded each step (cybermonklabs/legion#4400) and, after it, read a conflict twice and merged
-// the base forward (cybermonklabs/legion#4464, 20261119003157), fenced each value of the copy of
-// Dispatch's issues (cybermonklabs/legion#4598, 20261120055717) and marked a launch that had Oh My
-// Pi resume a claim's session by its id (cybermonklabs/legion#4581, 20261120042902), and every
-// other embedded version, the step record's three, 20261119003157, 20261120042902 and
-// 20261120055717 among them, is one main's run applied. One rewrites claims_suspended_by_check,
-// one deletes the controller notices of two kinds the daemon no longer writes, and 20261126110259
-// rewrites outbox_kind_check over the rows main's daemon left, and dispatch://INFRA-3931's state
-// events (20261126163320), which main has not recorded either, rewrite it last. The upgrade
-// applies all four whatever main's newest version is: Store.apply asks each migration whether its
-// own version is recorded.
+// thisBranchsMigrationsMainLacks are the versions this head embeds that main at 32b3c6c3, this
+// branch's newest merge of main, has not recorded, read off that commit as releaseDatabase says:
+// dispatch://INFRA-4730's three (20261122154644, 20261122154645 and 20261126035722), every one of
+// them below main's newest, 20261127193428, and the union of the kind lists that this branch's
+// merge 07a5990c made, which this merge renumbered 20261128030241 so that it stands above main's
+// newest. Every other embedded version is one main's run applied, #4065's two (20261115060739 and
+// 20261115121838) and its merge holds kind (20261126110259), dispatch://INFRA-3931's state events
+// (20261126163320), cybermonklabs/legion#3712's four (20261112012123, 20261112215432,
+// 20261118073048 and 20261122212816), #5204's parent of a plan task (20261124022547) and #5908's
+// claim left (20261127193428) among them. 20261122154645 rewrites outbox_kind_check over the rows
+// main's daemon left, and 20261128030241 rewrites it last, as it does on every database this
+// release upgrades. The upgrade applies all four whatever main's newest version is: Store.apply
+// asks each migration whether its own version is recorded.
 var thisBranchsMigrationsMainLacks = map[int]bool{
-	20261115060739: true, 20261115121838: true, 20261126110259: true, stateEventsVersion: true,
+	holdsGateVersion: true, issueFactsVersion: true, claimsIssueVersion: true,
+	kindsAfterTheStateEventsVersion: true,
 }
 
-// A daemon of this release is also deployed over a database main migrated once main recorded each
-// step and each plan rating, read a conflict twice and read a root's design-gate basis, and that
+// A daemon of this release is also deployed over the database main at 32b3c6c3 migrated, and that
 // database's outbox can hold a row of each of main's newest kinds: main's daemon queues a
 // step_record at each start and end of a step, its roll forward (20261117064152) queues one for
 // each run a rollback left open, it queues a plan_record for each retro that rates its plan, a
@@ -232,15 +233,23 @@ var thisBranchsMigrationsMainLacks = map[int]bool{
 // tree's news of its approved design (20261119203047), a phase_ended row for each parent the
 // admission pass moves into awaiting_children in the middle of its worker's phase, and a
 // pending_basis_seed and a reparent_seed for each read of a root's design-gate basis and of a
-// re-parented root (20261122154643). The upgrade applies this branch's kind lists with the merge
-// holds change (20261126110259) and then the state events (20261126163320) over those rows, and
-// `ADD CONSTRAINT … CHECK` validates the rows the table holds, so a list that left any of the
-// eight kinds out would fail Migrate (SQLSTATE 23514) and leave the daemon unable to boot. After
-// the upgrade the outbox takes a merge_holds_changed row, the kind 20261126110259 adds: both lists
-// stand above 20261122154643's, which does not name the kind, and the state events' list, which
-// names it too, is the last word of the check. The negative controls are each of the eight kinds
-// taken out of either list, where the Migrate below then fails on that pending row, and
-// merge_holds_changed taken out of the last one, where the row queued after the upgrade is refused.
+// re-parented root (20261122154643). The upgrade applies 20261122154645's kind list and then the
+// merge's union of the kind lists (20261128030241) over those rows, and `ADD CONSTRAINT … CHECK`
+// validates the rows the table holds, so a list that left any of the eight kinds out would fail
+// Migrate (SQLSTATE 23514) and leave the daemon unable to boot. The embedded copies of the last two
+// lists main's run applied, 20261126110259's and the state events', are the merged ones, which
+// name retention_end where main's do not; no row of that kind is queued before the upgrade, so
+// the rows the upgrade meets are rows main's daemon writes. After the upgrade the outbox takes a
+// merge_holds_changed row, the kind 20261126110259 adds, and a retention_end row, the kind
+// 20261122154645 adds: 20261128030241's list, which names both, is the last word of the check.
+// The upgrade moves the store's schema version from the one main's daemon announced,
+// 20261127193428, to 20261128030241's, which the merge's first boot announces (that migration's
+// file says why), so the database main migrated reports a version below it and the upgraded store
+// reports it. The negative controls are each of the eight kinds taken out of either of the two
+// lists, where the Migrate below then fails on that pending row; merge_holds_changed or
+// retention_end taken out of the last one, where the row queued after the upgrade is refused; and
+// 20261128030241 taken out of thisBranchsMigrationsMainLacks, where the database main migrated
+// already reports the merge's schema version.
 func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -256,6 +265,9 @@ func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 		if _, err := store.apply(ctx, migration); err != nil {
 			t.Fatalf("apply %s as main's own run did: %v", migration.Name, err)
 		}
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version >= kindsAfterTheStateEventsVersion {
+		t.Fatalf("the database main migrated reports schema version %d (%v), want one below the merge's %d, which main's run never applied", version, err, kindsAfterTheStateEventsVersion)
 	}
 	kinds := []string{"step_record", "plan_record", "conflict_confirm", "merge_forward", "design_changes",
 		"phase_ended", "pending_basis_seed", "reparent_seed"}
@@ -277,13 +289,28 @@ func TestADatabaseMainMigratedWithRowsOfItsNewestKindsUpgrades(t *testing.T) {
 			t.Fatalf("%s rows after the upgrade = %d, want the pending one kept", kind, pending)
 		}
 	}
-	if _, err := store.pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
-		values ('merge_holds_changed', 'LEGION-208', '{}', 0, now(), '')`); err != nil {
-		t.Fatalf("queue a merge_holds_changed row after the upgrade: %v", err)
+	if version, err := store.SchemaVersion(ctx); err != nil || version != kindsAfterTheStateEventsVersion {
+		t.Fatalf("after the upgrade the store reports schema version %d (%v), want the merge's %d, which the upgrade applies last", version, err, kindsAfterTheStateEventsVersion)
+	}
+	for _, kind := range []string{"merge_holds_changed", "retention_end"} {
+		if err := queueRowOfKind(store, kind); err != nil {
+			t.Fatalf("queue a %s row after the upgrade: %v", kind, err)
+		}
 	}
 }
 
-// releaseDatabase is the database one release left, which this branch's daemon upgrades.
+// releaseDatabase is the database one release left, which this branch's daemon upgrades. Its
+// newest and its lacks are read off the release's commit, not reasoned out, and the next merge
+// reads its own the same way: from the workspace root, with c the commit,
+//
+//	m=packages/daemon/internal/store/migrations
+//	held=$(git ls-tree --name-only "$c" "$m/" | grep -oE '[0-9]{14}' | sort)
+//	echo "$held" | tail -1
+//	comm -23 <(ls "$m"/*.up.sql | grep -oE '[0-9]{14}' | sort) <(echo "$held") |
+//		awk -v newest="$(echo "$held" | tail -1)" '$1 <= newest'
+//
+// prints newest and then lacks: every version this head embeds, numbered at or below newest, that
+// the commit does not list.
 type releaseDatabase struct {
 	name string
 	// newest is the newest version the release embeds, and lacks each version numbered below
@@ -351,43 +378,48 @@ func upgradeFrom(t *testing.T, release releaseDatabase) {
 	release.check(t, store)
 }
 
-// todaysMainsNewestMigration is the pinned baseline this test upgrades from: main's newest
-// migration at this branch's merge of main f21107b285c7, the sequence of each value of the copy of
-// Dispatch's issues. Main has numbered newer migrations since, and this test does not follow them.
-// It and the other migrations main numbered after this branch's claim_sessions (20261116144907) —
-// the role-holders publication (20261116165926), the reviewer's reviewed commit (20261116234034),
-// the step records' three (20261117000528, 20261117004117, 20261117064152), the plan record's kind
-// list (20261117023932), the pull request statuses (20261117112334), the update ask mark's cutover
-// (20261117200337), the conflict's second read and the merge forward (20261119003157) and the mark
-// of a launch that had Oh My Pi resume a session by its id (20261120042902) — stand above it.
-// A deployment of main applies them first, so this branch's daemon finds a database whose newest
-// recorded version stands above its own new migration.
-const todaysMainsNewestMigration = 20261120055717
+// todaysMainsNewestMigration is the pinned baseline this test upgrades from: the newest migration
+// of main at 9aff682b90, the parent of #4220 (46795520eb), which brought claim_sessions
+// (20261116144907) to main: the update ask mark's cutover (20261117200337). Main has numbered
+// newer migrations since, and this test does not follow them. It and the other migrations main
+// held at that commit numbered after claim_sessions — the role-holders publication
+// (20261116165926), the reviewer's reviewed commit (20261116234034), the step records' three
+// (20261117000528, 20261117004117, 20261117064152) and the pull request statuses (20261117112334) —
+// stand above claim_sessions. A deployment of main applies them first, so this branch's daemon
+// finds a database whose newest recorded version stands above claim_sessions.
+const todaysMainsNewestMigration = 20261117200337
 
-// thisBranchsClaimSessions is this branch's one daemon migration main has not recorded.
-const thisBranchsClaimSessions = 20261116144907
-
-// A database main migrated to the pinned baseline, 20261120055717, has recorded every migration
-// up to it but claim_sessions, which is numbered below it. Store.Migrate applies every
-// migration that database has not recorded, whatever version stands highest (apply asks each
-// migration whether its own version is recorded), so the upgrade applies 20261116144907 below that
-// baseline: claim_sessions is created, and its backfill holds the session a claim of main's daemon
-// recorded for that claim. So this branch's migration keeps its number.
+// A database main at 9aff682b90 migrated, to the pinned baseline, has recorded every migration this
+// head embeds numbered up to it but ten, which releaseDatabase's command prints for that commit:
+// claim_sessions (20261116144907), which #4220 brought next; cybermonklabs/legion#3712's
+// repository correction (20261112012123) and held task's resume (20261112215432), which main took
+// only at da1b3f8258; #4065's two (20261115060739 and 20261115121838), which main took at
+// a2ac5fd7; the gate basis (20261114064234), the phase awaiting_children (20261114232555), the
+// project pause (20261115194357), the plan record's kind list (20261117023932) and the plan of an
+// issue (20261117034837). Store.Migrate applies every migration that database has not recorded,
+// whatever version stands highest (apply asks each migration whether its own version is
+// recorded), so the upgrade applies 20261116144907 below that baseline: claim_sessions is
+// created, and its backfill holds the session a claim of main's daemon recorded for that claim.
+// So claim_sessions keeps its number.
 //
-// The database is built from the migrations numbered up to the pinned baseline alone (review round
-// 13), so a migration added after this test still finds the database that baseline leaves, and the
-// upgrade applies it too, after claim_sessions.
+// The database is built from the migrations numbered up to the pinned baseline alone, but those it
+// lacks (review round 13), so a migration added after this test still finds the database that
+// baseline leaves, and the upgrade applies it too, after claim_sessions.
 //
-// The control (the pull request records the run): a loader that skips a migration numbered below
-// the newest version recorded leaves claim_sessions unapplied, and the test fails naming it.
+// The controls: a loader that skips a migration numbered below the newest version recorded leaves
+// claim_sessions unapplied, and the test fails naming it (the pull request records the run); and
+// claim_sessions taken out of the lacks builds a database that holds it before main's claim is
+// written, whose backfill then holds nothing, and the test fails on the session it does not hold.
 func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const token, session = "legion-legion-legion-901-implementer", "ses_main"
 	upgradeFrom(t, releaseDatabase{
-		name:   "main at the pinned baseline",
+		name:   "main at 9aff682b90",
 		newest: todaysMainsNewestMigration,
-		lacks:  []int{thisBranchsClaimSessions},
+		lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+			suspendedByControllerVersion, dropControllerWakesVersion, projectPauseVersion, claimSessionsVersion,
+			planRecordKindVersion, issuePlansVersion},
 		seed: func(t *testing.T, store *Store) {
 			if _, err := store.pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -416,81 +448,237 @@ func TestADatabaseTodaysMainMigratedTakesTheClaimSessionsMigrationBelowItsNewest
 // newest, above it.
 const mainsAppliedSequence = 20261121170714
 
+// issueReleaseCommittedVersion and podReleaseGiveUpsVersion are #4194's two migrations, the mark
+// that a release's teardown is committed and the record of a release given up on, which main took
+// below this branch's newest at its merge of dc18a1fe.
+const (
+	issueReleaseCommittedVersion = 20261120210000
+	podReleaseGiveUpsVersion     = 20261126001514
+)
+
+// suspendedByControllerVersion is #4065's controller source of a claim's suspension, which main
+// took at a2ac5fd7 beside the drop of the controller wakes for nothing (dropControllerWakesVersion),
+// both below the newest of every database of an earlier merge.
+const suspendedByControllerVersion = 20261115060739
+
+// readmittedApprovalArtifactVersion is the document a kept approval names, one of
+// cybermonklabs/legion#3712's four, which main took at da1b3f8258 below the newest of most
+// databases here; repositoryCorrectionVersion, deliveryResumeVersion and phaseEntryAwaitingVersion
+// are the other three.
+const readmittedApprovalArtifactVersion = 20261122212816
+
 // At each merge of main since 77eac01e35d0 each side has recorded a migration the other has not,
-// and this branch's daemon meets a database that either side left. One that main at 4a8d82bfd090,
-// this head's merge of main before 4ad19fe8459c, migrated holds main's applied sequence
-// (20261121170714) and the plan of an issue (20261117034837), which main took after 77eac01e35d0,
-// and none of INFRA-3320's three versions, two of which stand below its newest. One that this
-// branch's head before its merge of 77eac01e35d0 (10e98a85ef53) migrated holds the three and lacks
-// both of main's, which stand below its newest, 20261122154643. One that this branch's head before
-// its merge of a7fae897a408 (03ac783258da), the merge that brought it the plan of an issue,
-// migrated holds main's applied sequence too and lacks the plan of an issue alone. The merge of
-// 4ad19fe8459c brought this branch main's plan of an experiment's draw (20261123165139), which
-// stands above every version of this branch's: one that main at 4ad19fe8459c migrated holds it and
-// lacks INFRA-3320's three, every one of them below its newest, and one that this branch's head
-// before that merge (dc73ab2f7f06) migrated holds every other version this head embeds below
-// 20261123165139 and lacks that one, above its newest. The merge of 8517faba31ac brought
-// dispatch://INFRA-5463's clear of the start failure of a claim whose agent is up (20261123212127),
-// which stood above every other version this head then embedded: one that main at 8517faba31ac
-// migrated holds it and lacks INFRA-3320's three, and one that this branch's head before that merge
-// (8af2e555670f) migrated lacks it, above its newest. Each of the databases of the earlier merges
-// lacks it too, above their newest. The merge of
-// 1cd586b462b4 brought main's release that keeps no saved workspace (20261123050533), which stands
-// above INFRA-3320's newest and below the plan of an experiment's draw: no database of an earlier
-// merge holds it, so the two of main at 4ad19fe8459c and 8517faba31ac and the one of this branch
-// at 8af2e555670f lack it below their newest, and the others above it. The merge of 1af8002b42b5
-// brought main's waiting line's issue priority (20261124060500) and #5349's cause times
-// (20261124073512), and the merge of c227d0466191 brought dispatch://INFRA-3149's release teardown
-// (20261124143026), which stands above them: the three stand above every other version this head
-// embeds, and no database of an earlier merge holds any of them, so each database here lacks all
-// three, above its newest. The merge of main into dispatch://INFRA-3931's branch brought its state
-// events (20261126163320), which stands above every other version this head embeds, the merge
-// holds' 20261126110259 among them: no database here holds it, so each lacks it above its newest.
-// Store.Migrate asks each embedded migration whether its own version is recorded (apply) and never
-// compares it with the newest, so each upgrade applies the versions that database lacks, below its
-// newest and above it alike, and leaves every embedded version recorded once.
+// and this branch's daemon meets a database that either side left. Each case below states its
+// database's newest and lacks as releaseDatabase's command prints them for its commit, in version
+// order. The paragraphs that follow say what each merge brought and which database holds it; a
+// database lacks, besides what one paragraph names, what a later one says it lacks.
+// One that main at 4a8d82bfd090, this head's merge of main before 4ad19fe8459c, migrated holds
+// main's applied sequence (20261121170714) and the plan of an issue (20261117034837), which main
+// took after 77eac01e35d0, and none of INFRA-3320's three versions, two of which stand below its
+// newest. One that this branch's head before its merge of 77eac01e35d0 (10e98a85ef53) migrated
+// holds the three and lacks both of main's, which stand below its newest, 20261122154643, and so
+// does one that dispatch://INFRA-4730's head before its merge of main (910fabb572) migrated, whose
+// newest is its own 20261122154645. One that this branch's head before its merge of a7fae897a408
+// (03ac783258da), the merge that brought it the plan of an issue, migrated holds main's applied
+// sequence too and lacks the plan of an issue. The merge of 4ad19fe8459c brought this branch
+// main's plan of an experiment's draw (20261123165139), which stood above every version of this
+// branch's then: one that main at 4ad19fe8459c migrated holds it and lacks INFRA-3320's three and
+// dispatch://INFRA-4730's two (20261122154644 and 20261122154645), every one of them below its
+// newest, and one that this branch's head before that merge (dc73ab2f7f06) migrated holds the
+// plan of an issue and main's applied sequence, below its newest, 20261122154643, and lacks every
+// version above it.
+// The merge of 8517faba31ac brought dispatch://INFRA-5463's clear of the start failure of a claim
+// whose agent is up (20261123212127), which stood above every other version this branch embedded
+// then: one that main at 8517faba31ac migrated holds it and lacks INFRA-3320's three and
+// INFRA-4730's two, and one that this branch's head before that merge (8af2e555670f) migrated
+// lacks that one, above its newest, and INFRA-4730's two, below it. Each of the databases of the
+// earlier merges lacks it too, above their newest.
+// dispatch://INFRA-1575's intake failures (20261120144241), which this branch takes with main
+// 843a9f45a3a0, stand below the newest of every one of these databases, and none of them recorded
+// it: main took it after 8517faba31ac, and this branch only at this merge. So each lacks it too.
+// The merge of 4e851eb15d0b brought dispatch://INFRA-5471's mark of a re-admission that still owes
+// its tree's members their return (20261123224717), which stood above every other version this
+// branch embedded then: one that main at 4e851eb15d0b migrated holds it and the intake failures and
+// lacks INFRA-3320's three and INFRA-4730's two, every one of them below its newest, and one that
+// this branch's head before that merge (9ed30ada122a) migrated lacks that one, above its newest,
+// and holds INFRA-4730's two. Each of the databases of the earlier merges lacks it too, above their
+// newest.
+// The merge of main 1cd586b462b4, which this branch takes through dispatch://INFRA-4728, brought
+// main's release that keeps no saved workspace (20261123050533), which stands above INFRA-4730's
+// two and below the plan of an experiment's draw: no database of an earlier merge holds it, so
+// the ones of main at 4ad19fe8459c, 8517faba31ac and 4e851eb15d0b and the ones of this branch at
+// 8af2e555670f and 9ed30ada122a lack it below their newest, and the others above it.
+// The merges of main fd2f03fb and bcc5d7e6 brought main's waiting line's issue priority
+// (20261124060500) and #5349's cause times (20261124073512), which stand above every version an
+// earlier merge brought: the database of main with Dispatch priority, main at fd2f03fb, holds the
+// first and lacks the second, above its newest, and every database of an earlier merge lacks
+// both, above its newest.
+// The merge of main c227d046 brought dispatch://INFRA-3149's release teardown (20261124143026),
+// which stands above every version an earlier merge brought: every database of an earlier merge
+// lacks it, above its newest.
+// The merge of main f69d69d2f71 brought #5310's earlier givers of a plan's version
+// (20261124033010), which stands below the issue priority: the database of main with Dispatch
+// priority lacks it, below its newest, and every other database of an earlier merge lacks it,
+// above its newest.
+// The merge of main a2ac5fd7 brought #4065's merge holds kind (20261126110259), which stands above
+// every version an earlier merge brought, and #4065's controller source of a claim's suspension
+// (20261115060739) and its drop of the controller wakes for nothing (20261115121838), which stand
+// below the newest of every database of an earlier merge, none of which recorded them: each of
+// those lacks the two. One that main at a2ac5fd7 migrated holds all three and lacks INFRA-4730's
+// three (20261122154644, 20261122154645 and 20261126035722), every one of them below its newest,
+// and can hold a merge_holds_changed row, which 20261122154645's list, applied over it, names. Its
+// upgrade takes both merge_holds_changed and retention_end after it; with merge_holds_changed out
+// of 20261122154645's list, the Migrate fails on the pending row instead.
+// The merge of main ca20a512 brought #5487's claim session run (20261125021636) and #5488's P0
+// bound (20261125181828), both below 20261126110259: one that main at a2ac5fd7 migrated lacks
+// both, below its newest, and one that main at ca20a512 migrated holds them, an issue's resolved
+// priority among their columns, and lacks INFRA-4730's three as main at a2ac5fd7 does. Neither
+// adds an outbox kind, so the lists the upgrade applies over that database are the ones it applies
+// over main's at a2ac5fd7.
+// The merge of main dc18a1fe brought #4194's committed release (20261120210000) and give-ups
+// (20261126001514), both below 20261126110259, and dispatch://INFRA-3931's state events
+// (20261126163320), above it. One that main at dc18a1fe migrated holds all three and lacks
+// INFRA-4730's three, below its newest, and can hold a row of each state kind, which
+// 20261122154645's list, applied over it, names: with a state kind out of that list, the Migrate
+// fails on its pending row.
+// One that this branch's head before that merge (40b2ad0e) migrated holds INFRA-4730's three and
+// lacks main's three, two below its newest and the state events above it, and can hold a
+// retention_end row, which the state events' list, applied over it, names: with retention_end out
+// of that list, the Migrate fails on that row. Every database of an earlier merge lacks the three
+// too: the committed release below its newest, the give-ups below the newest of main's at
+// a2ac5fd7 and at ca20a512 and above every other's, and the state events above its newest.
+// That merge wrote the union of the kind lists, as 20261127104032, which the merge of main
+// 32b3c6c3 renumbered 20261128030241 (below), and which stands above every other version this head
+// embeds: every database here lacks it under its number now, above its newest, so each upgrade
+// applies it last. Its list, which names the same kinds as 20261122154645's and the state events',
+// is the last word of the check on each database here.
+// The merge of main 45f6e9d3 brought cybermonklabs/legion#3712's four, which main took at
+// da1b3f8258: an issue's repository correction (20261112012123), the resume a held task carries
+// (20261112215432), the wait on a resume's phase entry (20261118073048) and the document a kept
+// approval names (20261122212816). None adds an outbox kind. No database of an earlier merge
+// recorded any of them, and every one of them stands below the newest of each of those databases
+// but 20261122212816, which stands above the newest of main's at 4a8d82bfd090 and of this
+// branch's at 10e98a85ef53, 910fabb572, 03ac783258da and dc73ab2f7f06: each of those databases
+// lacks the four, the ones below its newest among its lacks. One that main at 45f6e9d3 migrated
+// holds them, an issue whose repository was corrected and an approval kept with its document
+// among its rows, and lacks INFRA-4730's three, below its newest, 20261126163320, as main's at
+// dc18a1fe does. One that this branch's head before that merge (f4a07e03) migrated lacks the four,
+// every one of them below its newest that this head embeds, 20261126163320, and can hold a phase
+// entry a resume raised marked to be sent as written (entry_verbatim), which 20261118073048 gives
+// the empty wait.
+// The merge of main f9809362 brought #5204's parent of a plan task (20261124022547), a column it
+// adds to 20261117034837's plan_tasks, which stands below the issue priority (20261124060500).
+// It adds no outbox kind. No database of an earlier merge recorded it: the one of main with
+// Dispatch priority, main's at a2ac5fd7, ca20a512, dc18a1fe and 45f6e9d3 and this branch's at
+// 40b2ad0e and f4a07e03 lack it below their newest, and every other one above its newest. One that
+// main at f9809362 migrated holds it, a plan task whose block names its parent among its rows, and
+// lacks INFRA-4730's three, below its newest, 20261126163320, as main's at 45f6e9d3 does.
+// The merge of main 32b3c6c3 brought #5908's claim left (20261127193428), a column it adds to
+// issues, which stands above every version an earlier merge brought but the union of the kind
+// lists. It adds no outbox kind, though main's daemon at it queues, beside a move's claim_release
+// row, which names no session, one that names a session the daemon left behind ({"session": …}).
+// No database of an earlier merge recorded it, and it stands above the newest of each: each lacks
+// it, above its newest. To stand above it, this merge renumbered the union of the kind lists from
+// 20261127104032 to 20261128030241, so the first boot of the merge still announces a schema version
+// main's daemon did not (20261128030241's file says why). The database of this branch at f4a07e03
+// recorded the union under its old number, a version this head embeds no migration of, which
+// Store.Migrate never reads: that database upgrades as one whose newest is the newest version it
+// recorded that this head embeds, the state events', and applies the union again under its new
+// number, a rewrite of the check to the list it already stood on, above the row of its old number.
+// One that main at 32b3c6c3 migrated holds the claim left, an issue whose record names the claim a
+// release left and a left session's claim release among its rows, and lacks INFRA-4730's three,
+// below its newest, 20261127193428, as main's at f9809362 does; its upgrade moves the store's
+// schema version to 20261128030241, above main's newest.
+// Store.Migrate asks each embedded migration whether its own version is recorded (apply) and
+// never compares it with the newest, so each upgrade applies the versions that database lacks,
+// below its newest and above it alike, and leaves every embedded version recorded once.
 //
-// Main's database holds an outbox row of each kind its own kind check admits, read off that check:
+// Main's database holds an outbox row of each kind its own kind check admits (queueMainsKinds):
 // the basis seeds' list rewrites the check, which validates every row the table holds, so a kind
 // main's daemon can queue that the list leaves out fails the upgrade. After it the outbox takes the
-// two basis seeds as well. This branch's database at 10e98a85ef53 holds a row of the copy of
-// Dispatch's issues as the release before 20261121170714 writes one, and the upgrade gives it
-// applied_seq at 0. Its database at 03ac783258da holds a phases row as the release before
-// 20261117034837 writes one, and the upgrade leaves the row as it was, running no step
-// (migration_20261117034837_test.go). Its database at dc73ab2f7f06 holds an experiment's draw as
-// the release before 20261123165139 writes one, and the upgrade leaves the row of no group, its
-// plan the empty word (migration_20261123165139_test.go). Its database at 8af2e555670f holds a
-// ready claim and a failed one, each with a start failure, as the release before 20261123212127
-// writes them, and the upgrade empties the ready claim's and keeps the failed one's
-// (migration_20261123212127_test.go).
+// two basis seeds as well. This branch's database at 10e98a85ef53 and dispatch://INFRA-4730's at
+// 910fabb572 each hold a row of the copy of Dispatch's issues as the release before
+// 20261121170714 writes one, and the upgrade gives it applied_seq at 0. This branch's database at
+// 03ac783258da holds a phases row as the release before 20261117034837 writes one, and the upgrade
+// leaves the row as it was, running no step (migration_20261117034837_test.go). Its database at
+// dc73ab2f7f06 holds an experiment's draw as the release before 20261123165139 writes one, and the
+// upgrade leaves the row of no group, its plan the empty word (migration_20261123165139_test.go).
+// Its database at 8af2e555670f holds a ready claim and a failed one, each with a start failure, as
+// the release before 20261123212127 writes them, and the upgrade empties the ready claim's and
+// keeps the failed one's (migration_20261123212127_test.go). Its database at 9ed30ada122a holds an
+// issue as this branch's daemon writes one, holding its own gate at its seen sequence, and the
+// upgrade keeps both and gives it members_owed at its default, false, a column this release
+// writes nowhere and reads only in its first boot's conversion and in `legion members-back`.
+// Main's database at 45f6e9d3 holds an issue whose repository a correction moved, with the
+// repository it left and the moment, and the approval its re-admission kept with the document
+// approved, as #3712's daemon writes them (record's CorrectIssueRepository and
+// KeepReadmittedApproval), and the upgrade keeps all three and gives the issue, a root, its own
+// gate (20261122154644). This branch's database at f4a07e03 holds a root architect's entry that a
+// resume raised, marked to be sent as written as the release before 20261118073048 marks it, and
+// the upgrade gives it the empty wait (migration_20261118073048_test.go), and the row its daemon
+// recorded for the union under 20261127104032 stays below the union's number now. Main's database
+// at f9809362 holds a plan task whose block names its parent, as #5204's daemon writes it (record's
+// PutPlan), and the upgrade keeps the parent (migration_20261124022547_test.go). Main's database at
+// 32b3c6c3 holds an issue whose record names the claim a release left and a claim_release row that
+// names the session a claim write left behind, as #5908's daemon writes them (record's
+// RecordClaimLeft and store's putClaim), and the upgrade keeps both as they were.
 //
-// Each database is built from the migrations numbered up to its own newest alone, so a migration
-// added after this test still finds the database that release left, and the upgrade applies it
-// too.
+// Each database is built from the migrations numbered up to its own newest alone, but those it
+// lacks, so a migration added after this test still finds the database that release left, and the
+// upgrade applies it too.
 func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	// queueMainsKinds writes a row of each kind main's kind check admits, and queueBasisSeeds a row
-	// of each basis seed after the upgrade: the seed and the check of a database main migrated.
-	queueMainsKinds := func(t *testing.T, store *Store) {
+	// queueKinds writes a row of each kind the kind check the database stands on admits but those
+	// of skipped: the rows the daemon that migrated it could leave.
+	queueKinds := func(t *testing.T, store *Store, skipped ...string) {
 		var check string
 		if err := store.pool.QueryRow(ctx, `select pg_get_constraintdef(oid) from pg_constraint
 			where conrelid = 'outbox'::regclass and conname = 'outbox_kind_check'`).Scan(&check); err != nil {
-			t.Fatalf("read the kind check main's database stands on: %v", err)
+			t.Fatalf("read the kind check the database stands on: %v", err)
 		}
 		kinds := regexp.MustCompile(`'([a-z_]+)'::`).FindAllStringSubmatch(check, -1)
 		if len(kinds) == 0 {
-			t.Fatalf("the kind check main's database stands on names no kind: %s", check)
+			t.Fatalf("the kind check the database stands on names no kind: %s", check)
 		}
+		queued := 0
 		for _, kind := range kinds {
-			if err := queueRowOfKind(store, kind[1]); err != nil {
-				t.Fatalf("queue the %s row main's kind check admits: %v", kind[1], err)
+			if slices.Contains(skipped, kind[1]) {
+				continue
 			}
+			if err := queueRowOfKind(store, kind[1]); err != nil {
+				t.Fatalf("queue the %s row the database's kind check admits: %v", kind[1], err)
+			}
+			queued++
 		}
-		t.Logf("main's database holds a row of each of the %d kinds its kind check admits", len(kinds))
+		t.Logf("the database holds a row of each of the %d kinds its kind check admits but %v", queued, skipped)
 	}
+	// queueMainsKinds is queueKinds for a database main migrated: a row of each kind main's own
+	// kind check at its commit admits. A database of main at a2ac5fd7 or later stands on the
+	// embedded copy of 20261126110259 or 20261126163320, this branch's merged list, which names
+	// retention_end, and main's own list at each of those commits does not (git show
+	// <commit>:packages/daemon/internal/store/migrations/<file>, as mainsKindCheck is read), so no
+	// row of it is queued. Every older database of main stands on 20261119203047's list, which is
+	// main's own text. queueBasisSeeds writes a row of each basis seed after the upgrade: the seed
+	// and the check of a database main migrated.
+	queueMainsKinds := func(t *testing.T, store *Store) { queueKinds(t, store, "retention_end") }
 	queueBasisSeeds := func(t *testing.T, store *Store) {
 		for _, kind := range []string{"pending_basis_seed", "reparent_seed"} {
+			if err := queueRowOfKind(store, kind); err != nil {
+				t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+			}
+		}
+	}
+	// keepsMainsStateRows is the check of a database main migrated once it wrote the state events:
+	// the row of each state kind queueMainsKinds left is kept with its sequence, and the outbox
+	// takes a row of each state kind, of merge_holds_changed and of retention_end after the upgrade.
+	keepsMainsStateRows := func(t *testing.T, store *Store) {
+		var sequenced int
+		if err := store.pool.QueryRow(ctx, `select count(*) from outbox
+			where kind in ('state_change', 'state_admission', 'state_boot') and state_seq is not null`).Scan(&sequenced); err != nil || sequenced != 3 {
+			t.Errorf("state rows after the upgrade = %d (%v), want the one of each state kind main's daemon left, kept with its sequence", sequenced, err)
+		}
+		for _, kind := range []string{"state_change", "state_admission", "state_boot", "merge_holds_changed", "retention_end"} {
 			if err := queueRowOfKind(store, kind); err != nil {
 				t.Errorf("queue a %s row after the upgrade: %v", kind, err)
 			}
@@ -500,28 +688,38 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "main at 4a8d82bfd090",
 			newest: mainsAppliedSequence,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion},
-			seed:   queueMainsKinds,
-			check:  queueBasisSeeds,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+				suspendedByControllerVersion, dropControllerWakesVersion, phaseEntryAwaitingVersion, intakeFailuresVersion,
+				issueReleaseCommittedVersion},
+			seed:  queueMainsKinds,
+			check: queueBasisSeeds,
 		},
 		{
 			name:   "main at 4ad19fe8459c",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
-			seed:   queueMainsKinds,
-			check:  queueBasisSeeds,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+				suspendedByControllerVersion, dropControllerWakesVersion, phaseEntryAwaitingVersion, intakeFailuresVersion,
+				issueReleaseCommittedVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion,
+				readmittedApprovalArtifactVersion, keepsNoWorkspaceVersion},
+			seed:  queueMainsKinds,
+			check: queueBasisSeeds,
 		},
 		{
 			name:   "main at 8517faba31ac",
 			newest: startFailureAfterReadyVersion,
-			lacks:  []int{gateBasisVersion, awaitingChildrenVersion, basisSeedsVersion, keepsNoWorkspaceVersion},
-			seed:   queueMainsKinds,
-			check:  queueBasisSeeds,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+				suspendedByControllerVersion, dropControllerWakesVersion, phaseEntryAwaitingVersion, intakeFailuresVersion,
+				issueReleaseCommittedVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion,
+				readmittedApprovalArtifactVersion, keepsNoWorkspaceVersion},
+			seed:  queueMainsKinds,
+			check: queueBasisSeeds,
 		},
 		{
 			name:   "this branch at 10e98a85ef53",
 			newest: basisSeedsVersion,
-			lacks:  []int{issuePlansVersion, mainsAppliedSequence},
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, suspendedByControllerVersion,
+				dropControllerWakesVersion, issuePlansVersion, phaseEntryAwaitingVersion, intakeFailuresVersion,
+				issueReleaseCommittedVersion, mainsAppliedSequence},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261121170714 names these columns and no other (record's
 				// PutDispatchIssue).
@@ -539,9 +737,33 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 			},
 		},
 		{
+			name:   "INFRA-4730 at 910fabb572",
+			newest: issueFactsVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, suspendedByControllerVersion,
+				dropControllerWakesVersion, issuePlansVersion, phaseEntryAwaitingVersion, intakeFailuresVersion,
+				issueReleaseCommittedVersion, mainsAppliedSequence},
+			seed: func(t *testing.T, store *Store) {
+				// That release names the same columns as the one above, and no other (record's
+				// PutDispatchIssue).
+				if _, err := store.pool.Exec(ctx, `insert into dispatch_issues (key, project, dispatch_seq, status, status_seq,
+					parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq)
+					values ('ACME-1', 'ACME', 5, 'todo', 5, null, 5, '{}', 5, '{legion}', 5, 'a0', 5)`); err != nil {
+					t.Fatalf("write a row of the copy of Dispatch's issues as INFRA-4730's daemon did: %v", err)
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				const applied = `select row(key, dispatch_seq, applied_seq)::text from dispatch_issues order by key`
+				if got, want := rowsAsText(t, store, applied), []string{"(ACME-1,5,0)"}; !slices.Equal(got, want) {
+					t.Errorf("the copy after the upgrade (key, dispatch_seq, applied_seq) = %v, want %v: the row it held, at 0", got, want)
+				}
+			},
+		},
+		{
 			name:   "this branch at 03ac783258da",
 			newest: basisSeedsVersion,
-			lacks:  []int{issuePlansVersion},
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, suspendedByControllerVersion,
+				dropControllerWakesVersion, issuePlansVersion, phaseEntryAwaitingVersion, intakeFailuresVersion,
+				issueReleaseCommittedVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261117034837 names no step of a phases row.
 				for _, seed := range []string{
@@ -565,6 +787,8 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at dc73ab2f7f06",
 			newest: basisSeedsVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, suspendedByControllerVersion,
+				dropControllerWakesVersion, phaseEntryAwaitingVersion, intakeFailuresVersion, issueReleaseCommittedVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261123165139 names these seven columns of a draw and no other
 				// (record's PutAssignments).
@@ -589,7 +813,9 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 		{
 			name:   "this branch at 8af2e555670f",
 			newest: experimentAssignmentPlanVersion,
-			lacks:  []int{keepsNoWorkspaceVersion},
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, suspendedByControllerVersion,
+				dropControllerWakesVersion, phaseEntryAwaitingVersion, intakeFailuresVersion, issueReleaseCommittedVersion,
+				holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion, keepsNoWorkspaceVersion},
 			seed: func(t *testing.T, store *Store) {
 				// The release before 20261123212127 keeps a claim's start failure through every later
 				// ready (record's claims columns as that release writes them).
@@ -606,6 +832,259 @@ func TestTheDatabasesOfMainAndOfThisBranchAtTheMergeEachTakeWhatTheyLack(t *test
 				const kept = `select row(state, last_start_failure <> '')::text from claims order by issue`
 				if got, want := rowsAsText(t, store, kept), []string{"(ready,f)", "(failed,t)"}; !slices.Equal(got, want) {
 					t.Errorf("the claims after the upgrade (state, holds a start failure) = %v, want %v: the ready claim's emptied, the failed claim's kept", got, want)
+				}
+			},
+		},
+		{
+			name:   "main at 4e851eb15d0b",
+			newest: membersOwedVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+				suspendedByControllerVersion, dropControllerWakesVersion, phaseEntryAwaitingVersion,
+				issueReleaseCommittedVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion,
+				readmittedApprovalArtifactVersion, keepsNoWorkspaceVersion},
+			seed:  queueMainsKinds,
+			check: queueBasisSeeds,
+		},
+		{
+			name:   "main with Dispatch priority",
+			newest: issuePriorityVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, gateBasisVersion, awaitingChildrenVersion,
+				suspendedByControllerVersion, dropControllerWakesVersion, phaseEntryAwaitingVersion,
+				issueReleaseCommittedVersion, basisSeedsVersion, holdsGateVersion, issueFactsVersion,
+				readmittedApprovalArtifactVersion, planTasksParentRefVersion, planEarlierGiversVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, priority)
+					values ('LEGION-702', 'LEGION-702', 'LEGION', 'urgent root', 'admitted', 1, 'todo', 'A', 7, 0)`); err != nil {
+					t.Fatalf("write an issue at P0 before the chain upgrade: %v", err)
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				queueBasisSeeds(t, store)
+				const priority = `select priority::text from issues where key = 'LEGION-702'`
+				if got := rowsAsText(t, store, priority); !slices.Equal(got, []string{"0"}) {
+					t.Errorf("priority after the chain upgrade = %v, want Dispatch's P0", got)
+				}
+			},
+		},
+		{
+			name:   "this branch at 9ed30ada122a",
+			newest: startFailureAfterReadyVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, suspendedByControllerVersion,
+				dropControllerWakesVersion, phaseEntryAwaitingVersion, issueReleaseCommittedVersion,
+				readmittedApprovalArtifactVersion, keepsNoWorkspaceVersion},
+			seed: func(t *testing.T, store *Store) {
+				// That release writes an issue's own facts on its record (record's PutIssue): the mark
+				// that it holds its own gate and the newest Dispatch sequence its consumer saw.
+				if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank,
+					last_dispatch_seq, holds_gate, seen_seq)
+					values ('LEGION-701', 'LEGION-701', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 7, true, 7)`); err != nil {
+					t.Fatalf("write an issue as this branch's daemon did before the members' mark: %v", err)
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				const facts = `select row(key, holds_gate, seen_seq, members_owed, priority)::text from issues order by key`
+				if got, want := rowsAsText(t, store, facts), []string{"(LEGION-701,t,7,f,)"}; !slices.Equal(got, want) {
+					t.Errorf("the issues after upgrade = %v, want %v: own facts kept, no members owed, and null priority", got, want)
+				}
+			},
+		},
+		{
+			name:   "main at a2ac5fd7",
+			newest: mergeHoldsChangedVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
+				issueReleaseCommittedVersion, holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion,
+				planTasksParentRefVersion, sessionRunVersion, p0StartVersion, podReleaseGiveUpsVersion, claimsIssueVersion},
+			seed: queueMainsKinds,
+			check: func(t *testing.T, store *Store) {
+				for _, kind := range []string{"merge_holds_changed", "retention_end"} {
+					if err := queueRowOfKind(store, kind); err != nil {
+						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+					}
+				}
+			},
+		},
+		{
+			name:   "main at ca20a512",
+			newest: mergeHoldsChangedVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
+				issueReleaseCommittedVersion, holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion,
+				planTasksParentRefVersion, podReleaseGiveUpsVersion, claimsIssueVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				if _, err := store.pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+					resolved_known, resolved_priority, priority_from)
+					values ('LEGION-703', 'LEGION-703', 'LEGION', 'inherited P0', 'admitted', 1, 'todo', 'A', 7, true, 0, 'OTHER-7')`); err != nil {
+					t.Fatalf("write an issue at an inherited P0 as main's daemon did: %v", err)
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				for _, kind := range []string{"merge_holds_changed", "retention_end"} {
+					if err := queueRowOfKind(store, kind); err != nil {
+						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+					}
+				}
+				const resolved = `select row(resolved_known, resolved_priority, priority_from)::text from issues where key = 'LEGION-703'`
+				if got, want := rowsAsText(t, store, resolved), []string{"(t,0,OTHER-7)"}; !slices.Equal(got, want) {
+					t.Errorf("the resolved priority after the upgrade = %v, want %v, as main's daemon wrote it", got, want)
+				}
+			},
+		},
+		{
+			name:   "main at dc18a1fe",
+			newest: stateEventsVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
+				holdsGateVersion, issueFactsVersion, readmittedApprovalArtifactVersion, planTasksParentRefVersion, claimsIssueVersion},
+			seed:  queueMainsKinds,
+			check: keepsMainsStateRows,
+		},
+		{
+			name:   "this branch at 40b2ad0e",
+			newest: mergeHoldsChangedVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion,
+				issueReleaseCommittedVersion, readmittedApprovalArtifactVersion, planTasksParentRefVersion, podReleaseGiveUpsVersion},
+			// This branch's daemon queues every kind of its own list, retention_end among them.
+			seed: func(t *testing.T, store *Store) { queueKinds(t, store) },
+			check: func(t *testing.T, store *Store) {
+				var retained int
+				if err := store.pool.QueryRow(ctx, `select count(*) from outbox where kind = 'retention_end'`).Scan(&retained); err != nil || retained != 1 {
+					t.Errorf("retention_end rows after the upgrade = %d (%v), want the one this branch's daemon left, kept", retained, err)
+				}
+				for _, kind := range []string{"state_change", "state_admission", "state_boot", "retention_end"} {
+					if err := queueRowOfKind(store, kind); err != nil {
+						t.Errorf("queue a %s row after the upgrade: %v", kind, err)
+					}
+				}
+			},
+		},
+		{
+			name:   "main at 45f6e9d3",
+			newest: stateEventsVersion,
+			lacks:  []int{holdsGateVersion, issueFactsVersion, planTasksParentRefVersion, claimsIssueVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				// #3712's daemon writes a correction with the repository the issue left and its
+				// moment (record's CorrectIssueRepository), and keeps a re-admission's approval with
+				// the document approved (record's KeepReadmittedApproval).
+				for _, seed := range []string{
+					`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq,
+						repo, default_branch, github_repo, repo_before, repo_corrected_at)
+						values ('LEGION-705', 'LEGION-705', 'LEGION', 'root', 'planning', 2, 'in_progress', 'A', 7,
+							'acme/gadgets', 'main', 'Acme/Gadgets', 'acme/widgets', now())`,
+					`insert into readmitted_approvals (issue, approved_version, latest_version, artifact)
+						values ('LEGION-705', 2, 3, 'art-705')`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a corrected issue and its kept approval as main's daemon at 45f6e9d3 did: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				keepsMainsStateRows(t, store)
+				const kept = `select row(i.repo, i.repo_before, i.repo_corrected_at is not null, i.holds_gate, a.artifact)::text
+					from issues i join readmitted_approvals a on a.issue = i.key order by i.key`
+				if got, want := rowsAsText(t, store, kept), []string{"(acme/gadgets,acme/widgets,t,t,art-705)"}; !slices.Equal(got, want) {
+					t.Errorf("the issue after the upgrade (repo, repo_before, corrected, holds_gate, kept artifact) = %v, want %v: the correction and the document kept, and the root holding its own gate", got, want)
+				}
+			},
+		},
+		{
+			name: "this branch at f4a07e03",
+			// That head recorded the union of the kind lists as 20261127104032, its newest, which
+			// this head embeds as 20261128030241; the newest version it recorded that this head
+			// embeds is the state events'.
+			newest: stateEventsVersion,
+			lacks: []int{repositoryCorrectionVersion, deliveryResumeVersion, phaseEntryAwaitingVersion, readmittedApprovalArtifactVersion,
+				planTasksParentRefVersion},
+			seed: func(t *testing.T, store *Store) {
+				// The release before 20261118073048 marks the entry a resume raises to be sent as
+				// written (record's PutPhase, phases.entry_verbatim), and that head's daemon
+				// recorded the union under its old number (Store.apply's row).
+				for _, seed := range []string{
+					`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+						values ('LEGION-704', 'LEGION-704', 'LEGION', 'root', 'planning', 1, 'in_progress', 'A', 7)`,
+					`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task, entry_verbatim)
+						values ('LEGION-704', 'architect', '', '', 0, '', 2, 'A person approved the spec of LEGION-704.', true)`,
+					`insert into schema_version (version) values (20261127104032)`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a resume's entry as this branch's daemon did before the wait on it: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				const entries = `select row(issue, role, entry, entry_awaiting)::text from phases order by issue, role`
+				if got, want := rowsAsText(t, store, entries), []string{"(LEGION-704,architect,2,{})"}; !slices.Equal(got, want) {
+					t.Errorf("the phases rows after the upgrade (issue, role, entry, entry_awaiting) = %v, want %v: the resume's entry, holding the empty wait", got, want)
+				}
+				const oldUnion = `select count(*)::text from schema_version where version = 20261127104032`
+				if got := rowsAsText(t, store, oldUnion); !slices.Equal(got, []string{"1"}) {
+					t.Errorf("the rows of the union's old number after the upgrade = %v, want the one that head recorded, kept below the union's number now", got)
+				}
+			},
+		},
+		{
+			name:   "main at f9809362",
+			newest: stateEventsVersion,
+			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				// #5204's daemon writes the parent a task's block names on the task's row (record's
+				// PutPlan, plan_tasks.parent_ref).
+				for _, seed := range []string{
+					`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
+						values ('LEGION-706', 1, 1, 'owner', 'artifact-706', 'legion-legion-legion-706-architect', now())`,
+					`insert into plan_tasks (issue, generation, task, plan_version, block_text, state, parent_ref)
+						values ('LEGION-706', 1, 'a', 1, 'Build the widget.', 'waiting', 'dispatch://LEGION-706/spec#b-r1')`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a plan task that names its parent as main's daemon at f9809362 did: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				keepsMainsStateRows(t, store)
+				const parents = `select task || '=' || parent_ref from plan_tasks where issue = 'LEGION-706' order by task`
+				if got, want := rowsAsText(t, store, parents), []string{"a=dispatch://LEGION-706/spec#b-r1"}; !slices.Equal(got, want) {
+					t.Errorf("the plan tasks after the upgrade (task=parent_ref) = %v, want %v: the parent its block names, kept", got, want)
+				}
+			},
+		},
+		{
+			name:   "main at 32b3c6c3",
+			newest: claimLeftVersion,
+			lacks:  []int{holdsGateVersion, issueFactsVersion, claimsIssueVersion},
+			seed: func(t *testing.T, store *Store) {
+				queueMainsKinds(t, store)
+				// #5908's daemon writes why a release left an issue's claim on its record (record's
+				// RecordClaimLeft, issues.claim_left), and queues, beside a move's claim release,
+				// which names no session, one that names the session a claim write left behind
+				// (store's putClaim).
+				for _, seed := range []string{
+					`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, claim_left)
+						values ('LEGION-707', 'LEGION-707', 'LEGION', 'parked root', 'admitted', 1, 'backlog', 'A', 7,
+							'{"holder": "user:alice", "reason": "person", "at": "2026-11-27T09:00:00Z"}')`,
+					`insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+						values ('claim_release', 'LEGION-707', '{"session": "ses-left"}', 0, now(), '')`,
+				} {
+					if _, err := store.pool.Exec(ctx, seed); err != nil {
+						t.Fatalf("write a claim left and a left session's claim release as main's daemon at 32b3c6c3 did: %v", err)
+					}
+				}
+			},
+			check: func(t *testing.T, store *Store) {
+				keepsMainsStateRows(t, store)
+				if version, err := store.SchemaVersion(ctx); err != nil || version != kindsAfterTheStateEventsVersion || version <= claimLeftVersion {
+					t.Errorf("after the upgrade the store reports schema version %d (%v), want the merge's %d, above main's newest, %d", version, err,
+						kindsAfterTheStateEventsVersion, claimLeftVersion)
+				}
+				const left = `select row(key, claim_left->>'holder', claim_left->>'reason', claim_left->>'at')::text from issues where key = 'LEGION-707'`
+				if got, want := rowsAsText(t, store, left), []string{"(LEGION-707,user:alice,person,2026-11-27T09:00:00Z)"}; !slices.Equal(got, want) {
+					t.Errorf("the claim left after the upgrade (key, holder, reason, at) = %v, want %v, as main's daemon wrote it", got, want)
+				}
+				const released = `select issue || ' ' || payload::text from outbox where kind = 'claim_release' order by id`
+				if got, want := rowsAsText(t, store, released), []string{"LEGION-208 {}", `LEGION-707 {"session": "ses-left"}`}; !slices.Equal(got, want) {
+					t.Errorf("the claim releases after the upgrade = %v, want %v: the move's and the left session's, each as main's daemon queued it", got, want)
 				}
 			},
 		},

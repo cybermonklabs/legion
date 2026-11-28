@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 type projectionStore struct {
@@ -33,14 +32,12 @@ type projectionStore struct {
 	// key, which is the order the state's `blocked` is judged from. DispatchIssuesOf serves the rows
 	// of the keys asked for and of what they wait on, as the real store does.
 	mirror []record.DispatchIssueRow
-	// lifecycles names the trees whose lifecycle stands open under the workflow, which is what
-	// says a tree runs (record.TreeLive); gates is each issue's design gates by step, as
-	// record.Store.Gates answers them; owed is the start each issue owes
-	// a worker of it, which is a returning issue's place in the waiting line. The three are what
-	// record.ReadLineFacts reads for the line.
-	lifecycles []string
-	gates      map[string]map[record.DesignStep]record.DesignGate
-	owed       []record.OwedStart
+	// gates is each issue's design gates by step, as record.Store.GatesOf and record.Store.Gates
+	// answer them; owed is the start each issue owes a worker of it, which is a returning issue's
+	// place in the waiting line. The gates and the owed starts are what record.ReadLineFacts reads
+	// for the line.
+	gates map[string]map[record.DesignStep]record.DesignGate
+	owed  []record.OwedStart
 	// assignments is every experiment answer the store holds, by the key of the unit it covers,
 	// in experiment order, as record.Store.Assignments answers them.
 	assignments map[string][]record.Assignment
@@ -55,16 +52,6 @@ func (s projectionStore) PlanTasksOf(context.Context, pgx.Tx, string) ([]record.
 
 func (s projectionStore) Assignments(context.Context, pgx.Tx, string) (map[string][]record.Assignment, error) {
 	return s.assignments, nil
-}
-
-func (s projectionStore) TreeLifecycles(_ context.Context, _ pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
-	open := make(map[string]treelifecycle.Lifecycle, len(s.lifecycles))
-	for _, tree := range s.lifecycles {
-		if slices.Contains(trees, tree) {
-			open[tree] = treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityWorkflow}
-		}
-	}
-	return open, nil
 }
 
 func (s projectionStore) Gates(_ context.Context, _ pgx.Tx, trees []string) (map[string]map[record.DesignStep]record.DesignGate, error) {
@@ -120,11 +107,12 @@ func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record
 	return s.checks, nil
 }
 func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, keys []string) ([]record.DispatchIssueRow, error) {
+	copied := s.copyRows()
 	wanted := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		wanted[key] = true
 	}
-	for _, row := range s.mirror {
+	for _, row := range copied {
 		if wanted[row.Key] {
 			for _, blocker := range row.Blockers {
 				wanted[blocker] = true
@@ -132,21 +120,22 @@ func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, keys []st
 		}
 	}
 	var rows []record.DispatchIssueRow
-	for _, row := range s.mirror {
-		if wanted[row.Key] {
-			rows = append(rows, row)
+	for _, key := range slices.Sorted(maps.Keys(copied)) {
+		if wanted[key] {
+			rows = append(rows, copied[key])
 		}
 	}
 	return rows, nil
 }
 
-// DispatchChildren groups the mirror's rows under the parent each names, as the real store does:
-// the children-first judgement reads it for every issue whose own first phase has not started
-// (record.ChildWaitsOf).
+// DispatchChildren groups the copy's rows under the parent each names, as the real store does:
+// the chain read takes the children of every key it started from (record.ReadChains), which the
+// children-first judgement reads.
 func (s projectionStore) DispatchChildren(_ context.Context, _ pgx.Tx, _ string, parents []string) (map[string][]record.DispatchIssueRow, error) {
+	copied := s.copyRows()
 	children := make(map[string][]record.DispatchIssueRow, len(parents))
-	for _, row := range s.mirror {
-		if row.Parent != "" && slices.Contains(parents, row.Parent) {
+	for _, key := range slices.Sorted(maps.Keys(copied)) {
+		if row := copied[key]; row.Parent != "" && slices.Contains(parents, row.Parent) {
 			children[row.Parent] = append(children[row.Parent], row)
 		}
 	}
@@ -164,6 +153,80 @@ func (s projectionStore) IssuesOf(_ context.Context, _ pgx.Tx, _ string, keys []
 		}
 	}
 	return issues, nil
+}
+
+// IssuesByKey is the record of each of keys this store holds, whatever its project, as the chain
+// read takes the records of every key on a chain it walked (record.ReadChains).
+func (s projectionStore) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]record.Issue, error) {
+	return s.IssuesOf(ctx, tx, "", keys)
+}
+
+// copyRows is the store's copy of Dispatch's issues by key: the mirror's rows, and for each record
+// the mirror holds no row of, the row a reading of Dispatch writes for it — the parent the record
+// names, else the tree where the record names one other than its own key, and the status Dispatch
+// last showed it in. A fixture that records an issue states its place on Dispatch's chain with
+// it, as the daemon's copy holds a row of every issue it records.
+func (s projectionStore) copyRows() map[string]record.DispatchIssueRow {
+	copied := make(map[string]record.DispatchIssueRow, len(s.mirror)+len(s.issues))
+	for _, row := range s.mirror {
+		copied[row.Key] = row
+	}
+	for _, issue := range s.issues {
+		if _, mirrored := copied[issue.Key]; mirrored {
+			continue
+		}
+		row := record.DispatchIssueRow{Key: issue.Key, Project: issue.Project, Status: issue.DispatchStatus, Blockers: []string{}}
+		if row.Status == "" {
+			row.Status = issue.Status
+		}
+		switch {
+		case issue.Parent != nil:
+			row.Parent = *issue.Parent
+		case issue.Tree != "" && issue.Tree != issue.Key:
+			row.Parent = issue.Tree
+		}
+		copied[issue.Key] = row
+	}
+	return copied
+}
+
+// ChainRows walks the copy as the real store does (record.Store.ChainRows): from every record
+// not at phase done, every row of the copy at todo and each of extra, up each parent the copy
+// names until a link the copy holds no row of, a key the walk has passed, or one link past the
+// most Dispatch allows; each key once, at the fewest links above a start it stands at.
+func (s projectionStore) ChainRows(_ context.Context, _ pgx.Tx, _ string, extra []string) ([]record.ChainRow, error) {
+	copied := s.copyRows()
+	starts := slices.Clone(extra)
+	for _, issue := range s.issues {
+		if issue.Phase != phase.Done {
+			starts = append(starts, issue.Key)
+		}
+	}
+	for key, row := range copied {
+		if row.Status == "todo" {
+			starts = append(starts, key)
+		}
+	}
+	read := make(map[string]record.ChainRow)
+	for _, start := range starts {
+		var path []string
+		for key, depth := start, 0; ; depth++ {
+			row, present := copied[key]
+			if kept, seen := read[key]; !seen || depth < kept.Depth {
+				read[key] = record.ChainRow{Key: key, Depth: depth, Parent: row.Parent, Status: row.Status, Present: present}
+			}
+			path = append(path, key)
+			if !present || row.Parent == "" || depth >= record.MaxChainLinks+1 || slices.Contains(path, row.Parent) {
+				break
+			}
+			key = row.Parent
+		}
+	}
+	rows := make([]record.ChainRow, 0, len(read))
+	for _, key := range slices.Sorted(maps.Keys(read)) {
+		rows = append(rows, read[key])
+	}
+	return rows, nil
 }
 
 // LiveIssues is every record of project that is not finished, by key, as the real store reads
@@ -185,32 +248,6 @@ func (s projectionStore) LiveIssues(_ context.Context, _ pgx.Tx, project string)
 	return live, nil
 }
 
-// AncestorsOf is the record of each of keys and of every issue above it on the chain of recorded
-// parents, for the issues of project, by key, as the real store walks it: the read the line's facts
-// make of a done parent the live records leave out (record.ReadParents).
-func (s projectionStore) AncestorsOf(_ context.Context, _ pgx.Tx, project string, keys []string) ([]record.Issue, error) {
-	byKey := make(map[string]record.Issue, len(s.issues))
-	for _, issue := range s.issues {
-		if issue.Project == project {
-			byKey[issue.Key] = issue
-		}
-	}
-	chain := map[string]record.Issue{}
-	for _, key := range keys {
-		for issue, ok := byKey[key]; ok; {
-			if _, walked := chain[issue.Key]; walked {
-				break
-			}
-			chain[issue.Key] = issue
-			if issue.Parent == nil {
-				break
-			}
-			issue, ok = byKey[*issue.Parent]
-		}
-	}
-	return slices.SortedFunc(maps.Values(chain), func(a, b record.Issue) int { return cmp.Compare(a.Key, b.Key) }), nil
-}
-
 // GatesRestingOn is every gate this store holds that rests on one of ancestors
 // (record.DesignGate.RestsOnIssue), in issue and then step order, as the real store reads them:
 // the read of the roots that rest on a parent held before its retro (record.RestingRootsOn).
@@ -227,12 +264,6 @@ func (s projectionStore) GatesRestingOn(_ context.Context, _ pgx.Tx, ancestors .
 	return resting, nil
 }
 
-// IssuesByKey is the record of each of keys this store holds, as the real store reads them by
-// primary key.
-func (s projectionStore) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]record.Issue, error) {
-	return s.IssuesOf(ctx, tx, "", keys)
-}
-
 // projectedAt is the fixed instant every test here projects at.
 var projectedAt = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 
@@ -243,9 +274,9 @@ func TestProjectShowsOnlySlotlessTodoIssuesInDispatchRankOrder(t *testing.T) {
 			{Key: "LEGION-210", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Phase: phase.Done, Status: "done", Rank: "00000"},
 			{Key: "LEGION-211", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Phase: phase.Admitted, Status: "backlog", Rank: "00001"},
 			{Key: "LEGION-212", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00004", LastDispatchSeq: 1, HandedOver: true},
-			// A root another tree handed over carrying the phase it ran there waits for its tree
-			// to be opened like any other: its promotion opens it and starts that phase's role.
-			{Key: "LEGION-213", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Status: "todo", Rank: "00003", LastDispatchSeq: 10, Phase: phase.Implementing, HandedOver: true, HandedOverFrom: "LEGION-200"},
+			// A root a hand-over of the release before carried in (record.CarriedIn) in the phase
+			// it ran there waits for a slot like any other: its promotion starts that phase's role.
+			{Key: "LEGION-213", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Status: "todo", Rank: "00003", LastDispatchSeq: 10, Phase: phase.Implementing, Generation: 1, CarriedGeneration: 1, HandedOver: true},
 			{Key: "LEGION-214", Project: "LEGION", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-214", Phase: phase.Admitted, Status: "todo", Rank: "00002", HandedOver: true},
 		},
 		slots: []record.Slot{{Issue: "LEGION-214", Index: 0, AdmittedAt: now}},
@@ -646,14 +677,14 @@ func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
 			{Key: "LEGION-208", Project: "LEGION", Tree: "LEGION-208", Status: "in_progress", Phase: phase.Implementing},
 			{Key: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Status: "todo", Phase: phase.Admitted},
 			{Key: "LEGION-212", Project: "LEGION", Tree: "LEGION-212", Status: "todo", Phase: phase.Admitted, Rank: "00012", HandedOver: true},
-			// A root another tree handed over, waiting for a slot with its run already under
-			// way: promotion admits it whatever its links say, so the state reports no wait for
-			// it either.
-			{Key: "LEGION-211", Project: "LEGION", Tree: "LEGION-211", Status: "todo", Phase: phase.Testing, Rank: "00011", HandedOver: true, HandedOverFrom: "LEGION-200"},
+			// A root a hand-over of the release before carried in (record.CarriedIn), waiting for
+			// a slot with its run already under way: promotion admits it whatever its links say,
+			// so the state reports no wait for it either.
+			{Key: "LEGION-211", Project: "LEGION", Tree: "LEGION-211", Status: "todo", Phase: phase.Testing, Generation: 1, CarriedGeneration: 1, Rank: "00011", HandedOver: true},
 		},
 		slots: []record.Slot{{Issue: "LEGION-208", Index: 0, AdmittedAt: projectedAt}},
 		mirror: []record.DispatchIssueRow{
-			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300", "LEGION-301"}},
+			{Key: "LEGION-209", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-300", "LEGION-301"}, Parent: "LEGION-208"},
 			{Key: "LEGION-211", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-301"}},
 			{Key: "LEGION-212", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-302"}},
 			{Key: "LEGION-300", Project: "LEGION", Status: "done"},
@@ -702,23 +733,27 @@ func lineIssue(key, tree, status string, stands phase.Phase, rank string) record
 // proves over record.Waiting, so the two say the same thing about the same facts: the issues
 // whose work came back first, oldest first on the one time axis an owed start and a gate's
 // approval share, and then the issues whose first phase has never started, by the Dispatch rank
-// of their tree's root. A root a person moved back to todo while its own tree runs is in no part
-// of it: it holds no slot, and it is no root that never ran.
+// of their top issue (R19 of dispatch://INFRA-3320). A root a person moved back to todo while it
+// stands in accepting is in no part of it: it holds no slot, and it is no root that never ran.
+// The issues under a parent stand under LEGION-40, a root at work, since a root whose own first
+// phase is still to come does its own work after its open children's (the children-first wait).
 func TestProjectShowsTheWaitingLineInTheLinesOwnOrder(t *testing.T) {
 	opened := projectedAt.Add(-2 * time.Hour)
 	approved := 1
 	store := projectionStore{
 		issues: []record.Issue{
-			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "M"),
-			lineIssue("LEGION-11", "LEGION-10", "todo", phase.Admitted, "N"),
-			lineIssue("LEGION-12", "LEGION-10", "in_progress", phase.Implementing, "O"),
+			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Admitted, "P"),
+			lineIssue("LEGION-40", "LEGION-40", "in_progress", phase.Implementing, "M"),
+			lineIssue("LEGION-11", "LEGION-40", "todo", phase.Admitted, "N"),
+			lineIssue("LEGION-12", "LEGION-40", "in_progress", phase.Implementing, "O"),
 			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "A"),
 			lineIssue("LEGION-30", "LEGION-30", "todo", phase.Admitted, "Z"),
 			lineIssue("LEGION-50", "LEGION-50", "todo", phase.Accepting, "B"),
 		},
-		lifecycles: []string{"LEGION-10", "LEGION-50"},
+		slots: []record.Slot{{Issue: "LEGION-40", Index: 0, AdmittedAt: opened}},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
 			"LEGION-10": {record.DesignStepSpec: {Issue: "LEGION-10", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
+			"LEGION-40": {record.DesignStepSpec: {Issue: "LEGION-40", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 6, At: opened}, EverOpened: true}},
 			"LEGION-50": {record.DesignStepSpec: {Issue: "LEGION-50", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 8, At: opened}, EverOpened: true}},
 		},
 		owed: []record.OwedStart{{Issue: "LEGION-12", ID: 42, CreatedAt: projectedAt.Add(-time.Hour)}},
@@ -979,7 +1014,6 @@ func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 			lineIssue("LEGION-12", "LEGION-10", "retro", phase.Merging, "C"),
 			lineIssue("LEGION-13", "LEGION-10", "done", phase.Done, "D"),
 		},
-		lifecycles: []string{"LEGION-10"},
 		slots: []record.Slot{
 			{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-11", Index: 1, AdmittedAt: projectedAt},
@@ -1108,10 +1142,7 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 	left.MovedAt = projectedAt.Add(-10 * time.Minute)
 	store := projectionStore{
 		issues: []record.Issue{root, child, left},
-		// The one tree whose lifecycle stands open under the workflow, which is what makes it
-		// live; LEGION-20's closed with its issue, so no root of it is among the live ones.
-		lifecycles: []string{"LEGION-10"},
-		slots:      []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
+		slots:  []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt.Add(-4 * time.Hour)}},
 	}
 
 	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Now: projectedAt})
@@ -1152,11 +1183,9 @@ func TestTheStateReportsEachTreesQuietTime(t *testing.T) {
 // failed carries it still and a claim that never failed carries nothing; and a held issue
 // carries the phase its hold took it out of.
 //
-// The two keys part on one point, which is R4's deliberate difference: `heldFrom` is served
-// whatever the issue's tree is doing, while `holdReason` is withheld from a tree that lingers.
-// A `todo` on a held root is exactly the act that releases a lingering tree's root, and the
-// phase it goes back to is what that act needs, so the phase stands outside the guard the
-// reason stands inside.
+// Both keys are served whatever else the record says: no tree lingers (R20 of
+// dispatch://INFRA-3320), so a linger deadline the release before wrote on a record withholds
+// nothing, and `holdReason` stands beside `heldFrom` for the issue that carries one.
 //
 // This is the one read that joins the record to the route: the route's own proofs build the
 // views themselves, so a build that recorded every cause and served none passes every one of
@@ -1182,7 +1211,6 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 			},
 			"LEGION-221": {{Issue: "LEGION-221", Role: claim.RoleImplementer, Claim: lingering}},
 		},
-		lifecycles: []string{"LEGION-220"},
 	}
 	// The implementer of the running tree failed and nothing has launched it since; the
 	// implementer of the lingering tree failed and an operator retired it after, which clears
@@ -1220,9 +1248,9 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 	}
 
 	lingered := got.Issues["LEGION-221"]
-	if lingered.HeldFrom != string(phase.Testing) || lingered.HoldReason != "" {
-		t.Errorf("the root of the lingering tree is held from %q for %q, want held from %s with no reason shown",
-			lingered.HeldFrom, lingered.HoldReason, phase.Testing)
+	if lingered.HeldFrom != string(phase.Testing) || lingered.HoldReason != string(record.HoldEscalated) {
+		t.Errorf("the issue whose record names a linger is held from %q for %q, want held from %s for %s: no tree lingers",
+			lingered.HeldFrom, lingered.HoldReason, phase.Testing, record.HoldEscalated)
 	}
 	if view := lingered.Workers[claim.RoleImplementer].Claim.Failure; !reflect.DeepEqual(view, api.FailureViewOf(retired)) {
 		t.Errorf("the retired implementer carries %+v, want the record its failure wrote, %+v",

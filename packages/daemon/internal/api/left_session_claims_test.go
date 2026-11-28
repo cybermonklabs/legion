@@ -368,11 +368,16 @@ const cyberPolicyFailure = "a provider error that cannot clear ended this claim'
 // heldArchitect is LEGION-208's root architect failed on OpenAI's cyber-policy refusal of its
 // session's content, recording that session: the claim whose retry leaves the session behind
 // whoever asks it, since a relaunch of the session would send that content again (supervise's
-// freshSession). Its tree is open, as admission's promotion of the root leaves it.
+// freshSession). Its tree is open, as admission's promotion of the root leaves it, and so is the
+// issue's own lifecycle, which admission opens for every issue it starts and which each claim of
+// the issue binds (store.Store.AdmitClaim).
 func heldArchitect(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	if _, err := h.store.OpenTreeLifecycle(h.ctx, testProject, "LEGION-208", treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of LEGION-208: %v", err)
+	}
+	if _, err := h.store.OpenIssueLifecycle(h.ctx, testProject, "LEGION-208", treelifecycle.AuthorityWorkflow); err != nil {
+		t.Fatalf("open the issue lifecycle of LEGION-208: %v", err)
 	}
 	token := freshSessionToken(t, "LEGION-208", claim.RoleArchitect)
 	if _, _, err := h.supervisor.Create(h.ctx, supervise.Claim{

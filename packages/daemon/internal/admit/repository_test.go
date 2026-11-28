@@ -102,16 +102,15 @@ func TestARootOnARepositoryLegionDoesNotServeIsNotAdmittedAndSaysWhy(t *testing.
 
 // An admitted root's repository follows the one Dispatch resolves it to: the first pass that
 // reads the change — a live event here — corrects the record onto acme/widgets and its default
-// branch and keeps acme/tools as the repository the issue left, and the boot listing and the
-// re-admission behind it find the record already on the repository Dispatch names, so they write
-// nothing and the issue is told nothing at all.
+// branch and keeps acme/tools as the repository the issue left, and the boot listing and the new
+// run a person's todo opens on the closed root behind it find the record already on the
+// repository Dispatch names, so they write nothing and the issue is told nothing at all.
 func TestARecordedRootsRepositoryFollowsDispatchAcrossAnEditAListingAndAReadmission(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Repositories: testRepositories, Clock: func() time.Time { return fixedNow }}, nil)
-	until := fixedNow.Add(time.Hour)
-	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools", Project: testProject, Title: "lingering", Tree: "LEGION-LINGER",
-		Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, HandedOver: true})
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Steps: config.DesignGateRootIssues.Steps(), Repositories: testRepositories, Clock: func() time.Time { return fixedNow }}, nil)
+	putIssue(t, pool, record.Issue{Key: "LEGION-LINGER", Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools", Project: testProject, Title: "closed", Tree: "LEGION-LINGER",
+		Phase: phase.Done, Generation: 3, Status: "done", DispatchStatus: "done", Rank: "A", LastDispatchSeq: 1, HandedOver: true})
 
 	moved := testRepositories.prepared(rootTodo("LEGION-LINGER", 2, "acme/widgets"))
 	moved.Status = "done"

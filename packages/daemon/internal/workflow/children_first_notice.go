@@ -40,11 +40,11 @@ func childCycleSentences(open []record.OpenChild) string {
 
 // ChildrenFirstNotice is what the architect that owns a parent is told when the parent's own first
 // phase begins to wait for its children: the parent, each open child with the Dispatch status that
-// holds it, what ends the wait, and each cycle among them. It is told once per issue and run of
-// its tree — the mark's key is the issue, its tree and that tree's root generation (admit's
-// tellChildrenFirst) — so a child filed later during one wait tells nobody again, while a
-// re-admitted tree, whose architect writes its spec anew, and a sub-parent handed over to a tree
-// of its own are told anew. It names no move of a child under another issue of the tree: an open
+// holds it, what ends the wait, and each cycle among them. It is told once per issue and run —
+// the mark's key is the issue itself and its own generation (admit's tellChildrenFirst) — so a
+// child filed later during one wait tells nobody again, while a new run of the issue, whose
+// architect writes its spec anew, is told anew, and a change of its Dispatch parent neither tells
+// it again nor keeps it from being told. It names no move of a child under another issue of the tree: an open
 // child holds every phase start of an issue whose phases started, so such a move would make that
 // issue wait too (dispatch://INFRA-3320 R11).
 func ChildrenFirstNotice(wait record.ChildWait) record.Notice {

@@ -32,15 +32,16 @@ import (
 // Runtime is what the supervisor has instead of a process table. Every method is about one
 // agent's process, addressed by the locator the runtime itself minted, except `Release`, which is
 // about a claim whether or not a process runs for it, `Observe` and `ReconcileOrphans`, which are
-// about all of them, and `CleanupTree`, which is about a whole tree.
+// about all of them, and `CleanupIssue`, which is about one issue.
 //
 // A locator that no longer names the claim's current process — nothing is there, or something
 // else is — is a process already stopped as far as `Suspend` and `Release` are concerned: neither
 // acts on it, and neither returns an error for it. `Suspend` leaves a newer incarnation the runtime
 // recorded for the claim alone. What a claim's process shares with the other processes of its
-// issue or tree — a sandbox's issue pod, its volume and Secrets — outlives every claim's `Suspend`
-// and `Release`, and only `CleanupTree` deletes it. A state the runtime cannot verify is an error,
-// never "stopped".
+// issue — a sandbox's issue pod, its volume and Secrets — outlives every claim's `Suspend` and
+// `Release`, and only the issue's own close (IssueSuspender) and its cleanup (`CleanupIssue`)
+// delete it: nothing of one issue is deleted for another (R17 of dispatch://INFRA-3320). A state
+// the runtime cannot verify is an error, never "stopped".
 type Runtime interface {
 	// Spawn starts an agent and returns the locator that identifies the process it started —
 	// including the incarnation, captured at spawn, that later observations are fenced against.
@@ -72,8 +73,8 @@ type Runtime interface {
 	// Release ends the claim, whether or not a process runs for it. The process k.Locator records,
 	// while it is still the claim's, is sent a shutdown frame over the claim's connection and given
 	// the runtime's stop grace to end itself; then it is gone, and the runtime forgets the claim.
-	// What the claim's process shared with its issue or tree stays for CleanupTree. k.Locator is
-	// nil when no process runs.
+	// What the claim's process shared with its issue stays for the issue's close and CleanupIssue.
+	// k.Locator is nil when no process runs.
 	Release(ctx context.Context, k Known) error
 	// Probe is one observation of one locator, now. `Uncertain` is a verdict, not a failure: a
 	// returned error means the runtime itself could not be asked, and an error is never a
@@ -90,8 +91,9 @@ type Runtime interface {
 	// process no sweep's known set names any more is the orphan sweep's. An entry that fails
 	// Validate is an error, and nothing of its claim is ended: tmux, which knows a claim's
 	// processes only by the locators it is given, then ends nothing at all. The sandbox deletes no
-	// issue Sandbox of a tree whose lifecycle is open or releasing: those are CleanupTree's alone; and
-	// no controller Sandbox whose claim the store holds unretired when the delete is decided.
+	// issue Sandbox of an issue whose own lifecycle is open or releasing: those are the issue's own
+	// close's and cleanup's alone; and no controller Sandbox whose claim the store holds unretired
+	// when the delete is decided.
 	ReconcileOrphans(ctx context.Context, known []Known, grace time.Duration) error
 	// AdoptWorkingCopy hands the agent's working copy the git identity its commits are authored
 	// with, in the place the working copy actually lives (which under a sandbox is not a
@@ -172,10 +174,12 @@ type Runtime interface {
 	// deletes an issue's disk, so every caller states what makes it still due rather than
 	// leaving the question to a nil.
 	ReplacePod(ctx context.Context, k Known, due func(context.Context) error) error
-	// CleanupTree deletes what the runtime holds for tree beyond its claims' processes, once every
-	// claim of the tree has retired and the tree's cleanup is reserved (store.CleanupReservedTree);
-	// nil once nothing of it remains. A runtime that holds nothing per tree returns nil at once.
-	CleanupTree(ctx context.Context, tree string) error
+	// CleanupIssue deletes what the runtime holds for issue beyond its claims' processes, by the
+	// issue's own identity, once every claim of the issue has retired and the issue's cleanup is
+	// reserved (store.CleanupReservedIssue); nil once nothing of it remains. It deletes nothing of
+	// another issue, whatever tree either stored. A runtime that holds nothing per issue returns
+	// nil at once.
+	CleanupIssue(ctx context.Context, issue string) error
 }
 
 // ErrSessionFileMissing is a Resume whose session, named by spec.ResumeSessionFile or by the id
@@ -482,38 +486,52 @@ type LaunchSessionNamer interface {
 
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
-// finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
-// with everything it owns — the role Secrets holding each launcher's token and credentials, and a
-// kept volume (IssueReleaser) — and the call returns once the cluster no longer has it; a Sandbox
-// already gone is success, so a retried close finishes. A close keeps nothing: the issue has left
-// the workflow, and its next launch, if a person sets it todo again, makes the Sandbox again.
-// Process-only runtimes have no shared issue resources to suspend.
+// finishes the close without acting). The pod is the issue's own, found by the issue's identity
+// alone, and podUID is the incarnation the close was queued for: a Sandbox that holds another pod
+// now, where both name one, is a later launch's, and the call finishes without acting on it (R17
+// of dispatch://INFRA-3320). "" fences no pod: a claim with no locator, or one under tmux. Once
+// the pod is stopped, the issue's Sandbox is deleted with everything it owns — the role Secrets
+// holding each launcher's token and credentials, and a kept volume (IssueReleaser) — and the call
+// returns once the cluster no longer has it; a Sandbox already gone is success, so a retried close
+// finishes. A close keeps nothing: the issue has left the workflow, and its next launch, if a
+// person sets it todo again, makes the Sandbox again. Process-only runtimes have no shared issue
+// resources to suspend.
 type IssueSuspender interface {
-	SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error
+	SuspendIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error
 }
 
 // IssueReleaser stops an issue's pod for a release, which leaves the issue in the workflow: the
 // idle release, and the release of a pod no claim of the issue can use. It is named apart from
 // Runtime.Release, which ends one claim's process. It stops the pod once authorize, called under
 // the runtime's issue launch lock, says the release still stands (false finishes the release
-// without acting). Then it keeps what the issue's next pod can use: a Sandbox that owns the
-// issue's kept volume stays, Suspended, with that volume, and the Secrets that the next launch
-// writes again are deleted. Every other Sandbox is deleted, as IssueSuspender deletes it. A Sandbox
-// already gone is success, so a retried release finishes. Process-only runtimes have no pod to
-// release.
+// without acting), fenced by podUID as IssueSuspender is. Then it keeps what the issue's next pod
+// can use: a Sandbox that owns the issue's kept volume stays, Suspended, with that volume, and the
+// Secrets that the next launch writes again are deleted. Every other Sandbox is deleted, as
+// IssueSuspender deletes it. A Sandbox already gone is success, so a retried release finishes.
+// Process-only runtimes have no pod to release.
 //
 // It answers whether it released a Sandbox: true once it has stopped the pod of the issue's
 // Sandbox and deleted or kept that Sandbox, false where it acted on nothing — authorize's false, a
-// Sandbox already gone (deleted by hand or by an earlier teardown), or a kept Sandbox an earlier
-// release already released, which runs no pod and owns no Secret.
+// Sandbox that holds a later pod than podUID, a Sandbox already gone (deleted by hand or by an
+// earlier teardown), or a kept Sandbox an earlier release already released, which runs no pod and
+// owns no Secret.
 //
 // writing, where it is not nil, is called under the same lock once the runtime has found a Sandbox
 // to release, just before its first write to that Sandbox or what it owns, and at most once; an
 // error from it ends the release before any write. A release that answers true has called it, and
 // one that acted on nothing has not.
 type IssueReleaser interface {
-	ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+	ReleaseIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error),
 		writing func(context.Context) error) (released bool, err error)
+}
+
+// OutlivesPod says whether an effect queued for the pod queued names does nothing to pod, the pod
+// the issue's Sandbox or its claim holds now: it names another. An effect that names no pod, and an
+// issue that holds none now, fence nothing. It is the one statement of the pod fence: the outbox
+// reads it before it acts (record.OutlivesPod), and IssueSuspender and IssueReleaser read it under
+// their launch turn.
+func OutlivesPod(queued, pod string) bool {
+	return queued != "" && pod != "" && queued != pod
 }
 
 // IssueVolumeReader says whether the issue's Sandbox holds a kept volume that it held already at

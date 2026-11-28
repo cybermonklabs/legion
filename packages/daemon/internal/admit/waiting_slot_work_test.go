@@ -265,7 +265,7 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read the line facts: %v", err)
 			}
-			if !record.CanWaitOnPerson(stored, facts.Gates[stored.Tree], true) {
+			if !record.CanWaitOnPerson(stored, facts.Chains.HoldsOwnGate(stored.Key), facts.Gates[stored.Key], true) {
 				t.Fatalf("the root whose gate has never opened may wait on no person, want it able to: the row it kept is what says the daemon started it")
 			}
 			waits, err := record.WaitsForSlot(ctx, tx, records, stored, admission.engine.GatedSteps())

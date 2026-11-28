@@ -1,0 +1,376 @@
+{
+  "contract": 46,
+  "commit": "7b4ffe3cbaf4da569a47f167b47bc75908493855",
+  "objects": {
+    "": {
+      "strict": true,
+      "keys": [
+        "admission",
+        "agentSecretsLogin",
+        "capabilities",
+        "consumers",
+        "controllerLocator",
+        "daemon",
+        "heldOutboxRows",
+        "issues",
+        "pendingStatusWrites",
+        "repositories",
+        "settings",
+        "strandedClaims"
+      ],
+      "required": [
+        "admission",
+        "capabilities",
+        "consumers",
+        "daemon",
+        "heldOutboxRows",
+        "issues",
+        "pendingStatusWrites",
+        "repositories",
+        "settings",
+        "strandedClaims"
+      ]
+    },
+    "admission": {
+      "strict": true,
+      "keys": ["active", "blocked", "cap", "free", "waiting"],
+      "required": ["active", "blocked", "cap", "waiting"]
+    },
+    "admission.blocked.*": {
+      "strict": true,
+      "keys": ["blockedBy", "issue"],
+      "required": ["blockedBy", "issue"]
+    },
+    "agentSecretsLogin": {
+      "strict": true,
+      "keys": ["state"],
+      "required": ["state"]
+    },
+    "capabilities.*": {
+      "strict": true,
+      "keys": ["configLine", "decision", "detail", "name", "source", "status"],
+      "required": ["detail", "name", "status"]
+    },
+    "consumers.*": {
+      "strict": true,
+      "keys": [
+        "lastHandledAt",
+        "name",
+        "oldestAgeSeconds",
+        "oldestAt",
+        "stalled",
+        "unavailable",
+        "waiting"
+      ],
+      "required": ["lastHandledAt", "name", "oldestAgeSeconds", "oldestAt", "stalled", "waiting"]
+    },
+    "controllerLocator": {
+      "strict": true,
+      "keys": ["external", "pluginContract", "registeredAt", "runtime", "sessionId"],
+      "required": ["external", "pluginContract", "registeredAt", "runtime", "sessionId"]
+    },
+    "daemon": {
+      "strict": true,
+      "keys": ["boots", "firstBootAt", "project", "schemaVersion", "startedAt"],
+      "required": ["boots", "firstBootAt", "project", "schemaVersion", "startedAt"]
+    },
+    "heldOutboxRows.*": {
+      "strict": true,
+      "keys": ["id", "issue", "kind", "waitedSeconds", "waitsOn"],
+      "required": ["id", "issue", "kind", "waitedSeconds", "waitsOn"]
+    },
+    "issues.*": {
+      "strict": true,
+      "keys": [
+        "architect",
+        "check",
+        "defaultBranch",
+        "designGate",
+        "generation",
+        "holdReason",
+        "key",
+        "phase",
+        "pullRequest",
+        "repo",
+        "slot",
+        "status",
+        "waitingOn",
+        "workers"
+      ],
+      "required": ["generation", "key", "phase", "status", "workers"]
+    },
+    "issues.*.architect": {
+      "strict": true,
+      "keys": [
+        "capabilities",
+        "locator",
+        "pluginContract",
+        "session",
+        "state",
+        "updateHead",
+        "updateRound"
+      ],
+      "required": ["pluginContract", "session", "state"]
+    },
+    "issues.*.architect.capabilities": {
+      "strict": true,
+      "keys": ["incarnation", "measuredAt", "ok", "open"],
+      "required": ["incarnation", "measuredAt", "ok", "open"]
+    },
+    "issues.*.architect.capabilities.open.*": {
+      "strict": true,
+      "keys": ["detail", "name"],
+      "required": ["detail", "name"]
+    },
+    "issues.*.architect.locator": {
+      "strict": true,
+      "keys": ["claim", "incarnation", "runtime", "sandbox", "tmux"],
+      "required": ["claim", "incarnation", "runtime"]
+    },
+    "issues.*.architect.locator.tmux": {
+      "strict": true,
+      "keys": ["pane", "window"],
+      "required": ["pane", "window"]
+    },
+    "issues.*.architect.locator.sandbox": {
+      "strict": true,
+      "keys": ["container", "generation", "name", "namespace", "podUid"],
+      "required": ["container", "generation", "name", "namespace", "podUid"]
+    },
+    "issues.*.check": {
+      "strict": true,
+      "keys": [
+        "last",
+        "lastWake",
+        "lookOpen",
+        "looks",
+        "mergeCommit",
+        "nextWakeAt",
+        "openedAt",
+        "pullRequest",
+        "repo"
+      ],
+      "required": [
+        "last",
+        "lookOpen",
+        "looks",
+        "mergeCommit",
+        "nextWakeAt",
+        "openedAt",
+        "pullRequest",
+        "repo"
+      ]
+    },
+    "issues.*.check.lastWake": {
+      "strict": true,
+      "keys": ["at", "detail", "kind"],
+      "required": ["at", "detail", "kind"]
+    },
+    "issues.*.designGate": {
+      "strict": true,
+      "keys": ["approvedVersion", "artifactId", "currentVersion"],
+      "required": ["approvedVersion", "artifactId", "currentVersion"]
+    },
+    "issues.*.pullRequest": {
+      "strict": true,
+      "keys": ["checksVerdict", "fixAttempts", "head", "number", "repo", "reviewDecision", "state"],
+      "required": ["fixAttempts", "head", "number", "repo", "state"]
+    },
+    "issues.*.slot": {
+      "strict": true,
+      "keys": ["admittedAt", "index", "lentTo"],
+      "required": ["admittedAt", "index"]
+    },
+    "issues.*.waitingOn": {
+      "strict": true,
+      "keys": ["answeredAt", "answeredBy", "artifactId", "ask", "gateVersion", "kind", "since"],
+      "required": ["kind"]
+    },
+    "issues.*.workers.*": {
+      "strict": true,
+      "keys": ["claim", "handoffCommit", "handoffRecord", "rounds"],
+      "required": ["claim", "rounds"]
+    },
+    "issues.*.workers.*.claim": {
+      "strict": true,
+      "keys": [
+        "capabilities",
+        "locator",
+        "pluginContract",
+        "session",
+        "state",
+        "updateHead",
+        "updateRound"
+      ],
+      "required": ["pluginContract", "session", "state"]
+    },
+    "issues.*.workers.*.claim.capabilities": {
+      "strict": true,
+      "keys": ["incarnation", "measuredAt", "ok", "open"],
+      "required": ["incarnation", "measuredAt", "ok", "open"]
+    },
+    "issues.*.workers.*.claim.capabilities.open.*": {
+      "strict": true,
+      "keys": ["detail", "name"],
+      "required": ["detail", "name"]
+    },
+    "issues.*.workers.*.claim.locator": {
+      "strict": true,
+      "keys": ["claim", "incarnation", "runtime", "sandbox", "tmux"],
+      "required": ["claim", "incarnation", "runtime"]
+    },
+    "issues.*.workers.*.claim.locator.tmux": {
+      "strict": true,
+      "keys": ["pane", "window"],
+      "required": ["pane", "window"]
+    },
+    "issues.*.workers.*.claim.locator.sandbox": {
+      "strict": true,
+      "keys": ["container", "generation", "name", "namespace", "podUid"],
+      "required": ["container", "generation", "name", "namespace", "podUid"]
+    },
+    "issues.*.workers.*.handoffRecord": {
+      "strict": true,
+      "keys": ["id", "version"],
+      "required": ["id", "version"]
+    },
+    "pendingStatusWrites.*": {
+      "strict": true,
+      "keys": ["attempts", "issue", "lastError", "nextAt", "payload"],
+      "required": ["attempts", "issue", "nextAt", "payload"]
+    },
+    "repositories": {
+      "strict": true,
+      "keys": ["caches", "mapped", "owners", "refused", "withoutWebhookApp"],
+      "required": ["caches", "mapped", "owners", "refused", "withoutWebhookApp"]
+    },
+    "repositories.caches.*": {
+      "strict": true,
+      "keys": [
+        "address",
+        "bytes",
+        "head",
+        "healthError",
+        "lastFetchAt",
+        "ready",
+        "reason",
+        "repo",
+        "retainedUntil",
+        "sandbox",
+        "state"
+      ],
+      "required": ["ready", "repo", "sandbox", "state"]
+    },
+    "repositories.mapped.*": {
+      "strict": true,
+      "keys": ["cache", "default", "repo"],
+      "required": ["default", "repo"]
+    },
+    "repositories.mapped.*.cache": {
+      "strict": true,
+      "keys": [
+        "address",
+        "bytes",
+        "head",
+        "healthError",
+        "lastFetchAt",
+        "ready",
+        "reason",
+        "repo",
+        "retainedUntil",
+        "sandbox",
+        "state"
+      ],
+      "required": ["ready", "repo", "sandbox", "state"]
+    },
+    "repositories.refused.*": {
+      "strict": true,
+      "keys": ["reason", "repo"],
+      "required": ["reason", "repo"]
+    },
+    "repositories.withoutWebhookApp.*": {
+      "strict": true,
+      "keys": ["reason", "repo"],
+      "required": ["reason", "repo"]
+    },
+    "settings": {
+      "strict": false,
+      "keys": ["max_fix_attempts", "worker_boot_timeout_seconds"],
+      "required": ["max_fix_attempts", "worker_boot_timeout_seconds"]
+    },
+    "strandedClaims.*": {
+      "strict": true,
+      "keys": ["issue", "role", "state"],
+      "required": ["issue", "role", "state"]
+    }
+  },
+  "enums": {
+    "capabilities.*.source": ["boot", "configuration"],
+    "capabilities.*.status": ["decided", "open", "present", "unchecked", "withheld"],
+    "controllerLocator.runtime": ["kubernetes", "tmux"],
+    "issues.*.architect.state": [
+      "failed",
+      "idle",
+      "launch_uncertain",
+      "launching",
+      "queued",
+      "ready",
+      "registered",
+      "retired",
+      "shim_connected",
+      "suspended",
+      "working"
+    ],
+    "issues.*.phase": [
+      "accepting",
+      "admitted",
+      "awaiting_merge",
+      "awaiting_person",
+      "done",
+      "held",
+      "implementing",
+      "integrating",
+      "merging",
+      "planning",
+      "retro",
+      "reviewing",
+      "testing",
+      "unrecorded"
+    ],
+    "issues.*.pullRequest.state": ["closed", "merged", "open"],
+    "issues.*.waitingOn.answeredBy": [
+      "approved",
+      "ask",
+      "changes_requested",
+      "closed",
+      "reply",
+      "retracted",
+      "turn",
+      "version"
+    ],
+    "issues.*.workers.*.claim.state": [
+      "failed",
+      "idle",
+      "launch_uncertain",
+      "launching",
+      "queued",
+      "ready",
+      "registered",
+      "retired",
+      "shim_connected",
+      "suspended",
+      "working"
+    ],
+    "repositories.caches.*.state": ["cloning", "failing", "ready", "refused", "starting"],
+    "repositories.mapped.*.cache.state": ["cloning", "failing", "ready", "refused", "starting"],
+    "strandedClaims.*.role": [
+      "architect",
+      "implementer",
+      "merger",
+      "planner",
+      "reviewer",
+      "tester"
+    ],
+    "strandedClaims.*.state": ["failed", "suspended"]
+  }
+}

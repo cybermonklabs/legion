@@ -14,9 +14,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// subTreeTarget is LEGION-211 of the tree LEGION-208, beneath LEGION-209, whose architect is a
-// sub-architect of the tree, with LEGION-210, a sibling of LEGION-209 whose architect is another
-// sub-architect. LEGION-211 walks the plan `implementer acceptance:owner` at generation 3, with its
+// subTreeTarget is LEGION-211 under LEGION-209 under the root LEGION-208 on its Dispatch chain, so
+// the architect of LEGION-209 acts on it, with LEGION-210, a sibling of LEGION-209 under
+// LEGION-208. LEGION-211 walks the plan `implementer acceptance:owner` at generation 3, with its
 // open pull request #44, and stands at at: implementing, accepting, or held from implementing.
 func subTreeTarget(t *testing.T, pool *pgxpool.Pool, engine *Engine, at phase.Phase) record.Issue {
 	t.Helper()
@@ -50,7 +50,7 @@ func walkTargetTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 	}
 }
 
-// subArchitect is the claim of the architect of key, a sub-architect of LEGION-208's tree.
+// subArchitect is the architect claim of key, an issue under LEGION-208.
 func subArchitect(t *testing.T, key string) claim.Token {
 	return claim.Token(treeRoleToken(t, key, claim.RoleArchitect))
 }
@@ -66,17 +66,6 @@ func openStepOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) re
 	})
 
 	return entry
-}
-
-// personsTodoOnChild is a person's todo on key, a child of parent, in Dispatch: it re-enters a
-// recorded child at its next generation (ReenterChild).
-func personsTodoOnChild(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent string) {
-	t.Helper()
-	todo := intake.DispatchIssue{Key: key, ResolvedRepo: "sjawhar/legion", Seq: 5, Type: "issue.updated", Status: "todo",
-		Title: key, Parent: parent, Rank: "V"}
-	if _, err := intake.ApplyFact(t.Context(), pool, "dispatch", "todo-"+key, todo, engine, admissionStub{}); err != nil {
-		t.Fatalf("the person's todo on %s: %v", key, err)
-	}
 }
 
 // architectsRequest is one of sign_off, request_backward_move and retry_or_escalate as its route
@@ -113,28 +102,27 @@ type requestWindow struct {
 	want    func(read, now record.Issue, nowEntry record.StepEntry, fact intake.Fact) *intake.Refusal
 }
 
-// The routes of sign_off, request_backward_move and retry_or_escalate judge their requester on
-// reads of the record taken before the fact lock (api's architectForIssue and architectOwns), and
-// read the issue's generation, and for accepting the run of its step. Between that read and the
-// fact an adoption can take the sub-architect's own issue out of the tree, a person can move the
-// issue under a sibling's sub-architect, a person's todo can re-enter the issue at its next
-// generation, and a move back can send the work back so that accepting starts again. The fact
-// judges each again on the record it reads (Engine.Apply) and refuses, unspent, with nothing moved:
-// ISSUE_OUTSIDE_TREE, ISSUE_NOT_OWNED, the request's own STALE_GENERATION, and for accepting its
-// STALE_ENTRY. Each control is the same request with no change between the read and the fact, and
-// it moves the issue.
+// The routes of sign_off, request_backward_move and retry_or_escalate judge their caller on reads
+// taken before the fact lock (api's ownsOnChain), and read the issue's generation, and for
+// accepting the run of its step. Between that read and the fact a person can move the issue from
+// under the caller's issue to under a sibling in Dispatch, a new run of the issue can open, and a
+// move back can send the work back so that accepting starts again. The fact judges each again on
+// the record and the chain it reads (Engine.Apply's requestRefusal) and refuses, unspent, with
+// nothing moved: ISSUE_NOT_OWNED naming the architect that acts on the issue now, the request's
+// own STALE_GENERATION, and for accepting its STALE_ENTRY. Each control is the same request with
+// no change between the read and the fact, and it moves the issue.
 func TestAnArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 	t.Parallel()
 	for _, request := range architectsRequests {
 		windows := []requestWindow{
 			{"control: the request of the record its route read", nil, nil},
-			{"an adoption took the sub-architect's own issue out of the tree", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				adoptInto(t, pool, engine, "LEGION-209", otherRoot(t, pool))
+			{"a person moved the issue under a sibling in Dispatch, the record as admission writes the change of parent", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+				reparentTo(t, pool, engine, "LEGION-211", "LEGION-210")
 			}, func(read, _ record.Issue, _ record.StepEntry, _ intake.Fact) *intake.Refusal {
-				return intake.IssueOutsideTree(read.Key, subArchitect(t, "LEGION-209"), request.name)
+				return notOwned(t, request.name, read.Key, subArchitect(t, "LEGION-209"), "LEGION-208")
 			}},
-			{"a person's todo re-entered the issue at its next generation and its work came back to the same place", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				personsTodoOnChild(t, pool, engine, "LEGION-211", "LEGION-209")
+			{"a new run of the issue opened and its work came back to the same place", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+				newRunOf(t, pool, engine, "LEGION-211", "LEGION-209")
 				walkTargetTo(t, pool, engine, "LEGION-211", request.at)
 			}, func(_, now record.Issue, _ record.StepEntry, fact intake.Fact) *intake.Refusal {
 				return fact.(intake.ArchitectRequest).StaleGeneration(now.Generation)
@@ -146,16 +134,6 @@ func TestAnArchitectsRequestIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 				move(t, pool, engine, "LEGION-211", TriggerImplementationReady, "", record.PhaseRow{})
 			}, func(_, _ record.Issue, nowEntry record.StepEntry, fact intake.Fact) *intake.Refusal {
 				return fact.(intake.EnteredRequest).StaleEntry(nowEntry)
-			}})
-		}
-		if request.name == "sign_off" {
-			windows = append(windows, requestWindow{"a person moved the issue under a sibling's sub-architect, the record as admission writes the re-parent", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-				moved := issueOf(t, pool, engine, "LEGION-211")
-				sibling := "LEGION-210"
-				moved.Parent = &sibling
-				seedIssue(t, pool, moved)
-			}, func(read, _ record.Issue, _ record.StepEntry, _ intake.Fact) *intake.Refusal {
-				return intake.IssueNotOwned(request.name, read.Key, subArchitect(t, "LEGION-209"))
 			}})
 		}
 		for _, window := range windows {

@@ -19,8 +19,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
-// gives Legion the plan in one version of a document of the issue.
+// PlanRegisterRequest is register_plan: the owner of an issue, an architect that acts on the issue
+// on its Dispatch chain, gives Legion the plan in one version of a document of the issue.
 type PlanRegisterRequest struct {
 	GrantID    string `json:"grantId"`
 	Issue      string `json:"issue"`
@@ -137,11 +137,11 @@ func (s *server) writeRefusal(w http.ResponseWriter, r *http.Request, refusal *i
 // No id decides whether a registration is one already taken (intake.ApplyFact applies every
 // PlanGiven): the workflow decides it against the store, and answers a give of the version that
 // runs, or that the issue's first step will run, as taken, with the plan given, as its first
-// registration was answered. Only an architect of the issue's tree gives a plan (planOwner, and
-// the workflow's judgement of the owner under the fact lock). The answer to a give taken again is
-// read as the first one is, so both read where the tasks stand by one path. A read that fails is
-// answered 500 RECORD_UNAVAILABLE, with the version taken, and the same registration given again
-// reads it again.
+// registration was answered. Only an architect that acts on the issue on its Dispatch chain gives
+// a plan (planOwner, and the workflow's judgement of the owner under the fact lock). The answer to
+// a give taken again is read as the first one is, so both read where the tasks stand by one path.
+// A read that fails is answered 500 RECORD_UNAVAILABLE, with the version taken, and the same
+// registration given again reads it again.
 func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	var req PlanRegisterRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -225,34 +225,66 @@ func (s *server) runningAt(ctx context.Context, issue string, generation uint64)
 	return running, err
 }
 
-// planOwner authorizes register_plan for an architect of the issue's tree, and answers the
-// generation the plan is given at. A recorded issue is its tree's architects', the root's or a
-// sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule every architect
-// operation holds it to), and its plan is given at its generation. One the daemon has not
-// recorded — a child before release_children records it — is the tree's when Dispatch's parent
-// chain reaches the tree (treeChain) and it has not entered the workflow, triage, backlog, icebox
-// or todo, and its plan is given at generation 0, where it waits for the issue's first step. These
-// reads come before the fact lock, so each refusal here is an early one: the workflow judges the
-// giver and the generation again on the record its fact reads (workflow's planGiven).
+// planOwner authorizes register_plan for an architect that acts on the issue on its Dispatch
+// chain as the daemon's copy holds it (intake.CallRefusal with intake.PlanCall, R18 of
+// dispatch://INFRA-3320): the architect of the issue itself or of an issue above it on the chain,
+// whatever the status of the issues between them, the rule release_children, rerun_child and
+// every other architect's call is held to. Any other caller is refused ISSUE_NOT_OWNED, naming the
+// architect claim that acts on the issue, and an issue whose chain the copy cannot show to its top
+// CHAIN_UNKNOWN. It answers the generation the plan is given at. A recorded issue is judged as
+// every architect's call on a recorded issue is (ownsOnChain), and its plan is given at its
+// generation. One the daemon has not recorded — a child before release_children records it — is
+// read from Dispatch, judged on its chain in the copy, and taken while it has not entered the
+// workflow, triage, backlog, icebox or todo; its plan is given at generation 0, where it waits for
+// the issue's first step. With no record to name its project, the chain is read under the
+// project Dispatch files the daemon's issues under, and the rule names architects by the claim
+// project token. These reads come before the fact lock, so each refusal here is an early one: the
+// workflow judges the giver and the generation again on the record and the chain its fact reads
+// (workflow's planGiven).
 func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, uint64, bool) {
-	grant, recorded, ok := s.architectOfRecord(w, r, grantID, issue)
-	if !ok {
+	if s.pool == nil || s.records == nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue's record and chain")
+		return credential.Grant{}, 0, false
+	}
+	recorded, err := s.recordedIssue(r.Context(), issue)
+	if err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue's record and chain")
 		return credential.Grant{}, 0, false
 	}
 	if recorded != nil {
-		return grant, recorded.Generation, true
+		grant, owned, ok := s.ownsOnChain(w, r, grantID, issue, intake.PlanCall)
+		return grant, owned.Generation, ok
+	}
+	grant, ok := s.architectGrant(w, r, grantID)
+	if !ok {
+		return credential.Grant{}, 0, false
 	}
 	if s.dispatch == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
 		return credential.Grant{}, 0, false
 	}
-	read := s.cachedIssueReader(registerPlanRoute)
-	unrecorded, found := read(w, r, issue)
+	unrecorded, found := s.dispatchReads().issue(w, r, issue)
 	if !found {
 		return credential.Grant{}, 0, false
 	}
-	if _, ok := s.treeChain(w, r, issue, unrecorded, grant.Tree, read); !ok {
+	var refusal *intake.Refusal
+	if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		chains, err := record.ReadChainsOf(ctx, tx, s.records, s.dispatchProject, []string{issue})
+		if err != nil {
+			return err
+		}
+		refusal, err = intake.CallRefusal(ctx, tx, s.records, s.project, chains, grant.Claim, grant.Issue, issue, intake.PlanCall)
+		return err
+	}); err != nil {
+		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue's record and chain")
 		return credential.Grant{}, 0, false
+	}
+	if refusal != nil {
+		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
+		return credential.Grant{}, 0, false
+	}
+	if s.callJudged != nil {
+		s.callJudged(r.Context(), intake.PlanCall.Op(), []string{issue})
 	}
 	switch unrecorded.Status {
 	case "triage", "backlog", "icebox", "todo":
@@ -272,16 +304,16 @@ type TaskStopRequest struct {
 	Task    string `json:"task"`
 }
 
-// stopTask is stop_task: an architect of the tree of an issue the daemon has recorded
-// (architectForIssue) stops one task of it, answered 200 with no body. The stop is the
-// workflow's (intake.TaskStopped), at the generation the route read: the workflow judges the
-// owner and the generation again under the fact lock, since an adoption or a new run can commit
-// between this read and the fact, and it answers a task the plan does not hold (TaskNotFound), one
-// that is done (TaskDone), and every task of an issue whose experiment's group runs the project's
-// default steps (intake.TaskNotStopped, PLAN_NOT_TAKEN). This route's own refusals are the early ones.
-// Each request is its own fact (requestFactID): a task the owner stops, starts again with a later
-// version and stops once more is stopped twice, and a retry of a stop already applied finds the
-// task stopped, which changes nothing.
+// stopTask is stop_task: an architect that acts on an issue the daemon has recorded, on its
+// Dispatch chain (ownsOnChain with intake.StopCall), stops one task of it, answered 200 with no
+// body. The stop is the workflow's (intake.TaskStopped), at the generation the route read: the
+// workflow judges the caller and the generation again under the fact lock, since a change of
+// parent or a new run can commit between this read and the fact, and it answers a task the plan
+// does not hold (TaskNotFound), one that is done (TaskDone), and every task of an issue whose
+// experiment's group runs the project's default steps (intake.TaskNotStopped, PLAN_NOT_TAKEN).
+// This route's own refusals are the early ones. Each request is its own fact (requestFactID): a
+// task the owner stops, starts again with a later version and stops once more is stopped twice,
+// and a retry of a stop already applied finds the task stopped, which changes nothing.
 func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	var req TaskStopRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -295,7 +327,7 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
 		return
 	}
-	grant, recorded, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
+	grant, recorded, ok := s.ownsOnChain(w, r, req.GrantID, req.Issue, intake.StopCall)
 	if !ok {
 		return
 	}

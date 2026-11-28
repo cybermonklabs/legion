@@ -128,6 +128,8 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: root.Key, Repo: "sjawhar/legion", Number: 42,
 			Branch: "legion/LEGION-208", HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})
 		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		// The merge GitHub made queues the close; Dispatch's done lands it and ends the merge's record.
+		landClose(t, pool, engine, root.Key)
 
 		retro := walkedWrite{start: true, task: "a", kind: record.PlaceRetro, role: "implementer", attempt: 1}
 		merge := walkedWrite{start: true, task: "a", kind: record.PlaceMerge, role: "merger", attempt: 1}

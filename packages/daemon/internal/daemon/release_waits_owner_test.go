@@ -13,12 +13,13 @@ import (
 )
 
 // A repository's recovery tells each child its release_children left unrecorded to the architect
-// that releases that child: its notice is queued on the child's parent when the record holds that
-// parent in the child's tree, so the owner walk takes it to the architect that owns that parent
-// (the parent's own while it holds its role, else the nearest one above it that does), and two
-// children under one parent share one notice. A child under the root, one whose parent is not
-// recorded, and one whose parent is recorded in another tree have no architect of the tree between
-// them and the root, so their notice is queued on the tree root, as every such notice was.
+// that releases that child: its notice is queued on the child's parent whenever the record holds
+// that parent, so the owner walk over the Dispatch chain takes it to the architect that owns that
+// parent (the parent's own while it holds its role, else the nearest one above it that does; R18
+// of dispatch://INFRA-3320), and two children under one parent share one notice. No stored tree is
+// read, so a parent another root's architect owns is told through that root. A child whose parent
+// is not recorded has no architect of its parent, so its notice is queued on the issue the release
+// was asked on.
 func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -65,8 +66,8 @@ func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("read the stalled notices: %v", err)
 	}
-	if len(got) != 2 || got[0].issue != root || got[1].issue != own {
-		t.Fatalf("stalled notices %+v; want one on %s and one on %s", got, root, own)
+	if len(got) != 3 || got[0].issue != root || got[1].issue != own || got[2].issue != foreign {
+		t.Fatalf("stalled notices %+v; want one on %s, one on %s and one on %s", got, root, own, foreign)
 	}
 	for i, tc := range []struct {
 		names, not []string
@@ -74,12 +75,14 @@ func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) 
 		{[]string{
 			"LEGION-5 (its parent LEGION-9 is not recorded: release LEGION-9 first, then LEGION-5)",
 			"LEGION-6 (its parent LEGION-1 is recorded now: release LEGION-6 again)",
-			"LEGION-7 (its parent LEGION-50 is recorded now: release LEGION-7 again)",
-		}, []string{"LEGION-3", "LEGION-4"}},
+		}, []string{"LEGION-3", "LEGION-4", "LEGION-7"}},
 		{[]string{
 			"LEGION-3 (its parent LEGION-2 is recorded now: release LEGION-3 again)",
 			"LEGION-4 (its parent LEGION-2 is recorded now: release LEGION-4 again)",
 		}, []string{"LEGION-5", "LEGION-6", "LEGION-7"}},
+		{[]string{
+			"LEGION-7 (its parent LEGION-50 is recorded now: release LEGION-7 again)",
+		}, []string{"LEGION-3 (", "LEGION-4 (", "LEGION-5 (", "LEGION-6 ("}},
 	} {
 		notice := got[i]
 		for _, want := range tc.names {

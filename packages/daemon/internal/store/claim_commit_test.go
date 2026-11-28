@@ -18,7 +18,7 @@ import (
 func TestAClaimWriteWhoseCommitReplyIsLostWakesItsRoleHolders(t *testing.T) {
 	t.Parallel()
 	st := migratedStore(t)
-	openHolderTree(t, st)
+	openIssueLifecycle(t, st, holderIssue)
 	if _, err := st.AdmitClaim(context.Background(), holderClaim(supervise.StateLaunching, "")); err != nil {
 		t.Fatalf("admit the claim: %v", err)
 	}

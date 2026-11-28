@@ -20,7 +20,7 @@ const (
 	// PauseStopStopped: the role stopped (RecordPauseStoppedTx), or stood queued with nothing to
 	// stop (EndPauseStop).
 	PauseStopStopped PauseStopEnd = "stopped"
-	// PauseStopTakenOver: something else stopped the role first: a park, a close, a linger, an
+	// PauseStopTakenOver: something else stopped the role first: a stop, a close, an
 	// operator, an earlier pause's late stop or an idle release (EndPauseStop).
 	PauseStopTakenOver PauseStopEnd = "taken_over"
 	// PauseStopFailed: the claim failed or retired.

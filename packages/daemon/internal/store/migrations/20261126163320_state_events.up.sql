@@ -13,16 +13,29 @@
 -- lane publishes its rows strictly in sequence order (internal/record's outboxInOrder).
 --
 -- The check is one list, so the migration that sets it names every kind. This one follows the list
--- of 20261126110259_merge_holds_changed: that migration's thirty-three kinds, step_record,
--- plan_record, conflict_confirm, merge_forward, design_changes, pending_basis_seed, reparent_seed
--- and merge_holds_changed among them, and these three, thirty-six in all. Its version stands above
--- 20261126110259 on purpose: Migrate applies every unrecorded migration in version order, so the
--- list with the higher version is the last word on any database. A version below 20261126110259
--- would let that migration run after this one on a fresh database and write its list without the
--- three state kinds, and the check would then refuse every state row. A list that left out one of
--- 20261126110259's kinds would refuse every row of that kind the daemon queues, and fail the
--- upgrade of a database that holds one pending, such as a merge_holds_changed row on a database
--- main migrated.
+-- of 20261126110259_merge_holds_changed: that migration's thirty-four kinds, step_record,
+-- plan_record, conflict_confirm, merge_forward, design_changes, pending_basis_seed, reparent_seed,
+-- merge_holds_changed and retention_end among them, and these three, thirty-seven in all. Its
+-- version stands above 20261126110259 on purpose: Migrate applies every unrecorded migration in
+-- version order, so of the lists a database has not recorded, the one with the higher version is
+-- applied last. A version below 20261126110259 would let that migration run after this one on a
+-- fresh database and write its list without the three state kinds, and the check would refuse
+-- every state row until a later list named them. The merge's 20261128030241 writes this list's
+-- kinds once more, above every other version, so its list is the one applied last on every
+-- database (that file says why). A list that left out one of 20261126110259's kinds would fail the
+-- upgrade of a database that holds a row of it pending, such as a merge_holds_changed row on a
+-- database main migrated.
+--
+-- The list names retention_end, the kind dispatch://INFRA-4730's 20261122154645 adds, which stands
+-- below this version: on a fresh database, and on one a build of that branch migrated, this list is
+-- applied after that one and before the merge's 20261128030241, whose list is applied last and
+-- names retention_end too. A list here without retention_end would fail the upgrade over a pending
+-- end of an issue's retention, and 20261128030241 could not mend that upgrade, since this file
+-- would fail before it ran. The daemon's runner records each migration by its version alone
+-- (store.Migrate), so a database that applied this file before retention_end was added keeps its
+-- record and runs nothing again: on such a database, which main migrated before that branch's
+-- merge, 20261122154645 is applied after this one, and its list names the three state kinds for
+-- that reason.
 --
 -- This file was numbered 20261119184200, below 20261119203047, and moved above it at the forward
 -- merge that brought that list in; it was then numbered 20261122163303, above 20261122154643, until
@@ -42,7 +55,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
   'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed',
-  'merge_holds_changed', 'state_change', 'state_admission', 'state_boot'));
+  'merge_holds_changed', 'retention_end', 'state_change', 'state_admission', 'state_boot'));
 
 -- One counter row per project. last_seq is the sequence of the newest state row the project's
 -- daemon committed, last_at that row's time, and last_tx the transaction that committed it. The

@@ -31,9 +31,9 @@
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
 # nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
 # `-tags e2e` test binary (build_daemon_driver), unless the caller hands it DRIVER, a binary it
-# built that way before the run: the check then notes DRIVER and builds nothing. proof runs the
-# one test TEST against them and holds that it passed, under the test binary's own deadline
-# TIMEOUT (a Go duration; 20m when the caller gives none, or gives it empty):
+# built that way before the run: the check then notes DRIVER and builds nothing. proof runs TEST,
+# one test or several separated by |, against them and holds that each passed, under the test
+# binary's own deadline TIMEOUT (a Go duration; 20m when the caller gives none, or gives it empty):
 # approved-version-news.sh's part two runs real model sessions for longer than that. The driver
 # check builds with STAMP when the caller gives one (build_daemon_driver's second argument), and
 # owner-steps-client.sh alone gives one; a handed DRIVER was stamped, or not, by its caller.
@@ -64,17 +64,18 @@
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 
-# require_dispatch_cli refuses a host where the proof's driver could not run the `dispatch` CLI,
-# with exit 1 and a FAIL line of its own, before the run builds or starts anything: that CLI is
-# this checkout's (packages/envoy-client/bin/dispatch.ts), which runs under bun out of the
-# checkout's node_modules. It then exports LEGION_E2E_REPO_ROOT, the checkout the driver builds
-# Dispatch from and runs the CLI out of, which the driver binary needs because it runs from the
-# directory the caller ran the entry script in, not the package's. An entry script whose driver
-# drives the CLI calls it after sourcing this file and before live_daemon_proof, so the refusal
-# comes before the run's own checks.
+# require_dispatch_cli refuses a host where the proof's driver could not run this checkout's bun
+# programs, with exit 1 and a FAIL line of its own, before the run builds or starts anything: the
+# `dispatch` CLI (packages/envoy-client/bin/dispatch.ts) and the legion tool's drivers
+# (packages/pi-legion/test), which run under bun out of the checkout's node_modules. It then
+# exports LEGION_E2E_REPO_ROOT, the checkout the driver builds Dispatch from and runs those out of,
+# which the driver binary needs because it runs from the directory the caller ran the entry script
+# in, not the package's. An entry script whose driver drives the CLI or a legion tool calls it
+# after sourcing this file and before live_daemon_proof, so the refusal comes before the run's own
+# checks.
 require_dispatch_cli() {
   command -v bun >/dev/null || {
-    echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI the proof drives runs under it" >&2
+    echo "FAIL prerequisites: bun is not on PATH; the dispatch CLI or the legion tool the proof drives runs under it" >&2
     exit 1
   }
   [ -d "$root/node_modules" ] || {
@@ -82,6 +83,20 @@ require_dispatch_cli() {
     exit 1
   }
   export LEGION_E2E_REPO_ROOT="$root"
+}
+
+# fetch_history WHAT fetches the whole history of the checkout at root when it is shallow, as CI's
+# is, for an entry script that reads an older commit of it: WHAT names that commit in the note it
+# prints. The fetch is from the checkout's own remote, the public repository, which needs no
+# credential. A fetch that fails ends the run with exit 1 and a FAIL line of its own, as
+# require_dispatch_cli does, before the run builds or starts anything.
+fetch_history() {
+  [ "$(git -C "$root" rev-parse --is-shallow-repository 2>/dev/null)" = true ] || return 0
+  note "the checkout is shallow; fetching its history to find $1"
+  git -C "$root" fetch --unshallow --quiet || {
+    echo "FAIL prerequisites: the shallow checkout at $root could not fetch its history (git fetch --unshallow)" >&2
+    exit 1
+  }
 }
 
 # The nats-server the run installs when the caller names none: the hub's v2.15.1, the version
@@ -223,11 +238,15 @@ live_daemon_proof() {
     LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
     TMPDIR="$work" \
     "$driver" -test.count=1 -test.timeout="$timeout" -test.v \
-    -test.run "^$test_name\$" 2>&1 | tee "$evidence/proof.log" ||
+    -test.run "^($test_name)\$" 2>&1 | tee "$evidence/proof.log" ||
     fail "the proof's driver failed; see $evidence/proof.log and $evidence/daemon.log"
-  # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing.
-  grep -q "^--- PASS: $test_name" "$evidence/proof.log" ||
-    fail "the proof's driver ran no step: it skipped, or -test.run matched no test; see $evidence/proof.log"
+  # A driver that skipped, or whose -test.run matched nothing, exits 0 having proved nothing. A
+  # proof may name several tests, separated by |, and each must pass.
+  local name
+  for name in ${test_name//|/ }; do
+    grep -q "^--- PASS: $name " "$evidence/proof.log" ||
+      fail "the proof's driver ran no step of $name: it skipped, or -test.run matched no test; see $evidence/proof.log"
+  done
   pass
   run_end
 }

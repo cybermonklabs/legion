@@ -6,9 +6,27 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// legionOnChain says whether an issue on key's Dispatch chain as chains hold it carries the
+// legion label: key itself or one of its links, as the daemon's copy of Dispatch's issues holds
+// their labels. The status of an issue on whose chain none does is anyone's to write (R26 of
+// dispatch://INFRA-3320), so the daemon neither repairs it (correctStatuses) nor re-asserts its
+// own over a session's write of it (sessionStatusWrite).
+func legionOnChain(chains *record.Chains, key string) bool {
+	if dispatch.CarriesLegionLabel(chains.Labels(key)) {
+		return true
+	}
+	for _, link := range chains.Chain(key).Links {
+		if dispatch.CarriesLegionLabel(chains.Labels(link)) {
+			return true
+		}
+	}
+	return false
+}
 
 // correctStatuses queues the Dispatch status write for every issue of the project whose recorded
 // Dispatch status is not the status of the phase it stands in (PhaseStatus). A status write the
@@ -18,7 +36,8 @@ import (
 // boot runs this, and so does the controller tick (statusRepairTick), so a lost write is put back
 // without a restart. issues are the project's own: the tick's LiveIssues names the project, and
 // the boot's read is the daemon's store, which holds no record of another project
-// (internal/daemon's projectRecords).
+// (internal/daemon's projectRecords). chains is the caller's one reading of the Dispatch chains
+// with every one of issues named, the reading its running roots were judged on.
 //
 // It skips an issue by these rules, in this order:
 //
@@ -31,18 +50,21 @@ import (
 //  2. its phase has no status of its own (an empty PhaseStatus): the issue keeps what it shows;
 //  3. its recorded Dispatch status is empty or out of the workflow (record.OutOfWorkflow). An
 //     empty status would otherwise pass this walk, and the row it queued could never be written:
-//     the outbox writes a status only where Dispatch shows the row's observed or target status
-//     (daemon's (*outbox).status), which an empty observed status never matches;
+//     the outbox writes a status only where Dispatch shows the row's observed or target status,
+//     or the status its record last saw Dispatch show (daemon's statusMoved), and this row's
+//     observed status and that one are the same empty status, which nothing matches;
 //  4. the status recorded and the phase's status agree, so there is nothing to correct;
-//  5. its tree's root is missing from the records this run reads, or that tree is not running by
-//     the one rule every reader of the question asks (record.TreeRuns, read here through
-//     record.RunningRoots): its lifecycle is not open under the workflow, the root lingers after
-//     its close, or the root is itself still waiting in the line for the tree to be opened. Its
-//     key goes in the run line's passed-over list;
-//  6. it already has an unfinished dispatch_status row of any kind (PendingStatusWrites), so a
+//  5. no issue on its Dispatch chain carries the legion label (legionOnChain): its status is
+//     anyone's to write (R26 of dispatch://INFRA-3320);
+//  6. its gate root on the Dispatch chain (record.Chains.GateRoot) is not among the roots this run
+//     reads as running, by the one rule every reader of the question asks (record.TreeRuns, read
+//     here through record.RunningRoots, R4 of dispatch://INFRA-3320): it is out of Legion's work,
+//     or itself still waiting in the line for a slot it does not hold, its first start or the one
+//     its returned work needs. Its key goes in the run line's passed-over list;
+//  7. it already has an unfinished dispatch_status row of any kind (PendingStatusWrites), so a
 //     write is on its way. Its key goes in the run line's pending list.
 //
-// Rules 5 and 6 come last, and in that order, because the run line names them as the issues the
+// Rules 6 and 7 come last, and in that order, because the run line names them as the issues the
 // run would otherwise have repaired, which holds only once every other rule has been applied.
 //
 // Each repair writes its own log line, and every run writes one run line, including a run that
@@ -50,14 +72,14 @@ import (
 // record.Issue.Status, not record.Issue.DispatchStatus, and this repair adds no field to it. So an
 // issue whose board status still differs after a run is one of four things, and the log says which:
 // it is in the run line's passed-over list, it is in its pending list, it has a repair line of its
-// own, or it has none of the three — which by the rules above means its record holds a Dispatch
-// status equal to its phase's, so what Dispatch shows and what the record says have come apart and
-// the record is what to look at.
+// own, or it has none of the three — which by the rules above means no issue on its chain carries
+// the legion label, or its record holds a Dispatch status equal to its phase's, so what Dispatch
+// shows and what the record says have come apart and the record is what to look at.
 //
 // The repair tells nobody. The record cannot tell a person's move on the board from a write the
 // daemon lost, so any notice would name both, and most of them would be the person's own move
 // arriving a moment before its event.
-func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record.Issue,
+func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, chains *record.Chains, issues []record.Issue,
 	running map[string]struct{}, trigger string) error {
 	pendingWrites, err := e.store.PendingStatusWrites(ctx, tx, e.cfg.Project)
 	if err != nil {
@@ -77,7 +99,10 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 		if want == "" || issue.DispatchStatus == "" || record.OutOfWorkflow(issue.DispatchStatus) || issue.DispatchStatus == want {
 			continue
 		}
-		if _, runs := running[issue.Tree]; !runs {
+		if !legionOnChain(chains, issue.Key) {
+			continue
+		}
+		if _, runs := running[chains.GateRoot(issue.Key)]; !runs {
 			passedOver = append(passedOver, issue.Key)
 			continue
 		}
@@ -127,18 +152,18 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 // fact's cost must not grow with the done records a project holds for good
 // (admit's TestAFactReadsAsManyRowsWhateverNumberOfFinishedRecordsTheProjectKeeps, which the tick
 // is one of the facts of). The repair selects the same issues from either list: every issue it can
-// act on is short of phase done, which LiveIssues holds, and a root LiveIssues leaves out is one
-// whose own record is done and holds no slot, whose tree has closed and lingers — so the issue
-// under it is passed over either way, by the missing root rather than by the tree-runs rule. The
-// boot reads the whole table once for its resume and hands the repair that list (booted).
+// act on is short of phase done, which LiveIssues holds, and an issue under a root LiveIssues
+// leaves out, one whose own record is done, has no gate root there: a record out of Legion's work
+// is no gate root on the chain (record.Chains.GateRoot). The boot reads the whole table once for
+// its resume and hands the repair that list and its chains (booted).
 func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result, error) {
 	issues, err := e.store.LiveIssues(ctx, tx, e.cfg.Project)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	running, err := record.ReadRunningRoots(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
+	running, chains, err := record.ReadRunningRoots(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.correctStatuses(ctx, tx, issues, running, "tick")
+	return intake.Result{}, e.correctStatuses(ctx, tx, chains, issues, running, "tick")
 }

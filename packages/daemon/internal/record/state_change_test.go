@@ -6,6 +6,7 @@ package record_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -75,7 +76,9 @@ func (r *changeRig) run(t *testing.T, key string, write func(ctx context.Context
 }
 
 // runOver runs write in a transaction of its own, which it commits or rolls back, and answers what
-// that one transaction did to each issue of keys.
+// that one transaction did to each issue of keys. The transaction is the daemon's own
+// (store.TransactWith), so the settles its writes register run at its end (package precommit), the
+// comparison of the trees among them (record.Postgres's watchTrees).
 func (r *changeRig) runOver(t *testing.T, keys []string, write func(ctx context.Context, tx pgx.Tx), commit bool) map[string]moved {
 	t.Helper()
 	ctx := context.Background()
@@ -83,17 +86,18 @@ func (r *changeRig) runOver(t *testing.T, keys []string, write func(ctx context.
 	for _, key := range keys {
 		before[key], queued[key] = r.view(t, key), len(r.changesOf(t, key))
 	}
-	tx, err := r.st.Pool().BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	write(ctx, tx)
-	if commit {
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatalf("commit: %v", err)
+	errRolledBack := errors.New("the test rolls the transaction back")
+	err := store.TransactWith(ctx, r.st.Pool(), pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		write(ctx, tx)
+		if !commit {
+			return errRolledBack
 		}
-	} else if err := tx.Rollback(ctx); err != nil {
+		return nil
+	})
+	switch {
+	case commit && err != nil:
+		t.Fatalf("commit: %v", err)
+	case !commit && !errors.Is(err, errRolledBack):
 		t.Fatalf("roll back: %v", err)
 	}
 	got := make(map[string]moved, len(keys))
@@ -109,6 +113,18 @@ func (r *changeRig) put(t *testing.T, issue record.Issue) func(context.Context, 
 		t.Helper()
 		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
 			t.Fatalf("put %s: %v", issue.Key, err)
+		}
+	}
+}
+
+// copyRow is a write of the copy's row of key under the parent of ("" for none) at seq through the
+// publishing store (record.Store.PutDispatchIssue), which a step expects to succeed.
+func (r *changeRig) copyRow(t *testing.T, key, of string, seq int64) func(context.Context, pgx.Tx) {
+	return func(ctx context.Context, tx pgx.Tx) {
+		t.Helper()
+		if err := r.records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: changeProject, Seq: seq,
+			Status: record.Carry("in_progress"), Parent: record.Carry(of), Blockers: record.Carry[[]string](nil)}); err != nil {
+			t.Fatalf("write the copy's row of %s under %q: %v", key, of, err)
 		}
 	}
 }
@@ -207,10 +223,13 @@ func canonical(t *testing.T, raw json.RawMessage) string {
 
 // assertMoved holds one transaction's state changes of key to the route's view of key. A
 // transaction that moves no field of want queues none, and the route's view of every field is
-// what it was. Otherwise it queues exactly one change, of the project, from the run, naming the
+// what it was. Otherwise the fields its changes of key name, in the order it queued them, are the
 // fields of want in want's order, each from the value the route served before the transaction to
-// the value it serves after it; every field want does not name the route still serves as it did.
-// It answers the change's values, field by field: where each named field went from, and to.
+// the value it serves after it, and every change is of the project and from the run; every field
+// want does not name the route still serves as it did. A write of the record names its own fields
+// in one change (record.ObservationOf), and the tree it moved in one change more, which the
+// transaction's end queues (record.Postgres's watchTrees), so a want that names the tree names it
+// last. It answers the changes' values, field by field: where each named field went from, and to.
 func assertMoved(t *testing.T, key string, got moved, want ...record.StateField) (from, to routeFields) {
 	t.Helper()
 	for _, field := range []record.StateField{record.StateFieldPhase, record.StateFieldTree, record.StateFieldSlot, record.StateFieldWaitingOn} {
@@ -225,24 +244,25 @@ func assertMoved(t *testing.T, key string, got moved, want ...record.StateField)
 		}
 		return nil, nil
 	}
-	if len(got.changes) != 1 {
-		t.Fatalf("the write of %s queued %d state changes (%+v), want one naming %v", key, len(got.changes), got.changes, want)
+	if len(got.changes) == 0 || len(got.changes) > 2 {
+		t.Fatalf("the write of %s queued %d state changes (%+v), want the ones naming %v", key, len(got.changes), got.changes, want)
 	}
-	change := got.changes[0]
-	if change.Project != changeProject || change.Run != changeRun || change.Issue != key {
-		t.Fatalf("the state change of %s names project %q, run %q and issue %q, want %s, %s and %s", key, change.Project, change.Run, change.Issue, changeProject, changeRun, key)
-	}
-	named := make([]record.StateField, 0, len(change.Changes))
+	var named []record.StateField
 	from, to = routeFields{}, routeFields{}
-	for _, field := range change.Changes {
-		named = append(named, field.Field)
-		if field.Role != "" {
-			t.Fatalf("the %s change of %s names the role %q, want none: only a claim change names one", field.Field, key, field.Role)
+	for _, change := range got.changes {
+		if change.Project != changeProject || change.Run != changeRun || change.Issue != key {
+			t.Fatalf("the state change of %s names project %q, run %q and issue %q, want %s, %s and %s", key, change.Project, change.Run, change.Issue, changeProject, changeRun, key)
 		}
-		from[field.Field], to[field.Field] = canonical(t, field.Old), canonical(t, field.New)
+		for _, field := range change.Changes {
+			named = append(named, field.Field)
+			if field.Role != "" {
+				t.Fatalf("the %s change of %s names the role %q, want none: only a claim change names one", field.Field, key, field.Role)
+			}
+			from[field.Field], to[field.Field] = canonical(t, field.Old), canonical(t, field.New)
+		}
 	}
 	if !slices.Equal(named, want) {
-		t.Fatalf("the state change of %s names %v, want %v, in that order", key, named, want)
+		t.Fatalf("the state changes of %s name %v, want %v, in that order", key, named, want)
 	}
 	for _, field := range want {
 		if from[field] != got.before[field] || to[field] != got.after[field] {
@@ -270,11 +290,17 @@ func changeIssue(key string, p phase.Phase) record.Issue {
 }
 
 // A write of an issue queues, in its own transaction, one state change naming each field Dispatch
-// observes that the write moved (record.ObservationOf): its phase, its tree and what it waits on
-// from a person, in that order, each from the value the state route served before the write to the
-// value it serves after it, as the route encodes them — a time at the microsecond Postgres stores
-// it at, not the nanosecond the write was handed. A first write names each field it gives a value
-// from null, and no field it leaves null. A write that moves none of them queues nothing, whatever
+// observes of its record that the write moved (record.ObservationOf): its phase and what it waits
+// on from a person, in that order, each from the value the state route served before the write to
+// the value it serves after it, as the route encodes them — a time at the microsecond Postgres
+// stores it at, not the nanosecond the write was handed. A write that moves its tree, the one the
+// Dispatch chain gives it (record.ObservedTrees), queues one state change more naming that, at the
+// transaction's end, and so does a write of a row of the copy that moves it: the first sighting of
+// a parent the copy lacked moves the tree of each recorded issue under it, while the first sighting
+// of a leaf the daemon does not record, a row no recorded issue's chain passes through, moves no
+// tree and queues nothing. A first write names each field it gives a value from null, and no field
+// it leaves null, the tree among them: every recorded issue is served a tree, its own key where its
+// chain names no gate root above it. A write that moves none of them queues nothing, whatever
 // else it writes — a status, a rank, the detail of an answer, the sequence a wait began at — and so
 // does a write the store refused, a write that rolled back, and every write of a store whose state
 // events are off.
@@ -288,14 +314,14 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 		if from[record.StateFieldPhase] != "null" || from[record.StateFieldTree] != "null" {
 			t.Fatalf("the first write of %s names its old values %v, want null for each", root.Key, from)
 		}
-		// An issue that names no tree is served none, so its first write names its phase alone.
+		// An issue whose record stores no tree is served the tree its chain gives all the same.
 		treeless := changeIssue("LEGION-2", phase.Planning)
 		treeless.Tree = ""
-		assertMoved(t, treeless.Key, r.commit(t, treeless.Key, r.put(t, treeless)), record.StateFieldPhase)
+		assertMoved(t, treeless.Key, r.commit(t, treeless.Key, r.put(t, treeless)), record.StateFieldPhase, record.StateFieldTree)
 		// A root recorded in awaiting_person names what it waits on from null as well.
 		waiting := changeIssue("LEGION-3", phase.AwaitingPerson)
 		waiting.Awaiting = &record.Awaiting{Ask: "ask-3", Since: record.EventMark{Seq: 4, At: since}}
-		from, _ = assertMoved(t, waiting.Key, r.commit(t, waiting.Key, r.put(t, waiting)), record.StateFieldPhase, record.StateFieldTree, record.StateFieldWaitingOn)
+		from, _ = assertMoved(t, waiting.Key, r.commit(t, waiting.Key, r.put(t, waiting)), record.StateFieldPhase, record.StateFieldWaitingOn, record.StateFieldTree)
 		if from[record.StateFieldWaitingOn] != "null" {
 			t.Fatalf("the first write of %s names its old waitingOn %s, want null", waiting.Key, from[record.StateFieldWaitingOn])
 		}
@@ -311,19 +337,55 @@ func TestAnIssueWriteQueuesOneStateEventNamingEachFieldItMoved(t *testing.T) {
 		}
 	})
 
-	t.Run("tree set and cleared", func(t *testing.T) {
-		issue := changeIssue("LEGION-20", phase.Implementing)
-		issue.Tree = ""
-		r.commit(t, issue.Key, r.put(t, issue))
-		issue.Tree = "LEGION-19"
-		_, to := assertMoved(t, issue.Key, r.commit(t, issue.Key, r.put(t, issue)), record.StateFieldTree)
+	// The tree an issue is served is its gate root on its Dispatch chain (R22 of
+	// dispatch://INFRA-3320), so a move of its parent in the copy of Dispatch's issues moves it,
+	// and so does a write of another record on that chain: a parent that leaves Legion's work
+	// leaves its child a root of its own. Each such transaction queues one change naming the tree
+	// of each issue it moved, and none for an issue whose tree it left as it was.
+	t.Run("tree moved by the Dispatch chain", func(t *testing.T) {
+		parent, child := changeIssue("LEGION-19", phase.Implementing), changeIssue("LEGION-20", phase.Implementing)
+		child.Tree = parent.Key
+		r.commit(t, parent.Key, r.copyRow(t, parent.Key, "", 1))
+		r.commit(t, child.Key, r.copyRow(t, child.Key, "", 1))
+		r.commit(t, parent.Key, r.put(t, parent))
+		r.commit(t, child.Key, r.put(t, child))
+		_, to := assertMoved(t, child.Key, r.commit(t, child.Key, r.copyRow(t, child.Key, parent.Key, 2)), record.StateFieldTree)
 		if to[record.StateFieldTree] != `"LEGION-19"` {
-			t.Fatalf("the tree set on %s goes to %s, want \"LEGION-19\"", issue.Key, to[record.StateFieldTree])
+			t.Fatalf("the tree of %s once Dispatch moves it under %s goes to %s, want \"LEGION-19\"", child.Key, parent.Key, to[record.StateFieldTree])
 		}
-		issue.Tree = ""
-		_, to = assertMoved(t, issue.Key, r.commit(t, issue.Key, r.put(t, issue)), record.StateFieldTree)
-		if to[record.StateFieldTree] != "null" {
-			t.Fatalf("the tree cleared on %s goes to %s, want null", issue.Key, to[record.StateFieldTree])
+		parent.Status = "backlog"
+		moved := r.runOver(t, []string{parent.Key, child.Key}, r.put(t, parent), true)
+		assertMoved(t, parent.Key, moved[parent.Key])
+		if _, to = assertMoved(t, child.Key, moved[child.Key], record.StateFieldTree); to[record.StateFieldTree] != `"LEGION-20"` {
+			t.Fatalf("the tree of %s once %s leaves Legion's work goes to %s, want its own key", child.Key, parent.Key, to[record.StateFieldTree])
+		}
+		assertMoved(t, child.Key, r.rollBack(t, child.Key, r.copyRow(t, child.Key, "", 3)))
+	})
+
+	// The trees are those of recorded issues, and a recorded issue's chain reaches another issue
+	// only through a row of the copy that names it as its parent. So the first sighting of a leaf
+	// the daemon does not record moves no tree, and the first sighting of a parent the copy lacked,
+	// which the daemon does not record either, moves the tree of the recorded issue under it: that
+	// issue's chain stopped at the missing row, so it was its own tree, and it is the gate root's
+	// above the parent once the row is there.
+	t.Run("the first sighting of a row of the copy", func(t *testing.T) {
+		root, member := changeIssue("LEGION-91", phase.Implementing), changeIssue("LEGION-92", phase.Implementing)
+		const parent, leaf = "LEGION-93", "LEGION-94"
+		r.commit(t, root.Key, r.copyRow(t, root.Key, "", 1))
+		r.commit(t, member.Key, r.copyRow(t, member.Key, parent, 1))
+		r.commit(t, root.Key, r.put(t, root))
+		r.commit(t, member.Key, r.put(t, member))
+		moved := r.runOver(t, []string{leaf, root.Key, member.Key}, r.copyRow(t, leaf, root.Key, 1), true)
+		assertMoved(t, leaf, moved[leaf])
+		assertMoved(t, root.Key, moved[root.Key])
+		assertMoved(t, member.Key, moved[member.Key])
+		moved = r.runOver(t, []string{parent, root.Key, member.Key}, r.copyRow(t, parent, root.Key, 1), true)
+		assertMoved(t, parent, moved[parent])
+		assertMoved(t, root.Key, moved[root.Key])
+		from, to := assertMoved(t, member.Key, moved[member.Key], record.StateFieldTree)
+		if from[record.StateFieldTree] != `"LEGION-92"` || to[record.StateFieldTree] != `"LEGION-91"` {
+			t.Fatalf("the tree of %s once the copy holds its parent %s under %s goes from %s to %s, want from its own key to \"LEGION-91\"",
+				member.Key, parent, root.Key, from[record.StateFieldTree], to[record.StateFieldTree])
 		}
 	})
 
@@ -541,27 +603,21 @@ func TestASlotWriteQueuesOneStateEventNamingTheSlotItMoved(t *testing.T) {
 	})
 }
 
-// A release of a tree's slots (ReleaseTreeSlots, the re-admission of the tree's own root) queues,
-// in its own transaction, one state change for each slot it frees, as a release of one slot does:
-// each naming the slot of its issue, from the index the state route served before the release to
-// null, in the order of the slots' indexes, which is the order the release answers its issues in.
-// An issue of the tree that holds no slot, and an issue of another tree, get none. A release of a
-// tree holding no slot queues nothing, and so do a release that rolled back and a release through
-// a store whose state events are off. The issues are recorded and granted their slots through a
-// store with its state events off, so every state change these steps read is a release's.
-func TestATreeReleaseQueuesOneStateEventForEachSlotItFrees(t *testing.T) {
+// The slot releases of one transaction (ReleaseSlot) queue one state change for each slot they
+// free, each naming the slot of its issue from the index the state route served before the
+// transaction to null, in the order the releases ran, and none for an issue whose slot no release
+// freed. A rolled-back pair queues nothing. The issues are recorded and granted their slots through
+// a store with its state events off, so every state change these steps read is a release's.
+func TestTheSlotReleasesOfOneTransactionQueueOneStateEventEach(t *testing.T) {
 	r := newChangeRig(t)
 	admitted := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
-	// seed records root and each of members in root's tree, and grants each issue of slots its
-	// index.
-	seed := func(t *testing.T, root string, members []string, slots map[string]int) {
+	// seed records each of keys and grants each issue of slots its index.
+	seed := func(t *testing.T, keys []string, slots map[string]int) {
 		t.Helper()
 		if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			records := record.NewStore()
-			for _, key := range append([]string{root}, members...) {
-				issue := changeIssue(key, phase.Implementing)
-				issue.Tree = root
-				if err := records.PutIssue(ctx, tx, issue); err != nil {
+			for _, key := range keys {
+				if err := records.PutIssue(ctx, tx, changeIssue(key, phase.Implementing)); err != nil {
 					return err
 				}
 			}
@@ -572,19 +628,16 @@ func TestATreeReleaseQueuesOneStateEventForEachSlotItFrees(t *testing.T) {
 			}
 			return nil
 		}); err != nil {
-			t.Fatalf("record the tree of %s: %v", root, err)
+			t.Fatalf("record %v: %v", keys, err)
 		}
 	}
-	// release frees the slots of tree through records and holds the issues it answers to want.
-	release := func(t *testing.T, records *record.Postgres, tree string, want ...string) func(context.Context, pgx.Tx) {
+	release := func(t *testing.T, keys ...string) func(context.Context, pgx.Tx) {
 		return func(ctx context.Context, tx pgx.Tx) {
 			t.Helper()
-			released, err := records.ReleaseTreeSlots(ctx, tx, tree)
-			if err != nil {
-				t.Fatalf("release the slots of %s's tree: %v", tree, err)
-			}
-			if !slices.Equal(released, want) {
-				t.Fatalf("the release of %s's tree answers %v, want %v, in slot order", tree, released, want)
+			for _, key := range keys {
+				if err := r.records.ReleaseSlot(ctx, tx, key); err != nil {
+					t.Fatalf("release the slot of %s: %v", key, err)
+				}
 			}
 		}
 	}
@@ -603,41 +656,25 @@ func TestATreeReleaseQueuesOneStateEventForEachSlotItFrees(t *testing.T) {
 		return issues
 	}
 
-	t.Run("a tree holding two slots", func(t *testing.T) {
-		const root, member, idle, other = "LEGION-201", "LEGION-202", "LEGION-203", "LEGION-204"
-		seed(t, root, []string{member, idle}, map[string]int{root: 2, member: 1})
-		seed(t, other, nil, map[string]int{other: 0})
+	t.Run("two slots released in one transaction", func(t *testing.T) {
+		const first, second, idle = "LEGION-202", "LEGION-201", "LEGION-203"
+		seed(t, []string{first, second, idle}, map[string]int{second: 2, first: 1})
 		before := len(queued(t))
-		got := r.runOver(t, []string{root, member, idle, other}, release(t, r.records, root, member, root), true)
-		for key, index := range map[string]string{member: "1", root: "2"} {
+		got := r.runOver(t, []string{first, second, idle}, release(t, first, second), true)
+		for key, index := range map[string]string{first: "1", second: "2"} {
 			slotMoved(t, key, got[key], index, "null")
 		}
 		assertMoved(t, idle, got[idle])
-		assertMoved(t, other, got[other])
-		if order := queued(t)[before:]; !slices.Equal(order, []string{member, root}) {
-			t.Fatalf("the release queued the state changes of %v, want %s's and then %s's, in slot order", order, member, root)
+		if order := queued(t)[before:]; !slices.Equal(order, []string{first, second}) {
+			t.Fatalf("the releases queued the state changes of %v, want %s's and then %s's, in the order they ran", order, first, second)
 		}
 	})
 
-	t.Run("a tree holding no slot", func(t *testing.T) {
-		const root = "LEGION-211"
-		seed(t, root, nil, nil)
-		assertMoved(t, root, r.commit(t, root, release(t, r.records, root)))
-	})
-
-	t.Run("a rolled-back release", func(t *testing.T) {
-		const root, member = "LEGION-221", "LEGION-222"
-		seed(t, root, []string{member}, map[string]int{root: 3, member: 4})
-		got := r.runOver(t, []string{root, member}, release(t, r.records, root, root, member), false)
-		assertMoved(t, root, got[root])
-		assertMoved(t, member, got[member])
-	})
-
-	t.Run("a store with the state events off", func(t *testing.T) {
-		const root = "LEGION-231"
-		seed(t, root, nil, map[string]int{root: 5})
-		if got := r.commit(t, root, release(t, record.NewStore(), root, root)); len(got.changes) != 0 || got.after[record.StateFieldSlot] != "null" {
-			t.Fatalf("a release through a store with its state events off queued %+v and the route serves %v, want none queued and the slot freed", got.changes, got.after)
-		}
+	t.Run("a rolled-back pair", func(t *testing.T) {
+		const first, second = "LEGION-221", "LEGION-222"
+		seed(t, []string{first, second}, map[string]int{first: 3, second: 4})
+		got := r.runOver(t, []string{first, second}, release(t, first, second), false)
+		assertMoved(t, first, got[first])
+		assertMoved(t, second, got[second])
 	})
 }

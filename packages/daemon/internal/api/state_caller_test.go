@@ -1172,8 +1172,6 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, QuietHoursField)
 				delete(issue, "podHold")
 				delete(issue, "treeRuns")
-				// Every row that reaches here is below priorityContract too, so neither the
-				// issue nor its waitingLine carries `priority`.
 				stripPriority(issue)
 				// Every row that reaches here is below repositoryCorrectionContract too, so no
 				// issue carries the four keys of a correction of its repository.
@@ -1283,18 +1281,20 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 
 // servedShape applies to want, a body decoded from the state this contract writes, what an older
 // caller is served that no column of the tables calling it names: the stand-ins of keys a
-// contract removed, and three bands of keys this contract writes. A caller below checkRoleContract
+// contract removed, and four bands of keys this contract writes. A caller below checkRoleContract
 // is served each issue's check without `role` (api's withoutCheckRole); a caller below
 // fixAttemptsContract is served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of
 // 3 in the settings block (withFixAttempts, withMaxFixAttempts); a caller below
 // stateMachineContract is served the issue without the seven keys that contract added
-// (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
-// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes), and a caller below
-// p0BoundContract the admission without `p0Holders` and `p0Bound` (withoutP0Start): every row of
-// those tables but the three served this daemon's own body is below both. Every other key of the settings block is
-// served as this contract writes it, since no reader types it (answers.go's typedSettings). One
-// contract decides the stand-ins, because the two sides of a caller's shaping part only below
-// ServingFloor, which is below fixAttemptsContract as every number this is called with is.
+// (withoutStateMachineFields); a caller below causeTimesContract is served each claim view
+// without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes); a caller below
+// chainContract is served the daemon block without `convertedAt` (withoutConvertedAt); and a
+// caller below p0BoundContract the admission without `p0Holders` and `p0Bound` (withoutP0Start):
+// every row of those tables but the three served this daemon's own body is below the last three.
+// Every other key of the settings block is served as this contract writes it, since no reader
+// types it (answers.go's typedSettings). One contract decides the stand-ins, because the two
+// sides of a caller's shaping part only below ServingFloor, which is below fixAttemptsContract as
+// every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	settings := want["settings"].(map[string]any)
 	if contract < entryNumber(p0BoundContract) {
@@ -1311,6 +1311,10 @@ func servedShape(want map[string]any, contract int) {
 	}
 	if contract < fixAttemptsContract {
 		settings["max_fix_attempts"] = float64(3)
+	}
+	// The conversion's time is a key chainContract added to the daemon block (withoutConvertedAt).
+	if daemon, carries := want["daemon"].(map[string]any); carries && contract < entryNumber(chainContract) {
+		delete(daemon, "convertedAt")
 	}
 	for _, issue := range want["issues"].(map[string]any) {
 		issue := issue.(map[string]any)

@@ -18,15 +18,15 @@ import (
 
 // The issues of k10 (dispatch://INFRA-3320, R8): P is LEGION-100 (basisAncestor), R is LEGION-208
 // (gatedRoot), a root whose spec step rests on P's approval, S a root of its own that is a
-// Dispatch child of P and opened its step on a person's approval of its own document, C a child a
-// linger handed over from R's tree with R's step carried, M a member of P's own tree, U a Dispatch
-// child of P filed and never released, and T the root of a tree P is a member of.
+// Dispatch child of P and opened its step on a person's approval of its own document, M a member of
+// P's own tree, U a Dispatch child of P filed and never released, T the root of a tree P is a member
+// of, and O a root in Legion's work outside P's chain that R is moved under.
 const (
 	restingOwnChild    = "LEGION-301"
-	restingCarried     = "LEGION-302"
 	restingNeverLet    = "LEGION-303"
 	restingMember      = "LEGION-101"
 	restingAncestorsOf = "LEGION-50"
+	restingOutside     = "LEGION-70"
 )
 
 // restingBasis is a person's approval of version 3 of P's primary document, whose requirement p2
@@ -50,7 +50,6 @@ func seedAcceptingAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "T",
 		HandedOver: true, LastDispatchSeq: 1})
-	seedTreeLifecycle(t, pool, basisAncestor)
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: basisAncestor, Repo: "sjawhar/legion", Number: 41,
 		Branch: "legion/" + basisAncestor, HeadSHA: "head", CheckedHead: "head", CheckRuns: []record.AttemptRun{{Name: acceptingCheck, ID: 1}}, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "implement-claim", HandoffCommit: "implement-1"})
@@ -72,6 +71,8 @@ func registerResting(t *testing.T, pool *pgxpool.Pool, apply func(string, intake
 
 // closeIssue applies Dispatch's event of key moving to status (done, backlog), which takes it out
 // of the workflow (the engine's leave), and mirrors it, as the daemon's handlers apply an event.
+// The record then holds the status, as admission's observation of the event writes it after the
+// engine's handler (admit's recordObservation), which these tests' admission stub does not.
 func closeIssue(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent, status string, seq int64) {
 	t.Helper()
 	kind := "issue.updated"
@@ -79,6 +80,9 @@ func closeIssue(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent, s
 		kind = "issue.closed"
 	}
 	applyMirrored(t, pool, engine, key+"-"+status, intake.DispatchIssue{Key: key, Seq: seq, Type: kind, Status: status, Title: key, Parent: parent, Rank: "V"})
+	if _, err := pool.Exec(t.Context(), "update issues set status = $2, dispatch_status = $2 where key = $1", key, status); err != nil {
+		t.Fatalf("record the observation of %s at %s: %v", key, status, err)
+	}
 }
 
 // mirrorChild writes what Dispatch shows of key, a child of parent at status, at seq, waiting on
@@ -101,7 +105,8 @@ func seedOwnApprovalChild(t *testing.T, pool *pgxpool.Pool) {
 		HandedOver: true, LastDispatchSeq: 1})
 	seedGate(t, pool, record.DesignGate{Issue: restingOwnChild, ArtifactID: "artifact-301", LatestVersion: 2, ApprovedVersion: new(2),
 		ApprovedMark: record.EventMark{Seq: 3, At: basisApprovedAt}})
-	seedMirrorChild(t, pool, restingOwnChild, "in_progress", basisAncestor)
+	// Above the sequence seedIssue's own copy row took, so the copy holds S under P.
+	mirrorChild(t, pool, restingOwnChild, basisAncestor, "in_progress", 2)
 }
 
 // refusedWith fails unless result is a 409 refusal of code whose message names each of names, and
@@ -149,18 +154,95 @@ const restingNamed = "LEGION-208 (its spec step, in implementing)"
 // The refusal of P's sign-off and close while R is in the workflow names R and says who moves it.
 const restingMover = "Each is a tree of its own: its own architect, or a person, moves it."
 
-// An ancestor's sign-off and close wait for the roots whose step rests on its approval, carried
-// to a handed-over child or not, and for its open Dispatch children, a root of its own among them,
-// in R8's order after the issues beneath it; and its architect hears when each resting root starts
-// to rest on it and when it closes or leaves the workflow, at its start when the daemon recorded it
-// in no live tree then, and in each catch-up (k10, dispatch://INFRA-3320 R8).
+// An ancestor's sign-off and close wait for the issues beneath it on its Dispatch chain, a root
+// under it that rests on its approval among them, then for the roots that rest on its approval
+// from outside its chain, then for its open Dispatch children, in R8's order; and its architect
+// hears when each resting root starts to rest on it and when it closes or leaves the workflow, at
+// its start when the daemon recorded it in no live tree then, and in each catch-up (k10,
+// dispatch://INFRA-3320 R8).
 func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 	t.Parallel()
-	t.Run("a resting root holds the sign-off until it is done, and the merge then closes the ancestor", func(t *testing.T) {
+	t.Run("a resting root under the ancestor holds the sign-off as an issue beneath it until it is done, and the merge then closes the ancestor", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)
 		seedAcceptingAncestor(t, pool)
 		registerResting(t, pool, applyFacts(t, pool, engine))
+		// R stands under P on its Dispatch chain and in Legion's work, so it is beneath P, which
+		// holds the sign-off before its rest on P's approval does (R18 of dispatch://INFRA-3320).
+		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
+
+		refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffChildInWorkflow, gatedRoot)
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Accepting {
+			t.Fatalf("P = %s after the refused sign-off, want accepting", got)
+		}
+
+		closeIssue(t, pool, engine, gatedRoot, basisAncestor, "done", 21)
+		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
+			t.Fatalf("the sign-off once R is done = %+v, want it accepted", result.Refusal)
+		}
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
+			t.Fatalf("P = %s after the accepted sign-off, want retro", got)
+		}
+
+		// The merged close needs no hold of its own (R8): the sign-off waited for R. It is queued at
+		// the merge and ends P's run once Dispatch shows P done (R24).
+		leave(t, pool, basisAncestor, phase.Merging, "retro")
+		applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41"})
+		if got := storedIssue(t, pool, basisAncestor).PendingClose; got == nil {
+			t.Fatalf("P's close after its merge = %+v, want the merge's close queued", got)
+		}
+		landClose(t, pool, engine, basisAncestor)
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Done {
+			t.Fatalf("P = %s once Dispatch shows it done, want done: the merge closes it as any merge does", got)
+		}
+	})
+
+	t.Run("a resting root under the ancestor on the backlog holds nothing", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		seedAcceptingAncestor(t, pool)
+		registerResting(t, pool, applyFacts(t, pool, engine))
+		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
+
+		closeIssue(t, pool, engine, gatedRoot, basisAncestor, "backlog", 21)
+		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
+			t.Fatalf("the sign-off with R on the backlog = %+v, want it accepted", result.Refusal)
+		}
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
+			t.Fatalf("P = %s after the sign-off, want retro", got)
+		}
+	})
+
+	t.Run("a Dispatch child on its own approval holds the sign-off as an issue beneath it", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		seedAcceptingAncestor(t, pool)
+		seedOwnApprovalChild(t, pool)
+
+		// S stands under P on its Dispatch chain and in Legion's work, so it is beneath P, whatever
+		// gate it works under (R18 of dispatch://INFRA-3320).
+		refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffChildInWorkflow, restingOwnChild)
+
+		closeIssue(t, pool, engine, restingOwnChild, basisAncestor, "done", 3)
+		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
+			t.Fatalf("the sign-off once S is done = %+v, want it accepted", result.Refusal)
+		}
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
+			t.Fatalf("P = %s after the sign-off, want retro", got)
+		}
+	})
+
+	t.Run("a resting root moved under a parent in Legion's work outside the ancestor's chain holds the sign-off as a resting root", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		seedAcceptingAncestor(t, pool)
+		registerResting(t, pool, applyFacts(t, pool, engine))
+		// After its step opened on P's approval, R is moved under O, a root at work outside P's
+		// chain: R is beneath O and not P, and it still rests on P's approval.
+		seedIssue(t, pool, record.Issue{Key: restingOutside, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+			Tree: restingOutside, Project: "LEGION", Title: "outside", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "O",
+			HandedOver: true, LastDispatchSeq: 1})
+		mirrorChild(t, pool, gatedRoot, restingOutside, "in_progress", 20)
 
 		message := refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffRestingRoot, restingNamed, restingMover)
 		if want := "LEGION-100 is not accepted while these roots that rest on its approval are still in the workflow: " + restingNamed + ". " +
@@ -172,108 +254,32 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			t.Fatalf("P = %s after the refused sign-off, want accepting", got)
 		}
 
-		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
+		closeIssue(t, pool, engine, gatedRoot, restingOutside, "done", 21)
 		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
 			t.Fatalf("the sign-off once R is done = %+v, want it accepted", result.Refusal)
 		}
 		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
 			t.Fatalf("P = %s after the accepted sign-off, want retro", got)
 		}
-
-		// The merged close needs no hold of its own (R8): the sign-off waited for R.
-		leave(t, pool, basisAncestor, phase.Merging, "retro")
-		applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41"})
-		if got := phaseOf(t, pool, basisAncestor); got != phase.Done {
-			t.Fatalf("P = %s after its merge, want done: the merge closes it as any merge does", got)
-		}
 	})
 
-	t.Run("a resting root on the backlog holds nothing", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := testEngine(config.DesignGateRootIssues, nil)
-		seedAcceptingAncestor(t, pool)
-		registerResting(t, pool, applyFacts(t, pool, engine))
-
-		closeIssue(t, pool, engine, gatedRoot, "", "backlog", 20)
-		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
-			t.Fatalf("the sign-off with R on the backlog = %+v, want it accepted", result.Refusal)
-		}
-		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
-			t.Fatalf("P = %s after the sign-off, want retro", got)
-		}
-	})
-
-	t.Run("a Dispatch child on its own approval holds the sign-off as an open child", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := testEngine(config.DesignGateRootIssues, nil)
-		seedAcceptingAncestor(t, pool)
-		seedOwnApprovalChild(t, pool)
-
-		message := refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffChildOpen, "LEGION-301 (in_progress)")
-		if want := "LEGION-100 is not accepted while these Dispatch children of it are open: LEGION-301 (in_progress). " +
-			"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. " +
-			restingReturn +
-			"A child that runs as a tree of its own is moved by its own architect or a person. " +
-			endChildrenFirst("acceptance"); message != want {
-			t.Fatalf("the refusal = %q, want %q", message, want)
-		}
-
-		closeIssue(t, pool, engine, restingOwnChild, basisAncestor, "done", 2)
-		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
-			t.Fatalf("the sign-off once S is done = %+v, want it accepted", result.Refusal)
-		}
-		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
-			t.Fatalf("P = %s after the sign-off, want retro", got)
-		}
-	})
-
-	t.Run("a step carried to a handed-over child holds the sign-off as the root did", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := testEngine(config.DesignGateRootIssues, nil)
-		seedAcceptingAncestor(t, pool)
-		registerResting(t, pool, applyFacts(t, pool, engine))
-		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
-		// The linger's hand-over made C a root of its own and carried R's step with its basis and
-		// its rest (admit's readmit, the orphan branch).
-		seedIssue(t, pool, record.Issue{Key: restingCarried, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-			Tree: restingCarried, Project: "LEGION", Title: restingCarried, Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "C",
-			HandedOver: true, LastDispatchSeq: 2})
-		carried := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]
-		carried.Issue = restingCarried
-		seedGate(t, pool, carried)
-
-		message := refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffRestingRoot, "LEGION-302 (its spec step, in implementing)")
-		if strings.Contains(message, gatedRoot) {
-			t.Fatalf("the refusal %q names %s, which is done", message, gatedRoot)
-		}
-		closeIssue(t, pool, engine, restingCarried, "", "done", 3)
-		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
-			t.Fatalf("the sign-off once C is done = %+v, want it accepted", result.Refusal)
-		}
-	})
-
-	t.Run("close_root waits for a resting root and for a child never released", func(t *testing.T) {
+	t.Run("close_root waits for a resting root under the ancestor and for a child never released", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := testEngine(config.DesignGateRootIssues, nil)
 		seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: basisAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "T",
 			HandedOver: true, LastDispatchSeq: 1})
-		seedTreeLifecycle(t, pool, basisAncestor)
 		registerResting(t, pool, applyFacts(t, pool, engine))
+		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
 
-		message := refusedWith(t, closeRootNow(t, pool, "close-held", basisAncestor), signOffRestingRoot, restingNamed, restingMover)
-		if want := "LEGION-100 is not closed while these roots that rest on its approval are still in the workflow: " + restingNamed + ". " +
-			"The design-gate step of each rests on an approval of LEGION-100, so LEGION-100 closes after them. " + restingMover + " " +
-			"Close the tree again once each one is done or out of the workflow"; message != want {
-			t.Fatalf("the refusal = %q, want %q", message, want)
-		}
+		refusedWith(t, closeRootNow(t, pool, "close-held", basisAncestor), signOffChildInWorkflow, gatedRoot)
 		if got := phaseOf(t, pool, basisAncestor); got != phase.Admitted {
 			t.Fatalf("P = %s after the refused close, want admitted", got)
 		}
 
-		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
+		closeIssue(t, pool, engine, gatedRoot, basisAncestor, "done", 21)
 		seedMirrorChild(t, pool, restingNeverLet, "backlog", basisAncestor)
-		message = refusedWith(t, closeRootNow(t, pool, "close-held-by-a-child", basisAncestor), signOffChildOpen, "LEGION-303 (backlog)")
+		message := refusedWith(t, closeRootNow(t, pool, "close-held-by-a-child", basisAncestor), signOffChildOpen, "LEGION-303 (backlog)")
 		if want := "LEGION-100 is not closed while these Dispatch children of it are open: LEGION-303 (backlog). " +
 			"A parent closes after its children, and a child that was never released holds the close until it is done or in icebox: close the tree again once none of them is open. " +
 			"A child that runs as a tree of its own is moved by its own architect or a person. " +
@@ -281,12 +287,19 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			t.Fatalf("the refusal = %q, want %q", message, want)
 		}
 
+		// Past R8's codes the close waits for every child done (R24): one in icebox still holds it.
 		mirrorChild(t, pool, restingNeverLet, basisAncestor, "icebox", 2)
+		refusedWith(t, closeRootNow(t, pool, "close-held-by-an-iceboxed-child", basisAncestor), "CHILDREN_NOT_DONE", "LEGION-303 (icebox)")
+		mirrorChild(t, pool, restingNeverLet, basisAncestor, "done", 3)
 		if result := closeRootNow(t, pool, "close-accepted", basisAncestor); result.Refusal != nil {
-			t.Fatalf("the close once R is done and U in icebox = %+v, want it accepted", result.Refusal)
+			t.Fatalf("the close once R and U are done = %+v, want it accepted", result.Refusal)
 		}
+		if got := phaseOf(t, pool, basisAncestor); got != phase.Admitted {
+			t.Fatalf("P = %s after the close, want admitted until Dispatch shows it done", got)
+		}
+		landClose(t, pool, engine, basisAncestor)
 		if got := phaseOf(t, pool, basisAncestor); got != phase.Done {
-			t.Fatalf("P = %s after the close, want done", got)
+			t.Fatalf("P = %s once Dispatch shows it done, want done", got)
 		}
 	})
 
@@ -296,12 +309,13 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		apply := applyFacts(t, pool, engine)
 		seedAcceptingAncestor(t, pool)
 		registerResting(t, pool, apply)
+		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
 
 		apply("root-v5", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5, Mark: askSeq(9)})
 		if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; record.GateOpen(gate) || gate.Basis != nil || !slices.Equal(gate.RestsOn, []string{basisAncestor}) {
 			t.Fatalf("R's spec step after version 5 = %#v, want it closed with no basis, still resting on %s", gate, basisAncestor)
 		}
-		refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffRestingRoot, restingNamed)
+		refusedWith(t, signOffNow(t, pool, "signoff-held", basisAncestor), signOffChildInWorkflow, gatedRoot)
 	})
 
 	t.Run("every hold at once is answered in R8's order", func(t *testing.T) {
@@ -310,34 +324,104 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedAcceptingAncestor(t, pool)
 		seedBeneath(t, pool, restingMember, basisAncestor, basisAncestor, phase.Implementing, "in_progress")
 		registerResting(t, pool, applyFacts(t, pool, engine))
-		// R is a Dispatch child of P as well, so it is both resting and open: the resting hold,
-		// which comes first, names it.
-		seedMirrorChild(t, pool, gatedRoot, "in_progress", basisAncestor)
-		seedOwnApprovalChild(t, pool)
+		// U, a Dispatch child of P filed in triage and never released, holds as an open child.
+		seedMirrorChild(t, pool, restingNeverLet, "triage", basisAncestor)
 
 		message := refusedWith(t, signOffNow(t, pool, "signoff-beneath", basisAncestor), signOffChildInWorkflow, restingMember)
-		if strings.Contains(message, gatedRoot) || strings.Contains(message, restingOwnChild) {
+		if strings.Contains(message, gatedRoot) || strings.Contains(message, restingNeverLet) {
 			t.Fatalf("the refusal %q names the holds that come after the first", message)
 		}
 		leave(t, pool, restingMember, phase.Done, "done")
 
 		message = refusedWith(t, signOffNow(t, pool, "signoff-resting", basisAncestor), signOffRestingRoot, restingNamed)
-		if strings.Contains(message, restingOwnChild) {
-			t.Fatalf("the refusal %q names S, which rests on nothing", message)
+		if strings.Contains(message, restingNeverLet) {
+			t.Fatalf("the refusal %q names U, which rests on nothing", message)
 		}
-		closeIssue(t, pool, engine, gatedRoot, basisAncestor, "done", 20)
+		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
 
-		message = refusedWith(t, signOffNow(t, pool, "signoff-open", basisAncestor), signOffChildOpen, "LEGION-301 (in_progress)")
-		if strings.Contains(message, gatedRoot) {
-			t.Fatalf("the refusal %q names R, which is done", message)
+		message = refusedWith(t, signOffNow(t, pool, "signoff-open", basisAncestor), signOffChildOpen, "LEGION-303 (triage)")
+		if want := "LEGION-100 is not accepted while these Dispatch children of it are open: LEGION-303 (triage). " +
+			"A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. " +
+			restingReturn +
+			"A child that runs as a tree of its own is moved by its own architect or a person. " +
+			endChildrenFirst("acceptance"); message != want {
+			t.Fatalf("the refusal = %q, want %q", message, want)
 		}
-		closeIssue(t, pool, engine, restingOwnChild, basisAncestor, "done", 2)
+		mirrorChild(t, pool, restingNeverLet, basisAncestor, "icebox", 2)
 
 		if result := signOffNow(t, pool, "signoff-accepted", basisAncestor); result.Refusal != nil {
 			t.Fatalf("the sign-off once nothing holds it = %+v, want it accepted", result.Refusal)
 		}
 		if got := phaseOf(t, pool, basisAncestor); got != phase.Retro {
 			t.Fatalf("P = %s after the sign-off, want retro", got)
+		}
+	})
+
+	// P's merge waits in merging while R, a Dispatch child of P parked on the backlog, is not done,
+	// and its close is queued once R is done or a person moves R out from under P, which the
+	// decision pass reads (WriteDueClose).
+	for _, tc := range []struct {
+		name string
+		end  func(t *testing.T, pool *pgxpool.Pool, engine *Engine)
+	}{
+		{"until it is done", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+			closeIssue(t, pool, engine, gatedRoot, basisAncestor, "done", 22)
+		}},
+		{"until a person unlinks it", func(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+			applyMirrored(t, pool, engine, gatedRoot+"-unlinked", intake.DispatchIssue{Key: gatedRoot, Seq: 22, Type: "issue.updated", Status: "backlog",
+				Title: gatedRoot, Rank: "V"})
+			closePass(t, pool, engine)
+		}},
+	} {
+		t.Run("a merged ancestor waits in merging for a resting child on the backlog "+tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			seedAcceptingAncestor(t, pool)
+			registerResting(t, pool, applyFacts(t, pool, engine))
+			// R is a Dispatch child of P, parked on the backlog before P's merge.
+			mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
+			closeIssue(t, pool, engine, gatedRoot, basisAncestor, "backlog", 21)
+
+			leave(t, pool, basisAncestor, phase.Merging, "retro")
+			applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41"})
+			if got, pending := phaseOf(t, pool, basisAncestor), storedIssue(t, pool, basisAncestor).PendingClose; got != phase.Merging || pending != nil {
+				t.Fatalf("P after its merge = %s with close %+v, want merging with no close queued while R is on the backlog", got, pending)
+			}
+			if merged := noticesOfKind(t, pool, basisAncestor, "pr-merged"); len(merged) != 1 || !strings.Contains(merged[0].Reason, gatedRoot+" (backlog)") {
+				t.Fatalf("P's pr-merged notices = %+v, want one naming R and its status", merged)
+			}
+
+			tc.end(t, pool, engine)
+			if pending := storedIssue(t, pool, basisAncestor).PendingClose; pending == nil || pending.Kind != "merge" {
+				t.Fatalf("P's close once R is no child of P that is not done = %+v, want the merge's close queued", pending)
+			}
+		})
+	}
+
+	t.Run("the ancestor's done with unlink_children ends a basis standing open on it, and the root's catch-up reports the step unregistered", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		seedAcceptingAncestor(t, pool)
+		registerResting(t, pool, applyFacts(t, pool, engine))
+		mirrorChild(t, pool, gatedRoot, basisAncestor, "in_progress", 20)
+
+		// A person closes P with unlink_children while R is in the workflow: Dispatch moves R out
+		// from under P at the status it stands in, and then closes P.
+		applyMirrored(t, pool, engine, gatedRoot+"-unlinked", intake.DispatchIssue{Key: gatedRoot, Seq: 21, Type: "issue.updated", Status: "in_progress",
+			Title: gatedRoot, Rank: "V"})
+		closeIssue(t, pool, engine, basisAncestor, "", "done", 2)
+		if gate, registered := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; registered {
+			t.Fatalf("R's spec step once P is done = %#v, want it unregistered: the basis it stood open on ended", gate)
+		}
+		ended := noticesOfKind(t, pool, gatedRoot, "basis-ended")
+		if len(ended) != 1 || !strings.Contains(ended[0].Reason, "unregistered: register it again") {
+			t.Fatalf("R's basis-ended notices = %+v, want one saying the step is unregistered", ended)
+		}
+		claimReady(t, pool, engine, gatedRoot, claim.RoleArchitect, 1)
+		caught := lastCatchUp(t, pool)
+		spec := slices.IndexFunc(caught.Gates, func(gate record.CatchUpGate) bool { return gate.Step == record.DesignStepSpec })
+		if spec < 0 || !caught.Gates[spec].Unregistered || caught.Gates[spec].Open || caught.Gates[spec].Basis != nil {
+			t.Fatalf("R's catch-up states its gates %+v, want the spec step unregistered with no basis", caught.Gates)
 		}
 	})
 
@@ -421,7 +505,6 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedIssue(t, pool, record.Issue{Key: restingAncestorsOf, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 			Tree: restingAncestorsOf, Project: "LEGION", Title: "tree root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "R",
 			HandedOver: true, LastDispatchSeq: 1})
-		seedTreeLifecycle(t, pool, restingAncestorsOf)
 		seedBeneath(t, pool, basisAncestor, restingAncestorsOf, restingAncestorsOf, phase.Implementing, "in_progress")
 		registerResting(t, pool, applyFacts(t, pool, engine))
 		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
@@ -487,7 +570,9 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		}
 
 		claimReady(t, pool, engine, basisAncestor, claim.RoleArchitect, 1)
+		// P registered no gate of its own, so its reason names its spec step before the roots.
 		want := "the tree of LEGION-100 at generation 1 as the daemon records it now; start or resume it as your role says" +
+			"; no document is registered for the spec step of LEGION-100: register the document of that step with register_gate and request the person's approval" +
 			"; resting on the approval of LEGION-100 and still in the workflow: " + restingNamed +
 			" (the daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)"
 		if got := lastCatchUpReason(t, pool); got != want {

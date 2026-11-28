@@ -47,8 +47,8 @@ type architectWakeFixture struct {
 	status string
 	// awaiting is the wait of a root that stands in awaiting_person, nil for every other.
 	awaiting *record.Awaiting
-	// carried records a hand-over row at the root's generation, which is what says the root
-	// stands in the run a hand-over carried it into (record.Store.HandedOverRoot).
+	// carried records the root as carried in at its generation (record.Issue.CarriedGeneration),
+	// which is what says the root stands in the run a hand-over carried it into.
 	carried bool
 	// registered gives the root a design-gate row its architect registered, which is what the
 	// gate arm reads the absence of.
@@ -88,24 +88,24 @@ func architectWakeRoot(key string) architectWakeFixture {
 		given: seededEntry, task: true, queuedAt: fixedNow, confirmed: true}
 }
 
-// seedArchitectWakeRoot records one fixture: the issue, its tree lifecycle, its slot, its
-// hand-over row, its design gate, the architect's phases row, and the architect's claim with the
-// task it holds.
+// seedArchitectWakeRoot records one fixture: the issue with its own facts (a root a hand-over of
+// the release before carried in at its generation, record.Issue.CarriedGeneration, where carried),
+// its lifecycle, its slot, its design gate, the architect's phases row, and the architect's claim
+// with the task it holds.
 func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixture) {
 	t.Helper()
 	ctx := context.Background()
-	putIssue(t, pool, record.Issue{Key: f.key, Tree: f.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+	root := record.Issue{Key: f.key, Tree: f.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: testProject, Title: "the root " + f.key, Phase: f.stands, Generation: f.generation, Awaiting: f.awaiting,
-		Status: f.status, DispatchStatus: f.status, Rank: f.key, HandedOver: true, LastDispatchSeq: 1})
+		Status: f.status, DispatchStatus: f.status, Rank: f.key, HandedOver: true, LastDispatchSeq: 1}
+	if f.carried {
+		root.CarriedGeneration = f.generation
+	}
+	putIssue(t, pool, root)
 	seedLifecycle(t, pool, f.key)
 	takeSlotAt(t, pool, f.key, f.admittedAt)
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if f.carried {
-			if err := records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: f.key, Generation: f.generation}); err != nil {
-				t.Fatalf("record %s as a root a hand-over created: %v", f.key, err)
-			}
-		}
 		if f.registered {
 			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: f.key, ArtifactID: "artifact-" + f.key, LatestVersion: 1}); err != nil {
 				t.Fatalf("record the design gate %s registered: %v", f.key, err)
@@ -338,7 +338,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 				t.Fatalf("the wake of %s = %q, want it not to say %q: %s", root, reason, tc.never, tc.why)
 			}
 			if tc.says != "" {
-				if starts := architectStartsOf(t, pool, root); len(starts) != 1 {
+				if starts := roleStarts(t, pool, root, claim.RoleArchitect); len(starts) != 1 {
 					t.Fatalf("the architect starts of %s = %+v, want the one the first pass wrote: the reason says it wrote one", root, starts)
 				}
 			}
@@ -465,7 +465,7 @@ func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *te
 			applySweep(t, pool, admission, "superseded-2")
 			assertArchitectWakes(t, pool, root, tc.want, tc.why)
 
-			starts := architectStartsOf(t, pool, root)
+			starts := roleStarts(t, pool, root, claim.RoleArchitect)
 			if tc.sent == 0 {
 				if len(starts) != 0 {
 					t.Fatalf("the architect starts of %s = %+v, want none: %s", root, starts, tc.why)
@@ -671,7 +671,7 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 			applySweep(t, pool, admission, "first-queued-1")
 			applySweep(t, pool, admission, "first-queued-2")
 			assertArchitectWakes(t, pool, root, tc.want, tc.why)
-			if starts := architectStartsOf(t, pool, root); len(starts) != 0 {
+			if starts := roleStarts(t, pool, root, claim.RoleArchitect); len(starts) != 0 {
 				t.Fatalf("the architect starts of %s = %+v, want none: its claim was given the entry its row names", root, starts)
 			}
 			if len(tc.want) == 0 {
@@ -1002,10 +1002,12 @@ func TestTheGateArchitectWakeIsNotRaisedForARootAHandoverCarriedIn(t *testing.T)
 		t.Fatalf("the architect wakes of the carried root = %q, want none: the gate arm reads a root standing at admitted", reasons)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root),
-			record.PhaseEntry{}, record.RoleRun{})
-		if err != nil || !reached {
-			t.Fatalf("the architect reach over the carried root = %t, %v, want the root inside it: the quiet above must be the arm's own reading", reached, err)
+		chains, err := record.ReadChains(context.Background(), tx, record.NewStore(), testProject, []string{root})
+		if err != nil {
+			t.Fatalf("read the chain of %s: %v", root, err)
+		}
+		if !workflow.ArchitectAtWork(issue(t, pool, root), chains.HoldsOwnGate(root), record.PhaseEntry{}, record.RoleRun{}) {
+			t.Fatal("the architect reach over the carried root leaves it out, want the root inside it: the quiet above must be the arm's own reading")
 		}
 	})
 }

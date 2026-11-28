@@ -194,97 +194,85 @@ func TestTheBootOpensAStepNoStartCountedAtTheCount0(t *testing.T) {
 	})
 }
 
-// A re-admission clears a generation's facts (ClearGeneration, ClearTreeGeneration), and the count
-// is none of them: the generation is part of a record's id already, and a count that started again
-// would give a later run of the same generation and place the id of an earlier one. So each clear
-// leaves every row whole — the count, the agent, the moment and the run — of the issue it clears,
-// of each member of the tree it clears, and of an issue of another tree; the tree's clear reaches
-// its root and its child, which the clear's own facts show it did.
+// A new run clears a generation's facts (ClearGeneration), and the count is none of them: the
+// generation is part of a record's id already, and a count that started again would give a later
+// run of the same generation and place the id of an earlier one. So the clear leaves every row
+// whole — the count, the agent, the moment and the run — of the issue it clears and of every other
+// issue; the clear reaches its own issue alone, which the clear's own facts show.
 func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
-	for _, clear := range []string{"the issue's", "the tree's"} {
-		t.Run(clear, func(t *testing.T) {
-			st := migratedStore(t)
-			store := NewStore()
-			testing3 := StepPlace{Task: "default", Kind: "step", Place: 3}
-			at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
-			inTx(t, st, func(tx pgx.Tx) {
-				for _, issue := range []struct{ key, tree string }{{"LEGION-1", "LEGION-1"}, {"LEGION-2", "LEGION-1"}, {"LEGION-3", "LEGION-3"}} {
-					if _, err := tx.Exec(t.Context(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-						values ($1, $2, 'LEGION', $1, 'testing', 1, 'testing', 'A', 1)`, issue.key, issue.tree); err != nil {
-						t.Fatalf("record %s: %v", issue.key, err)
-					}
-					// A handoff commit each clear empties, which shows the clear reached the issue.
-					if _, err := tx.Exec(t.Context(), `insert into phases (issue, role, claim, handoff_commit, rounds, verdict)
-						values ($1, 'tester', '', 'head', 0, '')`, issue.key); err != nil {
-						t.Fatalf("record the tester's row of %s: %v", issue.key, err)
-					}
+	st := migratedStore(t)
+	store := NewStore()
+	testing3 := StepPlace{Task: "default", Kind: "step", Place: 3}
+	at := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []struct{ key, tree string }{{"LEGION-1", "LEGION-1"}, {"LEGION-2", "LEGION-1"}, {"LEGION-3", "LEGION-3"}} {
+			if _, err := tx.Exec(t.Context(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+				values ($1, $2, 'LEGION', $1, 'testing', 1, 'testing', 'A', 1)`, issue.key, issue.tree); err != nil {
+				t.Fatalf("record %s: %v", issue.key, err)
+			}
+			// A handoff commit each clear empties, which shows the clear reached the issue.
+			if _, err := tx.Exec(t.Context(), `insert into phases (issue, role, claim, handoff_commit, rounds, verdict)
+				values ($1, 'tester', '', 'head', 0, '')`, issue.key); err != nil {
+				t.Fatalf("record the tester's row of %s: %v", issue.key, err)
+			}
+		}
+		// Rows that differ in every field: the root's open at its third start, the child's
+		// ended at its fifth, and the other tree's issue's uncounted at its second.
+		want := map[string]StepStart{}
+		for _, seed := range []struct {
+			key   string
+			count int
+			agent string
+			at    time.Time
+			run   StepRun
+		}{
+			{"LEGION-1", 3, "legion-legion-legion-1-tester", at, RunOpen},
+			{"LEGION-2", 5, "legion-legion-legion-2-tester", at.Add(time.Hour), RunEnded},
+			{"LEGION-3", 2, "legion-legion-legion-3-tester", at.Add(2 * time.Hour), RunUncounted},
+		} {
+			for range seed.count {
+				raise(t, tx, seed.key, testing3, seed.agent, seed.at)
+			}
+			if seed.run == RunEnded {
+				if _, ended, err := store.EndStepStart(t.Context(), tx, seed.key, testing3); err != nil || !ended {
+					t.Fatalf("end the run of %s = %t, %v", seed.key, ended, err)
 				}
-				// Rows that differ in every field: the root's open at its third start, the child's
-				// ended at its fifth, and the other tree's issue's uncounted at its second.
-				want := map[string]StepStart{}
-				for _, seed := range []struct {
-					key   string
-					count int
-					agent string
-					at    time.Time
-					run   StepRun
-				}{
-					{"LEGION-1", 3, "legion-legion-legion-1-tester", at, RunOpen},
-					{"LEGION-2", 5, "legion-legion-legion-2-tester", at.Add(time.Hour), RunEnded},
-					{"LEGION-3", 2, "legion-legion-legion-3-tester", at.Add(2 * time.Hour), RunUncounted},
-				} {
-					for range seed.count {
-						raise(t, tx, seed.key, testing3, seed.agent, seed.at)
-					}
-					if seed.run == RunEnded {
-						if _, ended, err := store.EndStepStart(t.Context(), tx, seed.key, testing3); err != nil || !ended {
-							t.Fatalf("end the run of %s = %t, %v", seed.key, ended, err)
-						}
-					}
-					if seed.run == RunUncounted {
-						if _, err := tx.Exec(t.Context(), `update step_starts set run = 'uncounted' where issue = $1`, seed.key); err != nil {
-							t.Fatalf("mark %s uncounted: %v", seed.key, err)
-						}
-					}
-					want[seed.key] = StepStart{Starts: int64(seed.count), Agent: seed.agent, StartedAt: seed.at, Run: seed.run}
+			}
+			if seed.run == RunUncounted {
+				if _, err := tx.Exec(t.Context(), `update step_starts set run = 'uncounted' where issue = $1`, seed.key); err != nil {
+					t.Fatalf("mark %s uncounted: %v", seed.key, err)
 				}
-				// The clear is required to be handed a forget (KeptForget), which runs here over no
-				// decision and no queued request: no issue keeps or queues one.
-				cleared := []string{"LEGION-1"}
-				if clear == "the issue's" {
-					if _, err := store.ClearGeneration(t.Context(), tx, Issue{Key: "LEGION-1", Tree: "LEGION-1"}, forgetNothing); err != nil {
-						t.Fatalf("ClearGeneration: %v", err)
-					}
-				} else {
-					if _, err := store.ClearTreeGeneration(t.Context(), tx, "LEGION-1", forgetNothing); err != nil {
-						t.Fatalf("ClearTreeGeneration: %v", err)
-					}
-					cleared = append(cleared, "LEGION-2")
-				}
-				var reached []string
-				rows, err := tx.Query(t.Context(), `select issue from phases where role = 'tester' and handoff_commit = '' order by issue`)
-				if err != nil {
-					t.Fatalf("read which issues the clear reached: %v", err)
-				}
-				for rows.Next() {
-					var key string
-					if err := rows.Scan(&key); err != nil {
-						t.Fatalf("scan: %v", err)
-					}
-					reached = append(reached, key)
-				}
-				rows.Close()
-				if !reflect.DeepEqual(reached, cleared) {
-					t.Fatalf("%s clear reached %v (their handoff commits emptied), want %v: a clear that reaches no issue proves nothing of the count", clear, reached, cleared)
-				}
-				for key, start := range want {
-					if got, err := store.StepStarts(t.Context(), tx, key, testing3); err != nil || got != start {
-						t.Errorf("StepStarts of %s after %s clear = %+v, %v; want the row unchanged, %+v", key, clear, got, err, start)
-					}
-				}
-			})
-		})
-	}
+			}
+			want[seed.key] = StepStart{Starts: int64(seed.count), Agent: seed.agent, StartedAt: seed.at, Run: seed.run}
+		}
+		// The clear is required to be handed a forget (KeptForget), which runs here over no
+		// decision and no queued request: no issue keeps or queues one.
+		cleared := []string{"LEGION-1"}
+		if _, err := store.ClearGeneration(t.Context(), tx, Issue{Key: "LEGION-1"}, forgetNothing); err != nil {
+			t.Fatalf("ClearGeneration: %v", err)
+		}
+		var reached []string
+		rows, err := tx.Query(t.Context(), `select issue from phases where role = 'tester' and handoff_commit = '' order by issue`)
+		if err != nil {
+			t.Fatalf("read which issues the clear reached: %v", err)
+		}
+		for rows.Next() {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			reached = append(reached, key)
+		}
+		rows.Close()
+		if !reflect.DeepEqual(reached, cleared) {
+			t.Fatalf("the issue's clear reached %v (their handoff commits emptied), want %v: a clear that reaches no issue proves nothing of the count", reached, cleared)
+		}
+		for key, start := range want {
+			if got, err := store.StepStarts(t.Context(), tx, key, testing3); err != nil || got != start {
+				t.Errorf("StepStarts of %s after the issue's clear = %+v, %v; want the row unchanged, %+v", key, got, err, start)
+			}
+		}
+	})
 }
 
 // The roll forward of a rollback marks each place of an issue the earlier release moved uncounted

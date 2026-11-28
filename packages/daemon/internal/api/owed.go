@@ -29,13 +29,13 @@ type OwedRequest struct {
 // a reminder renders the phrase it is given and never one of its own.
 //
 // Architect is the architect claim that owns the claim now (owningArchitect): the issue's own
-// architect while its claim holds its role, else the nearest one above it whose claim does, else
-// the tree root's. It is named for a phase worker whose issue the workflow records, whether or not
-// the claim owes, and left out for an architect, the controller, a failed claim and an issue the
-// workflow does not record. The reminder's architect notice goes to it (`tellArchitect` in
-// packages/pi-shared/src/phase-reminder.ts), and so does the stall watch's notice of a stuck call
-// (packages/pi-legion/src/stall-evidence.ts), so both reach the architect the daemon's own notices
-// of the issue reach, without a read of the daemon's whole state.
+// architect while its claim holds its role, else the nearest one above it on its Dispatch chain
+// whose claim does, else its gate root's. It is named for a phase worker whose issue the workflow
+// records, whether or not the claim owes, and left out for an architect, the controller, a failed
+// claim and an issue the workflow does not record. The reminder's architect notice goes to it
+// (`tellArchitect` in packages/pi-shared/src/phase-reminder.ts), and so does the stall watch's
+// notice of a stuck call (packages/pi-legion/src/stall-evidence.ts), so both reach the architect
+// the daemon's own notices of the issue reach, without a read of the daemon's whole state.
 type OwedResponse struct {
 	Owes      bool        `json:"owes"`
 	Work      string      `json:"work"`
@@ -130,21 +130,27 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 }
 
 // owningArchitect is the architect claim that owns a phase worker on issue now (OwedResponse's
-// Architect): the end of the owner walk from issue itself (record.OwnerWalk.Architect), over the
-// architect claims of issue's tree as the store records them. That is the walk the daemon's own
-// notices about a phase worker take (workflowRuntime.owningArchitect in
-// internal/daemon/specs.go): the issue's own architect while its claim holds its role, else the
-// nearest one above it that does, else the tree root's. It reads the tree's issues and their
-// architect claims, so it grows with the tree and not with the deployment, in a read-only
-// transaction of its own, which the completion route, sharing handoffPosition, does not pay for.
+// Architect): the end of the owner walk from issue itself over its Dispatch chain
+// (record.OwnerWalk.Architect, R18 of dispatch://INFRA-3320), as the store records the architect
+// claims on that chain now. That is the walk the daemon's own notices about a phase worker take
+// (workflowRuntime.owningArchitect in internal/daemon/specs.go): the issue's own architect while
+// its claim holds its role, else the nearest one above it in Legion's work that does, else its
+// gate root's. A walk that meets a chain the copy cannot show to its top (record.ErrChainUnknown)
+// names the issue's own architect, where it starts, as that reader does
+// (record.OwnerWalk.ArchitectOrOwn). Nothing of the stored tree is read: the route reads the
+// issue's chain once per ask (record.ReadOwnerWalk: the copy's rows of the chain, the records they
+// name and the architect claims on it, and no child of the issue), in the same statements whatever
+// the chain, the tree or the deployment, so only their rows grow, and with the chain alone, which
+// Dispatch bounds (record.MaxChainLinks). It reads in a read-only transaction of its own, which
+// the completion route, sharing handoffPosition, does not pay for.
 func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim.Token, error) {
 	var owner claim.Token
 	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		walk, err := record.ReadOwnerWalk(ctx, s.records, tx, s.project, issue.Tree)
+		walk, err := record.ReadOwnerWalk(ctx, s.records, tx, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
 		}
-		owner, err = walk.Architect(issue, false)
+		owner, err = walk.ArchitectOrOwn(issue.Key, false)
 		return err
 	})
 	return owner, err
@@ -164,10 +170,11 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // later still; the record is what the workflow writes in the very transaction that takes a
 // completion or moves a phase. So a role whose phase has finished owes nothing whatever it was
 // handed or remembers: the issue has moved on to another role's phase (RoleFor names another
-// role), to one no role works (awaiting_person, awaiting_children, done, held), or its tree lingers, where a
-// completion records nothing; or the phase is merging and its pull request is merged, which is
-// what finishes that phase (workflow.PhaseFinished) while a merged root stands in merging until
-// the rest of its tree leaves.
+// role), to one no role works (awaiting_person, awaiting_children, done, held), or out of
+// Legion's work (record.InLegionsWork), where a stop or a person's done keeps the phase it stood
+// in (R20 of dispatch://INFRA-3320) and a completion records nothing; or the phase is merging and
+// its pull request is merged, which is what finishes that phase (workflow.PhaseFinished) while a
+// merged root stands in merging until the rest of its tree leaves.
 //
 // Within the role's own open phase, the two numbers the daemon closes the difference between
 // decide, read as the daemon reads them, so this answer and the daemon's sending of the entry's
@@ -188,12 +195,12 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // being the check's current one of this check instance, and the check the claim's role's — owes
 // that look. Every other claim owes its phase or nothing, by the rule above, and that includes a
 // claim whose served look the check has left: a phase task leaves the served look in place
-// (supervise's ServingCheck), so a tester that once served a look and holds testing work again,
-// a root reopened in its linger, owes its testing phase, and the completion route takes that
-// phase's completion from it, since only a report that names its check (checkOpenedAt) is taken
-// on the check route. A look the record holds open for the claim's role while the claim serves
-// none — its task not yet taken, or a testing turn still running behind a merged close — is not
-// owed yet: a report sent from that turn is refused as no report on production
+// (supervise's ServingCheck), so a tester that once served a look and holds testing work again, a
+// merged issue reopened into a new run, owes its testing phase, and the completion route takes
+// that phase's completion from it, since only a report that names its check (checkOpenedAt) is
+// taken on the check route. A look the record holds open for the claim's role while the claim
+// serves none — its task not yet taken, or a testing turn still running behind a merged close — is
+// not owed yet: a report sent from that turn is refused as no report on production
 // (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
 // Neither the claim's prompts nor the daemon's own delivery of a relaunch's record change that
@@ -214,7 +221,7 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 			return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 		}
 	}
-	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
+	if position.stopped || roleFor(issue.Phase) != c.Role || position.merged() {
 		return nothing
 	}
 	if behind := c.GivenEntry < position.entry; !behind && position.completed {

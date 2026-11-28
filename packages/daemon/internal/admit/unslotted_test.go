@@ -1,277 +1,60 @@
 package admit
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A root waiting for its slot that a person or an outside session moves to a status only a running
-// tree has (in_progress, testing, needs_review, retro) leaves the line, and no slot would ever reach
-// it again. It leaves the workflow as a parked root does: its phase is done and its tree
-// lingers, and Legion starts nothing for it, so a slot that frees later goes elsewhere and never
-// starts a second copy of someone else's work. The controller is told nothing: its skill re-admits
-// nothing for such a root, and it reads the root from the state, at phase done beside a status only
-// a running tree has (#4065). Set back to todo with the label, it is queued again and takes the
-// next slot. A root a hand-over carried into a phase past admitted waits in the line the same way,
-// and leaves it the same way. A root whose key an operator's tree holds leaves the same way but
-// lingers no tree, since the tree under its key is the operator's (workflow's leave,
-// leaveUnderOperator): its phase is done with no linger, the controller is told nothing either, and
-// a todo with the label admits it again. With a slot free it then waits while the operator's tree
-// is open (treelifecycle.ErrAuthorityHeld), and no architect starts.
-func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {
-	for _, tc := range []struct {
-		name, actor, status string
-		phase               phase.Phase
-		// handedOverFrom is the tree a root carried its run out of: a root past admitted waits
-		// in the line only as a tree another tree handed over, since a root's own record is
-		// what says its generation has still to run (record.Waiting). generation is the one it
-		// waits at, 0 for the 1 seedWaiting writes: a hand-over's re-admission opens one past the
-		// generation the root ran at in the tree it left (readmit), so a carried root is at 2 at
-		// least.
-		handedOverFrom string
-		generation     uint64
-	}{
-		{name: "a person's in_progress", status: "in_progress", phase: phase.Admitted},
-		{name: "an outside session's in_progress", actor: "ses-outsider", status: "in_progress", phase: phase.Admitted},
-		{name: "an outside session's needs_review", actor: "ses-outsider", status: "needs_review", phase: phase.Admitted},
-		{name: "a person's testing", status: "testing", phase: phase.Admitted},
-		{name: "an outside session's retro", actor: "ses-outsider", status: "retro", phase: phase.Admitted},
-		{name: "a person's in_progress on a root carried into implementing", status: "in_progress", phase: phase.Implementing, handedOverFrom: "LEGION-200", generation: 2},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-			seedSlotted(t, pool, "LEGION-1", "A")
-			seedWaiting(t, pool, "LEGION-5", "B")
-			waiting := issue(t, pool, "LEGION-5")
-			waiting.Phase, waiting.HandedOverFrom = tc.phase, tc.handedOverFrom
-			if tc.generation != 0 {
-				waiting.Generation = tc.generation
-			}
-			putIssue(t, pool, waiting)
-			assertWaiting(t, pool, []string{"LEGION-5"})
-
-			apply(t, pool, admission, "taken", intake.DispatchIssue{Key: "LEGION-5", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: tc.status, Title: "LEGION-5", Rank: "B", HandedOver: true, ActorSession: tc.actor}, engine)
-			got := issue(t, pool, "LEGION-5")
-			if got.Phase != phase.Done || got.LingerUntil == nil || got.Status != tc.status {
-				t.Fatalf("LEGION-5 after the %s = %#v, want it out of the workflow: phase done, lingering, status %s", tc.status, got, tc.status)
-			}
-			assertWaiting(t, pool, nil)
-			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}})
-			if notices := controllerNotices(t, pool); len(notices) != 0 {
-				t.Fatalf("controller notices = %#v, want none: the root's phase done beside its %s is what the controller reads", notices, tc.status)
-			}
-
-			// The running tree finishes: its slot frees, and the released root does not take it.
-			apply(t, pool, admission, "first-done", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
-			assertSlots(t, pool, nil)
-			if started := architectStarts(t, pool, "LEGION-5"); started != 0 {
-				t.Fatalf("architect starts for LEGION-5 = %d, want none: Legion runs nothing someone else took", started)
-			}
-
-			// Set back to todo with the label, it is queued again at its next generation and takes
-			// the free slot.
-			apply(t, pool, admission, "queued-again", intake.DispatchIssue{Key: "LEGION-5", ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: "LEGION-5", Rank: "B", HandedOver: true}, engine)
-			next := waiting.Generation + 1
-			if got := issue(t, pool, "LEGION-5"); got.Phase != phase.Admitted || got.Generation != next || got.LingerUntil != nil || got.Status != "in_progress" {
-				t.Fatalf("LEGION-5 set back to todo = %#v, want it admitted at generation %d and running", got, next)
-			}
-			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-5", Index: 0, AdmittedAt: fixedNow}})
-			if started := architectStarts(t, pool, "LEGION-5"); started != 1 {
-				t.Fatalf("architect starts for LEGION-5 = %d, want one, for its generation %d", started, next)
-			}
-		})
-	}
-
-	t.Run("a person's in_progress on a root whose key an operator's tree holds", func(t *testing.T) {
-		const key = "LEGION-OPS"
-		pool := migratedPool(t)
-		admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-		seedSlotted(t, pool, "LEGION-1", "A")
-		seedWaiting(t, pool, key, "B")
-		inTx(t, pool, func(tx pgx.Tx) {
-			project, err := claim.ProjectToken(testProject)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, project, key, treelifecycle.AuthorityOperator); err != nil {
-				t.Fatalf("open the operator's tree under %s: %v", key, err)
-			}
-		})
-		assertWaiting(t, pool, []string{key})
-
-		apply(t, pool, admission, "taken", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: key, Rank: "B", HandedOver: true}, engine)
-		if got := issue(t, pool, key); got.Phase != phase.Done || got.LingerUntil != nil || got.Status != "in_progress" {
-			t.Fatalf("%s after the in_progress = %#v, want it out of the workflow at phase done with no linger, status in_progress", key, got)
-		}
-		if notices := controllerNotices(t, pool); len(notices) != 0 {
-			t.Fatalf("controller notices = %#v, want none: %s at phase done beside its in_progress is what the controller reads", notices, key)
-		}
-
-		// The running tree finishes, freeing its slot; then the root is set back to todo with the
-		// label: it is admitted again and waits behind the operator's tree, so the free slot stays
-		// free and no architect starts.
-		apply(t, pool, admission, "first-done", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "done", Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
-		apply(t, pool, admission, "queued-again", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: key, Rank: "B", HandedOver: true}, engine)
-		if got := issue(t, pool, key); got.Phase != phase.Admitted || got.Generation != 2 || got.LingerUntil != nil || got.Status != "todo" {
-			t.Errorf("%s set back to todo = %#v, want it admitted at generation 2, waiting at todo", key, got)
-		}
-		if started := architectStarts(t, pool, key); started != 0 {
-			t.Errorf("architect starts for %s = %d, want none while the operator holds its tree", key, started)
-		}
-		assertSlots(t, pool, nil)
-		assertWaiting(t, pool, []string{key})
-		if notices := controllerNotices(t, pool); len(notices) != 0 {
-			t.Fatalf("controller notices after the todo = %#v, want none", notices)
-		}
-	})
-}
-
-// A root recorded in the workflow at a status only a running tree has, whose tree nothing will
-// open again — the state dispatch://INFRA-129 reported, which an earlier release left — is
-// released at the boot read, even with a slot free: nothing starts for it, and the controller is
-// told nothing, since it reads the released root from the state. Its tree holds no lifecycle,
-// which is what says a tree runs now: a root of a tree that does run can hold no slot while it
-// waits on another issue (it gave its slot back, releaseSlotsForWaits), and the net must leave
-// every one of those alone. A running root, one taken out of the line by its label (a pause the
-// label ends), and another project's root in the same store are left as they are.
-func TestTheBootReadReleasesARootThatHeldNoSlotAndWaitedForNone(t *testing.T) {
+// A waiting root moved to another in-work status keeps its phase, and gets no slot until
+// Dispatch shows it todo again. No promotion or new run is triggered by another status.
+func TestAWaitingRootMovedOutOfTodoWaitsForTodo(t *testing.T) {
 	for _, status := range []string{"in_progress", "testing", "needs_review", "retro"} {
 		t.Run(status, func(t *testing.T) {
+			const key = "LEGION-5"
 			pool := migratedPool(t)
-			admission := newAdmission(t, 3, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			seedSlotted(t, pool, "LEGION-RUN", "A")
-			putIssue(t, pool, record.Issue{Key: "LEGION-81", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-				Title: "LEGION-81", Tree: "LEGION-81", Phase: phase.Admitted, Generation: 1, Status: status, DispatchStatus: status, Rank: "B",
-				HandedOver: true, LastDispatchSeq: 5})
-			putIssue(t, pool, record.Issue{Key: "LEGION-OFF", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-OFF", Tree: "LEGION-OFF",
-				Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "C", LastDispatchSeq: 5})
-			putIssue(t, pool, record.Issue{Key: "OTHER-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "OTHER", Title: "OTHER-1", Tree: "OTHER-1",
-				Phase: phase.Admitted, Generation: 1, Status: status, DispatchStatus: status, Rank: "D", HandedOver: true, LastDispatchSeq: 5})
-
-			reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
-				{Key: "LEGION-81", ResolvedRepo: "acme/widgets", Title: "LEGION-81", Status: status, Rank: "B", LastSeq: 5, HandedOver: true},
-				{Key: "LEGION-OFF", ResolvedRepo: "acme/widgets", Title: "LEGION-OFF", Status: "todo", Rank: "C", LastSeq: 5},
-			}, 1, 1, true)
-
-			if got := issue(t, pool, "LEGION-81"); got.Phase != phase.Done || got.LingerUntil == nil || got.Status != status {
-				t.Fatalf("LEGION-81 after the boot read = %#v, want it out of the workflow: phase done, lingering, status %s", got, status)
+			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			engine := priorityEngine()
+			seedSlotted(t, pool, "LEGION-1", "A")
+			seedWaiting(t, pool, key, "B")
+			assertWaiting(t, pool, []string{key})
+			fact := intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+				Status: status, Title: key, Rank: "B", HandedOver: true}
+			apply(t, pool, admission, "other-status", fact, engine)
+			if got := issue(t, pool, key); got.Phase != phase.Admitted || got.Status != status || got.Generation != 1 {
+				t.Fatalf("waiting root after status change = %+v; want admitted at %s in generation 1", got, status)
 			}
-			if got := issue(t, pool, "LEGION-OFF"); got.Phase != phase.Admitted || got.LingerUntil != nil {
-				t.Fatalf("LEGION-OFF after the boot read = %#v, want it left admitted: the label puts it back in the line", got)
-			}
-			if got := issue(t, pool, "LEGION-RUN"); got.Phase != phase.Admitted || got.Status != "in_progress" {
-				t.Fatalf("LEGION-RUN after the boot read = %#v, want it running as it was", got)
-			}
-			if got := issue(t, pool, "OTHER-1"); got.Phase != phase.Admitted || got.LingerUntil != nil {
-				t.Fatalf("OTHER-1 after the boot read = %#v, want another project's root left to its own daemon", got)
-			}
-			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-RUN", Index: 0, AdmittedAt: fixedNow}})
 			assertWaiting(t, pool, nil)
-			if started := architectStarts(t, pool, "LEGION-81"); started != 0 {
-				t.Fatalf("architect starts for LEGION-81 = %d, want none", started)
+			apply(t, pool, admission, "slot-freed", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+				Status: "done", Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
+			assertSlots(t, pool, nil)
+			if starts := architectStarts(t, pool, key); starts != 0 {
+				t.Fatalf("architect starts before the todo = %d; want none", starts)
 			}
-			if notices := controllerNotices(t, pool); len(notices) != 0 {
-				t.Fatalf("controller notices = %#v, want none: the released LEGION-81 is read from the state", notices)
+			fact.Seq, fact.Status = 3, "todo"
+			apply(t, pool, admission, "todo", fact, engine)
+			assertSlots(t, pool, []record.Slot{{Issue: key, Index: 0, AdmittedAt: fixedNow}})
+			if got := issue(t, pool, key); got.Generation != 1 {
+				t.Fatalf("return to todo opened generation %d; want generation 1", got.Generation)
 			}
 		})
 	}
 }
 
-// A boot listing behind the Dispatch consumer may already show the status that takes a waiting
-// root out of its line. Until the consumer reaches its captured position, neither promotion nor
-// unslotted repair acts on that snapshot. Release applies it first, then repairs the root without
-// ever starting it.
-func TestReleaseAppliesAHeldRunningStatusBeforeUnslottedRepair(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedWaiting(t, pool, "LEGION-HELD", "A")
-	waiting := issue(t, pool, "LEGION-HELD")
-	waiting.LastDispatchSeq = 1
-	putIssue(t, pool, waiting)
-
-	reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
-		{Key: waiting.Key, ResolvedRepo: "acme/widgets", Title: waiting.Title, Status: "in_progress", Rank: waiting.Rank, HandedOver: true, LastSeq: 2},
-	}, 5, 2, false)
-	if got := issue(t, pool, waiting.Key); got.Status != "todo" || got.Phase != phase.Admitted {
-		t.Fatalf("held root before release = %#v, want its stored todo admission left untouched", got)
-	}
-	assertSlots(t, pool, nil)
-	if notices := controllerNotices(t, pool); len(notices) != 0 {
-		t.Fatalf("controller notices before release = %#v, want none", notices)
-	}
-
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "held-position-reached", intake.DispatchConsumerPosition{AckFloorStream: 5}, engine, admission); err != nil {
-		t.Fatalf("release held position: %v", err)
-	}
-	got := issue(t, pool, waiting.Key)
-	if got.Status != "in_progress" || got.Phase != phase.Done || got.LingerUntil == nil {
-		t.Fatalf("held root after release = %#v, want it released from the workflow", got)
-	}
-	if started := architectStarts(t, pool, waiting.Key); started != 0 {
-		t.Fatalf("architect starts after held release = %d, want none", started)
-	}
-	if notices := controllerNotices(t, pool); len(notices) != 0 {
-		t.Fatalf("controller notices after release = %#v, want none: the released root is read from the state", notices)
-	}
-}
-
-// A status write the daemon queued before the move — a todo still on its way to Dispatch, say —
-// would land over the status someone else set and put the root back in the line beside their work.
-// Releasing the root drops it, as every move out of the workflow drops the daemon's queued writes.
-func TestReleasingAnUnslottedRootDropsTheStatusWritesQueuedBeforeIt(t *testing.T) {
-	pool := migratedPool(t)
-	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
-	seedSlotted(t, pool, "LEGION-RUN", "A")
-	seedWaiting(t, pool, "LEGION-CLEANUP", "B")
-	inTx(t, pool, func(tx pgx.Tx) {
-		row, err := record.NewOutboxRow("LEGION-CLEANUP", record.OrdinaryStatusWrite("todo", "backlog", ""), fixedNow)
-		if err != nil {
-			t.Fatalf("build the queued status write: %v", err)
-		}
-		if err := record.NewStore().Enqueue(context.Background(), tx, row); err != nil {
-			t.Fatalf("queue the status write: %v", err)
-		}
-	})
-
-	apply(t, pool, admission, "taken", intake.DispatchIssue{Key: "LEGION-CLEANUP", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "in_progress", Title: "LEGION-CLEANUP", Rank: "B", HandedOver: true}, engine)
-
-	if got := issue(t, pool, "LEGION-CLEANUP"); got.Phase != phase.Done || got.Status != "in_progress" {
-		t.Fatalf("LEGION-CLEANUP after the in_progress = %#v, want it out of the workflow", got)
-	}
-	for _, effect := range effects(t, pool) {
-		if _, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-CLEANUP" {
-			t.Fatalf("status write %#v still queued for the released root, want it dropped", effect.payload)
-		}
-	}
-}
-
-// Admission's unslotted repair is narrow: the running-tree statuses are the only statuses where
-// a slotless root has definitely left its queue. An unknown Dispatch status must remain recorded
-// for its own handler rather than being silently taken out of Legion's workflow.
+// An unknown status is recorded without ending the issue's run.
 func TestAnUnknownStatusDoesNotReleaseAnUnslottedRoot(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	stranded := record.Issue{Key: "LEGION-UNKNOWN", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "unknown status", Tree: "LEGION-UNKNOWN",
 		Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1}
 	putIssue(t, pool, stranded)
@@ -279,8 +62,8 @@ func TestAnUnknownStatusDoesNotReleaseAnUnslottedRoot(t *testing.T) {
 	apply(t, pool, admission, "unknown-status", intake.DispatchIssue{Key: stranded.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "blocked", Title: stranded.Title, Rank: stranded.Rank, HandedOver: true}, engine)
 
 	got := issue(t, pool, stranded.Key)
-	if got.Phase != phase.Admitted || got.LingerUntil != nil || got.Status != "blocked" {
-		t.Fatalf("unknown-status root = %#v, want it left admitted without a linger", got)
+	if got.Phase != phase.Admitted || got.Status != "blocked" {
+		t.Fatalf("unknown-status root = %#v, want it left admitted with the status recorded", got)
 	}
 	if notices := controllerNotices(t, pool); len(notices) != 0 {
 		t.Fatalf("controller notices = %#v, want none for an unknown status", notices)

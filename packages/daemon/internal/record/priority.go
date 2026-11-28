@@ -73,8 +73,7 @@ func (p Priority) String() string {
 	return ""
 }
 
-// band is where p's band stands in the waiting line, lower first: P0 to P3 in their order, and
-// NoPriority, an entry with no priority (PriorityOf), after P3 (Waiting).
+// band is where p sorts: P0 to P3 in order, then NoPriority (PriorityOf).
 func (p Priority) band() uint8 {
 	if p == NoPriority {
 		return uint8(P3) + 1
@@ -102,8 +101,7 @@ type Resolved struct {
 
 // AdmissionPriority is the priority admission reads for issue: the one Dispatch resolves it to
 // where Dispatch sent one (Resolved.Known), else its own. So with a Dispatch release that resolves
-// no priority only an issue's own P0 makes it P0, and no Legion tree fallback ever does: the
-// daemon never walks a parent chain of its own to find one.
+// no priority only an issue's own P0 makes it P0, and no top issue's priority ever does.
 func (i Issue) AdmissionPriority() Priority {
 	if i.Resolved.Known {
 		return i.Resolved.Priority
@@ -113,23 +111,21 @@ func (i Issue) AdmissionPriority() Priority {
 
 // PriorityOf is the priority that places issue in the waiting line: the one Dispatch resolves it
 // to where Dispatch sent one (Issue.AdmissionPriority), else, for a Dispatch release that resolves
-// none, its own, else its tree root's, else NoPriority. root is the record of issue's tree root,
-// the issue itself for a root, and the zero Issue where the root has no record. The root's
-// priority is read from the root's record each time, never copied onto its members, so a person's
-// change of a root's priority reaches every member that has none of its own at the daemon's next
-// read of the root, with no event of theirs. The tree root's stands for an older Dispatch's order
-// of the line alone: it never makes an issue P0 for a start (Issue.StartsNow).
-func PriorityOf(issue, root Issue) Priority {
+// none, its own, then its top issue's, then NoPriority. The caller reads top from the same
+// Dispatch chain as its rank. Priority never copies from the top issue onto a member's record.
+// The top issue's stands for an older Dispatch's order of the line alone: it never makes an issue
+// P0 for a start (Issue.StartsNow).
+func PriorityOf(issue, top Issue) Priority {
 	if issue.Resolved.Known || issue.Priority != NoPriority {
 		return issue.AdmissionPriority()
 	}
-	return root.Priority
+	return top.Priority
 }
 
 // StartsNow says whether issue starts outside the admission cap (R10 of dispatch://INFRA-3199, C2
 // of dispatch://INFRA-5636): whether admission reads it as P0 (Issue.AdmissionPriority), directly
-// or by Dispatch's inheritance. It never reads PriorityOf's tree root: a P0 Legion tree root makes
-// none of its children P0.
+// or by Dispatch's inheritance. It never reads PriorityOf's top issue: a P0 top issue makes none
+// of the issues under it P0 unless Dispatch resolves them to P0.
 func (i Issue) StartsNow() bool { return i.AdmissionPriority() == P0 }
 
 // SlotHolders is a project's holders of an admission slot as the cap and the P0 bound count them:

@@ -166,8 +166,8 @@ func (r *stateGoldenRig) stamped(t *testing.T, live time.Time) time.Time {
 
 // pass commits write in one transaction that ends as an admission pass that judges the block ends
 // a fact (admit's block rule, Admission.Apply, and queueAdmissionBlock): the project's admission
-// block judged afresh at the clock's instant, through the one judgement the state route serves it
-// from, and written where it moved, which queues its state event in the same transaction.
+// block judged afresh, through the one judgement the state route serves it from, and written where
+// it moved, which queues its state event in the same transaction.
 func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
@@ -179,7 +179,7 @@ func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx p
 		if err != nil {
 			return err
 		}
-		judged, err := blockers.JudgeAdmission(ctx, tx, r.scoped, r.cfg.Project, r.cfg.Gates.Steps(), slots, r.cfg.AdmissionCap, r.now)
+		judged, err := blockers.JudgeAdmission(ctx, tx, r.scoped, r.cfg.Project, r.cfg.Gates.Steps(), slots, r.cfg.AdmissionCap)
 		if err != nil {
 			return err
 		}
@@ -400,7 +400,7 @@ func TestStateEventsGolden(t *testing.T) {
 			}
 		}},
 		// A root handed to Legion while the slot is free is recorded and promoted by one fact: its
-		// phase and tree, its slot and its tree's lifecycle, and the block it changes.
+		// phase and tree, its slot and its own issue lifecycle, and the block it changes.
 		{"a root is admitted", func(t *testing.T) {
 			r.pass(t, func(ctx context.Context, tx pgx.Tx) error {
 				if err := r.scoped.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: root.Key, Project: "LEGION", Seq: 1,
@@ -413,7 +413,7 @@ func TestStateEventsGolden(t *testing.T) {
 				if err := r.scoped.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: r.now}); err != nil {
 					return err
 				}
-				_, err := r.scoped.OpenTreeLifecycle(ctx, tx, "legion", root.Key, treelifecycle.AuthorityWorkflow)
+				_, err := r.scoped.OpenIssueLifecycle(ctx, tx, "legion", root.Key, treelifecycle.AuthorityWorkflow)
 				return err
 			})
 		}},
@@ -458,9 +458,14 @@ func TestStateEventsGolden(t *testing.T) {
 				return r.scoped.ClearReleasedForWait(ctx, tx, root.Key)
 			})
 		}},
-		{"the shipped root's tree is cleared", func(t *testing.T) {
-			shipped.Tree = ""
-			r.pass(t, func(ctx context.Context, tx pgx.Tx) error { return r.scoped.PutIssue(ctx, tx, shipped) })
+		// A done issue's tree is the nearest issue above it on its Dispatch chain that holds its
+		// own gate (record.Chains.StateTree), so a move of its parent in the copy moves its tree,
+		// which the transaction's end names (record.Postgres's watchTrees).
+		{"Dispatch moves the shipped root under the admitted root", func(t *testing.T) {
+			r.pass(t, func(ctx context.Context, tx pgx.Tx) error {
+				return r.scoped.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: shipped.Key, Project: "LEGION", Seq: 3,
+					Status: record.Carry("done"), Parent: record.Carry(root.Key), Blockers: record.Carry([]string{})})
+			})
 		}},
 		// An operator's claim on an issue the workflow does not record lists the issue at
 		// unrecorded (projection/project.go), so its first claim write names that phase too.

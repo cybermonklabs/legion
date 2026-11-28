@@ -69,12 +69,14 @@ func newRootArchitectRig(t *testing.T) *rootArchitectRig {
 	}
 	t.Cleanup(st.Close)
 	records := record.NewStore()
+	// A root as the daemon records one: holding its own gate, its copy row naming no parent (putChainIssue).
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
-		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
-	putOutboxIssue(t, pool, records, root)
+		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", HoldsGate: true}
+	putChainIssue(t, pool, records, root)
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree: %v", err)
 	}
+	openIssue(t, st, "legion", root.Key, treelifecycle.AuthorityWorkflow)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
 	sup.deps.ClaimActivity = st.ClaimActivity

@@ -159,7 +159,7 @@ func (r *workingCopyRig) launch() {
 	if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
 		r.t.Fatalf("spawn the implementer: %v", err)
 	}
-	readyClaimOf(r.t, r.sup, r.token, claim.RoleImplementer)
+	readyClaimAs(r.t, r.sup, r.token, claim.RoleImplementer, "ses-"+string(claim.RoleImplementer))
 	r.wait()
 }
 
@@ -183,7 +183,7 @@ func (r *workingCopyRig) relaunch() {
 	if loc := machine.Claim().Locator; loc == nil || loc.Incarnation == ended.Incarnation {
 		r.t.Fatalf("the implementer records the process %+v after the relaunch, want another than %s: the case's own premise", loc, ended.Incarnation)
 	}
-	readyClaimOf(r.t, r.sup, r.token, claim.RoleImplementer)
+	readyClaimAs(r.t, r.sup, r.token, claim.RoleImplementer, "ses-"+string(claim.RoleImplementer))
 	r.wait()
 }
 

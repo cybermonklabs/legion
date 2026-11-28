@@ -13,9 +13,11 @@
 #     completions reads its handoff record from Dispatch, so Dispatch is up for them;
 #   - a-phase-moves-while-dispatch-is-down: with the Dispatch process stopped the second review
 #     approves, the architect signs off, the retro completes and GitHub merges the pull request, so
-#     the issue reaches done; control: `dispatch steps` then exits non-zero naming the unreachable
-#     server, and the daemon's outbox holds the issue's step records unfinished; Dispatch started
-#     on the same database, the records of those four steps reach it, each ended, within the
+#     the issue reaches merging with its close queued, since a close lands only when Dispatch
+#     shows the issue done (R20 and R24 of dispatch://INFRA-3320); control: `dispatch steps` then
+#     exits non-zero naming the unreachable server, and the daemon's outbox holds the issue's step
+#     records unfinished; Dispatch started on the same database, the close lands, the issue
+#     reaches done, and the records of those four steps reach Dispatch, each ended, within the
 #     outbox's longest backoff and one lease;
 #   - walk-to-done-with-one-failed-review: `dispatch steps --issue <KEY>` prints the header
 #     `<KEY>: 10 steps in 1 tasks`, the line `task default needs …` of the default plan, and one

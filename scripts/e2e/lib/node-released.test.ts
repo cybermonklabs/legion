@@ -9,10 +9,11 @@ import { scriptFunctions } from "./script-functions";
 // judgement over the node's pods, as `kubectl get pods -o json` lists them, and node_released reads
 // the node and its pods through kubectl and judges them. The run at a578760e failed the checkpoint
 // with the node holding the run's repository cache pod (`legion.dev/cache=true`, no tree label,
-// alive as long as the daemon) and the carried child's new tree's pod (another tree of the same
-// project, launched at tree 1's linger expiry), neither of them tree 1's: the judgement must let a
-// node stay for those and for another project's pod, hold the wait for a pod of tree 1 or of the
-// run with no tree label, and count a finished pod or a pod with no project label for nothing.
+// alive as long as the daemon) and a pod of another tree of the same project, neither of them
+// tree 1's (no tree lingers, so nothing of tree 1 is carried into a tree of its own): the
+// judgement must let a node stay for those and for another project's pod, hold the wait for a pod
+// of tree 1 or of the run with no tree label, and count a finished pod or a pod with no project
+// label for nothing.
 const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"));
 
 const run = "legsmoke";

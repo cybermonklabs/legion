@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -106,20 +108,35 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	if s.stopped(w, r, "spawn") {
 		return
 	}
+	// An operator's tree is named for the issue it grew from, so the architect of its own issue is
+	// the gate holder's (supervise.Claim.HoldsGate); a workflow start writes the mark again from the
+	// Dispatch chain.
 	c := supervise.Claim{
 		Token: token, Project: s.project, Tree: req.Tree, Issue: req.Issue, Role: req.Role, State: supervise.StateQueued,
+		HoldsGate: claim.IsTreeRoot(req.Issue, req.Tree),
 	}
 	if s.refusedWhilePaused(w, r, "spawn", c) {
 		return
 	}
 	if claim.IsTreeArchitect(req.Role, req.Issue, req.Tree) {
-		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, s.drawExperiments(req.Tree)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		if _, err := s.trees.OpenTreeLifecycle(ctx, s.project, req.Tree, treelifecycle.AuthorityOperator); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {
 			s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
 			return
 		}
+	}
+	// The claim binds its issue's own lifecycle (store.Store.AdmitClaim): the operator opens it
+	// where nothing holds it, drawing the issue's own experiments in the open's transaction, and an
+	// issue the workflow already holds keeps the workflow's, whose epoch the claim binds and whose
+	// draws admission made, as a worker the operator spawns into a workflow tree binds that tree's.
+	if _, err := s.trees.OpenOperatorIssueLifecycle(ctx, s.project, req.Issue, s.drawExperiments(req.Issue)); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("issue %s is waiting for durable cleanup: %v", req.Issue, err))
+		return
+	} else if err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		s.operationFailure(w, r, supervise.SuspendedByOperator, "spawn", token, err)
+		return
 	}
 	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
@@ -147,16 +164,16 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 	s.writeUnparsedAnswer(w, r, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
-// drawExperiments draws the tree-unit experiments the project declares for tree, for the open
-// that creates the tree's lifecycle row to run in its own transaction
-// (store.Store.OpenOperatorTreeLifecycle, experiment.DrawAndRecord): one answer per experiment,
+// drawExperiments draws the tree-unit experiments the project declares for issue, for the open
+// that creates the issue's lifecycle row to run in its own transaction
+// (store.Store.OpenOperatorIssueLifecycle, experiment.DrawAndRecord): one answer per experiment,
 // under the mode the project declares it at and at the instant this server's clock reads,
-// recorded against the tree's root issue key (record.Store.PutAssignments, which admission's own
-// path draws through too). An operator's tree usually has no issue record at all, and then the
-// draw writes nothing — nothing is refused and no record is invented.
-func (s *server) drawExperiments(tree string) func(ctx context.Context, tx pgx.Tx) error {
+// recorded against the issue's own key (record.Store.PutAssignments, which admission's own path
+// draws through too). An operator's issue usually has no issue record at all, and then the draw
+// writes nothing — nothing is refused and no record is invented.
+func (s *server) drawExperiments(issue string) func(ctx context.Context, tx pgx.Tx) error {
 	return func(ctx context.Context, tx pgx.Tx) error {
-		return experiment.DrawAndRecord(ctx, tx, s.records, tree, s.experiments, config.ExperimentTree, s.source, s.now())
+		return experiment.DrawAndRecord(ctx, tx, s.records, issue, s.experiments, config.ExperimentTree, s.source, s.now())
 	}
 }
 
@@ -492,10 +509,9 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 }
 
 // closeTree is the operator closing a tree no workflow issue backs, through its root claim: the
-// tree's close, as the workflow's tree_close is for a tree whose linger expired. Without it a
-// root the operator spawned could never end — under a sandbox, its Sandbox and the tree volume
-// would stay for good. A workflow issue's tree is the workflow's to close, and a worker's claim is
-// stopped, not closed.
+// close of every issue the operator spawned in that tree. Without it a root the operator spawned
+// could never end — under a sandbox, its Sandbox would stay for good. A workflow issue's tree is
+// the workflow's to close, and a worker's claim is stopped, not closed.
 //
 // The tree's claims are read first and held as this route's decisions (RouteDecisions), so a
 // daemon's stop that begins during the close keeps their worker stream connections; a read that
@@ -505,14 +521,18 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // at all — where the answers and the close they decide sit together; a refused close stops
 // nothing, and the refusal an operator sees is the machine's. A close of a tree already retired
 // answers 200: the operator asked for an outcome that holds, and a retry after a timeout is not a
-// failure. Then every other claim of the tree that has not retired is stopped, as tree_close stops
-// each, so no worker is left on a tree volume that is being deleted. The close reserves the tree's
-// cleanup first, so no claim of the tree can bind or launch meanwhile; after every claim stopped,
-// the store's reserved cleanup has the runtime release the tree (Options.Releaser) and confirms
-// it. A release failure leaves the reservation durable for the same close to resume; a claim the
-// daemon supervises no machine for cannot be stopped that way, since the stop route answers 404 for
-// it, until the daemon restarts and builds a machine for every stored claim; the 500 says so for
-// that claim. Nothing retries either for the operator.
+// failure. Then every other claim of the tree that has not retired is stopped, so no worker is
+// left in a pod that is being deleted. The close reserves the cleanup of each issue the tree's
+// claims name first, by that issue's own lifecycle (store.Store.ReserveOperatorIssueCleanup), so
+// no claim of it can bind or launch meanwhile; after every claim stopped, the store's reserved
+// cleanup has the runtime release each issue (Options.Releaser) and confirms it: what is deleted is
+// each issue's own, by its identity, never a tree's whole (R17 of dispatch://INFRA-3320). Each
+// confirmation is applied as a fact (intake.IssueCleanedUp), so an admission pass that waited for
+// that cleanup runs at once; a failure of that fact is logged, since the cleanup stands. A
+// release failure leaves the reservation durable for the same close to resume; a claim the daemon
+// supervises no machine for cannot be stopped that way, since the stop route answers 404 for it,
+// until the daemon restarts and builds a machine for every stored claim; the 500 says so for that
+// claim. Nothing retries either for the operator.
 func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	root, ok := s.supervisor.Machine(token)
@@ -541,11 +561,18 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		s.operationFailure(w, r, supervise.SuspendedByOperator, "close", token, err)
 		return
 	}
-	lifecycle, cleanup, err := s.trees.ReserveOperatorTreeCleanup(ctx, s.project, c.Tree)
-	if err != nil {
-		s.logFailure("api: reserve cleanup of an operator-closed tree", "tree", c.Tree, "error", err)
-		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but its durable tree cleanup could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, err))
-		return
+	issues := treeIssues(claims, c.Tree, c.Issue)
+	cleanups := make(map[string]uint64, len(issues))
+	for _, issue := range issues {
+		lifecycle, reserved, err := s.trees.ReserveOperatorIssueCleanup(ctx, s.project, issue)
+		if err != nil {
+			s.logFailure("api: reserve cleanup of an issue of an operator-closed tree", "tree", c.Tree, "issue", issue, "error", err)
+			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("closed %s's root claim, but the durable cleanup of its issue %s could not be reserved: %v. Retry legion claims close once that is resolved", c.Tree, issue, err))
+			return
+		}
+		if reserved {
+			cleanups[issue] = lifecycle.Epoch
+		}
 	}
 	claims, err = s.supervisor.Claims(ctx)
 	if err != nil {
@@ -578,11 +605,21 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 			c.Tree, token, strings.Join(unstopped, "; ")))
 		return
 	}
-	if cleanup {
-		if err := s.trees.CleanupReservedTree(ctx, s.project, c.Tree, lifecycle.Epoch, s.releaser); err != nil {
-			s.logFailure("api: cleanup an operator-closed tree", "tree", c.Tree, "error", err)
-			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but durable resource cleanup is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, err))
+	for _, issue := range issues {
+		epoch, reserved := cleanups[issue]
+		if !reserved {
+			continue
+		}
+		if err := s.trees.CleanupReservedIssue(ctx, s.project, issue, epoch, s.releaser); err != nil {
+			s.logFailure("api: cleanup an issue of an operator-closed tree", "tree", c.Tree, "issue", issue, "error", err)
+			s.refuse(w, r, http.StatusInternalServerError, fmt.Sprintf("closed %s's claims, but the durable resource cleanup of issue %s is pending: %v. Retry legion claims close after the reported cleanup error is resolved", c.Tree, issue, err))
 			return
+		}
+		if s.pool != nil {
+			fact := intake.IssueCleanedUp{Issue: issue, Epoch: epoch}
+			if _, err := s.apply(ctx, "api", fmt.Sprintf("issue-cleaned-up:%s:%d", issue, epoch), fact); err != nil {
+				s.log.Warn("api: apply the confirmation of an issue's cleanup failed", "tree", c.Tree, "issue", issue, "epoch", epoch, "error", err)
+			}
 		}
 	}
 	s.operatorDone(r, token)
@@ -609,6 +646,19 @@ func treeOthers(claims []supervise.Claim, tree string, root claim.Token) []claim
 		}
 	}
 	return others
+}
+
+// treeIssues is root and every other issue a claim of tree in claims names, sorted, once each: the
+// issues an operator's close of tree cleans up, each by its own lifecycle.
+func treeIssues(claims []supervise.Claim, tree, root string) []string {
+	issues := []string{root}
+	for _, c := range claims {
+		if c.Tree == tree && c.Issue != "" && !slices.Contains(issues, c.Issue) {
+			issues = append(issues, c.Issue)
+		}
+	}
+	slices.Sort(issues)
+	return issues
 }
 
 // list answers every claim the daemon supervises, in token order: as its machine last published it

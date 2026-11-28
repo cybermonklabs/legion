@@ -22,11 +22,10 @@ type RestingRoot struct {
 
 // RestingRoots is each root of every tree whose step rests on ancestor's approval in its
 // generation (Store.GatesRestingOn: a basis on ancestor opened the step, or the step's basis names
-// ancestor now, standing or pending, on the root's own row or on the row a hand-over carried to a
-// child) and that is still in the workflow, by the predicate the sign-off's hold on the issues
-// beneath it reads of each of them (InWorkflow), in key order. A root that is done, on the
-// backlog, in icebox or triage, or lingering holds nothing. Its record is read by key, whatever
-// project or tree it is in.
+// ancestor now, standing or pending, on the root's own row) and that is still in the workflow, by
+// the predicate the sign-off's hold on the issues beneath it reads of each of them (InWorkflow),
+// in key order. A root that is done, on the backlog, in icebox or triage holds nothing. Its
+// record is read by key, whatever project or tree it is in.
 func RestingRoots(ctx context.Context, tx pgx.Tx, store Store, ancestor string) ([]RestingRoot, error) {
 	gates, err := store.GatesRestingOn(ctx, tx, ancestor)
 	if err != nil {

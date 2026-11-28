@@ -86,36 +86,36 @@ func TestTheGiversOfAPlanVersionAreASet(t *testing.T) {
 	})
 }
 
-// A version is its owners' while one of its givers is an architect of the issue's tree now
-// (GivenByOwner), the rule each reader of the plans of an issue's owners holds: a version another
-// tree's architect gave last, which the root's architect gave before, is the root's architect's
-// still, so it is no earlier owner's plan (PlansOfEarlierOwners), and the owners' newest plan
+// A version is its owners' while one of its givers acts on the issue on its Dispatch chain now
+// (GivenByOwner), the rule each reader of the plans of an issue's owners holds: a version the
+// architect of an issue above it on the chain gave last, which the issue's own architect gave
+// before, is the issue's own architect's still once Dispatch moves the issue from under that issue,
+// so it is no earlier owner's plan (PlansOfEarlierOwners), and the owners' newest plan
 // (OwnersNewestPlan) reads it. That reader orders the versions by the time each was last given:
 // version 3 at generation 0, given first, is the newest once another owner gives it again after
 // version 5 was given at generation 1.
 //
 // The faults it catches: a version judged by its last giver alone (its control: GivenByOwner
-// reading GivenBy alone, under which the root's version reads as an earlier owner's), and an add
-// that leaves the time of the version's first give (its control: AddPlanGiver writing no
+// reading GivenBy alone, under which the issue's own version reads as an earlier owner's), and an
+// add that leaves the time of the version's first give (its control: AddPlanGiver writing no
 // given_at, under which the owners' newest plan is version 5 of generation 1).
 func TestAVersionIsItsOwnersWhileOneOfItsGiversOwnsTheIssue(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	issue := issueFixture(planIssue)
-	member := issueFixture("LEGION-300")
-	member.Tree = planIssue
 	first, firstTasks, firstSteps := ownersPlan(planIssue, 0, 3, planOwner, planGivenAt)
 	second, secondTasks, secondSteps := ownersPlan(planIssue, 1, 5, planOwner, planGivenAt.Add(time.Hour))
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, NewStore().PutIssue(ctx, tx, member))
+		chainRow(t, tx, "LEGION-300", "", 1)
+		chainRow(t, tx, planIssue, "LEGION-300", 1)
 		putPlan(t, tx, first, firstTasks, firstSteps)
 		putPlan(t, tx, second, secondTasks, secondSteps)
-		// LEGION-300's architect, a sub-architect of the tree, gives version 3 of generation 0 again.
+		// LEGION-300's architect, which acts on LEGION-208 from above it on its chain, gives version 3
+		// of generation 0 again.
 		addGiver(t, tx, planIssue, 0, 3, otherOwner, planGivenAt.Add(2*time.Hour), true)
 	})
-	// LEGION-300 then stands in a tree of its own: its architect owns nothing of LEGION-208.
-	member.Tree = member.Key
-	inTx(t, st, func(tx pgx.Tx) { must(t, NewStore().PutIssue(ctx, tx, member)) })
+	// Dispatch then moves LEGION-208 from under LEGION-300: its architect owns nothing of LEGION-208.
+	inTx(t, st, func(tx pgx.Tx) { chainRow(t, tx, planIssue, "", 2) })
 
 	inTx(t, st, func(tx pgx.Tx) {
 		earlier, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)

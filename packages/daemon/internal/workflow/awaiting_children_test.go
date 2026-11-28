@@ -389,7 +389,7 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 	t.Parallel()
 	hooked := New(record.NewStore(), Config{
-		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, Linger: time.Hour, ProductionCheckRole: claim.RoleTester,
+		Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3, ProductionCheckRole: claim.RoleTester,
 		ReviewAppLogin: testReviewApp, Repositories: testRepositories, Clock: func() time.Time { return cwAt },
 		Hooks: []Hook{{Name: "back", On: HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer}, Prompt: "Read the failing check first."}},
 	}, nil)

@@ -83,7 +83,7 @@ func (e *Engine) ResolveIssueRepository(fact intake.DispatchIssue) (Resolution, 
 // after any read the daemon kept of it was made, so a kept read would move the record onto a
 // repository an App was uninstalled from since, or at a default branch renamed since. A fact whose
 // preparation made no such read — a boot listing's, which reads GitHub for no repository, an
-// event's or a hand-over's whose preparation's reads GitHub did not answer, or an event prepared
+// event's whose preparation's reads GitHub did not answer, or an event prepared
 // while its issue had no record or while its record held no repository — is Unread: nothing is
 // written and nothing is said, and the daemon's follow reads GitHub again (its followRecorded):
 // once a boot is over for the first, at the commit of the apply for the last
@@ -167,7 +167,7 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // what it has. Every pass that reads a recorded issue's resolution calls it, once per issue,
 // inside the transaction that pass applies in: a live Dispatch event (Engine.dispatchIssue), the
 // listing admission reconciles at boot (its applySummary; the recovery listing takes no recorded
-// issue), admission's outbox hand-over (its consumeHandover), and the daemon's follow over
+// issue), and the daemon's follow over
 // Dispatch's listing (its followRecorded), which reads an issue again wherever a pass can leave
 // its record on another repository than Dispatch resolves (its requestFollow and requestFollowOf
 // say who asks for one; this asks for one below). The correction is one statement in that
@@ -181,7 +181,7 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // other name or a spelling in another case is no move — this writes nothing and says nothing. Two
 // reads of Dispatch at one sequence cannot be ordered, and a correction moves no sequence
 // (record.Store.CorrectIssueRepository writes none), so a fact prepared before another correction
-// moved the record — a hand-over's read against a follow's at the same sequence, or a late event
+// moved the record — a listing's read against a follow's at the same sequence, or a late event
 // against a follow that read Dispatch after the event — would otherwise put the record back on an
 // older resolution, and nothing would read the issue again before its next event or the next
 // boot. The issue is owed a follow instead, which reads Dispatch and GitHub fresh
@@ -201,7 +201,7 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // commit hook, as above: without it the record would keep the repository that listing or that
 // backfill wrote until the issue's next event or the next boot. A stamped fact that made no read
 // asks no follow here, since the preparation that stamped it asked one already where one is owed
-// (the daemon's prepareRecorded and prepareHandover).
+// (the daemon's prepareRecorded).
 //
 // The repository is resolved from the fact alone (correctionResolution): the refusal the fact's
 // preparation read from GitHub — a role App not installed on it, a repository GitHub does not
@@ -368,10 +368,10 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 // for it as one a role App reaches. The architect is told what the issue is told, since no list of
 // the project's repositories is there to choose from: any repository both role Apps are
 // installed on records an issue, so what is wrong is the name or the installation. The notice is
-// queued on that parent when the record holds it in root's tree, so the owner walk takes it to the
-// parent's own architect while that claim holds its role, the one that releases the parent's
-// children, and on up the tree once it does not; a parent the record does not hold in the tree has
-// no architect of it, and the notice goes on root, the tree's architect.
+// queued on that parent when the daemon records it, so the owner walk takes it up the Dispatch
+// chain to the parent's own architect while that claim holds its role, the one that releases the
+// parent's children, and on up the chain once it does not (R18 of dispatch://INFRA-3320); a parent
+// the daemon does not record has no architect of it, and the notice goes on root.
 func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, parent, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
@@ -383,7 +383,7 @@ func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		if err != nil {
 			return err
 		}
-		if recorded != nil && recorded.Tree == root.Key {
+		if recorded != nil {
 			on = recorded.Key
 		}
 	}

@@ -75,7 +75,7 @@ func TestTheArchitectSweepResendsWhatALostResumeCarried(t *testing.T) {
 			// sweep is the one thing left that sends the raised entry's work.
 			runStart(t, pool, root)
 			applySweep(t, pool, admission, "resume-lost")
-			starts := architectStartsOf(t, pool, root)
+			starts := roleStarts(t, pool, root, claim.RoleArchitect)
 			if len(starts) != 1 || starts[0].Entry != resumed.Entry {
 				t.Fatalf("the architect starts of %s after the sweep = %+v, want one at the entry %d the resume raised", root, starts, resumed.Entry)
 			}
@@ -154,7 +154,7 @@ func TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted
 		t.Fatalf("the architect starts of %s after the sweep = %+v, want one at the entry %d the resume raised: the resume's work "+
 			"is owed to the architect of a root in planning as much as at admitted", root, starts, resumed.Entry)
 	}
-	if requests := architectStartsOf(t, pool, root); len(requests) != 1 || requests[0].Task != "" ||
+	if requests := roleStarts(t, pool, root, claim.RoleArchitect); len(requests) != 1 || requests[0].Task != "" ||
 		!sameWait(requests[0].Awaiting, *resumed.EntryAwaiting) {
 		t.Errorf("the start sent again for entry %d = %+v, want the resume's own: no text and the wait %+v the row keeps", resumed.Entry,
 			requests, *resumed.EntryAwaiting)

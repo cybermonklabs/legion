@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -344,7 +343,9 @@ func freshSessionWorkflow(t *testing.T) (*harness, record.Store) {
 // phase worker is what admission's repair ends (admit's finishFencedStarts) — and that row is
 // the one record through which the waiting line reads an issue standing in a worker phase
 // (record.Waiting over LineFacts.Owed). So the issue waits for a slot in no part of the line:
-// until a start is written again, no promotion can ever reach it.
+// until a start is written again, no promotion can ever reach it. The copy of Dispatch holds
+// LEGION-209 under LEGION-208 (seedCopy), as the daemon's boot fills it for every issue it
+// records before its first decision (R16 of dispatch://INFRA-3320), so the issue's chain is known.
 func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	root := "LEGION-208"
@@ -353,6 +354,14 @@ func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 	token, _ := h.launchIn(root, "LEGION-209", claim.RoleImplementer)
 	h.ready(token, "ses_implementer", 1)
 	workingIssue(t, h, phase.Implementing)
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := seedCopy(tx, root, "", "in_progress"); err != nil {
+			return err
+		}
+		return seedCopy(tx, "LEGION-209", root, "in_progress")
+	}); err != nil {
+		t.Fatalf("seed the copy rows of LEGION-209: %v", err)
+	}
 	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/stop", nil); recorder.Code != http.StatusOK {
 		t.Fatalf("stop = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
@@ -382,12 +391,12 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 			return err
 		}
 		// The Dispatch project key is what the starts a project owes are read under
-		// (record.Store.OwedStarts), and the tree lifecycles under the claim token derived from
-		// it (record.ReadLifecycles), so this passes the one key the daemon passes.
+		// (record.Store.OwedStarts), and the chains of the copy under (record.ReadChains), so this
+		// passes the one key the daemon passes.
 		if facts, err = record.ReadLineFacts(h.ctx, tx, records, testDispatchProject, issues, config.DesignGateRootIssues.Steps()); err != nil {
 			return err
 		}
-		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil, time.Now())
+		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil)
 		return err
 	}); err != nil {
 		t.Fatalf("read the waiting line: %v", err)

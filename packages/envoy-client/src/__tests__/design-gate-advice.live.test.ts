@@ -48,7 +48,7 @@ function storedSentence(version: number, approvedBy: string): string {
 /** The clause between them, for the issues whose design gates record the document written. */
 function gateClause(gates: readonly { readonly issue: string; readonly step: string }[]): string {
   const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
-  return `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`;
+  return `A Legion design gate records this document, so each issue of ${gates.length === 1 ? "its tree" : "each tree"} merges nothing, and starts no newly released child, until that approval comes back; work in flight goes on: ${named}.`;
 }
 
 /** What one design-gate step records, as a daemon older than `holds` publishes it: the test
@@ -98,7 +98,7 @@ describe.skipIf(!dispatchStackEnabled)(
         await asPerson("POST", "/api/v1/projects", { key, name: `${key} project` });
         // The deployment's own gated steps, which its daemon publishes beside the gate records
         // and which the advice reads: a gate row with no `holds`, on a step the deployment does not
-        // gate, holds no READY back and prints no clause.
+        // gate, holds nothing back and prints no clause.
         await asMachine("PUT", `/api/v1/projects/${key}/gated-steps`, {
           steps: ["decisions", "criteria", "spec"],
           actor: { kind: "session", id: SESSION },

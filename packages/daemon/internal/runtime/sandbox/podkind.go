@@ -76,17 +76,19 @@ type podKind interface {
 }
 
 // podKindOf is the kind a Sandbox's labels name: an issue pod's carry legion.dev/issue, the project
-// controller's legion.dev/role=controller and no tree. Any other labelling names no kind and is
-// refused, so a pod is never judged against a role list its labels do not state.
+// controller's legion.dev/role=controller and no issue. Any other labelling names no kind and is
+// refused, so a pod is never judged against a role list its labels do not state. The tree label
+// names nothing here: it is the gate root at the pod's creation, read by no decision (decision 14
+// of dispatch://INFRA-4730).
 func podKindOf(labels map[string]string) (podKind, error) {
 	switch {
 	case labels[labelIssue] != "":
 		return issuePod{}, nil
-	case labels[labelRole] == string(claim.RoleController) && labels[labelTree] == "":
+	case labels[labelRole] == string(claim.RoleController):
 		return controllerPod{}, nil
 	}
-	return nil, fmt.Errorf("its labels name neither an issue nor the project controller (%s=%q, %s=%q, %s=%q)",
-		labelIssue, labels[labelIssue], labelTree, labels[labelTree], labelRole, labels[labelRole])
+	return nil, fmt.Errorf("its labels name neither an issue nor the project controller (%s=%q, %s=%q)",
+		labelIssue, labels[labelIssue], labelRole, labels[labelRole])
 }
 
 // keptVolume is the one rule that decides whether a launch keeps its volume: an issue pod (kind)
@@ -569,8 +571,8 @@ func (controllerPod) prepare(l *launch) error {
 	return nil
 }
 
-// labels carry the controller role and no tree or issue: the controller belongs to no tree, so no
-// tree's cleanup lists its Sandbox (CleanupTree), and the labels name its kind (podKindOf).
+// labels carry the controller role and no tree or issue: the controller belongs to no issue, so no
+// issue's cleanup deletes its Sandbox (CleanupIssue), and the labels name its kind (podKindOf).
 func (controllerPod) labels(project string, _ launch) map[string]string {
 	return map[string]string{labelProject: project, labelRole: string(claim.RoleController)}
 }

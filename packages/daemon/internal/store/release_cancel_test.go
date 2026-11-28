@@ -115,7 +115,7 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 // of an issue that has left run on in it with their launcher tokens and `gh` credentials.
 //
 // The sequence is the one production runs: the release's stops have suspended the pod's claims,
-// the root is parked while the check runs so the linger's rows are queued above the release's,
+// the issue is stopped while the check runs so its leave's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
 	t.Parallel()
@@ -128,11 +128,10 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 
-	// The root is parked: its tree lingers, its phase is done, and its close queues its own rows
-	// above the release's (workflow's beginLinger).
-	if _, err := st.Pool().Exec(ctx, `update issues set phase = 'done', status = 'backlog',
-		linger_until = now() + interval '1 hour' where key = $1`, rootIssue); err != nil {
-		t.Fatalf("park the root: %v", err)
+	// The issue is stopped: a person moved it to the backlog, and its leave queues its own rows
+	// above the release's (workflow's leave), keeping its phase (R20 of dispatch://INFRA-3320).
+	if _, err := st.Pool().Exec(ctx, `update issues set status = 'backlog' where key = $1`, rootIssue); err != nil {
+		t.Fatalf("stop the issue: %v", err)
 	}
 	var closeRow int64
 	if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
@@ -141,7 +140,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("queue the close's own row: %v", err)
 	}
 
-	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 	teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 	if err != nil || teardown.Act != ReleaseCancel || teardown.Cause != ReleaseCauseUnauthorized {
 		t.Fatalf("the teardown = %s for %s, %v; want %s for %s", teardown.Act, teardown.Cause, err,
@@ -168,7 +167,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 		t.Fatalf("finish the release's rows: %v", err)
 	}
 	act, err := st.IssueSuspension(ctx, "legion",
-		IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: closeRow},
+		IssueClose{Issue: rootIssue, Generation: 1, Row: closeRow},
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close = %t, %v; want it to act: its Sandbox deletion is what takes the pod's role Secrets with it", act, err)

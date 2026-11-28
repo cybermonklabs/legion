@@ -12,7 +12,7 @@ import (
 )
 
 // statusWritesOf is every dispatch_status row queued for key, in outbox order, as the executor
-// would take them.
+// would take them, each read without its fence as effects reads every row (unfenced).
 func statusWritesOf(t *testing.T, pool *pgxpool.Pool, key string) []record.StatusWrite {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
@@ -27,7 +27,7 @@ func statusWritesOf(t *testing.T, pool *pgxpool.Pool, key string) []record.Statu
 		if err := rows.Scan(&write); err != nil {
 			t.Fatalf("decode a status write of %s: %v", key, err)
 		}
-		writes = append(writes, write)
+		writes = append(writes, unfenced(write).(record.StatusWrite))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the status writes of %s: %v", key, err)

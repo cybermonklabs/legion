@@ -42,6 +42,27 @@ func bootIssue(key, tree, status string, stands phase.Phase) record.Issue {
 	return issue
 }
 
+// putBootIssue records issue and writes its row of the copy of Dispatch's issues, under the
+// parent its record names, as a boot reads both: every decision reads the issue's chain from the
+// copy (record.Chains), never the tree its record stores.
+func putBootIssue(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
+	if err := records.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	return putBootCopy(ctx, tx, records, issue)
+}
+
+// putBootCopy writes issue's row of the copy of Dispatch's issues under the parent its record
+// names, at its status.
+func putBootCopy(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
+	parent := ""
+	if issue.Parent != nil {
+		parent = *issue.Parent
+	}
+	return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: issue.Project, Seq: 1,
+		Status: record.Carry(issue.Status), Parent: record.Carry(parent)})
+}
+
 // bootHandlers is the pair of handlers every fact of these tests is applied through, in the
 // order the daemon applies them: the workflow, which resumes what the boot must resume, and then
 // admission, whose pass releases and grants the slots.
@@ -127,10 +148,10 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 	}
 	root, child := bootProject+"-1", bootProject+"-2"
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
+		if err := putBootIssue(ctx, tx, records, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
-		if err := records.PutIssue(ctx, tx, bootIssue(child, root, "in_progress", phase.Implementing)); err != nil {
+		if err := putBootIssue(ctx, tx, records, bootIssue(child, root, "in_progress", phase.Implementing)); err != nil {
 			return err
 		}
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
@@ -144,6 +165,8 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The child started its phase, so admission opened its own lifecycle, which its claim binds.
+	openIssue(t, st, project, child, treelifecycle.AuthorityWorkflow)
 	if _, err := st.AdmitClaim(ctx, supervise.Claim{Token: implementer, Project: project, Tree: root, Issue: child,
 		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
 		Session: "ses_implementer", SessionFile: "/dev/null"}); err != nil {
@@ -349,6 +372,22 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the pre-release store onto the release: %v", err)
+	}
+	// The release before kept no copy of Dispatch's chain; the release's first boot fills it from a
+	// listing before any decision, which these rows stand in for.
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := records.Issues(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, issue := range issues {
+			if err := putBootCopy(ctx, tx, records, issue); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
 	}
 	granted := slotHolders(t, pool)
 	// The migration was written for the rule where merging held a slot — the merger merges the

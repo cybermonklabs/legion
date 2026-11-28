@@ -332,28 +332,19 @@ func launchOf(t *testing.T, r *Runtime, spec runtime.SpawnSpec) launch {
 	return l
 }
 
-// fakeStore is the runtime's durable state, in memory: every tree is live (its lifecycle open)
-// unless closed says its cleanup confirmed, a claim of an issue runs a process only when running
-// names it, in the tree it names, an issue's Sandbox belongs to a tree only when homes names it
-// (to none otherwise), and a claim is stored unretired only when unretired names it. The store's
-// own rule for a Sandbox's home is held by its tests (store.IssueSandboxHome); here a test sets it.
+// fakeStore is the runtime's durable state, in memory: every issue is live (its own lifecycle
+// open) unless closed says its cleanup confirmed, and a claim is stored unretired only when
+// unretired names it. The store's own rule for an issue's lifecycle is held by its tests
+// (store.IssueLive); here a test sets it.
 type fakeStore struct {
 	mu        sync.Mutex
 	closed    map[string]bool
-	running   map[string]runningClaim
-	homes     map[string]string
 	unretired map[claim.Token]bool
 	claims    []supervise.Claim
 }
 
-// runningClaim is a claim of an issue that runs a process (token:state), in tree.
-type runningClaim struct{ tree, claim string }
-
 func newFakeStore() *fakeStore {
-	return &fakeStore{
-		closed: map[string]bool{}, running: map[string]runningClaim{}, homes: map[string]string{},
-		unretired: map[claim.Token]bool{},
-	}
+	return &fakeStore{closed: map[string]bool{}, unretired: map[claim.Token]bool{}}
 }
 
 func (s *fakeStore) ClaimUnretired(_ context.Context, token claim.Token) (bool, error) {
@@ -382,34 +373,24 @@ func (s *fakeStore) retire(token claim.Token) {
 	delete(s.unretired, token)
 }
 
-func (s *fakeStore) IssueSandboxHome(_ context.Context, _, issue string) (string, error) {
+func (s *fakeStore) IssueLive(_ context.Context, _, issue string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.homes[issue], nil
+	return !s.closed[issue], nil
 }
 
-func (s *fakeStore) TreeLive(_ context.Context, _, tree string) (bool, error) {
+// close records issue's own cleanup as confirmed: what the issue left behind is then an orphan.
+func (s *fakeStore) close(issue string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return !s.closed[tree], nil
+	s.closed[issue] = true
 }
 
-// IssueRunsElsewhere filters as the store's query does: the issue's running claim is named only
-// when its tree is not the tree asked about.
-func (s *fakeStore) IssueRunsElsewhere(_ context.Context, _, issue, tree string) (string, error) {
+// open records issue's lifecycle as open again, as its next run's open does.
+func (s *fakeStore) open(issue string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.running[issue]; ok && c.tree != tree {
-		return c.claim, nil
-	}
-	return "", nil
-}
-
-// close records tree's cleanup as confirmed: what the tree left behind is then an orphan.
-func (s *fakeStore) close(tree string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closed[tree] = true
+	delete(s.closed, issue)
 }
 
 // testSpec is a launch of the claim on the tree, with its prompt files under dir.

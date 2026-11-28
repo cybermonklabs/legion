@@ -167,8 +167,8 @@ func TestApplyFactRollsBackHandlerAndDeduplicationOnError(t *testing.T) {
 // An Observed fact, Dispatch's view of an issue the workflow did not record when the fact was
 // prepared, reaches the handlers as a plain observation while the issue stays unrecorded, with
 // neither field of the view. Once the issue is recorded, the handlers get the event the view was
-// prepared in place of, carrying the view's Ancestry and Reread, which the preparation read
-// for the view alone, or nothing for release_children's view, prepared in place of none.
+// prepared in place of, or, for release_children's view, prepared in place of none, the view
+// itself still marked Observed: a reading the copy of Dispatch's issues takes and nothing decides on.
 func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -185,11 +185,9 @@ func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 		}
 	}
 	event := DispatchIssue{Key: "LEGION-208", Seq: 5, Status: "todo", HandedOver: true, ActorSession: "session", ResolvedRepo: "acme/widgets"}
-	reread := map[string][]string{"LEGION-214": nil}
-	ancestry := []string{"LEGION-169", "LEGION-168"}
-	view := DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets", Ancestry: ancestry, Reread: reread, Observed: true, Delivered: &event}
+	view := DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets", Observed: true, Delivered: &event}
 	apply("unrecorded", view)
-	if want := (DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets", Ancestry: ancestry, Reread: reread}); len(seen) != 1 || !reflect.DeepEqual(seen[0], want) {
+	if want := (DispatchIssue{Key: "LEGION-208", Seq: 7, Status: "backlog", ResolvedRepo: "acme/widgets"}); len(seen) != 1 || !reflect.DeepEqual(seen[0], want) {
 		t.Fatalf("the handlers saw %+v for an unrecorded issue's view, want only %+v", seen, want)
 	}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -200,11 +198,10 @@ func TestApplyFactSettlesAViewByWhetherItsIssueIsRecorded(t *testing.T) {
 	}
 	seen = nil
 	apply("recorded", view)
-	apply("recorded-release", DispatchIssue{Key: "LEGION-208", Seq: 8, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", Observed: true})
-	delivered := event
-	delivered.Ancestry, delivered.Reread = ancestry, reread
-	if len(seen) != 1 || !reflect.DeepEqual(seen[0], delivered) {
-		t.Fatalf("the handlers saw %+v once the issue was recorded, want only the delivered event %+v", seen, delivered)
+	release := DispatchIssue{Key: "LEGION-208", Seq: 8, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets", Observed: true}
+	apply("recorded-release", release)
+	if want := []DispatchIssue{event, release}; !reflect.DeepEqual(seen, want) {
+		t.Fatalf("the handlers saw %+v once the issue was recorded, want the delivered event and then the release's view as a reading %+v", seen, want)
 	}
 }
 
@@ -391,19 +388,19 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			name:    "Dispatch issue created",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.created",
 			file:    "dispatch/issue-created.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 1, Type: "issue.created", Status: "triage", Title: "Captured approval issue", Rank: "UUUU", Labels: []string{}, At: mark(1, "2026-09-23T00:46:14.704977Z").At},
 		},
 		{
 			name:    "Dispatch issue updated",
 			subject: "notifications.dispatch.issue.CAPTURE-3.issue.updated",
 			file:    "dispatch/issue-updated.json",
-			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, At: mark(2, "2026-09-23T00:45:37.517455Z").At},
 		},
 		{
 			name:    "Dispatch issue closed",
 			subject: "notifications.dispatch.issue.CAPTURE-4.issue.closed",
 			file:    "dispatch/issue-closed.json",
-			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}},
+			want:    DispatchIssue{Key: "CAPTURE-4", Seq: 6, Type: "issue.closed", Status: "done", Title: "Captured approval issue", Rank: "UUUU", ResolvedRepo: "sjawhar/legion", Labels: []string{}, At: mark(6, "2026-09-23T00:46:30.649108Z").At},
 		},
 		{
 			name:    "Dispatch artifact version",
@@ -505,7 +502,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-updated-resolved-only.json",
 			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "f",
 				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
-				Blockers: []string{}, ClaimKnown: true},
+				Blockers: []string{}, ClaimKnown: true, At: mark(3, "2026-09-23T00:46:40Z").At},
 		},
 		{
 			name:    "pull request opened",
@@ -788,7 +785,8 @@ func TestADispatchIssueEventWithoutResolvedRepoDecodesWithItsRepositoryMissing(t
 	if err != nil {
 		t.Fatalf("decode of an event without resolved_repo = %v, want it decoded", err)
 	}
-	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{}}
+	want := DispatchIssue{Key: "CAPTURE-3", Seq: 2, Type: "issue.updated", Status: "todo", Title: "Captured workflow issue", Rank: "UUU", ResolvedRepoMissing: true, Labels: []string{},
+		At: time.Date(2026, 9, 23, 0, 45, 37, 517455000, time.UTC)}
 	if !reflect.DeepEqual(decoded.Fact, want) {
 		t.Fatalf("fact = %#v, want %#v", decoded.Fact, want)
 	}
@@ -2333,6 +2331,62 @@ func TestDecodeDispatchIssueNamesASessionActor(t *testing.T) {
 	}
 	if elsewhere.Fact != nil {
 		t.Fatalf("fact = %#v, want no fact for an event of another project's issue", elsewhere.Fact)
+	}
+}
+
+// An issue event carries the time Dispatch recorded it (its envelope's created_at) onto the fact
+// (DispatchIssue.At), so the repair judges a session's write by the role holders the daemon had
+// published then, as Dispatch judged it, however late the consumer applies it.
+func TestAnIssueEventCarriesItsDispatchTime(t *testing.T) {
+	data, err := os.ReadFile("testdata/dispatch/issue-updated.json")
+	if err != nil {
+		t.Fatalf("read captured issue.updated envelope: %v", err)
+	}
+	var envelope struct {
+		Payload string `json:"payload"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatalf("decode captured envelope: %v", err)
+	}
+	var event struct {
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &event); err != nil || event.CreatedAt.IsZero() {
+		t.Fatalf("the captured event's created_at = %v, %v; want a time: this test proves nothing", event.CreatedAt, err)
+	}
+	got, err := decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, data)
+	if err != nil {
+		t.Fatalf("decode the captured event: %v", err)
+	}
+	if issue, ok := got.Fact.(DispatchIssue); !ok || !issue.At.Equal(event.CreatedAt) {
+		t.Fatalf("fact = %#v, want it at %s, the time Dispatch recorded the event", got.Fact, event.CreatedAt)
+	}
+
+	// The same envelope with no created_at in its event gives a fact at the zero time: the fact
+	// names no time Dispatch did not record.
+	var payload, whole map[string]any
+	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+		t.Fatalf("decode the captured event as a map: %v", err)
+	}
+	delete(payload, "created_at")
+	stripped, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode the event without created_at: %v", err)
+	}
+	if err := json.Unmarshal(data, &whole); err != nil {
+		t.Fatalf("decode the captured envelope as a map: %v", err)
+	}
+	whole["payload"] = string(stripped)
+	untimed, err := json.Marshal(whole)
+	if err != nil {
+		t.Fatalf("encode the envelope without created_at: %v", err)
+	}
+	got, err = decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, untimed)
+	if err != nil {
+		t.Fatalf("decode the event without created_at: %v", err)
+	}
+	if issue, ok := got.Fact.(DispatchIssue); !ok || !issue.At.IsZero() {
+		t.Fatalf("fact = %#v, want it at the zero time: its event names no created_at", got.Fact)
 	}
 }
 

@@ -207,9 +207,9 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
 // for one call), and answers whether it wrote them (plan.enqueue). A phase worker's stall
 // is read by the architect that owns its issue, and a child's own architect's stall by the
-// architect above that child, as each one's death is. A tree architect's own stall whose end
-// failed its claim over a stop the runtime did not confirm
-// (supervise.StallBackstopStop.StopUnconfirmed) is told to the controller as well, in a row of
+// architect above that child, as each one's death is. The stall of an architect whose issue holds
+// its own gate, whose end failed its claim over a stop the runtime did not confirm
+// (supervise.StallBackstopStop.StopUnconfirmed), is told to the controller as well, in a row of
 // its own: every notice of the tree that no child's own architect takes reaches that architect,
 // whose claim has failed, so nobody inside the tree is left to open the finding for a process
 // that may still be running. A failed claim whose stop the runtime confirmed is told to the
@@ -217,11 +217,13 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 // claimFailed), and the stall's copy would be a wake it does nothing on. Every other end of that
 // architect's stall is told to the architect alone too: the task is still owed to it and nothing
 // failed, and the architect's own skill opens the finding for a stop the runtime did not confirm
-// and for a stall that repeats, so the controller's copy would be a second telling (#4065).
+// and for a stall that repeats, so the controller's copy would be a second telling (#4065). The
+// gate is the claim's own mark, set at its launch from the Dispatch chain
+// (supervise.Claim.HoldsGate, R15 of dispatch://INFRA-3320), never the tree the claim stores.
 func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, stop supervise.StallBackstopStop, found string) (bool, error) {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}
-	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) && stop.End == supervise.EndFailed && stop.StopUnconfirmed {
+	if c.Role == claim.RoleArchitect && c.HoldsGate && stop.End == supervise.EndFailed && stop.StopUnconfirmed {
 		rows = append(rows, record.ControllerNotice(notice))
 	}
 	return s.plan.enqueue(ctx, c.Issue, rows...)

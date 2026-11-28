@@ -361,56 +361,6 @@ func TestCorrectIssueRepositoryClearsTheWaitingRepositoryChange(t *testing.T) {
 	})
 }
 
-// QueuedRootsUnder lists, by key, exactly the labelled todo roots whose Ancestry holds the key,
-// whatever their parent: not a root whose chain holds another key, an unlabelled one, one in
-// another status, nor a child in a tree. A root's Ancestry reads back as it was written.
-func TestQueuedRootsUnderListsTheLabelledTodoRootsWhoseChainHoldsTheKey(t *testing.T) {
-	ctx := context.Background()
-	st := migratedStore(t)
-	records := NewStore()
-	issue := func(key, tree, status string, handed bool, ancestry ...string) Issue {
-		issue := issueFixture(key)
-		issue.Tree, issue.Status, issue.HandedOver, issue.Ancestry = tree, status, handed, ancestry
-		if len(ancestry) != 0 {
-			issue.Parent = ParentOf(ancestry[0])
-		}
-		return issue
-	}
-	inTx(t, st, func(tx pgx.Tx) {
-		for _, recorded := range []Issue{
-			issue("LEGION-300", "LEGION-300", "in_progress", true),
-			issue("LEGION-302", "LEGION-302", "todo", true, "LEGION-401", "LEGION-400", "LEGION-300"),
-			issue("LEGION-301", "LEGION-301", "todo", true, "LEGION-400", "LEGION-300"),
-			issue("LEGION-303", "LEGION-303", "todo", true, "LEGION-300"),
-			issue("LEGION-304", "LEGION-304", "todo", false, "LEGION-400"),
-			issue("LEGION-305", "LEGION-305", "backlog", true, "LEGION-400"),
-			issue("LEGION-306", "LEGION-300", "todo", true, "LEGION-400"),
-			issue("LEGION-307", "LEGION-307", "todo", true),
-		} {
-			must(t, records.PutIssue(ctx, tx, recorded))
-		}
-	})
-	inTx(t, st, func(tx pgx.Tx) {
-		roots, err := records.QueuedRootsUnder(ctx, tx, "LEGION-400")
-		must(t, err)
-		var keys []string
-		for _, root := range roots {
-			keys = append(keys, root.Key)
-		}
-		if !reflect.DeepEqual(keys, []string{"LEGION-301", "LEGION-302"}) {
-			t.Fatalf("QueuedRootsUnder(LEGION-400) = %v, want LEGION-301 and LEGION-302", keys)
-		}
-		if !reflect.DeepEqual(roots[1].Ancestry, []string{"LEGION-401", "LEGION-400", "LEGION-300"}) || roots[1].Status != "todo" {
-			t.Fatalf("QueuedRootsUnder(LEGION-400)[1] = %#v, want the whole record of LEGION-302", roots[1])
-		}
-		none, err := records.Issue(ctx, tx, "LEGION-307")
-		must(t, err)
-		if none.Ancestry != nil {
-			t.Fatalf("LEGION-307 reads back with Ancestry %#v, want nil as written", none.Ancestry)
-		}
-	})
-}
-
 // A record written before the schema carried the issue's repository has none, and the boot fills
 // it (daemon's backfillRepositories): UnfilledIssues lists one project's unfilled records, and
 // FillIssueRepository fills one, once, with GitHub's spelling beside the record's own.
@@ -819,9 +769,129 @@ func TestStoreRoundTripsATreeTakenBack(t *testing.T) {
 	})
 }
 
-// The tree a root left is what keeps it its own tree on every later pass of the admission sweep
-// and every release of children (workflow's RanAsRoot), so PutIssue stores it and every read
-// behind issueColumns gives it back.
+// The mark that an issue has held its own gate as a root (Issue.HoldsGate) is what keeps the gate
+// of an issue that ran as a root once it gets a parent in Legion's work (R15 of
+// dispatch://INFRA-3320), so it survives every write: PutIssue stores it and every read behind
+// issueColumns gives it back, and a later write of a copy that carries false — one read before a
+// pass marked the issue — keeps it. MarkHoldsGate marks many issues in one statement; a key with
+// no record writes nothing, and no keys write nothing.
+func TestStoreRoundTripsTheMarkThatAnIssueHoldsItsOwnGate(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	held := issueFixture("LEGION-217")
+	held.HoldsGate = true
+	unmarked := issueFixture("LEGION-218")
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, held))
+		must(t, records.PutIssue(ctx, tx, unmarked))
+		got, err := records.Issue(ctx, tx, held.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &held) {
+			t.Fatalf("issue holding its own gate = %#v, want %#v", got, held)
+		}
+		both, err := records.IssuesByKey(ctx, tx, []string{held.Key, unmarked.Key})
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, both), []Issue{held, unmarked}) {
+			t.Fatalf("issues by key = %#v, want %#v", both, []Issue{held, unmarked})
+		}
+	})
+
+	stale := held
+	stale.HoldsGate = false
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, stale))
+		got, err := records.Issue(ctx, tx, held.Key)
+		must(t, err)
+		if !got.HoldsGate {
+			t.Fatalf("%s after a write of a copy carrying no mark holds its own gate = false, want true: the mark is never cleared", held.Key)
+		}
+	})
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.MarkHoldsGate(ctx, tx, nil))
+		must(t, records.MarkHoldsGate(ctx, tx, []string{unmarked.Key, held.Key, "LEGION-999"}))
+		marked, err := records.IssuesByKey(ctx, tx, []string{held.Key, unmarked.Key, "LEGION-999"})
+		must(t, err)
+		want := held
+		wantMarked := unmarked
+		wantMarked.HoldsGate = true
+		if !reflect.DeepEqual(writtenAll(t, marked), []Issue{want, wantMarked}) {
+			t.Fatalf("issues after the pass's mark = %#v, want %#v: both marked, and no record made for a key with none", marked, []Issue{want, wantMarked})
+		}
+	})
+}
+
+// Each issue keeps its own facts on its record (R17 of dispatch://INFRA-3320): the retention a
+// converted linger left it, the run and gate a hand-over carried into it, a close Dispatch refused,
+// the newest Dispatch sequence the consumer saw and the session writes the repair holds while its
+// chain is unknown, in their order. PutIssue stores each
+// and every read behind issueColumns gives it back, and a record carrying none reads back with
+// none. A later write replaces each of them but two: issues.tree is the insert's alone, so a copy
+// naming another tree keeps the one the issue was first recorded under (R22), and seen_seq only
+// moves forward, so a copy read before the consumer moved it never takes it back. The write that
+// clears the refused close, the retention and the held writes clears them.
+func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	retained := time.Date(2026, 11, 21, 6, 30, 0, 0, time.UTC)
+	facts := issueFixture("LEGION-219")
+	facts.Tree = "LEGION-200"
+	facts.RetainedUntil = &retained
+	facts.CarriedGeneration, facts.CarriedGate = 4, true
+	facts.PendingClose = &PendingClose{Generation: 3, Entry: 7, Kind: "close_root", Reason: "Closed by its architect: every child is done."}
+	facts.SeenSeq = 52
+	facts.HeldSessionWrites = []HeldSessionWrite{{Session: "ses-architect", Status: "done", Seq: 50}, {Session: "ses-worker", Status: "backlog", Seq: 52}}
+	bare := issueFixture("LEGION-220")
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, facts))
+		must(t, records.PutIssue(ctx, tx, bare))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &facts) {
+			t.Fatalf("issue with its own facts = %#v, want %#v", got, facts)
+		}
+		both, err := records.IssuesByKey(ctx, tx, []string{facts.Key, bare.Key})
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, both), []Issue{facts, bare}) {
+			t.Fatalf("issues by key = %#v, want %#v", both, []Issue{facts, bare})
+		}
+	})
+
+	later := facts
+	later.Tree = "LEGION-300"
+	later.RetainedUntil, later.PendingClose, later.HeldSessionWrites = nil, nil, nil
+	later.CarriedGeneration, later.CarriedGate = 0, false
+	later.SeenSeq = 40
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, later))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		want := later
+		want.Tree, want.SeenSeq = facts.Tree, facts.SeenSeq
+		if !reflect.DeepEqual(written(t, got), &want) {
+			t.Fatalf("issue after a later write = %#v, want %#v: the tree it was first recorded under, the newest sequence seen, and every other fact as the later write gave it", got, want)
+		}
+	})
+
+	ahead := later
+	ahead.SeenSeq = 60
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, ahead))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		if got.SeenSeq != 60 {
+			t.Fatalf("%s's newest sequence seen after a write carrying 60 = %d, want 60: a sequence ahead of the stored one moves it", facts.Key, got.SeenSeq)
+		}
+	})
+}
+
+// The tree a root of the release before was handed over from (Issue.HandedOverFrom) is a column of
+// the record that release still reads, so PutIssue stores it and every read behind issueColumns
+// gives it back.
 func TestStoreRoundTripsTheTreeARootLeft(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -836,10 +906,10 @@ func TestStoreRoundTripsTheTreeARootLeft(t *testing.T) {
 		if !reflect.DeepEqual(written(t, got), &left) {
 			t.Fatalf("handed-over root = %#v, want %#v", got, left)
 		}
-		issues, err := records.TreeIssues(ctx, tx, left.Key)
+		issues, err := records.IssuesByKey(ctx, tx, []string{left.Key})
 		must(t, err)
 		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{left}) {
-			t.Fatalf("tree issues = %#v, want %#v", issues, []Issue{left})
+			t.Fatalf("issues by key = %#v, want %#v", issues, []Issue{left})
 		}
 	})
 }
@@ -939,29 +1009,32 @@ func TestClaimSessionAnswersTheSeededSessionOrEmpty(t *testing.T) {
 	})
 }
 
-// SessionOfTree and SessionClaim together separate the answers a claim release stands on (the
+// SessionOf and SessionClaim together separate the answers a claim release stands on (the
 // outbox's releaseClaim), which a root waiting on a person reads too (workflow.Unresumable): a
-// session a claim of the asked tree names now; one a claim of that tree recorded and left behind,
-// which claim_sessions still holds for it; the same two of another tree's claim and of the project
-// controller's, which own no issue of this tree; and a name the daemon cannot attribute to any
-// claim: one claim_sessions holds for no claim (a name two claims recorded, which the boot logs),
-// one only another project's claim holds, and one nobody holds. SessionClaim names the claim with
-// the session it names now, so a caller tells a left session from a current one. SessionClaimsTree
-// reads claims.session alone, so it finds the current session of the asked tree and no left one.
+// session a claim of an asked issue names now; one a claim of such an issue recorded and left
+// behind, which claim_sessions still holds for it; the same two of another issue's claim and of the
+// project controller's, which own none of the asked issues; and a name the daemon cannot attribute
+// to any claim: one claim_sessions holds for no claim (a name two claims recorded, which the boot
+// logs), one only another project's claim holds, and one nobody holds. SessionClaim names the claim
+// with the session it names now, so a caller tells a left session from a current one.
+// SessionClaimsOf reads claims.session alone, so it finds the current session of an asked issue
+// and no left one. The asked issues are the ones a caller reads from its Chains, never the tree a
+// claim stores (R18 of dispatch://INFRA-3320), so the two claims of project LEGION store one tree
+// between them and no read names it.
 func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	controller := string(claim.ControllerToken("legion"))
-	// seed records a claim of project in tree (the controller's on none), naming session now, and
-	// holds each of held for it in claim_sessions, as supervise's holdRecorded does at each
-	// registration.
-	seed := func(tx pgx.Tx, project, token, tree string, role claim.Role, session string, held ...string) {
+	// seed records a claim of project on issue (the controller's on none) under the stored tree,
+	// naming session now, and holds each of held for it in claim_sessions, as supervise's
+	// holdRecorded does at each registration.
+	seed := func(tx pgx.Tx, project, token, tree, issue string, role claim.Role, session string, held ...string) {
 		t.Helper()
 		_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-			values ($1, $2, $3, $3, $4, 0, $5, '', $6, 0, 0, 0, 0)`,
-			token, project, tree, string(role), session, string(supervise.StateWorking))
+			values ($1, $2, $3, $4, $5, 0, $6, '', $7, 0, 0, 0, 0)`,
+			token, project, tree, issue, string(role), session, string(supervise.StateWorking))
 		must(t, err)
 		for _, name := range held {
 			_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ($1, 'session', $2, $3)`,
@@ -970,30 +1043,30 @@ func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *test
 		}
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		seed(tx, "LEGION", "here", "LEGION-208", claim.RoleArchitect, "ses-here", "ses-here", "ses-here-left")
-		seed(tx, "LEGION", "elsewhere", "LEGION-209", claim.RoleArchitect, "ses-elsewhere", "ses-elsewhere", "ses-elsewhere-left")
-		seed(tx, "LEGION", controller, "", claim.RoleController, "ses-controller", "ses-controller", "ses-controller-left")
-		seed(tx, "OTHER", "theirs", "OTHER-5", claim.RoleArchitect, "ses-theirs", "ses-theirs")
+		seed(tx, "LEGION", "here", "LEGION-200", "LEGION-208", claim.RoleArchitect, "ses-here", "ses-here", "ses-here-left")
+		seed(tx, "LEGION", "elsewhere", "LEGION-200", "LEGION-209", claim.RoleArchitect, "ses-elsewhere", "ses-elsewhere", "ses-elsewhere-left")
+		seed(tx, "LEGION", controller, "", "", claim.RoleController, "ses-controller", "ses-controller", "ses-controller-left")
+		seed(tx, "OTHER", "theirs", "OTHER-5", "OTHER-5", claim.RoleArchitect, "ses-theirs", "ses-theirs")
 		_, err := tx.Exec(ctx, `insert into claim_sessions (project, kind, name, claim) values ('LEGION', 'session', 'ses-conflict', '')`)
 		must(t, err)
 	})
-	here := SessionClaim{Token: "here", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleArchitect, Session: "ses-here"}
-	elsewhere := SessionClaim{Token: "elsewhere", Tree: "LEGION-209", Issue: "LEGION-209", Role: claim.RoleArchitect, Session: "ses-elsewhere"}
+	here := SessionClaim{Token: "here", Issue: "LEGION-208", Role: claim.RoleArchitect, Session: "ses-here"}
+	elsewhere := SessionClaim{Token: "elsewhere", Issue: "LEGION-209", Role: claim.RoleArchitect, Session: "ses-elsewhere"}
 	controlling := SessionClaim{Token: controller, Role: claim.RoleController, Session: "ses-controller"}
 	for _, tc := range []struct {
 		name    string
 		session string
-		// inTree is SessionClaimsTree's answer, ofTree SessionOfTree's, both for LEGION-208.
-		inTree bool
-		ofTree bool
+		// claims is SessionClaimsOf's answer, of SessionOf's, both for the asked issue LEGION-208.
+		claims bool
+		of     bool
 		// claimed is the claim SessionClaim finds in project LEGION, and found whether it finds one.
 		claimed SessionClaim
 		found   bool
 	}{
-		{name: "the current session of the asked tree", session: "ses-here", inTree: true, ofTree: true, claimed: here, found: true},
-		{name: "a session the asked tree left behind", session: "ses-here-left", ofTree: true, claimed: here, found: true},
-		{name: "the current session of another tree", session: "ses-elsewhere", claimed: elsewhere, found: true},
-		{name: "a session another tree left behind", session: "ses-elsewhere-left", claimed: elsewhere, found: true},
+		{name: "the current session of an asked issue", session: "ses-here", claims: true, of: true, claimed: here, found: true},
+		{name: "a session an asked issue left behind", session: "ses-here-left", of: true, claimed: here, found: true},
+		{name: "the current session of another issue under the same stored tree", session: "ses-elsewhere", claimed: elsewhere, found: true},
+		{name: "a session another issue under the same stored tree left behind", session: "ses-elsewhere-left", claimed: elsewhere, found: true},
 		{name: "the project controller's session", session: "ses-controller", claimed: controlling, found: true},
 		{name: "a session the project controller left behind", session: "ses-controller-left", claimed: controlling, found: true},
 		{name: "a name held for no claim", session: "ses-conflict"},
@@ -1002,14 +1075,14 @@ func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *test
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, st, func(tx pgx.Tx) {
-				inTree, err := records.SessionClaimsTree(ctx, tx, "LEGION-208", tc.session)
+				claims, err := records.SessionClaimsOf(ctx, tx, []string{"LEGION-208"}, tc.session)
 				must(t, err)
-				ofTree, err := records.SessionOfTree(ctx, tx, "LEGION-208", tc.session)
+				of, err := records.SessionOf(ctx, tx, []string{"LEGION-208"}, tc.session)
 				must(t, err)
 				claimed, found, err := records.SessionClaim(ctx, tx, "LEGION", tc.session)
 				must(t, err)
-				if inTree != tc.inTree || ofTree != tc.ofTree {
-					t.Fatalf("%s claims LEGION-208 = %t and is one of its sessions = %t, want %t and %t", tc.session, inTree, ofTree, tc.inTree, tc.ofTree)
+				if claims != tc.claims || of != tc.of {
+					t.Fatalf("%s claims LEGION-208 = %t and is one of its sessions = %t, want %t and %t", tc.session, claims, of, tc.claims, tc.of)
 				}
 				if found != tc.found || (found && claimed != tc.claimed) {
 					t.Fatalf("SessionClaim(LEGION, %s) = %+v, %t, want %+v, %t", tc.session, claimed, found, tc.claimed, tc.found)
@@ -1176,16 +1249,6 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 		if len(open) != 2 || !sameProductionCheck(&open[0], woken) || !sameProductionCheck(&open[1], fresh) {
 			t.Fatalf("open production checks = %+v, want the root's then the child's", open)
 		}
-		ofTree, err := records.OpenProductionChecksOfTree(ctx, tx, root.Key)
-		must(t, err)
-		if len(ofTree) != 2 || ofTree[0].Issue != root.Key || ofTree[1].Issue != child.Key {
-			t.Fatalf("open production checks of %s = %+v, want the root's then the child's", root.Key, ofTree)
-		}
-		ofOther, err := records.OpenProductionChecksOfTree(ctx, tx, other.Key)
-		must(t, err)
-		if len(ofOther) != 0 {
-			t.Fatalf("open production checks of %s = %+v, want none: its one check is closed", other.Key, ofOther)
-		}
 	})
 	refused := done
 	refused.Outcome = "shrug"
@@ -1218,10 +1281,10 @@ var forgetNothing KeptForget = func(context.Context, pgx.Tx, string, KeptDecisio
 // The reviewer's row keeps the commit its newest recorded review read (PhaseRow.ReviewedHead),
 // which the task of a later review round names. A row the release before wrote names no such
 // column and reads back with none. A new generation clears it with the rest of the generation's
-// facts, for one issue (ClearGeneration: the rerun of a child, an adoption) and for a whole tree
-// (ClearTreeGeneration: the re-admission of a root), so the first review of a new generation is
-// told no commit. The issue keeps no decision, so the forget each clear is required to be handed
-// (KeptForget) is run over nothing.
+// facts, of one issue at a time (ClearGeneration, which a new run makes: workflow's Engine.NewRun,
+// and the first boot's finish of a hand-over that carries no run), so the first review of a new
+// generation is told no commit. The issue keeps no decision, so the forget each clear is required
+// to be handed (KeptForget) is run over nothing.
 func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	ctx := context.Background()
 	const reviewed = "aaa111"
@@ -1275,33 +1338,21 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		}
 	})
 
-	for _, tc := range []struct {
-		name  string
-		key   string
-		clear func(tx pgx.Tx, issue Issue) error
-	}{
-		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
+	t.Run("a new generation of the issue clears it", func(t *testing.T) {
+		st := migratedStore(t)
+		issue := issueFixture("LEGION-290")
+		writeReviewer(t, st, issue)
+		if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != reviewed {
+			t.Fatalf("before the clear the reviewer's row reads the reviewed commit %q, want %q: the clear would prove nothing", got, reviewed)
+		}
+		inTx(t, st, func(tx pgx.Tx) {
 			_, err := NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
-			return err
-		}},
-		{name: "a new generation of the tree clears it", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
-			_, err := NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, forgetNothing)
-			return err
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			st := migratedStore(t)
-			issue := issueFixture(tc.key)
-			writeReviewer(t, st, issue)
-			if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != reviewed {
-				t.Fatalf("before the clear the reviewer's row reads the reviewed commit %q, want %q: the clear would prove nothing", got, reviewed)
-			}
-			inTx(t, st, func(tx pgx.Tx) { must(t, tc.clear(tx, issue)) })
-			if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != "" {
-				t.Fatalf("after the clear the reviewer's row reads the reviewed commit %q, want none: it was the generation's that ended", got)
-			}
+			must(t, err)
 		})
-	}
+		if got := reviewerOf(t, st, issue.Key).ReviewedHead; got != "" {
+			t.Fatalf("after the clear the reviewer's row reads the reviewed commit %q, want none: it was the generation's that ended", got)
+		}
+	})
 }
 
 func TestMarkProcessedIsIdempotent(t *testing.T) {
@@ -1556,7 +1607,7 @@ func TestHeldRowsListsLifecycleRowsBehindTheirIssuesRunningOne(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload, at time.Time) int64 {
-		row, err := NewOutboxRow(issue, payload, at)
+		row, err := unrecordedRow(issue, payload, at)
 		must(t, err)
 		id, err := records.EnqueueID(ctx, tx, row)
 		must(t, err)
@@ -1765,7 +1816,7 @@ func TestDueRowsListsOnlyTheRowsALaneMayRunNow(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}
@@ -1816,7 +1867,7 @@ func TestADueLifecycleRowWaitsWhileItsIssuesLifecycleRowRuns(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) int64 {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		id, err := records.EnqueueID(ctx, tx, row)
 		must(t, err)
@@ -1894,7 +1945,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
 			WorkspaceRemove{Linger: 1},
 		} {
-			row, err := NewOutboxRow("LEGION-208", payload, now)
+			row, err := unrecordedRow("LEGION-208", payload, now)
 			must(t, err)
 			must(t, records.Enqueue(ctx, tx, row))
 		}
@@ -1985,7 +2036,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 			SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 1},
 			OrdinaryStatusWrite("done", "in_progress", ""),
 		} {
-			row, err := NewOutboxRow("LEGION-208", payload, now)
+			row, err := unrecordedRow("LEGION-208", payload, now)
 			must(t, err)
 			must(t, records.Enqueue(ctx, tx, row))
 		}
@@ -2085,12 +2136,12 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
+		must(t, records.ClaimKeptDecisionsOf(ctx, tx, "LEGION-1", []string{"LEGION-1"}, kept, catchUp))
 	})
 
 	// The lane's lease of the catch-up, a moment from committing.
@@ -2143,8 +2194,8 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 }
 
 // A lane finishing a catch-up and a transaction that locked the tree's decisions and then drops the
-// root's catch-ups (workflow.Adopt and spentKept, which lock them through UnclaimedKept before they
-// queue a catch-up) would take the same two locks in opposite orders if the drop locked the rows.
+// root's catch-ups (spentKept, which locks them through UnclaimedKeptOf before it queues a
+// catch-up) would take the same two locks in opposite orders if the drop locked the rows.
 // The finish deletes its row and then sets the decisions it claimed back to unclaimed (the foreign
 // key's on delete set null), which waits on the decisions the other transaction locked; a drop that
 // locked every catch-up of the issue, the finishing one included, would wait on the finish, and
@@ -2163,12 +2214,12 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
+		must(t, records.ClaimKeptDecisionsOf(ctx, tx, "LEGION-1", []string{"LEGION-1"}, kept, catchUp))
 	})
 	var leased OutboxRow
 	inTx(t, st, func(tx pgx.Tx) {
@@ -2183,7 +2234,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	txAdopt, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txAdopt.Rollback(ctx) }()
-	if _, _, err := records.UnclaimedKept(ctx, txAdopt, "LEGION-1"); err != nil {
+	if _, _, err := records.UnclaimedKeptOf(ctx, txAdopt, "LEGION-1", []string{"LEGION-1"}); err != nil {
 		t.Fatalf("lock the decisions owed to LEGION-1: %v", err)
 	}
 	// The lane's finish deletes the row and waits on those decisions.
@@ -2246,18 +2297,18 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-1", Ref: ref, Decision: DecisionAskAnswered,
 			Actor: "user:alice", At: at}))
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		catchUp, err = records.EnqueueID(ctx, tx, row)
 		must(t, err)
-		must(t, records.ClaimKeptDecisions(ctx, tx, "LEGION-1", kept, catchUp))
+		must(t, records.ClaimKeptDecisionsOf(ctx, tx, "LEGION-1", []string{"LEGION-1"}, kept, catchUp))
 	})
 
 	// The re-hold's copy, queued in a transaction of its own and carrying the row's claims.
 	var copyID int64
 	inTx(t, st, func(tx pgx.Tx) {
-		row, err := NewOutboxRow("LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
+		row, err := NewFencedRow(ctx, tx, records, "LEGION-1", Notice{Kind: "catch-up", Role: claim.RoleArchitect, Reason: "the tree of LEGION-1",
 			Resends: 1, ResendOf: catchUp, CatchUp: &CatchUp{Generation: 1, Launch: 1, Decided: ref, Kept: &kept}}, now)
 		must(t, err)
 		copyID, err = records.EnqueueID(ctx, tx, row)
@@ -2324,7 +2375,7 @@ func TestAStartWaitsForItsIssuesBranch(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}
@@ -2377,7 +2428,8 @@ func TestAStartWaitsForItsIssuesReleaseTeardown(t *testing.T) {
 	records := NewStore()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	enqueue := func(tx pgx.Tx, issue string, payload OutboxPayload) {
-		row, err := NewOutboxRow(issue, payload, now)
+		// A writer of this release names the run and the phase entry it queues the row for (unrecordedRow).
+		row, err := unrecordedRow(issue, payload, now)
 		must(t, err)
 		must(t, records.Enqueue(ctx, tx, row))
 	}
@@ -2487,20 +2539,21 @@ func TestPendingStatusWritesListsEveryUnfinishedStatusEffect(t *testing.T) {
 	}
 }
 
-// The waiting line's second part is the slotless todo roots and orphans handed to Legion, in
-// rank order: a root in todo without the label waits for nothing, however high it ranks. A
-// root's own record says whether the generation it carries has already run, so each record here
-// carries the phase it stands at, as every record the store reads does.
-func TestWaitingIncludesOnlySlotlessHandedOverTodoRootsAndOrphansInRankOrder(t *testing.T) {
+// The waiting line's second part is the slotless todo roots handed to Legion, in rank order: a
+// root in todo without the label waits for nothing, however high it ranks, and an issue under a
+// root whose gate has not opened waits for that gate. A root's own record says whether the
+// generation it carries has already run, so each record here carries the phase it stands at, as
+// every record the store reads does.
+func TestWaitingIncludesOnlySlotlessHandedOverTodoRootsInRankOrder(t *testing.T) {
 	issues := []Issue{
 		{Key: "LEGION-210", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-210", Phase: phase.Done, Status: "done", Rank: "00000", HandedOver: true},
 		{Key: "LEGION-211", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-211", Phase: phase.Admitted, Status: "backlog", Rank: "00001", HandedOver: true},
 		{Key: "LEGION-212", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00004", LastDispatchSeq: 1, HandedOver: true},
 		{Key: "LEGION-213", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-213", Phase: phase.Admitted, Status: "todo", Rank: "00003", LastDispatchSeq: 10, HandedOver: true},
-		{Key: "LEGION-214", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00002"},
+		{Key: "LEGION-214", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Parent: ParentOf("LEGION-212"), Phase: phase.Admitted, Status: "todo", Rank: "00002"},
 		{Key: "LEGION-215", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-215", Phase: phase.Admitted, Status: "todo", Rank: "00000"},
 	}
-	line, _ := Waiting(issues, nil, LineFacts{})
+	line, _ := Waiting(issues, nil, LineFacts{Chains: chainsOf(issues, copyOf(issues...))})
 	got := WaitingIssues(line)
 	want := []Issue{issues[3], issues[2]}
 	if !reflect.DeepEqual(got, want) {
@@ -2564,7 +2617,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "children_wait_children", "children_waited_at",
-			"members_owed", "priority", "resolved_known", "resolved_priority", "priority_from", "claim_left"},
+			"holds_gate", "retained_until", "carried_generation", "carried_gate", "pending_close", "seen_seq", "held_session_writes", "members_owed", "priority",
+			"resolved_known", "resolved_priority", "priority_from", "claim_left"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_awaiting", "entry_raised_at", "entry_moved_back", "entry_from", "entry_given_task", "entry_given_entry", "entry_given_generation", "handoff_record", "handoff_version", "reviewed_head", "step_task", "step_place"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "reviews_requested", "head_checks", "null_mergeable_reads", "null_mergeable_since", "evidence_read_at", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"issue_plans":       {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at", "earlier_givers"},
@@ -2579,7 +2633,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":        {"key", "claimed_by", "claim_seq"},
 		"slots":                  {"issue", "index", "admitted_at"},
 		"processed_events":       {"source", "event_id", "processed_at"},
-		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "state_seq", "state_at", "state_tx"},
+		"outbox":                 {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "attempt_key", "attempt_body", "state_seq", "state_at", "state_tx"},
+		"issue_lifecycles":       {"project", "issue", "epoch", "authority", "cleanup_started", "cleanup_confirmed_at", "updated_at"},
+		"tree_conversions":       {"project", "step", "converted_at"},
 		"intake_failures": {"id", "project", "consumer", "subject", "stream_seq", "stored_at", "headers", "payload", "event_source", "event_id",
 			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
 			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
@@ -2933,7 +2989,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	var named []ParkedDecision
 	inTx(t, st, func(tx pgx.Tx) {
 		var err error
-		named, err = records.ParkedDecisions(ctx, tx, "LEGION-210")
+		named, err = records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-210"})
 		must(t, err)
 	})
 	want := []ParkedDecision{
@@ -2954,7 +3010,7 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 		}
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		again, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
+		again, err := records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-210"})
 		must(t, err)
 		if len(again) != len(want) {
 			t.Fatalf("a second read = %#v, want the rows still kept: only a delivery forgets them", again)
@@ -2964,11 +3020,11 @@ func TestAParkedDecisionKeepsTheNewestPerRefAndIsForgottenOnlyWhereItWasNamed(t 
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.AddParkedDecision(ctx, tx, ParkedDecision{Issue: "LEGION-210", Ref: spec,
 			Decision: DecisionDesignChangesRequested, Actor: "user:carol", At: t0.Add(time.Hour)}))
-		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-210", KeptDecisions{Decisions: []DecisionMark{
+		must(t, records.ForgetKeptDecisionsOf(ctx, tx, "LEGION-210", []string{"LEGION-210"}, KeptDecisions{Decisions: []DecisionMark{
 			{Ref: spec, At: t0.Add(2 * time.Second)}, {Ref: ask, At: t0.Add(time.Second)}}}, 0))
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		left, err := records.ParkedDecisions(ctx, tx, "LEGION-210")
+		left, err := records.ParkedDecisionsOf(ctx, tx, []string{"LEGION-210"})
 		must(t, err)
 		if len(left) != 1 || left[0].Ref != spec || left[0].Decision != DecisionDesignChangesRequested || left[0].Actor != "user:carol" ||
 			left[0].Artifact != "" || left[0].Version != 0 {
@@ -3010,13 +3066,13 @@ func TestAReadmittedApprovalIsKeptUntilTheStartThatNamedItIsDelivered(t *testing
 	// A re-admission since the start named the pair kept a newer one, which the forget leaves.
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.KeepReadmittedApproval(ctx, tx, "LEGION-211", KeptApproval{Step: DesignStepSpec, Approved: 4, Latest: 5}))
-		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-211", KeptDecisions{KeptApproval: KeptApproval{Approved: 3, Latest: 4}}, 0))
+		must(t, records.ForgetKeptDecisionsOf(ctx, tx, "LEGION-211", []string{"LEGION-211"}, KeptDecisions{KeptApproval: KeptApproval{Approved: 3, Latest: 4}}, 0))
 		approved, latest, err := records.ReadmittedApproval(ctx, tx, "LEGION-211")
 		must(t, err)
 		if approved != 4 || latest != 5 {
 			t.Fatalf("after the forget = %d, %d, want the pair kept since, 4 and 5", approved, latest)
 		}
-		must(t, records.ForgetKeptDecisions(ctx, tx, "LEGION-211", KeptDecisions{KeptApproval: KeptApproval{Approved: 4, Latest: 5}}, 0))
+		must(t, records.ForgetKeptDecisionsOf(ctx, tx, "LEGION-211", []string{"LEGION-211"}, KeptDecisions{KeptApproval: KeptApproval{Approved: 4, Latest: 5}}, 0))
 		if approved, _, err := records.ReadmittedApproval(ctx, tx, "LEGION-211"); err != nil || approved != 0 {
 			t.Fatalf("after the forget of the pair it named = %d, %v, want zero", approved, err)
 		}

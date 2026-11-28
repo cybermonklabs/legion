@@ -1306,8 +1306,8 @@ Neither `workspace-init` looks for a session file, and neither is told to expect
 A launch that creates the issue's pod provisions its workspace from the issue's pushed branch and continues its own session from the table;
 a role launched into the pod already running provisions nothing and continues its session in the workspace the roles before it left.
 Which launch is which, and what goes with a pod, is stated once in [The disk dies with its pod](#the-disk-dies-with-its-pod), and for a kept volume in [A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod).
-A child issue re-admitted as a root of its own keeps its roles' sessions the same way (`Machine.Retree`):
-they are rows, and no disk is carried into the new tree.
+An issue whose Dispatch parent changes keeps its claims and its roles' sessions the same way:
+they are rows, and a change of parent moves none of them.
 
 An agent whose workspace is newer than its session is told so before its next turn.
 Provisioning records when it created a workspace, in the workspace's own `.jj/legion-created`, which jj never snapshots (`workspace.RecordCreated`).
@@ -1645,7 +1645,7 @@ The claim must have no live process: suspend it first, or use a queued, failed, 
 The daemon clears and persists only `session` and `session_file`, logs the forgotten session and file, and returns them in the answer.
 It does not read or change the session database, so the old session row remains there.
 
-Retrying a failed architect then spawns a fresh agent, the daemon's controller keeper does the same for its failed controller claim, and a retired claim starts fresh at its next workflow start or re-admission.
+Retrying a failed architect then spawns a fresh agent, the daemon's controller keeper does the same for its failed controller claim, and a retired claim starts fresh at its next workflow start, such as its issue's return to work or a new run of it.
 Resuming a suspended claim starts a fresh session with its pending task.
 
 ### Copying file sessions before turning it on
@@ -1654,7 +1654,7 @@ This runbook copies only from the release before issue pods, `legion-v10.0.0`, w
 A deployment on `legion-v10.1.0` to `legion-v10.2.x`, which runs one pod per issue, has no copy path: its switch to `postgres` is a drain at a pushed boundary, every tree closed, and the sessions on those volumes are lost.
 There is no way back either, and nothing to go back to: this release has no second store, and nothing copies a row out to a file.
 
-Before it reaps a Sandbox-owned volume, including a disk-shape replacement, an issue or tree cleanup, an orphan cleanup, or a controller cleanup, the daemon reads the retiring Sandbox's pod template.
+Before it reaps a Sandbox-owned volume, including a disk-shape replacement, an issue's cleanup, an orphan cleanup, or a controller cleanup, the daemon reads the retiring Sandbox's pod template.
 Under `postgres`, the providers volume's `OMP_SESSION_SQL_DSN` item proves the Sandbox stored sessions in a database; under `cloudsql-iam`, the launcher command's `--session-instance`, `--session-database`, and `--session-user` flags do.
 Either marker permits the reap.
 Without a database marker, the daemon refuses when a matching claim records a session; it has no providers-Secret read permission or session-store connection, so it cannot inspect the session database.
@@ -1770,52 +1770,54 @@ the operator's providers Secret (`provider_keys`) and, under `runtime.kubernetes
 A role process is addressed by the pod's uid, its role and its generation (the incarnation `<pod uid>/<generation>`):
 in a healthy running pod, starting, suspending or recovering one role never restarts the pod or touches another role.
 A new generation of a role in a running pod is a new child of its launcher.
-A pod is replaced after it dies, when it was not made by this runtime, or when a closed issue is re-admitted after suspension (`packages/daemon/internal/runtime/sandbox`).
+A pod is replaced after it dies, when it was not made by this runtime, or when an issue a stop or a close took out of Legion's work comes back (`packages/daemon/internal/runtime/sandbox`).
 
 Releasing a role ends only its process.
 The issue owns its Sandbox, its role Secrets and its `-boot` Secret, and nothing else:
 its disk belongs to its pod, as a generic ephemeral volume the pod's own template declares, so the Sandbox owns no `volumeClaimTemplates` entry and the disk is created and deleted with the pod ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 The one exception is a microVM pod under `keep_volume`: its Sandbox owns one `issue` claim template, and the claim made from it outlives the pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-Each Sandbox carries the tree's `legion.dev/tree` label, which is how the tree's cleanup finds them.
-Each tree also has one durable lifecycle record (`tree_lifecycles`, keyed by the normalized project token and the tree):
+Each Sandbox carries the `legion.dev/tree` label, the issue's gate root when its pod was made, and no decision of the daemon reads it (`labelTree`, `internal/runtime/sandbox/names.go`).
+A running pod is never relabelled, so a change of the issue's Dispatch parent leaves its pod, its disk and every role in it as they were, and a role launched into that pod later gets the issue's gate root of that launch as its `LEGION_TREE` while the pod keeps its label (`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`).
+Each issue has one durable lifecycle record (`issue_lifecycles`, keyed by the normalized project token and the issue):
 an epoch that is open, cleanup-reserved, or cleanup-confirmed, and the authority that opened it.
-Workflow admission opens a root's epoch in the fact that gives it its slot; the authenticated operator spawn of a root architect opens an operator tree's.
-Every claim binds the open epoch in the same short transaction that first writes it, and every spawn, resume or retry binds again before it launches, all under the fact path's one global serializer.
+Workflow admission opens an issue's epoch in the fact that starts it, and the authenticated operator spawn of an issue's architect opens that issue's epoch under the operator's authority (`OpenOperatorIssueLifecycle`, `internal/store/issue_lifecycle.go`).
+Every claim binds its issue's open epoch in the same short transaction that first writes it, and every spawn, resume or retry binds again before it launches, all under the fact path's one global serializer.
 A reserved epoch refuses those writes with a named wait that keeps the start's outbox row and charges no launch failure;
-a confirmed epoch admits nothing until a fresh root admission opens the next one.
-A workflow root whose key names an open operator tree waits for its slot behind that tree's epoch, and when it leaves the workflow while it waits (a person parks it, or someone moves it to a running tree's status) its record goes to `done` and nothing more:
-the operator's claims and pod carry the root's tokens and names, so the workflow queues no stop, no `issue_suspend` and no linger close for them (`leaveUnderOperator`, `internal/workflow/linger.go`).
-`todo` with the label queues it again.
+a confirmed epoch admits nothing until a fresh start of the issue opens the next one.
+Admission passes over an issue whose epoch the operator holds and starts the issues behind it, and when such an issue leaves Legion's work the workflow queues nothing for it:
+the operator's claims and pod carry the issue's tokens and names, so no stop, no `issue_suspend` and no cleanup of the workflow's reaches them (`record.OperatorHolds`, read by `leave` in `internal/workflow/leave.go`).
+The release before kept one such record for each tree (`tree_lifecycles`, bound by `claims.tree_epoch`).
+This release keeps writing it for that release, one open row for each tree that `issues.tree` stores while an issue that stores it is in Legion's work and has started, and reads it for no decision ([Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree)).
 
-A workflow close or withdrawal queues a separate `issue_suspend` effect for each affected issue, after its per-role stops.
-The effect checks both workflow generations, later starts, unfinished stop effects and every stored role, including a launch not yet present in the runtime's watch.
-A held turn, unfinished or uncertain launch, or Kubernetes error keeps the effect pending; a superseded close finishes without acting.
+A stop or a close of an issue queues that issue's own `issue_suspend` effect after its per-role stops:
+a move of the issue to `backlog`, `icebox` or `triage` and a close as `done` each act on that one issue, whatever stands above or below it.
+The effect names the issue's generation, its phase entry and the pod it was queued for, and checks the issue's generation, later starts, unfinished stop effects and every stored role, including a launch not yet present in the runtime's watch.
+A held turn, unfinished or uncertain launch, or Kubernetes error keeps the effect pending;
+a superseded close, one of an issue back in Legion's work, and one whose Sandbox holds a later pod than the one it names finish without acting.
 Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended` and waits for its pod to disappear, which takes the disk that pod owns.
-Then it deletes the Sandbox, whatever the close was:
-a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
+Then it deletes the Sandbox, a stop's and a close's alike, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
 Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
 Where the Sandbox owns a kept volume, the foreground delete deletes that volume too ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
+An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later start resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
 A daemon restart retries the stored effect.
-Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, and a claim whose session supervise's `forgetSession` has dropped starts a new one;
+An issue's return to Legion's work, or a new run of it, makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, and a claim whose session supervise's `forgetSession` has dropped starts a new one;
 the issue pod's launch turn orders a concurrent resume after any suspension already in flight.
 
-Linger expiry reserves its tree only while the root still lingers at the close's generation, so a re-admission that committed first fences it;
-an operator close reserves after it authenticated the root close.
-Either reservation comes before the census, which then reads every stored claim of the tree, including one that persisted before the reservation but has not launched yet, and deletes nothing until all of them retired.
-A reservation that is not confirmed resumes on the next attempt, even after a re-admission, and stays the new start's wait until API confirmation:
-every close row of the tree, however stale its generation or the linger it closed, still retires its claim and drives that cleanup before the checks that finish a stale close apply.
-A launch checks its tree's epoch again just before it records `launching` and calls the runtime, so a reservation committed after the claim bound refuses it there, with the same uncharged wait.
+A close's cleanup reserves the issue's own epoch only while the issue still stands at the close's generation, out of Legion's work and with no production check open, so a return that committed first fences it (`cleanupClosedIssue`, `internal/daemon/outbox.go`;
+`ReserveIssueCleanup`, `internal/store/issue_lifecycle.go`).
+A stop reserves nothing: the issue keeps its lifecycle, and its claims stay suspended until it comes back.
+An operator's close of an issue its own spawn opened reserves after it authenticated the close (`ReserveOperatorIssueCleanup`).
+Either reservation comes before the census, which then reads every stored claim of the issue, including one that persisted before the reservation but has not launched yet, and deletes nothing until all of them retired.
+A reservation that is not confirmed resumes on the next attempt, whatever the issue has done since, and stays the new start's wait until API confirmation.
+Each confirmation, the outbox's and the operator's close's, is applied as a fact of its own (`intake.IssueCleanedUp`), so a start that waited for that cleanup takes a free slot at once rather than at the next fact or tick.
+A launch checks its issue's epoch again just before it records `launching` and calls the runtime, so a reservation committed after the claim bound refuses it there, with the same uncharged wait.
 Every lifecycle step takes the global serializer before it reads the lifecycle row.
 
-Once every claim of the tree has retired, the runtime deletes the tree's Sandboxes, found by listing them from the API by the tree's label, in any order (`CleanupTree`, `internal/runtime/sandbox/cleanup.go`):
-each delete carries the listed object's UID and resourceVersion plus `foreground` propagation and is awaited until the API no longer has it, the listing is read again until it holds none, and a delete the API refuses because the Sandbox changed since the listing lists again after a short wait.
-Nothing is handed over any more: the cleanup deletes every Sandbox the listing names, a carried child's included, because a child carried into a tree of its own has nothing left to be handed
-— the work was on its pod's disk, which went with the pod, or on a kept volume, which goes with the Sandbox — and that child's own tree creates a Sandbox for it at its first launch (`ensureSandbox`).
-A Sandbox the new tree's launch relabelled before the cleanup reached it fails the cleanup's fence and is no longer in the next listing, so it is left to that tree.
-The orphan sweep still keeps a Sandbox whose home is another tree (`Store.IssueSandboxHome`:
-a child whose hand-over is pending, or one carried into a tree of its own that it is in or can still be admitted into), which is how a carried child's Sandbox survives a sweep between its launch and its old tree's cleanup.
+Once every claim of the issue has retired, the runtime deletes the issue's own Sandbox, named by the issue's identity alone, and nothing of another issue, whatever tree either stored (`CleanupIssue`, `internal/runtime/sandbox/cleanup.go`):
+the close has usually deleted it already, and one already gone is gone, so a retry after a failure finishes, while a Sandbox by that name labelled with another project or issue is left alone and named.
+The delete carries the Sandbox's UID and resourceVersion plus `foreground` propagation and is awaited until the API no longer has it.
+The orphan sweep keeps an issue's Sandbox while that issue's own lifecycle is live, open or reserved and still releasing, whatever tree its label names, and deletes it, fenced and logged, once the issue's cleanup has confirmed or where the issue never had a lifecycle (`sweep` in `internal/runtime/sandbox/sandbox.go`, `Store.IssueLive`).
 Agent Sandbox v1.0.3 creates each Sandbox's PVC with that Sandbox as its controller owner and `blockOwnerDeletion: true`;
 foreground deletion keeps the owner visible until Kubernetes garbage collection deletes every blocking dependent
 — an issue Sandbox's six role Secrets, and the claim a controller's or a cache's Sandbox owns.
@@ -1823,56 +1825,19 @@ The restricted daemon has no PVC API verb, so a Sandbox's absence after its fore
 An issue's ephemeral disk is not among those dependents: it is its pod's own, and it goes when the delete takes the pod.
 A kept volume is among them: its claim is the issue Sandbox's, so the delete waits until the garbage collector deletes it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 
-An operator-created tree has no workflow record:
+An issue the operator's spawn opened has no workflow record:
 its stored operator authority, not a zero or sentinel generation, selects the operator cleanup entry point, which then applies the same cleanup without manufacturing a workflow issue.
-A tree closed before any of its Sandboxes was created lists none and confirms its reservation without deleting anything.
-A root that left admission's waiting line before a slot opened its tree (labelled `todo`, then set to `backlog`, `icebox` or `done`) lingers as any root does, but its tree never had a lifecycle and holds nothing a cleanup releases, so its linger's close rows reserve nothing and finish.
+An issue closed before any Sandbox of it was created holds none and confirms its reservation without deleting anything.
+A root that left admission's waiting line before its first start never had a lifecycle and holds nothing a cleanup releases, so its close reserves nothing and finishes.
 
-A child of a closed tree re-admitted as a root of its own keeps its key, so its claims and its Sandbox's name.
-Its old tree's cleanup does not wait on a claim of it that runs nothing;
-each of its claims is re-pointed to its new tree before its first start there, and binds that tree's epoch;
-and its root launch takes over the Sandbox its old tree left, if the cleanup has not reached it yet:
-the Sandbox is relabelled for the new tree (`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`), and whether it is that Sandbox or one made afresh, the launch brings a new pod, with a disk of its own or on the kept volume of a relabelled Sandbox, and the roles resume from the session table.
-A role still in a turn when the old tree closed holds that close's suspension until the turn ends, and the carry's new generation can reach the issue before the close's suspend row of a role has run at all, after a stop of the old tree finished without acting (a production check's look start supersedes the linger's suspend), or before that look's start, already past its fences, brings its claim up in the old tree.
-So the move itself, a hand-over, an orphan carry or an adoption, queues a suspend of the old tree for every role of the issue (`Engine.StopLeftTree`, `internal/workflow/adopt.go`).
-Every row of the old tree serves an earlier generation, but such a suspend or tree close still stops a claim that stands in the old tree, waiting while its claim's machine is still to come (a rolling restart).
-The cleanup waits on every claim still running in its tree, so a claim that no stop reached would hold it, and the old root's next run with it, until the new tree started the issue, which a carried child held on a blocker or behind the admission cap does not do.
-When the stop completes as the row runs, it makes the old tree's close rows due at once (`stopInLeftTree`, `internal/daemon/outbox.go`); a suspension held for a turn is instead picked up at the close row's next retry, at most 64 seconds on.
-Such a row releases nothing of the old tree itself: the deletes of the old tree's Sandboxes run on the close rows of the issues still in that tree, so the carried issue's lane, and its new tree's start on it, do not wait behind them.
-Nor does a start of the new tree launch anything while a claim of the issue still runs a process in another tree:
-the start suspends that claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until the claim has stopped (`stopElsewhere`).
-When that call stops a claim and no other claim of the issue still runs, it makes the close rows of the tree it stood in due at once.
-If another claim still runs, `stopElsewhere` returns its wait before that wake; when it later finds the first claim already stopped, that tree's close rows retry at most 64 seconds on.
-Either stop is bounded where the old tree's close would have ended the turn, at the old root's linger expiry (`linger_hours`):
-a turn that ends within the linger ends on its own, and one still running at the expiry is stopped there.
-Once the old root no longer lingers (it was reopened, say), there is no close left to wait for, and the stop falls back to the stop timeout (`worker_stop_timeout_seconds`) from then (`carriedStopDeadline`):
-a role still in a turn is stopped that long after, losing only the tool call in flight.
-Either way the claim keeps the issue's branch and its session, which the new tree's start resumes: a phase worker's with its phase's resume task, and the issue's own architect's, now its root's, with the task the start of a carried root gives it;
-the workspace is provisioned again from that branch in the new pod.
-A turn that hangs inside the linger is the operator's to stop sooner:
-`legion claims suspend` stops it at the stop timeout (`worker_stop_timeout_seconds`) from then and makes the hold the operator's, so the new tree's start of that role waits for the operator, with the claim already re-pointed to the new tree, and `legion claims resume` relaunches its session there.
-A Sandbox the old tree left `Running`, none of whose claims runs any more, is relabelled and suspended in one patch fenced to the uid and resourceVersion it read, so the launch waits its pod out;
-while a claim of the old tree still runs, the launch is refused, naming it.
-That holds whether the new tree's start or the old tree's cleanup comes first:
-a cleanup that reaches the issue first deletes its Sandbox, and the new tree's first launch makes one (above), while the orphan sweep keeps a Sandbox whose home is the tree it is labelled with.
-A Sandbox's home ends when its issue can no longer be admitted into that tree.
-For a tree admission has not opened, a child set to `backlog`, `icebox` or `done`, or to a status only a running tree has (`in_progress`, `testing`, `needs_review`, `retro`), leaves the waiting line and lingers like any root, so its Sandbox stays until its linger expires;
-one whose label is taken off leaves the line with no linger, so its Sandbox goes at the next sweep.
-Taken out by its label, once it is `todo` with the label again it waits in the line and is admitted into the phase it stood in, continuing its run in a pod of its own from the issue's branch:
-its roles' sessions continue from the session table, and whatever the pod it had was working on went with that pod's disk ([The disk dies with its pod](#the-disk-dies-with-its-pod)), or with the kept volume of the Sandbox that the sweep deleted.
-Taken out by a status, it comes back as any root does after its linger:
-a new generation at `admitted`, its design gate and handoffs cleared (`ClearTreeGeneration`), its architect starting over from the issue's branch.
-A hand-over fence counts only while the child's record still names the tree the fence was written for, and a hand-over Dispatch refuses permanently drops its fence with its row (`finishRefused`, `internal/daemon/outbox.go`).
-Past that the Sandbox is an orphan, which the sweep deletes, fenced and logged, taking its pod, the disk that pod owns and a kept volume that the Sandbox owns.
-A child re-admitted after its old tree's cleanup took its Sandbox, one that had left the workflow before the close (a parked child the close does not hand over), finds no Sandbox and makes one at its next launch;
-its re-pointed claim still names its session (`Retree`, `internal/supervise/lifecycle.go`, keeps it:
-the supervisor knows nothing of Sandboxes, and a check there would race the cleanup), which the session table holds and the role resumes.
-That launch creates the issue's pod on a new disk, so it provisions its workspace from the issue's branch, as every new pod on a new disk does ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and nothing is reported lost
-— the same path a root re-admitted after its own tree's close takes.
+An issue whose Dispatch parent changes keeps its key, so its claims and its Sandbox's name, and keeps its claims, its sessions and its pod as they are:
+nothing is re-pointed, relabelled or stopped, and the change moves no lifecycle row (R17 of dispatch://INFRA-3320).
+An issue that left Legion's work and comes back resumes its claims in their recorded sessions, in a pod made afresh that provisions its workspace from the issue's branch, as every new pod on a new disk does ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and nothing is reported lost.
+The lingers, hand-overs and adoptions of the release before, and the rows they left, are what the first boot's conversion finishes, cancels or moves onto each issue, and [Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree) gives what the release before needs of them after a rollback.
 
 Before the daemon opens its store, so before any schema write, image probe or reconcile, it checks that Agent Sandbox is installed and refuses a namespace that holds a Sandbox of its project whose pod template is neither of the containers its labels allow
 — for an issue's (`legion.dev/issue`), the one `roles` container or, from the layout before contract 39, exactly the six role containers;
-for the project controller's (`legion.dev/role=controller` with no tree), the one `controller` container
+for the project controller's (`legion.dev/role=controller` with no issue label), the one `controller` container
 — or that does not own exactly the volumes a Sandbox of that kind owns.
 That rule is the kind's, not one rule for both:
 an issue's Sandbox owns at most the one claim template named `issue`: none where its pod's disk is the pod's own, and that one where a microVM pod keeps its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -1920,6 +1885,8 @@ the release before it reads `max(version)` uncast, so a deployment that skips it
 A daemon of a release before migration `0058_catch_up_cursor` that runs on a database a later release has migrated applies Dispatch's events without moving any issue's catch-up cursor (`issues.caught_up_seq`).
 Before a later release starts on that database again, set every cursor to null (`update issues set caught_up_seq = null`), or its boot catch-up replays the events the earlier daemon already applied;
 a catch-up from a null cursor replays nothing and sets the cursor to the issue's latest event on Dispatch (the comment of `0058_catch_up_cursor.up.sql` says why).
+
+A rollback from the release that stores no tree, or from a later one, to any release before it runs that release's step first, with every daemon of the database stopped, and only then the steps of each earlier release that the sections below give ([Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree)).
 
 ### Upgrading a deployment with running trees
 
@@ -2340,6 +2307,7 @@ A task's stop records the first late report only if that step had started, and s
 Before returning to a daemon that chooses a check report from the claim's state, stop the new daemon and, for each project being rolled back, run the SQL below with `<PROJECT>` replaced by that project's key.
 Without this reset the old daemon can mistake a later phase completion for a check report, because a phase task no longer clears the kept look.
 Clear only kept looks on claims whose issues still run.
+An issue is done when its status or its phase is `done`: the daemon's merge close moves it to phase `done`, and a person's done keeps the phase it stood in, such as `merging`, though it still opens a merged issue's production check.
 Done issues keep their looks so the old daemon can attribute their production reports, and another project's claims stay unchanged.
 Then start the previous daemon with its matching plugin and worker image.
 This step is needed only when that previous daemon lacks the explicit `checkOpenedAt` request field.
@@ -2350,10 +2318,11 @@ SET serving_check_look = 0, serving_check_opened_at = NULL
 FROM issues AS i
 WHERE c.issue = i.key
   AND i.project = '<PROJECT>'
+  AND i.status <> 'done'
   AND i.phase <> 'done';
 ```
 
-`TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone` runs this exact SQL against a running issue, a done issue and an issue of another project.
+`TestTheWayBackClearsTheKeptLookOfAClaimOfARunningIssueAlone` runs this exact SQL against a running issue, a done issue, a merged issue a person set done at phase `merging`, and an issue of another project.
 It checks the reset's scope; it does not claim to exercise the previous daemon's completion route.
 
 #### Rolling back the release whose cap counts issues
@@ -2483,7 +2452,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Eight migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps both names.
+Ten migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), dispatch://INFRA-4730's `20261122154645_issue_facts`, which adds `retention_end`, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2532,7 +2501,7 @@ An ask of the merger that has landed stays: the earlier release reads it as a la
 This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and a suspension source of a claim, `controller`.
 It serves the project's controller six actions on an agent, `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`, which it served before, and `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, and it refuses every other grant, an architect's included, `403 CONTROLLER_REQUIRED` at all six (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
 Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so none of those lists runs after it.
-Only `20261126163320_state_events` writes the list after it, and that list keeps `merge_holds_changed`.
+Two migrations write the list after it, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps `merge_holds_changed`; on a database main migrated, dispatch://INFRA-4730's `20261122154645_issue_facts`, whose version stands below it, is applied after it, and its list keeps `merge_holds_changed` too.
 Its migration `20261115060739_claim_suspended_by_controller` adds the source to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
 This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
@@ -2590,7 +2559,7 @@ The earlier release then runs the controller's pod as `runtime.kubernetes.pod.se
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Four migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps both names and `phase_ended`.
+Six migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), dispatch://INFRA-4730's `20261122154645_issue_facts`, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps both names and `phase_ended`.
 The release that holds a parent's start while a child of it is open queues `phase_ended` rows again for one move of its own ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
@@ -2679,7 +2648,7 @@ The given-up records stay as they were, and after the roll forward a replay or a
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Seven migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
+Nine migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), dispatch://INFRA-4730's `20261122154645_issue_facts`, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
 A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
@@ -2731,7 +2700,8 @@ This release has the daemon publish each change of what Dispatch observes as a s
 Before it, Dispatch read each configured daemon's `GET /legion/v1/state` once a minute.
 The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`, or as consecutive messages split between events where they pass 900 KB (`stateMessageBound`).
 Its migration `20261126163320_state_events` adds the three state kinds to the outbox's kind check (`outbox_kind_check`), the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
-That migration writes the whole list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `phase_ended` among its kinds, and its version stands above `20261126110259_merge_holds_changed`, the last migration before it that writes the list, so it writes the list last on any database.
+That migration writes the whole list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `phase_ended` among its kinds, and its version stands above `20261126110259_merge_holds_changed`, the last migration before it that writes the list.
+`20261128030241_outbox_kinds_after_the_state_events` writes the list after it, with the same kinds, `retention_end` among them, and its version stands above every other, so it writes the list last on any database.
 Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
 It also adds the index `legion_reads_project_recorded_at` and the tables `legion_event_cursors` and `legion_event_parts`.
 It adds `legion_state_intake` to `server_processes`, with the default 0: a process of this release registers 1, and a process of an earlier release does not name the column, so its row reads 0.
@@ -2813,7 +2783,7 @@ The boot event of that roll forward follows the cursor and carries the same sche
 
 **An edit of the daemon's database by SQL publishes no state event.**
 Only the daemon's own writes queue one.
-After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
+After an operator changes an issue's phase, status or wait, a row of the copy of Dispatch's issues (which the issue's tree is read from, `record.ObservedTrees`), a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
 A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
 Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
 
@@ -2855,6 +2825,7 @@ It deletes each `claim_release` row that carries `session`, and keeps each row t
 The drop of the column and the delete of the version row go together.
 The release before needs neither, since it never names the column.
 The delete of the version row makes the version that the store reports, its highest recorded row, the version of the release before again.
+The one exception is a database that the release that stores no tree migrated: its `20261128030241_outbox_kinds_after_the_state_events` stays recorded above this version, so the store reports that version still, and [Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree) says how Dispatch then reads the daemon whole.
 At the roll-forward, the store finds no row of this version and runs the migration again, which adds the column again, null on every issue.
 
 The rollback loses two things:
@@ -2880,7 +2851,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Six migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
+Eight migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), dispatch://INFRA-4730's `20261122154645_issue_facts`, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2938,7 +2909,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Five migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
+Seven migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), dispatch://INFRA-4730's `20261122154645_issue_facts`, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -3239,7 +3210,8 @@ So one project can roll back while another stays on this release, and the statem
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
 Its version stands above `20261119003157`, so the list of that migration never runs after it.
-Three migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`) and then `20261126163320_state_events`, and each list keeps `design_changes`.
+Five migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), dispatch://INFRA-4730's `20261122154645_issue_facts`, the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps `design_changes`.
+The lists of `20261122154645_issue_facts`, `20261126163320_state_events` and `20261128030241_outbox_kinds_after_the_state_events` name the same kinds, `retention_end`, `merge_holds_changed` and the three state kinds among them, so the kind check is the same whichever of them a database applied last.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -3486,7 +3458,7 @@ It adds four columns to `phases` beside the phase entry.
 `entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
 The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
-That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; two migrations write the list after it, the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
+That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; four migrations write the list after it, dispatch://INFRA-4730's `20261122154645_issue_facts`, which adds `retention_end`, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events` and then `20261128030241_outbox_kinds_after_the_state_events`, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
 This release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
@@ -3727,6 +3699,222 @@ Run them only when every daemon of the database is stopped, and roll back every 
 **Each project's daemon image moves first, and its worker image with it or after it.**
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
+
+#### Rolling back the release that stores no tree
+
+This release stores no tree: it reads every parent and child question from its copy of Dispatch's issues, keeps each issue's own facts on the issue, and acts on each issue's own status (dispatch://INFRA-3320 R15 to R26, dispatch://INFRA-4730).
+It still writes the old tree columns for the release before: `issues.tree` once, when it first records an issue, `claims.tree` as that stored tree, and one open `tree_lifecycles` row with a bound epoch for each stored tree while an issue that stores it is in Legion's work and has started, as the release before opens one at the promotion that starts a run, so a root in the line that never started reads to that release as one that never ran.
+Its migration `20261122154644_issue_holds_gate` adds `issues.holds_gate`, set on every record whose key is its stored tree.
+Its migration `20261122154645_issue_facts` adds six columns of `issues` (`retained_until`, `carried_generation`, `carried_gate`, `pending_close`, `seen_seq` and `held_session_writes`), five of `claims` (`launch_tree`, `issue_epoch`, `holds_gate`, `published_since` and `unpublished_since`) and two of `outbox` (`attempt_key` and `attempt_body`), the tables `issue_lifecycles` and `tree_conversions`, the four functions the design news reads through over the Dispatch chain (`design_news_counts`, `design_news_credits_under`, `design_news_openings_under` and `design_news_told_of`), which the release before calls none of, and the outbox kind `retention_end` to the kind check.
+Its list and the lists of `20261126163320_state_events` and `20261128030241_outbox_kinds_after_the_state_events` name the same kinds, `merge_holds_changed` and the three state kinds among them, so the kind check is the same whichever of them a database applied last.
+The release also queues the architect notice kind `reparented` and the controller notice kind `status-scope`, a `dispatch_status` row that carries an option of Dispatch's status-change route (`includeChildren`, `unlinkChildren` or `includeParent`), and new keys on the payloads of kinds the release before reads.
+The first boot on this release converts each project's store and records that it did in `tree_conversions`, which the state serves as `daemon.convertedAt`.
+
+An earlier daemon reads this much of the release:
+
+- **The new columns and tables.**
+  An earlier daemon names none of them in any statement: it selects none and inserts none, and an insert of its takes each one's default.
+
+- **A `retention_end` row.**
+  The kind check admits it, and no outbox lane of an earlier daemon lists it, so that daemon runs none.
+
+- **The two new notice kinds.**
+  An earlier release refuses a notice of a kind it does not know (`record/outbox.go`), at every attempt.
+
+- **A status write with an option of the status-change route.**
+  An earlier release knows none of the three options, and written without its option the write would break Dispatch's parent rule (dispatch://INFRA-3320 R24).
+
+- **The new keys of existing payloads.**
+  An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a row that carries a key this release adds is refused at every attempt: the run and the phase entry each effect names, the pod a stop, a cleanup, a save or a release names, the architect a notice names, the row a status write waits for, the controller that asked for it and the Dispatch status its record held when it was queued, and the parts of a reparent seed beside the parent, the tree and the words the earlier release requires of it.
+
+- **A root the first boot's conversion made of a hand-over that had landed.**
+  Its record carries `carried_generation` and stores another issue's key as its tree, and an earlier release re-admits only a record whose key is its tree, so the step gives it what that release's own re-admission and promotion would have written.
+
+- **A session write the repair holds** (`issues.held_session_writes`), on an issue whose Dispatch chain was unknown.
+  An earlier release keeps no such list, and no statement can take a write the way the workflow takes it, so the step sets each one back as that release sets back every write it does not take.
+
+- **The crossing times of the claims** (`claims.published_since` and `claims.unpublished_since`).
+  An earlier release neither reads nor writes them, so the step clears them, and a later upgrade reads no crossing from before the rollback as one after it.
+
+- **The record of the conversion.**
+  The step deletes the project's `tree_conversions` row, so the next boot on this release converts what the earlier release wrote in between.
+
+- **A Sandbox's `legion.dev/tree` label.**
+  This release labels a pod with the issue's gate root when it makes the pod and reads the label nowhere, while an earlier release deletes a tree's Sandboxes by that label and sweeps a Sandbox whose label is not its issue's stored tree, so the step relabels each Sandbox with the tree its issue stores.
+
+- **`issues.ancestry`** needs no statement: this release stops writing it, and an earlier release writes it again for each listed `todo` issue at its own boot, before its first decision.
+
+- **The trees Dispatch shows of the project.**
+  This release's state events name each issue's tree as its Dispatch chain gives it (`record.ObservedTrees`), where a release from `20261126163320_state_events` on named the tree the record stores, and the migration `20261128030241_outbox_kinds_after_the_state_events` stays recorded, so the earlier daemon's boot announces the same schema version and Dispatch reads it whole at no boot (its state intake reads a daemon whole at a boot only where the schema version moved).
+  Once the earlier image runs, `PUT` the project's Legion setting with its same URL, so Dispatch reads that daemon whole and then holds the trees it names; once this release runs again, `PUT` it once more.
+
+- **`issues.tree` and `claims.tree`** need no statement beyond the hand-over roots above: this release wrote each once and never changed it, so an issue whose Dispatch parent changed since its record stands in its old tree again.
+
+**Run the step with every daemon of the database stopped, before the earlier image is pinned.**
+Replace `<PROJECT>` with the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`.
+The SQL runs first:
+
+```sql
+-- The rows of one project the release before cannot run.
+delete from outbox where split_part(issue, '-', 1) = '<PROJECT>' and (kind = 'retention_end'
+  or (kind = 'notice' and payload->>'kind' = 'reparented')
+  or (kind = 'controller_notice' and payload->>'kind' = 'status-scope')
+  or (kind = 'dispatch_status' and (payload ? 'includeChildren' or payload ? 'unlinkChildren' or payload ? 'includeParent')));
+-- The keys this release adds to the payloads of the kinds the release before reads.
+update outbox set payload = payload - 'generation' - 'entry' - 'after' - 'controller' - 'dispatchStatus'
+  where kind = 'dispatch_status' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'generation' - 'entry' - 'to'
+  where kind in ('notice', 'controller_notice') and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'generation' - 'entry'
+  where kind in ('dispatch_message', 'role_message', 'phase_ended', 'hook_prompt', 'update_ask', 'merge_forward',
+    'merge_queue_removal') and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'generation'
+  where kind in ('check_wake', 'check_look', 'check_bound') and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'entry' - 'podUid' - 'readPodUid'
+    || case when coalesce(payload->>'readPodUid', '') <> '' then jsonb_build_object('podUid', payload->>'readPodUid') else '{}'::jsonb end
+  where kind in ('issue_suspend', 'issue_release') and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = case when coalesce(payload->>'launcher', '') = 'true'
+    then payload - 'entry' else payload - 'entry' - 'podUid' end
+  where kind = 'issue_bundle' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'podUid' where kind = 'supervise' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox set payload = payload - 'generation' - 'entry' - 'oldParent' - 'phase' - 'slot' - 'steps'
+  where kind = 'reparent_seed' and split_part(issue, '-', 1) = '<PROJECT>';
+-- Each root the conversion made of a hand-over that had landed, as the release before's re-admission leaves one.
+insert into handed_over_roots (issue, generation, gate_carried)
+  select key, carried_generation, carried_gate from issues
+  where project = '<PROJECT>' and carried_generation <> 0 and tree <> key
+  on conflict (issue) do update set generation = excluded.generation, gate_carried = excluded.gate_carried;
+insert into tree_lifecycles (project, tree, epoch, authority)
+  select lower('<PROJECT>'), key, 1, 'workflow' from issues
+  where project = '<PROJECT>' and carried_generation <> 0 and tree <> key
+  on conflict (project, tree) do update set epoch = tree_lifecycles.epoch + 1, authority = 'workflow',
+    cleanup_started = false, cleanup_confirmed_at = null, updated_at = now()
+  where tree_lifecycles.cleanup_started and tree_lifecycles.cleanup_confirmed_at is not null;
+update claims c set tree = i.key, tree_epoch = l.epoch from issues i
+  join tree_lifecycles l on l.project = lower('<PROJECT>') and l.tree = i.key
+  where c.project = lower('<PROJECT>') and c.issue = i.key
+    and i.project = '<PROJECT>' and i.carried_generation <> 0 and i.tree <> i.key;
+update outbox o set payload = o.payload || jsonb_build_object('tree', i.key)
+    || case when o.payload ? 'treeGeneration' then jsonb_build_object('treeGeneration', i.generation) else '{}'::jsonb end
+  from issues i where o.issue = i.key and o.payload ? 'tree'
+    and i.project = '<PROJECT>' and i.carried_generation <> 0 and i.tree <> i.key;
+update issues set handed_over_from = case when phase = 'admitted' then tree else '' end, tree = key
+  where project = '<PROJECT>' and carried_generation <> 0 and tree <> key;
+-- Each issue of one project holding session writes the repair held on an unknown chain, each write, and what the step does with them.
+select i.key, w.session, w.status, w.seq,
+    case when i.dispatch_status <> i.status and ((i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done'))
+        or (i.phase = 'awaiting_person' and (i.awaiting_ask is not null or i.awaiting_gate_version is not null) and i.key = i.tree and i.linger_until is null))
+      then 'set back to ' || i.status else 'left as Dispatch shows it, ' || i.dispatch_status end as step
+  from issues i cross join lateral jsonb_to_recordset(i.held_session_writes) as w(session text, status text, seq bigint)
+  where i.project = '<PROJECT>' and i.held_session_writes <> '[]'::jsonb order by i.key, w.seq;
+insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+  select 'dispatch_status', key, jsonb_build_object('kind', 'reassert', 'status', status, 'observedStatus', dispatch_status,
+      'observedSeq', (held_session_writes -> -1 ->> 'seq')::bigint), 0, now(), ''
+  from issues where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb and dispatch_status <> status
+    and ((phase <> 'done' and status not in ('triage', 'icebox', 'backlog', 'done'))
+      or (phase = 'awaiting_person' and (awaiting_ask is not null or awaiting_gate_version is not null) and key = tree and linger_until is null));
+update issues set held_session_writes = '[]'::jsonb where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb;
+-- The crossing times of the claims of one project, which the release before does not keep.
+update claims set published_since = null, unpublished_since = null
+  where project = lower('<PROJECT>') and (published_since is not null or unpublished_since is not null);
+-- The record of the conversion of one project.
+delete from tree_conversions where project = '<PROJECT>';
+-- Each issue of one project with a claim not retired, and the tree it stores, for the relabel of its Sandbox.
+select key, tree from issues where project = '<PROJECT>'
+  and exists (select 1 from claims c where c.issue = issues.key and c.state <> 'retired') order by key;
+```
+
+The header of `20261122154645_issue_facts.up.sql` carries this same block, and `internal/store`'s `TestTheTreeConversionWayBackLeavesWhatTheReleaseBeforeReads` runs it.
+Its first `select` prints each issue holding a session write the repair held, each write, and what the step does with it: `set back to <status>` where the step queues one status write in the earlier release's shape, at the last held write's sequence, or `left as Dispatch shows it, <status>` where it queues none.
+Keep that list: it names each write that someone makes again after the rollback.
+Its last `select` prints each issue that has a claim not retired, with the tree it stores now.
+
+Then relabel each Sandbox of those issues with that tree, with `<project>` replaced by the project's claim token, `project` lowercased with every character outside `a-z0-9` dropped (`project: LEGION` gives `legion`), and `DATABASE_URL` set to the daemon's database URL:
+
+```sh
+psql "$DATABASE_URL" -At -F ' ' -c "select key, tree from issues where project = '<PROJECT>' and exists (select 1 from claims c where c.issue = issues.key and c.state <> 'retired') order by key" |
+  while read -r issue tree; do
+    kubectl -n legion label --overwrite sandboxes -l "legion.dev/project=<project>,legion.dev/issue=$issue" "legion.dev/tree=$tree"
+  done
+```
+
+A Sandbox whose label already names that tree is left as it is, and an issue with no Sandbox labels nothing.
+
+What each costs:
+
+- a deleted `retention_end` row: the earlier release's own linger serves the deadline it carried, from the `linger_until` the conversion left;
+
+- a deleted `reparented` or `status-scope` notice: no one tells it again;
+
+- a deleted status write with an option: a person makes that write again;
+
+- a held session write the step sets back: an architect above makes its write again once the earlier release runs, which judges it by its own rule, and a session with no claim of the issue's tree, or a person, makes again a write on a child that the earlier release takes as a person's move;
+
+- a held session write on an issue out of the workflow: the step queues no row, so a write the earlier release would have set back there stays on the board, and a held `todo` on a root at phase `done` is re-admitted by that release's boot listing as a person's reopen would be;
+
+- an issue that became a root under this release, by an unlink or by a parent that left Legion's work: it keeps its first `issues.tree` and an empty `handed_over_from`, so the earlier release reads it as a member of that old tree and makes its adoption, slot and children-first decisions on it as it would have.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and each statement of the block names one project.
+Run the block once for each project of the database, with every daemon of the database stopped, and roll back every daemon of one database in the same change: a rollback below this release then runs the earlier releases' sections, whose statements act on every project's rows.
+
+**Each project's daemon image moves first, and its worker image with it or after it.**
+The role prompts that state this release's rules ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
+A rollback moves each project's worker image back with its daemon image.
+
+**The upgrade path.**
+A project upgrades to this release only from a release that carries dispatch://INFRA-4728, dispatch://INFRA-4729 and dispatch://INFRA-4731.
+Its Dispatch runs dispatch://INFRA-4731's status-change route before the daemon upgrades, since this release sends each status write that carries an option there.
+A roll forward after a rollback converts again from the state the earlier release left, its rows included.
+That conversion also marks each claim the earlier release wrote whose issue holds its own gate, before the daemon builds any claim's machine, so an architect an operator started on a root while the rollback held is that tree's root again, and the operator's close of the tree is accepted.
+
+#### Before the pin that carries the release that stores no tree moves: the members its first boot brings back
+
+This step is part of the upgrade to that release, not of its rollback.
+On the release before, a root that left Legion's work suspended the claims of every member of its tree, and only the root's re-admission brought the members back.
+This release keeps no tree, so a root's return resumes only the root itself (dispatch://INFRA-3320 R20).
+So the first boot's conversion brings back each such member that is still in Legion's work itself (step 8, `bringMembersBack` in `internal/daemon/tree_conversion.go`).
+The member starts again in the phase it stands in, at a new phase entry.
+A member with an open Dispatch child, in any phase from `planning` through `accepting`, waits in `awaiting_children` instead, and none of its roles starts until no open child stands under it.
+The step leaves these as they are: a claim that the operator suspended, a claim that the idle release suspended, a member whose own status is out of work, and a member whose Dispatch claim a person holds.
+
+`legion members-back` of this release lists these members, with the selection that the step uses (`record.ReadMembersBack`).
+Run it once for each project, INFRA, BET, LINUX and OSSV, before the pin moves.
+Run it as a one-shot pod in the namespace `legion`, as [Probing a configuration before the daemon boots on it](#probing-a-configuration-before-the-daemon-boots-on-it) says to run probe-boot:
+the image that the pin will move to, the daemon's ServiceAccount, the daemon pod's environment (`LEGION_POSTGRES_DSN`) and its `/etc/legion-config` mount.
+The daemon's pod runs the release before, whose `legion` has no `members-back`.
+The one-shot pod runs this command, with the image's entrypoint `legion`:
+
+```sh
+legion members-back --config /etc/legion-config/legion.yaml
+```
+
+The command reads the store as `legion start` reads it: the file's `postgres_dsn`, else `LEGION_POSTGRES_DSN`.
+It reads in one read-only transaction and changes nothing.
+It reads only columns that the store of `legion-v22.16.2` holds, and `issues.members_owed` where the store holds it.
+Where the store holds no `issues.members_owed`, it reads the state that the column's migration marks (`20261123224717_members_owed.up.sql`).
+So it gives the same answer before and after the store's migration to this release.
+An operator who holds the DSN on a machine of their own can run this release's `legion` there instead, with a copy of the project's `legion.yaml` and `LEGION_POSTGRES_DSN` set.
+Read the pod's output with `kubectl -n legion logs <pod>`.
+For example:
+
+```text
+CAPTURE: the first boot on this release brings back 1 member, each in the phase it stands in:
+CAPTURE-11 implementing: its root CAPTURE-10 went to backlog
+```
+
+The first line names the project and how many members its first boot brings back.
+Each line after it is one member: its key, the phase where it starts again, and how its tree left Legion's work.
+How the tree left is read from the root's records, in this order:
+`its root <KEY> closed at its merge`;
+`an operator's act stopped its root <KEY>` (the operator holds the root's tree, or suspended a claim of the root);
+`a claim of its root <KEY> failed`;
+`its root <KEY> went to <status>` (the root's own status: `backlog`, `icebox`, `triage` or `done`);
+`its root <KEY> came back into work before its members` (the root is back in work, and the release before had not brought its members back yet: `issues.members_owed`).
+The output names no claim token, no session id and no secret.
+On a store whose conversion has already run, it prints that the conversion ran and lists no member.
+
+Set any of them to backlog before the boot to keep it stopped.
 
 #### Rolling back below the release that trims an issue pod's volume
 
@@ -4219,7 +4407,9 @@ Every migration recorded above 20261114031356 that neither block deletes stays s
 `internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward` holds the store to it: after the two blocks the store records every migration this tree embeds but the five the blocks delete (`leftStanding`, against the five versions the test writes in `wayBackVersions`), and reports the highest of them.
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row.
+`20261123165139_experiment_assignment_plan`, of #4930's release, keeps its version row: that release's rollback ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)) runs no statement.
 `20261123212127_claim_start_failure_after_ready.up.sql`, of #5278's release, carries no way back, since an earlier release reads the start failures it emptied as none recorded.
+`20261122154644_issue_holds_gate` and `20261122154645_issue_facts`, of dispatch://INFRA-4730's release, keep their version rows: that release's rollback ([Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree)) deletes no version row.
 `20261124060500_issue_priority.up.sql`, of #5365's release, carries no way back, since an earlier release names the columns of `issues` in each statement and leaves `priority` alone.
 `20261124073512_claim_cause_times.up.sql`, of #5349's release, carries no way back either, since an earlier release names none of the four columns it adds.
 What that rollback costs is the two times: the earlier release rewrites a claim's cause and leaves standing the time and the digest of the cause before it, and #5349's release serves a time only while its digest is the digest of the cause the claim holds, and a start failure's time before the claim's `lastReady` as none (the migration's header).
@@ -4333,11 +4523,13 @@ Then run that section's update of `parked_decisions`, since a decision the earli
 20261120210000_issue_release_committed, of dispatch://INFRA-3589, adds `issue_releases.committed` at its default, false, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it has no way back, and the earlier release never writes the column; the same release also writes a key the earlier release refuses on each wake's start, `wakeDetail`, so a rollback to a release before it runs the one statement of [Rolling back idle release](#rolling-back-idle-release) that strips that key, after its daemon stops and before the earlier image starts.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261122154643_outbox_kinds_with_the_basis_seeds, of dispatch://INFRA-3320, writes the outbox's kind check again with `pending_basis_seed` and `reparent_seed` added to the design news's list and touches none of the six, so the block holds over it, and a rollback to a release before it deletes the rows of both kinds as [Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open) says and deletes no version row, so after the eleven statements a store that cybermonklabs/legion#4592's release migrated still records it.
+20261122154644_issue_holds_gate, of dispatch://INFRA-4730, adds `issues.holds_gate` at its default, false, sets it on every record whose key is its stored tree, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback to a release before it takes the steps of its release's own section, [Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree).
+20261122154645_issue_facts, of dispatch://INFRA-4730, adds six columns of `issues`, five of `claims` and two of `outbox`, the tables `issue_lifecycles` and `tree_conversions` and four functions the design news reads through over the Dispatch chain, opens an issue lifecycle for each issue a live claim names under an open tree lifecycle and binds its claims to it, sets `claims.holds_gate` on every claim whose issue is its stored tree, and writes the outbox's kind check again with `retention_end`, `merge_holds_changed`, `state_change`, `state_admission` and `state_boot` added to the basis seeds' list, and touches none of the six, so the block holds over it and leaves the columns, the tables and the functions standing, which the earlier release names in no statement; a rollback to a release before it runs the step of its own section first, [Rolling back the release that stores no tree](#rolling-back-the-release-that-stores-no-tree), which deletes no version row, so after the eleven statements a store that release migrated still records it.
 20261122212816_readmitted_approval_artifact, of dispatch://INFRA-3136, adds `readmitted_approvals.artifact` at its default, the empty string, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; it has no down file, and a rollback to a release before it runs the update of that column that the contract entry 20261125181104 section below gives.
 20261123050533_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
-20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
+20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, which main's re-admission (#5303) sets on the roots whose members it has still to bring back, which this release writes nowhere and reads only in its first boot's conversion and in `legion members-back`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
 20261124022547_plan_tasks_parent_ref adds `plan_tasks.parent_ref` and touches none of the six.
 So the block holds over it and leaves the column standing, which the earlier release names in no statement.
 A rollback past 20261117034837_issue_plans drops the column with its table.
@@ -4362,9 +4554,11 @@ A rollback past it takes `admission_p0_bound` out of `legion.yaml` first, since 
 The same release writes the outbox key `decided` on each supervise start a person, the controller or the issue's architect decided (`record.SuperviseRequest.Decided`), and an earlier release decodes outbox rows strictly, so a row that carries it fails there on every attempt: before the earlier image boots, with every daemon of the database stopped, run `update outbox set payload = payload - 'decided' where kind = 'supervise' and payload ? 'decided';`, which takes that key off each supervise row and leaves every other key, and every row of another kind, a catch-up notice's own `decided` among them; the earlier release then runs such a start as one of its own.
 That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scratch `outbox` table with the `kind` check and the `payload jsonb` column `0004_record.up.sql` gives it, holding a supervise start that carried `decided` beside `resendEntry`, a supervise start without it and a `notice` row carrying `decided` at the top and under `catch_up`: the first run printed `UPDATE 1` and the second `UPDATE 0`, the first row kept `resendEntry`, and the `notice` row kept both keys.
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
-20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
-20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
+20261126035722_claims_issue_and_project adds the indexes `claims_issue` on `claims (issue)` and `claims_project` on `claims (project)`, which the reads of the claims of one issue and of one project use, and touches none of the six, so the block holds over it; its way back is to leave both indexes standing, and it carries no SQL for them, since each is a plain index that constrains no row and changes no result, so an earlier release reads and writes `claims` the same with them in place, at the cost of each claim write also updating them.
+20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` and `retention_end` added to the list of 20261122154643_outbox_kinds_with_the_basis_seeds, and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
+20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `retention_end` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
+20261128030241_outbox_kinds_after_the_state_events writes the outbox's kind check again after 20261126163320_state_events does, with that migration's list, `retention_end` and the three state kinds among it, and touches none of the six, so the block holds over it; it carries no way back, since the earlier release writes no kind it leaves out, and its version, the newest, above 20261127193428_claim_left too, which writes no kind, is what moves the schema version the merge's first boot announces (its file says why).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -4847,7 +5041,7 @@ the task of a turn in flight goes back to waiting and is delivered again, while 
 a claim whose suspension is held for its turn is suspended instead of relaunched, and its next resume launches on the current plugin;
 a claim still launching is left to its registration, which decides it the moment it arrives).
 Each relaunch logs one line, exactly `supervise: the process speaks another plugin contract; relaunching it onto the current plugin`, naming `claim`, `incarnation`, `pluginContract` (0 when the claim recorded none), `daemonApiVersion` (the daemon's own number, the first line of its `legion version --contracts`) and `trigger` (`boot`, `registration`, or `sweep`:
-a relaunch the tree lifecycle or the store refuses leaves the claim live and stale, so the orphan sweep
+a relaunch the issue's lifecycle or the store refuses leaves the claim live and stale, so the orphan sweep
 — the one periodic pass that already reads every claim — posts it again until one attempt starts).
 
 Under Kubernetes that relaunch keeps an issue pod
@@ -6614,7 +6808,7 @@ The example `legion.yaml` (`deploy/kubernetes/daemon/legion.yaml.example`) leave
 
 ### Anatomy of a Sandbox pod
 
-Each Sandbox carries `legion.dev/project`, `legion.dev/tree` and `legion.dev/issue` (`names.go`):
+Each Sandbox carries `legion.dev/project`, `legion.dev/tree` and `legion.dev/issue` (`names.go`), the tree label holding the issue's gate root when its pod was made, which no decision reads:
 one Sandbox per issue, shared by every role that works it, owning its pod and the role Secrets and no volume, except the kept volume of a microVM pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 A microVM issue pod's template carries one label more, `legion.dev/sandbox: microvm`, which the Sandbox and its Secrets do not carry ([Pods in microVMs](#pods-in-microvms)).
 The pod template (`manifest.go`) has one init container, `workspace-init`, and one container,
@@ -7189,7 +7383,7 @@ The image probe runs as a Sandbox of its own, `legion-probe-<project>-<digest12>
 Each repository a live record of the project names has a cache of its own, and so does a repository a launch works:
 one Sandbox, `legion-<project>-cache-<owner>-<repo>-<8 hex>` (`CacheSandboxName`, `names.go`;
 the hex is of the repository's name, so two repositories whose names slug alike get two caches), labelled `legion.dev/project` and `legion.dev/cache=true` and annotated `legion.dev/cache-repo: <owner>/<repo>`, which is the one place its repository is read from (`kubectl -n legion get sandbox -l legion.dev/cache`).
-It is no issue's and no claim's: no tree's cleanup lists it, and nothing of it registers on the worker stream (`internal/runtime/sandbox/repocache.go`).
+It is no issue's and no claim's: no issue's cleanup names it, and nothing of it registers on the worker stream (`internal/runtime/sandbox/repocache.go`).
 Its pod runs one container, `cache`, the image's `legion workspace-init cache --repo <owner>/<repo> --root /legion/cache --listen :8418 --refresh
 10m0s` (`refresh_minutes`, as a duration), under gVisor with the operator's ServiceAccount and scheduling, or with the cache's own ServiceAccount while its bucket is on ("The bucket", below), and nothing of an agent's:
 no model route, provider key or Dispatch variable.
@@ -8984,10 +9178,9 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 - **the pod is released**: no role of the issue has a turn in progress or a turn due for the idle period, and the workspace read finds nothing that no branch or tag on origin holds, so the daemon suspends each live claim with the source `released` and runs the stop above's teardown ([Idle release](#idle-release)).
   The issue stays in the workflow, and the next wake for one of its roles brings a new pod, whose workspace provisioning makes from the issue's pushed branch;
 
-- **the tree closes**: at the linger's expiry its cleanup foreground-deletes every issue Sandbox of the tree, in any order (`CleanupTree`, `internal/runtime/sandbox/cleanup.go`), and hands none over
-  — a child carried into a tree of its own gets a Sandbox of its own at its next launch, since there is no disk left to hand it;
+- **the issue's cleanup runs**: once a closed issue's every claim has retired and no production check of it is open, its cleanup foreground-deletes the issue's own Sandbox where its close has not deleted it already (`CleanupIssue`, `internal/runtime/sandbox/cleanup.go`), and nothing of another issue;
 
-- **the orphan sweep** deletes a Sandbox of a tree whose cleanup confirmed or that has no lifecycle (`ReconcileOrphans`, `internal/runtime/sandbox/sandbox.go`), taking its pod, and the pod its disk;
+- **the orphan sweep** deletes the Sandbox of an issue whose cleanup confirmed or that has no lifecycle (`ReconcileOrphans`, `internal/runtime/sandbox/sandbox.go`), whatever tree its label names, taking its pod, and the pod its disk;
 
 - **the node goes**, or the kubelet evicts the pod.
   Agent Sandbox recreates a `Running` Sandbox's pod under the same name at once, and that pod brings a claim of its own:
@@ -9377,11 +9570,11 @@ Kubernetes' garbage collector then deletes the claim before the Sandbox is gone.
 Where the class's reclaim policy is `Delete`, the disk goes with the claim.
 
 - Each suspension of the issue that the workflow queues (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`).
-  That is a move to `backlog`, `icebox` or `triage`, a close as `done` where no production check opens, and the tree's linger.
+  That is a move of the issue to `backlog`, `icebox` or `triage`, and a close as `done` where no production check opens.
   Where a production check opens, it is also the check's wait for its next look, and its close.
-  A root's leave suspends every issue of its tree.
+  Each issue's own status decides its suspension: a move of a parent suspends no issue under it unless the move takes that issue with it.
 
-- The tree's cleanup when its linger ends (`CleanupTree`), and the orphan sweep (`ReconcileOrphans`).
+- The issue's cleanup after its close (`CleanupIssue`), and the orphan sweep (`ReconcileOrphans`).
 
 - The reset (below).
 
@@ -9392,8 +9585,8 @@ Where the class's reclaim policy is `Delete`, the disk goes with the claim.
   A launch that replaces the pod for another reason replaces such a Sandbox at the same time.
 
 So a kept volume does not outlive its issue's time in the workflow, or its production check's first look.
-A tree that the operator holds is the exception.
-When its issues leave the workflow, the workflow queues no suspension for them (`leaveUnderOperator`, `internal/workflow/linger.go`), so their kept volumes stay until the operator's own cleanup, as their Sandboxes do.
+An issue whose lifecycle the operator holds is the exception.
+When it leaves the workflow, the workflow queues no suspension for it (`record.OperatorHolds`, read by `leave` in `internal/workflow/leave.go`), so its kept volume stays until the operator's own cleanup, as its Sandbox does.
 
 Each launch that replaces the Sandbox logs `sandbox runtime: replacing the issue's Sandbox, with any volume claim it owns`, with the issue, the Sandbox, its old uid, the claim and the reason.
 
@@ -9469,7 +9662,7 @@ An out-of-memory kill that something on the volume causes keeps the volume, so o
 To give an issue a new volume, move the issue to `backlog`, and then move it to `todo`.
 The move to `backlog` suspends the issue, and the suspension deletes its Sandbox and its claim.
 After the move to `todo`, the issue's next launch makes a new Sandbox, and its pod provisions on a new, empty volume.
-For a root, the two moves give every issue of its tree a new volume.
+The two moves reach that issue alone, unless a move takes the issues under it with it.
 Have each role push its work first, because the reset deletes all the work on the volume that no role pushed.
 
 Never delete the claim by hand.
@@ -9530,7 +9723,7 @@ the worker's session reports when its next reminder timer is due, and the daemon
 The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work, or when no answer arrives within 3 seconds (`OWED_READ_BOUND_MS`), when it nudges in words that name no phase.
 A phase worker whose phase is open is reminded five minutes after a turn that did not complete it, and fifteen minutes after one whose reply opened with a `WAITING` line or that ended with background work of its own still running (`reminderMs` and `waitingMs`, `packages/pi-shared/src/stall-limits.ts`), so of the workers in an open phase only one that said what it waits on is released.
 Each live claim of the pod must also have reported to the daemon, after its last turn, that it runs no background work, and the pod must run the image the daemon's configuration names with every live claim on the daemon's current contract.
-The pod of a root that waits on a person's answer in `awaiting_person` is kept until that answer comes; its children are not.
+The pod of an issue that waits on a person's answer in `awaiting_person` is kept until that answer comes; the pods of the issues under it are not.
 A pod held past the idle period is held for one of those reasons, and the daemon records which one.
 One more reason holds a pod that is otherwise idle: its workspace holds work that no branch or tag on origin holds, which the release's first act reads (`unpushed_work`, below), or that act could not read the workspace (`workspace_unread`).
 A project's pause holds a pod too, under `paused` or `pause_held` ([Pausing a project](#pausing-a-project)).
@@ -9545,8 +9738,8 @@ It changes no claim, so each claim keeps its state, its phase, its budgets and i
 It deletes the disk only after a read of the workspace found nothing that no branch or tag on origin holds.
 No role process runs in that pod, so the pod's launcher makes the read, with the count a role's shim makes: the release queues that workspace check first, and the teardown waits for it.
 A read that finds work keeps the pod (`unowned_unpushed_work`), and so does a read that cannot be made (`unowned_workspace_unread`), such as a pod whose launcher is older than the read and so does not say `readsWorkspace` in its hello.
-The issue's architect, the one that owns the issue (the notice route walks up the tree), gets one `workspace-kept` notice for each pod kept so, naming the state of each claim of the issue and what the read found; where that architect will not hold its role again (its claim failed, or its tree lingers or has closed), the project's controller gets the notice instead.
-A read that found work holds the pod until a start or a turn of a claim of the issue after that read, and the read the release then makes finds nothing; until the runtime holds another pod for the issue; or until the issue or its tree leaves the workflow or lingers.
+The issue's architect, the one that owns the issue on its Dispatch chain (the architect of the issue or of an issue above it, as every notice is routed), gets one `workspace-kept` notice for each pod kept so, naming the state of each claim of the issue and what the read found; where that architect will not hold its role again (its claim failed or retired, or this daemon does not supervise it), the project's controller gets the notice instead.
+A read that found work holds the pod until a start or a turn of a claim of the issue after that read, and the read the release then makes finds nothing; until the runtime holds another pod for the issue; or until the issue leaves the workflow.
 A failed read holds it the same way, and is also asked again after an hour.
 The daemon pushes and saves nothing.
 A start or a turn of a claim of the issue after the release's mark cancels the teardown, so a read a later turn could make stale deletes nothing.
@@ -9560,7 +9753,7 @@ Of the reasons that hold such a pod past the idle period, the daemon writes five
 a claim of the issue still records a process (`unowned_claim_process`), a suspension that holds — the operator's or the controller's — is over a claim (`unowned_operator_suspended`, a name that says the operator's alone and stands for both), a task, notice, message or start waits for delivery to a role of the issue (`unowned_delivery_waiting`), a decline or the launcher's read says the disk holds unpushed work (`unowned_unpushed_work`), and the launcher could not read the disk (`unowned_workspace_unread`).
 A project's pause adds a sixth, `unowned_pause_held`, for a pod the pause holds, and the daemon records a pod this rule would release while the project is paused under `paused` ([Pausing a project](#pausing-a-project)).
 The rule answers six reasons more, which the daemon counts in the per-pass line of its log and writes to no record:
-the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue or its tree root has left the workflow or lingers (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
+the issue's Sandbox has gone already (`unowned_sandbox_gone`), the issue has left the workflow (`unowned_tree_not_live`), a release of the pod is already running (`unowned_releasing`), a live claim holds the pod again (`unowned_claim_live`), the record holds no claim of the issue at all (`unowned_no_claim`), and the pod did something inside the period (`unowned_not_idle`).
 `unowned_sandbox_gone` is the word an operator reads most, and it is no fault.
 It also names a kept Sandbox that a release left `Suspended`, which runs no pod and owns no Secret.
 The runtime answers a `Suspended` kept Sandbox that carries the release's record `legion.dev/secrets-released` as absent (`IssueSandbox`, `podimage.go`), so the rule does not release it again at each pass.
@@ -9569,15 +9762,15 @@ The rule releases such a Sandbox once.
 That release deletes its Secrets, keeps the Sandbox with its uid and writes the record, and the next pass holds the issue under `unowned_sandbox_gone`.
 The runtime also answers absent a Sandbox whose stored object carries a `deletionTimestamp`, for as long as it does, and, from the moment the API server answered this runtime's write until the runtime's store of Sandboxes shows it, one its own delete has taken and a kept Sandbox its own release has just written `legion.dev/secrets-released` on (`IssueSandbox`, `podimage.go`).
 The release learns from the API server that its write is done, and the store learns it only when the watch delivers it, so without that answer the pass after a release can read the Sandbox as it was and release the pod a second time.
-Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue or its tree root leaves the workflow or lingers.
+Nothing takes a released issue out of the list the pass decides, because this release changes no claim, so the rule reads every issue whose pod it has taken on every later pass and holds it under that word, once a minute, until a start makes a claim of the issue live, which builds its pod again, or the issue leaves Legion's work.
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 A suspension that holds keeps the pod because it is one that the daemon never ends by itself (`RuleMayResume`).
 Its holder ends that pod, or a resume or a stop that outranks the holder does: resuming the agent starts the role in the pod that is still there, and stopping it retires the agent and leaves the issue to this rule.
 
-The daemon also closes the pod of a child that has left the workflow while its tree runs on, which neither release takes.
-The child's park or close is its one close:
-it suspends or closes each claim of the child and deletes the child's Sandbox, and nothing of its running tree closes it again.
-An operator's resume, task or retry and the controller's fresh session start a claim without reading the standing of its issue, so a claim of such a child can run again after that close, in a pod built again for it.
+The daemon also closes the pod of an issue that has left the workflow by its own standing, which neither release takes.
+The issue's own departure, a stop or a close, is its one close:
+it suspends or closes each claim of the issue and deletes the issue's Sandbox, and nothing above or below the issue closes it again.
+An operator's resume, task or retry and the controller's fresh session start a claim without reading the standing of its issue, so a claim of such an issue can run again after that close, in a pod built again for it.
 Once that pod has had no turn in progress, no delivery waiting for a role of it and no background work reported for the idle period, the idle pass finishes the close (`workflow.LeftPodClose`):
 it suspends each live claim for the daemon, which keeps the claim's session, and suspends the issue's Sandbox, which deletes it with the pod and the disk.
 Where a live claim stands, the pass first queues the workspace check alone, through that role's shim, as the idle release reads it:
@@ -9586,10 +9779,10 @@ While that check waits on the lane the pass holds the pod as its own act under w
 The pass over the pods no claim owns does the same for such a pod whose claims have all stopped, which no pass decided before, with the read made by the pod's launcher, since no role runs to read through:
 the pass queues that workspace check alone, and a clean read queues the Sandbox suspension, fenced on the newest turn start the pass read, so a turn after the read leaves the suspension without acting.
 A read that finds work, or cannot be made, keeps the pod, as the release of a pod no claim owns keeps one (`unowned_unpushed_work`, `unowned_workspace_unread`), and tells the issue's architect once for the pod (`workspace-kept`); so does a decline on record that says the disk holds work.
-A child whose Sandbox the runtime does not hold, which is nearly every such child, is passed over with no line and no record.
+An issue whose Sandbox the runtime does not hold, which is nearly every such issue, is passed over with no line and no record.
 A pause keeps the pod (`paused`, `pause_held`), and so do a stopped claim that still records a process (`unowned_claim_process`) and an operator's suspension (`unowned_operator_suspended`).
-Every other pod of an issue that has left the workflow, or whose tree lingers, is held as `tree_not_live` while its close is still to come or still running:
-a lingering tree is closed when its linger ends, a root that has left the workflow has had its tree's close already or belongs to the operator, an open look of the issue's production check ends with a close of its own, and a role stop or a Sandbox suspension of the issue that is still queued is that close at work.
+Every other pod of an issue that has left the workflow is held as `tree_not_live` while its close is still to come or still running:
+an issue whose lifecycle the operator holds is the operator's to close, an issue whose own cleanup has started is that cleanup's, an open look of the issue's production check ends with a close of its own, and a role stop or a Sandbox suspension of the issue that is still queued is that close at work.
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark carries:
 
@@ -9664,7 +9857,7 @@ The wakes are these:
   It looks again at its turn or five minutes later, whichever comes first, so a park that ends early, through an operator's resume or a restart, delays the message by five minutes at most.
   A hook prompt is then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy answers it `404`, and its row tries again on its backoff until the woken session holds the role and takes it; a merge-queue removal message and a merge-forward message wait the same way until the woken session holds the role.
 
-  - A hook prompt's row waits while its role is being woken: its claim is released and its issue is still in the workflow with a tree that does not linger, so the row's own attempt wakes it, or its claim is launching under that wake or under the wake pacing's hold.
+  - A hook prompt's row waits while its role is being woken: its claim is released and its issue is still in the workflow, so the row's own attempt wakes it, or its claim is launching under that wake or under the wake pacing's hold.
     Otherwise it waits for one hour from the later of the hook's firing and the role's last ready, so a released role of an issue that has left the workflow gets no wake, and its row ends at that hour; a role whose claim failed or was retired is never published to, and the row ends at once.
     The waiting row holds the pod from idle release only while its role has a claim on the issue that runs, is starting, or was suspended by an idle release, which the row's own first attempt wakes.
     A row whose role has no claim, or whose claim was suspended for any other cause, holds no pod: such a role comes back only by a start or a resume, the operator's or the controller's, and either brings a pod of its own.
@@ -9702,13 +9895,13 @@ It waits for that merger too, and it reaches the merger when a resume lifts that
 While it waits, the message holds the issue's pod, as any row of the role-message lane does.
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
-A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
-Every other path that suspends, resumes, stops or closes the agent of a released claim takes that agent over from the release, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's agent, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, and the controller's `suspend`, `resume_agent`, `stop` and `fresh_session`.
+A wake acts only on a claim that is still `released`, of an issue still in Legion's work.
+Every other path that suspends, resumes, stops or closes the agent of a released claim takes that agent over from the release, after which no wake acts on it: a stop, a close, the end of a retention that a linger of the release before left (`retention_end`), the production check — whose `pending` report suspends the checking role's agent, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — the operator's `legion claims` commands, and the controller's `suspend`, `resume_agent`, `stop` and `fresh_session`.
 The boot's resume by rule passes over a released claim (`booted`), and a wake or a backstop that came due while the daemon was down acts once the daemon has started.
 Two other boot steps can start a released claim.
 Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
 The first boot of this release also queues, once, a start for each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/cutover_merger_repair.go`).
-That merger starts when its tree's design gate allows it, as at any start of the `merging` phase, which holds no admission slot.
+That merger starts when the design gates it waits for allow it, as at any start of the `merging` phase, which holds no admission slot.
 A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod.
 After that moment, the release's record of a role's claim as `released` is its point of no return for that role: a wake of that role no longer cancels the release.
 The release's teardown runs to its end, and the wake's start waits for it, because no start of a role of the issue runs while the issue's teardown row is in the outbox.
@@ -9760,7 +9953,7 @@ Every other answer stands as the store gave it, with its own hold, recorded in `
 
 - a cancel for `overtaken`, which the store decides where the pod was given work after the mark, records the hold `overtaken`;
 
-- a cancel for `unauthorized`, which the store decides where the run the release was taken against has moved on, the issue has left the workflow, its tree lingers or its cleanup is reserved, records the hold `unauthorized`;
+- a cancel for `unauthorized`, which the store decides where the run the release was taken against has moved on, the issue has left the workflow or its cleanup is reserved, records the hold `unauthorized`;
 
 - a release committed or recorded acts, since an earlier attempt was authorized to take that pod.
 
@@ -9981,10 +10174,10 @@ For each row of `select issue, release_id, size_bytes from workspace_bundles`, w
 Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
-A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`), and one that a launcher reads (whose payload names `launcher` or `close`), is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, or the teardown (`issue_release`) or the suspension (`issue_suspend`) that a launcher's clean read lets through, whose payload names `podUid`, the pod that read found clean, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart' or payload ? 'podUid'` prints 0.
+A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`), and one that a launcher reads (whose payload names `launcher` or `close`), is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, or the teardown (`issue_release`) or the suspension (`issue_suspend`) that a launcher's clean read lets through, whose payload names `readPodUid`, the pod that read found clean, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart' or payload ? 'readPodUid'` prints 0.
 Nor does the release before decode the notice kinds `workspace-kept` and `workspace-taken`, which a later release added with no migration of their own, so delete the unsent ones before the block, the copies queued for the controller among them: `delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('workspace-kept', 'workspace-taken')`.
 An update round of that later release can also have kept a pod for its disk (R7 of #5285): it records the keep as an idle release's decline (`idle_release_declines`), which the block below drops, so the release before holds no pod for it, and its next update round over the pod replaces the pod whatever its disk holds; first list the kept pods with `select issue, pod_uid, reason, commits, changed from idle_release_declines`, and have a role of each such issue push its work, or tell the issue's architect through Dispatch that the rollback will take it.
-A later migration, `20261125023041_idle_release_declines_told_pod.up.sql`, adds `idle_release_declines.told_pod`, the pod the issue's architect was told of by its `workspace-kept` notice; the release before it reads no such column and writes its rows without it, so a rollback to the release that keeps no saved workspace but whose launcher makes no read (contract 217) takes those two steps for the launcher's check rows, the rows that name `podUid` and the `workspace-kept` notices, and neither block.
+A later migration, `20261125023041_idle_release_declines_told_pod.up.sql`, adds `idle_release_declines.told_pod`, the pod the issue's architect was told of by its `workspace-kept` notice; the release before it reads no such column and writes its rows without it, so a rollback to the release that keeps no saved workspace but whose launcher makes no read (contract 217) takes those two steps for the launcher's check rows, the rows that name `readPodUid` and the `workspace-kept` notices, and neither block.
 A later one again, `20261125023100_pod_replacements.up.sql`, adds `pod_replacements`, where the daemon records each replacement of an issue pod that may take a disk, from before the act until the architect's `workspace-taken` notice of it is queued; no earlier release reads it, and a row it still holds at the rollback is a notice the architect is not sent, so read them first with `select issue, pod_uid, record from pod_replacements` and tell each issue's architect, through Dispatch, what the row's read found.
 A rollback past all three runs the three migrations' way backs in one transaction, the newest first.
 The block below is the last paragraph of each migration's header, newest first, and they say the same statements:
@@ -10053,7 +10246,7 @@ Four gates hold the project's work:
 **What still runs.**
 The pause never stops the controller, and it holds none of the controller's tasks, notices or ticks: the controller is the session that resumes the project and answers people meanwhile.
 Under `controller: operator` the daemon holds no controller claim, so nothing of this changes there.
-Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), the take-back of a stopped phase's task (a `supervise` row whose op is `retire_task`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, the Dispatch reads `pending_basis_seed` and `reparent_seed` among them, and each row of another project on the same database.
+Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`, `retention_end`), the take-back of a stopped phase's task (a `supervise` row whose op is `retire_task`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, the Dispatch reads `pending_basis_seed` and `reparent_seed` among them, and each row of another project on the same database.
 The reconcile of a tree's news of its approved design (`design_changes`) is such a row: it reads Dispatch and records what changed, and it tells a role only by a news-only start, a `start` row that waits with the other held rows.
 The entry sweep's backstop for that news queues no reconcile while the project is paused, and its first tick after the resume queues one for each tree still owed news (`queueOwedDesignNews`, `internal/daemon/design_news.go`).
 The workflow still records what happens.
@@ -10086,7 +10279,7 @@ The stops themselves run in the outbox, so a pause of several hundred roles does
 
 Background work that a session still runs ends with its process.
 A stopped role's claim is `suspended` with the source `released`, the idle release's own (`supervise.SuspendedByReleased`), so `legion claims list` prints it as `suspended:released`.
-Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume its agent, a wake starts that agent again, and a park, a close, a linger, or a suspension by the operator or the controller takes the stopped agent over.
+Every rule of the daemon reads it as a released claim: it keeps its phase and the task it holds, the boot does not resume its agent, a wake starts that agent again, and a stop, a close, the end of a retention, or a suspension by the operator or the controller takes the stopped agent over.
 Each stop is one store transaction (`projectPause.stopped`, `internal/daemon/pause.go`).
 It writes the claim and the stop's record, and with them:
 
@@ -10131,7 +10324,7 @@ A hold ends in one of three ways, and its record says which (`project_pause_pod_
 
 - `ready`: a role of the pod became ready again, at a launch the resume released or at any later wake;
 
-- `deleted`: a close, a park, a linger, the end of a production check's look or a tree's teardown deleted the pod.
+- `deleted`: a close, a stop, the end of a production check's look or the issue's cleanup deleted the pod.
   Each of these deletes a pod during a pause as it does at any other time.
 
 So a pod whose roles were all stopped stays after the resume until a role of it runs again, and it holds its reservation for that long.
@@ -10168,7 +10361,7 @@ A second pause that begins before the role is back holds the row again, and the 
 A later stop of the role that is still open, or that ended cancelled, taken over or failed, changes nothing.
 A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded, or given up on its record, after that stop.
 A role message that a pause held for a role that no pause stopped, such as one that an idle release had released before the pause, finishes undelivered and wakes nothing, as on main.
-A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded, or given up on its record, after that stop, any suspension of the role but a release (a park, a close, a linger, a suspension by the operator or the controller, or a root's own exit), a failure, a retirement, and the issue leaving the workflow or its tree lingering while the role is released.
+A row that a pause held for a role that a pause stopped ends undelivered on these events alone: a pod release of the issue recorded, or given up on its record, after that stop, any suspension of the role but a release (a stop, a close, a suspension by the operator or the controller, or a root's own exit), a failure, a retirement, and the issue leaving Legion's work while the role is released.
 An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
 The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.
@@ -10845,7 +11038,7 @@ each issue's pod (every role of it alike) and the image probe's.
 - **A project with no live record** boots and serves all the same, and its boot logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
 
 - **An issue's repository** is the one Dispatch resolves for it, which is any `owner/name` an issue or its parent chain in its own project names, recorded with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
-  A later change of it moves the record onto the new repository, its default branch and GitHub's spelling of it, in the pass that reads the change: a live Dispatch event of the issue, the hand-over the outbox completes, or a pass over Dispatch's listing, which makes the single-issue correction for each recorded issue it reads, as a live event of that issue would: the one pass over every recorded issue the daemon makes once its boot is over, or one it owes an issue whose earlier pass GitHub did not answer (below) or found the record moved.
+  A later change of it moves the record onto the new repository, its default branch and GitHub's spelling of it, in the pass that reads the change: a live Dispatch event of the issue, or a pass over Dispatch's listing, which makes the single-issue correction for each recorded issue it reads, as a live event of that issue would: the one pass over every recorded issue the daemon makes once its boot is over, or one it owes an issue whose earlier pass GitHub did not answer (below) or found the record moved.
   Each of those passes reads both role Apps' installations on the repository the change names, GitHub's spelling of it and its default branch at that moment, and writes the correction from that read alone.
   That correction is one statement in the fact's own transaction (`record.(*Postgres).CorrectIssueRepository`), so it moves nothing to the backlog, reruns nothing and opens no generation, and the record keeps the repository the issue left and the moment of the correction.
   Under this runtime the daemon then replaces the issue's pod, since the pod holds the clone, the gh directories and the token of the repository the issue has left, and the update round carries that replacement as it carries any other: every role is asked to push its work and answer the round, and the pod is replaced once every role has answered or at the round's bound, with no rescue of what a role left unpushed ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
@@ -10854,7 +11047,7 @@ each issue's pod (every role of it alike) and the image probe's.
   The record says the same with no key of its own: the issue's `pullRequest.repo` on `GET /legion/v1/state` is the repository the pull request was opened on, which no correction moves, and `repo` beside it is the repository the issue works now.
   The only other writer of a recorded issue's repository is this release's one-time rename pass, which writes a configured rename's `to`, as GitHub spells it, over its `from` once GitHub shows the transfer (`record.(*Postgres).RenameIssueRepository`, beside `CorrectIssueRepository`).
   It is no correction: the pair names one repository, so the record keeps no repository the issue left, and a resolution that still names the `from` after the pass wrote the `to` is no change, corrects nothing and replaces no pod.
-  A pass applies its change only while the record holds the repository it held when that pass read the record (a configured rename's two names, or two spellings of one name, are no move): two reads of Dispatch at one sequence cannot be ordered and a correction moves no sequence, so a pass that read the record before another pass moved it, such as a hand-over whose Dispatch read is at a follow's own sequence or an event that arrives after a follow, writes nothing and says nothing rather than put the record back on an older resolution.
+  A pass applies its change only while the record holds the repository it held when that pass read the record (a configured rename's two names, or two spellings of one name, are no move): two reads of Dispatch at one sequence cannot be ordered and a correction moves no sequence, so a pass that read the record before another pass moved it, such as a listing's read at a follow's own sequence or an event that arrives after a follow, writes nothing and says nothing rather than put the record back on an older resolution.
   The daemon owes such an issue a pass over Dispatch's listing, asked when the pass that wrote nothing commits, which reads Dispatch and GitHub again; a daemon that stops before the ask loses only the ask, since its next boot's listing finds every recorded issue Dispatch resolves to another repository than its record names and asks for that pass over them.
 
 - **A repository change the daemon cannot apply yet** waits on the record.
@@ -10930,7 +11123,7 @@ each issue's pod (every role of it alike) and the image probe's.
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:
-  a backward move into its phase, the admission pass's return of a parent from `awaiting_children` into its phase once no Dispatch child under it is open, the first run of a re-admitted tree (the root's promotion, or the admission pass that finds the tree running when its design gate opened first), or a production check's look after the issue's merge;
+  a backward move into its phase, the admission pass's return of a parent from `awaiting_children` into its phase once no Dispatch child under it is open, the issue's coming back into Legion's work (a return to work at a new phase entry, or a new run), or a production check's look after the issue's merge;
   the retry of a held issue is a fifth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
   Each of these brings the worker back in the session the claim kept.
 
@@ -11110,15 +11303,13 @@ each issue's pod (every role of it alike) and the image probe's.
 
   (beside the block's other volumes and mounts).
 
-- **The draw is the tree's, and is made once.**
-  It is made when the tree's lifecycle row is first created, in that row's own transaction, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is kept on the tree's root issue record with the mode it was drawn under and the time of the draw.
-  A re-admission, a new generation and the next epoch after a cleanup keep it, since none of them creates that row again, and a child its finished root hands over as a tree of its own is settled at the hand-over, with the answer of the tree it leaves: that tree's draw, the draw time included, where it had one.
-  Every issue of a tree carries its root's group, so a child is never drawn for.
-  A tree first opened before this release has no group and runs without memory, and nothing draws for it later:
-  a change of a project's mode, and turning the block on at all, reach only the trees opened after the change, and a child handed over out of such a tree is never drawn for either, since the hand-over gives it that tree's answer whether it is a draw or none.
-  A root out of a tree the daemon never opened — one with no lifecycle row, whose work never ran — takes no answer with it, so its own first open draws it like any other new tree.
-  The hand-over decides both, in the transaction that records it, so which of the two roots is promoted first changes nothing.
-  An operator's spawn whose tree has no issue record records no draw and runs without memory; nothing is refused and no record is invented.
+- **The draw is settled once for each issue, at its first start.**
+  It is settled when the issue's own lifecycle row is first created, in that row's own transaction, on both paths that open one — admission's own and the operator's `POST /legion/v1/operator/claims` — and is kept on the issue's own record with the mode it was drawn under and the time of the draw (`takeTreeDraw`, `internal/admit/admit.go`).
+  An issue that starts with an issue above it in Legion's work takes the answer of the nearest such issue that holds one, the draw time included, and an issue with none above it draws its own.
+  A return to work, a new run and the next epoch after a cleanup keep it, since none of them creates that row again, and a later change of the issue's Dispatch parent changes no answer.
+  An issue started before this release has no group and runs without memory, and nothing draws for it later:
+  a change of a project's mode, and turning the block on at all, reach only the issues first started after the change.
+  An operator's spawn whose issue has no issue record records no draw and runs without memory; nothing is refused and no record is invented.
 
 - **What a memory-group role is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the project's memory overlays, which outrank both;
@@ -11147,12 +11338,12 @@ each issue's pod (every role of it alike) and the image probe's.
   `mode: off` with `config_files` and `instructions` still set keeps them as written, so a project moved to `on` moves one key — and they are not inert there:
   a tree already drawn into the memory group names them, which is why the mount check and the readability check hold at `off` too.
   A project with no block at all is the pod every deployment built before the block existed.
-  Every issue of `GET /legion/v1/state` carries its tree's `memoryGroup` (`memory` or `none`), `memoryDrawMode` and `memoryDrawnAt`, the three absent together while nothing has drawn for the tree (daemon API contract 49);
+  Every issue of `GET /legion/v1/state` carries its `memoryGroup` (`memory` or `none`), `memoryDrawMode` and `memoryDrawnAt`, the three absent together while nothing has drawn for the issue (daemon API contract 49);
   `settings` carries the project's block;
   and `legion state` prints one line per declared experiment, the `memory` line among them, counting the issues that hold each arm and naming no issue.
-  It counts issues because every issue of the state carries each answer that applies to it, its tree's for a tree experiment and its own for an issue experiment, so one count serves either kind.
+  It counts issues because every issue of the state carries each answer that applies to it, the one it took at its first start for a tree experiment and its own for an issue experiment, so one count serves either kind.
   A count of trees would fit a tree experiment alone, and even there it would not count draws:
-  a child handed over as a tree of its own takes its old tree's draw verbatim, the draw time included, so two trees hold one draw.
+  an issue that starts under another takes the nearest one's draw verbatim, the draw time included, so two issues hold one draw.
 
 - **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
@@ -11209,13 +11400,13 @@ each issue's pod (every role of it alike) and the image probe's.
   The agent's telemetry takes the value up to 255 characters, so load refuses a project whose experiments, each at its longest arm's name and the memory experiment among them, would make it longer.
 
 - **The draw is the unit's, and is made once.**
-  A tree experiment is drawn when the tree's lifecycle row is first created, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against the tree's root key.
+  A tree experiment is settled when an issue's lifecycle row is first created, on both paths that open one — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against that issue's own key: an issue that starts with an issue above it in Legion's work takes the nearest such issue's row verbatim, and an issue with none above it draws its own.
   An issue experiment is drawn when the daemon first records the issue, root or child, and is recorded against that issue's own key.
   Each answer is one row of `experiment_assignments` carrying the arm, the arm's `plan` where it names one, the mode in force at the draw and the instant, written once and never updated.
-  A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its finished root hands over as a tree of its own is settled at the hand-over with the answers of the tree it leaves:
-  for each experiment of unit `tree` that tree held a row for, that row's arm, mode and instant verbatim, marked carried, and no arm at all for each experiment that tree held no tree row for and the child holds no row of its own for, which is an answer and is never drawn for later.
+  A return to work, a new run and the next epoch after a cleanup keep it, and a later change of the issue's Dispatch parent changes no answer.
+  A row a hand-over of an earlier release settled carries that tree's arm, mode and instant verbatim, marked carried, or no arm at all, which is an answer and is never drawn for later.
   A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
-  An operator's spawn whose tree has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
+  An operator's spawn whose issue has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
   The launch follows the record, not the mode:
   a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` gives every new unit no arm and takes nothing from a unit already running.
   A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
@@ -12208,7 +12399,7 @@ a failed review-App mint fails the launch naming the role, and the keeper relaun
 A project whose review App is installed on no account has no GitHub owner to mint for, and starts the controller anyway with `gh` acting as nobody, as `legion controller start` does there, its addressing telling it so (`Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.`):
 its role Secret records an empty `github-default`, its `gh-controller` volume is an empty directory, and it holds owners from its next pod on.
 It runs no init container (`controllerPod.initContainers`): nothing on its volume needs preparing before the launcher starts.
-The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no tree's cleanup lists it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
+The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no issue's cleanup names it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
 It runs as `runtime.kubernetes.pod.controller_service_account` where the file names one, and as the operator's `runtime.kubernetes.pod.service_account`, the same account as every issue pod, where it does not, so a deployment that names no controller account runs its controller exactly as before (`controllerPod.serviceAccount` in `podkind.go`, `podTemplate` in `manifest.go`).
@@ -12269,7 +12460,7 @@ The roles-dir form changes six things for the controller:
 Without the member, the controller's pod is the pod this section describes above.
 A writer audience added, dropped or changed is a moved session store (`movedSessionStore`), so the next launch into the controller's pod replaces it.
 
-The Sandbox is the claim's alone, where an issue's is its tree's.
+The Sandbox is the claim's alone, where an issue's is that issue's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.
 The orphan sweep keeps it while the controller's claim is not retired, running or suspended, so a suspended controller's session survives, and deletes it once the claim is retired.
 The sweep reads the claim from the store again under the pod's launch turn, so a controller launched after the sweep read the daemon's claims keeps its Sandbox.

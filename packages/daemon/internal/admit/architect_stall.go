@@ -87,17 +87,14 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		root, run := held.issue, read.runs[held.token]
 		row := read.entries[record.PhaseRole{Issue: root.Key, Role: claim.RoleArchitect}]
 		now := a.now()
-		took, err := a.architectTookNothing(ctx, tx, root, row, run, floor, now)
-		if err != nil {
-			return nil, err
-		}
+		took := architectTookNothing(root, row, run, read.chains.HoldsOwnGate(root.Key), floor, now)
 		for _, arm := range []struct {
 			arm record.ArchitectStallArm
 			why string
 		}{
 			{record.ArchitectTookNothing, took},
 			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], floor, now)},
-			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, run, floor,
+			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Key], held.admittedAt, row, run, floor,
 				letOuts[root.Key], now)},
 		} {
 			if arm.why != "" {
@@ -198,7 +195,7 @@ func (f stallFloor) count(since time.Time) (from time.Time, said string) {
 // ArchitectStallArms is, by root key, every arm of the stall reading that holds for that root's
 // own architect now, in the order a controller is told them, and nothing for a root no arm holds
 // for. It is the reading the admission pass makes before it wakes the controller — the same
-// reads of the project (reread), the same holders (readSlotHolders) and the same arms
+// reads of the project (readShared), the same holders (readSlotHolders) and the same arms
 // (architectStalls) — and it reads nothing of the marks, of the controller's registration or of
 // a wake, so an arm is in the answer whether or not the controller was told of it. It writes
 // nothing, so the state route asks it in its own read-only snapshot (internal/daemon's
@@ -224,7 +221,7 @@ func (a *Admission) ArchitectStallArms(ctx context.Context, tx pgx.Tx) (map[stri
 	if err != nil || paused {
 		return nil, err
 	}
-	issues, slots, facts, err := a.reread(ctx, tx)
+	issues, slots, facts, err := a.readShared(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -333,31 +330,28 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // hear earlier and can now raises the arm, because the task it was owed never arrived. The reach
 // is read over the entry the architect's row names (row) and the run, as the sweep's send reads
 // it, so the arm reads the roots the rule of R5 reaches and no others, as R7 says. Those
-// readings are asked last, so a root whose claim holds no such task costs no read.
-func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseEntry,
-	run record.RoleRun, floor stallFloor, now time.Time,
-) (string, error) {
+// readings are asked last, though they read nothing either.
+func architectTookNothing(root record.Issue, row record.PhaseEntry, run record.RoleRun, holdsGate bool, floor stallFloor, now time.Time) string {
 	held := run.Claim
 	if held == nil || held.Pending == nil {
-		return "", nil
+		return ""
 	}
 	task := held.Pending
 	if task.Entry == 0 || task.Entry != row.Entry || task.Generation != root.Generation || !task.ConfirmedAt.IsZero() ||
 		task.QueuedAt.IsZero() {
-		return "", nil
+		return ""
 	}
 	queued := firstQueued(*held)
 	since, counted := tookNothingSince(*held, queued)
 	if !counted {
-		return "", nil
+		return ""
 	}
 	from, floored := floor.count(since)
 	if now.Sub(from) <= workflow.StrandedReleaseWake {
-		return "", nil
+		return ""
 	}
-	served, err := a.architectServed(ctx, tx, root, row, run)
-	if err != nil || !served {
-		return "", err
+	if !architectServed(root, row, run, holdsGate) {
+		return ""
 	}
 	unconfirmed := "No turn of that claim has confirmed it."
 	switch {
@@ -369,7 +363,7 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 			since.UTC().Format(time.RFC3339))
 	}
 	return fmt.Sprintf("the task of phase entry %d was first queued to the architect's claim of %s at %s. %s%s The root stands at %s. The daemon writes no second start while that task stands.",
-		task.Entry, root.Key, queued.UTC().Format(time.RFC3339), unconfirmed, floored, root.Phase), nil
+		task.Entry, root.Key, queued.UTC().Format(time.RFC3339), unconfirmed, floored, root.Phase)
 }
 
 // tookNothingSince is the moment the first arm counts the pending task of held from, given when
@@ -459,7 +453,7 @@ func firstQueued(held record.RoleClaim) time.Time {
 // new session): a
 // controller woken for that claim would take `fresh_session`, which discards the session that
 // start resumes, and the mark the wake writes would leave a real failure later in the run waking
-// nobody. Every re-admission of a closed tree makes that shape, since the linger's end retires the
+// nobody. Every new run of a closed root makes that shape, since its close retires the
 // architect's claim and the promotion queues its start in the same pass that reads this arm. A
 // claim whose start has run against it and failed, or whose start has stood owed past the bound,
 // is the failure no further send cures, which R7's second arm names (the architect's reading of R7
@@ -500,7 +494,7 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 	if held != nil && held.State != supervise.StateFailed && held.State != supervise.StateRetired {
 		return ""
 	}
-	relaunch := workflow.ArchitectRelaunchOf(run, root, floor.at, now)
+	relaunch := workflow.ArchitectRelaunchOf(run, floor.at, now)
 	if relaunch == workflow.RelaunchNext {
 		return ""
 	}

@@ -40,6 +40,11 @@ type decodedMessage struct {
 	// refused settlement is not poison, since no redelivery reads it otherwise, so the consumer
 	// acknowledges it and logs it once per event id (consumeMessage).
 	Refused *checksRefusal
+	// Seen is the issue and the sequence of a Dispatch event of an issue of the daemon's project,
+	// whether it decodes to a fact or to none: the consumer advances that issue's cursor with it,
+	// in the fact's transaction or, for an event no handler takes, in one of its own (seenEvent).
+	// Nil for every other message.
+	Seen *seenEvent
 }
 
 // settlementRead is what a checks settlement's payload gives of the three fields a settlement is
@@ -135,6 +140,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	var err error
 	var legacy bool
 	var refused *checksRefusal
+	var seen *seenEvent
 	switch {
 	case subject == legionWakeSubject:
 		if envelope.Source != "envoy" {
@@ -145,7 +151,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
 		}
-		fact, unread, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
+		fact, unread, seen, legacy, err = decodeDispatchFact(subject, project, envelope.Payload)
 	case strings.HasPrefix(subject, dispatchDocumentPrefix):
 		if envelope.Source != "dispatch" {
 			return decodedMessage{}, fmt.Errorf("Dispatch subject has envelope source %q", envelope.Source)
@@ -162,7 +168,7 @@ func decodeMessage(subject, project string, repositories []ghrepo.Repository, da
 	if err != nil {
 		return decodedMessage{}, err
 	}
-	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused}, nil
+	return decodedMessage{Source: envelope.Source, EventID: envelope.factID(), Fact: fact, Unread: unread, LegacyName: legacy, Refused: refused, Seen: seen}, nil
 }
 
 func (e envoyEnvelope) valid() error {
@@ -313,26 +319,37 @@ func (e dispatchEvent) mark() record.EventMark {
 
 // daemonActor says whether the daemon made the event: its actor is the session the daemon writes
 // every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
-// one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
-// check (StatusChange.DaemonActor) both read. Each reads only issues of the daemon's own project:
-// the decoder skips another project's events (decodeDispatchIssueEvent), and the outbox sets back
-// only its own project's issues. So the session of the event's issue is the session of the
-// daemon's own project, the one its writes name with dispatch_token_broker off and the one its
-// broker token proves with it on (dispatch.WritesAs).
+// one statement of that rule, which the decoder (DispatchIssue.DaemonActor), the set-back's check
+// (StatusChange.DaemonActor) and the walk of an issue's event log (actorSession) read. Each reads
+// only issues of the daemon's own project: the decoder skips another project's events
+// (decodeDispatchIssueEvent), and the outbox sets back and the preparation reads the log of only
+// its own project's issues. So the session of the event's issue is the session of the daemon's own
+// project, the one its writes name with dispatch_token_broker off and the one its broker token
+// proves with it on (dispatch.WritesAs).
 func (e dispatchEvent) daemonActor() bool {
 	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
+}
+
+// actorSession is the session that made the event, other than the daemon's own (daemonActor): ""
+// for the daemon, a person, Dispatch itself and an actor of no kind. The decoder
+// (DispatchIssue.ActorSession) and the walk of an issue's event log (issueEvent.Session) read it.
+func (e dispatchEvent) actorSession() string {
+	if e.Actor.Kind == "session" && !e.daemonActor() {
+		return e.Actor.ID
+	}
+	return ""
 }
 
 // decodeDispatchFact decodes one Dispatch issue event of project from its name in either form
 // (subjectforms.IssueEventKey), reporting whether the name was the old one. A name that carries
 // its key in neither form is poison (errIssueNameInNeitherForm).
-func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool, error) {
+func decodeDispatchFact(subject, project, payload string) (Fact, []string, *seenEvent, bool, error) {
 	key, legacy, ok := subjectforms.IssueEventKey(subject)
 	if !ok {
-		return nil, nil, false, fmt.Errorf("%w: %s", errIssueNameInNeitherForm, subject)
+		return nil, nil, nil, false, fmt.Errorf("%w: %s", errIssueNameInNeitherForm, subject)
 	}
-	fact, unread, err := decodeDispatchIssueEvent(key, project, payload)
-	return fact, unread, legacy, err
+	fact, unread, seen, err := decodeDispatchIssueEvent(key, project, payload)
+	return fact, unread, seen, legacy, err
 }
 
 // decodeDispatchIssueEvent decodes one Dispatch event of issue key, for project. The stream carries
@@ -340,34 +357,34 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool,
 // skipped before its payload is read, so it is never poison here. A field the mirror only records
 // (an issue's claim, an ask's kind) that cannot be read is taken as unknown and named in unread,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
-// does not act on.
-func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
+// does not act on. Every valid event of the project is seen, whether it decodes to a fact or to
+// none (seenEvent).
+func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, *seenEvent, error) {
 	if !projectIssueKey(key, project) {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	var event dispatchEvent
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
-		return nil, nil, fmt.Errorf("decode Dispatch event: %w", err)
+		return nil, nil, nil, fmt.Errorf("decode Dispatch event: %w", err)
 	}
 	if event.ID <= 0 || event.Seq <= 0 || event.Notify == nil || !claim.IsIssueKey(event.IssueKey) || event.Type == "" || !isJSONObject(event.Payload) {
-		return nil, nil, fmt.Errorf("Dispatch durable message payload is not a valid Dispatch event")
+		return nil, nil, nil, fmt.Errorf("Dispatch durable message payload is not a valid Dispatch event")
 	}
 	if key != event.IssueKey {
-		return nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
+		return nil, nil, nil, fmt.Errorf("Dispatch durable subject key %s disagrees with event issue_key %s", key, event.IssueKey)
 	}
 	var unread []string
 	fact, err := decodeDispatchEvent(event, &unread)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return fact, unread, nil
+	return fact, unread, &seenEvent{key: event.IssueKey, seq: event.Seq}, nil
 }
 
 // projectIssueKey says whether key is an issue key of project, which the daemon decodes events
 // of; any other key is another daemon's.
 func projectIssueKey(key, project string) bool {
-	keyProject, _, _ := strings.Cut(key, "-")
-	return keyProject == project && claim.IsIssueKey(key)
+	return claim.KeyProject(key) == project && claim.IsIssueKey(key)
 }
 
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
@@ -376,7 +393,8 @@ func projectIssueKey(key, project string) bool {
 // becomes the fact its live delivery would have been. It returns the fields it took as unknown,
 // as the live decoder logs them.
 func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, error) {
-	return decodeDispatchIssueEvent(key, project, string(event))
+	fact, unread, _, err := decodeDispatchIssueEvent(key, project, string(event))
+	return fact, unread, err
 }
 
 // issueEventTypes is every type of Dispatch event that is an issue event: one that carries the
@@ -443,17 +461,12 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			}
 			parent = *issue.Parent
 		}
-		actorSession := ""
-		daemonActor := event.daemonActor()
-		if event.Actor.Kind == "session" && !daemonActor {
-			actorSession = event.Actor.ID
-		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
 			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
 			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
-			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
-			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+			ActorSession: event.actorSession(), DaemonActor: event.daemonActor(), ResolvedRepo: deref(resolved),
+			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown, At: event.CreatedAt.UTC()}, nil
 	}
 	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":

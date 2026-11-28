@@ -20,9 +20,9 @@ import (
 )
 
 // passReads counts the reads of the project's live records admission makes through the store it
-// is given: each pass reads them once at its start (adoptQueuedRoots) and again only after a write
-// of its own makes them stale (reread), so a fact that runs no pass reads them not at all. Every
-// other read and write is the real store's.
+// is given: each pass reads them once at its start (readPass) and again only after a write of its
+// own makes that read stale (finalJudgement), so a fact that runs no pass reads them not at all.
+// Every other read and write is the real store's.
 type passReads struct {
 	record.Store
 	live int
@@ -183,12 +183,33 @@ func TestACatchUpReleaseAPauseHeldBackIsOwedThePassAfterTheResume(t *testing.T) 
 	pause := pauseTestProject(t, pool, fixedNow)
 
 	admission.ReleaseCatchUp("LEGION-HELD")
-	applyAsTheDaemon(t, pool, admission, "timer", "paused-linger", intake.LingerExpired{Issue: "LEGION-UNRELATED", Generation: 1}, engineStub{})
+	applyAsTheDaemon(t, pool, admission, "github", "paused-push", intake.Push{Repo: "acme/widgets", Branch: "legion/LEGION-UNRELATED",
+		Before: "1111111", After: "2222222", Pusher: "someone", Sender: "someone"}, engineStub{})
 	assertSlots(t, pool, nil)
 
 	endTestPause(t, pool, pause, fixedNow)
-	applyAsTheDaemon(t, pool, admission, "timer", "resumed-linger", intake.LingerExpired{Issue: "LEGION-UNRELATED-2", Generation: 1}, engineStub{})
+	applyAsTheDaemon(t, pool, admission, "github", "resumed-push", intake.Push{Repo: "acme/widgets", Branch: "legion/LEGION-UNRELATED-2",
+		Before: "1111111", After: "3333333", Pusher: "someone", Sender: "someone"}, engineStub{})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-HELD", Index: 0, AdmittedAt: fixedNow}})
+	assertWaiting(t, pool, nil)
+}
+
+// The confirmation of an issue's own cleanup (intake.IssueCleanedUp) writes no record of the
+// project: the lifecycle row it stands for was written outside the fact, and a pass that leaves an
+// issue whose cleanup is reserved in the line waits for it. So the pass rule runs the pass on it
+// whatever it wrote, and the root waiting for the free slot takes it at once. Without the fact in
+// passFact the confirmation ran no pass, and the issue's next start waited for the tick.
+func TestTheConfirmationOfAnIssuesCleanupRunsThePassThoughItWritesNoRecord(t *testing.T) {
+	pool := migratedPool(t)
+	admission, reads := passCounted(t, 1)
+	seedWaiting(t, pool, "LEGION-ROOT", "A")
+
+	applyAsTheDaemon(t, pool, admission, "outbox", "issue-cleaned-up", intake.IssueCleanedUp{Issue: "LEGION-208", Epoch: 1}, admission.engine)
+
+	if reads.live != 1 {
+		t.Fatalf("the confirmation read the project's live records %d times, want 1: one pass", reads.live)
+	}
+	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-ROOT", Index: 0, AdmittedAt: fixedNow}})
 	assertWaiting(t, pool, nil)
 }
 

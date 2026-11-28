@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // An admission judgement reads only the tables whose writes record.Store.JudgedWrites counts
@@ -25,12 +24,13 @@ import (
 // admission block and a stale free-slot answer.
 //
 // The seeded project makes every read a pass can make return rows:
-//   - a live tree with its slot, its lifecycle and its open design gate;
+//   - a running root with its slot and its open design gate;
 //   - a start the project owes;
 //   - an admitted child whose Dispatch row has a claim and waits on an unfinished issue, and that
 //     has an open child of its own in Dispatch;
-//   - a member whose parent is done;
-//   - a member of a tree whose root is done.
+//   - a member whose parent in Dispatch is done, so its chain is read through the done parent's
+//     row of the copy (record.ReadChains);
+//   - a member of a done root.
 //
 // The test reads the slots and judges the admission as a pass does (blockers.JudgeAdmission), in a
 // new transaction. Then it reads in that same transaction each user table that Postgres counts a
@@ -76,6 +76,16 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 			return err
 		}
 		for _, mirrored := range []record.DispatchReading{
+			{Key: root, Project: "LEGION", Seq: 2, Status: record.Carry("in_progress"), Parent: record.Carry(""),
+				Blockers: record.Carry[[]string](nil)},
+			{Key: doneParent, Project: "LEGION", Seq: 2, Status: record.Carry("done"), Parent: record.Carry(root),
+				Blockers: record.Carry[[]string](nil)},
+			{Key: member, Project: "LEGION", Seq: 2, Status: record.Carry("in_progress"), Parent: record.Carry(doneParent),
+				Blockers: record.Carry[[]string](nil)},
+			{Key: doneRoot, Project: "LEGION", Seq: 2, Status: record.Carry("done"), Parent: record.Carry(""),
+				Blockers: record.Carry[[]string](nil)},
+			{Key: doneRootMember, Project: "LEGION", Seq: 2, Status: record.Carry("todo"), Parent: record.Carry(doneRoot),
+				Blockers: record.Carry[[]string](nil)},
 			{Key: child, Project: "LEGION", Seq: 2, Status: record.Carry("todo"), Parent: record.Carry(root),
 				Blockers: record.Carry([]string{blocker}), ClaimedBy: "user:alice", ClaimSeq: 2},
 			{Key: grandchild, Project: "LEGION", Seq: 3, Status: record.Carry("todo"), Parent: record.Carry(child),
@@ -96,9 +106,6 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
-	if _, err := st.OpenTreeLifecycle(ctx, "legion", root, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("open the tree of %s: %v", root, err)
-	}
 
 	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -109,7 +116,7 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the slots: %v", err)
 	}
-	judged, err := blockers.JudgeAdmission(ctx, tx, records, "LEGION", []record.DesignStep{record.DesignStepSpec}, slots, 3, now)
+	judged, err := blockers.JudgeAdmission(ctx, tx, records, "LEGION", []record.DesignStep{record.DesignStepSpec}, slots, 3)
 	if err != nil {
 		t.Fatalf("judge the admission: %v", err)
 	}
@@ -117,13 +124,11 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 	facts := judged.Facts
 	var unread []string
 	for read, found := range map[string]bool{
-		"the tree's lifecycle":            len(facts.Lifecycles) > 0,
-		"the open gate":                   facts.Gates[root].Open(),
-		"the owed start":                  len(facts.OwedRows) > 0,
-		"the done parent":                 len(facts.Parents) > 0,
-		"the done root":                   len(facts.Roots) > 0,
-		"the child's open Dispatch child": len(facts.ChildWaits) > 0,
-		"the child's Dispatch row":        len(judged.Rows[child].Blockers) > 0,
+		"the open gate":  facts.Gates[root].Open(),
+		"the owed start": len(facts.OwedRows) > 0,
+		"the member's chain through its done parent": facts.Chains.Chain(member).Known() && facts.Chains.GateRoot(member) == root,
+		"the child's open Dispatch child":            len(facts.ChildWaits) > 0,
+		"the child's Dispatch row":                   len(judged.Rows[child].Blockers) > 0,
 	} {
 		if !found {
 			unread = append(unread, read)

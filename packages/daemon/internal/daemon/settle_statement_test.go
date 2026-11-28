@@ -17,11 +17,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// settleLine boots a daemon of cfg over rows and holds (seedConflicts), with the tree of each
-// claim in open open, so its relaunch reaches its hold (treelifecycle.CheckWork), and returns it,
-// its runtime, and the settle statement its boot logs for the name held for no claim.
+// settleLine boots a daemon of cfg over rows and holds (seedConflicts), with the tree and the issue
+// of each claim in open open and the claim bound to both, so its relaunch reaches its hold
+// (treelifecycle.CheckWork), and returns it, its runtime, and the settle statement its boot logs for
+// the name held for no claim.
 func settleLine(t *testing.T, cfg config.Config, project, name string, rows []conflictRow, open []claim.Token, holds string, args ...any) (*daemon, *fake.Runtime, string) {
 	t.Helper()
 	seedConflicts(t, cfg.PostgresDSN, project, rows, holds, args...)
@@ -41,6 +43,14 @@ func settleLine(t *testing.T, cfg config.Config, project, name string, rows []co
 			}
 			if _, err := st.Pool().Exec(ctx, `update claims set tree_epoch = 1 where token = $1`, string(row.token)); err != nil {
 				t.Fatalf("bind %s to its tree: %v", row.token, err)
+			}
+			// A claim binds to its issue's own lifecycle, which the workflow's admission opened.
+			lifecycle, err := st.OpenIssueLifecycle(ctx, project, row.issue, treelifecycle.AuthorityWorkflow)
+			if err != nil {
+				t.Fatalf("open the lifecycle of %s: %v", row.issue, err)
+			}
+			if _, err := st.Pool().Exec(ctx, `update claims set issue_epoch = $2 where token = $1`, string(row.token), int64(lifecycle.Epoch)); err != nil {
+				t.Fatalf("bind %s to its issue: %v", row.token, err)
 			}
 		}
 	}

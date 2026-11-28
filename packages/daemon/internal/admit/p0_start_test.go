@@ -134,15 +134,21 @@ func TestOnlyAChildsOwnP0StartsItUnderARootOfEachPriority(t *testing.T) {
 }
 
 // Every hold on a start but the cap stays for a P0 issue: a root without the legion label, a root
-// not in todo, a blocked_by link to an open issue, a closed design gate, an ancestor's hold, a
-// lingering tree and a paused project each keep a P0 issue out of a slot. Each case holds a free
-// P0 root beside the held one, which does start, so a case in which nothing started would read as
-// a pass that never ran; the paused project starts nothing, and starts both once its pause ends.
+// not in todo, a blocked_by link to an open issue, a closed design gate, an ancestor's hold and a
+// paused project each keep a P0 issue out of a slot. Each case holds a free P0 root beside the held
+// one, which does start, so a case in which nothing started would read as a pass that never ran;
+// the paused project starts nothing, and starts both once its pause ends. A case that names a held
+// reason reads the pass's held list too, which names the held issue with that reason and the issue
+// that holds it.
 func TestEveryHoldButTheCapStaysForAP0Issue(t *testing.T) {
 	const held, free = "LEGION-50", "LEGION-60"
 	for _, tc := range []struct {
 		name string
 		seed func(t *testing.T, pool *pgxpool.Pool)
+		// reason is the word the held list names the held issue with, and by the issue that
+		// holds it; "" for a case the list is not read in.
+		reason record.HeldReason
+		by     string
 	}{
 		{name: "a root without the legion label", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			p0Queued(t, pool, held, "C", record.P0, func(issue *record.Issue) { issue.HandedOver = false })
@@ -161,15 +167,12 @@ func TestEveryHoldButTheCapStaysForAP0Issue(t *testing.T) {
 			p0Tree(t, pool, "LEGION-40", "Bz", record.P2, false)
 			p0Member(t, pool, "LEGION-40", held, "C", phase.Admitted, "todo", record.P0)
 		}},
-		{name: "an ancestor's hold", seed: func(t *testing.T, pool *pgxpool.Pool) {
-			p0Queued(t, pool, held, "C", record.P0, func(issue *record.Issue) { issue.Ancestry = []string{"LEGION-1"} })
-		}},
-		{name: "a lingering tree", seed: func(t *testing.T, pool *pgxpool.Pool) {
-			until := fixedNow.Add(time.Hour)
-			putIssue(t, pool, record.Issue{Key: "LEGION-40", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-				Project: testProject, Title: "a lingering root", Tree: "LEGION-40", Phase: phase.Done, Generation: 1, Status: "done",
-				Rank: "Bz", HandedOver: true, LingerUntil: &until, LastDispatchSeq: 1})
-			p0Member(t, pool, "LEGION-40", held, "C", phase.Admitted, "todo", record.P0)
+		{name: "an ancestor's hold", reason: record.HeldAncestry, by: "LEGION-1", seed: func(t *testing.T, pool *pgxpool.Pool) {
+			// Its Dispatch parent LEGION-41 stands on the backlog, out of Legion's work, under
+			// LEGION-1, which is at work, and the copy of Dispatch's issues shows that chain: the
+			// ancestry hold (record.HeldReasonOf).
+			putIssue(t, pool, chainRecord("LEGION-41", "LEGION-1", phase.Admitted, "backlog"))
+			p0Queued(t, pool, held, "C", record.P0, func(issue *record.Issue) { issue.Parent = new("LEGION-41") })
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -189,6 +192,11 @@ func TestEveryHoldButTheCapStaysForAP0Issue(t *testing.T) {
 			}
 			if !holdsSlot(t, pool, free) {
 				t.Fatalf("%s, at P0 with no other hold, holds no slot: the pass started no P0 issue, so this case proves nothing", free)
+			}
+			if tc.reason != "" {
+				assertNotStarted(t, pool, held)
+				_, rows := passJudgement(t, pool, admission)
+				assertHeldBy(t, rows, held, tc.reason, tc.by)
 			}
 		})
 	}

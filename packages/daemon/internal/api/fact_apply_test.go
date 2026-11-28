@@ -307,7 +307,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 // fact names: the architect's move back of a child in implementing, whose run is its
 // implementer's, waits for nothing, though the architect runs the accepting step of another
 // child. A request refused before it applies a fact waits for nothing: the tester's completion
-// with no verdict, and the architect's move back of an issue of another tree.
+// with no verdict, and the move back by an architect whose issue the child's Dispatch chain does
+// not pass through.
 func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	r := newAwaitRig(t)
 	worker, _ := r.h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
@@ -346,8 +347,8 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	seedIssueAt(t, r.h, "LEGION-400", phase.Implementing)
 	other := newLiveClaim(t, r.h, "LEGION-400", claim.RoleArchitect)
 	refused(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
-		"grantId": other.grant(t), "issue": "LEGION-301", "to": "implementing", "reason": "not this architect's tree",
-	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
+		"grantId": other.grant(t), "issue": "LEGION-301", "to": "implementing", "reason": "not this architect's issue",
+	}, nil), http.StatusForbidden, "ISSUE_NOT_OWNED")
 
 	if made := r.made(); len(made) != 0 {
 		t.Fatalf("the waits made = %+v, want none", made)

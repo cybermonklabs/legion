@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -9,13 +10,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// passRead is one read of what an admission pass judges (reread): the project's live records,
+// passRead is one read of what an admission pass judges (readPass): the project's live records,
 // every project's slots and the line facts over those records, beside the transaction it was taken
-// in and how many rows that transaction had written to the tables a judgement reads when the read
-// was taken (record.Store.JudgedWrites), with counted false where Postgres kept no such count. The
-// count is taken before the read, so a write anywhere in the transaction after it, by any code,
-// makes a later count differ; and a count is the transaction's own, so a read of another
-// transaction never stands in this one.
+// in and how many rows that transaction had written to the tables a judgement reads once the read
+// finished (record.Store.JudgedWrites), with counted false where Postgres kept no such count. The
+// count is taken right after readPass marks the roots, whose one write — marking roots that hold
+// their own gate (MarkHoldsGate) — changes no judgement (Chains.HoldsOwnGate answers the same for a
+// root marked or not), so the pass's own mark sits in the count's baseline while any later write in
+// the transaction, by any code, makes a later count differ; and a count is the transaction's own, so
+// a read of another transaction never stands in this one.
 type passRead struct {
 	tx      pgx.Tx
 	writes  int64
@@ -25,11 +28,11 @@ type passRead struct {
 	facts   record.LineFacts
 }
 
-// passJudgement is a pass's read (passRead) and, when judged is set, the judgement of the line the
+// lineJudgement is a pass's read (passRead) and, when judged is set, the judgement of the line the
 // pass made over it (blockers.JudgeLine): its mirror rows, its facts as the judgement filled them,
 // its line and the rows the line left behind. The read's slots are every project's; the line was
 // judged over the project's own among them (record.OwnSlots).
-type passJudgement struct {
+type lineJudgement struct {
 	passRead
 	judged      bool
 	rows        map[string]blockers.Row
@@ -38,15 +41,31 @@ type passJudgement struct {
 	dropped     []record.HeldIssue
 }
 
-// readPass is reread with the transaction's count of the rows a judgement reads taken first
-// (record.Store.JudgedWrites), and it is what every pass reads its records through, so the pass's
-// end can tell whether that read still stands (finalJudgement).
+// readPass is what every pass reads its records through: the pass's shared reads (readShared),
+// then the mark of every root they find as holding its own gate, then the transaction's count of
+// the rows a judgement reads (record.Store.JudgedWrites), taken after the mark, so the pass's end
+// can tell whether that read still stands (finalJudgement) without the pass's own root mark
+// (MarkHoldsGate) making the judgement look stale.
 func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
-	writes, counted, err := a.store.JudgedWrites(ctx, tx)
+	issues, slots, facts, err := a.readShared(ctx, tx)
 	if err != nil {
 		return passRead{}, err
 	}
-	issues, slots, facts, err := a.reread(ctx, tx)
+	// Every recorded issue the pass finds a root holds its own gate from now on, and keeps it once
+	// it gets a parent in Legion's work (R15 of dispatch://INFRA-3320, record.Chains.HoldsOwnGate):
+	// one statement marks every root the read finds unmarked, and none is sent when there is none.
+	var roots []string
+	for _, issue := range issues {
+		if !issue.HoldsGate && facts.Chains.IsRoot(issue.Key) {
+			roots = append(roots, issue.Key)
+		}
+	}
+	if len(roots) > 0 {
+		if err := a.store.MarkHoldsGate(ctx, tx, roots); err != nil {
+			return passRead{}, fmt.Errorf("mark the roots that hold their own gate: %w", err)
+		}
+	}
+	writes, counted, err := a.store.JudgedWrites(ctx, tx)
 	if err != nil {
 		return passRead{}, err
 	}
@@ -55,15 +74,15 @@ func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
 
 // judged records, as this pass's last judgement, the judgement of the line JudgeLine answered over
 // read (rows, facts, line and dropped), and answers it.
-func (a *Admission) judged(read passRead, rows map[string]blockers.Row, facts record.LineFacts, line []record.LineEntry, dropped []record.HeldIssue) *passJudgement {
-	a.last = &passJudgement{passRead: read, judged: true, rows: rows, judgedFacts: facts, line: line, dropped: dropped}
+func (a *Admission) judged(read passRead, rows map[string]blockers.Row, facts record.LineFacts, line []record.LineEntry, dropped []record.HeldIssue) *lineJudgement {
+	a.last = &lineJudgement{passRead: read, judged: true, rows: rows, judgedFacts: facts, line: line, dropped: dropped}
 	return a.last
 }
 
-// judge judges the line over read (blockers.JudgeLine, under this pass's clock) and records the
-// judgement as this pass's last (judged).
-func (a *Admission) judge(ctx context.Context, tx pgx.Tx, read passRead) (*passJudgement, error) {
-	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, read.issues, record.OwnSlots(read.issues, read.slots), read.facts, nil, a.now())
+// judge judges the line over read (blockers.JudgeLine) and records the judgement as this pass's
+// last (judged).
+func (a *Admission) judge(ctx context.Context, tx pgx.Tx, read passRead) (*lineJudgement, error) {
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, read.issues, record.OwnSlots(read.issues, read.slots), read.facts, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +108,7 @@ func (a *Admission) judge(ctx context.Context, tx pgx.Tx, read passRead) (*passJ
 // (record.Store.OwedStarts), which no such write is. That is why the pass's end judges once and
 // hands the one judgement to each of its readers (endPass) rather than asking this again after
 // each write.
-func (a *Admission) finalJudgement(ctx context.Context, tx pgx.Tx) (*passJudgement, error) {
+func (a *Admission) finalJudgement(ctx context.Context, tx pgx.Tx) (*lineJudgement, error) {
 	if last := a.last; last != nil && last.tx == tx && last.counted {
 		writes, counted, err := a.store.JudgedWrites(ctx, tx)
 		if err != nil {
@@ -111,6 +130,6 @@ func (a *Admission) finalJudgement(ctx context.Context, tx pgx.Tx) (*passJudgeme
 
 // admission is the admission judgement of j under cap (blockers.AdmissionOf): the block and its
 // parts, read from j alone.
-func (j *passJudgement) admission(cap int) blockers.AdmissionJudgement {
+func (j *lineJudgement) admission(cap int) blockers.AdmissionJudgement {
 	return blockers.AdmissionOf(j.issues, record.OwnSlots(j.issues, j.slots), j.rows, j.judgedFacts, j.line, j.dropped, cap)
 }

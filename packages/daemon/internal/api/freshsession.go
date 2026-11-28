@@ -236,7 +236,7 @@ func outcomeOf(started bool) freshOutcome {
 //
 // A restart the workflow refuses is therefore no refusal of the fresh session — not a fact the
 // store would not apply, not the workflow's own refusal of it, not an issue the retry leaves
-// held because its tree lingers. The claim is back in a new session whichever of them comes,
+// held because it is out of Legion's work. The claim is back in a new session whichever of them comes,
 // and this answers success with the refusal named in it (FreshSessionResponse.PhaseNotRestarted,
 // OperatorClaim.PhaseNotRestarted). A refusal here would be false twice over: it would tell the
 // caller that nothing happened, for a worker this route had just relaunched, and for a

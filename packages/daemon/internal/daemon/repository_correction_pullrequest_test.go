@@ -87,7 +87,7 @@ func newLeftPullRequestRig(t *testing.T) *leftPullRequestRig {
 		repository: w.issueLaunchRepository,
 		appOwners:  func(claim.Role) []string { return []string{"acme", "zeta"} },
 	}
-	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: leftPullRequestKey, Tree: leftPullRequestKey, Project: "LEGION", Title: "the issue that moved",
+	putChainIssue(t, r.pool, r.records, record.Issue{Key: leftPullRequestKey, Tree: leftPullRequestKey, Project: "LEGION", Title: "the issue that moved",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", HandedOver: true,
 		LastDispatchSeq: 1, Repo: leftRepo, DefaultBranch: "main", GitHubRepo: leftRepo})
 	return r

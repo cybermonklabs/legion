@@ -82,7 +82,8 @@ func TestAStopBeforeTheFirstStepSettlesThePlanAndStopsItsTask(t *testing.T) {
 		root := stepRoot(t, pool, phase.Admitted)
 		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer")
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
-		leaveAs(t, pool, engine, root.Key, "done")
+		// The merge's close ends the task done, the one end at which its last step passed.
+		endRunAs(t, pool, engine, root.Key, "done")
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, issueOf(t, pool, engine, root.Key), "a"))
 		if want := intake.FinishedTask(root.Key, "a", record.TaskDone, intake.StopOfTask); !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the stop of a done task = %+v, want %+v", result.Refusal, want)

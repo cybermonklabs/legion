@@ -40,9 +40,9 @@ import (
 // error's ladder sends the task again, a newer task takes the place of the task whose turn runs (a
 // supersede, a give-back of what the agent read), the daemon restarts, the claim store fails a
 // write and its repair, and a generation is cleared under the reviewer's claim, which is kept with
-// whatever it holds: a person sets the child back to todo (a re-entry, its next run brought back to
-// reviewing), or closes the root and sets it back to todo inside the linger (a re-admission of the
-// tree, whose architect registers its approved spec again).
+// whatever it holds: a person moves the child to the backlog and its architect runs it again (a
+// re-entry, workflow's NewRun, its next run brought back to reviewing). Main's re-admission of the
+// tree has no step: in this branch it leaves the child holding its own gate, outside this tree.
 //
 // Two steps reach what one claim alone cannot. In a hand-over, the child's next run after a re-entry
 // stops in testing while a person approves a version that changes the work, its tester takes the
@@ -70,9 +70,9 @@ import (
 //
 //   - exactly: the version the row says its holder took is the one the run's baseline, the raises
 //     and the credits the claim store holds reach (the SQL function design_news_known), counting
-//     only news rendered for the run the issue stands in (design_news_current), and the row owes the
+//     only news rendered for the run the issue stands in (design_news_counts), and the row owes the
 //     opening that stands exactly when no role message told it, no final credit settled it and no
-//     standing credit carried it (design_news_opening_told, design_news_told_in);
+//     standing credit carried it (design_news_opening_told, design_news_told_of);
 //   - never ahead of what the holder was told: the record never says it took a version no prompt
 //     its holders read told it, beyond versions that changed only decision blocks, and never says an
 //     opening told that no message and no prompt they read told (told twice, never lost);
@@ -84,10 +84,9 @@ import (
 //     holds when its prompt goes, and the copy its acknowledgement writes, which its confirmation
 //     credits, name the start's own text the prompt carries, exactly the version pairs the prompt's
 //     text names, and the opening it says opened, rendered for the run the prompt was sent in;
-//   - a clear empties what the issue's holders took: the next run starts from its own baseline —
-//     the version approved when its first phase started, or, after a re-admission of the tree, the
-//     version the review history names once the reconcile has read it — and counts only what a
-//     prompt sent in that run told;
+//   - a clear empties what the issue's holders took: the next run starts from its own baseline, the
+//     version approved when its first phase started, and counts only what a prompt sent in that run
+//     told;
 //   - and, once the run quiesces, the reviewer has taken the approved version and owes no opening.
 //
 // A refused write leaves the claim store behind the machine until the machine's next write of the
@@ -108,7 +107,7 @@ import (
 // (design_news_credit_test.go) pins it.
 //
 // With no variable set it runs newsModelCISeed and newsModelReplacementSeed for 40 steps each, a few
-// seconds: a seed whose run reaches eighteen of the twenty kinds of step and that each of the
+// seconds: a seed whose run reaches eighteen of the nineteen kinds of step and that each of the
 // record's rules, put back wrong one at a time, fails (newsModelCISeed says how that was read), and a
 // seed that fails where a running turn's task is replaced by a step that cannot replace it
 // (newsModelReplacementSeed). LEGION_NEWS_MODEL_SEED runs one seed,
@@ -153,22 +152,24 @@ func TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold(t *testing.T) {
 }
 
 // newsModelCISeed is the seed the model test runs where no variable names one. Its 40 steps reach
-// eighteen of the twenty kinds of step — all but the provider error's ladder and the restart — the
-// two hand-overs, a re-entry, a re-admission and the root architect's narrowed task among them, and
-// the run fails under each of the seven rules the record keeps put back wrong one at a time (a credit
-// counted in any run, a credit reaching from any version, a fold that keeps no unreached credit, a
-// read that counts no standing credit, a fold before the turn's result, a carried opening that
-// clears any opening, and a narrowed root task that keeps the news it held). Read from runs of seeds
-// 1 to 100 at 40 steps: unmutated with -v, which prints the kinds each seed's drive chose
-// (newsModel.kinds), and under each of the seven. 91 of those seeds failed under all seven, no seed
-// reached all twenty kinds, and 35 is one of the five that fail under all seven and reach eighteen.
-const newsModelCISeed = 35
+// eighteen of the nineteen kinds of step — all but the restart — the two hand-overs, a re-entry and
+// the root architect's narrowed task among them, and the run fails under each of the seven rules
+// the record keeps put back wrong one at a time (a credit counted in any run, a credit reaching from
+// any version, a fold that keeps no unreached credit, a read that counts no standing credit, a fold
+// before the turn's result, a carried opening that clears any opening, and a narrowed root task
+// that keeps the news it held). Read from runs of seeds 1 to 100 at 40 steps, made on 2026-11-22 by
+// the builds Jobs at cf33de38: unmutated with -v, which prints the kinds each seed's drive chose
+// (newsModel.kinds), where every seed passed, and under each of the seven. 92 of those seeds failed
+// under all seven, no seed reached all nineteen kinds, and 43 is the lower of the two that reach
+// eighteen, 43 and 90, both of which fail under all seven.
+const newsModelCISeed = 43
 
 // newsModelReplacementSeed is the second seed the model test runs where no variable names one: the
 // seed whose run fails when supervise's refusal to let a task of news alone take a running turn's
-// place (Machine.queue) is deleted, which newsModelCISeed's run does not reach. Read from runs of
-// seeds 1 to 40 at 40 steps with that refusal deleted: seed 5 alone failed, at its step 7, and every
-// seed of 1 to 100 passes with it in place.
+// place (Machine.queue) is deleted, which newsModelCISeed's run does not reach (seed 43 passes with
+// it deleted). Read from runs of seeds 1 to 40 at 40 steps with that refusal deleted, made on
+// 2026-11-22 by the builds Jobs at cf33de38: seed 5 is the lowest of the five that failed (5, 12,
+// 19, 20 and 27), and it fails at its step 7; every seed of 1 to 100 passes with the refusal in place.
 const newsModelReplacementSeed = 5
 
 // errModelWrite is a write the model's claim store refused (newsModelStore).
@@ -280,8 +281,9 @@ func (s *newsModelStore) RetireDelivery(ctx context.Context, c supervise.Claim, 
 	return nil
 }
 
-// newsModelUnknown is the version a run's holder started from where nothing has said it yet
-// (newsModelRow.base), and the version a closure reaches from it while no credit reaches it.
+// newsModelUnknown is a base version the record does not know, which a closure reaches only
+// through a credit told with no earlier version (design_news_known's own rule). Every row of the
+// model starts from a version it knows (newsModelRow.base).
 const newsModelUnknown = -1
 
 // newsModelAny is the earlier version of a credit told with none (record.DeliveryNewsItem.From
@@ -343,9 +345,8 @@ type newsModelRow struct {
 	audience record.DesignAudience
 	agents   []*newsModelAgent
 	// run counts the clears of a generation the row has been through, and base is the version the
-	// run's holder started from: the baseline its first phase took, the version the architect took
-	// at a registration, or, after a re-admission of the tree, newsModelUnknown until the reconcile
-	// has read it from the review history.
+	// run's holder started from: the baseline its first phase took, or the version the architect
+	// took at a registration.
 	run  int
 	base int
 	// final is every credit of this run the record folded into the row: each confirmed copy whose
@@ -547,10 +548,9 @@ type newsModel struct {
 	// decisionOnly says which versions changed only decision blocks of the one before.
 	latest       int
 	decisionOnly map[int]bool
-	// childGen and rootGen are the generations the child and the tree's root stand at: a re-entry
-	// raises the child's, a re-admission the root's. clears counts the re-entries and re-admissions,
-	// and handovers the hand-overs.
-	childGen, rootGen uint64
+	// childGen is the generation the child stands at: a re-entry raises it, and no step raises the
+	// root's (newsModelRootGen). clears counts the re-entries, and handovers the hand-overs.
+	childGen          uint64
 	clears, handovers int
 	// handoverClear counts the clear made under the second hand-over's tester credit, which no
 	// other clear uses up (handoverClearDue).
@@ -571,10 +571,10 @@ type newsModel struct {
 	spent     int
 	ambiguity newsModelAmbiguity
 	// superseding is the id of the task the supersede step queued since the last check, and
-	// entryStarts says a step since then can have run the start of a newer entry: a re-entry's, a
-	// re-admission's and a hand-over's starts of the reviewer, the sweep's admission pass, which
-	// sends a claim the entry its phases row is owed, and the starts step, which runs such a start
-	// that a refused write left on its backoff. Each of those steps sets it in its own case (do).
+	// entryStarts says a step since then can have run the start of a newer entry: a re-entry's and
+	// a hand-over's starts of the reviewer, the sweep's admission pass, which sends a claim the entry
+	// its phases row is owed, and the starts step, which runs such a start that a refused write left
+	// on its backoff. Each of those steps sets it in its own case (do).
 	// The two are what take the place of a task whose turn runs (check).
 	superseding string
 	entryStarts bool
@@ -629,8 +629,8 @@ func (m *newsModel) toldRows() map[toldKey]record.DesignTold {
 	m.t.Helper()
 	rows := map[toldKey]record.DesignTold{}
 	m.r.inTx(func(tx pgx.Tx) error {
-		told, err := m.r.records.TreeTold(m.r.ctx, tx, m.r.root)
-		for _, row := range told {
+		facts, _, err := record.ReadTreeNewsFacts(m.r.ctx, m.r.records, tx, config.DesignGateRootIssues.Steps(), "LEGION", m.r.root)
+		for _, row := range facts.Told {
 			rows[toldKey{row.Issue, row.Audience}] = row
 		}
 		return err
@@ -657,7 +657,7 @@ func newNewsModel(t *testing.T, seed int64) *newsModel {
 	child := newNewsModelRow("child's holder", pathChild, record.AudienceHolder)
 	root := newNewsModelRow("root's architect", pathRoot, record.AudienceArchitect)
 	m := &newsModel{t: t, seed: seed, rng: rand.New(rand.NewPCG(uint64(seed), uint64(seed))), r: r, clock: &heldClock{},
-		latest: 4, decisionOnly: map[int]bool{}, childGen: 1, rootGen: 1, child: child, root: root, ran: map[string]int{}, kinds: map[string]bool{}}
+		latest: 4, decisionOnly: map[int]bool{}, childGen: 1, child: child, root: root, ran: map[string]int{}, kinds: map[string]bool{}}
 	m.reviewer = child.agent(t, "reviewer", claim.RoleReviewer)
 	m.tester = child.agent(t, "tester", claim.RoleTester)
 	m.architect = root.agent(t, "root's architect", claim.RoleArchitect)
@@ -697,12 +697,15 @@ func (m *newsModel) agentOf(token claim.Token) *newsModelAgent {
 	return nil
 }
 
+// newsModelRootGen is the generation the tree's root stands at throughout a run of the model.
+const newsModelRootGen uint64 = 1
+
 // gens is the run row's news is rendered for now: the generation of its issue and of its tree's root.
 func (m *newsModel) gens(row *newsModelRow) (uint64, uint64) {
 	if row.issue == pathChild {
-		return m.childGen, m.rootGen
+		return m.childGen, newsModelRootGen
 	}
-	return m.rootGen, m.rootGen
+	return newsModelRootGen, newsModelRootGen
 }
 
 // answer is Dispatch's change set of pair, by the model's versions: decision-only where every
@@ -940,7 +943,7 @@ func (m *newsModel) quiesce() {
 	told := m.r.toldOf(pathChild, record.AudienceHolder)
 	var owed record.TreeNews
 	m.r.inTx(func(tx pgx.Tx) error {
-		facts, err := record.TreeNewsFacts(m.r.ctx, m.r.records, tx, config.DesignGateRootIssues.Steps(), pathRoot)
+		facts, _, err := record.ReadTreeNewsFacts(m.r.ctx, m.r.records, tx, config.DesignGateRootIssues.Steps(), "LEGION", pathRoot)
 		owed = record.OwedNews(facts)
 		return err
 	})

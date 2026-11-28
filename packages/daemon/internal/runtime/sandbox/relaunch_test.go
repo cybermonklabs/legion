@@ -226,95 +226,72 @@ func TestSpawnOverAnExistingSandbox(t *testing.T) {
 	})
 }
 
-// A child of a closed tree re-admitted as a root of its own keeps its key, so its Sandbox's name,
-// and may find the Sandbox its old tree left, still labelled with that tree: a close deletes the
-// issue's Sandbox, so one is left only where that close never ran on it — the issue had already
-// moved, or a later start superseded the close — and its old tree's cleanup has not reached it
-// either. The orphan root's launch keeps that Sandbox, relabelled for its own tree, rather than
-// deleting and remaking it, and patches its labels, mode and pod template alone, leaving the rest
-// of its spec as it found it: the Sandbox it finds owns no volume claim template, the shape this
-// runtime makes for an issue, and the relabel adds none. Its disk it does not keep: an issue
-// pod's disk is the pod's own ephemeral volume, so the old tree's pod took it, and the orphan's
-// pod brings one of its own and provisions its workspace afresh. One its old tree left Running,
-// none of whose roles runs any more, is suspended in the relabel's patch and kept the same way.
-// One a claim of the old tree still runs in is refused and left as it is. An orphan root whose
-// Sandbox still owned the `issue` claim template of the release before the pod-owned disk would
-// be relabelled here and then replaced by the same launch, Sandbox and claim together
-// (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
-func TestAnOrphanRootKeepsTheSandboxItsOldTreeLeft(t *testing.T) {
+// A Sandbox is made for an issue, whose key, so its Sandbox's name, outlives a change of its
+// parent, and the tree label it carries is the gate root at its creation, which a running pod
+// keeps and no decision reads (decision 14 of dispatch://INFRA-4730). A launch under another gate
+// root uses the Sandbox as it finds it: it deletes nothing, relabels nothing of the Sandbox, and
+// patches its mode and pod template alone, so a pod the launch makes carries the launch's own gate
+// root. A role launched into a pod that already runs gets the gate root as its LEGION_TREE, and the
+// pod keeps the label it was made with (R22 of dispatch://INFRA-3320, "Spec departures" 3).
+func TestALaunchUnderANewGateRootUsesTheIssuesSandboxAsItFindsIt(t *testing.T) {
 	t.Parallel()
-	orphan := claim.Token("legion-legion-legion-209-architect")
-	name := SandboxName(orphan)
-	oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
-	orphanSpec := func(t *testing.T) runtime.SpawnSpec {
-		spec := testSpec(t, orphan, claim.RoleArchitect, "LEGION-209")
+	t.Run("a suspended Sandbox made under another gate root", func(t *testing.T) {
+		member := claim.Token("legion-legion-legion-209-architect")
+		name := SandboxName(member)
+		made := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
+		spec := testSpec(t, member, claim.RoleArchitect, "LEGION-209")
 		spec.Tree = "LEGION-209"
-		return spec
-	}
-	t.Run("suspended by its old tree", func(t *testing.T) {
-		g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-old-tree", modeSuspended, oldTree)})
-		loc := g.spawn(orphanSpec(t))
-		if deleted := slices.ContainsFunc(g.writes(), func(a action) bool { return a.resource == "sandboxes" && a.verb == "delete" }); deleted {
-			t.Fatalf("the orphan root's launch deleted a Sandbox: %v", g.writes())
+		g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-made", modeSuspended, made)})
+		loc := g.spawn(spec)
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" && (w.verb == "delete" || w.verb == "patch" && strings.Contains(w.patch, "/metadata/labels")) {
+				t.Fatalf("the launch under a new gate root wrote %s, want neither a delete nor a relabel", w)
+			}
 		}
 		s := g.sandbox(name)
-		if s == nil || s.UID != "uid-sandbox-old-tree" || s.Labels[labelTree] != labelValue("LEGION-209") || s.Labels[labelIssue] != labelValue("LEGION-209") {
-			t.Fatalf("orphan root's Sandbox = %+v, want the old tree's Sandbox kept and relabelled for tree LEGION-209", s)
+		if s == nil || s.UID != "uid-sandbox-made" || s.Labels[labelTree] != labelValue(testTree) || s.Labels[labelIssue] != labelValue("LEGION-209") {
+			t.Fatalf("the issue's Sandbox = %+v, want it kept with the tree label it was made with", s)
 		}
 		if len(s.Spec.VolumeClaimTemplates) != 0 {
-			t.Fatalf("orphan root's Sandbox claims %+v, want none: the launch patches its labels, mode and pod template alone", s.Spec.VolumeClaimTemplates)
-		}
-		if got := s.Spec.PodTemplate.Metadata.Labels[labelTree]; got != labelValue("LEGION-209") {
-			t.Fatalf("the relabelled Sandbox's pod template carries tree %q, want LEGION-209", got)
+			t.Fatalf("the issue's Sandbox claims %+v, want none: the launch patches its mode and pod template alone", s.Spec.VolumeClaimTemplates)
 		}
 		pod := g.pod(name)
 		if pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
 			t.Fatalf("pod %+v, locator %+v; want the launch's pod", pod, loc)
 		}
 		if pod.Labels[labelTree] != labelValue("LEGION-209") {
-			t.Fatalf("the new pod carries tree %q, want LEGION-209", pod.Labels[labelTree])
+			t.Fatalf("the pod the launch made carries tree %q, want the launch's gate root LEGION-209", pod.Labels[labelTree])
 		}
 		podDisk(t, pod.Spec)
 	})
-	t.Run("left running by its old tree, none of whose roles runs", func(t *testing.T) {
-		g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-old-tree", modeRunning, oldTree)})
-		// A claim of the orphan root's own tree runs nothing the relabel would end: only a claim of
-		// another tree holds the Sandbox.
-		g.store.running["LEGION-209"] = runningClaim{tree: "LEGION-209", claim: "legion-legion-legion-209-planner:launching"}
-		g.eventually("the old tree's pod", func() bool { return g.pod(name) != nil })
-		old := g.pod(name).UID
-		loc := g.spawn(orphanSpec(t))
-		s := g.sandbox(name)
-		if s == nil || s.UID != "uid-sandbox-old-tree" || s.Labels[labelTree] != labelValue("LEGION-209") || s.mode() != modeRunning {
-			t.Fatalf("the orphan root's Sandbox = %+v, want the old tree's Sandbox kept, relabelled for LEGION-209 and running its launch", s)
+	t.Run("a role launched into a pod that already runs", func(t *testing.T) {
+		g := newRig(t, nil)
+		first := g.spawn(workerSpec(t))
+		name := first.Sandbox.Name
+		spec := testSpec(t, otherToken, claim.RoleReviewer, testTree)
+		spec.Tree = "LEGION-300"
+		loc := g.spawn(spec)
+		if loc.Sandbox.PodUID != first.Sandbox.PodUID {
+			t.Fatalf("the second role's launch went into pod %s, want the running pod %s kept", loc.Sandbox.PodUID, first.Sandbox.PodUID)
 		}
-		relabels := 0
-		for _, w := range g.writes() {
-			if w.resource == "sandboxes" && w.verb == "patch" && modePatched(t, w.patch, modeSuspended) && strings.Contains(w.patch, labelValue("LEGION-209")) {
-				relabels++
-				if !strings.Contains(w.patch, `{"op":"test","path":"/metadata/resourceVersion"`) {
-					t.Errorf("the relabel patch %s tests no resourceVersion, want it fenced to the Sandbox it read", w.patch)
+		if s := g.sandbox(name); s == nil || s.Labels[labelTree] != labelValue(testTree) {
+			t.Fatalf("the Sandbox after a launch under LEGION-300 = %+v, want the label it was made with", s)
+		}
+		if pod := g.pod(name); pod == nil || pod.Labels[labelTree] != labelValue(testTree) {
+			t.Fatalf("the running pod after a launch under LEGION-300 = %+v, want the label it was made with", pod)
+		}
+		var told string
+		for _, frame := range g.sent(otherToken) {
+			if start, ok := frame.(shimwire.LauncherStart); ok {
+				for _, entry := range start.Env {
+					if value, found := strings.CutPrefix(entry, "LEGION_TREE="); found {
+						told = value
+					}
 				}
 			}
 		}
-		if relabels != 1 {
-			t.Fatalf("writes %v; want one patch that relabels the Sandbox for LEGION-209 and suspends it", g.writes())
-		}
-		pod := g.pod(name)
-		if pod == nil || pod.UID == old || string(pod.UID) != loc.Sandbox.PodUID || pod.Labels[labelTree] != labelValue("LEGION-209") {
-			t.Fatalf("pod %+v, locator %+v; want a new pod of tree LEGION-209 in place of the old tree's %s", pod, loc, old)
-		}
-		podDisk(t, pod.Spec)
-	})
-	t.Run("still running its old tree's roles", func(t *testing.T) {
-		g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-old-tree", modeRunning, oldTree)})
-		g.store.running["LEGION-209"] = runningClaim{tree: testTree, claim: "legion-legion-legion-209-implementer:working"}
-		g.launcher(orphan)
-		if _, err := g.r.Spawn(g.ctx, orphanSpec(t)); err == nil || !strings.Contains(err.Error(), "still runs roles (legion-legion-legion-209-implementer:working)") {
-			t.Fatalf("orphan root's launch over a running Sandbox of its old tree = %v, want the refusal naming the running claim", err)
-		}
-		if s := g.sandbox(name); s == nil || s.UID != "uid-sandbox-old-tree" || s.Labels[labelTree] != labelValue(testTree) || s.mode() != modeRunning {
-			t.Fatalf("the old tree's running Sandbox = %+v, want it left as it was", s)
+		if told != "LEGION-300" {
+			t.Fatalf("the role launched into the running pod was told LEGION_TREE=%q, want its launch's gate root LEGION-300", told)
 		}
 	})
 }
@@ -894,7 +871,7 @@ func TestTheNameAReplacementKeptForItsGapGoesOnceTheReplacementCarriesIt(t *test
 		t.Fatalf("the tester, whose pod in the replacement failed on its own: %s, Displaced %t (%s); want Gone and not Displaced, a death the supervisor charges",
 			obs.Kind, obs.Displaced, obs.Detail)
 	}
-	if err := g.r.SuspendIssue(g.ctx, testTree, testTree, func(context.Context) (bool, error) { return true, nil }); err != nil {
+	if err := g.r.SuspendIssue(g.ctx, testTree, "", func(context.Context) (bool, error) { return true, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if g.sandbox(name) != nil {

@@ -129,8 +129,9 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 }
 
 // Release is claim-scoped. It stops at most the role process and MUST NOT delete, suspend or
-// otherwise change its issue Sandbox, even when this runtime sees no sibling role: the tree's
-// reserved cleanup (store.CleanupReservedTree, then CleanupTree) alone deletes issue Sandboxes.
+// otherwise change its issue Sandbox, even when this runtime sees no sibling role: the issue's own
+// close (SuspendIssue) and its reserved cleanup (store.CleanupReservedIssue, then CleanupIssue)
+// alone delete issue Sandboxes.
 func TestReleaseNeverDeletesTheIssueSandbox(t *testing.T) {
 	t.Parallel()
 	name := SandboxName(workerToken)
@@ -197,9 +198,9 @@ func TestReleaseRefusesALocatorOfAnotherClaim(t *testing.T) {
 }
 
 // The daemon reads its claims before it sweeps, and a retry after boot sweeps at a grace of 0
-// while it launches claims, so a claim launched after that read is missing from known. Its tree's
-// lifecycle is open, as its launch's own lifecycle check required: the sweep keeps its Sandbox,
-// whether the launch has finished or is still waiting for its pod.
+// while it launches claims, so a claim launched after that read is missing from known. Its
+// issue's own lifecycle is open, as its launch's own lifecycle check required: the sweep keeps its
+// Sandbox, whether the launch has finished or is still waiting for its pod.
 func TestTheOrphanSweepKeepsTheSandboxesOfALiveTreeUnknownClaimsLaunched(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
@@ -270,7 +271,7 @@ func TestALaunchBegunDuringAnOrphansDeleteWaitsForIt(t *testing.T) {
 		sandboxObject(t, leftover, "uid-sandbox-leftover", modeSuspended, claimLabels(claim.RoleTester)),
 	}, withSandboxHooks(hooks))
 	g.launcher(workerToken)
-	// The leftover's tree had its cleanup confirmed; the launch is its re-admission's.
+	// The leftover's issue had its cleanup confirmed; the launch is its next run's.
 	g.store.close(testTree)
 	armed.Store(true)
 	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
@@ -287,15 +288,14 @@ func TestALaunchBegunDuringAnOrphansDeleteWaitsForIt(t *testing.T) {
 	}
 }
 
-// The sweep deletes the project's Sandboxes of a tree whose cleanup confirmed (or that has no
-// lifecycle), only past the grace, and in the foreground, as the tree cleanup does
-// (deleteSandbox). A Sandbox of a live tree survives whatever claims are known, with or without a
-// locator: a suspended role has no locator while its issue is still in the live tree (N3), and a
-// claim launched after the daemon read its claims is missing from known. The image
-// probe's Sandbox is no claim's and is the probe's own to delete (#1266), and one whose labels name
-// no issue and tree is kept and reported: what cannot be told apart from a live tree's is never
-// deleted.
-func TestTheOrphanSweepDeletesOnlySandboxesOfClosedTreesPastTheGrace(t *testing.T) {
+// The sweep deletes the project's Sandboxes of an issue whose own cleanup confirmed (or that has
+// no lifecycle), only past the grace, and in the foreground, as the issue's cleanup does
+// (deleteSandbox). A Sandbox of a live issue survives whatever claims are known, with or without a
+// locator: a suspended role has no locator while its issue is still live (N3), and a claim
+// launched after the daemon read its claims is missing from known. The image probe's Sandbox is no
+// claim's and is the probe's own to delete (#1266), and one whose labels name no issue is kept and
+// reported: what cannot be told apart from a live issue's is never deleted.
+func TestTheOrphanSweepDeletesOnlySandboxesOfClosedIssuesPastTheGrace(t *testing.T) {
 	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-9-planner")
 	probe := "legion-probe-legion-1d10089a0000"
@@ -327,13 +327,13 @@ func TestTheOrphanSweepDeletesOnlySandboxesOfClosedTreesPastTheGrace(t *testing.
 		t.Fatalf("sweep past the grace = %v, want the unlabelled Sandbox %s reported", err, unlabelled)
 	}
 	if g.sandbox(SandboxName(orphan)) != nil {
-		t.Fatal("an orphan of a closed tree past the grace survived")
+		t.Fatal("an orphan of an issue whose cleanup confirmed survived past the grace")
 	}
 	if policy := deletes[SandboxName(orphan)].PropagationPolicy; policy == nil || *policy != metav1.DeletePropagationForeground {
 		t.Fatalf("the orphan's delete propagation = %v, want foreground, so its PVC is gone before its Sandbox is", policy)
 	}
 	if g.sandbox(SandboxName(rootToken)) == nil {
-		t.Fatal("the live tree's root Sandbox, and with it the issue's volume, was deleted though no claim of it was known")
+		t.Fatal("the live issue's root Sandbox, and with it the issue's volume, was deleted though no claim of it was known")
 	}
 	for _, kept := range []string{probe, unlabelled} {
 		if g.sandbox(kept) == nil {
@@ -343,77 +343,72 @@ func TestTheOrphanSweepDeletesOnlySandboxesOfClosedTreesPastTheGrace(t *testing.
 }
 
 // The sweep decides on a Sandbox as the informer held it, and takes the pod's launch turn only once
-// its tree looks closed. An issue of that closed tree can be re-admitted in between — a child
-// re-admitted as a root of its own, whose launch keeps the suspended Sandbox, relabelled for the
-// new tree with its UID unchanged (TestAnOrphanRootKeepsTheSandboxItsOldTreeLeft), and runs a pod
-// in it before the sweep's turn comes. The delete is fenced to what the decision read, as the
-// controller branch's is (TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays): the
-// re-admitted issue keeps its running Sandbox on this sweep and on the next, which reads the
-// Sandbox under its live tree. Its Sandbox owns no volume claim template, the shape this runtime
-// makes for an issue, so the launch relabels it rather than replacing it
-// (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
+// its issue looks cleaned up. The issue can start a run of its own in between, whose launch keeps
+// the suspended Sandbox, its UID and its tree label unchanged (ensureSandbox uses a Sandbox as it
+// finds it), and runs a pod in it before the sweep's turn comes. The delete is fenced to what the
+// decision read, as the controller branch's is (TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays):
+// the issue keeps its running Sandbox on this sweep and on the next, which reads its lifecycle live.
+// Its Sandbox owns no volume claim template, the shape this runtime makes for an issue, so the
+// launch keeps it rather than replacing it (TestALaunchReplacesTheIssueSandboxOfTheSupersededDiskShape).
 func TestAnIssueSandboxReadmittedSinceItsDeleteWasDecidedStays(t *testing.T) {
 	t.Parallel()
 	orphan := claim.Token("legion-legion-legion-209-architect")
 	name := SandboxName(orphan)
-	oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
+	created := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
 	spec := testSpec(t, orphan, claim.RoleArchitect, "LEGION-209")
 	spec.Tree = "LEGION-209"
 	var g *rig
 	var loc runtime.Locator
-	store := &readmittingStore{fakeStore: newFakeStore(), tree: testTree}
+	store := &readmittingStore{fakeStore: newFakeStore(), issue: "LEGION-209"}
 	store.readmit = func() { loc = g.spawn(spec) }
-	g = newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-old-tree", modeSuspended, oldTree)},
+	g = newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-created", modeSuspended, created)},
 		withOptions(func(o *Options) { o.Store = store }))
 	g.dyn.PrependReactor("patch", "sandboxes", k8stesting.ObjectReaction(&versionedTracker{ObjectTracker: generationTracker{g.dyn.Tracker()}}))
 	g.dyn.PrependReactor("delete", "sandboxes", fenceSandboxDeletes(g))
-	store.close(testTree)
+	store.close("LEGION-209")
 	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	if !store.readmitted.Load() {
-		t.Fatal("the sweep never read the old tree's lifecycle, so the re-admission never ran between its decision and its delete")
+		t.Fatal("the sweep never read the issue's lifecycle, so its next run never launched between the decision and its delete")
 	}
 	kept := func(when string) {
 		t.Helper()
 		s := g.sandbox(name)
-		if s == nil || s.UID != "uid-sandbox-old-tree" || s.Labels[labelTree] != labelValue("LEGION-209") || s.mode() != modeRunning {
-			t.Fatalf("the re-admitted issue's Sandbox %s = %+v; want the relabelled Sandbox uid-sandbox-old-tree kept Running under tree LEGION-209", when, s)
+		if s == nil || s.UID != "uid-sandbox-created" || s.Labels[labelTree] != labelValue(testTree) || s.mode() != modeRunning {
+			t.Fatalf("the issue's Sandbox %s = %+v; want uid-sandbox-created kept Running with the tree label it was made with", when, s)
 		}
 		if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
-			t.Fatalf("the re-admitted issue's pod %s = %+v; want the launch's pod %s still running", when, pod, loc.Sandbox.PodUID)
+			t.Fatalf("the issue's pod %s = %+v; want the launch's pod %s still running", when, pod, loc.Sandbox.PodUID)
 		}
 	}
-	kept("after the sweep that decided on the old tree's Sandbox")
-	g.eventually("the runtime's store to hold the Sandbox relabelled", func() bool {
-		s, _ := g.r.storedSandbox(name)
-		return s != nil && s.Labels[labelTree] == labelValue("LEGION-209")
-	})
+	kept("after the sweep that decided on the issue's Sandbox")
+	store.open("LEGION-209")
 	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
 		t.Fatal(err)
 	}
 	kept("after the next sweep")
 }
 
-// readmittingStore is the runtime's store whose first TreeLive read of tree runs readmit before it
-// answers: a re-admission of one of the tree's issues that lands between the sweep's decision and
-// the pod turn it takes to delete.
+// readmittingStore is the runtime's store whose first IssueLive read of issue runs readmit before
+// it answers: the issue's next run launching between the sweep's decision and the pod turn it
+// takes to delete.
 type readmittingStore struct {
 	*fakeStore
-	tree       string
+	issue      string
 	once       sync.Once
 	readmit    func()
 	readmitted atomic.Bool
 }
 
-func (s *readmittingStore) TreeLive(ctx context.Context, project, tree string) (bool, error) {
-	if tree == s.tree {
+func (s *readmittingStore) IssueLive(ctx context.Context, project, issue string) (bool, error) {
+	if issue == s.issue {
 		s.once.Do(func() {
 			s.readmit()
 			s.readmitted.Store(true)
 		})
 	}
-	return s.fakeStore.TreeLive(ctx, project, tree)
+	return s.fakeStore.IssueLive(ctx, project, issue)
 }
 
 // versionedTracker stores a Sandbox patch under a new resourceVersion, as the API server does for

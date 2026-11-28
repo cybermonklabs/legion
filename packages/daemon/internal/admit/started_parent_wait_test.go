@@ -166,7 +166,7 @@ func spLine(t *testing.T, pool *pgxpool.Pool) []record.LineEntry {
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		if _, _, line, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil, fixedNow); err != nil {
+		if _, _, line, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil); err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
 	})
@@ -306,7 +306,7 @@ func TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds(t *testing.T) {
 		var held []record.HeldIssue
 		inTx(t, pool, func(tx pgx.Tx) {
 			var err error
-			if held, _, _, err = admission.tickRows(context.Background(), tx, func() (*passJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
+			if held, _, _, err = admission.tickRows(context.Background(), tx, func() (*lineJudgement, error) { return admission.finalJudgement(context.Background(), tx) }); err != nil {
 				t.Fatalf("read what is held: %v", err)
 			}
 		})
@@ -325,7 +325,8 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 		name    string
 		at      phase.Phase
 		slotted bool
-		// queued is a root that waits in the line for its tree to be opened: its record alone,
+		// queued is a root that waits in the line for its first start, carried in at its
+		// generation by a hand-over of the release before (record.CarriedIn): its record alone,
 		// with no tree lifecycle.
 		queued bool
 		shape  func(*record.Issue)
@@ -346,7 +347,7 @@ func TestTheAdmissionPassLeavesTheseParentsWhereTheyStand(t *testing.T) {
 			if tc.queued {
 				putIssue(t, pool, record.Issue{Key: spParent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 					Project: testProject, Title: spParent, Tree: spParent, Phase: tc.at, Generation: 1, Status: "todo", Rank: spParent,
-					HandedOver: true, HandedOverFrom: "LEGION-299"})
+					HandedOver: true, CarriedGeneration: 1})
 			} else {
 				spSeedParent(t, pool, spParent, tc.at, tc.slotted, tc.shape)
 			}
@@ -667,5 +668,74 @@ func TestAReturnedParentWaitsForASlotAheadOfWorkThatNeverStarted(t *testing.T) {
 	}
 	if got := issue(t, pool, unstarted); got.Phase != phase.Admitted {
 		t.Fatalf("%s = %s, want it still waiting at admitted", unstarted, got.Phase)
+	}
+}
+
+// spReparent applies Dispatch's event of key moving under parent at sequence seq, keeping status,
+// through the daemon's own handler order: the copy takes the new parent first, so every decider
+// behind it reads the chain this event wrote (applyMirrored).
+func spReparent(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, status, parent string, seq int64) {
+	t.Helper()
+	applyMirrored(t, pool, admission, key+"-reparented", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: seq,
+		Type: "issue.updated", Status: status, Title: key, Parent: parent, Rank: key, HandedOver: true}, admission.engine)
+}
+
+// A parent in awaiting_children whose own Dispatch parent changes keeps its run and the start it
+// holds (R13 and R20 of dispatch://INFRA-3320): a change of parent is no stop and no return, so its
+// phase, its generation, the start it holds and the moment its wait began all stay, and no worker
+// of it starts while its child is open.
+func TestAReparentOfAParentInAwaitingChildrenKeepsTheStartItHolds(t *testing.T) {
+	const oldParent, newParent = "LEGION-310", "LEGION-320"
+	pool := migratedPool(t)
+	admission := quiet(t, 3)
+	seedStarted(t, pool, oldParent, phase.Implementing, nil)
+	seedStarted(t, pool, newParent, phase.Implementing, nil)
+	held := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing."
+	waited := spWaiting(t, pool, spParent, phase.Implementing, held, "children of "+spParent+" were open", func(issue *record.Issue) {
+		issue.Parent, issue.LastDispatchSeq = record.ParentOf(oldParent), 1
+	})
+	seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+	spReparent(t, pool, admission, spParent, "in_progress", newParent, 2)
+
+	got := issue(t, pool, spParent)
+	if got.Phase != phase.AwaitingChildren || got.Generation != 1 || got.ChildrenWait == nil ||
+		got.ChildrenWait.Start != phase.Implementing || got.ChildrenWait.Task != held ||
+		got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(waited) {
+		t.Fatalf("the reparented parent = phase %s, generation %d, held start %+v, waited at %v; want it waiting still with the start it held since %s",
+			got.Phase, got.Generation, got.ChildrenWait, got.ChildrenWaitedAt, waited)
+	}
+	if got.Parent == nil || *got.Parent != newParent {
+		t.Fatalf("the reparented parent's parent = %v, want %s", got.Parent, newParent)
+	}
+	if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 0 {
+		t.Fatalf("the worker starts of the reparented parent = %+v, want none while its child is open", starts)
+	}
+}
+
+// The pass that applies a change of parent reads the children-first waits of the old parent and the
+// new one (R11, R13 and R18 of dispatch://INFRA-3320): a child moving from a parent that waits on it
+// alone to a started parent ends the old parent's wait, which returns to the start it held at that
+// pass, and holds the new parent, which moves to awaiting_children and frees its slot.
+func TestAReparentRereadsBothParentsChildrenFirstWaits(t *testing.T) {
+	const newParent = "LEGION-330"
+	pool := migratedPool(t)
+	admission := quiet(t, 3)
+	held := "Continue " + spParent + ". Issue: " + spParent + ". Phase: implementing."
+	spWaiting(t, pool, spParent, phase.Implementing, held, "children of "+spParent+" were open", nil)
+	seedMirrorChild(t, pool, spChild, "backlog", spParent)
+	spSeedParent(t, pool, newParent, phase.Implementing, true, nil)
+
+	spReparent(t, pool, admission, spChild, "backlog", newParent, 2)
+
+	if back := issue(t, pool, spParent); back.Phase != phase.Implementing || back.ChildrenWait != nil {
+		t.Fatalf("the old parent = phase %s, held start %+v; want it back in the implementing it held, nothing held", back.Phase, back.ChildrenWait)
+	}
+	stopped := issue(t, pool, newParent)
+	if stopped.Phase != phase.AwaitingChildren || stopped.ChildrenWait == nil || stopped.ChildrenWait.Start != phase.Implementing {
+		t.Fatalf("the new parent = phase %s, held start %+v; want awaiting_children holding its implementing start", stopped.Phase, stopped.ChildrenWait)
+	}
+	if holdsSlot(t, pool, newParent) {
+		t.Fatalf("the new parent still holds its slot, want it freed by its wait")
 	}
 }

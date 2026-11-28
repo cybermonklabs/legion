@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/store/precommit"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -190,24 +191,42 @@ func TestATransactionOnAClosedScopeIsItsOwn(t *testing.T) {
 }
 
 // A joined write that fails is undone on its own, whatever its outer body does with the error: the
-// join runs under a savepoint that rolls back, and the hooks it registered are cut, so an outer
-// body that swallows the error commits neither the inner write's row nor its hook.
+// join runs under a savepoint that rolls back, and the hooks and the settles (package precommit) it
+// registered are cut, so an outer body that swallows the error commits neither the inner write's
+// row, nor its hook, nor its settle's row. A settle the outer body registered before the join
+// stays, with its id, so the outer body's later settle under that id is still a repeat; the id the
+// failed join registered first is free again, so the outer body's later settle under it runs. The
+// settles that stay run in the order they were registered.
 func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
 	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var hooks joinedHooks
+	type settleID string
+	var settled []int
+	settle := func(id int) func(context.Context, pgx.Tx) error {
+		return func(ctx context.Context, tx pgx.Tx) error {
+			settled = append(settled, id)
+			_, err := insertProbe(ctx, tx, id)
+			return err
+		}
+	}
 	innerFails := errors.New("the inner body fails after its write")
 	err := Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := insertProbe(ctx, tx, 1); err != nil {
 			return err
 		}
 		OnCommit(ctx, hooks.hook("A"))
+		precommit.Once(ctx, settleID("outer"), settle(4))
 		if err := Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := insertProbe(ctx, tx, 2); err != nil {
 				return err
 			}
 			OnCommit(ctx, hooks.hook("B"))
+			precommit.Once(ctx, settleID("joined"), settle(5))
+			if scoped, registered := precommit.Scoped(ctx, settleID("joined")); !scoped || !registered {
+				t.Errorf("precommit.Scoped in the joined body = %v, %v, want its settle registered on the open transaction", scoped, registered)
+			}
 			return innerFails
 		}); !errors.Is(err, innerFails) {
 			t.Errorf("the joined Transact = %v, want its body's error", err)
@@ -216,16 +235,21 @@ func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
 			return err
 		}
 		OnCommit(ctx, hooks.hook("C"))
+		precommit.Once(ctx, settleID("joined"), settle(6))
+		precommit.Once(ctx, settleID("outer"), settle(7))
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("Transact = %v, want nil: the outer body swallowed the inner error", err)
 	}
-	if ids := rig.probeIDs(t); !slices.Equal(ids, []int{1, 3}) {
-		t.Fatalf("committed rows = %v, want [1 3]: the failed joined write rolls back alone", ids)
+	if ids := rig.probeIDs(t); !slices.Equal(ids, []int{1, 3, 4, 6}) {
+		t.Fatalf("committed rows = %v, want [1 3 4 6]: the failed joined write rolls back alone, its settle (5) with it, the outer settle registered before it stays (4, not 7), and the joined settle's id is free again (6)", ids)
 	}
 	if got := hooks.order(); !slices.Equal(got, []string{"A", "C"}) {
 		t.Fatalf("hooks ran %v, want [A C]: the failed joined write's hook is cut", got)
+	}
+	if !slices.Equal(settled, []int{4, 6}) {
+		t.Fatalf("the settles ran %v, want [4 6]: the ones that stayed, in the order they were registered", settled)
 	}
 }
 
@@ -375,7 +399,8 @@ func (s *heldSavepoint) Commit(ctx context.Context) error {
 // (heldSavepoints), so it is never sent: the rollback of a joined write that fails, and the release
 // of one that succeeds. pgx's savepoint statement that fails leaves the outer transaction open, so
 // a commit there would keep the joined write's row, without its hook after a rollback and with it
-// after a release, for a join that answered an error.
+// after a release, for a join that answered an error. The outer body's settle (package precommit)
+// never starts either: it would run its statements on a transaction already known not to commit.
 func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *testing.T) {
 	t.Parallel()
 	innerFails := errors.New("the inner body fails once its context has ended")
@@ -392,6 +417,8 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 			pool := &heldSavepoints{pool: rig.pool, t: t, release: row.release}
 			ctx := WithTransactionTracking(context.Background())
 			var hooks joinedHooks
+			type settleID string
+			settled := false
 			err := Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if _, err := insertProbe(ctx, tx, 1); err != nil {
 					return err
@@ -414,6 +441,13 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 					return err
 				}
 				OnCommit(ctx, hooks.hook("C"))
+				if !precommit.Once(ctx, settleID("outer"), func(ctx context.Context, tx pgx.Tx) error {
+					settled = true
+					_, err := insertProbe(ctx, tx, 4)
+					return err
+				}) {
+					t.Errorf("precommit.Once in the outer body registered nothing, want its settle on the open transaction")
+				}
 				return nil
 			})
 			if !errors.Is(err, errSavepointNotEnded) {
@@ -424,6 +458,9 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 			}
 			if got := hooks.order(); len(got) != 0 {
 				t.Errorf("hooks ran %v, want none", got)
+			}
+			if settled {
+				t.Errorf("the outer body's settle ran, want none: its transaction was known not to commit before the settles")
 			}
 		})
 	}

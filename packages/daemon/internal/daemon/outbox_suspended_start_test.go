@@ -21,7 +21,7 @@ import (
 // when the tree stops: a person parks it, and the claim is suspended holding that generation and
 // phase's task, or the linger closes the tree and retires the claim, which keeps what it held
 // (supervise's retire). The person reopens the root — inside the linger, or after the close — and
-// re-admission starts the member again (admit's startMidPhaseMembers). Bringing such a claim
+// re-admission starts the member again (admit's promotion). Bringing such a claim
 // back sends the task it kept as soon as its agent is ready (supervise's sendPending), so the
 // one thing that may do it is the row the cap holds: the member works its phase exactly when the
 // cap says it may, and there is no second row behind this one to prompt the same phase again.

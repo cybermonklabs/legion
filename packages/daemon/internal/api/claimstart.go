@@ -83,7 +83,8 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // callers answer a refusal differently: the retry gives it as its own answer (retryStart),
 // while the fresh session has started the agent before it gets here and answers success with
 // the refusal named in it (freshSession). A restart that leaves the issue held relaunched
-// nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
+// nothing: the workflow retries no phase of an issue out of Legion's work (workflow's
+// retryOrEscalate), whose todo brings it back and releases the hold, so it is refused naming the issue
 // rather than reported as a restart. So is one that moved the issue to awaiting_children: a
 // Dispatch child of it is open, so the workflow started no phase of it and holds the start
 // instead (workflow's awaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
@@ -136,7 +137,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 		return http.StatusInternalServerError, fmt.Sprintf("could not read %s's record after the retry: %v", c.Issue, err), nil, true
 	}
 	if after != nil && after.Phase == phase.Held {
-		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), nil, true
+		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: the issue is out of Legion's work, where a retry starts nothing, and a todo on %s brings it back and releases its hold", c.Issue, working, token, c.Issue), nil, true
 	}
 	if after != nil && after.Phase == phase.AwaitingChildren && after.ChildrenWait != nil {
 		back := "the daemon goes back to that start by itself"

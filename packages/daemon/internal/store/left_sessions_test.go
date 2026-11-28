@@ -128,7 +128,7 @@ func TestEveryClaimWriteThatLeavesASessionBehindQueuesItsRelease(t *testing.T) {
 
 	t.Run("each claim write", func(t *testing.T) {
 		s, told := releasingStore(t)
-		openHolderTree(t, s)
+		openIssueLifecycle(t, s, holderIssue)
 		put := func(c supervise.Claim) func() error { return func() error { return s.PutClaim(ctx, c) } }
 		admit := func(c supervise.Claim) func() error {
 			return func() error {
@@ -226,7 +226,7 @@ func TestEveryClaimWriteThatLeavesASessionBehindQueuesItsRelease(t *testing.T) {
 			if releases {
 				s.ReleaseLeftSessionClaims(func(string) {})
 			}
-			openHolderTree(t, s)
+			openIssueLifecycle(t, s, holderIssue)
 			if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
 				t.Fatalf("admit the claim: %v", err)
 			}
@@ -292,7 +292,7 @@ func TestEveryClaimWriteThatLeavesASessionBehindQueuesItsRelease(t *testing.T) {
 
 	t.Run("two moves of one claim before the lane runs", func(t *testing.T) {
 		s, told := releasingStore(t)
-		openHolderTree(t, s)
+		openIssueLifecycle(t, s, holderIssue)
 		if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
 			t.Fatalf("admit the claim: %v", err)
 		}
@@ -315,7 +315,7 @@ func TestEveryClaimWriteThatLeavesASessionBehindQueuesItsRelease(t *testing.T) {
 
 	t.Run("a transaction that rolls back", func(t *testing.T) {
 		s, told := releasingStore(t)
-		openHolderTree(t, s)
+		openIssueLifecycle(t, s, holderIssue)
 		if _, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "")); err != nil {
 			t.Fatalf("admit the claim: %v", err)
 		}

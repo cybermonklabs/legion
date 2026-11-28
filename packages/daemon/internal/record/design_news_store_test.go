@@ -60,7 +60,7 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 		var rows []DesignTold
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			rows, err = records.TreeTold(ctx, tx, root.Key)
+			rows, err = records.TreeTold(ctx, tx, root.Key, []string{root.Key, child.Key, sibling.Key})
 			must(t, err)
 		})
 		for _, row := range rows {
@@ -103,9 +103,10 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 // Each settlement of the gate's opening on a told row gives the row its next opening number
 // (DesignTold.Opening), through the one SQL function every writer of the owed opening calls: an
 // opening owed to a holder owed news, the opened role message, and the close, which settles every
-// row of the tree and no other tree's. So an opening is named by the number its row held when it
-// became owed, and a close and a reopening owe one under a new number. A role message to an
-// audience with no row writes none, since nothing is owed to it.
+// row of the issues it names, the closed gate's tree (Chains.GateTree), and no other tree's. So an
+// opening is named by the number its row held when it became owed, and a close and a reopening
+// owe one under a new number. A role message to an audience with no row writes none, since nothing
+// is owed to it.
 func TestEachSettlementOfTheOpeningMovesItsNumber(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -119,12 +120,13 @@ func TestEachSettlementOfTheOpeningMovesItsNumber(t *testing.T) {
 			must(t, records.PutIssue(ctx, tx, issue))
 		}
 	})
+	trees := map[string][]string{root.Key: {root.Key, child.Key}, other.Key: {other.Key}}
 	read := func() map[string]DesignTold {
 		t.Helper()
 		rows := map[string]DesignTold{}
 		inTx(t, st, func(tx pgx.Tx) {
-			for _, tree := range []string{root.Key, other.Key} {
-				told, err := records.TreeTold(ctx, tx, tree)
+			for tree, members := range trees {
+				told, err := records.TreeTold(ctx, tx, tree, members)
 				must(t, err)
 				for _, row := range told {
 					rows[row.Issue+"/"+string(row.Audience)] = row
@@ -152,7 +154,7 @@ func TestEachSettlementOfTheOpeningMovesItsNumber(t *testing.T) {
 		t.Fatalf("the architect told by the opened message holds a row %+v, want none: nothing is owed to it", row)
 	}
 
-	inTx(t, st, func(tx pgx.Tx) { must(t, records.CloseOpenings(ctx, tx, root.Key)) })
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.CloseOpenings(ctx, tx, trees[root.Key])) })
 	want("at the close", child.Key+"/holder", false, 2)
 	want("at the close of another tree", other.Key+"/holder", true, 1)
 
@@ -181,7 +183,7 @@ func TestAFillWritesOnlyTheVersionsTheToldRowDoesNotKnow(t *testing.T) {
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}, at.Add(time.Hour)))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 3}, at.Add(time.Hour)))
 		var err error
-		rows, err = records.TreeTold(ctx, tx, root.Key)
+		rows, err = records.TreeTold(ctx, tx, root.Key, []string{root.Key})
 		must(t, err)
 	})
 	want := []DesignTold{
@@ -413,8 +415,9 @@ func TestAnUnreadReviewHistoryIsRecordedPerQuestionUntilItIsRead(t *testing.T) {
 }
 
 // A generation's clear takes what its holders took of the gate with the gate itself: an issue's
-// told rows go with the generation, so the next generation's work takes its own baseline. A tree's
-// clear takes every member's rows, and an issue's own clear takes its rows alone.
+// told rows go with its own generation, so the next generation's work takes its own baseline, and
+// an issue's clear takes its rows alone (R17 of dispatch://INFRA-3320: a new run is the issue's
+// own). A change of gate root forgets the holder row alone (ForgetTold).
 func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -436,12 +439,12 @@ func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceArchitect, raisedTo(map[DesignStep]int{DesignStepSpec: 3}), at))
 		must(t, records.RaiseTold(ctx, tx, other.Key, AudienceHolder, raisedTo(map[DesignStep]int{DesignStepSpec: 1}), at))
 	})
-	count := func(tree string) int {
+	count := func(tree string, members ...string) int {
 		t.Helper()
 		var rows []DesignTold
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			rows, err = records.TreeTold(ctx, tx, tree)
+			rows, err = records.TreeTold(ctx, tx, tree, members)
 			must(t, err)
 		})
 		return len(rows)
@@ -453,17 +456,23 @@ func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 		_, err := records.ClearGeneration(ctx, tx, child, forgetNothing)
 		must(t, err)
 	})
-	if got := count(root.Key); got != 2 {
+	if got := count(root.Key, root.Key, child.Key); got != 2 {
 		t.Fatalf("the told rows of %s after its child's clear = %d, want the root's two left", root.Key, got)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		_, err := records.ClearTreeGeneration(ctx, tx, root.Key, forgetNothing)
+		must(t, records.ForgetTold(ctx, tx, root.Key))
+	})
+	if got := count(root.Key, root.Key, child.Key); got != 1 {
+		t.Fatalf("the told rows of %s after its holder row is forgotten = %d, want its architect's row alone", root.Key, got)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := records.ClearGeneration(ctx, tx, root, forgetNothing)
 		must(t, err)
 	})
-	if got := count(root.Key); got != 0 {
-		t.Fatalf("the told rows of %s after its tree's clear = %d, want none: they went with the gate", root.Key, got)
+	if got := count(root.Key, root.Key, child.Key); got != 0 {
+		t.Fatalf("the told rows of %s after its own clear = %d, want none: they went with the gate", root.Key, got)
 	}
-	if got := count(other.Key); got != 1 {
-		t.Fatalf("the told rows of %s after another tree's clear = %d, want its own one kept", other.Key, got)
+	if got := count(other.Key, other.Key); got != 1 {
+		t.Fatalf("the told rows of %s after another issue's clear = %d, want its own one kept", other.Key, got)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // seedStage3 is a project at Stage 3: one root in review whose Dispatch status write has failed
@@ -64,9 +65,10 @@ func seedStage3(s *seeding) composition {
 }
 
 // seedOperatorClaim is an operator's spawn of an architect on an issue the workflow keeps no record
-// of (internal/api's spawn route: store.Store.OpenOperatorTreeLifecycle, then the claim's admission),
-// idle in its tmux pane, on the smallest tmux file of its own project. No record moves, so its
-// moments are the wall clock's month.
+// of (internal/api's spawn route: store.Store.OpenTreeLifecycle and OpenOperatorIssueLifecycle
+// under the operator's authority, then the claim's admission), idle in its tmux pane, on the
+// smallest tmux file of its own project. No record moves, so its moments are the wall clock's
+// month.
 func seedOperatorClaim(s *seeding) composition {
 	const project = "AC91849371"
 	minimal := apiSettings(s.t, "minimalSettingsFile")
@@ -78,8 +80,10 @@ func seedOperatorClaim(s *seeding) composition {
 	spawnedAt := time.Date(2026, 9, 25, 5, 50, 0, 0, time.UTC)
 	_, err := s.st.RecordBoot(s.ctx, project, spawnedAt)
 	s.must("the boot", err)
-	_, err = s.st.OpenOperatorTreeLifecycle(s.ctx, "ac91849371", "AC91849371-900", func(context.Context, pgx.Tx) error { return nil })
+	_, err = s.st.OpenTreeLifecycle(s.ctx, "ac91849371", "AC91849371-900", treelifecycle.AuthorityOperator)
 	s.must("the operator's tree", err)
+	_, err = s.st.OpenOperatorIssueLifecycle(s.ctx, "ac91849371", "AC91849371-900", func(context.Context, pgx.Tx) error { return nil })
+	s.must("the operator's issue", err)
 	token := s.token(project, "AC91849371-900", claim.RoleArchitect)
 	s.claimAs(supervise.Claim{Token: token, Project: "ac91849371", Tree: "AC91849371-900", Issue: "AC91849371-900", Role: claim.RoleArchitect,
 		Generation: 1, State: supervise.StateIdle, Session: "01a0d71d-aace-7448-a0d4-e401d736438f",
@@ -127,11 +131,11 @@ func seedLastPause(s *seeding) composition {
 // one tree runs: LEGION-208, a root just started, its architect ready in the issue's pod, whose
 // session reported its live rows. LEGION-209 is a child of that tree held at admitted behind
 // LEGION-300, an issue still in progress. LEGION-210 is a root that waits behind LEGION-301, an
-// issue the daemon has never observed and so cannot call finished. LEGION-211 is a root
-// LEGION-200's tree handed over, which waits on LEGION-302 too, but carries a run, so no Dispatch
-// link holds it (blockers.Exempt). The two waiting roots are live trees of their own, so `trees`
-// names three roots while one issue holds a slot. The records move, so the moments are of 2126,
-// after the database's own clock (the populated seed's reason, `at`).
+// issue the daemon has never observed and so cannot call finished. LEGION-211 is a root a
+// hand-over of the release before carried in (record.CarriedIn), which waits on LEGION-302 too,
+// but carries a run, so no Dispatch link holds it (blockers.Exempt). The two waiting roots are live
+// trees of their own, so `trees` names three roots while one issue holds a slot. The records move,
+// so the moments are of 2126, after the database's own clock (the populated seed's reason, `at`).
 func seedDaemonController(s *seeding) composition {
 	cfg := apifixture.LoadSettings(s.t, apiSettings(s.t, "settingsFixtureFile"))
 	admitted := time.Date(2126, 10, 6, 18, 2, 11, 0, time.UTC)
@@ -155,9 +159,11 @@ func seedDaemonController(s *seeding) composition {
 	child.Parent = new("LEGION-208")
 	blocked := issue("LEGION-210", "LEGION-210", phase.Admitted, "todo", 1, 6)
 	blocked.Rank = "00010"
-	// LEGION-211 runs the phase it ran in LEGION-200's tree (admit's hand-over, HandedOverFrom).
+	// LEGION-211 runs the phase a hand-over of the release before carried it into, at the
+	// generation the first boot's conversion copied onto its record with its old root's gate
+	// (record.CarryHandedOverRoots).
 	handed := issue("LEGION-211", "LEGION-211", phase.Implementing, "todo", 2, 7)
-	handed.Rank, handed.HandedOverFrom = "00011", "LEGION-200"
+	handed.Rank, handed.CarriedGeneration, handed.CarriedGate = "00011", 2, true
 	s.putRecorded(
 		recorded{root, reading("LEGION-208", "in_progress", 4, "", ""), admitted},
 		recorded{child, reading("LEGION-209", "todo", 5, "LEGION-208", "", "LEGION-300"), admitted.Add(-20 * time.Minute)},
@@ -168,9 +174,6 @@ func seedDaemonController(s *seeding) composition {
 	// every issue fact it applies). LEGION-301 has no row: the daemon has never observed it.
 	s.mirrorOnly(reading("LEGION-300", "in_progress", 8, "", ""))
 	s.mirrorOnly(reading("LEGION-302", "todo", 9, "", ""))
-	s.in("the hand-over of LEGION-211", func(ctx context.Context, tx pgx.Tx) error {
-		return s.records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: "LEGION-211", Generation: 2, GateCarried: true})
-	})
 	// The promotion of LEGION-208 took its slot and opened its tree (admit's promotion).
 	s.in("the slot of LEGION-208", func(ctx context.Context, tx pgx.Tx) error {
 		return s.records.PutSlot(ctx, tx, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: admitted})

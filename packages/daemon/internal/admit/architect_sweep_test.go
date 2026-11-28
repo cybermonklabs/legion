@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,9 +19,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// architectSweepGeneration is the generation every root of this file stands at. A hand-over row
-// is written at that same generation for a carried root, which is what says the root stands in
-// the run a hand-over carried it into (record.Store.HandedOverRoot).
+// architectSweepGeneration is the generation every root of this file stands at. A carried root
+// carries that same generation (record.Issue.CarriedGeneration), which is what says the root
+// stands in the run a hand-over of the release before carried it into (workflow.ArchitectCarried).
 const architectSweepGeneration = 2
 
 // architectSweepFixture is one root the sweep is asked about. The base shape, which every case
@@ -37,11 +36,10 @@ type architectSweepFixture struct {
 	// stands is the phase the issue is recorded in, and status the Dispatch status with it.
 	stands phase.Phase
 	status string
-	// lingers records the root as a park left it: a linger deadline ahead of it.
-	lingers bool
-	// carried records a hand-over row at generation, which is what says the root stands in the
-	// run a hand-over carried it into, and gateCarried marks that row as one whose hand-over
-	// brought the old root's design gate (record.HandedOverRoot.GateCarried).
+	// carried records the root as one a hand-over of the release before carried in at generation
+	// (record.Issue.CarriedGeneration), which is what says the root stands in the run a hand-over
+	// carried it into, and gateCarried marks that the hand-over brought the old root's design gate
+	// (record.Issue.CarriedGate).
 	carried     bool
 	gateCarried bool
 	// gateOpened registers an approved design gate of the root, which is the root record.AtWork
@@ -73,8 +71,8 @@ func architectSweepRoot(key string) architectSweepFixture {
 		claimed: true, state: supervise.StateIdle, given: seededEntry - 1}
 }
 
-// seedArchitectSweepRoot records one fixture: the issue, its tree lifecycle, its slot, its
-// hand-over row, its design gate, the architect's phases row and the architect's claim.
+// seedArchitectSweepRoot records one fixture: the issue with its own facts, its lifecycle, its
+// slot, its design gate, the architect's phases row and the architect's claim.
 func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFixture) {
 	t.Helper()
 	ctx := context.Background()
@@ -89,9 +87,8 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 		parent := tree
 		root.Parent = &parent
 	}
-	if f.lingers {
-		until := fixedNow.Add(time.Hour)
-		root.LingerUntil = &until
+	if f.carried {
+		root.CarriedGeneration, root.CarriedGate = architectSweepGeneration, f.gateCarried
 	}
 	putIssue(t, pool, root)
 	seedLifecycle(t, pool, tree)
@@ -100,12 +97,6 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if f.carried {
-			if err := records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: f.key,
-				Generation: architectSweepGeneration, GateCarried: f.gateCarried}); err != nil {
-				t.Fatalf("record %s as a root a hand-over created: %v", f.key, err)
-			}
-		}
 		if f.gateOpened {
 			version := 1
 			if err := records.PutGate(ctx, tx, record.DesignGate{Issue: f.key, ArtifactID: "artifact-" + f.key,
@@ -232,8 +223,8 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 		why    string
 	}{
 		{
-			name: "a root that lingers", change: func(f *architectSweepFixture) { f.lingers, f.status = true, "done" },
-			why: "nothing of a tree that has left the workflow is started again until its re-admission (workflow.ArchitectHears)",
+			name: "a root a person closed", change: func(f *architectSweepFixture) { f.status = "done" },
+			why: "nothing of an issue out of Legion's work is started again until it returns (workflow.ArchitectHears)",
 		},
 		{
 			name: "a root Dispatch has taken out of the workflow", change: func(f *architectSweepFixture) { f.status = "backlog" },
@@ -435,7 +426,7 @@ func TestTheArchitectSweepWritesOneStartOverRepeatedPasses(t *testing.T) {
 
 // The task the rule sends is derived again from the record as it stands, rather than read off
 // the phases row the entry was raised with. The reason is measured: a kept decision is claimed by
-// the outbox row that names it, and record.Postgres.UnclaimedKept locks and reads only what
+// the outbox row that names it, and record.Postgres.UnclaimedKeptOf locks and reads only what
 // nothing claims, so a text composed once and sent again could name a decision another telling
 // has already claimed. The row's own stored text is a different string here, which is what makes
 // the two readings tell apart.
@@ -616,7 +607,7 @@ func TestTheArchitectSweepsResendOfALostResumeTellsTheApprovalThatSupersededItsR
 		Kind: intake.DispatchArtifactApproved, Version: 4, Mark: seqMark(12)})
 	applySweep(t, pool, admission, "resume-lost-after-the-approval")
 
-	starts := architectStartsOf(t, pool, root)
+	starts := roleStarts(t, pool, root, claim.RoleArchitect)
 	if len(starts) != 1 || starts[0].Entry != resumed.Entry {
 		t.Fatalf("the architect starts of %s after the approval and the sweep = %+v, want the one the sweep writes for the entry %d the resume raised",
 			root, starts, resumed.Entry)
@@ -644,12 +635,11 @@ func TestTheArchitectSweepsResendOfALostResumeTellsTheApprovalThatSupersededItsR
 // A root a hand-over carried in is inside the reach in every phase of the run that carried it,
 // and the task the sweep sends it names the phase it stands in now and the run that hand-over
 // carried it into (dispatch://INFRA-2614 R3, R5). The record holds no fact that says the root
-// still stands in the phase that came with it — the hand-over row names no phase
+// still stands in the phase that came with it — the record names no phase
 // (workflow.ArchitectCarried) — so the task says what holds of a root in its carried phase and
 // of one that has moved on in that same run, and never that the phase it stands in is the one
-// the carry put it in. The gate clause is the hand-over row's own
-// (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
-// its linger comes with no gate.
+// the carry put it in. The gate clause is the record's own (record.Issue.CarriedGate): a root
+// carried in without its old root's gate comes with no gate.
 func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

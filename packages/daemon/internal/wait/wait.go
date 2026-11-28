@@ -36,9 +36,8 @@ func (w *waiting) Is(target error) bool { return target == ErrWaiting }
 
 // Until is a wait that names when to run the row again: at, instead of the outbox's backoff
 // (UntilAt reads it back). It is a wait as any other (errors.Is matches ErrWaiting), with text as
-// its message: for an effect whose next chance is a known moment — a lingering tree's close
-// waiting for a member's production check, bounded at a time the record holds — rather than
-// something that happens.
+// its message: for an effect whose next chance is a known moment — the second read of a head a
+// first read found conflicting, due a minute after it — rather than something that happens.
 func Until(at time.Time, text string) error {
 	return &until{waiting: waiting{err: errors.New(text)}, at: at}
 }

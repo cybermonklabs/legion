@@ -30,24 +30,40 @@ func scanTold(row scanner) (DesignTold, error) {
 	return told, nil
 }
 
-// TreeTold is every told row of the issues of tree, by issue and then audience, as each audience
-// took it: what OwedNews weighs the tree's gate against, in one read. It reads the rows through
-// the SQL function design_news_told_in, which counts beside each row's own versions the credit of
-// every confirmed delivery whose turn's result has not yet made it final (the claim store's
-// carried_news), each item and opening of it only while the record still holds the run it was
-// rendered in (DeliveryNewsItem.Generation and TreeGeneration), so every reader of a told row —
+// TreeTold is every told row of members, the issues of the tree of the gate root root (the gate
+// root and the issues in Legion's work whose gate root it is on the Dispatch chain,
+// Chains.GateTree), by issue and then audience, as each audience took it: what OwedNews weighs the
+// tree's gate against, in one read. It reads the rows through the SQL function design_news_told_of,
+// which counts beside each row's own versions the credit of every confirmed delivery whose turn's
+// result has not yet made it final (the claim store's carried_news), each item and opening of it
+// only where it was rendered under root and while the record still holds the run it was rendered
+// in (DeliveryNewsItem.Root, Generation and TreeGeneration), so every reader of a told row —
 // OwedNews, the reconcile's settlement and raise, a start and a send — weighs the same answer, and
-// the give-back of a credit needs no write here.
-func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error) {
-	rows, err := tx.Query(ctx, `select `+toldColumns+` from design_news_told_in($1)`, tree)
+// the give-back of a credit needs no write here. No stored tree is read.
+func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, root string, members []string) ([]DesignTold, error) {
+	rows, err := tx.Query(ctx, `select `+toldColumns+` from design_news_told_of($1, $2)`, root, members)
 	if err != nil {
-		return nil, fmt.Errorf("read what the holders of tree %s took: %w", tree, err)
+		return nil, fmt.Errorf("read what the holders of the tree of %s took: %w", root, err)
 	}
 	told, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DesignTold, error) { return scanTold(row) })
 	if err != nil {
-		return nil, fmt.Errorf("read what the holders of tree %s took: %w", tree, err)
+		return nil, fmt.Errorf("read what the holders of the tree of %s took: %w", root, err)
 	}
 	return told, nil
+}
+
+// ForgetTold deletes what issue's holder took of the approved design (its holder row): the row's
+// versions are of the documents of the gate its issue stood under, and a change of its gate root
+// on the Dispatch chain puts it under another gate's documents, so the versions name nothing of
+// them. The holder of its phase is then owed the new gate's approved versions as work in flight is
+// owed a version the record does not know (OwedNews), and is told them. Its caller is the change
+// of parent that moves the issue's gate root (workflow's forgetToldAcrossGateRoots), as main's move
+// of an issue into another tree cleared the issue's generation.
+func (s *Postgres) ForgetTold(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, `delete from design_news_told where issue = $1 and audience = $2`, issue, string(AudienceHolder)); err != nil {
+		return fmt.Errorf("forget what %s's holder took of the design of the gate it left: %w", issue, err)
+	}
+	return nil
 }
 
 // BaselineTold writes issue's audience row at the approved version of each step whose gate row
@@ -124,16 +140,16 @@ func (s *Postgres) SettleOpening(ctx context.Context, tx pgx.Tx, issue string, a
 	return nil
 }
 
-// CloseOpenings settles the gate's close on every told row of tree's issues: no audience is owed
-// an opening once the gate has closed, since each holder is told the close and the next opening
-// decides afresh how each is told that one (workflow's openingDelivery). Each row takes its next
-// opening number, as at SettleOpening, through the same function, so a task that carried the
-// opening before the close says closed when it is sent after it, and its credit clears nothing of
-// a reopening that follows.
-func (s *Postgres) CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error {
+// CloseOpenings settles the gate's close on every told row of members, the issues of the tree of
+// the gate that closed (Chains.GateTree): no audience is owed an opening once the gate has closed,
+// since each holder is told the close and the next opening decides afresh how each is told that one
+// (workflow's openingDelivery). Each row takes its next opening number, as at SettleOpening, through
+// the same function, so a task that carried the opening before the close says closed when it is
+// sent after it, and its credit clears nothing of a reopening that follows.
+func (s *Postgres) CloseOpenings(ctx context.Context, tx pgx.Tx, members []string) error {
 	if _, err := tx.Exec(ctx, `select design_news_opening_settled(told.issue, told.audience, false)
-		from design_news_told told join issues owner on owner.key = told.issue where owner.tree = $1`, tree); err != nil {
-		return fmt.Errorf("settle the close of tree %s's gate on its told rows: %w", tree, err)
+		from design_news_told told where told.issue = any($1)`, members); err != nil {
+		return fmt.Errorf("settle the close of a gate on the told rows of %v: %w", members, err)
 	}
 	return nil
 }
@@ -164,28 +180,32 @@ func (s *Postgres) FillTold(ctx context.Context, tx pgx.Tx, issue string, audien
 	return nil
 }
 
-// TreeNewsFacts is what OwedNews reads of tree, as tx finds the record: the deployment's steps, the
-// root's gate rows, every member with the root among them, their told rows, and whether each
-// member's pull request has merged, read from the pull request's own state whatever phase the
-// member stands in, in one read for the whole tree (Store.PullRequestsOf). Every reader of a tree's
-// owed news reads its facts here, so the opening, a phase move, the reconcile, a start, the
-// merger's hold, the sweep and the root architect's summary weigh one rule over one read.
-func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignStep, tree string) (NewsFacts, error) {
-	gates, err := store.GatesOf(ctx, tx, tree)
+// TreeNewsFacts is what OwedNews reads of the tree of the gate root root, as tx finds the record:
+// the deployment's steps, the gate root's rows, every member of the tree on chains with the gate
+// root among them (Chains.GateTree: the gate root and the issues in Legion's work whose gate root it
+// is, whatever tree their records store), their told rows, and whether each member's pull request
+// has merged, read from the pull request's own state whatever phase the member stands in, in one
+// read for the whole tree (Store.PullRequestsOf). chains is a read that started from root or from an
+// issue under it (ReadChains). Every reader of a tree's owed news reads its facts here, so the
+// opening, a phase move, the reconcile, a start, the merger's hold, the sweep and the root
+// architect's summary weigh one rule over one read.
+func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignStep, chains *Chains, root string) (NewsFacts, error) {
+	gates, err := store.GatesOf(ctx, tx, root)
 	if err != nil {
 		return NewsFacts{}, err
 	}
-	members, err := store.TreeIssues(ctx, tx, tree)
+	tree := chains.GateTree(root)
+	members := make([]Issue, 0, len(tree))
+	keys := make([]string, 0, len(tree))
+	for _, key := range tree {
+		if member, recorded := chains.Record(key); recorded {
+			members = append(members, member)
+			keys = append(keys, key)
+		}
+	}
+	told, err := store.TreeTold(ctx, tx, root, keys)
 	if err != nil {
 		return NewsFacts{}, err
-	}
-	told, err := store.TreeTold(ctx, tx, tree)
-	if err != nil {
-		return NewsFacts{}, err
-	}
-	keys := make([]string, len(members))
-	for i, member := range members {
-		keys[i] = member.Key
 	}
 	requests, err := store.PullRequestsOf(ctx, tx, keys)
 	if err != nil {
@@ -195,7 +215,20 @@ func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignSt
 	for _, member := range members {
 		merged[member.Key] = requests[member.Key].State == PullRequestMerged
 	}
-	return NewsFacts{Steps: steps, Gates: gates, Members: members, Told: told, Merged: merged}, nil
+	return NewsFacts{Root: root, Steps: steps, Gates: gates, Members: members, Told: told, Merged: merged}, nil
+}
+
+// ReadTreeNewsFacts is TreeNewsFacts of the tree key stands in on the Dispatch chains of project,
+// read here with key named (ReadChains): its gate root's, or, for an issue out of Legion's work,
+// the gate holder the state names it under (Chains.StateTree). It answers the chains it read, which
+// a caller that walks the tree's owners reads too.
+func ReadTreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignStep, project, key string) (NewsFacts, *Chains, error) {
+	chains, err := ReadChains(ctx, tx, store, project, []string{key})
+	if err != nil {
+		return NewsFacts{}, nil, err
+	}
+	facts, err := TreeNewsFacts(ctx, store, tx, steps, chains, chains.StateTree(key))
+	return facts, chains, err
 }
 
 // DesignNewsPending says whether the outbox holds a reconcile of tree's news (DesignNewsReconcile)

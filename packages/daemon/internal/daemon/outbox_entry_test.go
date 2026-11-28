@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,10 +23,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -117,13 +121,14 @@ func entryEngine(t *testing.T) *workflow.Engine {
 		Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 }
 
-// startPromoted raises role's entry on issue as the promotion of a re-admitted tree does
-// (workflow.Engine.StartPromotedWorker), in a transaction of its own that settles the runs its
-// start ends, as a fact's does (workflow.Engine.OpenFact).
+// startPromoted raises role's entry on issue as the promotion of a root a hand-over of the release
+// before carried in does (workflow.Engine.StartPromotedWorker, through StartCarriedRun), in a
+// transaction of its own that settles the runs its start ends, as a fact's does
+// (workflow.Engine.OpenFact).
 func startPromoted(ctx context.Context, db store.TxPool, engine *workflow.Engine, issue record.Issue, role claim.Role) error {
 	ctx = engine.OpenFact(ctx)
 	return store.Transact(ctx, db, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := engine.StartPromotedWorker(ctx, tx, issue, role, false); err != nil {
+		if err := engine.StartPromotedWorker(ctx, tx, issue, role); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)
@@ -155,9 +160,9 @@ func TestAnAppendOnlyStartRowBelowItsRolesEntryDeliversNothingAndStartsNoRole(t 
 		t.Fatalf("lease the implementer's start row as the lane does: %v", err)
 	}
 
-	// The promotion of a re-admitted tree's member is a later entry of the same phase: it raises
-	// the number, writes that entry's task on the phases row and writes its own start
-	// (workflow.Engine.StartPromotedWorker).
+	// The promotion of a root a hand-over of the release before carried in is a later entry of the
+	// same phase: it raises the number, writes that entry's task on the phases row and writes its
+	// own start (workflow.Engine.StartPromotedWorker).
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
 		t.Fatalf("raise the implementer's second entry: %v", err)
@@ -264,9 +269,9 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 // the two a held-back start meets.
 //
 // The sequence each stands in is the one the record writes: a start queues an entry's task, and
-// the promotion of a re-admitted tree's member raises the next entry with the phase's resume task
-// (workflow.Engine.StartPromotedWorker, record.SuperviseRequest.ResumeTask), which a worker
-// already at work needs no second prompt for.
+// the promotion of a root a hand-over of the release before carried in raises the next entry with
+// the phase's resume task (workflow.Engine.StartPromotedWorker, record.SuperviseRequest.ResumeTask),
+// which a worker already at work needs no second prompt for.
 func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t *testing.T) {
 	t.Parallel()
 	t.Run("a start of the entry whose task the claim holds records that entry", func(t *testing.T) {
@@ -374,17 +379,17 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 	})
 }
 
-// A re-admission leaves the role's entry where it stood and takes the work of it away: the task
-// is the ended generation's and goes with that generation's handoffs
-// (workflow.Engine.ClearGeneration, which workflow's Adopt and ReenterChild run for each issue
-// they move), while the number stays, because it counts the entries the role has been handed on
-// this issue and nothing of a re-admission unhands one (record.PhaseRow.Entry and EntryTask).
+// A new run leaves the role's entry where it stood and takes the work of it away: the task is the
+// ended generation's and goes with that generation's handoffs (workflow.Engine.ClearGeneration,
+// which workflow's NewRun runs), while the number stays, because it counts the entries the role
+// has been handed on this issue and nothing of a new run unhands one (record.PhaseRow.Entry and
+// EntryTask).
 //
-// What writes the work again is the promotion of the re-admitted tree's member
+// What writes the work again is the role's next start, here the promotion's
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
 // number in the same transaction and writes the start that carries both, so the worker is started
 // under an entry above every entry a completion still in flight could name.
-func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
+func TestANewRunLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	rig := newOneStartRig(t)
@@ -401,22 +406,22 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return rig.engine.ClearGeneration(ctx, tx, rig.issue, time.Now().UTC())
 	}); err != nil {
-		t.Fatalf("clear the generation the re-admission ends: %v", err)
+		t.Fatalf("clear the generation the new run ends: %v", err)
 	}
 
-	readmitted := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
-	if readmitted.Entry != before.Entry || !readmitted.EntryRaisedAt.Equal(before.EntryRaisedAt) {
-		t.Fatalf("the implementer's phases row after the re-admission = entry %d raised at %s, want the entry %d raised at %s it stood on",
-			readmitted.Entry, readmitted.EntryRaisedAt, before.Entry, before.EntryRaisedAt)
+	cleared := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
+	if cleared.Entry != before.Entry || !cleared.EntryRaisedAt.Equal(before.EntryRaisedAt) {
+		t.Fatalf("the implementer's phases row after the new run's clear = entry %d raised at %s, want the entry %d raised at %s it stood on",
+			cleared.Entry, cleared.EntryRaisedAt, before.Entry, before.EntryRaisedAt)
 	}
-	if readmitted.EntryTask != "" {
+	if cleared.EntryTask != "" {
 		t.Fatalf("the implementer's phases row still names the work %q of the generation that ended, want none: its promotion writes the task it is given",
-			readmitted.EntryTask)
+			cleared.EntryTask)
 	}
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := startPromoted(ctx, rig.pool, entryEngine(t), *issue, claim.RoleImplementer); err != nil {
-		t.Fatalf("promote the re-admitted tree's implementer: %v", err)
+		t.Fatalf("promote the implementer of the cleared issue: %v", err)
 	}
 
 	promoted := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
@@ -424,9 +429,9 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 		t.Fatalf("the implementer's phases row after the promotion = entry %d with task %q, want entry %d carrying the work it is owed",
 			promoted.Entry, promoted.EntryTask, before.Entry+1)
 	}
-	// The promotion's start takes out the start the issue still owed, whose task the re-admission
-	// cleared, and writes its own in its place (record.Store.EnqueueStart), so one start stands
-	// and it is the one the phases row names.
+	// The promotion's start takes out the start the issue still owed, whose task went with the
+	// clear, and writes its own in its place (record.Store.EnqueueStart), so one start stands and
+	// it is the one the phases row names.
 	rows = entryStartRows(t, rig.pool, rig.issue.Key)
 	if len(rows) != 1 || rows[0].request.Entry != promoted.Entry || rows[0].request.Task != promoted.EntryTask {
 		t.Fatalf("the start rows after the promotion = %+v, want the one row of entry %d carrying the task %q its phases row names",
@@ -521,10 +526,10 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 //
 // The sequence is the record's. The implementer's completion hands testing to the tester, whose
 // phases row is raised to entry 1 with that entry's task and whose claim takes it and begins a
-// turn on it. The promotion of a re-admitted tree's member then raises entry 2 with the phase's
-// resume task (workflow.Engine.StartPromotedWorker): the runner holds that task back, since the
-// claim is working entry 1's (keepsStartTask), and records nothing, so the claim stands below its
-// row.
+// turn on it. The promotion of a root a hand-over of the release before carried in then raises
+// entry 2 with the phase's resume task (workflow.Engine.StartPromotedWorker): the runner holds that
+// task back, since the claim is working entry 1's (keepsStartTask), and records nothing, so the
+// claim stands below its row.
 //
 // What the claim standing below its row then gives the worker is the rest of this case. The
 // tester's completion of entry 1 is refused 409 HANDOFF_STALE_ENTRY with nothing recorded,
@@ -548,6 +553,14 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	holdSlot(t, rig.pool, rig.issue.Key)
 	records := record.NewStore()
 	engine := entryEngine(t)
+	// The copy of Dispatch's issues holds the root, so its chain is known and the admission pass
+	// reads it as a running gate root (R16 of dispatch://INFRA-3320).
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		seedCopyRow(t, tx, rig.issue.Key, "", rig.issue.Status, 1)
+		return nil
+	}); err != nil {
+		t.Fatalf("fill the copy of Dispatch's issues: %v", err)
+	}
 
 	// The implementer's completion is held to an open pull request on the issue's branch
 	// (workflow's TriggerImplementationReady), which the record holds here as the opened webhook
@@ -749,5 +762,432 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	}
 	if got := readIssue(t, rig.pool, rig.issue.Key); got.Phase != phase.Reviewing {
 		t.Fatalf("the issue stands at %s after the completion of entry 2's task, want reviewing", got.Phase)
+	}
+}
+
+// lateEffect is one fenced kind of effect (record.FenceOf) as the k27 case queues it: the payload,
+// whether the kind is the run's alone (it names the generation and no phase entry), and how the
+// case reads whether its executor acted. A runner given no Dispatch client and no Envoy publisher
+// fails the run of a row that reaches its effect for want of one, so err is the read of every
+// kind whose effect is a write or a publish; the production check's rows apply a fact, read off
+// processed_events; a stop suspends its claim.
+type lateEffect struct {
+	name    string
+	payload record.OutboxPayload
+	runOnly bool
+	acted   func(t *testing.T, rig oneStartRig, err error) bool
+}
+
+// reachedItsEffect reads a run whose executor reached the write or the publish its runner has no
+// client for.
+func reachedItsEffect(_ *testing.T, _ oneStartRig, err error) bool {
+	return err != nil
+}
+
+// appliedAFact reads a production check's row that applied its fact: the outbox applies each under
+// the source outbox, and nothing else of the case does.
+func appliedAFact(t *testing.T, rig oneStartRig, err error) bool {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("run the production check's row: %v", err)
+	}
+	var applied int
+	if err := rig.pool.QueryRow(context.Background(), `select count(*) from processed_events where source = 'outbox'`).Scan(&applied); err != nil {
+		t.Fatalf("count the facts the outbox applied: %v", err)
+	}
+	return applied > 0
+}
+
+// suspendedItsClaim reads a stop that suspended the implementer's claim the case made.
+func suspendedItsClaim(t *testing.T, rig oneStartRig, err error) bool {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("run the stop: %v", err)
+	}
+	machine, found := rig.sup.Machine(rig.token)
+	if !found {
+		t.Fatal("the implementer's claim is gone")
+	}
+	machine.Wait()
+	state := machine.Claim().State
+	return state == supervise.StateSuspended || state == supervise.StateRetired
+}
+
+// Every effect the daemon queues for an issue names the run and the phase entry it was queued at
+// (record.Fence), and one that acts and runs after its issue was handed a later entry or a later
+// run does nothing to it (R17 and R20 of dispatch://INFRA-3320). One case for each fenced kind of
+// record's fence inventory (TestEveryOutboxKindNamesItsRunOrSaysWhyNot): queued at the issue's
+// generation G and entry N, it acts when it runs there; delivered after the issue's entry was
+// raised to N+1 (as a return to work raises it) and after its generation was raised to G+1 (a new
+// run), it does nothing. A notice, an architect's or the controller's, only tells, and its
+// delivery reads the run alone (the architect's ruling of 2026-11-21 on dispatch://INFRA-3320): it
+// is delivered at N+1 and does nothing in G+1. The pod's suspension is
+// TestACleanupDeletesOnlyItsOwnIssuesPod's, which reads the pod it acts on beside the fence; an
+// idle release's save, role stop and teardown cancel the release they belong to rather than acting
+// (the outbox's podStands and release arms). A claim release is no fenced kind: its executor judges
+// the issue's record when it runs, so a late one leaves the claim of a run that returned
+// (left_session_claims_test.go).
+func TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	opened := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	effects := []lateEffect{
+		{"dispatch_status", record.OrdinaryStatusWrite("testing", "in_progress", ""), false, reachedItsEffect},
+		{"dispatch_message", record.MessagePost{Body: "A message of the run."}, false, reachedItsEffect},
+		{"notice", record.Notice{Kind: "phase-finished", Role: claim.RolePlanner, Phase: phase.Planning}, false, reachedItsEffect},
+		{"controller_notice", record.ControllerNotice{Kind: record.TriageNotice}, false, reachedItsEffect},
+		{"role_message", record.RoleMessage{Role: "legion-legion-legion-208-implementer", Body: "The checks of the head settled."}, false, reachedItsEffect},
+		{"phase_ended", record.PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren, Reason: "LEGION-209 (todo) is open"}, false, reachedItsEffect},
+		{"hook_prompt", record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Say what the round missed."}, false, reachedItsEffect},
+		{"update_ask", record.UpdateAsk{Role: claim.RoleImplementer, Round: "pod:9d3f0c7a", Pod: "9d3f0c7a", Text: "Commit and push, then stop."}, false, reachedItsEffect},
+		{"merge_queue_removal", record.MergeQueueRemoval{Number: 42, Head: "c0de"}, false, reachedItsEffect},
+		{"merge_forward", record.MergeForwardMessage{Step: record.MergeForwardAsk, Role: claim.RoleImplementer, Head: "c0de", Base: "main", Phase: phase.Implementing, PullRequest: 42, Why: record.ConflictMergeNext}, false, reachedItsEffect},
+		{"gate_seed", record.GateSeed{ArtifactID: "artifact-208", Step: record.DesignStepSpec, Version: 1}, true, reachedItsEffect},
+		{"pending_basis_seed", record.PendingBasisSeed{Step: record.DesignStepSpec, ArtifactID: "artifact-208", BasisArtifactID: "artifact-200", BasisVersion: 2, Ask: "ask-1",
+			RegisteredAt: opened}, true, reachedItsEffect},
+		{"retention_end", record.RetentionEnd{}, false, reachedItsEffect},
+		{"issue_branch", record.IssueBranch{}, true, reachedItsEffect},
+		{"check_wake", record.CheckWakeDue{Look: 1, OpenedAt: opened, Reason: "the agent's own wake"}, true, appliedAFact},
+		{"check_look", record.CheckLook{Look: 1, OpenedAt: opened}, true, appliedAFact},
+		{"check_bound", record.CheckBound{}, true, appliedAFact},
+		{"supervise suspend", record.SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}, false, suspendedItsClaim},
+		{"supervise issue_close", record.SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1}, false, suspendedItsClaim},
+	}
+	later := []struct {
+		name string
+		move func(t *testing.T, rig oneStartRig)
+	}{
+		{"delivered where it was queued", func(*testing.T, oneStartRig) {}},
+		{"delivered at the next phase entry", func(t *testing.T, rig oneStartRig) {
+			t.Helper()
+			row := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
+			row.Entry++
+			if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+				return record.NewStore().PutPhase(ctx, tx, row)
+			}); err != nil {
+				t.Fatalf("raise the implementer's entry: %v", err)
+			}
+		}},
+		{"delivered in the next run", func(t *testing.T, rig oneStartRig) {
+			t.Helper()
+			issue := readIssue(t, rig.pool, rig.issue.Key)
+			issue.Generation++
+			putOutboxIssue(t, rig.pool, record.NewStore(), *issue)
+		}},
+	}
+	// GitHub refuses every write, so a branch's run errs once it reaches its create; the fake keeps
+	// nothing, so every case shares it.
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "refused", http.StatusForbidden)
+	}))
+	t.Cleanup(github.Close)
+	for _, effect := range effects {
+		for _, when := range later {
+			t.Run(effect.name+" "+when.name, func(t *testing.T) {
+				rig := newOneStartRig(t)
+				records := record.NewStore()
+				if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+					return records.PutProductionCheck(ctx, tx, record.ProductionCheck{Issue: rig.issue.Key, Project: "LEGION", Tree: rig.issue.Tree,
+						Repo: rig.issue.Repo, Number: 42, MergeSHA: "c0de", OpenedAt: opened, BoundAt: opened.Add(time.Hour), Role: claim.RoleTester, Looks: 1})
+				}); err != nil {
+					t.Fatalf("open the issue's production check: %v", err)
+				}
+				runner := &outbox{log: quietLogger(), pool: rig.pool, records: records, project: "legion", dispatchProject: "LEGION",
+					tokens: outboxTokens{}, githubAPI: github.URL}
+				if _, isStop := effect.payload.(record.SuperviseRequest); isStop {
+					runner = rig.runner
+					locator, err := rig.rt.Spawn(ctx, runtime.SpawnSpec{Claim: rig.token, Role: claim.RoleImplementer})
+					if err != nil {
+						t.Fatalf("mint the implementer's locator: %v", err)
+					}
+					machine, _, err := rig.sup.Create(ctx, supervise.Claim{Token: rig.token, Project: "legion", Tree: rig.issue.Tree,
+						Issue: rig.issue.Key, Role: claim.RoleImplementer, State: supervise.StateReady, Generation: 1, Locator: &locator,
+						Session: "ses-implementer", SessionFile: "/tmp/implementer.jsonl"}, "")
+					if err != nil {
+						t.Fatalf("create the implementer's claim: %v", err)
+					}
+					machine.Wait()
+				}
+				row := mustOutboxRow(t, rig.issue.Key, effect.payload, time.Now())
+				enqueueOutbox(t, rig.pool, records, row)
+				queued := claimDueOutboxRowOf(t, rig.pool, row.Kind)
+				queuedAt, _ := record.FenceOf(mustDecode(t, queued))
+				if queuedAt.Generation != 1 || (queuedAt.Entry == 0) != effect.runOnly {
+					t.Fatalf("the %s row names %+v, want the run its issue stands at and, unless the kind is the run's alone, the phase entry", effect.name, queuedAt)
+				}
+				if _, isAsk := effect.payload.(record.MergeForwardMessage); isAsk {
+					// A late merge-forward ask ends through the ask's own end (lateMergeForwardAsk),
+					// which deletes the row under the lease its attempt holds, reads the asked role's
+					// claim and settles the ask at the clock's moment: the row runs leased, as a lane
+					// runs it, over a runner with a clock that supervises the issue's claims and still
+					// has no Envoy publisher.
+					queued.LeaseToken = leaseOutboxRow(t, rig.pool, queued.ID)
+					runner.supervisor, runner.now = rig.sup, time.Now
+				}
+				when.move(t, rig)
+				err := runner.execute(ctx, queued)
+				// A kind that is the run's alone (the gate's seeds, the branch, the production
+				// check's rows) acts at any phase entry of its run (R17), and so is a notice
+				// delivered at any (reports).
+				reports := map[string]bool{"notice": true, "controller_notice": true}
+				want := when.name == later[0].name || (effect.runOnly || reports[effect.name]) && when.name == later[1].name
+				if acted := effect.acted(t, rig, err); acted != want {
+					t.Fatalf("the %s row %s acted = %t (run error %v), want %t: an effect does nothing to a later phase entry or run than its own",
+						effect.name, when.name, acted, err, want)
+				}
+			})
+		}
+	}
+}
+
+// claimDueOutboxRowOf is the one queued row of kind, read back as the store holds it.
+func claimDueOutboxRowOf(t *testing.T, pool *store.Pool, kind record.OutboxKind) record.OutboxRow {
+	t.Helper()
+	var row record.OutboxRow
+	if err := pool.QueryRow(context.Background(), `select id, kind, issue, payload, created_at from outbox where kind = $1 order by id desc limit 1`,
+		string(kind)).Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload, &row.CreatedAt); err != nil {
+		t.Fatalf("read the queued %s row: %v", kind, err)
+	}
+	row.NextAt = time.Now()
+	return row
+}
+
+// mustDecode is row's payload, decoded as the outbox decodes it.
+func mustDecode(t *testing.T, row record.OutboxRow) record.OutboxPayload {
+	t.Helper()
+	payload, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decode row %d: %v", row.ID, err)
+	}
+	return payload
+}
+
+// cleanupRuntime is the fake runtime with the issue-level cleanup a close or a stop asks of a
+// Kubernetes one (runtime.IssueSuspender), which records each pod it deleted: the pod the issue's
+// Sandbox held when the cleanup's authorize, asked under the pod's launch turn, let it act
+// (fake.Runtime.IssuePod, which the case scripts), as SuspendIssue(project, issue, podUID).
+type cleanupRuntime struct {
+	*fake.Runtime
+	project string
+	mu      sync.Mutex
+	// trees is the tree label (legion.dev/tree) of each issue's pod a case launched: the gate root
+	// the pod was made under, which the release before's cleanup selected pods by and this
+	// release's reads for nothing.
+	trees   map[string]string
+	deleted []string
+}
+
+// launched gives issue's Sandbox the pod pod, made under the gate root tree.
+func (r *cleanupRuntime) launched(issue, pod, tree string) {
+	r.ScriptIssuePod(issue, pod)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.trees == nil {
+		r.trees = map[string]string{}
+	}
+	r.trees[issue] = tree
+}
+
+func (r *cleanupRuntime) SuspendIssue(ctx context.Context, issue, _ string, authorize func(context.Context) (bool, error)) error {
+	act, err := authorize(ctx)
+	if err != nil || !act {
+		return err
+	}
+	pod, _ := r.IssuePod(issue)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleted = append(r.deleted, r.project+"/"+issue+"/"+pod)
+	r.ScriptIssuePod(issue, "")
+	return nil
+}
+
+func (r *cleanupRuntime) deletions() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.deleted)
+}
+
+// A cleanup deletes only its own issue's pod, the incarnation it was queued for (R17 of
+// dispatch://INFRA-3320: a pod and its disk are deleted by the issue's own identity and the pod's
+// own incarnation). A stop queues the issue's suspension (record.IssueSuspend) for the pod its
+// claims ran in and at the run and phase entry the issue stood at. Run against that pod, it
+// deletes it. Run once the issue's Sandbox holds a later pod — the issue came back and was
+// stopped again, its next launch making a pod of its own — it deletes nothing, and nothing either
+// once the issue stands at a later phase entry, as a return raises it. A former parent's close
+// deletes its own pod and cleans up its own lifecycle alone: its child, launched under its gate
+// root — the child's pod carries the parent's key as its tree label, and its record the parent
+// as its tree — and since moved out from under it, runs on with its pod and its lifecycle.
+func TestACleanupDeletesOnlyItsOwnIssuesPod(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const child = "LEGION-209"
+	for _, tc := range []struct {
+		name    string
+		pod     string
+		entered bool
+		// child closes the issue at done while child, launched under it, still runs.
+		child bool
+		want  []string
+	}{
+		{name: "the pod it was queued for", pod: "pod-of-the-stop", want: []string{"legion/LEGION-208/pod-of-the-stop"}},
+		{name: "a later pod of the issue", pod: "pod-of-a-later-launch"},
+		{name: "the same pod at a later phase entry", pod: "pod-of-the-stop", entered: true},
+		{name: "a former parent's close, while the child launched under its gate root runs", pod: "pod-of-the-stop", child: true,
+			want: []string{"legion/LEGION-208/pod-of-the-stop"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := isolatedOutboxPool(t)
+			st, err := store.Open(ctx, pool.Config().ConnString())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(st.Close)
+			records := record.NewStore()
+			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: "LEGION-208", Title: "stopped", Phase: phase.Implementing, Generation: 1, Status: "backlog", DispatchStatus: "backlog"}
+			if tc.child {
+				issue.Status, issue.DispatchStatus = record.DoneStatus, record.DoneStatus
+			}
+			putOutboxIssue(t, pool, records, issue)
+			implementer := record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Entry: 2}
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+				return records.PutPhase(ctx, tx, implementer)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			cleanup := &cleanupRuntime{Runtime: rt, project: "legion"}
+			sup.deps.Runtime = cleanup
+			runner := &outbox{log: quietLogger(), pool: pool, records: records, supervisor: sup, trees: st, project: "legion", dispatchProject: "LEGION", now: time.Now}
+			if tc.child {
+				// The child stands at work as a root of its own now, its record still naming the
+				// tree it was launched in, and both issues' lifecycles stand open as their
+				// admissions left them.
+				putOutboxIssue(t, pool, records, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+					Project: "LEGION", Tree: issue.Key, Title: "moved out", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+					DispatchStatus: "in_progress"})
+				for _, key := range []string{issue.Key, child} {
+					if _, err := st.OpenIssueLifecycle(ctx, "legion", key, treelifecycle.AuthorityWorkflow); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cleanup.launched(child, "pod-of-the-child", issue.Key)
+			}
+
+			// The stop queued the suspension while its roles ran in the pod of the stop.
+			row := mustOutboxRow(t, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: 1, TreeGeneration: 1, PodUID: "pod-of-the-stop"}, time.Now())
+			enqueueOutbox(t, pool, records, row)
+			queued := claimDueOutboxRowOf(t, pool, record.OutboxKindIssueSuspend)
+			cleanup.launched(issue.Key, tc.pod, issue.Key)
+			if tc.entered {
+				implementer.Entry++
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+					return records.PutPhase(ctx, tx, implementer)
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := runner.execute(ctx, queued); err != nil {
+				t.Fatalf("run the suspension: %v", err)
+			}
+			if got := cleanup.deletions(); !slices.Equal(got, tc.want) {
+				t.Fatalf("the suspension deleted %v, want %v: a cleanup deletes only the pod of its own issue it was queued for, at the run and entry it was queued at", got, tc.want)
+			}
+			if !tc.child {
+				return
+			}
+			var cleaned []string
+			for _, call := range cleanup.CallsOf("CleanupIssue") {
+				cleaned = append(cleaned, call.Issue)
+			}
+			if want := []string{issue.Key}; !slices.Equal(cleaned, want) {
+				t.Fatalf("the close cleaned up %v, want %v: the closed issue's own lifecycle alone", cleaned, want)
+			}
+			if live, err := st.IssueLive(ctx, "legion", child); err != nil || !live {
+				t.Fatalf("%s's own lifecycle is live: %t (%v) after its former parent's close, want it open", child, live, err)
+			}
+			if pod, _ := cleanup.IssuePod(child); pod != "pod-of-the-child" {
+				t.Fatalf("%s's Sandbox holds pod %q after its former parent's close, want pod-of-the-child still running", child, pod)
+			}
+		})
+	}
+}
+
+// A root that comes back into Legion's work while its own cleanup is reserved waits in the line
+// for that cleanup, and takes a free slot as soon as the cleanup confirms, with no other event (R17
+// of dispatch://INFRA-3320): the confirmation is a fact of its own (intake.IssueCleanedUp), and
+// admission looks again on it as on every fact. The close's cleanup row (record.IssueSuspend) made
+// the reservation at its first try and waited; the root is set back to todo; the row's next try
+// runs under a runtime that holds no pod of the issue (tmux, the fake). A root a person closed at
+// work keeps its run, and the row stands. A root closed at done starts a new run with its todo, so
+// the row is of a run that has ended, and still finishes the reservation its earlier try made: a
+// fence keeps a row off a pod, never off the cleanup it already holds. Negative controls, run when
+// this was written, failing this test and then reverted: with no fact applied once the cleanup
+// confirms, neither root takes a slot; with the row of an ended run finishing nothing, the root
+// closed at done keeps its cleanup reserved.
+func TestARootBackInTodoTakesASlotOnceItsCleanupConfirms(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		at   phase.Phase
+	}{
+		{name: "a root closed at work", at: phase.Admitted},
+		{name: "a root closed at done", at: phase.Done},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const key = "CAPTURE-40"
+			pool := isolatedOutboxPool(t)
+			w := copyRuntime(t, pool, &copyBoard{}, 3)
+			w.projectID = "capture"
+			st, err := store.Open(ctx, pool.Config().ConnString())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(st.Close)
+			closed := conversionIssue(key, key, tc.at, "done", 1)
+			closed.HandedOver = true
+			putOutboxIssue(t, pool, w.records, closed)
+			if _, err := pool.Exec(ctx, `insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started)
+				values ('capture', $1, 1, 'workflow', true)`, key); err != nil {
+				t.Fatalf("reserve the cleanup of %s: %v", key, err)
+			}
+			enqueueOutbox(t, pool, w.records, mustOutboxRow(t, key, record.IssueSuspend{Tree: key, Generation: 1, TreeGeneration: 1}, time.Now()))
+			queued := claimDueOutboxRowOf(t, pool, record.OutboxKindIssueSuspend)
+
+			if _, err := intake.ApplyFact(ctx, pool, "dispatch", "back-in-todo", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 5,
+				Type: "issue.updated", Status: "todo", Title: key, Rank: key, HandedOver: true, Labels: []string{"legion"}}, w.handlers...); err != nil {
+				t.Fatalf("apply the todo of %s: %v", key, err)
+			}
+			slotted := func() bool {
+				t.Helper()
+				var slotted bool
+				if err := pool.QueryRow(ctx, `select exists (select 1 from slots where issue = $1)`, key).Scan(&slotted); err != nil {
+					t.Fatal(err)
+				}
+				return slotted
+			}
+			if slotted() {
+				t.Fatalf("%s took a slot while its cleanup is reserved, want it waiting for the cleanup", key)
+			}
+
+			sup, _ := newOutboxSupervisor(t, "capture", t.TempDir())
+			runner := &outbox{log: quietLogger(), pool: pool, records: w.records, supervisor: sup, trees: st, project: "capture",
+				dispatchProject: "CAPTURE", now: time.Now, handlers: w.handlers}
+			if err := runner.execute(ctx, queued); err != nil {
+				t.Fatalf("run the cleanup of %s: %v", key, err)
+			}
+			// The confirmation's own pass may open the issue's next epoch at once, so the
+			// reservation's end is read, not the row of the epoch it confirmed.
+			var reserved bool
+			if err := pool.QueryRow(ctx, `select cleanup_started and cleanup_confirmed_at is null from issue_lifecycles
+				where project = 'capture' and issue = $1`, key).Scan(&reserved); err != nil || reserved {
+				t.Fatalf("the cleanup of %s is still reserved: %t (%v), want the reservation the row's first try made finished", key, reserved, err)
+			}
+			if !slotted() {
+				t.Fatalf("%s holds no slot once its cleanup confirmed, with every slot free: want the confirmation to start it", key)
+			}
+		})
 	}
 }

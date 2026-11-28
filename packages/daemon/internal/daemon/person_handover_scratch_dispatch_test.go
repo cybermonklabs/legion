@@ -224,17 +224,19 @@ type scratchReview struct {
 	CreatedAt time.Time    `json:"created_at"`
 }
 
-// personHandoverRig is one proof's rig: the scratch Dispatch, the daemon's configuration and
-// database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
-// writes. The spec document every issue is created with gives its primary document a settled
-// version 1 to approve. architects keeps, by tree, the launch and the registered session of each
-// architect admit launched, which ready reports ready; tune, when set, adjusts the daemon's test
-// overrides at each boot, as a proof that holds the outbox or a registration sets them.
+// personHandoverRig is one proof's rig: the scratch Dispatch (dispatch, which a proof restarts
+// with other settings, and baseURL, where it serves), the daemon's configuration and database, the
+// daemon once booted (boot), the fake runtime it launches on, and the JSON log it writes. The spec
+// document every issue is created with gives its primary document a settled version 1 to approve.
+// architects keeps, by tree, the launch and the registered session of each architect admit
+// launched, which ready reports ready; tune, when set, adjusts the daemon's test overrides at each
+// boot, as a proof that holds the outbox or a registration sets them.
 // experimentSource, set before boot, is the random source the booted daemon draws a `random`
 // experiment with; nil is the daemon's own. daemonLog, set before boot, also receives the
 // daemon's log, as a live proof keeps it for its evidence; nil keeps it in logs alone.
 type personHandoverRig struct {
 	t                *testing.T
+	dispatch         *scratchDispatch
 	baseURL          string
 	cfg              config.Config
 	pool             *store.Pool
@@ -310,7 +312,7 @@ func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissio
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
+	return &personHandoverRig{t: t, dispatch: scratch, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
 }
 
 // boot starts the daemon on the rig's configuration and database, on a fresh fake runtime, its log
@@ -1091,20 +1093,24 @@ func (r *personHandoverRig) notQueued(key, status string, lines int) {
 // architect's registered session holds, as architectGrants does for the blockers proof, and keeps
 // that launch and session for ready.
 func (r *personHandoverRig) admit(key string) func() string {
+	r.t.Helper()
+	setDispatchStatus(r.t, r.baseURL, key, "todo")
+	return r.admitted(key, 0)
+}
+
+// admitted waits for key, handed to Legion, to take a slot, for the daemon to launch its architect
+// a time past the launched it had launched it before, and for Dispatch to show the daemon's
+// in_progress, and answers as admit does: a root that waited in the line is admitted by the
+// promotion a freed slot brings, with no act of the person's.
+func (r *personHandoverRig) admitted(key string, launched int) func() string {
 	t := r.t
 	t.Helper()
-	setDispatchStatus(t, r.baseURL, key, "todo")
 	settled(t, r.d, "admit "+key+" into a slot", func(s api.State) bool {
 		return slices.Contains(s.Admission.Active, key)
 	})
 	architect := r.architectToken(key)
 	testwait.Eventually(t, "the daemon to launch the architect of "+key, func() bool {
-		for _, call := range r.rt.Calls() {
-			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == architect {
-				return true
-			}
-		}
-		return false
+		return r.launches(string(architect)) > launched
 	})
 	launch := lastLaunch(t, r.rt, architect)
 	session, secret := registerLaunch(t, r.d, launch)
@@ -1169,17 +1175,20 @@ func (r *personHandoverRig) registerGate(key, artifactID string, grant func() st
 	}
 }
 
-// cleaned waits for the cleanup of key's tree, which its park began, to be confirmed
-// (tree_lifecycles), as the blockers proof waits before it takes a tree back: a root handed back
-// while its cleanup still runs waits for it, and is promoted at the next fact.
-func (r *personHandoverRig) cleaned(key string) {
+// stopped waits for the stop key's park made to finish: every supervise and issue_suspend row of
+// key has run, so its claims are suspended with their sessions kept and its Sandbox is gone. Its
+// own lifecycle stays open and nothing of it is cleaned up: a stopped issue comes back with its
+// claims (R20 of dispatch://INFRA-3320), so a root handed back after this is promoted at the next
+// fact with no cleanup to wait for.
+func (r *personHandoverRig) stopped(key string) {
 	r.t.Helper()
-	testwait.Eventually(r.t, "the cleanup of "+key+"'s tree to be confirmed", func() bool {
-		var cleaned bool
-		if err := r.pool.QueryRow(r.t.Context(), `select cleanup_confirmed_at is not null from tree_lifecycles where tree = $1`, key).Scan(&cleaned); err != nil {
+	testwait.Eventually(r.t, "the stop of "+key+" to finish", func() bool {
+		var left int
+		if err := r.pool.QueryRow(r.t.Context(), `select count(*) from outbox where issue = $1 and kind in ('supervise', 'issue_suspend')`,
+			key).Scan(&left); err != nil {
 			return false
 		}
-		return cleaned
+		return left == 0
 	})
 }
 
@@ -1311,8 +1320,8 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	settled(t, r.d, "release the slot of "+recorded.Key+" once the person parked it", func(s api.State) bool {
 		return !slices.Contains(s.Admission.Active, recorded.Key)
 	})
-	r.cleaned(recorded.Key)
-	t.Logf("%s ran, registered its gate at version 1, and was parked by the person at Dispatch's sequence %d; its tree's cleanup is confirmed", recorded.Key, parkedRecorded.LastSeq)
+	r.stopped(recorded.Key)
+	t.Logf("%s ran, registered its gate at version 1, and was parked by the person at Dispatch's sequence %d; its stop has finished", recorded.Key, parkedRecorded.LastSeq)
 
 	// 2. The running root takes the slot for good.
 	running := r.create(asSession, "Flagship tree occupies everything", labelled)

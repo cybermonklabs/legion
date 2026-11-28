@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -143,17 +146,20 @@ func TestTheLivenessSweepNamesTheOperatorsRetryForAHeldController(t *testing.T) 
 }
 
 // A start row the workflow or admission writes for a failed claim retries it (the outbox's start).
-// Every such start but two is the daemon's own — the next phase start of a role, a child
-// architect's next phase start, a re-admission's start, a production check's look, the sweep's
-// start of a root architect — and none of them launches the agent of a claim held for a
+// Every such start but those someone decided is the daemon's own — the next phase start of a role,
+// a child architect's next phase start, a return to work's start, a production check's look, the
+// sweep's start of a root architect — and none of them launches the agent of a claim held for a
 // cyber-policy refusal again: the row finishes without acting and the claim stays failed with its
 // session. A start of the issue's phase by the role that works it tells the workflow of the
 // failure again (heldStartRefused), so the issue is held for its architect; a start of no phase
 // tells nothing. A row an older daemon wrote for the held phase's retry carries ResendEntry and no
-// Decided, and is the daemon's own too. The two starts someone decided carry Decided — the held
-// phase's retry (workflow's restart) and a promoted root's architect start (workflow's
-// StartPromotedArchitect, which the controller's restart of a tree brings) — and each starts the
-// agent again in a new session.
+// Decided, and is the daemon's own too. The starts someone decided carry Decided — the held
+// phase's retry (workflow's restart) and a root architect's start of no phase: a promoted root's
+// (workflow's StartPromotedArchitect), and a failed root architect's that a todo on its root asks
+// for, the controller's restart of a stuck tree among them (workflow's retryFailedArchitect) — and
+// each starts the agent again in a new session. A root's architect starts under the gate root the
+// outbox reads on the Dispatch chain, its own key, whatever gate root it last ran under: the held
+// architect here last ran under another, as a member's does before its issue becomes a root.
 func TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -190,6 +196,15 @@ func TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt(t *t
 			token := mustClaimToken(t, issue.Key, tc.role)
 			held := heldForCyberPolicy(supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, Issue: issue.Key, Role: tc.role})
 			held.State = tc.state
+			if tc.role == claim.RoleArchitect {
+				held.LaunchTree = "LEGION-100"
+				if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+					return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: "LEGION", Seq: 1,
+						Status: record.Carry(issue.Status), Parent: record.Carry("")})
+				}); err != nil {
+					t.Fatalf("seed the copy's row of %s under no parent: %v", issue.Key, err)
+				}
+			}
 			if _, _, err := sup.Create(context.Background(), held, ""); err != nil {
 				t.Fatalf("create the held %s: %v", tc.role, err)
 			}
@@ -219,6 +234,9 @@ func TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt(t *t
 					got.Session != "" || got.Abandoned.Session != "ses-refused" {
 					t.Fatalf("after the decided start the %s is %s, session %q (abandoned %q), with %d spawns and %d resumes; want it launching once in a new session",
 						tc.role, got.State, got.Session, got.Abandoned.Session, spawns, len(resumesOf(rt, token)))
+				}
+				if spawned := rt.CallsOf("Spawn")[0].Spec.Tree; tc.role == claim.RoleArchitect && spawned != issue.Key {
+					t.Fatalf("the decided start launched the root's architect under %q, want its own key %s, the gate root on the Dispatch chain", spawned, issue.Key)
 				}
 				return
 			}

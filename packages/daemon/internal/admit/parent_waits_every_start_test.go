@@ -1103,9 +1103,11 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		{name: "an open child the daemon never recorded, in triage, holds the start", status: "triage", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedMirrorChild(t, pool, spChild, "triage", spParent)
 		}},
-		{name: "an open child running as a tree of its own holds the start", status: "in_progress", seed: func(t *testing.T, pool *pgxpool.Pool) {
+		// A child that ran as a root of its own before Dispatch put it under the parent: a
+		// reading newer than the one its record was written with shows the parent above it.
+		{name: "an open child that ran as a root of its own holds the start", status: "in_progress", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedStarted(t, pool, spChild, phase.Implementing, nil)
-			seedMirrorChild(t, pool, spChild, "in_progress", spParent)
+			spMirror(t, pool, spChild, "in_progress", spParent, 10)
 		}},
 		{name: "an open child itself in awaiting_children holds the start", status: "in_progress", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			waited := fixedNow.Add(-time.Hour)
@@ -1378,7 +1380,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	})
 
 	// The architect's retry of a parent held from implementing whose phases row a re-admission
-	// cleared (record.Store.ClearTreeGeneration): the clear empties the task of the entry and keeps
+	// cleared (record.Store.ClearGeneration): the clear empties the task of the entry and keeps
 	// the entry, and a held member is given no promoted worker, so the row stands on entry 3 with
 	// no task when the retry comes. The retry writes its own task as the one the implementer was
 	// given for entry 3 in the issue's generation, and leaves the row's empty task as it stands
@@ -1811,61 +1813,71 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		pwStatuses(t, pool, spParent, nil)
 	})
 
-	// A root handed over from another tree, carrying the slot it held there in implementing, waits
-	// in the line for its tree to be opened (record.QueuedRoot). The pass leaves it where it stands
-	// and its promotion opens its tree on the slot it carries and starts the phase it carries.
-	t.Run("a root handed over carrying its slot in implementing starts the phase it carries", func(t *testing.T) {
+	// A root a hand-over of the release before carried in, in implementing, waits in the line for
+	// its first start under this release (record.CarriedIn). Its promotion opens it, and the start
+	// of the phase it carries is a phase start like any other (dispatch://INFRA-3320 R9): with an
+	// open Dispatch child it waits in awaiting_children holding that start, and no worker of it
+	// starts (workflow.Engine.StartCarriedRun). Once the child is done, the pass's return starts the
+	// phase it carries.
+	t.Run("a root handed over in implementing waits on its open child and starts the phase it carries once the child is done", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := pwAdmission(t, 2)
 		carriedRoot(t, pool, spParent, phase.Implementing, "A")
-		takeSlot(t, pool, spParent)
 		seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 		spPass(t, pool, admission)
 
 		got := issue(t, pool, spParent)
-		if got.Phase != phase.Implementing || got.ChildrenWait != nil || got.HandedOverFrom != "" || !treeOpen(t, pool, spParent) {
-			t.Fatalf("the carried root = phase %s, held start %+v, handed over from %q, tree open %t; want implementing in a tree of its own, nothing held",
-				got.Phase, got.ChildrenWait, got.HandedOverFrom, treeOpen(t, pool, spParent))
+		if got.Phase != phase.AwaitingChildren || got.ChildrenWait == nil || got.ChildrenWait.Start != phase.Implementing ||
+			!issueOpen(t, pool, spParent) {
+			t.Fatalf("the carried root = phase %s, held start %+v, started %t; want awaiting_children, started, holding the start of implementing",
+				got.Phase, got.ChildrenWait, issueOpen(t, pool, spParent))
+		}
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 0 {
+			t.Fatalf("worker starts = %+v, want none while its child is open", starts)
+		}
+		if told := spNotices(t, pool, spParent); len(told) != 1 {
+			t.Fatalf("awaiting-children notices = %+v, want one", told)
+		}
+
+		back := pnChildDone(t, pool, admission)
+
+		if back.Phase != phase.Implementing || back.ChildrenWait != nil {
+			t.Fatalf("the carried root once its child is done = phase %s, held start %+v; want implementing", back.Phase, back.ChildrenWait)
 		}
 		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer {
 			t.Fatalf("worker starts = %+v, want the implementer's start of the phase it carries", starts)
 		}
-		if !holdsSlot(t, pool, spParent) {
-			t.Fatalf("slots = %+v, want the one it carried", slots(t, pool))
-		}
-		if told := spNotices(t, pool, spParent); len(told) != 0 {
-			t.Fatalf("awaiting-children notices = %+v, want none", told)
-		}
 	})
 
-	// The carried-slot exemption is specific to implementing. Other carried worker phases
-	// wait at the promotion itself if a child is open.
+	// No phase a carried root brings is exempt from R9 at its promotion (INFRA-3320 item 46): in
+	// every worker phase, a root a hand-over of the release before carried in starts the phase it
+	// carries where no open child stands under it, and waits in awaiting_children at the promotion
+	// itself where one does. No case gives the root a slot first: its promotion takes its row, and
+	// a root that holds one is no queued root (record.AwaitsPromotion).
 	for _, carries := range []phase.Phase{phase.Testing, phase.Planning, phase.Reviewing, phase.Implementing} {
-		t.Run("a root handed over carrying its slot in "+string(carries)+" starts with no open child", func(t *testing.T) {
+		t.Run("a root handed over in "+string(carries)+" starts with no open child", func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := pwAdmission(t, 2)
 			carriedRoot(t, pool, spParent, carries, "A")
-			takeSlot(t, pool, spParent)
 
 			spPass(t, pool, admission)
 
-			if got := issue(t, pool, spParent); got.Phase != carries || got.ChildrenWait != nil || got.HandedOverFrom != "" || !treeOpen(t, pool, spParent) {
-				t.Fatalf("the promoted root = phase %s, held start %+v, handed over from %q; want %s in a tree of its own, nothing held",
-					got.Phase, got.ChildrenWait, got.HandedOverFrom, carries)
+			if got := issue(t, pool, spParent); got.Phase != carries || got.ChildrenWait != nil || !issueOpen(t, pool, spParent) {
+				t.Fatalf("the promoted root = phase %s, held start %+v, started %t; want %s, started, nothing held",
+					got.Phase, got.ChildrenWait, issueOpen(t, pool, spParent), carries)
 			}
 			if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != phase.RoleFor(carries) || starts[0].task == "" {
 				t.Fatalf("worker starts = %+v, want the %s's start of the phase the root carries", starts, phase.RoleFor(carries))
 			}
 		})
 		if carries == phase.Implementing {
-			continue // The open-child row above covers the exemption.
+			continue // The row above holds implementing's start and follows it back once the child is done.
 		}
-		t.Run("a root handed over carrying its slot in "+string(carries)+" waits at promotion for its open child", func(t *testing.T) {
+		t.Run("a root handed over in "+string(carries)+" waits at promotion for its open child", func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := pwAdmission(t, 2)
 			carriedRoot(t, pool, spParent, carries, "A")
-			takeSlot(t, pool, spParent)
 			seedMirrorChild(t, pool, spChild, "todo", spParent)
 
 			spPass(t, pool, admission)
@@ -1875,9 +1887,9 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 				t.Fatalf("the promoted root = phase %s, held start %+v; want awaiting_children holding %s",
 					got.Phase, got.ChildrenWait, carries)
 			}
-			if !reflect.DeepEqual(got.ChildrenWait.Children, []string{spChild}) || got.HandedOverFrom != "" || !treeOpen(t, pool, spParent) {
-				t.Fatalf("the promoted root's wait names %v, handed over from %q; want %s alone and a tree of its own",
-					got.ChildrenWait.Children, got.HandedOverFrom, spChild)
+			if !reflect.DeepEqual(got.ChildrenWait.Children, []string{spChild}) || !issueOpen(t, pool, spParent) {
+				t.Fatalf("the promoted root's wait names %v, started %t; want %s alone, started",
+					got.ChildrenWait.Children, issueOpen(t, pool, spParent), spChild)
 			}
 			noWorkerLaunch(t, pool, spParent, phase.RoleFor(carries))
 		})

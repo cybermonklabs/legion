@@ -7,14 +7,19 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // twoExperiments are two experiments declared under the `experiments` key, each with one arm that
@@ -113,12 +118,12 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // never queries at all.
 func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 	t.Parallel()
-	const tree, issue = "LEGION-1", "LEGION-2"
+	const issue = "LEGION-2"
 	declared := config.Project{}.ExperimentsDeclared("projects.test")
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
 		t.Fatalf("a project that writes no experiment declares %+v, want the memory experiment alone", declared)
 	}
-	arms, err := launchVariants(nil, declared, "/state")(context.Background(), tree, issue, claim.RoleImplementer)
+	arms, err := launchVariants(nil, declared, "/state", "LEGION")(context.Background(), issue, claim.RoleImplementer)
 	if err != nil || arms.Variants != nil || arms.Instructions != nil {
 		t.Fatalf("launchVariants over a fileless declaration = %+v, %v, want no arm and no error", arms, err)
 	}
@@ -127,7 +132,7 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 		Variants: []config.Variant{{Name: "on", Weight: 1, ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"}}, {Name: "off", Weight: 1}}}}
 	read := func() (queried bool) {
 		defer func() { queried = recover() != nil }()
-		_, _ = launchVariants(nil, naming, "/state")(context.Background(), tree, issue, claim.RoleImplementer)
+		_, _ = launchVariants(nil, naming, "/state", "LEGION")(context.Background(), issue, claim.RoleImplementer)
 		return false
 	}
 	if !read() {
@@ -135,16 +140,93 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 	}
 }
 
-// An experiment that names its roles reaches the launches of those roles alone: in a tree drawn
+// A launch of an issue the daemon holds no record of takes each tree experiment's arm from the
+// nearest issue above it on its Dispatch chain that is in Legion's work and holds one, and runs in
+// no arm where no such issue holds one: where the copy holds no row of it, where its parent is no
+// issue the daemon records, where the issue above it holds an issue-unit row alone, which is that
+// issue's own answer, and where the issue above it that holds the draw is out of Legion's work. A
+// recorded issue reads its own rows alone, so one that holds none runs in no arm even under an
+// issue that holds the draw. The first row, an unrecorded issue under that issue, takes its arm,
+// so the rows that answer no arm are not passed by a reader that reads nothing.
+func TestAnUnrecordedIssueRunsInNoArmWhereNoIssueAboveItInWorkHoldsOne(t *testing.T) {
+	t.Parallel()
+	const project = "LEGION"
+	declared := []config.Experiment{
+		{Name: "plan-length", Mode: config.ExperimentOn, Unit: config.ExperimentTree, OnVariant: "long", Variants: []config.Variant{
+			{Name: "long", Weight: 1, ConfigFiles: []string{"/etc/legion-experiments/long.yml"}}, {Name: "short", Weight: 1}}},
+		{Name: "handoff-note", Mode: config.ExperimentOn, Unit: config.ExperimentIssue, OnVariant: "long", Variants: []config.Variant{
+			{Name: "long", Weight: 1, ConfigFiles: []string{"/etc/legion-experiments/handoff.yml"}}, {Name: "short", Weight: 1}}},
+	}
+	drawn := time.Date(2026, 11, 24, 4, 34, 0, 0, time.UTC)
+	treeDraw := record.Assignment{Experiment: "plan-length", Unit: string(config.ExperimentTree), Variant: "long", Mode: string(config.ExperimentOn), DrawnAt: &drawn}
+	issueDraw := record.Assignment{Experiment: "handoff-note", Unit: string(config.ExperimentIssue), Variant: "long", Mode: string(config.ExperimentOn), DrawnAt: &drawn}
+	st := migratedStore(t, testDSN(t))
+	records := record.NewStore()
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		for _, recorded := range []struct {
+			key    string
+			at     phase.Phase
+			status string
+			rows   []record.Assignment
+		}{
+			{"LEGION-1", phase.Implementing, "in_progress", []record.Assignment{treeDraw}},
+			{"LEGION-2", phase.Implementing, "in_progress", []record.Assignment{issueDraw}},
+			{"LEGION-3", phase.Done, "done", []record.Assignment{treeDraw}},
+			{"LEGION-4", phase.Implementing, "in_progress", nil},
+		} {
+			if err := records.PutIssue(ctx, tx, record.Issue{Key: recorded.key, Project: project, Tree: recorded.key, Title: recorded.key,
+				Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Phase: recorded.at, Generation: 1,
+				Status: recorded.status, Rank: "A"}); err != nil {
+				return err
+			}
+			if _, err := records.PutAssignments(ctx, tx, recorded.key, recorded.rows); err != nil {
+				return err
+			}
+		}
+		for _, copied := range []struct{ key, parent string }{
+			{"LEGION-1", ""}, {"LEGION-2", ""}, {"LEGION-3", ""}, {"LEGION-4", "LEGION-1"}, {"LEGION-5", ""},
+			{"LEGION-10", "LEGION-1"}, {"LEGION-12", "LEGION-5"}, {"LEGION-13", "LEGION-2"}, {"LEGION-14", "LEGION-3"},
+		} {
+			seedCopyRow(t, tx, copied.key, copied.parent, "in_progress", 1)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed the records and the copy: %v", err)
+	}
+
+	launch := launchVariants(st, declared, "/state", project)
+	for _, row := range []struct {
+		name, issue string
+		want        []string
+	}{
+		{"an unrecorded issue under an issue in work that holds the draw", "LEGION-10", []string{"plan-length=long"}},
+		{"an unrecorded issue the copy holds no row of", "LEGION-11", nil},
+		{"an unrecorded issue under an issue the daemon does not record", "LEGION-12", nil},
+		{"an unrecorded issue under an issue that holds an issue-unit row alone", "LEGION-13", nil},
+		{"an unrecorded issue under an issue out of Legion's work that holds the draw", "LEGION-14", nil},
+		{"a recorded issue that holds no row, under an issue in work that holds the draw", "LEGION-4", nil},
+	} {
+		arms, err := launch(context.Background(), row.issue, claim.RoleImplementer)
+		var got []string
+		for _, variant := range arms.Variants {
+			got = append(got, variant.Experiment+"="+variant.Name)
+		}
+		if err != nil || !reflect.DeepEqual(got, row.want) {
+			t.Errorf("%s: %s launches in %v, %v; want %v and no error", row.name, row.issue, got, err, row.want)
+		}
+	}
+}
+
+// An experiment that names its roles reaches the launches of those roles alone: in an issue drawn
 // into its arm, the planner and the implementer launch with the arm's overlays and instructions,
 // and the reviewer, the tester, the architect and the merger launch on the deployment's own
-// settings, so the roles that judge a treated tree's work are the control's. The tree keeps its
-// arm throughout: the same record answers every role. An experiment that names no roles reaches
+// settings, so the roles that judge a treated issue's work are the control's. The issue keeps its
+// arm throughout: its own record answers every role. An experiment that names no roles reaches
 // every role, as it did before the key existed.
 func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
 	t.Parallel()
 	const tree, issue = "LEGION-1", "LEGION-2"
-	recorded := map[string][]record.Assignment{tree: {{Experiment: "cheaper-model", Variant: "open"}}}
+	recorded := map[string][]record.Assignment{issue: {{Experiment: "cheaper-model", Variant: "open"}}}
 	declare := func(roles []claim.Role) []config.Experiment {
 		return []config.Experiment{{Name: "cheaper-model", Mode: config.ExperimentRandom, Unit: config.ExperimentTree, Roles: roles,
 			Variants: []config.Variant{
@@ -155,8 +237,8 @@ func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
 	spawn := func(declared []config.Experiment, role claim.Role) runtime.SpawnSpec {
 		s := memorySpecs(t, "")
 		launch := experiment.ForLaunch(declared, "/state")
-		s.variants = func(_ context.Context, tree, issue string, role claim.Role) (experiment.Arms, error) {
-			return launch.Arms(recorded, tree, issue, role), nil
+		s.variants = func(_ context.Context, issue string, role claim.Role) (experiment.Arms, error) {
+			return launch.Arms(recorded, issue, role), nil
 		}
 		return memorySpawn(t, s, tree, issue, role)
 	}

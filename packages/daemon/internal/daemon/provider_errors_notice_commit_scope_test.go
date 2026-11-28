@@ -110,9 +110,12 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 		issue     string
 		role      claim.Role
 		architect string // whose architect topic hears it; "" for none
+		// holdsGate is the mark of an architect whose issue holds its own gate, which the launch
+		// writes from the Dispatch chain (supervise.Claim.HoldsGate): the tree root's here.
+		holdsGate bool
 	}{
 		{name: "a phase worker's run", issue: "LEGION-1", role: claim.RoleImplementer, architect: "LEGION-1"},
-		{name: "the tree architect's own run", issue: "LEGION-1", role: claim.RoleArchitect},
+		{name: "the tree architect's own run", issue: "LEGION-1", role: claim.RoleArchitect, holdsGate: true},
 		{name: "a child's own architect's run", issue: "LEGION-2", role: claim.RoleArchitect, architect: "LEGION-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,7 +147,7 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 				handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", log: log}
 
 			w.providerErrorRunReached(supervise.Claim{Token: mustClaimToken(t, tc.issue, tc.role), Project: "legion", Tree: "LEGION-1",
-				Issue: tc.issue, Role: tc.role, Generation: 1}, reason)
+				Issue: tc.issue, Role: tc.role, Generation: 1, HoldsGate: tc.holdsGate}, reason)
 			// The rows are one transaction, so once the controller's row is there every row is.
 			testwait.Eventually(t, "the provider-errors notices to commit", func() bool {
 				var rows int
@@ -188,7 +191,11 @@ func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testi
 				if !ok {
 					t.Fatalf("delivered %+v, want a publish on %s", delivered, topic)
 				}
-				if message := "provider-errors on " + tc.issue; published.message != message || !reflect.DeepEqual(published.payload, want) {
+				// The run and the phase entry each row names are its fence (record.Fence), which
+				// TestALateEffectOfAnEarlierRunOrPhaseEntryDoesNothing reads; this case reads what it says.
+				got, _ := published.payload.(record.Notice)
+				got.Generation, got.Entry = 0, 0
+				if message := "provider-errors on " + tc.issue; published.message != message || !reflect.DeepEqual(got, want) {
 					t.Fatalf("the publish on %s = %q %+v, want %s carrying %+v", topic, published.message, published.payload, message, want)
 				}
 			}

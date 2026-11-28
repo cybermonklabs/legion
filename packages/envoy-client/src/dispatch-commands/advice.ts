@@ -272,7 +272,7 @@ export function renderAdvice(
     if (gates.length > 0) {
       const named = gates.map((gate) => `${gate.issue}, step ${gate.step}`).join("; ");
       parts.push(
-        `A Legion design gate records this document, so every READY in ${gates.length === 1 ? "its" : "each"} tree is refused until that approval comes back: ${named}.`
+        `A Legion design gate records this document, so each issue of ${gates.length === 1 ? "its tree" : "each tree"} merges nothing, and starts no newly released child, until that approval comes back; work in flight goes on: ${named}.`
       );
     }
     parts.push(

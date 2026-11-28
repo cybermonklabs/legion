@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -307,12 +308,13 @@ func (s *supervision) finishReplacement(ctx context.Context, operation, issue, p
 	attrs ...any) (store.PodReplacementFinish, error) {
 	attrs = append([]any{"issue", issue, "pod", pod, "operation", operation}, attrs...)
 	noticed := false
-	notice := func(took []store.PodReplacement) (*store.IdleReleaseRow, error) {
+	notice := func(ctx context.Context, tx pgx.Tx, took []store.PodReplacement) (*store.IdleReleaseRow, error) {
 		at, read := tellingRecord(took)
 		if at < 0 {
 			return nil, nil
 		}
-		row, err := record.NewOutboxRow(issue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect, Reason: message(read)}, s.plan.clock.Now())
+		row, err := record.NewFencedRow(ctx, tx, record.NewStore(), issue, record.Notice{Kind: record.WorkspaceTakenNotice, Role: claim.RoleArchitect, Reason: message(read)},
+			s.plan.clock.Now())
 		if err != nil {
 			return nil, fmt.Errorf("encode the issue's architect's notice of what the replacement took: %w", err)
 		}

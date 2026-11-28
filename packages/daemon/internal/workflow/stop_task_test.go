@@ -28,6 +28,19 @@ func ownersStop(t *testing.T, issue record.Issue, task string) intake.TaskStoppe
 // stopped with.
 const stopsBy = "task a of LEGION-208 was stopped by its owner"
 
+// landQueuedClose lands the close the daemon queued for key (record.PendingClose), as Dispatch's
+// done echo of that close lands it (closeLanded): the merge queues the close, and the issue ends
+// its run once Dispatch shows it done (R24 of dispatch://INFRA-3320).
+func landQueuedClose(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) {
+	t.Helper()
+	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		if issue.PendingClose == nil {
+			t.Fatalf("%s holds no close the daemon queued, want the one its merge queued", key)
+		}
+		return engine.closeLanded(ctx, tx, issue)
+	})
+}
+
 // The owner's stop_task of a task that is not done, on an issue of no experiment's group (in the
 // group default every stop is refused, plan_experiment_test.go), stops it where it stands, in one
 // transaction: the task is stopped with its reason and keeps its place, its issue is held from the
@@ -38,9 +51,8 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // task-stopped notice that names who stopped the task (the daemon's notice executor publishes it
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
 // stopped at its merge closes the issue, as it closes an issue with no plan rows held from
-// merging. A stopped task whose issue then leaves the workflow is left, and keeps why it was
-// stopped. An issue with no plan rows has no task to stop, and a stop of a member of a
-// lingering tree, whose phase and running task the linger keeps, changes nothing.
+// merging. A stopped task whose issue's run then ends is left, and keeps why it was stopped. An
+// issue with no plan rows has no task to stop.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 	t.Parallel()
 	t.Run("at testing", func(t *testing.T) {
@@ -102,7 +114,10 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 
 		// The stranded report passes over the tester's claim the stop suspended: the daemon
 		// suspended it, and no rule resumes a held issue's step. The same claim an operator
-		// suspended is listed, since only the operator's resume runs it again.
+		// suspended is listed, since only the operator's resume runs it again. The root holds the
+		// slot its hold keeps, as admission gave it, so its tree runs (record.TreeRuns, R4 of
+		// dispatch://INFRA-3320): a root that waits for a slot it does not hold runs nothing.
+		seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: stepClock})
 		for _, tc := range []struct {
 			by       supervise.SuspendSource
 			stranded int
@@ -180,7 +195,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 	})
 
-	t.Run("at merging the merger stops, and a merge GitHub still lands closes the issue, as it closes a hold of no plan rows", func(t *testing.T) {
+	t.Run("at merging the merger stops, and a merge GitHub still lands closes the issue once Dispatch shows its close, as it closes a hold of no plan rows", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -201,8 +216,9 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		if result := apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge was refused: %+v", result.Refusal)
 		}
+		landQueuedClose(t, pool, engine, root.Key)
 		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done || issue.Hold != nil {
-			t.Fatalf("%s stands in %s (hold %+v) after its merge, want done", root.Key, issue.Phase, issue.Hold)
+			t.Fatalf("%s stands in %s (hold %+v) after its merge's close landed, want done", root.Key, issue.Phase, issue.Hold)
 		}
 		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskDone {
 			t.Fatalf("task a is %s after its issue's merge, want done", task.State)
@@ -230,8 +246,9 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		if result := applyFacts(t, unplanned, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge of the issue with no plan rows was refused: %+v", result.Refusal)
 		}
+		landQueuedClose(t, unplanned, engine, held.Key)
 		if issue := issueOf(t, unplanned, engine, held.Key); issue.Phase != phase.Done || issue.Hold != nil {
-			t.Fatalf("%s with no plan rows stands in %s (hold %+v) after its merge, want done", held.Key, issue.Phase, issue.Hold)
+			t.Fatalf("%s with no plan rows stands in %s (hold %+v) after its merge's close landed, want done", held.Key, issue.Phase, issue.Hold)
 		}
 		if notices := noticesOf(t, unplanned, held.Key, "pr-merged"); len(notices) != 0 {
 			t.Fatalf("the pr-merged notices = %+v, want none: the merge closed the issue it held from merging", notices)
@@ -275,28 +292,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 	})
 
-	t.Run("a stop of a member of a lingering tree changes nothing", func(t *testing.T) {
-		pool := migratedPool(t)
-		engine := returnEngine()
-		root := stepRoot(t, pool, phase.Implementing)
-		member := stepChild(t, pool, "LEGION-209", phase.Admitted, nil)
-		seedStepsPlan(t, pool, member.Key, member.Generation, "implementer", "tester")
-		firstStep(t, pool, engine, member.Key)
-		// The root's leave as done begins the tree's linger (beginLinger), which writes the root
-		// done and keeps the member's phase and its running task.
-		leaveAs(t, pool, engine, root.Key, "done")
-		before := standingOf(t, pool, engine, member.Key, true)
-		result := applyFacts(t, pool, engine)("stop", ownersStop(t, member, "a"))
-		want := "the tree LEGION-208 is lingering after it left the workflow, so the owner's stop of task a of LEGION-209 changed nothing"
-		if result.Refusal == nil || result.Refusal.Code != "TREE_LINGERING" || result.Refusal.Message != want {
-			t.Fatalf("the stop in a lingering tree = %+v, want TREE_LINGERING %q", result.Refusal, want)
-		}
-		if after := standingOf(t, pool, engine, member.Key, true); after.outbox != before.outbox || after.issue.Phase != before.issue.Phase || !reflect.DeepEqual(after.task, before.task) {
-			t.Fatalf("the refused stop changed %s:\n before %+v\n after  %+v", member.Key, before, after)
-		}
-	})
-
-	t.Run("a stopped task whose issue leaves the workflow is left and keeps why it was stopped", func(t *testing.T) {
+	t.Run("a stopped task whose issue's run ends is left and keeps why it was stopped", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -305,57 +301,36 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
-		leave := func(pool *pgxpool.Pool, key string) {
-			t.Helper()
-			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				issue, err := engine.store.Issue(ctx, tx, key)
-				if err != nil {
-					return err
-				}
-				return engine.leave(ctx, tx, *issue, "backlog")
-			})
-
-		}
-		leave(pool, root.Key)
+		endRunAs(t, pool, engine, root.Key, "backlog")
 		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft || task.StoppedReason != stopsBy ||
 			task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) {
-			t.Fatalf("task a after its issue left = %s (%q) at %+v, want left at step 1 with the reason %q", task.State, task.StoppedReason, task.Place, stopsBy)
+			t.Fatalf("task a after its issue's run ended = %s (%q) at %+v, want left at step 1 with the reason %q", task.State, task.StoppedReason, task.Place, stopsBy)
+		}
+		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done || issue.Hold != nil {
+			t.Fatalf("%s after its run ended stands in %s (hold %+v), want done with no hold", root.Key, issue.Phase, issue.Hold)
 		}
 
-		// The twin: an issue with no plan rows leaves as today, and has no task rows after it.
+		// The twin: an issue with no plan rows ends its run as today, and has no task rows after it.
 		unplanned := migratedPool(t)
 		bare := stepRoot(t, unplanned, phase.Implementing)
-		leave(unplanned, bare.Key)
+		endRunAs(t, unplanned, engine, bare.Key, "backlog")
 		applyInTx(t, unplanned, engine, func(ctx context.Context, tx pgx.Tx) error {
 			stored, err := engine.store.Plan(ctx, tx, bare.Key, bare.Generation)
 			if err == nil && stored != nil {
-				t.Errorf("the issue with no plan rows has the plan %+v after it left, want none", stored)
+				t.Errorf("the issue with no plan rows has the plan %+v after its run ended, want none", stored)
 			}
 			return err
 		})
 
-		if issue := issueOf(t, unplanned, engine, bare.Key); issue.Phase != phase.Done || issue.LingerUntil == nil {
-			t.Fatalf("%s with no plan rows stands in %s (linger %v) after it left, want done and lingering, as today", bare.Key, issue.Phase, issue.LingerUntil)
+		if issue := issueOf(t, unplanned, engine, bare.Key); issue.Phase != phase.Done {
+			t.Fatalf("%s with no plan rows stands in %s after its run ended, want done, as today", bare.Key, issue.Phase)
 		}
 	})
 
 	// A task that is done, or that left the workflow with its issue before it was done, has
 	// nothing left to stop: each stop is refused with its own text before the store's stop, which
-	// refuses both states itself and would fail the whole fact, and changes nothing. A child's
-	// leave lingers no tree, so its stop would reach the store's stop; a root's leave lingers its
-	// tree, and the task's own state is still what the refusal says, not the linger.
+	// refuses both states itself and would fail the whole fact, and changes nothing.
 	t.Run("a task that is done and a task that left are refused and change nothing", func(t *testing.T) {
-		leave := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status string) {
-			t.Helper()
-			applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-				issue, err := engine.store.Issue(ctx, tx, key)
-				if err != nil {
-					return err
-				}
-				return engine.leave(ctx, tx, *issue, status)
-			})
-
-		}
 		const doneText = "is done, so nothing of it is left to stop. This stop changed nothing."
 		const leftText = "left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."
 		for _, tc := range []struct {
@@ -377,7 +352,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 				}
 				seedStepsPlan(t, pool, issue.Key, issue.Generation, "implementer")
 				move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
-				leave(t, pool, engine, issue.Key, tc.status)
+				endRunAs(t, pool, engine, issue.Key, tc.status)
 				if task := taskOf(t, pool, engine, issue.Key); task.State != tc.state {
 					t.Fatalf("task a of %s is %s before the stop, want %s", issue.Key, task.State, tc.state)
 				}

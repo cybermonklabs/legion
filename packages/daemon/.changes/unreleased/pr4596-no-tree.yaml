@@ -1,0 +1,33 @@
+kind: Changed
+body: |-
+  The daemon stores no tree. It reads each parent and child question from its copy of Dispatch's
+  `child_of` links: who acts on an issue (the architect the Dispatch chain names, nearest first),
+  whether the issue may start and where it waits in the admission line, whether a parent may
+  finish, and what a stop or a close does. A change of parent in Dispatch moves an issue's notices
+  and calls to the architect the new chain names, and the issue's own architect, the one above it
+  before and the one above it now each get one `reparented` notice, an architect that is two of
+  them only one. An issue keeps its own run, phase, sessions, slot, design gate and pull
+  request across a change of parent. A chain stops at its project's boundary, as Dispatch's own
+  walk does: a parent of another project is no issue above, so an issue right under one is a root
+  of its own, its own architect's, and a child of another project holds no wait of its parent's.
+  Where the copy does not hold an issue's chain up to its top, the chain is unknown. On an unknown
+  chain, an issue that holds no admission slot starts nothing. The daemon lists it held
+  `chain_unknown` while it is in Legion's work. A stopped issue that returns to work also starts
+  nothing: its stop gave its slot back. An issue that already holds a slot continues its work.
+  The daemon refuses an architect's call on an unknown chain with `CHAIN_UNKNOWN` and reads the
+  chain again until it is known. The `reparented` notices of a change of parent wait until the
+  new parent's chain is known. They wait even if the issue's work stops before then. The adoption
+  of a closed tree's members, orphan roots, the stored
+  ancestry and the hand-over of a lingering tree's children go. This release replaces #5303's
+  return of a re-admitted root's members: a root's leave stops only its own claims and its return
+  resumes its own phase, so no member waits for its root's re-admission; #5303's
+  `20261123224717_members_owed` stays in the store, and this release reads it only at its first
+  boot. That first boot brings back each member that its root's departure suspended under the
+  release before and that is still in Legion's work: it starts again in its phase at a new
+  phase entry, or waits in `awaiting_children` for an open Dispatch child. Before the pin moves,
+  run this release's `legion members-back` for each project to list those members, and set any of
+  them to backlog to keep it stopped (`docs/kubernetes.md`, "Before the pin that carries the
+  release that stores no tree moves: the members its first boot brings back").
+time: 2026-11-22T22:26:12Z
+custom:
+    Issue: pr4596

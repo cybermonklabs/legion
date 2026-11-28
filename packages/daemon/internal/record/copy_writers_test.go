@@ -27,14 +27,15 @@ type copyWriter struct {
 // R16), so only the code that writes a reading, and the boot that refills the copy from its
 // listing, names a method that writes it. The set below is every such use in the daemon's
 // non-test source, read from that source: the mirror's one write (blockers.Mirror.put), which an
-// event, a view, the release's read, the periodic turn's re-read and a listing all reach, and
-// the boot's refill in reconcileListing, which empties the project's rows in the transaction that
-// fills them from the listing. A use added anywhere else is a member the set does not hold, and
-// the test fails naming its file and function.
+// event, a view, the release's read, an API status call's reads (intake.StatusCall.Readings), the
+// periodic turn's re-read and a listing all reach, and the boot's refill in fillCopy, which
+// reconcileListing calls to empty the project's rows in the transaction that fills them from the
+// listing. A use added anywhere else is a member the set does not hold, and the test fails naming
+// its file and function.
 func TestEveryWriterOfTheCopyIsAReading(t *testing.T) {
 	want := []copyWriter{
 		{file: "internal/blockers/mirror.go", function: "(*Mirror).put", method: "PutDispatchIssue"},
-		{file: "internal/daemon/workflow.go", function: "(*workflowRuntime).reconcileListing", method: "TakeDispatchRefill"},
+		{file: "internal/daemon/workflow.go", function: "(*workflowRuntime).fillCopy", method: "TakeDispatchRefill"},
 	}
 	got := copyWriters(t, filepath.Join("..", ".."), "cmd", "internal")
 	for _, writer := range got {

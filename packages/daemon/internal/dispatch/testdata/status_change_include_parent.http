@@ -1,0 +1,14 @@
+HTTP/1.1 200 OK
+Content-Type: application/json
+Idempotency-Key: capture-include-parent-1795261633
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Sat, 21 Nov 2026 11:47:18 GMT
+Transfer-Encoding: chunked
+
+919
+{"issue":{"key":"LEGION-46","project":"LEGION","number":46,"title":"include parent child","status":"todo","priority":null,"rank":"zh","labels":[],"parent":"LEGION-45","blocked_by":[],"advances":[],"advances_revision":0,"assignee":"alice","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"2026-11-21T11:47:17.953244Z","updated_at":"2026-11-21T11:47:18.156702Z","closed_at":null,"primary_artifact_id":"9fe99b0d-ccba-45b1-8a81-7b47dac549e2","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":2},"changed":[{"key":"LEGION-45","status":"in_progress","parent":null,"previous_last_seq":2,"issue":{"key":"LEGION-45","project":"LEGION","number":45,"title":"include parent parent","status":"in_progress","priority":null,"rank":"zg","labels":[],"parent":null,"blocked_by":[],"advances":[],"advances_revision":0,"assignee":"alice","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"2026-11-21T11:47:17.759884Z","updated_at":"2026-11-21T11:47:18.12271Z","closed_at":null,"primary_artifact_id":"2f9af6b1-6a4d-4ffd-b801-243e9e43a5d3","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":4}},{"key":"LEGION-46","status":"todo","parent":"LEGION-45","previous_last_seq":1,"issue":{"key":"LEGION-46","project":"LEGION","number":46,"title":"include parent child","status":"todo","priority":null,"rank":"zh","labels":[],"parent":"LEGION-45","blocked_by":[],"advances":[],"advances_revision":0,"assignee":"alice","claim":null,"components":{"mode":"inherit","ids":[],"unknown":[],"reason":null,"inherited_from":null},"external_links":[],"route":null,"repo":null,"resolved_repo":null,"created_by":{"kind":"user","id":"alice","proven":true},"created_at":"2026-11-21T11:47:17.953244Z","updated_at":"2026-11-21T11:47:18.156702Z","closed_at":null,"primary_artifact_id":"9fe99b0d-ccba-45b1-8a81-7b47dac549e2","verification_artifact_id":"","plan_artifact_id":"","decisions_artifact_id":"","last_seq":2}}]}
+
+0
+

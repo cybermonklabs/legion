@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -92,31 +94,52 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // work than the row on record, and the architect's notice once for each pod (store's
 // recordDecline). So a read after a turn that finds the same work moves the row's moment and tells
 // nobody. again is a read that may end an earlier round's keep of the pod, made with no round
-// (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
+// (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage). The message is
+// fenced by the issue's run and phase entry as the record's own transaction holds them
+// (record.NewFencedRow), which the store's write joins; the claim states the architect's notice
+// names are read before it, in a read of their own that the transaction could not join.
 func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase, again bool) (bool, error) {
 	after, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		return false, fmt.Errorf("read the claims of %s once the read of its pod is made: %w", issue, err)
 	}
 	at := keptMoment(read.at, append(slices.Clone(group), s.noticeGroup(claimsOf(after, issue))...))
-	if worker, live := openPhaseWorker(group, round, issuePhase); live && read.err == nil {
-		message, err := record.NewOutboxRow(issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, again)}, at)
-		if err != nil {
-			return false, fmt.Errorf("encode the message of %s's kept pod: %w", issue, err)
+	worker, live := openPhaseWorker(group, round, issuePhase)
+	tellsWorker := live && read.err == nil
+	var claims store.ClaimStates
+	if !tellsWorker {
+		if claims, err = s.supervisor.store.ClaimStatesIn(ctx, s.plan.project, issue); err != nil {
+			return false, err
 		}
-		decline := declineOf(worker.Role, pod, at, read.work, read.err)
-		decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
-		return s.supervisor.store.DeclinePodReplacement(ctx, s.plan.project, issue, decline)
 	}
-	claims, err := s.supervisor.store.ClaimStatesIn(ctx, s.plan.project, issue)
+	records := record.NewStore()
+	var told bool
+	err = store.Transact(ctx, s.supervisor.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		decline, err := podKeptDecline(ctx, tx, records, issue, pod, reasons, read, at, worker, tellsWorker, claims, again)
+		if err != nil {
+			return err
+		}
+		told, err = s.supervisor.store.DeclinePodReplacement(ctx, s.plan.project, issue, decline)
+		return err
+	})
+	return told, err
+}
+
+// podKeptDecline is the decline row of a round's keep (recordPodKept), with its message fenced in
+// tx: the open phase's worker's role message where tellsWorker, else the architect's
+// workspace-kept notice, which names claims.
+func podKeptDecline(ctx context.Context, tx pgx.Tx, records record.Store, issue, pod, reasons string, read workspaceRead, at time.Time,
+	worker supervise.Claim, tellsWorker bool, claims store.ClaimStates, again bool) (store.IdleReleaseDecline, error) {
+	if !tellsWorker {
+		return keptNoticeDecline(ctx, tx, records, issue, pod, at, read.work, read.err, roundKeptMessage(issue, pod, reasons, claims, read.work, read.err, again))
+	}
+	message, err := record.NewFencedRow(ctx, tx, records, issue, record.RoleMessage{Role: string(worker.Token), Body: podKeptMessage(issue, pod, reasons, read.work, again)}, at)
 	if err != nil {
-		return false, err
+		return store.IdleReleaseDecline{}, fmt.Errorf("encode the message of %s's kept pod: %w", issue, err)
 	}
-	decline, err := keptNoticeDecline(issue, pod, at, read.work, read.err, roundKeptMessage(issue, pod, reasons, claims, read.work, read.err, again))
-	if err != nil {
-		return false, err
-	}
-	return s.supervisor.store.DeclinePodReplacement(ctx, s.plan.project, issue, decline)
+	decline := declineOf(worker.Role, pod, at, read.work, read.err)
+	decline.Message = &store.IdleReleaseRow{Kind: string(message.Kind), Payload: message.Payload}
+	return decline, nil
 }
 
 // keptMoment is the moment a round's keep records (recordPodKept): the read's own, readAt, or,

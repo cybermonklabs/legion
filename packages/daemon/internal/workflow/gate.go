@@ -93,15 +93,14 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // basis the step stood or waited on: the step waits for a person's approval of the root's own
 // document, as it did before the basis (R3).
 //
-// A root out of the workflow, or whose tree lingers (record.Stopped, of the root as this
-// transaction reads it), takes no basis, standing or pending: the registration drops the basis
-// before anything reads it, so it refuses nothing and is written as one with no basis. Its
-// architect can still be in the turn its leave suspends, so its registration can land after the
-// leave, which told the ancestor's architect that the root left and ended any wait of its steps
-// on an ancestor's request (leaveBases). A basis taken then would tell that architect the root
-// rests on it again, post the basis on the root's issue, and open the step, or let a later
-// approval open it, on a root nobody runs (R3, R8). The fact is a copy, so the drop is this
-// registration's alone.
+// A root out of the workflow (record.Stopped, of the root as this transaction reads it) takes no
+// basis, standing or pending: the registration drops the basis before anything reads it, so it
+// refuses nothing and is written as one with no basis. Its architect can still be in the turn its
+// leave suspends, so its registration can land after the leave, which told the ancestor's
+// architect that the root left and ended any wait of its steps on an ancestor's request
+// (leaveBases). A basis taken then would tell that architect the root rests on it again, post the
+// basis on the root's issue, and open the step, or let a later approval open it, on a root nobody
+// runs (R3, R8). The fact is a copy, so the drop is this registration's alone.
 func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.GateRegistered) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -110,7 +109,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if fact.Basis != nil && record.Stopped(*issue) {
 		e.logOnCommit(ctx, "workflow: a registration on a basis of a root out of the workflow takes no basis", "issue", issue.Key,
 			"step", fact.Step.OrSpec(), "ancestor", fact.Basis.Issue, "basis", fact.Basis.ArtifactID, "basis_version", fact.Basis.Version,
-			"pending", fact.Basis.Pending != nil, "phase", issue.Phase, "status", issue.Status, "lingers", issue.Lingers())
+			"pending", fact.Basis.Pending != nil, "phase", issue.Phase, "status", issue.Status)
 		fact.Basis = nil
 	}
 	if refusal, err := e.acceptedBasis(ctx, tx, fact); err != nil || refusal.Refusal != nil {
@@ -372,8 +371,11 @@ func (e *Engine) tellChanges(ctx context.Context, tx pgx.Tx, key string, step re
 		Review: mark, Artifact: artifact}); err != nil {
 		return err
 	}
-	if issue.Phase != phase.Admitted || !claim.IsTreeRoot(issue.Key, issue.Tree) {
+	if issue.Phase != phase.Admitted {
 		return nil
+	}
+	if holds, err := e.holdsOwnGate(ctx, tx, *issue); err != nil || !holds {
+		return err
 	}
 	if mark.Seq > 0 {
 		return e.store.TakeInThrough(ctx, tx, issue.Key, mark.Seq)
@@ -635,8 +637,11 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 // all arrived the row is the read's or newer. A fence placed above Since could instead refuse, for
 // good, an event newer than the read. Only a root's asks are mirrored.
 func (e *Engine) mirrorRegisteredRequest(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.GateRegistered) (record.RootAsk, error) {
-	if fact.RequestAsk == "" || !claim.IsTreeRoot(root.Key, root.Tree) {
+	if fact.RequestAsk == "" {
 		return record.RootAsk{}, nil
+	}
+	if holds, err := e.holdsOwnGate(ctx, tx, root); err != nil || !holds {
+		return record.RootAsk{}, err
 	}
 	turn := "human"
 	if fact.RequestWaitsOnAgent {
@@ -699,7 +704,9 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 // approval request (record.DesignGate.PendingOnBasis) declares nothing: its architect registered
 // on that request rather than handing the root's own document to the person, so the root keeps
 // its slot and its phase, and the wait the request of the root's own document may raise is
-// admission's to read from the record as it stands (R1).
+// admission's to read from the record as it stands (R1). An issue that holds no gate of its own on
+// the Dispatch chain declares nothing either: its request was mirrored as no row
+// (mirrorRegisteredRequest), which stands open on nobody's turn.
 func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.GateRegistered, request record.RootAsk, gate record.DesignGate) error {
 	if gate.PendingOnBasis() {
 		e.logOnCommit(ctx, "workflow: a registration pending on an ancestor's request hands nothing to the person", "issue", root.Key,
@@ -707,7 +714,7 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 		return nil
 	}
 	since := fact.Since.Seq
-	if fact.RequestAsk == "" || since <= 0 || !claim.IsTreeRoot(root.Key, root.Tree) || request.WaitingOnSeq > since || request.Seq > since ||
+	if fact.RequestAsk == "" || since <= 0 || request.WaitingOnSeq > since || request.Seq > since ||
 		!request.WithHuman() || !request.GateRequestOf(gateRequestOf(gate, e.gatesStep(gate.Step))) {
 		return nil
 	}
@@ -726,7 +733,7 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 // waiting, keeping its slot, rather than standing at admitted until its architect registers again. A request the mirror already holds
 // is the mirror's; a gate of another generation or document is left as it is.
 func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.GateRequestFound) (intake.Result, error) {
-	root, err := e.recordedRoot(ctx, tx, fact.Issue)
+	root, _, err := e.gateHolder(ctx, tx, fact.Issue)
 	if err != nil || root == nil || root.Generation != fact.Generation || fact.RequestAsk == "" {
 		return intake.Result{}, err
 	}
@@ -754,7 +761,7 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 
 // dispatchArtifact applies an artifact event to the gates registered on that document: the root
 // that owns it, by whose key Dispatch sends its events, takes every event (applyArtifact), and each
-// copy a hand-over carried to a child of its tree, now a root of its own (admit's readmit), takes
+// copy a hand-over of the release before carried to a child of its tree, now a root of its own, takes
 // only an approval that opens it or keeps it open (copyTakes). register_gate refuses a document of
 // another issue, so no other gate names it as its own.
 //
@@ -766,7 +773,7 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 //
 // An artifact event comes to one of three outcomes as the handover of its root (personHandover).
 // A person's approval of the primary document of a labelled root parked on the backlog or the
-// icebox, whose tree is not live, is that person's handover of the root: it queues the root
+// icebox, and not in Legion's work, is that person's handover of the root: it queues the root
 // (handoverQueued), or a change of the root's status after it refuses it (handoverRefused, below).
 // Every other event is no handover (handoverNone), and its gates take it as above. For a queued
 // handover the daemon queues the root's todo itself, as admission does for a person's legion label
@@ -939,17 +946,16 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // (handoverDecision). A person's handover is an approval (not a changes request or a version) that
 // Dispatch names a person as having made (Actor.Person()), of the primary document of a root — no
 // parent — that carries the legion label and is parked (backlog or icebox) in Dispatch's view
-// (intake.DispatchArtifact.MayQueueHandover), whose tree is not live: it queues the root
-// (handoverQueued) unless the root's status changed after it, which refuses it (handoverRefused,
-// below). Every other fact is no handover (handoverNone). The approval is the person's newer act
-// than the park: a person who approves a parked labelled root's spec wants it run, whoever parked
-// it and whether or not it ran before. An unrecorded root is queued by the write; a recorded root
-// whose tree finished is re-admitted by it as a new generation, as a person's own todo re-admits
-// one today, and its tree lingering or long closed makes no difference. A root whose tree is live
-// — its lifecycle stands open under the workflow, or it waits in the line for its tree to be
-// opened, or it waits on a person — is no handover, whatever Dispatch shows: its gate takes the
-// approval as today, and the park's own event, when the daemon applies it, takes the tree out
-// (leave).
+// (intake.DispatchArtifact.MayQueueHandover), and that is not in Legion's work
+// (record.InLegionsWork): it queues the root (handoverQueued) unless the root's status changed
+// after it, which refuses it (handoverRefused, below). Every other fact is no handover
+// (handoverNone). The approval is the person's newer act than the park: a person who approves a
+// parked labelled root's spec wants it run, whoever parked it and whether or not it ran before. An
+// unrecorded root is queued by the write; a recorded one returns to work by the todo the write
+// makes, as a person's own todo returns it (ReturnToWork, NewRun's three cases). A root still in
+// Legion's work — its record not yet out of work, whatever Dispatch shows — is no handover: its
+// gate takes the approval as today, and the park's own event, when the daemon applies it, takes it
+// out (leave).
 //
 // The decision reads Dispatch's view of the issue (fact.Issue), which the daemon's prepare stage
 // sets for a person's non-carried approval and nothing else: a nil view — the gate seed's or the
@@ -974,14 +980,14 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // when the fact is prepared, so a replay reads Dispatch at replay time, and the order in which the
 // daemon applies the issue's other events changes nothing. It is refused rather than dropped
 // (handoverRefused), so dispatchArtifact tells the controller of it, and only for a root the
-// approval would otherwise queue: a live tree's gate hears the approval itself. Any other later
-// event, a rename say, changes no status and leaves the approval queuing the root, as the walk
-// expects.
+// approval would otherwise queue: the gate of a root in Legion's work hears the approval itself.
+// Any other later event, a rename say, changes no status and leaves the approval queuing the
+// root, as the walk expects.
 //
 // dispatchArtifact ties its skip of the root's own gate to this decision, any outcome but
-// handoverNone, rather than to the tree being live: a lingering root that is not parked — closed
-// as done, or still in triage — is no handover and keeps today's behaviour, its gate taking the
-// event, so a reopen inside the linger sees the approvals given while it lingered.
+// handoverNone, rather than to the root being in Legion's work: a root out of it that is not
+// parked — closed as done, or still in triage — is no handover and keeps today's behaviour, its
+// gate taking the event, so its return to work sees the approvals given while it was out.
 func (e *Engine) personHandover(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (handoverDecision, error) {
 	if !fact.MayQueueHandover() {
 		return handoverDecision{}, nil
@@ -990,10 +996,8 @@ func (e *Engine) personHandover(ctx context.Context, tx pgx.Tx, fact intake.Disp
 	if err != nil {
 		return handoverDecision{}, err
 	}
-	if stored != nil {
-		if live, err := record.TreeLive(ctx, e.store, tx, *stored, e.cfg.Steps); err != nil || live {
-			return handoverDecision{}, err
-		}
+	if stored != nil && record.InLegionsWork(*stored) {
+		return handoverDecision{}, nil
 	}
 	if fact.StatusChangedSeq > 0 {
 		return handoverDecision{kind: handoverRefused, root: stored}, nil
@@ -1015,10 +1019,10 @@ type handoverKind int
 
 const (
 	// handoverNone is an event that is no person's handover: anything but a person's approval of
-	// a parked labelled root's primary document, or such an approval of a root whose tree is live.
+	// a parked labelled root's primary document, or such an approval of a root in Legion's work.
 	handoverNone handoverKind = iota
-	// handoverQueued is a person's approval of a parked labelled root's primary document, whose
-	// tree is not live, with no change of the root's status after it: the root's own gate takes it
+	// handoverQueued is a person's approval of a parked labelled root's primary document, not in
+	// Legion's work, with no change of the root's status after it: the root's own gate takes it
 	// quietly (recordHandover), and dispatchArtifact queues the root's todo as the person's
 	// handover.
 	handoverQueued
@@ -1240,8 +1244,10 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // reaches it only by the news it is owed, settleChildArchitectOpenings); that gate's merge hold
 // reaches the child's merger once it holds merging.
 //
-// Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
-// suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
+// The tree is key, the gate root, and the issues in Legion's work whose gate root key is on the
+// Dispatch chain (record.Chains.GateTree), whatever tree their records store. A gate root out of
+// Legion's work (record.InLegionsWork) stands where its stop left it, every role of it suspended,
+// so a gate that moves then tells nobody, as a CI settlement tells nobody.
 //
 // The closed message is sent to each of them alike. The opening is decided for each of them by
 // openingDelivery, over what the tree owes of its approved design as this transaction leaves the
@@ -1255,11 +1261,11 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // the gate, through the one rule every writer of the owed opening calls (the SQL function
 // design_news_opening_settled, through record.Store.SettleOpening and CloseOpenings): the opening a
 // holder owed news is owed (owed), the opening the opened message told (not owed), and the close,
-// which settles every told row of the tree, linger or not, since an opening owed before a close is
-// never told. Each moves the row's opening number, so a task that carried an earlier opening never
-// clears a later one at its confirmation, and an opened message never leaves a holder owed an
-// opening it was told: a later version that changes decision blocks alone then sends that holder
-// nothing (the daemon's settlementOf).
+// which settles every told row of the tree, its gate root in Legion's work or not, since an
+// opening owed before a close is never told. Each moves the row's opening number, so a task that
+// carried an earlier opening never clears a later one at its confirmation, and an opened message
+// never leaves a holder owed an opening it was told: a later version that changes decision blocks
+// alone then sends that holder nothing (the daemon's settlementOf).
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -1272,17 +1278,26 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	if err != nil || root == nil {
 		return err
 	}
+	// The gate's tree is key and the issues in Legion's work whose gate root key is on the Dispatch
+	// chain (record.Chains.GateTree), whatever tree their records store.
+	chains, err := record.ReadChains(ctx, tx, e.store, root.Project, []string{key})
+	if err != nil {
+		return err
+	}
+	tree := chains.GateTree(key)
 	if !open {
-		if err := e.store.CloseOpenings(ctx, tx, root.Tree); err != nil {
+		if err := e.store.CloseOpenings(ctx, tx, tree); err != nil {
 			return err
 		}
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
-		return err
+	if !record.InLegionsWork(*root) {
+		return nil
 	}
-	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
-	if err != nil {
-		return err
+	members := make([]record.Issue, 0, len(tree))
+	for _, held := range tree {
+		if member, recorded := chains.Record(held); recorded {
+			members = append(members, member)
+		}
 	}
 	// The members first, then the root's architect, since the gate is the root's.
 	recipients := make([]roleRecipient, 0, len(members)+1)
@@ -1291,10 +1306,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
 		}
 	}
-	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
+	recipients = append(recipients, roleRecipient{issue: key, role: claim.RoleArchitect, row: key})
 	addressed, err := e.addressRoles(root.Project, recipients,
 		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
-			"tree", root.Tree, "step", string(step), "version", version, "open", open))
+			"tree", key, "step", string(step), "version", version, "open", open))
 	if err != nil {
 		return err
 	}
@@ -1302,22 +1317,22 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// version this event carries is that step's document's, and a message naming the spec would
 	// send a reader to the wrong one (INFRA-1272).
 	if !open {
-		body := gateClosedSentence(root.Tree, step, document, version)
+		body := gateClosedSentence(key, step, document, version)
 		for _, to := range addressed {
 			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
 				return err
 			}
 		}
-		e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
+		e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", key,
 			"step", string(step), "version", version, "open", open, "told", len(addressed))
 		return nil
 	}
-	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, root.Tree)
+	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, chains, key)
 	if err != nil {
 		return err
 	}
 	owed := record.OwedNews(facts)
-	opened := gateOpenedMessage(root.Tree, step, document, version, onBasis)
+	opened := gateOpenedMessage(key, step, document, version, onBasis)
 	messages, byNews := 0, 0
 	for _, to := range addressed {
 		audience := record.AudienceHolder
@@ -1341,21 +1356,21 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// whose opening that news carries (settleChildArchitectOpenings).
 	var owedByNews []record.Issue
 	for _, member := range members {
-		if member.Phase == phase.Accepting && !claim.IsTreeRoot(member.Key, member.Tree) &&
+		if member.Phase == phase.Accepting && member.Key != key &&
 			openingDelivery(owed, facts.Told, member.Key, record.AudienceHolder, opened, step, version).byNews {
 			owedByNews = append(owedByNews, member)
 		}
 	}
-	settled, err := e.settleChildArchitectOpenings(ctx, tx, *root, members, owedByNews)
+	settled, err := e.settleChildArchitectOpenings(ctx, tx, *root, chains, owedByNews)
 	if err != nil {
 		return err
 	}
 	byNews += settled
-	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
+	e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", key,
 		"step", string(step), "version", version, "open", open, "told", messages)
 	if byNews > 0 {
 		e.logOnCommit(ctx, "workflow: the opening is owed to each phase worker and each architect owed news, and the task carrying their news tells it",
-			"issue", key, "tree", root.Tree, "step", string(step), "version", version, "holders", byNews)
+			"issue", key, "tree", key, "step", string(step), "version", version, "holders", byNews)
 	}
 	return nil
 }
@@ -1422,19 +1437,20 @@ func basisStepsOf(steps []record.DesignStep, gates map[record.DesignStep]record.
 }
 
 // settleChildArchitectOpenings settles the gate's opening as owed on the holder row of each member
-// of owedByNews that a child's architect holds. owedByNews is the members of root's tree (members,
-// as tellGateMoved read them in tx) that stand in accepting below the root and are owed news
-// (openingDelivery). A child's architect holds such a member where the owner walk from the member
-// itself (record.OwningIssue) ends at an architect other than the tree root's. That is the walk
-// the reviewer's approval that moved the member there was routed by, and the architect sign_off
-// accepts it from. That architect holds the member's phase as the root's architect holds a member
-// it owns, so the task that carries the member's news to it leads with the opening, as a phase
-// worker's does, and it is sent no opened message (tellGateMoved). A member the tree root's
-// architect holds is passed over, since that architect is told the opening once, on its own row.
-// It answers how many rows it settled, and reads the architect claims the store records
-// (record.ArchitectRuns) only where owedByNews holds a member.
+// of owedByNews that a child's architect holds. owedByNews is the members of root's tree (its gate
+// tree on chains, as tellGateMoved read them in tx) that stand in accepting below the root and are
+// owed news (openingDelivery). A child's architect holds such a member where the owner walk from
+// the member itself over the Dispatch chain (record.OwnerWalk.Owner, R18 of dispatch://INFRA-3320)
+// ends at an architect other than the gate root's. That is the walk the reviewer's approval that
+// moved the member there was routed by, and the architect sign_off accepts it from. That architect
+// holds the member's phase as the root's architect holds a member it owns, so the task that
+// carries the member's news to it leads with the opening, as a phase worker's does, and it is sent
+// no opened message (tellGateMoved). A member the gate root's architect holds is passed over, since
+// that architect is told the opening once, on its own row. It answers how many rows it settled,
+// and reads the architect claims the store records (record.OwnerWalkOver) only where owedByNews
+// holds a member.
 func (e *Engine) settleChildArchitectOpenings(ctx context.Context, tx pgx.Tx, root record.Issue,
-	members, owedByNews []record.Issue) (int, error) {
+	chains *record.Chains, owedByNews []record.Issue) (int, error) {
 	if len(owedByNews) == 0 {
 		return 0, nil
 	}
@@ -1442,14 +1458,17 @@ func (e *Engine) settleChildArchitectOpenings(ctx context.Context, tx pgx.Tx, ro
 	if err != nil {
 		return 0, err
 	}
-	tree := record.TreeByKey(members)
-	runs, err := record.ArchitectRuns(ctx, e.store, tx, project, tree)
+	keys := make([]string, len(owedByNews))
+	for i, member := range owedByNews {
+		keys[i] = member.Key
+	}
+	walk, err := record.OwnerWalkOver(ctx, e.store, tx, project, chains, keys)
 	if err != nil {
 		return 0, err
 	}
 	settled := 0
 	for _, member := range owedByNews {
-		if record.OwningIssue(project, tree, member, false, runs) == root.Tree {
+		if walk.Owner(member.Key, false) == root.Key {
 			continue
 		}
 		if err := e.store.SettleOpening(ctx, tx, member.Key, record.AudienceHolder, true); err != nil {
@@ -1542,12 +1561,11 @@ func gateClosedSentence(tree string, step record.DesignStep, document string, ve
 // merging under a document nobody had approved, or waiting for an opening it was never told of
 // (dispatch://INFRA-714/spec R5).
 //
-// Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record
-// of a person's approval on a parked root (recordHandover), whose roles are suspended and whose
-// decision goes to the controller instead, and the carry of a gate onto a re-admitted orphan
-// (admit's own write), which is a tree that has not started. The clearing of a told changes
-// request (untellUnresumedChanges) writes a row that cannot move the standing gate at all, since
-// that record is no part of whether a gate is open.
+// One write of a gate row stays outside it, because its tree has nobody to tell: the record of a
+// person's approval on a parked root (recordHandover), whose roles are suspended and whose decision
+// goes to the controller instead. The clearing of a told changes request (untellUnresumedChanges)
+// writes a row that cannot move the standing gate at all, since that record is no part of whether a
+// gate is open.
 //
 // version and the row's own document are what the message names, so a reader is sent to the
 // document that moved rather than to the spec.
@@ -1635,12 +1653,15 @@ func raisesApproval(before record.DesignGate, held bool, after record.DesignGate
 // criteria row its architect registered beside a deployment that gates spec and not criteria) is
 // closed with a row of its own (classify.StandingGate). So a new version of a registered
 // Verification document closes it as a new spec version does. It is the one predicate the message
-// and the merger's start hold both read — the hold asks it as the outbox's designGateClosed — so a
-// member is never told the gate opened while the hold still holds its merger, nor left untold when
-// the hold lets it go. A step the deployment gates that nothing has registered holds the tree's
-// work (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can be
-// said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the one
-// difference between them.
+// and the merger's start hold both read once a step of the gate has opened — the hold asks it
+// through classify.MergeHold, as the outbox's mergeHold — so a member is never told the gate
+// opened while the hold still holds its merger, nor left untold when the hold lets it go. Before
+// any step has opened, the hold of an issue that holds its own gate and that no hand-over of the
+// release before carried in without a gate also waits on a gated step that has no row, and no
+// opening can be told then, since an opening is an approval. A step the deployment gates that
+// nothing has registered holds the tree's work (FirstClosedStep) but names no document, so nobody
+// can be asked about it and nothing can be said of it: it is why the message reads StandingGate
+// rather than DesignGatesOpen, and the one difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
 	_, held := classify.StandingGate(e.cfg.Steps, gates)
 	return !held

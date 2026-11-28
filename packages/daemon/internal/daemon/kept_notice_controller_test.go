@@ -17,29 +17,24 @@ import (
 // root of a production issue's round did on a provider's 429), the notice goes to the project's controller
 // instead, once, however often its row runs, and the controller's row publishes it on the
 // controller's role topic, once the registered controller session holds that role live, with the
-// notice's own words. The same holds where the notice's row runs after
-// the architect stopped with its tree, which lingers now (stoppedWithTree, the Legion reviewer's
-// point 3 on R6's review fixes): a row that waited on its backoff while the tree finished ends
-// there before any publish, and its notice goes to the controller as well. Control: an architect
-// that holds its role gets the notice, and nothing goes to the controller.
+// notice's own words. Control: an architect that holds its role gets the notice, and nothing goes
+// to the controller.
 func TestAKeptPodsNoticeGoesToTheControllerWhenNoArchitectWillHearIt(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		state      supervise.ClaimState
-		lingers    bool
 		absent     bool
 		controller int
 	}{
-		{"its_architect_failed", supervise.StateFailed, false, true, 1},
-		{"its_tree_lingers_and_its_architect_stopped_with_it", supervise.StateSuspended, true, true, 1},
-		{"control:_its_architect_holds_its_role", supervise.StateWorking, false, false, 0},
+		{"its_architect_failed", supervise.StateFailed, true, 1},
+		{"control:_its_architect_holds_its_role", supervise.StateWorking, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			noticeTree(t, pool, records, tc.lingers)
+			noticeTree(t, pool, records, false)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 			architectClaim(t, sup, "LEGION-1", tc.state)
 			registerProjectControllerAs(t, pool.Config().ConnString(), "legion", "ses_controller")

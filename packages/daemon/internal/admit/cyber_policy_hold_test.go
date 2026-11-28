@@ -75,23 +75,34 @@ func TestTheRepairWritesNoStartForAWorkerHeldForCyberPolicy(t *testing.T) {
 	}
 }
 
-// The controller's restart of a tree — its root to backlog, then to todo — re-admits the root at a
-// new generation, and its promotion starts the root's architect. That start is someone's decision
-// (record.SuperviseRequest.Decided, workflow.Engine.StartPromotedArchitect), so it is the start
-// that launches again, in a new session, an architect held for OpenAI's cyber-policy refusal: the
-// controller restarts the tree as for any stuck tree and needs to know nothing of the hold.
+// The controller's restart of a stuck tree is its set_status of todo on the root, in Legion's work,
+// whose architect claim failed (R20 of dispatch://INFRA-3320, in place of the release before's
+// backlog and then todo on the root, which re-admitted it): it writes no status and opens no new
+// run, and starts that claim again as `legion claims retry` does (workflow's
+// retryFailedArchitect). That start is someone's decision (record.SuperviseRequest.Decided), so it
+// is the start that launches again, in a new session, an architect held for OpenAI's cyber-policy
+// refusal: the controller restarts the tree as for any stuck tree and needs to know nothing of the
+// hold. The root is the Dispatch chain's, an issue the copy shows under no parent, and its
+// architect the claim of its own key.
 func TestTheRestartOfATreeStartsItsRootArchitectAsADecidedStart(t *testing.T) {
+	const root = "LEGION-250"
 	pool := migratedPool(t)
-	admission, _ := readmittedAdmission(t, 1)
-	readmittedTree(t, pool, admission, false)
-	if starts := architectStartsOf(t, pool, rmRoot); len(starts) != 0 {
-		t.Fatalf("the architect starts of %s while it waits in the line = %+v, want none: the promotion's is the one this case reads", rmRoot, starts)
+	admission := quiet(t, 1)
+	seedSlottedInPhase(t, pool, testProject, root, "A", phase.Implementing, nil)
+	putWorkerClaim(t, pool, root, root, claim.RoleArchitect, 1, supervise.StateFailed, "")
+	failWorkerClaim(t, pool, root, claim.RoleArchitect, "cyber_policy")
+	if starts := roleStarts(t, pool, root, claim.RoleArchitect); len(starts) != 0 {
+		t.Fatalf("the architect starts of %s before the controller's todo = %+v, want none: the todo's is the one this case reads", root, starts)
 	}
 
-	promoteRoot(t, pool, admission)
+	applyAsTheDaemon(t, pool, admission, "api", "set-status", intake.StatusCall{Op: intake.SetStatusCall,
+		Issues: []intake.StatusCallIssue{{Key: root, Status: "todo"}}}, admission.engine)
 
-	starts := architectStartsOf(t, pool, rmRoot)
-	if len(starts) != 1 || !starts[0].Decided || starts[0].Generation != 2 {
-		t.Fatalf("the architect starts of the promoted %s = %+v, want one at generation 2 marked decided", rmRoot, starts)
+	starts := roleStarts(t, pool, root, claim.RoleArchitect)
+	if len(starts) != 1 || !starts[0].Decided || starts[0].Generation != 1 || starts[0].Phase != "" {
+		t.Fatalf("the architect starts of %s after the controller's todo = %+v, want one of generation 1 and no phase, marked decided", root, starts)
+	}
+	if got := issue(t, pool, root); got.Generation != 1 || got.Phase != phase.Implementing {
+		t.Fatalf("%s after the controller's todo stands in %s at generation %d, want implementing at 1: the todo restarts its architect and opens no run", root, got.Phase, got.Generation)
 	}
 }

@@ -112,6 +112,7 @@ func (p *liveIssueProof) seedImplementing(head string) {
 	if _, err := p.st.OpenTreeLifecycle(ctx, p.project, p.key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", p.key, err)
 	}
+	openIssue(t, p.st, p.project, p.key, treelifecycle.AuthorityWorkflow)
 	implementer := p.token(claim.RoleImplementer)
 	if _, err := p.st.AdmitClaim(ctx, supervise.Claim{
 		Token: implementer, Project: p.project, Tree: p.key, Issue: p.key, Role: claim.RoleImplementer,

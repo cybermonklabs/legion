@@ -28,7 +28,9 @@ func TestLookNamesItsCheckLive(t *testing.T) {
 	proof := newLiveProof(t, "scripts/e2e/look-names-its-check.sh")
 	proof.cfg.ReviewRoundCap = 3
 	root := liveCLICheckout(t)
-	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root).scratchDispatch, 1,
+	// Dispatch's events reach the daemon: a status write waits for them, and the merge's close
+	// lands only on Dispatch's done (R20 and R24 of dispatch://INFRA-3320), which the look waits for.
+	rig := newOwnerStepsRig(t, proof, startHandoffDispatch(t, root, proof.cfg.NatsURLs[0]).scratchDispatch, 1,
 		config.Project{ProductionCheck: claim.RoleTester})
 	l := &ownerStepsClientLive{ownerStepsRig: rig, root: root}
 	binary := filepath.Join(t.TempDir(), "legion")

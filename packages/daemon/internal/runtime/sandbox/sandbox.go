@@ -1073,7 +1073,8 @@ func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
 // Release is a claim-scoped operation: it ends at most the recorded role process and forgets the
 // claim from this runtime. It never suspends or deletes an issue Sandbox, even when this runtime
 // sees no sibling role: the issue's Sandbox and its Secrets — and with the Sandbox the pod and the
-// disk that pod owns — are the tree cleanup's alone (CleanupTree), which runs once every stored claim of the tree has retired. The project
+// disk that pod owns — are the issue's own close's (SuspendIssue) and cleanup's (CleanupIssue)
+// alone, the second of which runs once every stored claim of the issue has retired. The project
 // controller's Sandbox belongs to the controller's claim and nothing else, so releasing that claim
 // deletes it (releaseControllerSandbox).
 func (r *Runtime) Release(ctx context.Context, k runtime.Known) error {
@@ -1237,26 +1238,27 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) 
 }
 
 // ReconcileOrphans deletes the project's Sandboxes nothing owns, once older than grace. An issue
-// Sandbox is owned by its tree's lifecycle: it is an orphan once its tree's cleanup confirmed or
-// when it has no lifecycle, which a launch whose create reached the API after its tree's cleanup
-// listed it can leave. A Sandbox of a tree whose lifecycle is open or releasing is its cleanup's
-// alone (CleanupTree), whatever claims are known: a launch passes its claim's lifecycle check
-// before it creates a Sandbox, so what this runtime launches is never swept. The project
-// controller's Sandbox is owned by the controller's claim: it is an orphan once that claim is
-// retired or gone. known is every claim the daemon has not retired, a suspended one included
-// (knownClaims), so a retired controller's Sandbox goes and a suspended one's, which owns the
-// volume its working root is on, stays; known was read before this listing, so a controller
-// launched in between is missing from it, and a Sandbox known does not name is kept while the
-// store holds its claim unretired, read again under the pod's launch turn (controllerOwned). Every
-// delete runs under the pod's launch turn, so a launch that begins meanwhile waits for the delete
-// and then creates the Sandbox afresh, and is fenced to the Sandbox as the decision read it, its
-// uid and resourceVersion (deleteFenced): an issue Sandbox's tree is read again under the turn,
-// and a Sandbox written since the informer's snapshot — relabelled for a new tree by a re-admitted
-// issue's launch (ensureSandbox), which keeps its uid and owns no volume at all, its pod's disk
-// being the pod's own, or set Running — is kept as a conflict for the next sweep to judge on what
-// it holds then. Every start writes the Sandbox its generation's address record
-// (recordAddresses), so a controller relaunched into it since makes the delete a conflict, and the
-// next sweep judges it again. The image probe's Sandbox (labelled legion.dev/probe) is no claim's
+// Sandbox is owned by its issue's own lifecycle, read by the issue label alone: it is an orphan
+// once its issue's cleanup confirmed or when the issue has no lifecycle, which a launch whose
+// create reached the API after its issue's cleanup read it can leave. A Sandbox of an issue whose
+// lifecycle is open or releasing is that issue's own close's and cleanup's alone (SuspendIssue,
+// CleanupIssue), whatever claims are known: a launch passes its claim's lifecycle check before it
+// creates a Sandbox, so what this runtime launches is never swept. Its tree label decides nothing:
+// it is the gate root at the pod's creation, and a change of parent leaves it as it was (decision
+// 14 of dispatch://INFRA-4730). The project controller's Sandbox is owned by the controller's
+// claim: it is an orphan once that claim is retired or gone. known is every claim the daemon has
+// not retired, a suspended one included (knownClaims), so a retired controller's Sandbox goes and
+// a suspended one's, which owns the volume its working root is on, stays; known was read before
+// this listing, so a controller launched in between is missing from it, and a Sandbox known does
+// not name is kept while the store holds its claim unretired, read again under the pod's launch
+// turn (controllerOwned). Every delete runs under the pod's launch turn, so a launch that begins
+// meanwhile waits for the delete and then creates the Sandbox afresh, and is fenced to the Sandbox
+// as the decision read it, its uid and resourceVersion (deleteFenced): an issue's lifecycle is
+// read again under the turn, and a Sandbox written since the informer's snapshot — set Running by
+// a launch of its issue — is kept as a conflict for the next sweep to judge on what it holds then.
+// Every start writes the Sandbox its generation's address record (recordAddresses), so a
+// controller relaunched into it since makes the delete a conflict, and the next sweep judges it
+// again. The image probe's Sandbox (labelled legion.dev/probe) is no claim's
 // and never an orphan: the probe deletes it, and its shutdown time has the controller delete it
 // otherwise (probe.go). A repository cache's Sandbox (labelled legion.dev/cache) is no claim's
 // either: the claim path passes over it, and sweepCaches keeps, repairs or retires it after the
@@ -1356,18 +1358,14 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 // (ReconcileOrphans), by its kind (podKindOf): the controller's pod is kept while it is one of
 // controllers, the Sandboxes of the known controller claims, or while the store holds its claim
 // unretired, read before the turn and again under it (controllerOwned); an issue pod while its
-// tree's lifecycle is live, or while its issue's Sandbox belongs to the tree it is labelled with
-// (Store.IssueSandboxHome): a carried child's Sandbox its own tree's launch has created, which
-// may already run a pod, while the child waits for the admission that opens its tree or lingers
-// after its own close. One whose child left the line, or whose linger expired, belongs nowhere
-// and is deleted, as every other orphan is, with the line that names it. A live tree is checked
-// before any turn is taken, so a Sandbox a concurrent launch of the same issue is still creating
-// or waiting on is never serialized behind that launch: the common case, where the tree stays
-// live, costs no turn at all. Only once the tree looks closed does the pod's launch turn apply,
-// held from a second, authoritative read through the delete (lockPod), so a launch that begins
-// meanwhile still waits for the delete and then creates the Sandbox afresh. A Sandbox whose
-// labels name no kind, or whose issue and tree labels are no keys, is kept and reported: what
-// cannot be told apart from a live tree's is never deleted.
+// issue's own lifecycle is live (Store.IssueLive), whatever tree its label names. A live issue is
+// checked before any turn is taken, so a Sandbox a concurrent launch of the same issue is still
+// creating or waiting on is never serialized behind that launch: the common case, where the issue
+// stays live, costs no turn at all. Only once the issue looks cleaned up does the pod's launch
+// turn apply, held from a second, authoritative read through the delete (lockPod), so a launch
+// that begins meanwhile still waits for the delete and then creates the Sandbox afresh. A Sandbox
+// whose labels name no kind, or whose issue label is no key, is kept and reported: what cannot be
+// told apart from a live issue's is never deleted.
 func (r *Runtime) sweep(ctx context.Context, u *unstructured.Unstructured, controllers map[string]bool) error {
 	kind, err := podKindOf(u.GetLabels())
 	if err != nil {
@@ -1399,11 +1397,11 @@ func (r *Runtime) sweep(ctx context.Context, u *unstructured.Unstructured, contr
 		}
 		return nil
 	}
-	issue, tree := u.GetLabels()[labelIssue], u.GetLabels()[labelTree]
-	if !claim.IsIssueKey(issue) || !claim.IsIssueKey(tree) {
-		return fmt.Errorf("reconcile orphans: Sandbox %s names no issue and tree (labels %s=%q, %s=%q); kept", name, labelIssue, issue, labelTree, tree)
+	issue := u.GetLabels()[labelIssue]
+	if !claim.IsIssueKey(issue) {
+		return fmt.Errorf("reconcile orphans: Sandbox %s names no issue (label %s=%q); kept", name, labelIssue, issue)
 	}
-	if live, err := r.store.TreeLive(ctx, r.project, tree); err != nil {
+	if live, err := r.store.IssueLive(ctx, r.project, issue); err != nil {
 		return fmt.Errorf("reconcile orphans: %w", err)
 	} else if live {
 		return nil
@@ -1413,26 +1411,19 @@ func (r *Runtime) sweep(ctx context.Context, u *unstructured.Unstructured, contr
 		return err
 	}
 	defer release()
-	live, err := r.store.TreeLive(ctx, r.project, tree)
-	if err != nil {
+	if live, err := r.store.IssueLive(ctx, r.project, issue); err != nil {
 		return fmt.Errorf("reconcile orphans: %w", err)
-	}
-	if live {
+	} else if live {
 		return nil
 	}
-	if home, err := r.store.IssueSandboxHome(ctx, r.project, issue); err != nil {
-		return fmt.Errorf("reconcile orphans: %w", err)
-	} else if home == tree {
-		return nil
-	}
-	// Fenced to the uid and resourceVersion the decision read: a re-admission of this issue that
-	// landed between the informer's snapshot and this turn relabelled the same Sandbox for its new
-	// tree (ensureSandbox) and may already run a pod in it; the uid alone would not tell.
+	// Fenced to the uid and resourceVersion the decision read: a launch of this issue that landed
+	// between the informer's snapshot and this turn may already run a pod in the same Sandbox; the
+	// uid alone would not tell.
 	s, err := decodeSandbox(u)
 	if err != nil {
 		return fmt.Errorf("reconcile orphans: decode Sandbox %s: %w", name, err)
 	}
-	if err := r.deleteFenced(ctx, s, "sandbox runtime: deleted an orphaned sandbox", "tree", tree); err != nil {
+	if err := r.deleteFenced(ctx, s, "sandbox runtime: deleted an orphaned sandbox", "issue", issue); err != nil {
 		return fmt.Errorf("reconcile orphans: %w", err)
 	}
 	return nil

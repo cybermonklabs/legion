@@ -524,7 +524,7 @@ func StopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, erro
 // rows that have not run would never find it. Such a claim is one the operator's spawn made
 // under this daemon's project token (api's spawn), which the pause stops as it stops every other.
 func StopKey(pause store.Pause, issue string) string {
-	if project, _, _ := strings.Cut(issue, "-"); project == pause.Project {
+	if claim.KeyProject(issue) == pause.Project {
 		return issue
 	}
 	return pause.Project
@@ -544,9 +544,13 @@ func resumedNotice(ended store.Pause) (store.PauseRow, error) {
 }
 
 // pauseRow encodes payload through record's own constructor, which validates it, as the store's
-// pause transaction takes a row (store.PauseRow), keyed by issue.
+// pause transaction takes a row (store.PauseRow), keyed by issue. A pause's notice is keyed by the
+// project, of which the daemon records no run, so it names the fence of a key the record holds
+// nothing of (record.FirstFence), which is the fence its delivery reads too (record.ReadFence): a
+// controller notice names its run and entry as every notice does (record.Notice.Generation). A
+// stop names no fence (record.FenceOf), and Fenced leaves it as it is.
 func pauseRow(issue string, payload record.OutboxPayload, at time.Time) (store.PauseRow, error) {
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := record.NewOutboxRow(issue, record.Fenced(payload, record.FirstFence), at)
 	if err != nil {
 		return store.PauseRow{}, err
 	}

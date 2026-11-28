@@ -6,7 +6,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
-// TriggerKind names the observation that can advance a workflow phase.
+// TriggerKind names the observation that can advance a workflow phase. TriggerPullRequestMerged
+// moves no row: the merge queues the close (closeMerged), and the issue leaves merging only when
+// Dispatch shows it done (closeLanded), where the name ends the merge step.
 type TriggerKind string
 
 const (
@@ -23,16 +25,14 @@ const (
 	TriggerBackward            TriggerKind = "backward"
 )
 
-// EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
-// issue's close alone (Engine.leave): a phase worker stays live from its role's first assignment
-// until its issue closes, so no row that only moves the issue between phases suspends anyone.
+// EffectKind identifies the durable outbox consequences selected by a row. No row stops a worker:
+// a phase worker stays live from its role's first assignment until its issue closes (Engine.leave),
+// so no row that only moves the issue between phases suspends anyone.
 type EffectKind string
 
 const (
-	EffectSuspend EffectKind = "suspend"
-	EffectStart   EffectKind = "start"
-	EffectNotice  EffectKind = "notice"
-	EffectLinger  EffectKind = "linger"
+	EffectStart  EffectKind = "start"
+	EffectNotice EffectKind = "notice"
 )
 
 // Snapshot is the record state a row guard reads. Guards are pure and contain no side effects.
@@ -90,12 +90,13 @@ var stepRows = []struct {
 // steps in the task's order, which holds implementing, then retro and merging (plan.Line of a plan
 // plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
 // this order: the gate's opening, out of admitted into the first phase of the line; each phase's
-// rows on its role's trigger (stepRows); the merge, out of merging into done; and a backward row
-// from each phase of the line to each phase before it in the line (backwardRows). A head that
-// conflicts with its base moves no phase (merge_forward.go). A row into accepting starts nobody,
-// because accepting's role is the tree's architect; every other row into a phase of the line
-// starts its role. No row carries a status of its own: every status a row writes is its target
-// phase's, which PhaseStatus holds.
+// rows on its role's trigger (stepRows); and a backward row from each phase of the line to each
+// phase before it in the line (backwardRows). No row moves an issue out of merging: the merge
+// queues the close (closeMerged), and the issue leaves merging when Dispatch shows it done
+// (closeLanded). A head that conflicts with its base moves no phase (merge_forward.go). A row
+// into accepting starts nobody, because accepting's role is the owning architect; every other row
+// into a phase of the line starts its role. No row carries a status of its own: every status a
+// row writes is its target phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], Effects: effectsInto(line[0])}}
 	for _, step := range stepRows {
@@ -109,10 +110,6 @@ func TableOf(line []phase.Phase) []Row {
 		}
 		rows = append(rows, Row{From: step.from, Trigger: step.trigger, Guard: step.guard, To: to, Effects: effectsInto(to)})
 	}
-	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
-	// GitHub's merge of the pull request as the phase's own terminating fact.
-	rows = append(rows, Row{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done,
-		Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}})
 	return append(rows, backwardRows(line)...)
 }
 

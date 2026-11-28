@@ -459,21 +459,42 @@ func (s *seeding) mirrorOnly(reading record.DispatchReading) {
 	})
 }
 
-// openTrees opens each tree's lifecycle under the workflow, as admission's promotion does
-// (record.Store.OpenTreeLifecycle in the fact's transaction).
+// openTrees opens each tree's lifecycle under the workflow and the root's own issue lifecycle
+// beside it, as admission's promotion of a root does in the fact's transaction
+// (record.Store.OpenTreeLifecycle, record.Store.OpenIssueLifecycle): each claim of the root binds
+// its issue's lifecycle (store.Store.AdmitClaim), and the tree's row is the shadow the release
+// before reads.
 func (s *seeding) openTrees(project string, trees ...string) {
 	s.t.Helper()
 	projectToken, err := claim.ProjectToken(project)
 	s.must("the project token", err)
 	for _, tree := range trees {
 		s.in("the lifecycle of "+tree, func(ctx context.Context, tx pgx.Tx) error {
-			_, err := s.records.OpenTreeLifecycle(ctx, tx, projectToken, tree, treelifecycle.AuthorityWorkflow)
+			if _, err := s.records.OpenTreeLifecycle(ctx, tx, projectToken, tree, treelifecycle.AuthorityWorkflow); err != nil {
+				return err
+			}
+			_, err := s.records.OpenIssueLifecycle(ctx, tx, projectToken, tree, treelifecycle.AuthorityWorkflow)
 			return err
 		})
 	}
 }
 
-// claimAs admits c's claim to its tree's open lifecycle (store.Store.AdmitClaim, the one way a
+// openIssues opens each issue's own lifecycle under the workflow, as admission opens it for each
+// issue it starts that is no root of a tree openTrees opens (record.Store.OpenIssueLifecycle):
+// each claim of the issue binds it.
+func (s *seeding) openIssues(project string, issues ...string) {
+	s.t.Helper()
+	projectToken, err := claim.ProjectToken(project)
+	s.must("the project token", err)
+	for _, issue := range issues {
+		s.in("the lifecycle of issue "+issue, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := s.records.OpenIssueLifecycle(ctx, tx, projectToken, issue, treelifecycle.AuthorityWorkflow)
+			return err
+		})
+	}
+}
+
+// claimAs admits c's claim to its issue's open lifecycle (store.Store.AdmitClaim, the one way a
 // claim enters the store) and then writes it as its machine last persisted it (store.Store.PutClaim,
 // or PutClaimAndDelivery where it holds a pending task), with the step the stream last reported
 // (store.Store.PutClaimStep).
@@ -501,14 +522,16 @@ func (s *seeding) claimAs(c supervise.Claim) supervise.Claim {
 }
 
 // enqueue queues payload for issue due at nextAt (record.Store.Enqueue), as the writer of that
-// row does, and answers the row's id.
+// row does, stamped with the fence its issue stands at (record.NewFencedRow, which workflow's
+// queuedRow builds every row through), and answers the row's id.
 func (s *seeding) enqueue(issue string, payload record.OutboxPayload, nextAt time.Time) int64 {
 	s.t.Helper()
-	row, err := record.NewOutboxRow(issue, payload, nextAt)
-	s.must("the outbox row of "+issue, err)
 	var id int64
 	s.in("the outbox row of "+issue, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
+		row, err := record.NewFencedRow(ctx, tx, s.records, issue, payload, nextAt)
+		if err != nil {
+			return err
+		}
 		id, err = s.records.EnqueueID(ctx, tx, row)
 		return err
 	})

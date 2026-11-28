@@ -28,7 +28,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
-	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
@@ -89,30 +88,14 @@ func (m *memoryController) RegisterController(_ context.Context, _ string, gener
 	return true, nil
 }
 
-// statusWrites is Dispatch as the issue status route reaches it: every status it was asked to
-// set. Any other Dispatch call is a test failure (the embedded nil Client panics).
-type statusWrites struct {
-	dispatch.Client
-	mu     sync.Mutex
-	writes []string
-}
-
-func (s *statusWrites) SetStatus(_ context.Context, key, status string) (dispatch.Issue, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.writes = append(s.writes, key+"="+status)
-	return dispatch.Issue{}, nil
-}
-
 // controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion issue status`
-// reach it: the real api.NewServer over an in-memory controller record, grants, and Dispatch, on
-// a loopback port, with every request that reached it recorded.
+// reach it: the real api.NewServer over an in-memory controller record and grants, on a loopback
+// port, with every request that reached it recorded.
 type controllerDaemon struct {
 	t          *testing.T
 	url        string
 	port       int
 	controller *memoryController
-	dispatch   *statusWrites
 
 	mu   sync.Mutex
 	seen []seenRequest
@@ -153,6 +136,15 @@ type controllerDaemonOptions struct {
 	// stateStatus, set, replaces GET /legion/v1/state's HTTP status (for a transient failure, e.g.
 	// 503), leaving rawStateBody (or the real handler's own body) as the body.
 	stateStatus int
+	// statusAnswer, set, is what POST /legion/v1/issues/status answers, with 200, once the route
+	// has taken the request as far as this daemon reaches: it decodes the body strictly, checks
+	// the status and the children and parent arguments, and redeems the controller grant, and then
+	// refuses DISPATCH_UNAVAILABLE, since a status call reads Dispatch and applies to the
+	// workflow's store (api.Options.Dispatch and Pool), neither of which this daemon has. That
+	// refusal and no other is answered with statusAnswer, the answer of a status call that queued
+	// its writes (api.StatusCallResponse); a request the route refused before it is answered as the
+	// route answered it.
+	statusAnswer string
 }
 
 // servesOneOf is the `served` predicate of a daemon serving repos (api.Options.Served): whether
@@ -233,14 +225,14 @@ func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.State, []sup
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
-// `legion issue status` reach it: the real api.NewServer over an in-memory controller record, grants,
-// and Dispatch, on a loopback port, with every request that reached it recorded.
+// `legion issue status` reach it: the real api.NewServer over an in-memory controller record and
+// grants, on a loopback port, with every request that reached it recorded.
 func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) *controllerDaemon {
 	t.Helper()
-	d := &controllerDaemon{t: t, controller: &memoryController{}, dispatch: &statusWrites{}}
+	d := &controllerDaemon{t: t, controller: &memoryController{}}
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
 		Project: controllerProject, OperatorToken: controllerOperatorToken, Controller: d.controller,
-		Steps: opts.steps, Dispatch: d.dispatch, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Steps: opts.steps, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Tokens: opts.tokens, Served: servesOneOf(opts.repos), RepositoryRenames: opts.renames,
 		State: fixedStateSource{repositories: opts.repositories}, StateTransactions: fixedStateTransactions{},
 	}).Handler
@@ -259,6 +251,12 @@ func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) 
 			}
 			if opts.stateStatus != 0 {
 				code = opts.stateStatus
+			}
+		}
+		if opts.statusAnswer != "" && r.Method == http.MethodPost && r.URL.Path == "/legion/v1/issues/status" {
+			var refused api.Failure
+			if code == http.StatusInternalServerError && json.Unmarshal(answer, &refused) == nil && refused.Code == "DISPATCH_UNAVAILABLE" {
+				code, answer = http.StatusOK, []byte(opts.statusAnswer)
 			}
 		}
 		d.mu.Lock()

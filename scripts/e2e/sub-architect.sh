@@ -37,7 +37,7 @@
 # kept and printed) keeps the transcript, the nats-server's log, the daemon's own and the driver's
 # output; the run's work directory, the driver binary among it, is under TMPDIR too, since a pod's
 # own disk is small and its TMPDIR names the issue's volume. The run around the driver is
-# lib/live-daemon-proof.sh's, which child-adoption.sh makes too.
+# lib/live-daemon-proof.sh's, which conflict-no-takeover.sh makes too.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

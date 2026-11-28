@@ -99,13 +99,15 @@ func newBasisSeedRig(t *testing.T) *basisSeedRig {
 		asks:   map[string]dispatch.Ask{}}
 	rig := &basisSeedRig{t: t, pool: pool, records: records, client: client,
 		runner: &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, dispatch: client, handlers: []intake.Handler{engine}, now: time.Now}}
+	// Each issue is recorded with its row of the copy (putChainIssue), so the Dispatch chain the
+	// notices are routed on is known: two roots, each its own gate root.
 	for _, issue := range []record.Issue{
 		{Key: basisSeedRoot, Tree: basisSeedRoot, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress",
 			DispatchStatus: "in_progress", Rank: "U", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
 		{Key: basisSeedAncestor, Tree: basisSeedAncestor, Project: "LEGION", Title: "ancestor", Phase: phase.Planning, Generation: 1, Status: "in_progress",
 			DispatchStatus: "in_progress", Rank: "T", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
 	} {
-		putOutboxIssue(t, pool, records, issue)
+		putChainIssue(t, pool, records, issue)
 		openTree(t, pool, "LEGION", issue.Key)
 	}
 	// The root's own document stands at the version registered, with no review: its read

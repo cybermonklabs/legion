@@ -1,0 +1,10 @@
+HTTP/1.1 409 Conflict
+Content-Type: application/json
+Idempotency-Key: capture-key-committed-1
+Vary: Accept-Encoding
+Vary: Dispatch-Trees
+X-Content-Type-Options: nosniff
+Date: Fri, 20 Nov 2026 15:47:57 GMT
+Content-Length: 235
+
+{"code":"KEY_COMMITTED","error":"the write under Idempotency-Key \"capture-key-committed-1\" (POST /api/v1/me/agent-tokens) landed, but Dispatch lost its answer, so it is not run again and has no answer to replay: read what it wrote"}

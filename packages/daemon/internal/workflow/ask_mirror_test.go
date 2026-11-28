@@ -525,7 +525,7 @@ func keptDecision(t *testing.T, pool *pgxpool.Pool, ref string) *record.ParkedDe
 	t.Helper()
 	var kept *record.ParkedDecision
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		decisions, err := record.NewStore().ParkedDecisions(context.Background(), tx, "LEGION-208")
+		decisions, err := record.NewStore().ParkedDecisionsOf(context.Background(), tx, []string{"LEGION-208"})
 		for _, decision := range decisions {
 			if decision.Ref == ref {
 				kept = &decision

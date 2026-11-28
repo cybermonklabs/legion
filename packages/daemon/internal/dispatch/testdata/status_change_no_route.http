@@ -1,0 +1,6 @@
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+Date: Fri, 20 Nov 2026 15:47:21 GMT
+Content-Length: 124
+
+{"code":"NOT_FOUND","error":"no route for POST /api/v1/issues/CORE-1/status-change","hint":"GET /api/v1 lists every route"}

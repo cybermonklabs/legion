@@ -32,7 +32,7 @@ const (
 func newToldRig(t *testing.T) *toldRig {
 	t.Helper()
 	r := &toldRig{keptRig: newKeptRig(t)}
-	r.issue(toldRoot, toldRoot)
+	r.issue(toldRoot, "")
 	r.issue(toldChild, toldRoot)
 	token, err := claim.NewToken("legion", toldChild, claim.RoleReviewer)
 	if err != nil {
@@ -58,15 +58,16 @@ func (r *toldRig) tell(issue string, audience record.DesignAudience, versions ma
 		issue, string(audience), encoded, openingOwed, r.at)
 }
 
-// told reads issue's audience row as every reader reads it (the SQL function design_news_told_in,
-// record.Postgres.TreeTold): the version of each step it holds with every standing credit counted
-// in, whether it owes the opening, and when a write of its versions last touched it.
+// told reads issue's audience row as every reader reads it (the SQL function design_news_told_of,
+// record.Postgres.TreeTold) as a member of toldRoot's tree: the version of each step it holds with
+// every standing credit rendered under toldRoot counted in, whether it owes the opening, and when a
+// write of its versions last touched it.
 func (r *toldRig) told(issue string, audience record.DesignAudience) (map[record.DesignStep]int, bool, time.Time) {
 	r.t.Helper()
 	var encoded []byte
 	var owed bool
 	var at *time.Time
-	if err := r.store.Pool().QueryRow(r.ctx, `select versions, opening_owed, told_at from design_news_told_in($3)
+	if err := r.store.Pool().QueryRow(r.ctx, `select versions, opening_owed, told_at from design_news_told_of($3, array[$1]::text[])
 		where issue = $1 and audience = $2`, issue, string(audience), toldRoot).Scan(&encoded, &owed, &at); err != nil {
 		r.t.Fatalf("read the %s row of %s: %v", audience, issue, err)
 	}
@@ -94,18 +95,19 @@ func (r *toldRig) wantTold(why string, issue string, audience record.DesignAudie
 // no version of it and whose review history could not say which (record.DeliveryHistoryUnread),
 // and the opening to the child's holder, under the opening number the child's row holds as tell
 // writes it (0). Each is rendered in the run the rig records its issues in, generation 1 of the
-// issue and of its tree's root (keptRig.issue). Its prompt was acknowledged carrying exactly that
-// news, so the delivery holds it as the copy its confirmation credits (supervise.Delivery.Carried).
+// issue and of its tree's gate root, toldRoot (keptRig.issue). Its prompt was acknowledged
+// carrying exactly that news, so the delivery holds it as the copy its confirmation credits
+// (supervise.Delivery.Carried).
 func (r *toldRig) newsTask(id string) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Review the change.", Items: []record.DeliveryNewsItem{
 		{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", From: new(3), To: 5,
-			Generation: 1, TreeGeneration: 1},
+			Generation: 1, Root: toldRoot, TreeGeneration: 1},
 		{Issue: toldRoot, Audience: record.AudienceArchitect, Step: record.DesignStepCriteria, Artifact: "artifact-checks", To: 2,
-			Generation: 1, TreeGeneration: 1,
+			Generation: 1, Root: toldRoot, TreeGeneration: 1,
 			HistoryUnread: &record.DeliveryHistoryUnread{Reason: "Dispatch failed 3 reads of the document's review history, the last with: 502 BAD_GATEWAY",
 				ReadAt: r.at}},
-	}, Openings: []record.DeliveryOpening{{Issue: toldChild, Audience: record.AudienceHolder, Generation: 1, TreeGeneration: 1}}})
+	}, Openings: []record.DeliveryOpening{{Issue: toldChild, Audience: record.AudienceHolder, Generation: 1, Root: toldRoot, TreeGeneration: 1}}})
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -163,7 +165,7 @@ func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	confirmed.ConfirmedAt = r.at.Add(time.Minute)
 	refused := errors.New("the transaction that confirms fails after the delivery's write")
 	if err := Transact(r.ctx, r.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		if err := putDelivery(ctx, tx, r.reviewer.Token, confirmed); err != nil {
+		if err := putDelivery(ctx, tx, r.reviewer.Token, confirmed, r.store.gateRootsOf()); err != nil {
 			return err
 		}
 		return refused

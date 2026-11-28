@@ -13,16 +13,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// The end rule of a step's run reads three inputs the store writes - the issue's record, its pull
-// request and its hand-over fence - and the fact's settle reads the runs of each issue its
-// transaction wrote one of them for (IssuesWritten). So each writer of those inputs keeps its
+// The end rule of a step's run reads two inputs the store writes - the issue's record and its pull
+// request - and the fact's settle reads the runs of each issue its transaction wrote one of them
+// for (IssuesWritten). So each writer of those inputs keeps its
 // issue, once, in the order of its first write, in a ctx that keeps writes (WithIssueWrites); a
 // writer that kept none would leave the run its write ends unended. A ctx that keeps no writes
 // keeps nothing, which is the control.
 func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
-	keys := []string{"LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"}
+	keys := []string{"LEGION-301", "LEGION-302"}
 	inTx(t, st, func(tx pgx.Tx) {
 		for _, key := range keys {
 			must(t, store.PutIssue(t.Context(), tx, issueFixture(key)))
@@ -33,9 +33,6 @@ func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 		must(t, store.PutIssue(ctx, tx, issueFixture(keys[0])))
 		must(t, store.PutPullRequest(ctx, tx, PullRequest{Issue: keys[1], Repo: "sjawhar/legion", Number: 1302, Branch: "legion/" + keys[1],
 			HeadSHA: "b1", State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}}))
-		must(t, store.PutHandover(ctx, tx, Handover{Issue: keys[2], Tree: keys[2], Generation: 1}))
-		must(t, store.DeleteHandover(ctx, tx, keys[3]))
-		must(t, store.DeleteHandoverAt(ctx, tx, keys[4], keys[4], 1))
 		must(t, store.PutIssue(ctx, tx, issueFixture(keys[0])))
 	}
 	inTx(t, st, func(tx pgx.Tx) {
@@ -55,7 +52,7 @@ func TestEachWriterOfAnEndInputKeepsItsIssue(t *testing.T) {
 // A fact runs the admission pass only where its transaction wrote a record of the project that
 // admission reads (RecordsWritten). Every writer of those rows keeps the mark in a ctx that keeps
 // writes when its statement matches a row, a row set to the value it held among them, and only
-// the writers of an issue's record, pull request and hand-over fence name the issue among
+// the writers of an issue's record and pull request name the issue among
 // IssuesWritten, which the end of a step's run reads: the movement and the phase rows a late
 // handoff writes keep the mark and name no issue. The controls are a statement that matches no
 // row (a fence that refuses it, a key that names none), the repository backfill, which runs
@@ -106,6 +103,18 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "its stalled tree told", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.MarkTreeStalledTold(ctx, tx, key, at))
 		}, marks: true},
+		{name: "its mark as holding its own gate", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.MarkHoldsGate(ctx, tx, []string{key}))
+		}, marks: true},
+		{name: "control: the mark of an issue already marked", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.MarkHoldsGate(ctx, tx, []string{key}))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.MarkHoldsGate(ctx, tx, []string{key}))
+		}},
+		{name: "control: the cursor of the Dispatch events seen, which the outbox's status writes wait on and no pass reads",
+			write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+				must(t, store.AdvanceSeenSeq(ctx, tx, key, 50))
+			}},
 		{name: "a phase row", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, marks: true},
@@ -113,12 +122,6 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 			must(t, store.PutPhase(ctx, tx, phaseRow))
 		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			_, err := store.ClearGeneration(ctx, tx, issueFixture(key), forgetNothing)
-			must(t, err)
-		}, marks: true},
-		{name: "a clear of its tree's generation", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.PutPhase(ctx, tx, phaseRow))
-		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ClearTreeGeneration(ctx, tx, key, forgetNothing)
 			must(t, err)
 		}, marks: true},
 		{name: "a clear that deletes a gate alone", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
@@ -168,22 +171,6 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "the release for a wait cleared", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.ClearReleasedForWait(ctx, tx, key))
 		}, marks: true},
-		{name: "a tree's slots released", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.PutSlot(ctx, tx, slot))
-		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ReleaseTreeSlots(ctx, tx, key)
-			must(t, err)
-		}, marks: true},
-		{name: "control: the release of a tree that holds no slot and no release", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			_, err := store.ReleaseTreeSlots(ctx, tx, key)
-			must(t, err)
-		}},
-		{name: "members owed", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.OweMembers(ctx, tx, key))
-		}, marks: true},
-		{name: "members owed cleared", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.ClearMembersOwed(ctx, tx, key))
-		}, marks: true},
 		{name: "the claim a release left", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.RecordClaimLeft(ctx, tx, key, &ClaimLeft{Holder: "user:alice", Reason: ClaimLeftPerson, At: at}))
 		}, marks: true},
@@ -210,14 +197,6 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 			must(t, store.PutPullRequest(ctx, tx, PullRequest{Issue: key, Repo: "acme/widgets", Number: 1310, Branch: "legion/" + key,
 				HeadSHA: "b1", State: PullRequestOpen, Failing: []string{}, Cancelled: []string{}}))
 		}, marks: true, issue: true},
-		{name: "a hand-over fence", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.PutHandover(ctx, tx, Handover{Issue: key, Tree: key, Generation: 1}))
-		}, marks: true, issue: true},
-		{name: "a tree's hand-overs cancelled", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.PutHandover(ctx, tx, Handover{Issue: key, Tree: key, Generation: 1}))
-		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
-			must(t, store.CancelTreeHandovers(ctx, tx, key, 1))
-		}, marks: true},
 		{name: "a reading of Dispatch's issue", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutDispatchIssue(ctx, tx, reading))
 		}, marks: true},
@@ -255,6 +234,14 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "a design gate", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.PutGate(ctx, tx, gate))
 		}, marks: true},
+		{name: "a design gate deleted", seed: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.PutGate(ctx, tx, gate))
+		}, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.DeleteGate(ctx, tx, key, DesignStepSpec))
+		}, marks: true},
+		{name: "control: the delete of a gate nobody holds", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.DeleteGate(ctx, tx, key, DesignStepSpec))
+		}},
 		{name: "a plan", write: seedPlan, marks: true},
 		{name: "a plan carried to the next generation", seed: seedPlan, write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.CarryPlan(ctx, tx, key, generation, generation+1, false))

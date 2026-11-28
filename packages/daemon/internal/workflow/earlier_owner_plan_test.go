@@ -14,22 +14,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The owner of an issue changes where an orphan is admitted again as a root of its own, and a plan
-// that an earlier owner gave is then passed over at the issue's first step (StartFirstPhase's
+// The owner of an issue changes where Dispatch moves it out from under the issue whose architect
+// gave its plan, an orphan that is admitted again as a root of its own among them, and a plan that
+// an earlier owner gave is then passed over at the issue's first step (StartFirstPhase's
 // gateOpened), never in silence: one log line for each version passed over, naming the issue, the
 // generation, the version, its document, its giver and the plan the first step runs; one
 // plan-not-taken notice to the issue's architect that names the same; and no row of the old plan
 // left in the three plan tables, so its walk never reads it, also where it stood at the issue's
 // own generation: the first step stores the project's default steps in their place. The owner is
-// any architect of the issue's tree now (record.ArchitectOfTree): a sub-architect's plan for an
-// issue of its tree is the owner's, and so is the tree root architect's plan for its child (the
-// control); each is carried to the issue's generation and its first step starts, and nobody is
-// told or logged. The twin: an issue given no plan starts planning on the default steps, with no
-// notice and no log line.
+// any architect that acts on the issue on its Dispatch chain now (record.PlanOwners): the plan of
+// the architect of an issue above it is the owner's, and so is the root architect's plan for its
+// child (the control); each is carried to the issue's generation and its first step starts, and
+// nobody is told or logged. The twin: an issue given no plan starts planning on the default steps,
+// with no notice and no log line.
 func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
-	earlier, owner := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
+	earlier, owner := architectOf(t, "LEGION-208"), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 	give := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, version int, by claim.Token, words ...string) {
 		t.Helper()
 		fact := ownersPlan(t, key, generation, version, givenTask(t, "Build the widget.", words...))
@@ -63,7 +64,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		}
 	}
 
-	t.Run("the plan of the architect of the tree the issue left is not taken: the first step runs the default steps", func(t *testing.T) {
+	t.Run("the plan of the architect of an issue the issue left on its chain is not taken: the first step runs the default steps", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		give(t, pool, engine, "LEGION-209", 0, 1, earlier, "implementer", "reviewer")
@@ -87,6 +88,8 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	t.Run("the earlier owner's plan at the issue's own generation is not walked either", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
+		// LEGION-208 is recorded too: who acts on LEGION-209 is read from its Dispatch chain.
+		recordedAt(t, pool, "LEGION-208", "LEGION-208")
 		recordedAt(t, pool, "LEGION-209", "LEGION-208")
 		give(t, pool, engine, "LEGION-209", 1, 1, earlier, "implementer", "reviewer")
 		recordedAt(t, pool, "LEGION-209", "LEGION-209")
@@ -127,13 +130,14 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		}
 	})
 
-	t.Run("a sub-architect's plan for an issue of its tree is the owner's: carried, and nobody told", func(t *testing.T) {
+	t.Run("the plan of the architect of an issue above it on its chain is the owner's: carried, and nobody told", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		recordedAt(t, pool, "LEGION-208", "LEGION-208")
 		recordedAt(t, pool, "LEGION-209", "LEGION-208")
 		give(t, pool, engine, "LEGION-210", 0, 1, owner, "implementer", "reviewer")
 		recordedAt(t, pool, "LEGION-210", "LEGION-208")
+		reparentTo(t, pool, engine, "LEGION-210", "LEGION-209")
 		logged.Reset()
 
 		firstStep(t, pool, engine, "LEGION-210")
@@ -142,7 +146,7 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		kept(t, pool, logged.String(), "LEGION-210", [3]int{2, 2, 4})
 	})
 
-	t.Run("control: the tree root architect's plan for its child is the owner's: carried, and nobody told", func(t *testing.T) {
+	t.Run("control: the root architect's plan for its child is the owner's: carried, and nobody told", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		recordedAt(t, pool, "LEGION-208", "LEGION-208")
@@ -173,15 +177,18 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 
 // A rerun carries the owner's plan to its new generation, with the time it was given (record.Store's
 // CarryPlan), so an issue that ran three generations under one owner holds a copy of that owner's
-// version at each. When the issue then leaves its tree, its first step passes over every copy and
-// names the version once in its one notice, and it logs each copy it deleted, with its generation.
-// The fault caught is a notice that names the version once for each copy.
+// version at each. When Dispatch then moves the issue out from under the owner's issue, its first
+// step passes over every copy and names the version once in its one notice, and it logs each copy
+// it deleted, with its generation. The fault caught is a notice that names the version once for
+// each copy.
 func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T) {
 	t.Parallel()
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
-	earlier := architectOf(t)
+	earlier := architectOf(t, "LEGION-208")
 	pool := migratedPool(t)
 	engine, logged := loggedEngine()
+	// LEGION-208 is recorded first: who acts on LEGION-209 is read from its Dispatch chain.
+	recordedAt(t, pool, "LEGION-208", "LEGION-208")
 	recordedAt(t, pool, "LEGION-209", "LEGION-208")
 	fact := ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 	fact.GivenBy = earlier
@@ -215,21 +222,25 @@ func TestAnEarlierOwnersPlanCarriedToSeveralGenerationsIsNamedOnce(t *testing.T)
 
 // A give of the version in force by another owner adds that owner to the copy of its own
 // generation alone (record.Store's AddPlanGiver), so the copies of one version that a first step
-// passes over can name different givers: a sub-architect gives version 1 at generation 1, a rerun
-// carries it to generation 2, the root's architect gives it again there, and the issue then leaves
-// its tree. Its one notice names the version once, with the givers of both copies together, the
-// giver the store added last first. The fault caught is a notice that tells the copies apart by
-// their givers and names the version once for each.
+// passes over can name different givers: the architect of LEGION-210, the issue LEGION-209 stands
+// under on its Dispatch chain, gives version 1 at generation 1, a rerun carries it to generation 2,
+// the root's architect gives it again there, and Dispatch then moves the issue out from under
+// both. Its one notice names the version once, with the givers of both copies together, the giver
+// the store added last first. The fault caught is a notice that tells the copies apart by their
+// givers and names the version once for each.
 func TestAVersionWhoseCopiesNameDifferentGiversIsNamedOnceWithEveryGiver(t *testing.T) {
 	t.Parallel()
-	sub, root := claim.Token(treeRoleToken(t, "LEGION-210", claim.RoleArchitect)), architectOf(t)
+	sub, root := claim.Token(treeRoleToken(t, "LEGION-210", claim.RoleArchitect)), architectOf(t, "LEGION-208")
 	pool := migratedPool(t)
 	engine := returnEngine()
-	recordedAt(t, pool, "LEGION-209", "LEGION-208")
+	// LEGION-209 stands under LEGION-210, under LEGION-208, on its Dispatch chain: the architect of
+	// each acts on it.
+	recordedAt(t, pool, "LEGION-208", "LEGION-208")
 	recordedAt(t, pool, "LEGION-210", "LEGION-208")
+	recordedAt(t, pool, "LEGION-209", "LEGION-210")
 	first := ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 	first.GivenBy = sub
-	mustTake(t, "version 1 of LEGION-209 at generation 1 by the sub-architect", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1), first))
+	mustTake(t, "version 1 of LEGION-209 at generation 1 by LEGION-210's architect", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1), first))
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().CarryPlan(t.Context(), tx, "LEGION-209", 1, 2, false)
 	})
@@ -252,14 +263,17 @@ func TestAVersionWhoseCopiesNameDifferentGiversIsNamedOnceWithEveryGiver(t *test
 
 // Two versions an earlier owner gave are each named, in the order they were given: the owner gives
 // version 1 at generation 1, a rerun carries it to generation 2, the owner gives version 2 there,
-// and the issue then leaves its tree. Its first step passes over the version in force of each
-// generation, version 1 and version 2, and its one notice names both. The fault caught is a notice
-// that keeps the first version alone, which would hide the later one from the new owner.
+// and Dispatch then moves the issue out from under the owner's issue. Its first step passes over
+// the version in force of each generation, version 1 and version 2, and its one notice names both.
+// The fault caught is a notice that keeps the first version alone, which would hide the later one
+// from the new owner.
 func TestTwoVersionsOfAnEarlierOwnerAreBothNamed(t *testing.T) {
 	t.Parallel()
-	earlier := architectOf(t)
+	earlier := architectOf(t, "LEGION-208")
 	pool := migratedPool(t)
 	engine := returnEngine()
+	// LEGION-208 is recorded first: who acts on LEGION-209 is read from its Dispatch chain.
+	recordedAt(t, pool, "LEGION-208", "LEGION-208")
 	recordedAt(t, pool, "LEGION-209", "LEGION-208")
 	first := ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 	first.GivenBy = earlier

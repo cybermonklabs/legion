@@ -12,7 +12,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
+
+// seedIssueLifecycle opens key's own lifecycle under the workflow's authority, as admission opens
+// it with the issue's first claim (record.Store.OpenIssueLifecycle; decision 16 of
+// dispatch://INFRA-4730): the barrier each claim of the issue binds, in place of a tree's.
+func seedIssueLifecycle(t *testing.T, pool *pgxpool.Pool, key string) {
+	t.Helper()
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		project, err := claim.ProjectToken("LEGION")
+		if err != nil {
+			return err
+		}
+		_, err = record.NewStore().OpenIssueLifecycle(t.Context(), tx, project, key, treelifecycle.AuthorityWorkflow)
+		return err
+	})
+}
 
 // heldWork is one issue a path that resumes work is read against: a task its owner stopped, held
 // from testing (record.HoldTaskStopped), a parent whose plan has no acceptance step, held for the
@@ -79,9 +95,8 @@ func (h heldWork) stand(t *testing.T, pool *pgxpool.Pool, issue record.Issue) re
 // which held has none of (phase.RoleFor, OpenPhaseRole). So none of these paths gives either one
 // work: the ready of a claim (readyWorkerTask), the boot's resume by rule (booted, through
 // suspendedPhaseOwners), the silence repair (workerSilent, through phaseWorkerRecord), and the CI
-// settlement's wake of a released pod (wakeOnSettlement). The fifth path, a re-admission's
-// promotion, is admission's (admit's TestAStoppedTaskAndAHeldParentGetNoWorkFromAPromotion). Each
-// path's twins, issues with no plan rows in the same phases, are resumed as today.
+// settlement's wake of a released pod (wakeOnSettlement). Each path's twins, issues with no plan
+// rows in the same phases, are resumed as today.
 func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 	t.Parallel()
 	t.Run("the ready of a claim", func(t *testing.T) {
@@ -120,7 +135,7 @@ func TestAStoppedTaskAndAHeldParentGetNoWork(t *testing.T) {
 				const key = "LEGION-212"
 				h.stand(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 					Tree: key, Project: "LEGION", Title: "a root", Generation: 1, Status: "in_progress", Rank: "U"})
-				seedTreeLifecycle(t, pool, key)
+				seedIssueLifecycle(t, pool, key)
 				seedRuleSuspendedOwner(t, pool, project, key, h.role())
 				engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -216,9 +231,14 @@ func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 				pool := migratedPool(t)
 				engine := returnEngine()
 				root := stepRoot(t, pool, h.from)
-				parent := root.Key
-				seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
-					Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
+				// beneath stands under a hold from retro, which names it, and under its twin, which
+				// resumes all the same. A hold from testing has none: an open Dispatch child holds the
+				// start of testing in awaiting_children (R9 of dispatch://INFRA-3320), a wait of its own.
+				if !record.OpenChildHolds(h.from) {
+					parent := root.Key
+					seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
+						Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
+				}
 				want := record.Hold{From: h.from}
 				if h.held() {
 					h.stand(t, pool, root)
@@ -264,14 +284,14 @@ func TestARetryOfAStoppedTaskOrAHeldParentIsRefused(t *testing.T) {
 
 // seedSilentWorker records role's claim of issue as the silence repair finds a worker it would
 // prompt (aSilentTester, for any role): the admission slot the issue's phase keeps, or its open
-// tree, the role's phase row naming the entry the claim was last given, and the claim up and
+// lifecycle, the role's phase row naming the entry the claim was last given, and the claim up and
 // between turns, holding no task, its agent's last step two hours before the clock.
 func seedSilentWorker(t *testing.T, pool *pgxpool.Pool, issue record.Issue, role claim.Role) {
 	t.Helper()
 	if record.KeepsSlot(issue) {
 		seedSlot(t, pool, record.Slot{Issue: issue.Key, Index: 0, AdmittedAt: silenceClock()})
 	} else {
-		seedTreeLifecycle(t, pool, issue.Key)
+		seedIssueLifecycle(t, pool, issue.Key)
 	}
 	token := silenceToken(t, role)
 	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: role, Claim: token, Entry: silenceEntry, EntryTask: silenceEntryTask, EntryRaisedAt: silenceStep()})

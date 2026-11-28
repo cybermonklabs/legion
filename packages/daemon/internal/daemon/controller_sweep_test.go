@@ -20,19 +20,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// liveTrees is a Sandbox runtime's store in which every tree's lifecycle is open, so the sweep
-// keeps every issue Sandbox it consults one for, and in which unretired names the one claim stored
-// unretired, if any: the controller's Sandbox, when the sweep deletes it, is deleted on its claim's
-// account alone, never for want of a live tree.
+// liveTrees is a Sandbox runtime's store in which every issue's own lifecycle is open, so the
+// sweep keeps every issue Sandbox it consults one for, and in which unretired names the one claim
+// stored unretired, if any: the controller's Sandbox, when the sweep deletes it, is deleted on its
+// claim's account alone, never for want of a live issue.
 type liveTrees struct{ unretired claim.Token }
 
-func (liveTrees) TreeLive(context.Context, string, string) (bool, error) { return true, nil }
-func (liveTrees) IssueRunsElsewhere(context.Context, string, string, string) (string, error) {
-	return "", nil
-}
-func (liveTrees) IssueSandboxHome(context.Context, string, string) (string, error) {
-	return "", nil
-}
+func (liveTrees) IssueLive(context.Context, string, string) (bool, error) { return true, nil }
 func (s liveTrees) ClaimUnretired(_ context.Context, token claim.Token) (bool, error) {
 	return token != "" && token == s.unretired, nil
 }

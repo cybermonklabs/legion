@@ -138,10 +138,11 @@ type IdleReleaseMark struct {
 	Rows  []IdleReleaseRow
 }
 
-// IdleReleaseDecide is what ReleaseIdleIssue hands the view it reads to: a rule's decision as the
+// IdleReleaseDecide is what ReleaseIdleIssue hands the view it reads to, with its transaction, in
+// which the decision reads the fence its rows carry (record.NewFencedRow): a rule's decision as the
 // rows it writes (IdleReleaseMark), none where the rule writes nothing. It is an alias, so a caller
 // that names it and one that spells the func type out name one type.
-type IdleReleaseDecide = func(pods.IdleView) (IdleReleaseMark, error)
+type IdleReleaseDecide = func(context.Context, pgx.Tx, pods.IdleView) (IdleReleaseMark, error)
 
 // releaseKindIdle and releaseKindUnowned are the two release rules as issue_releases.kind spells
 // them: the release of a pod whose roles are all quiet, and the release of a pod no role can use
@@ -196,11 +197,11 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 
 // UnownedPods is every issue of project whose pod no role can use, in key order: one that holds
 // at least one claim, holds no claim whose state is outside ('failed', 'retired', 'suspended')
-// — no live claim, that is — and whose own row and whose tree root's row both still stand in
-// the workflow. It is the candidate list of the second release rule
-// (workflow.UnownedPodRelease), beside IdlePods, which answers the other half: the pods a live
-// claim still holds. Such a pod holds its reservation (2 CPU and 8 GiB at the defaults) with no
-// role that can take a turn in it, which is what the rule releases.
+// — no live claim, that is — and whose own row still stands in the workflow. It is the
+// candidate list of the second release rule (workflow.UnownedPodRelease), beside IdlePods, which
+// answers the other half: the pods a live claim still holds. Such a pod holds its reservation (2
+// CPU and 8 GiB at the defaults) with no role that can take a turn in it, which is what the rule
+// releases.
 //
 // The project is spelled two ways, and the two are not the same string, so this read takes
 // both. project is the issue record's own project (issues.project, the Dispatch project key
@@ -213,11 +214,12 @@ func issueKeys(rows pgx.Rows) ([]string, error) {
 //
 // outOfWorkflow is the workflow's list of statuses that take an issue out of it
 // (record.OutOfWorkflowStatuses), which the store does not restate: the gate every other path
-// reads is a Go predicate (pods.InWorkflowNotLingering) and a select cannot call one, so the
-// rule arrives as a list and the filter is this statement's three conditions per row — the
-// status outside that list, the phase short of done, and no linger.
+// reads is a Go predicate (pods.Standing.InWorkflow) and a select cannot call one, so the rule
+// arrives as a list and the filter is this statement's conditions per row — the issue's own
+// status outside that list and its own phase short of done, whatever stands above it (R20 of
+// dispatch://INFRA-3320).
 //
-// Those three conditions are what the filter is for, since the claim states alone would answer
+// Those conditions are what the filter is for, since the claim states alone would answer
 // every issue of the deployment whose roles ever stopped. Every candidate costs one transaction
 // of ReleaseIdleIssue, which opens by taking the daemon's global fact serializer
 // (treelifecycle.Serialize, pg_advisory_xact_lock(hashtext('legion.apply_fact'))) — the same
@@ -236,10 +238,9 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 	what := "list the pods of " + project + " no claim owns"
 	var issues []string
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+		rows, err := tx.Query(ctx, `select i.key from issues i
 			where i.project = $1
-			and i.status <> all($2) and i.phase <> 'done' and i.linger_until is null
-			and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+			and i.status <> all($2) and i.phase <> 'done'
 			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
 			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
 				and c.state not in ('failed', 'retired', 'suspended'))
@@ -256,29 +257,37 @@ func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, o
 	return issues, nil
 }
 
-// LeftPods is every child issue of project that has left the workflow while its tree runs on —
-// its phase done and its status one outOfWorkflow names, under a tree root that is in the
-// workflow and does not linger — and whose claims have all stopped, in key order: the candidates
-// of the close of such a pod (workflow.LeftPodClose), beside IdlePods and UnownedPods, which
-// answer the pods with a live claim and the pods of issues still in the workflow. Its arguments
-// are UnownedPods's, spelled as that method says.
+// LeftPods is every issue of project that has left the workflow by its own standing — its phase
+// done or its status one outOfWorkflow names, whatever stands above or below it (R20 of
+// dispatch://INFRA-3320) — whose claims have all stopped and whose own lifecycle neither the
+// operator holds nor a cleanup has reserved, in key order: the candidates of the close of such a
+// pod (workflow.LeftPodClose), beside IdlePods and UnownedPods, which answer the pods with a live
+// claim and the pods of issues still in the workflow. Its arguments are UnownedPods's, spelled as
+// that method says.
 //
-// Such an issue's own departure was its one close, and nothing of its running tree closes it
+// Such an issue's own departure was its one close (the workflow's leave), and nothing closes it
 // again, so a pod of it that still stands — one an operator's resume, task or retry, or the
 // controller's fresh session, built again after that close and whose roles have stopped since —
-// is a pod no other rule takes. Nearly every issue this answers has no pod at all, because its
-// close deleted it; the caller asks the runtime before it opens a transaction for one.
+// is a pod no other rule takes. Two lifecycles of an issue are left out, the two the idle view
+// reads (pods.IdleView.OperatorHolds, CleanupStarted): one the operator holds
+// (operatorHeldLifecycle), whose claims, pod and cleanup are the operator's, so its leave queued
+// no close (record.OperatorHolds), and one whose cleanup has started, which deletes the issue's
+// Sandbox itself and finishes a close's suspension without acting (issueStopFences); no claim of
+// it starts again before a fresh open of its lifecycle, which clears the reservation. Nearly
+// every issue this answers has no pod at all, because its close deleted it; the caller asks the
+// runtime before it opens a transaction for one.
 func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
-	what := "list the pods of " + project + " whose issue left the workflow under a running tree"
+	what := "list the pods of " + project + " whose issue left the workflow"
 	var issues []string
 	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
-			where i.project = $1 and i.key <> i.tree
-			and i.phase = 'done' and i.status = any($2) and i.linger_until is null
-			and root.status <> all($2) and root.phase <> 'done' and root.linger_until is null
+		rows, err := tx.Query(ctx, `select i.key from issues i
+			where i.project = $1
+			and (i.status = any($2) or i.phase = 'done')
 			and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
 			and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
 				and c.state not in ('failed', 'retired', 'suspended'))
+			and not exists (select 1 from issue_lifecycles l where l.project = $3 and l.issue = i.key
+				and (l.cleanup_started or `+operatorHeldLifecycle+`))
 			order by i.key`, project, outOfWorkflow, claimProject)
 		if err != nil {
 			return err
@@ -292,10 +301,18 @@ func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outO
 	return issues, nil
 }
 
+// operatorHeldLifecycle is the predicate, over an issue_lifecycles row, of a lifetime the operator
+// owns: it opened it and its cleanup has not confirmed (treelifecycle.Lifecycle.HeldByOperator,
+// which record.OperatorHolds reads), stated in SQL for the idle view and LeftPods, which cannot
+// call that method. Its columns are unqualified, so it reads the issue_lifecycles row of the
+// statement it stands in.
+const operatorHeldLifecycle = `(authority = 'operator' and cleanup_confirmed_at is null)`
+
 // ReleaseIdleIssue is the release's one transaction: it reads issue's idle view and hands it to
-// decide, and when decide answers rows it writes them and the release's mark together, so the
-// view the decision rests on and the mark that records it are one atomic act. It is the close's
-// one transaction too, for the pod of an issue the workflow has taken out
+// decide, with the transaction, in which decide reads the fence its rows carry
+// (record.NewFencedRow), and when decide answers rows it writes them and the release's mark
+// together, so the view the decision rests on and the mark that records it are one atomic act. It
+// is the close's one transaction too, for the pod of an issue the workflow has taken out
 // (IdleReleaseMark.Close): the rows that close writes rest on the same view, and nothing else.
 //
 // The mark records the ids the rows were given: first_row and last_row are the release's own
@@ -321,7 +338,7 @@ func (s *Store) LeftPods(ctx context.Context, project, claimProject string, outO
 // written, as a fault of the rule that decided it rather than of the database: the check of the
 // workspace is read through the role the mark names, so a release without one and without the
 // second rule's kind is a release nobody can carry out.
-func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide func(pods.IdleView) (IdleReleaseMark, error)) (bool, error) {
+func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, decide IdleReleaseDecide) (bool, error) {
 	if project == "" || issue == "" {
 		return false, errors.New("an idle release needs its project and its issue")
 	}
@@ -334,7 +351,7 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if err != nil {
 			return err
 		}
-		mark, err := decide(view)
+		mark, err := decide(ctx, tx, view)
 		if err != nil || len(mark.Rows) == 0 {
 			return err
 		}
@@ -734,11 +751,10 @@ func recordDecline(ctx context.Context, tx pgx.Tx, project, issue string, declin
 	return true, nil
 }
 
-// ForgetIdleDecline deletes the decline of issue's release, if one stands: the issue is done or
-// its tree is closing, so no idle release of its pod is coming, or a workspace check has just read
-// the workspace and found nothing that origin does not hold, so the work the decline named is gone
-// and no rule may keep the pod for it. A decline the table does not hold is success, so a retried
-// delete finishes.
+// ForgetIdleDecline deletes the decline of issue's release, if one stands: the issue is done, so
+// no idle release of its pod is coming, or a workspace check has just read the workspace and found
+// nothing that origin does not hold, so the work the decline named is gone and no rule may keep
+// the pod for it. A decline the table does not hold is success, so a retried delete finishes.
 //
 // It takes no serializer of its own. A caller that joins it to a transaction that also writes the
 // issue's lifecycle takes the lifecycle serializer (treelifecycle.Serialize) first, before this
@@ -800,20 +816,19 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // under this project's token, so its pod can find the record that project's daemon keeps of the
 // issue. A release decided on that record would queue rows keyed by the other project's issue,
 // which this project's outbox never runs (record's DueRows), under a mark that would never
-// clear. The root is read through the issue's own tree and needs no check of its own: a record
-// takes its root's project when the workflow writes it, so the root of a record of this project
-// is this project's too.
+// clear. Every standing the rules read is the issue's own (R20 of dispatch://INFRA-3320): the
+// stored tree and its root's generation are read only for the rows the release before requires
+// (pods.IdleView.TreeGeneration), the issue's own generation where that root is not recorded.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
-	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase string
-	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
-		root.phase, root.status, root.generation, root.linger_until,
-		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
-		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
-		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &view.LingerUntil,
-		&rootPhase, &view.Root.Status, &rootGeneration, &view.Root.LingerUntil,
-		&view.Root.AwaitingPerson, &view.Root.Answered)
+	var issueGeneration, treeGeneration int64
+	var issuePhase string
+	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation,
+		coalesce((select root.generation from issues root where root.key = i.tree), i.generation),
+		i.phase = 'awaiting_person', i.awaiting_answered_at is not null
+		from issues i where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
+		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &treeGeneration,
+		&view.AwaitingPerson, &view.Answered)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -821,8 +836,8 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read %s for its idle view: %w", issue, err)
 	}
 	view.Found = true
-	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
-	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
+	view.Phase = phase.Phase(issuePhase)
+	view.Generation, view.TreeGeneration = uint64(issueGeneration), uint64(treeGeneration)
 
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
@@ -859,11 +874,11 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 
 	// The rows of a close are read with the rows that wait for a role, in the one statement:
-	// a role stop of the issue (each supervise op a close, a linger's close or an idle release
-	// stops a role with), the issue's Sandbox suspension, the bound row of an open look of its
-	// production check, whose end is a close of its own, and a workspace check, which a left
-	// pod's close queues before any stop (the outbox kind keeps the name of the release's save,
-	// record.OutboxKindIssueBundle).
+	// a role stop of the issue (each supervise op a close or an idle release stops a role with,
+	// and the release before's tree close), the issue's Sandbox suspension, the bound row of an
+	// open look of its production check, whose end is a close of its own, and a workspace check,
+	// which a left pod's close queues before any stop (the outbox kind keeps the name of the
+	// release's save, record.OutboxKindIssueBundle).
 	if err := tx.QueryRow(ctx, `select
 		exists (select 1 from outbox where issue = $1 and `+idleWaitingRow+`),
 		exists (select 1 from outbox where issue = $1 and kind = 'supervise'
@@ -885,6 +900,14 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	view.Declined, err = readIdleDecline(ctx, tx, project, issue)
 	if err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the declined release of %s: %w", issue, err)
+	}
+	// The issue's own lifecycle, as LeftPods filters by it, which the close of a left pod reads
+	// (workflow.LeftPodClose): one the operator holds is the operator's to close, and one whose
+	// cleanup has started is that cleanup's. An issue with no lifecycle row reads neither.
+	err = tx.QueryRow(ctx, `select `+operatorHeldLifecycle+`, cleanup_started from issue_lifecycles
+		where project = $1 and issue = $2`, project, issue).Scan(&view.OperatorHolds, &view.CleanupStarted)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return pods.IdleView{}, fmt.Errorf("read the lifecycle of %s for its idle view: %w", issue, err)
 	}
 	// The pause's two facts, read by the view's project token as readOpenPauseByToken reads a
 	// pause (which says why): project_pauses and the pod holds carry its Dispatch key, which

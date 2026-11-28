@@ -27,9 +27,10 @@ var (
 // pod's own and went with it. A kept volume (keptVolume) is the Sandbox's own claim, and the
 // foreground delete takes it with the Sandbox: a close deletes a kept volume too. The issue's next
 // launch, if a person sets it todo again, makes the Sandbox afresh (ensureSandbox). The parent's
-// Sandbox is another issue's and is never touched.
-func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error)) error {
-	_, err := r.endIssuePod(ctx, issue, tree, authorize, nil, false)
+// Sandbox is another issue's and is never touched. podUID is the pod the close was queued for
+// (runtime.IssueSuspender).
+func (r *Runtime) SuspendIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error)) error {
+	_, err := r.endIssuePod(ctx, issue, podUID, authorize, nil, false)
 	return err
 }
 
@@ -56,21 +57,27 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 //
 // It answers, and calls writing, as runtime.IssueReleaser says. A kept Sandbox an earlier release
 // already released is one releasedKept reads so, which it leaves as it is.
-func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+func (r *Runtime) ReleaseIssue(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error),
 	writing func(context.Context) error) (bool, error) {
-	return r.endIssuePod(ctx, issue, tree, authorize, writing, true)
+	return r.endIssuePod(ctx, issue, podUID, authorize, writing, true)
 }
 
 // endIssuePod is SuspendIssue, and ReleaseIssue where keep is true: the issue's pod ended under
 // its launch turn, and then the issue's Sandbox deleted, or kept where keep is true and the
 // Sandbox owns a kept volume. Under the turn, the Sandbox is read first, and the steps after act
-// on that read. One labelled with another project, issue or tree is refused, and authorize is not
+// on that read. One labelled with another project or issue is refused, and authorize is not
 // asked: the daemon's authorize of a release commits the release where it acts (store's
 // CommitIssueRelease), and a committed release is never cancelled. A refusal after that commit
-// would come on every attempt, and the release would never end. Then authorize is asked, and
-// false acts on nothing. A Sandbox already gone, and a kept Sandbox an earlier release already
-// released (releasedKept), are done once authorize has answered, because the caller acts on that
-// answer as on any other. The Sandbox is set Suspended in the one write of its mode here
+// would come on every attempt, and the release would never end. The Sandbox is the issue's own by
+// its identity alone: its tree label is its creation's, read by no decision (decision 14 of
+// dispatch://INFRA-4730), so a Sandbox made under another gate root is still this issue's. Then
+// authorize is asked, and false acts on nothing. A Sandbox already gone, and a kept Sandbox an
+// earlier release already released (releasedKept), are done once authorize has answered, because
+// the caller acts on that answer as on any other. One whose pod is not podUID, where both name one
+// (runtime.OutlivesPod), holds a later launch's pod, and nothing of it is ended (R17 of
+// dispatch://INFRA-3320); that read comes after authorize, which for a release reads the same pod
+// under the same turn and cancels the release before it commits (the daemon's podStands), so no
+// committed release meets it. The Sandbox is set Suspended in the one write of its mode here
 // (suspendOver), and its pod is waited out. That write is setMode's JSON patch for a Sandbox that
 // is not Suspended yet, and nothing for one that is. A release reads the stored pod for that write
 // and a close reads none, so a release whose pod failed on the kept volume (volumeFault) sends one
@@ -80,12 +87,13 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // secretsReleasedAnnotation) and changes no mode.
 //
 // It answers true once it has deleted or kept the Sandbox it found, and false where it acted on
-// nothing (runtime.IssueReleaser): authorize's false, a Sandbox already gone, and the released
-// kept Sandbox read off the object the API answered (releasedKept), each with authorize's error,
-// if any. writing, where it is not nil, runs once that Sandbox is found and is this release's to
-// act on, after authorize and just before suspendOver, the first write. A delete and a release's
-// record on a kept Sandbox are kept for IssueSandbox until the store shows them (noteTaken).
-func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error),
+// nothing (runtime.IssueReleaser): authorize's false, a Sandbox already gone, the Sandbox that
+// holds a later pod, and the released kept Sandbox read off the object the API answered
+// (releasedKept), each with authorize's error, if any. writing, where it is not nil, runs once
+// that Sandbox is found and is this release's to act on, after authorize and just before
+// suspendOver, the first write. A delete and a release's record on a kept Sandbox are kept for
+// IssueSandbox until the store shows them (noteTaken).
+func (r *Runtime) endIssuePod(ctx context.Context, issue, podUID string, authorize func(context.Context) (bool, error),
 	writing func(context.Context) error, keep bool) (bool, error) {
 	act := "suspend"
 	if keep {
@@ -119,12 +127,17 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	if err != nil {
 		return false, err
 	}
-	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) || s.Labels[labelTree] != labelValue(tree) {
-		return false, fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue and tree", act, issue, s.Name)
+	if s.Labels[labelProject] != r.project || s.Labels[labelIssue] != labelValue(issue) {
+		return false, fmt.Errorf("%s issue %s: Sandbox %s does not belong to this issue", act, issue, s.Name)
 	}
 	authorized, err := authorize(ctx)
 	if err != nil || !authorized {
 		return false, err
+	}
+	if held := r.storedPod(name); ownedBy(held, s.UID) && runtime.OutlivesPod(podUID, string(held.UID)) {
+		r.log.Info("sandbox runtime: the issue's Sandbox holds a later pod than the one this "+act+" was queued for; ended nothing",
+			"issue", issue, "sandbox", name, "pod", podUID, "current_pod", held.UID)
+		return false, nil
 	}
 	// A kept Sandbox an earlier release already released holds nothing this release could take;
 	// a second patch would only write the same record again.

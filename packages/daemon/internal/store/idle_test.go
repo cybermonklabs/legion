@@ -62,8 +62,8 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !view.Found || view.Tree != rootIssue || view.Phase != phase.Implementing || view.Generation != 1 || view.Status != "in_progress" {
 		t.Fatalf("view = %+v, want the running issue", view)
 	}
-	if !view.IsRoot() || view.Root.AwaitingPerson || view.Root.LingerUntil != nil {
-		t.Fatalf("root = %+v, want the running root", view.Root)
+	if view.AwaitingPerson || view.TreeGeneration != 1 {
+		t.Fatalf("view = %+v, want an issue waiting on no person, its stored tree at generation 1", view)
 	}
 	if len(view.Claims) != 1 {
 		t.Fatalf("claims = %+v, want the one claim", view.Claims)
@@ -221,7 +221,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	kept, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(pods.IdleView) (IdleReleaseMark, error) {
+	kept, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{}, nil
 	})
 	if err != nil || kept {
@@ -236,7 +236,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 
 	var seen pods.IdleView
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		seen = view
 		return IdleReleaseMark{Generation: view.Generation, Role: claim.RoleImplementer, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"implementer"}`)},
@@ -284,7 +284,7 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 
 	// A second release never starts behind the first: the decision is asked, sees the mark, and
 	// nothing more is written.
-	again, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	again, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		if !view.Releasing {
 			t.Error("the second decision was handed a view that does not report the release in progress")
 		}
@@ -321,7 +321,7 @@ func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
 	const theirs = "OTHERPROJECT-9"
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHERPROJECT-9","generation":1,"treeGeneration":1,"role":"architect"}`)},
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHERPROJECT-9","role":"architect","generation":1}`), Boundary: true},
@@ -356,7 +356,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		Payload:  []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`),
 		Boundary: true}
 
-	refused, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	refused, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: view.Generation, Rows: []IdleReleaseRow{teardown}}, nil
 	})
 	if err == nil || refused {
@@ -370,7 +370,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		t.Fatalf("outbox rows = %d, want none written by a mark the store refused", rows)
 	}
 
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, view pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: []IdleReleaseRow{teardown}}, nil
 	})
 	if err != nil || !marked {
@@ -389,7 +389,7 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 	// Every row of the release reads the kind back out of the mark, whatever the fences then
 	// decide for the row itself.
 	decision, err := st.IssueRelease(ctx, "legion",
-		IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last},
+		IssueReleased{Issue: rootIssue, Generation: 1, Row: last},
 		record.OutOfWorkflow)
 	if err != nil || !decision.SuspendsNoRole {
 		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
@@ -433,9 +433,11 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 // pod no role can take a turn in, which is what the second release rule acts on. The claim
 // states alone are not the answer — every issue of the deployment whose roles ever stopped
 // would be one, and each candidate costs a transaction that takes the daemon's global fact
-// serializer — so the workflow filter is read here beside them: the member of a lingering tree,
-// the issue whose own phase is done and the one closed long ago all hold claims that have
-// stopped and are no candidates, and the pod with a live claim is the idle rule's.
+// serializer — so the workflow filter is read here beside them, over each issue's own standing
+// (R20 of dispatch://INFRA-3320): the issue whose own phase is done and the one closed long ago
+// hold claims that have stopped and are no candidates, the member of a lingering tree is one by its
+// own standing whatever its stored tree's root says, and the pod with a live claim is the idle
+// rule's.
 func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	t.Parallel()
 	const (
@@ -476,8 +478,92 @@ func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0] != unowned {
-		t.Fatalf("the candidates = %v, want %s alone: the pod no claim owns under a tree the workflow still runs", candidates, unowned)
+	if len(candidates) != 2 || candidates[0] != unowned || candidates[1] != underLinger {
+		t.Fatalf("the candidates = %v, want %s and %s: the pods no claim owns of issues in the workflow by their own standing", candidates, unowned, underLinger)
+	}
+}
+
+// LeftPods is the candidate list of the close of a left pod (workflow.LeftPodClose): the issues
+// out of the workflow by their own standing whose claims have all stopped, whatever stands above
+// or below them (R20 of dispatch://INFRA-3320). A child parked with its phase kept, a root, an
+// issue whose own phase is done and a member whose stored tree's root left are each one. An issue
+// still in the workflow is the second release rule's, one with a live claim the idle rule's, and
+// one with no claim has no pod. One whose own lifecycle the operator holds is the operator's to
+// close, and one whose cleanup has started is that cleanup's, and the idle view reads those two
+// facts for the same issues (pods.IdleView.OperatorHolds, CleanupStarted).
+func TestTheLeftPodCandidatesAreTheIssuesOutOfTheWorkflowByTheirOwnStanding(t *testing.T) {
+	t.Parallel()
+	const (
+		parent    = "LEGION-400"
+		parked    = "LEGION-401"
+		leftRoot  = "LEGION-402"
+		phaseDone = "LEGION-403"
+		underLeft = "LEGION-404"
+		inWork    = "LEGION-405"
+		live      = "LEGION-406"
+		noClaim   = "LEGION-407"
+		operators = "LEGION-408"
+		cleanedUp = "LEGION-409"
+	)
+	st := migratedStore(t)
+	ctx := context.Background()
+	if _, err := st.Pool().Exec(ctx, `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq) values
+		($1, $1, 'LEGION', 'a parent at work', 'implementing', 1, 'in_progress', 'A', 1),
+		($2, $1, 'LEGION', 'a child parked with its phase kept', 'implementing', 1, 'backlog', 'B', 1),
+		($3, $3, 'LEGION', 'a root closed', 'done', 1, 'done', 'C', 1),
+		($4, $4, 'LEGION', 'an issue whose own phase is done', 'done', 1, 'in_progress', 'D', 1),
+		($5, $3, 'LEGION', 'a member of the closed root, iceboxed', 'testing', 1, 'icebox', 'E', 1),
+		($6, $6, 'LEGION', 'an issue in the workflow', 'implementing', 1, 'in_progress', 'F', 1),
+		($7, $7, 'LEGION', 'a parked issue a live claim still holds', 'implementing', 1, 'backlog', 'G', 1),
+		($8, $8, 'LEGION', 'a parked issue with no claim', 'implementing', 1, 'backlog', 'H', 1),
+		($9, $9, 'LEGION', 'a parked issue the operator holds', 'implementing', 1, 'backlog', 'I', 1),
+		($10, $10, 'LEGION', 'a closed issue whose cleanup ran', 'done', 1, 'done', 'J', 1)`,
+		parent, parked, leftRoot, phaseDone, underLeft, inWork, live, noClaim, operators, cleanedUp); err != nil {
+		t.Fatalf("seed the project's issues: %v", err)
+	}
+	for _, c := range []supervise.Claim{
+		{Token: claim.Token("legion-legion-legion-401-implementer"), Issue: parked, Tree: parent, Role: claim.RoleImplementer, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-402-architect"), Issue: leftRoot, Tree: leftRoot, Role: claim.RoleArchitect, State: supervise.StateRetired},
+		{Token: claim.Token("legion-legion-legion-403-implementer"), Issue: phaseDone, Tree: phaseDone, Role: claim.RoleImplementer, State: supervise.StateFailed},
+		{Token: claim.Token("legion-legion-legion-404-tester"), Issue: underLeft, Tree: leftRoot, Role: claim.RoleTester, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-405-implementer"), Issue: inWork, Tree: inWork, Role: claim.RoleImplementer, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-406-implementer"), Issue: live, Tree: live, Role: claim.RoleImplementer, State: supervise.StateIdle},
+		{Token: claim.Token("legion-legion-legion-408-implementer"), Issue: operators, Tree: operators, Role: claim.RoleImplementer, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-409-implementer"), Issue: cleanedUp, Tree: cleanedUp, Role: claim.RoleImplementer, State: supervise.StateRetired},
+	} {
+		c.Project, c.TreeEpoch, c.Generation = "legion", 1, 1
+		if err := st.PutClaim(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started, cleanup_confirmed_at) values
+		('legion', $1, 1, 'workflow', false, null),
+		('legion', $2, 1, 'operator', false, null),
+		('legion', $3, 1, 'workflow', true, now())`, parked, operators, cleanedUp); err != nil {
+		t.Fatalf("seed the issues' own lifecycles: %v", err)
+	}
+
+	candidates, err := st.LeftPods(ctx, "LEGION", "legion", record.OutOfWorkflowStatuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{parked, leftRoot, phaseDone, underLeft}; !slices.Equal(candidates, want) {
+		t.Fatalf("the candidates = %v, want %v: the pods with no live claim of the issues out of the workflow by their own standing, but the operator's and a cleaned-up one", candidates, want)
+	}
+	for _, tc := range []struct {
+		issue                   string
+		operatorHolds, cleaning bool
+	}{
+		{issue: parked},
+		{issue: noClaim},
+		{issue: operators, operatorHolds: true},
+		{issue: cleanedUp, cleaning: true},
+	} {
+		if view := idleViewOf(t, st, tc.issue); view.OperatorHolds != tc.operatorHolds || view.CleanupStarted != tc.cleaning {
+			t.Errorf("the idle view of %s reads the operator holding it %t and its cleanup started %t, want %t and %t",
+				tc.issue, view.OperatorHolds, view.CleanupStarted, tc.operatorHolds, tc.cleaning)
+		}
 	}
 }
 
@@ -514,8 +600,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	if err := treelifecycle.Serialize(ctx, park); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := park.Exec(ctx, `update issues set phase = 'done', status = 'backlog',
-		linger_until = now() + interval '1 hour' where key = $1`, rootIssue); err != nil {
+	if _, err := park.Exec(ctx, `update issues set phase = 'done', status = 'backlog' where key = $1`, rootIssue); err != nil {
 		t.Fatalf("park the root: %v", err)
 	}
 	var closeRow int64
@@ -580,7 +665,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	// The consequence itself: the close's own suspension acts, which is what deletes the issue's
 	// Sandbox and takes the pod's role Secrets with it.
 	act, err := st.IssueSuspension(ctx, "legion",
-		IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: closeRow},
+		IssueClose{Issue: rootIssue, Generation: 1, Row: closeRow},
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close after the race = %t, %v; want it to act", act, err)
@@ -667,10 +752,11 @@ var keptRoleMessageRows = []struct {
 }
 
 // queueWaitingKeptRow queues payload's row on rootIssue as a row that has waited three attempts for
-// a session to hold its role (the daemon's publishKeptToRole).
+// a session to hold its role (the daemon's publishKeptToRole). It names a fence (record.FirstFence),
+// as every row of a fenced kind must; the idle reads judge no row by its fence.
 func queueWaitingKeptRow(t *testing.T, st *Store, payload record.OutboxPayload) {
 	t.Helper()
-	row, err := record.NewOutboxRow(rootIssue, payload, time.Now())
+	row, err := record.NewOutboxRow(rootIssue, record.Fenced(payload, record.FirstFence), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -863,7 +949,7 @@ func TestAStartWaitingForItsSlotHoldsNoPodUntilTheSlotComes(t *testing.T) {
 	}
 	teardownDecides := func(t *testing.T, r release, act ReleaseAct, cause ReleaseCause) {
 		decision, err := r.st.IssueRelease(r.ctx, "legion",
-			IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: r.last}, record.OutOfWorkflow)
+			IssueReleased{Issue: rootIssue, Generation: 1, Row: r.last}, record.OutOfWorkflow)
 		if err != nil || decision.Act != act || decision.Cause != cause {
 			t.Fatalf("the teardown = %s for %s, %v; want %s for %s", decision.Act, decision.Cause, err, act, cause)
 		}

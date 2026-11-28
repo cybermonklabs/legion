@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
@@ -19,13 +18,15 @@ import (
 // whose process a retirement already stopped (relaunchRefused); the start that met it retries once
 // the cleanup confirmed and a fresh admission opened the next epoch.
 
-// revive binds an explicitly spawned, resumed or retried claim to the open tree epoch before
-// launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
-// cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
-// asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced. place is the place the
-// request's caller already took for this launch in the pacing (RequestSpawn.Place), nil for every
-// request that took none (launchAfter).
+// revive binds an explicitly spawned, resumed or retried claim to its issue's open lifecycle
+// epoch before launching, and carries the epochs the admission bound into the claim the launch
+// rechecks: a claim a stop suspended and a return starts again binds the epoch the return's
+// promotion opened, not the one it bound before its stop. In-lifetime recovery only rechecks the
+// bound epoch (checkLaunch), so an old launch cannot cross a cleanup confirmation into a later
+// admission. exempt is whether the request that asked for it is one the wake pacing never makes
+// wait (exemptWake); every caller reads it from its own event, so a request that carries no such
+// field is paced. place is the place the request's caller already took for this launch in the
+// pacing (RequestSpawn.Place), nil for every request that took none (launchAfter).
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -46,7 +47,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place
 	if err != nil {
 		return err
 	}
-	m.claim.TreeEpoch = bound.TreeEpoch
+	m.claim.TreeEpoch, m.claim.IssueEpoch = bound.TreeEpoch, bound.IssueEpoch
 	if admitted != nil {
 		admitted()
 	}
@@ -259,34 +260,52 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	return relaunch.retry(ctx)
 }
 
-// RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):
-// only such a claim may move to another tree.
+// RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates).
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
 
 // Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
 // let go, so a project's pause has nothing of it to stop.
 func (c Claim) Gone() bool { return IsGone(c.State) }
 
-// Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
-// re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The
-// claim drops its old tree's epoch, so its next start binds the new tree's lifecycle and launches
-// in the new tree's resources, and keeps its session: the session is the issue's, on the host under
-// tmux, and under a sandbox in the runtime's session database (runtime.kubernetes.session_store
-// postgres), which every tree's pods read, so it resumes in the new tree while the old tree
-// lingers, whatever the old tree's cleanup takes. Only a claim that runs nothing is re-pointed; one
-// whose process still runs in the old tree is a wait (wait.ErrWaiting): the new tree's start
-// suspends it first, keeping its session, and waits for that suspension to land (the daemon's
-// outbox, stopElsewhere).
-func (m *Machine) Retree(ctx context.Context, tree string) error {
+// MarkLaunch records on the claim what the Dispatch chain reads of its issue when the claim is
+// started: tree, the issue's gate root (record.Chains.StateTree), which the claim's next launch
+// carries as its spawn spec's Tree, so as the role's LEGION_TREE and the pod label of a pod that
+// launch makes (Claim.LaunchTree, decision 13 of dispatch://INFRA-4730), and holds, whether the
+// issue holds its own design gate (Claim.HoldsGate, record.Chains.HoldsOwnGate). The daemon's
+// outbox writes both at each start, so a change of parent that makes the issue a root, or takes a
+// root under a parent that holds the gate, reaches the claim's next launch. The mark is what the
+// machine reads a gate holder's architect by (Claim.treeRoot); a claim already marked so writes
+// nothing.
+//
+// LaunchTree stays the tree the claim's process was launched under while one runs (a state that
+// holds the process's capability). An architect's such claim is relaunched in its own session
+// under the new gate root by the GateRootMoved event the caller posts for architects alone
+// (relaunchUnder), so its plugin registers the gate root again (R22 of dispatch://INFRA-3320); a
+// phase worker keeps the tree of its launch until a start finds it with no process. A claim with
+// no process writes tree for the launch its start makes.
+func (m *Machine) MarkLaunch(ctx context.Context, tree string, holds bool) error {
 	m.mu.Lock()
 	defer m.unlock()
-	if m.claim.Tree == tree {
+	changed := m.claim.HoldsGate != holds
+	if changed {
+		m.log.Info("supervise: the claim's issue holds its own design gate", "holds_gate", holds)
+		m.claim.HoldsGate = holds
+	}
+	if !HoldsCapability(m.claim.State) && m.claim.LaunchTree != tree {
+		m.claim.LaunchTree, changed = tree, true
+	}
+	if !changed {
 		return nil
 	}
-	if !m.claim.RunsNothing() {
-		return wait.Errorf("re-point claim %s from tree %s to %s: it is %s there", m.claim.Token, m.claim.Tree, tree, m.claim.State)
-	}
-	m.log.Info("supervise: the claim's issue moved to another tree", "from", m.claim.Tree, "to", tree)
-	m.claim.Tree, m.claim.TreeEpoch = tree, 0
 	return m.persist(ctx)
+}
+
+// LaunchedTree is the tree the claim's launch names (Claim.LaunchTree): the gate root its issue
+// stood under when the daemon last started it, or, for a claim no start of this release has
+// marked (one the operator spawned, one the release before launched), the tree it stores.
+func (c Claim) LaunchedTree() string {
+	if c.LaunchTree != "" {
+		return c.LaunchTree
+	}
+	return c.Tree
 }

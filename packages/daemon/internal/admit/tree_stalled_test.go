@@ -145,7 +145,7 @@ func passFacts(t *testing.T, pool *pgxpool.Pool) (record.LineFacts, []record.Slo
 		if facts, err = record.ReadLineFacts(ctx, tx, records, testProject, issues, nil); err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		if _, facts, _, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil, fixedNow); err != nil {
+		if _, facts, _, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil); err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
 	})
@@ -316,12 +316,13 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	admission.UseStalledTreeNotice(bound)
 	registerController(t, pool)
 
-	// Tree A: a root in implementing on an open pull request, a child waiting for its merge on
-	// a merged one, and a child the record shows as done. The done child is no member of the
-	// tree — the pass's live read leaves it out, and the measure would drop it in any case —
-	// so a late GitHub event on its old pull request moves nothing and the notice never names
-	// it.
-	seedQuietRoot(t, pool, stalledRootA, "A", phase.Implementing)
+	// Tree A: a root on an open pull request waiting for its open Dispatch child (the
+	// children-first wait, which an open child under a started parent puts it in), a child
+	// waiting for its merge on a merged one, and a child the record shows as done. The done child
+	// is no member of the tree — the pass's live read leaves it out, and the measure would drop
+	// it in any case — so a late GitHub event on its old pull request moves nothing and the
+	// notice never names it.
+	seedQuietRoot(t, pool, stalledRootA, "A", phase.AwaitingChildren)
 	seedQuietChild(t, pool, stalledRootA, stalledChildA, "A1", phase.Merging, "in_progress")
 	seedQuietChild(t, pool, stalledRootA, stalledDoneA, "A2", phase.Done, record.DoneStatus)
 	seedPullRequest(t, pool, stalledRootA, 41, record.PullRequestOpen)
@@ -359,7 +360,7 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	}
 	want := []stalledNotice{
 		toldOf(stalledRootA, 7,
-			stalledRootA+" is in implementing. The implementer has the turn. Pull request 41 is open.",
+			stalledRootA+" is in awaiting_children. No role works this phase. Pull request 41 is open.",
 			stalledChildA+" is in merging. The merger has the turn. Pull request 42 is merged."),
 		toldOf(stalledRootB, 7, stalledRootB+" is in retro. The implementer has the turn. Pull request 43 is merged."),
 	}
@@ -450,6 +451,94 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	tick(t, pool, admission, "after-the-promotion")
 	if got := stalledRoots(t, pool); got != nil {
 		t.Fatalf("the pass after the promotion told the controller of %v, want nothing: a tree the daemon started an hour ago has not stopped", got)
+	}
+}
+
+// k25 (R15 of dispatch://INFRA-3320): the stalled-tree measure reads a gate root's movement over
+// the issues whose gate root it is (record.TreeMember, read from the pass's chains), never over
+// the issues whose stored tree names it, and tells the controller once until that movement
+// passes the mark. The stored tree is what today's daemon wrote at each insert and kept: here
+// LEGION-502 stands under LEGION-501 on Dispatch's chain but its record names a tree the daemon
+// never recorded, and LEGION-512 stands under LEGION-511 but its record names LEGION-501's tree.
+// A measure grouped by the stored tree would read LEGION-501 as still while its child works and
+// LEGION-511 as moving only when LEGION-511 itself moves, and would name each child in the other
+// tree's notice.
+func TestTheStalledTreeMeasureGroupsByGateRoot(t *testing.T) {
+	const (
+		rootR  = "LEGION-501"
+		childM = "LEGION-502"
+		rootS  = "LEGION-511"
+		childN = "LEGION-512"
+	)
+	pool := migratedPool(t)
+	bound := deploymentBound(t, "")
+	admission := quiet(t, 4)
+	admission.UseStalledTreeNotice(bound)
+	registerController(t, pool)
+
+	// Each root waits for its open child (the children-first wait), and each child is at work
+	// in implementing.
+	seedQuietRoot(t, pool, rootR, "A", phase.AwaitingChildren)
+	seedQuietRoot(t, pool, rootS, "B", phase.AwaitingChildren)
+	for _, child := range []struct{ key, parent, stored string }{
+		{childM, rootR, "LEGION-509"},
+		{childN, rootS, rootR},
+	} {
+		issue := quietRootRecord(child.key, "C", phase.Implementing)
+		issue.Tree, issue.Parent, issue.HandedOver = child.stored, new(child.parent), false
+		putIssue(t, pool, issue)
+		takeSlot(t, pool, child.key)
+	}
+	records := claimStore(t, pool)
+	seedClaim(t, records, rootR, rootR, claim.RoleArchitect, supervise.StateIdle)
+	seedClaim(t, records, rootR, childM, claim.RoleImplementer, supervise.StateIdle)
+	seedClaim(t, records, rootS, rootS, claim.RoleArchitect, supervise.StateIdle)
+	seedClaim(t, records, rootS, childN, claim.RoleImplementer, supervise.StateIdle)
+
+	toldOf := func(root string, hours float64, child string) stalledNotice {
+		reason := fmt.Sprintf("%s has stopped. The tree has been quiet for %.1f hours. No agent of the tree is at work.", root, hours) +
+			"\n" + root + " is in awaiting_children. No role works this phase. The record holds no pull request." +
+			"\n" + child + " is in implementing. The implementer has the turn. The record holds no pull request."
+		return stalledNotice{issue: root, reason: reason + "\nRead the tree and decide what it needs." +
+			" You can ask a role what it waits on. You can park the tree."}
+	}
+
+	// LEGION-502 works under LEGION-501 an hour before the measure, so LEGION-501's tree has
+	// moved; LEGION-511 and LEGION-512 have been still for seven hours, so LEGION-511's tree is
+	// told, naming both of its members.
+	settled := settleMovements(t, pool, rootR, childM, rootS, childN)
+	measuredAt := settled.Add(7 * time.Hour)
+	markMoved(t, pool, childM, measuredAt.Add(-time.Hour))
+	admission.now = func() time.Time { return measuredAt }
+	tick(t, pool, admission, "gate-root-stall-1")
+	if got, want := stalledNotices(t, pool), []stalledNotice{toldOf(rootS, 7, childN)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the controller was told %#v, want %#v: each gate root is measured over the issues whose gate root it is", got, want)
+	}
+	if told := issue(t, pool, rootS).TreeStalledToldAt; told == nil || !told.Equal(settled) {
+		t.Fatalf("%s carries the stall mark %v, want its members' last movement %s", rootS, told, settled.Format(time.RFC3339Nano))
+	}
+
+	// A later pass of the same stall tells nothing.
+	publishStalledNotices(t, pool)
+	later := measuredAt.Add(time.Hour)
+	markMoved(t, pool, childM, later.Add(-time.Hour))
+	admission.now = func() time.Time { return later }
+	tick(t, pool, admission, "gate-root-stall-2")
+	if got := stalledRoots(t, pool); got != nil {
+		t.Fatalf("a second pass of the same stall told the controller of %v, want nothing", got)
+	}
+
+	// LEGION-512 moves, which is a movement of LEGION-511's tree whatever its stored tree says,
+	// and stops again: LEGION-511 is told once more and LEGION-501, whose child goes on working,
+	// is not.
+	moved := later.Add(time.Hour)
+	markMoved(t, pool, childN, moved)
+	stalledAgainAt := moved.Add(7 * time.Hour)
+	markMoved(t, pool, childM, stalledAgainAt.Add(-time.Hour))
+	admission.now = func() time.Time { return stalledAgainAt }
+	tick(t, pool, admission, "gate-root-stall-3")
+	if got, want := stalledRoots(t, pool), []string{rootS}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after %s moved and stopped, the controller was told of %v, want %v alone", childN, got, want)
 	}
 }
 
@@ -632,7 +721,7 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		seedQuietRoot(t, pool, suspended, "I", phase.Implementing)
 		seedClaim(t, records, suspended, suspended, claim.RoleImplementer, supervise.StateSuspended)
 		inTx(t, pool, func(tx pgx.Tx) {
-			row, err := record.NewOutboxRow(suspended, record.Notice{Kind: "held", Role: claim.RoleImplementer,
+			row, err := record.NewFencedRow(context.Background(), tx, record.NewStore(), suspended, record.Notice{Kind: "held", Role: claim.RoleImplementer,
 				Phase: phase.Implementing, Reason: string(record.HoldEscalated)}, fixedNow)
 			if err != nil {
 				t.Fatalf("build the notice queued to %s's suspended role: %v", suspended, err)
@@ -1430,8 +1519,8 @@ func TestAFullCapWithAHandedOverRootPastItsReviewStillMoves(t *testing.T) {
 	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
 	tick(t, pool, admission, "measure")
 
-	if !treeOpen(t, pool, carried) {
-		t.Fatalf("the tree of %s is closed after the pass: the premise is that its promotion opens it under the full cap", carried)
+	if !issueOpen(t, pool, carried) {
+		t.Fatalf("%s holds no open lifecycle after the pass: the premise is that its promotion starts it under the full cap", carried)
 	}
 	if got := stalledRoots(t, pool); got != nil {
 		t.Fatalf("the controller was told of %v, want nothing: the promotion of this pass starts %s under the full cap, so the line moves",

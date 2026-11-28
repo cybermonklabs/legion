@@ -38,7 +38,7 @@ import (
 // reviewer`: it launches its tester before its reviewer, and the same check of the order must fail.
 func TestAPlanInAnyOrderRunsToDone(t *testing.T) {
 	t.Parallel()
-	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
+	r := newPlanRig(t, 2, config.Project{})
 	walked, control := r.issues[0].key, r.issues[1].key
 	order := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
 	r.givePlan("implementer", "reviewer", "tester")
@@ -124,7 +124,7 @@ func (r *ownerStepsRig) launchedInOrder(steps []claim.Role) error {
 // merge end the walk at done.
 func TestAStepThatReadsAPullRequestWaitsForAnImplementer(t *testing.T) {
 	t.Parallel()
-	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 1, config.Project{})
+	r := newPlanRig(t, 1, config.Project{})
 	r.testerFirstRefused()
 
 	r.givePlan("implementer", "planner")
@@ -281,13 +281,18 @@ func (r *inFlightRig) approvedIntoRetro() error {
 	return nil
 }
 
-// newReleaseBeforeRig is the store the release before leaves, every migration applied, seeded with
-// the walk's issue and the control in reviewing on the plan `implementer reviewer`
-// (seedPlanInReviewing), the control's plan rows deleted, with the daemon booted on it at the real
-// Dispatch of this package's tests, and each issue's recorded claims resumed in their sessions.
+// newReleaseBeforeRig is the store the release before leaves, every migration but this release's
+// two applied (storeWithholding), seeded with the walk's issue and the control in reviewing on the
+// plan `implementer reviewer` (seedPlanInReviewing), the control's plan rows deleted, migrated to
+// this release's schema as a deploy migrates it, with the daemon booted on it at the real Dispatch
+// of this package's tests, whose events reach the daemon on the broker they share (newPlanRig), and
+// each issue's recorded claims resumed in their sessions.
 func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	t.Helper()
-	proof := newLiveProofOn(t, workflowNATS(t))
+	natsURL := workflowNATS(t)
+	proof := newLiveProofOn(t, natsURL)
+	st, dsn := storeWithholding(t, "legion_release_before", 20261122154644, 20261122154645)
+	proof.st, proof.cfg.PostgresDSN = st, dsn
 	proof.cfg.Project = "RB" + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
 	proof.cfg.AdmissionCap = 16
@@ -299,7 +304,7 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &inFlightRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
+	r := &inFlightRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{natsURL: natsURL}),
 		github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
@@ -324,6 +329,9 @@ func newReleaseBeforeRig(t *testing.T) *inFlightRig {
 	r.control, r.walks = r.walks[1], r.walks[:1]
 	for _, table := range []string{"plan_steps", "plan_tasks", "issue_plans"} {
 		r.exec("delete from "+table+" where issue = $1", r.control.key)
+	}
+	if _, err := st.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate the store the release before left to this release's schema: %v", err)
 	}
 	r.boot()
 	for _, issue := range []*inFlightIssue{r.walks[0], r.control} {

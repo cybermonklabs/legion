@@ -1777,8 +1777,9 @@ func TestACacheThatCannotBeMadeNeverFailsTheReconciliation(t *testing.T) {
 	}
 }
 
-// A tree's cleanup lists the tree's Sandboxes, which a cache never is: it survives.
-func TestCleanupTreeNeverListsACache(t *testing.T) {
+// An issue's cleanup deletes the issue's own Sandbox by its name, which a cache never is: it
+// survives.
+func TestAnIssueCleanupNeverTakesACache(t *testing.T) {
 	t.Parallel()
 	g := newRig(t, nil)
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
@@ -1786,14 +1787,14 @@ func TestCleanupTreeNeverListsACache(t *testing.T) {
 	}
 	g.spawn(rootSpec(t))
 	g.store.close(testTree)
-	if err := g.r.CleanupTree(g.ctx, testTree); err != nil {
-		t.Fatalf("CleanupTree: %v", err)
+	if err := g.r.CleanupIssue(g.ctx, testTree); err != nil {
+		t.Fatalf("CleanupIssue: %v", err)
 	}
 	if g.sandbox(SandboxName(rootToken)) != nil {
-		t.Fatal("the tree's own Sandbox survived its cleanup")
+		t.Fatal("the issue's own Sandbox survived its cleanup")
 	}
 	if g.sandbox(CacheSandboxName(testProject, cacheRepo)) == nil {
-		t.Error("the tree's cleanup deleted the repository cache")
+		t.Error("the issue's cleanup deleted the repository cache")
 	}
 }
 

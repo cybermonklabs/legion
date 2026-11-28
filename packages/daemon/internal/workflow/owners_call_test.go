@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -15,12 +16,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// treeArchitectsRead is what an architect route reads of key for the architect of key's tree root
-// (api's architectForIssue and openStep): that architect's claim, the issue's generation and the
-// run of the step it stands in. The daemon serves its routes only once it has booted, so the read
-// comes after the boot's open of each run no start counted, by engine, the scenario's daemon
-// (bootBefore): a run the release before started is read as the boot opened it, as its fact reads
-// it.
+// treeArchitectsRead is what an architect route reads of key for the architect of key's gate root
+// on its Dispatch chain (record.Chains.StateTree; api's ownsOnChain and openStep): that
+// architect's claim, the issue's generation and the run of the step it stands in. The daemon
+// serves its routes only once it has booted, so the read comes after the boot's open of each run
+// no start counted, by engine, the scenario's daemon (bootBefore): a run the release before
+// started is read as the boot opened it, as its fact reads it.
 func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) (claim.Token, uint64, record.StepEntry) {
 	t.Helper()
 	bootBefore(t, pool, engine)
@@ -36,27 +37,28 @@ func treeArchitectsRead(t *testing.T, pool *pgxpool.Pool, engine *Engine, key st
 	if issue, err = records.Issue(ctx, tx, key); err != nil {
 		t.Fatalf("the route's read of %s: %v", key, err)
 	}
-	if issue != nil {
-		if entry, err = records.OpenStep(ctx, tx, key); err != nil {
-			t.Fatalf("the route's read of %s's open step: %v", key, err)
-		}
-	}
-
 	if issue == nil {
 		t.Fatalf("the route's read: %s is not recorded", key)
 	}
-	return claim.Token(treeRoleToken(t, issue.Tree, claim.RoleArchitect)), issue.Generation, entry
+	if entry, err = records.OpenStep(ctx, tx, key); err != nil {
+		t.Fatalf("the route's read of %s's open step: %v", key, err)
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, records, issue.Project, []string{key})
+	if err != nil {
+		t.Fatalf("the route's read of %s's chain: %v", key, err)
+	}
+	return claim.Token(treeRoleToken(t, chains.StateTree(key), claim.RoleArchitect)), issue.Generation, entry
 }
 
-// rootsSignOff is the sign_off of key by its tree root's architect, as the route of engine's daemon
-// builds it.
+// rootsSignOff is the sign_off of key by its gate root's architect, as the route of engine's
+// daemon builds it.
 func rootsSignOff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) intake.SignOff {
 	t.Helper()
 	by, generation, entry := treeArchitectsRead(t, pool, engine, key)
 	return intake.SignOff{Issue: key, By: by, Generation: generation, Entry: entry}
 }
 
-// rootsMoveBack is the request_backward_move of key to to by its tree root's architect, as the
+// rootsMoveBack is the request_backward_move of key to to by its gate root's architect, as the
 // route of engine's daemon builds it.
 func rootsMoveBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, to phase.Phase, reason string) intake.BackwardMove {
 	t.Helper()
@@ -64,24 +66,47 @@ func rootsMoveBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 	return intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: to, Reason: reason, By: by, Generation: generation, Entry: entry}
 }
 
-// otherRoot is the root LEGION-300 of a tree of its own, standing at admitted, generation 1: the
-// tree an adoption moves an issue of LEGION-208's into.
+// otherRoot is the root LEGION-300, standing at admitted, generation 1, with no parent on its
+// Dispatch chain: the issue a person moves an issue of LEGION-208's under in Dispatch.
 func otherRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 	t.Helper()
 	root := record.Issue{Key: "LEGION-300", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-300",
 		Project: "LEGION", Title: "another root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	seedIssue(t, pool, root)
-	seedTreeLifecycle(t, pool, root.Key)
 	return root
 }
 
-// adoptInto moves key into root's tree as production's adoption writes it (moveIntoTree), at the
-// issue's next generation.
-func adoptInto(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, root record.Issue) {
+// reparentTo moves key under parent on its Dispatch chain, as a person's change of parent reaches
+// the copy and admission records it on the record (seedIssue writes both): its run, its
+// generation and its plan stay with it (R17 of dispatch://INFRA-3320).
+func reparentTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent string) {
+	t.Helper()
+	moved := issueOf(t, pool, engine, key)
+	moved.Parent = &parent
+	seedIssue(t, pool, moved)
+}
+
+// newRunOf opens key's next run, standing at admitted at the next generation, through the one
+// path that opens a run (NewRun, decision 8 of dispatch://INFRA-4730), as a person's todo on its
+// closed record opens it, with parent the Dispatch parent the todo's reading carries: the window
+// in which a route's read of the run that ended reaches a fact of the next.
+func newRunOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent string) {
 	t.Helper()
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		return engine.moveIntoTree(ctx, tx, issue, root, intake.AdoptedChild{Issue: issue.Key, Parent: root.Key})
+		return engine.NewRun(ctx, tx, issue, intake.DispatchIssue{Key: key, ResolvedRepo: issue.Repo, Seq: issue.LastDispatchSeq + 1,
+			Type: "issue.updated", Status: "todo", Title: issue.Title, Parent: parent, Rank: issue.Rank})
 	})
+}
+
+// notOwned is the 403 ISSUE_NOT_OWNED the workflow answers op on key from by, an architect that
+// does not act on key on its Dispatch chain when the fact commits (architectCallRefusal over
+// intake.CallRefusal, the rule every architect's call is held to): it names owner, the issue
+// whose architect acts on key now, and that architect's claim.
+func notOwned(t *testing.T, op, key string, by claim.Token, owner string) *intake.Refusal {
+	t.Helper()
+	return &intake.Refusal{Status: 403, Code: "ISSUE_NOT_OWNED", Message: fmt.Sprintf(
+		"%s of %s is refused: on its Dispatch chain %s is neither the issue of %s nor under it; the architect of %s (%s) acts on it",
+		op, key, key, by, owner, treeRoleToken(t, owner, claim.RoleArchitect))}
 }
 
 // todoChild is a child of LEGION-208 at the status todo, the record a release or a person's todo
@@ -124,19 +149,20 @@ func assertStopped(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string,
 	}
 }
 
-// The route of stop_task judges the owner and the run on a read of the record it takes before the
-// fact lock (api's architectForIssue), and an adoption, a re-entry or a member's leaving the tree
-// can commit before the fact applies. The fact judges both again on the record it reads: an
-// architect that owns the issue no longer is refused ISSUE_OUTSIDE_TREE, and a stop of a run the
-// issue left TASK_STALE_GENERATION, before the task of the run that stands now is touched. Each
-// refusal writes nothing and leaves the fact unspent. Each control is the same stop with no such
-// change between the read and the fact, and it stops the task.
+// The route of stop_task judges the caller and the run on reads it takes before the fact lock
+// (api's ownsOnChain), and a change of parent in Dispatch or a new run can commit before the fact
+// applies. The fact judges both again where it commits (requestRefusal): an architect that acts
+// on the issue on its Dispatch chain no longer is refused ISSUE_NOT_OWNED, naming the architect
+// that does, and a stop of a run the issue left TASK_STALE_GENERATION, before the task of the run
+// that stands now is touched. Each refusal writes nothing and leaves the fact unspent. Each
+// control is the same stop with no such change between the read and the fact, and it stops the
+// task.
 func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 	t.Parallel()
-	for _, adopted := range []bool{false, true} {
+	for _, moved := range []bool{false, true} {
 		name := "control: the owner's stop of the run its route read stops the task"
-		if adopted {
-			name = "an adoption into another tree overtook the stop: ISSUE_OUTSIDE_TREE"
+		if moved {
+			name = "a change of parent in Dispatch took the child from under the owner before the stop: ISSUE_NOT_OWNED"
 		}
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -146,30 +172,23 @@ func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 			child := todoChild(t, pool, "LEGION-209")
 			seedStepsPlan(t, pool, child.Key, child.Generation, "implementer", "tester")
 			stop := ownersStop(t, child, "a")
-			if adopted {
-				// The adoption raises the child's generation in LEGION-300's tree, whose architect
-				// gives the new run a plan whose task has the same id.
-				root := otherRoot(t, pool)
-				adoptInto(t, pool, engine, child.Key, root)
-				moved := issueOf(t, pool, engine, child.Key)
-				given := ownersPlan(t, moved.Key, moved.Generation, 1, givenTask(t, "The new owner's work.", "implementer", "reviewer"))
-				given.GivenBy = claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect))
-				mustTake(t, "the new owner's plan", apply(planID(moved.Key, moved.Generation, 1), given))
+			if moved {
+				reparentTo(t, pool, engine, child.Key, otherRoot(t, pool).Key)
 			}
 			before := standingOf(t, pool, engine, child.Key, true)
 			result := apply("stop", stop)
-			if !adopted {
+			if !moved {
 				assertStopped(t, pool, engine, child.Key, result)
 				return
 			}
-			assertStopRefused(t, pool, engine, child.Key, "stop", result, intake.IssueOutsideTree(child.Key, stop.By, "stop_task"), before)
+			assertStopRefused(t, pool, engine, child.Key, "stop", result, notOwned(t, "stop_task", child.Key, stop.By, "LEGION-300"), before)
 		})
 	}
 
-	for _, reentered := range []bool{false, true} {
+	for _, rerun := range []bool{false, true} {
 		name := "control: the owner's stop of the run its route read stops the running task"
-		if reentered {
-			name = "a person's todo re-entered the child at its next generation before the stop: TASK_STALE_GENERATION"
+		if rerun {
+			name = "a new run of the child opened before the stop: TASK_STALE_GENERATION"
 		}
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -180,23 +199,19 @@ func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 			seedStepsPlan(t, pool, child.Key, child.Generation, "implementer", "tester")
 			firstStep(t, pool, engine, child.Key)
 			stop := ownersStop(t, issueOf(t, pool, engine, child.Key), "a")
-			if reentered {
+			if rerun {
 				// The same owner gives the new run a plan whose task has the same id.
-				todo := intake.DispatchIssue{Key: child.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated", Status: "todo",
-					Title: child.Key, Parent: "LEGION-208", Rank: "V"}
-				if _, err := intake.ApplyFact(t.Context(), pool, "dispatch", "todo", todo, engine, admissionStub{}); err != nil {
-					t.Fatalf("the person's todo: %v", err)
-				}
+				newRunOf(t, pool, engine, child.Key, "LEGION-208")
 				now := issueOf(t, pool, engine, child.Key)
 				if now.Generation != child.Generation+1 || now.Phase != phase.Admitted {
-					t.Fatalf("premise: the todo left %s at generation %d in %s, want generation %d at admitted", child.Key, now.Generation, now.Phase, child.Generation+1)
+					t.Fatalf("premise: the new run left %s at generation %d in %s, want generation %d at admitted", child.Key, now.Generation, now.Phase, child.Generation+1)
 				}
 				mustTake(t, "the new run's plan", apply(planID(child.Key, now.Generation, 1),
 					ownersPlan(t, child.Key, now.Generation, 1, givenTask(t, "The work again.", "implementer", "reviewer"))))
 			}
 			before := standingOf(t, pool, engine, child.Key, true)
 			result := apply("stop", stop)
-			if !reentered {
+			if !rerun {
 				assertStopped(t, pool, engine, child.Key, result)
 				return
 			}
@@ -204,30 +219,31 @@ func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 		})
 	}
 
-	// A sub-architect owns each issue of its tree through its own issue there
-	// (record.ArchitectOfTree). When an adoption takes that issue to another tree, the sub-architect
-	// owns the rest of the tree no longer, and their generations do not move: only the owner's
-	// judgment refuses the stop.
+	// The architect of an issue above the stopped one on its Dispatch chain acts on it, through
+	// its own issue there (intake.CallRefusal). When a person moves the stopped issue out from
+	// under that issue in Dispatch, that architect acts on it no longer, and its generation does
+	// not move: only the judgment of who acts on the issue refuses the stop.
 	for _, left := range []bool{false, true} {
-		name := "control: a sub-architect's stop of a task of its tree stops it"
+		name := "control: the stop of the architect above the issue on its chain stops it"
 		if left {
-			name = "the sub-architect's own issue left the tree before the stop: ISSUE_OUTSIDE_TREE at the same generation"
+			name = "the issue left the chain under the caller's issue before the stop: ISSUE_NOT_OWNED at the same generation"
 		}
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
 			apply := applyFacts(t, pool, engine)
 			stepRoot(t, pool, phase.Implementing)
-			sub := todoChild(t, pool, "LEGION-209")
+			above := todoChild(t, pool, "LEGION-209")
 			target := stepChild(t, pool, "LEGION-210", phase.Admitted, nil)
+			reparentTo(t, pool, engine, target.Key, above.Key)
 			seedStepsPlan(t, pool, target.Key, target.Generation, "implementer", "tester")
 			firstStep(t, pool, engine, target.Key)
-			stop := intake.TaskStopped{Issue: target.Key, Task: "a", By: claim.Token(treeRoleToken(t, sub.Key, claim.RoleArchitect)),
+			stop := intake.TaskStopped{Issue: target.Key, Task: "a", By: claim.Token(treeRoleToken(t, above.Key, claim.RoleArchitect)),
 				Generation: issueOf(t, pool, engine, target.Key).Generation}
 			if left {
-				adoptInto(t, pool, engine, sub.Key, otherRoot(t, pool))
-				if now := issueOf(t, pool, engine, target.Key); now.Generation != stop.Generation || now.Tree != "LEGION-208" {
-					t.Fatalf("premise: %s stands at generation %d in the tree %s, want generation %d in LEGION-208", target.Key, now.Generation, now.Tree, stop.Generation)
+				reparentTo(t, pool, engine, target.Key, "LEGION-208")
+				if now := issueOf(t, pool, engine, target.Key); now.Generation != stop.Generation {
+					t.Fatalf("premise: %s stands at generation %d, want generation %d", target.Key, now.Generation, stop.Generation)
 				}
 			}
 			before := standingOf(t, pool, engine, target.Key, true)
@@ -236,20 +252,21 @@ func TestAnOwnersStopIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 				assertStopped(t, pool, engine, target.Key, result)
 				return
 			}
-			assertStopRefused(t, pool, engine, target.Key, "stop", result, intake.IssueOutsideTree(target.Key, stop.By, "stop_task"), before)
+			assertStopRefused(t, pool, engine, target.Key, "stop", result, notOwned(t, "stop_task", target.Key, stop.By, "LEGION-208"), before)
 		})
 	}
 }
 
 // The route of register_plan judges the giver and the generation on reads it takes before the
-// fact lock (api's planOwner): the record, or, for an issue the daemon has not recorded, Dispatch's
-// parent chain and status, with generation 0. The fact judges both again on the record it reads. A
-// plan given at generation 0 waits there for the first step of an issue the daemon recorded since
-// only while that issue stands before its first step with no plan rows at its own generation; once
-// that step took a plan, the plan is refused PLAN_STALE_GENERATION, and the owner's plan given
-// again at the recorded generation meets the rules of a later version. A giver that owns the issue
-// no longer is refused ISSUE_OUTSIDE_TREE. Each refusal writes nothing and leaves the fact
-// unspent.
+// fact lock (api's planOwner): the record, or, for an issue the daemon has not recorded, its
+// Dispatch status and its chain in the copy, with generation 0. The fact judges both again on the
+// record and the chain it reads. A plan given at generation 0 waits there for the first step of an
+// issue the daemon recorded since only while that issue stands before its first step with no plan
+// rows at its own generation; once that step took a plan, the plan is refused
+// PLAN_STALE_GENERATION, and the owner's plan given again at the recorded generation meets the
+// rules of a later version. A giver that acts on the issue on its Dispatch chain no longer is
+// refused ISSUE_NOT_OWNED, naming the architect that does. Each refusal writes nothing and leaves
+// the fact unspent.
 func TestAnOwnersPlanIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 	t.Parallel()
 	widget := func(t *testing.T) plan.Task { return givenTask(t, "Build the widget.", "implementer", "reviewer") }
@@ -290,7 +307,7 @@ func TestAnOwnersPlanIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 		}
 	})
 
-	t.Run("a plan given at generation 0 for a child the daemon recorded since in another tree: ISSUE_OUTSIDE_TREE", func(t *testing.T) {
+	t.Run("a plan given at generation 0 for a child the daemon recorded since under another root: ISSUE_NOT_OWNED", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		recordedAt(t, pool, "LEGION-208", "LEGION-208")
@@ -302,33 +319,34 @@ func TestAnOwnersPlanIsJudgedOnTheRecordItsFactReads(t *testing.T) {
 		given := ownersPlan(t, "LEGION-209", 0, 1, widget(t))
 		result := applyFacts(t, pool, engine)(id, given)
 
-		assertPlanRefusal(t, pool, engine, "LEGION-209", 0, id, result, intake.IssueOutsideTree("LEGION-209", given.GivenBy, "register_plan"), before)
+		assertPlanRefusal(t, pool, engine, "LEGION-209", 0, id, result, notOwned(t, "register_plan", "LEGION-209", given.GivenBy, "LEGION-300"), before)
 	})
 
 	for _, left := range []bool{false, true} {
-		name := "control: a sub-architect's plan for an issue of its tree is taken"
+		name := "control: the plan of the architect above the issue on its chain is taken"
 		if left {
-			name = "the sub-architect's own issue left the tree before the plan: ISSUE_OUTSIDE_TREE at the same generation"
+			name = "the issue left the chain under the giver's issue before the plan: ISSUE_NOT_OWNED at the same generation"
 		}
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := returnEngine()
 			stepRoot(t, pool, phase.Implementing)
-			sub := todoChild(t, pool, "LEGION-209")
+			above := todoChild(t, pool, "LEGION-209")
 			target := stepChild(t, pool, "LEGION-210", phase.Admitted, nil)
+			reparentTo(t, pool, engine, target.Key, above.Key)
 			given := ownersPlan(t, target.Key, target.Generation, 1, widget(t))
-			given.GivenBy = claim.Token(treeRoleToken(t, sub.Key, claim.RoleArchitect))
+			given.GivenBy = claim.Token(treeRoleToken(t, above.Key, claim.RoleArchitect))
 			id := planID(target.Key, target.Generation, 1)
 			if left {
-				adoptInto(t, pool, engine, sub.Key, otherRoot(t, pool))
+				reparentTo(t, pool, engine, target.Key, "LEGION-208")
 			}
 			before := planStandingOf(t, pool, engine, target.Key, target.Generation)
 			result := applyFacts(t, pool, engine)(id, given)
 			if !left {
-				mustTake(t, "the sub-architect's plan", result)
+				mustTake(t, "the plan of the architect above", result)
 				return
 			}
-			assertPlanRefusal(t, pool, engine, target.Key, target.Generation, id, result, intake.IssueOutsideTree(target.Key, given.GivenBy, "register_plan"), before)
+			assertPlanRefusal(t, pool, engine, target.Key, target.Generation, id, result, notOwned(t, "register_plan", target.Key, given.GivenBy, "LEGION-208"), before)
 		})
 	}
 }

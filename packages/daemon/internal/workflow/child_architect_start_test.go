@@ -10,9 +10,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/record/fencetest"
 )
 
-// heldRow is one row the outbox holds, decoded, with the issue it is queued on.
+// heldRow is one row the outbox holds, decoded, with the issue it is queued on, without the fence
+// it carries (fencetest.Unfenced): a case reads what the row does.
 type heldRow struct {
 	issue   string
 	payload record.OutboxPayload
@@ -36,7 +38,7 @@ func queuedRows(t *testing.T, pool *pgxpool.Pool) []heldRow {
 		if err != nil {
 			t.Fatalf("decode outbox row %d: %v", row.ID, err)
 		}
-		queued = append(queued, heldRow{issue: row.Issue, payload: payload})
+		queued = append(queued, heldRow{issue: row.Issue, payload: fencetest.Unfenced(payload)})
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the outbox: %v", err)

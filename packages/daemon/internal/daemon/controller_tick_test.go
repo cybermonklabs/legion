@@ -188,7 +188,7 @@ func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", dispatch.BearerTransport("dispatch-token", nil), nil,
-		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)
+		newRepositories(cfg.Project, cfg.RepositoryRenames), appauth.NewInstalled(), log, tokens, repositoriesGitHub(t), nil, nil, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}
@@ -213,6 +213,8 @@ func seedSilentPhaseWorker(t *testing.T, pool *store.Pool, key string, lastStep 
 		Title: key, Tree: key, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "A",
 		HandedOver: true, LastDispatchSeq: 1,
 	})
+	// Its row of the copy, so the root stands on a known Dispatch chain (R16 of dispatch://INFRA-3320).
+	seedTickMirror(t, pool, key, "in_progress", 1)
 	project, err := claim.ProjectToken("CAPTURE")
 	if err != nil {
 		t.Fatal(err)

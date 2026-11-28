@@ -179,7 +179,6 @@ func TestAHeldPhasesRetryRaisesNoEntry(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}, Generation: 1,
 		Status: "testing", Rank: "U", HandedOver: true})
-	seedTreeLifecycle(t, pool, entryIssue)
 	seedEntryRow(t, pool, claim.RoleTester, "test-claim")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
@@ -216,27 +215,25 @@ func TestAProductionChecksLookRaisesNoEntry(t *testing.T) {
 	}
 }
 
-// A re-admitted tree's promotion hands its mid-phase member's role the work of its phase again,
-// so it raises that role's entry and writes the resume task as the work of the new entry. The
-// re-admission cleared the task the earlier entry named with the rest of the generation
-// (Engine.ClearTreeGeneration), so the record would otherwise name an entry whose work
-// nothing could send again.
+// The promotion of a root a hand-over of the release before carried in (StartCarriedRun) hands its
+// mid-phase member's role the work of its phase again (StartPromotedWorker), so it raises that
+// role's entry and writes the resume task as the work of the new entry. The hand-over started a
+// new generation of the root, so the record would otherwise name an entry whose work nothing could
+// send again.
 func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	issue := record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U"}
 	seedIssue(t, pool, issue)
-	seedTreeLifecycle(t, pool, entryIssue)
-	// The row a re-admission leaves: the entry where it stood, with no task of its own, and the
+	// The row the promotion finds: the entry where it stood, with no task of its own, and the
 	// move back that raised it still on it, which the promotion's own entry writes over.
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim",
 		Entry: seededEntry, EntryRaisedAt: seededRaisedAt, EntryMovedBack: true})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer, false)
-		return err
+		return engine.StartPromotedWorker(ctx, tx, issue, claim.RoleImplementer)
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")
@@ -322,7 +319,6 @@ func TestTheWorkAnEntryNamesIsSentOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedIssue(t, pool, issue)
-			seedTreeLifecycle(t, pool, entryIssue)
 			seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleReviewer, Claim: "review-claim"})
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			want, held := phaseResumeTask(t, pool, engine, entryIssue), ""

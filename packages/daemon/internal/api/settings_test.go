@@ -87,7 +87,6 @@ var settingsEmitted = map[string]string{
 	"Config.Projects":                                "projects",
 	"Config.Gates":                                   "gates",
 	"Config.GitHubApps":                              "github_apps",
-	"Config.Linger":                                  "linger_hours",
 	"Config.ProductionCheckBound":                    "production_check_hours",
 	"Config.PodUpdateGrace":                          "pod_update_grace_minutes",
 	"Config.StalledTreeNotice":                       "stalled_tree_notice_hours",
@@ -506,8 +505,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if cache.Volume != "40Gi" || cache.RefreshMinutes != 15 || cache.RetainHours != 48 || cache.Resources.CPU != "500m" || cache.Resources.CPURequest != "500m" || cache.Resources.Memory != "1Gi" || cache.Resources.EphemeralStorage != "2Gi" {
 		t.Errorf("runtime.kubernetes.repository_cache = %+v, want the file's volume, refresh, retention, cpu and memory with the default ephemeral storage", cache)
 	}
-	if settings.LingerHours != 1.5 || settings.WorkerStopTimeoutSeconds != 30 || settings.Controller != config.ControllerLaunchDaemon {
-		t.Errorf("linger_hours %v, worker_stop_timeout_seconds %d, controller %q; want 1.5, 30, daemon", settings.LingerHours, settings.WorkerStopTimeoutSeconds, settings.Controller)
+	if settings.WorkerStopTimeoutSeconds != 30 || settings.Controller != config.ControllerLaunchDaemon {
+		t.Errorf("worker_stop_timeout_seconds %d, controller %q; want 30, daemon", settings.WorkerStopTimeoutSeconds, settings.Controller)
 	}
 	controller := settings.Runtime.Kubernetes.Resources.Controller
 	if controller.CPU != "2" || controller.CPURequest != "1" || controller.MemoryRequest != "4Gi" || controller.EphemeralStorage != "10Gi" {

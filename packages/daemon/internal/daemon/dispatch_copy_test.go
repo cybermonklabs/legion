@@ -77,7 +77,7 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 			t.Fatalf("write the status of %s: %v", key, err)
 		}
 
-		// The fact api's recordOwnStatusWrite applies for a write Dispatch answered at a sequence.
+		// The fact api's ApplyOwnStatusWrite applies for a write Dispatch answered at a sequence.
 		event := intake.OwnStatusWrite(written)
 		fact := intake.ObservedIssue(written)
 		fact.Delivered = &event
@@ -91,12 +91,12 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 // decisions that read them, so admission starts no issue an unfinished blocker holds. In each case
 // W waits on B and B is unfinished: an issue event of W names B, while the copy shows B in
 // progress; the first boot's listing, which refills the project's rows of the copy, lists W
-// waiting on B and B in progress; the periodic turn re-reads B; and the release's read of W, as it
-// adopts W into a live tree, shows W waiting on B. In the first three W is a labelled todo root on
-// the waiting line with a slot free for it; in the fourth the tree's root waits on W, its open
-// child, in awaiting_children and holds no slot (dispatch://INFRA-3320 R11), so both slots stand
-// free. In each W takes a slot only if the pass of the same fact reads a copy in which W waits on
-// nothing.
+// waiting on B and B in progress; the periodic turn re-reads B; and the release's read of W, a
+// recorded child of a live tree, applied as a reading of Dispatch (intake.ObservedIssue), shows W
+// waiting on B. In the first three W is a labelled todo root on the waiting line with a slot free
+// for it; in the fourth W is the tree's child at admitted, todo, and the one slot the tree's root
+// does not hold stands free. In each W takes a slot only if the pass of the same fact reads a copy
+// in which W waits on nothing.
 //
 // The turn re-reads a blocker only while the copy shows it unfinished
 // (TestThePeriodicTurnReReadsOnlyWhatSomethingWaitsOn), so its case holds B todo in the copy,
@@ -179,11 +179,12 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		w := copyRuntime(t, pool, &copyBoard{}, 2)
 		seedLiveTree(t, pool, tree)
-		seedWaitingRoot(t, pool, waiter, "B")
+		seedHeldChild(t, pool, waiter, tree)
 		seedTickMirror(t, pool, blocker, "in_progress", 1)
 
-		applyCopyFact(t, w, "api", "waves/adopt", intake.ChildAdoption{Tree: tree, Children: []intake.AdoptedChild{
-			{Issue: waiter, Parent: tree, Status: "todo", BlockedBy: []string{blocker}, Seq: 4}}})
+		parent := tree
+		applyCopyFact(t, w, "api", "waves/read", intake.ObservedIssue(dispatch.Issue{Key: waiter, Status: "todo", Title: waiter,
+			Parent: &parent, Rank: "A", ResolvedRepo: "acme/widgets", BlockedBy: []string{blocker}, LastSeq: 4}))
 
 		if got := copied(t, pool, waiter); !slices.Equal(got.blockers, []string{blocker}) || got.blockersSeq != 4 {
 			t.Fatalf("the copy holds %s waiting on %q at %d, want %s at the read's 4", waiter, got.blockers, got.blockersSeq, blocker)
@@ -192,16 +193,11 @@ func TestEachReadingKindWritesItsBlockers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the record of %s: %v", waiter, err)
 		}
-		if recorded == nil || recorded.Tree != tree || recorded.Phase != phase.Admitted {
-			t.Fatalf("%s = %#v, want it in the tree of %s at admitted: its first phase waits on %s", waiter, recorded, tree, blocker)
+		if recorded == nil || recorded.Phase != phase.Admitted {
+			t.Fatalf("%s = %#v, want it at admitted: its first phase waits on %s", waiter, recorded, blocker)
 		}
-		// The tree's root, in planning, now waits on its open child W in awaiting_children and holds
-		// no slot (dispatch://INFRA-3320 R11), so the one slot this case can show is one W took.
-		if got := recordedPhase(t, w, tree); got != phase.AwaitingChildren {
-			t.Fatalf("%s after the adoption = %s, want awaiting_children: %s is its open child", tree, got, waiter)
-		}
-		if slotted := tickSlotted(t, pool); len(slotted) != 0 {
-			t.Fatalf("slots = %v, want none: %s waits on %s, which is in progress, and %s holds no slot in awaiting_children", slotted, waiter, blocker, tree)
+		if slotted := tickSlotted(t, pool); !slices.Equal(slotted, []string{tree}) {
+			t.Fatalf("slots = %v, want %s's alone: %s waits on %s, which is in progress", slotted, tree, waiter, blocker)
 		}
 	})
 }
@@ -274,7 +270,7 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 		Projects: map[string]config.Project{"CAPTURE": {}}}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", dispatch.BearerTransport(workflowDispatchToken, nil), nil, newRepositories(cfg.Project, cfg.RepositoryRenames),
-		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, time.Now, nil, nil)
+		appauth.NewInstalled(), slog.New(slog.NewTextHandler(io.Discard, nil)), tokens, repositoriesGitHub(t), nil, nil, time.Now, nil, nil)
 	if err != nil {
 		t.Fatalf("open the workflow: %v", err)
 	}
@@ -283,13 +279,15 @@ func copyRuntime(t *testing.T, pool *store.Pool, board *copyBoard, slots int) *w
 }
 
 // copyBoard is Dispatch as a copyRuntime reads it, through the daemon's own client: the calls
-// every boot makes (servedBootCall), the project's listing, and each issue it serves by key, to a
+// every boot makes (servedBootCall), the project's listing, each issue it serves by key, to a
 // read of that issue and to the daemon's status write on it, which it answers with the issue as
-// the write leaves it. A test fills it before the runtime reads it and never changes it after.
-// Any other request fails the test.
+// the write leaves it, and the event log of each issue logs names, paged after a sequence as
+// Dispatch pages it. A test fills it before the runtime reads it and never changes it after. Any
+// other request fails the test.
 type copyBoard struct {
 	listing []map[string]any
 	issues  map[string]map[string]any
+	logs    map[string][]map[string]any
 }
 
 func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
@@ -298,10 +296,23 @@ func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
 			return
 		}
 		key := strings.TrimPrefix(r.URL.Path, "/api/v1/issues/")
+		logged, hasLog := b.logs[strings.TrimSuffix(key, "/events")]
 		var body any
 		switch issue := b.issues[key]; {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			body = b.listing
+		case r.Method == http.MethodGet && strings.HasSuffix(key, "/events") && hasLog:
+			after, err := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+			if err != nil {
+				t.Errorf("read the sequence the daemon reads %s after: %v", key, err)
+			}
+			page := []map[string]any{}
+			for _, event := range logged {
+				if event["seq"].(int64) > after {
+					page = append(page, event)
+				}
+			}
+			body = page
 		case r.Method == http.MethodGet && issue != nil:
 			body = issue
 		case r.Method == http.MethodPatch && issue != nil:
@@ -324,6 +335,14 @@ func (b *copyBoard) serve(t *testing.T) http.HandlerFunc {
 			t.Errorf("write %s: %v", r.URL.Path, err)
 		}
 	}
+}
+
+// boardStatusEvent is the issue event of key at seq by which a person left it at status, as
+// Dispatch's event log serves it (copyBoard.logs).
+func boardStatusEvent(key, status string, seq int64) map[string]any {
+	return map[string]any{"id": seq, "issue_key": key, "seq": seq, "type": "issue.updated", "notify": true,
+		"actor": map[string]string{"kind": "user", "id": "a-person"}, "created_at": "2026-11-26T12:00:00Z",
+		"payload": map[string]any{"key": key, "status": status, "labels": []string{}}}
 }
 
 // boardSummary is key as Dispatch's listing serves it (model.IssueSummary) at seq: in status,
@@ -454,10 +473,9 @@ func recordedPhase(t *testing.T, w *workflowRuntime, key string) phase.Phase {
 	return recorded.Phase
 }
 
-// seedLiveTree records tree as a running root of this project in planning, as api's
-// adoptionHarness records its live tree: holding an admission slot, its tree lifecycle open under
-// the workflow and its spec's gate approved, so a todo child that joins it with a slot free
-// starts planning at once.
+// seedLiveTree records tree as a running root of this project in planning: holding an admission
+// slot, its tree lifecycle open under the workflow and its spec's gate approved, so a todo child
+// that joins it with a slot free starts planning at once.
 func seedLiveTree(t *testing.T, pool *store.Pool, tree string) {
 	t.Helper()
 	seedTickIssue(t, pool, record.Issue{Key: tree, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

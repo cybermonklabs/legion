@@ -11,7 +11,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // membersOwedVersion is the version of the migration this file tests, so the test can migrate
@@ -93,13 +92,13 @@ func TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun(t *test
 				return err
 			}
 		}
+		// The trees' lifecycles as the release before writes them (its tree_lifecycles rows), which
+		// this release reads only at its first boot's conversion: LEGION-4's cleanup reserved.
 		for _, key := range []string{"LEGION-2", "LEGION-3", "LEGION-31", "LEGION-4", "LEGION-6"} {
-			if _, err := treelifecycle.Open(ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow); err != nil {
+			if _, err := tx.Exec(ctx, `insert into tree_lifecycles (project, tree, epoch, authority, cleanup_started)
+				values ('legion', $1, 1, 'workflow', $2)`, key, key == "LEGION-4"); err != nil {
 				return err
 			}
-		}
-		if _, err := treelifecycle.ReserveCleanup(ctx, tx, "legion", "LEGION-4", treelifecycle.AuthorityWorkflow); err != nil {
-			return err
 		}
 		for _, key := range []string{"LEGION-2", "LEGION-6"} {
 			slots, err := records.Slots(ctx, tx)

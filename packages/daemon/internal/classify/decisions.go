@@ -1947,3 +1947,52 @@ func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]re
 	}
 	return record.DesignGate{}, false
 }
+
+// MergeHold is the step that holds the merge of an issue, with the row that step holds (the zero
+// row for a step nobody registered), and whether a step holds it. gates are the rows of the
+// issue's gate root, holdsGate says whether that gate root is the issue itself
+// (record.Chains.HoldsOwnGate), and issue is the issue's own record. It is the one rule the
+// merger's start hold reads (the daemon's mergerWaitsForTheDesignGate).
+//
+// An issue that holds its own gate, of which no row has ever stood open
+// (record.DesignGate.EverOpened), is held as its start is held (FirstClosedStep): a step the tree
+// is gated on (TreeSteps) that holds no row holds its merge. That is the issue a release before
+// kept at work in another issue's tree and that became a root with no gate of its own: nobody
+// approved its design, and its merger waits until its architect registers the document of that
+// step and a person approves it. A root that a hand-over of the release before carried into the
+// run it stands at without a gate (record.CarriedIn, and no record.Issue.CarriedGate: facts of its
+// own record, R17 of dispatch://INFRA-3320) is not such an issue: its run came in through that
+// hand-over, and in merging its architect registers no document, so the step a person is asked
+// about holds its merge, as it holds every other issue's.
+//
+// Every other issue is held by the step a person is asked about (StandingGate), where a step with
+// no row holds nothing. So a step the deployment started to gate after the issue's gate opened
+// holds the issue's merge no more than it did before, though it holds the tree's next starts
+// (record.TreeGate.Required): the two holds differ for that step alone. A deployment that gates no
+// step holds no merge.
+func MergeHold(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate, holdsGate bool, issue record.Issue) (record.DesignStep, record.DesignGate, bool) {
+	handedOverWithoutGate := record.CarriedIn(issue) && !issue.CarriedGate
+	if holdsGate && !handedOverWithoutGate && !gateEverOpened(gates) {
+		step, gate, closed := FirstClosedStep(configured, gates)
+		if !closed || len(TreeSteps(configured, gates)) == 0 {
+			return "", record.DesignGate{}, false
+		}
+		return step, gate, true
+	}
+	gate, held := StandingGate(configured, gates)
+	if !held {
+		return "", record.DesignGate{}, false
+	}
+	return gate.Step.OrSpec(), gate, true
+}
+
+// gateEverOpened says whether a row of gates stands open or has stood open at some point
+// (record.DesignGate.EverOpened, which the store writes for each row an approval opened).
+func gateEverOpened(gates map[record.DesignStep]record.DesignGate) bool {
+	for _, gate := range gates {
+		if gate.EverOpened || DesignGateOpen(gate) {
+			return true
+		}
+	}
+	return false
+}

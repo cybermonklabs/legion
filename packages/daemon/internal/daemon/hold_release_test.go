@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -65,7 +66,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 	}
 	// target is far past anything an ack floor on this empty stream will ever reach: only idle —
 	// a fresh consumer with nothing ever published to it — can close this hold.
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, 1000, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 	if !admission.Held() {
@@ -140,7 +141,7 @@ func TestPollHoldReleaseReleasesOnceTheEventThatPinnedTheFloorIsGivenUp(t *testi
 		t.Fatalf("publish the pinned event: %v", err)
 	}
 	// The boot's listing is held until the consumer's floor reaches the pinned event.
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "LEGION", []dispatch.IssueSummary{
 		{Key: "LEGION-300", ResolvedRepo: "acme/widgets", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, int64(ack.Sequence), intake.DispatchConsumerPosition{})
 	if !admission.Held() {
@@ -199,7 +200,7 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed root: %v", err)
 	}
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, 5, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 	if !admission.Held() {
@@ -247,7 +248,7 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 	}
 	hold := func(seq int64) {
 		t.Helper()
-		reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+		reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 			{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: seq},
 		}, 5, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 		if !admission.Held() {
@@ -293,7 +294,7 @@ func TestPollHoldReleaseRetriesAFailedApplyOfAnUnchangedPosition(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed root: %v", err)
 	}
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, 5, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 	if !admission.Held() {
@@ -360,6 +361,9 @@ func (d *pilotDispatch) SetStatus(context.Context, string, string) (dispatch.Iss
 }
 func (d *pilotDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *pilotDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("pilotDispatch takes no status change")
 }
 func (d *pilotDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *pilotDispatch) HandOver(context.Context, dispatch.Issue, string) error {
@@ -436,6 +440,9 @@ func (d *filteringDispatch) SetStatus(context.Context, string, string) (dispatch
 }
 func (d *filteringDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
+}
+func (d *filteringDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("filteringDispatch takes no status change")
 }
 func (d *filteringDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *filteringDispatch) HandOver(context.Context, dispatch.Issue, string) error {
@@ -575,9 +582,11 @@ func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 	w := &workflowRuntime{
 		pool: pool, records: record.NewStore(), admission: admission, engine: engine, handlers: []intake.Handler{engine, admission}, repositories: newRepositories("CAPTURE", ghrepo.Renames{}),
+		// The listing as Dispatch sends it, each issue with its sequence and its labels, which the
+		// copy takes before admission reads any chain (reconcileListing).
 		dispatch: &pilotDispatch{summaries: []dispatch.IssueSummary{
-			{Key: "CAPTURE-1", ResolvedRepo: "sjawhar/legion", Title: "todo root", Status: "todo", Rank: "A", HandedOver: true},
-			{Key: "CAPTURE-2", ResolvedRepo: "sjawhar/legion", Title: "backlog root", Status: "backlog", Rank: "B", HandedOver: true},
+			{Key: "CAPTURE-1", ResolvedRepo: "sjawhar/legion", Title: "todo root", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 1, Labels: []string{dispatch.LegionLabel}},
+			{Key: "CAPTURE-2", ResolvedRepo: "sjawhar/legion", Title: "backlog root", Status: "backlog", Rank: "B", HandedOver: true, LastSeq: 1, Labels: []string{dispatch.LegionLabel}},
 		}},
 		dispatchProject: "CAPTURE", consumers: consumers, bootID: "pilot-boot", log: log,
 		holdPollInterval: 10 * time.Millisecond,
@@ -645,7 +654,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed root: %v", err)
 	}
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-EDGE", ResolvedRepo: "sjawhar/legion", Title: "edge", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 	}, 5, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 	if !admission.Held() {
@@ -695,7 +704,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Title: "race", Status: "todo", Rank: "A", HandedOver: false, LastSeq: 1},
 	}, 10, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 	if !admission.Held() {
@@ -784,7 +793,7 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(record.NewStore(), engine, 1, "CAPTURE", log)
 
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-RACE", ResolvedRepo: "sjawhar/legion", Title: "race", Status: "todo", Rank: "A", HandedOver: false, LastSeq: 1},
 	}, 10, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})
 	if !admission.Held() {
@@ -843,17 +852,30 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 	<-done
 }
 
-// reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
-// its own transaction (store.Transact), settling the runs its writes end before it commits, and
-// running the commit hooks it registered once that commits.
-func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
+// reconcileAdmission runs admission's boot reconcile of project as the workflow runtime does
+// (reconcile): the copy takes the listing first (reconcileListing), so admission reads each listed
+// issue's chain from the listing itself (R16 of dispatch://INFRA-3320), and then admission
+// reconciles in its own transaction (store.Transact), settling the runs its writes end before it
+// commits, and running the commit hooks it registered once that commits. A listing Dispatch sends
+// carries each issue's sequence and labels: a fixture's summary that names no sequence is copied
+// at 1, the lowest a reading carries, and one handed over with no labels named carries the legion
+// label.
+func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, project string, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
 	listed := make([]intake.DispatchIssue, len(summaries))
+	mirrored := slices.Clone(summaries)
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
+		mirrored[i].LastSeq = max(summary.LastSeq, 1)
+		if summary.HandedOver && summary.Labels == nil {
+			mirrored[i].Labels = []string{dispatch.LegionLabel}
+		}
 	}
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, admission)
+		if err := blockers.Reconcile(ctx, tx, record.NewStore(), project, mirrored); err != nil {
+			return err
+		}
 		if _, err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
 		}
@@ -912,7 +934,7 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	// LEGION-NEXT's is level with its record and holds nothing. The target is far past anything an
 	// ack floor on this empty stream will ever reach, so only the quiet consumer's idle reading,
 	// taken by the runtime's own ticker, closes the hold.
-	reconcileAdmission(t, pool, admission, []dispatch.IssueSummary{
+	reconcileAdmission(t, pool, admission, "CAPTURE", []dispatch.IssueSummary{
 		{Key: "LEGION-HELD", ResolvedRepo: "sjawhar/legion", Title: "LEGION-HELD", Status: "todo", Rank: "A", HandedOver: true, LastSeq: 2},
 		{Key: "LEGION-NEXT", ResolvedRepo: "sjawhar/legion", Title: "LEGION-NEXT", Status: "todo", Rank: "B", HandedOver: true, LastSeq: 1},
 	}, 1000, intake.DispatchConsumerPosition{AckFloorStream: 0, Idle: false})

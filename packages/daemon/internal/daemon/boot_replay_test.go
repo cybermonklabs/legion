@@ -334,6 +334,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		if _, err := st.OpenTreeLifecycle(ctx, project, issue, treelifecycle.AuthorityOperator); err != nil {
 			t.Fatalf("open the tree of %s: %v", token, err)
 		}
+		openIssue(t, st, project, issue, treelifecycle.AuthorityOperator)
 		if _, err := st.AdmitClaim(ctx, c); err != nil {
 			t.Fatalf("put %s: %v", token, err)
 		}

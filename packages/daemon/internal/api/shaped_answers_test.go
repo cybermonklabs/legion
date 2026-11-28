@@ -1302,8 +1302,9 @@ func TestTheServedContractsOfACallerBelowTheFloor(t *testing.T) {
 // its own is an answer this names and that does not, which is a programming error rather than a
 // body served unshaped.
 //
-// Each row is handed a body its own route could write, because the six rows whose shape has
-// moved shape a State, an Issue, the release records, a refusal and the two registrations and
+// Each row is handed a body its own route could write, because the ten rows whose shape has
+// moved shape a State, an Issue, the release records, a refusal, the two answers of the status
+// calls, the plan registration's answer, the two registrations and an agent action's answer and
 // panic on anything else: a row handed the wrong type would fail here as an answer with no row
 // does, and never serve that body unshaped.
 func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
@@ -1360,6 +1361,20 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
+			case AnswerWaveRelease, AnswerStatusCall:
+				queued := []QueuedStatusWrite{{Issue: "LEGION-209", Status: "todo", Row: 42}}
+				var body any = StatusCallResponse{Queued: queued}
+				if answer.ID == AnswerWaveRelease {
+					body = WaveReleaseResponse{Released: []string{"LEGION-209"}, Queued: queued}
+				}
+				below, _ := shapeAnswer(answer.ID, body, ServingFloor, entryNumber(chainContract)-1)
+				if encoded, err := json.Marshal(below); err != nil || bytes.Contains(encoded, []byte(`"queued"`)) {
+					t.Errorf("the %s answer served below chainContract = %s (%v), want no `queued`, which chainContract added", answer.ID, encoded, err)
+				}
+				own, _ := shapeAnswer(answer.ID, body, entryNumber(chainContract), entryNumber(chainContract))
+				if encoded, err := json.Marshal(own); err != nil || !bytes.Contains(encoded, []byte(`"queued":[{"issue":"LEGION-209","status":"todo","row":42}]`)) {
+					t.Errorf("the %s answer served at chainContract = %s (%v), want its queued write", answer.ID, encoded, err)
+				}
 			case AnswerPlanRegister:
 				// A task that runs carries `running` from the running-step entry on, and a caller
 				// below it is served the task without it, on a copy: the body the route built
@@ -1413,11 +1428,11 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 	}
 }
 
-// The seven rows that shape a body of their own panic on a body of another type, as a row that
+// The ten rows that shape a body of their own panic on a body of another type, as a row that
 // does not exist panics: a route that wrote a State under AnswerIssueRecord would otherwise
 // have it served unshaped and in silence.
 func TestShapeAnswerPanicsOnABodyItsRowCannotShape(t *testing.T) {
-	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerRegister, AnswerRegisterController, AnswerAgentAction} {
+	for _, id := range []AnswerID{AnswerState, AnswerIssueRecord, AnswerReleaseRecords, AnswerRefusal, AnswerWaveRelease, AnswerStatusCall, AnswerPlanRegister, AnswerRegister, AnswerRegisterController, AnswerAgentAction} {
 		t.Run(string(id), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

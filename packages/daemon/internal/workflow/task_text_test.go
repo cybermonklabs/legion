@@ -131,8 +131,7 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		_, err = engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer, false)
-		return err
+		return engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleReviewer)
 	})
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
@@ -153,8 +152,9 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 }
 
 // A move into a phase that starts no worker composes no task, since no worker is told one: the
-// merge of an issue with plan rows closes it, as the merge of an issue with no plan rows does,
-// though done holds no place in its task's line, which a start's task must name (standingPart).
+// merge of an issue with plan rows closes it once Dispatch shows the close it queued (closeLanded),
+// as the merge of an issue with no plan rows does, though done holds no place in its task's line,
+// which a start's task must name (standingPart).
 func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -169,6 +169,7 @@ func TestAMoveIntoAPhaseThatStartsNoWorkerComposesNoTask(t *testing.T) {
 	if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 		t.Fatalf("the merge was refused: %+v", result.Refusal)
 	}
+	landClose(t, pool, engine, root.Key)
 	if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Done {
 		t.Fatalf("%s stands in %s after its merge, want done", root.Key, issue.Phase)
 	}
@@ -271,8 +272,7 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				if err != nil {
 					return err
 				}
-				_, err = tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester, false)
-				return err
+				return tc.engine.StartPromotedWorker(ctx, tx, *issue, claim.RoleTester)
 			})
 
 			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), tc.working+"\nContinue root. Issue: LEGION-208. Phase: testing."+

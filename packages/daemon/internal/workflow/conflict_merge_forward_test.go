@@ -447,7 +447,7 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 	left := func(t *testing.T, pool *pgxpool.Pool, role claim.Role, step record.MergeForwardStep) string {
 		t.Helper()
 		pr := recordedPR(t, pool, "LEGION-208")
-		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), false, &pr, role, step, conflictHead)
+		return leftMergeForwardAt(storedIssue(t, pool, "LEGION-208"), &pr, role, step, conflictHead)
 	}
 
 	t.Run("an ask the release before made in merging", func(t *testing.T) {
@@ -506,7 +506,8 @@ func TestAnAskOfTheImplementerThatHasNotLandedKeepsItsMergeIntoMerging(t *testin
 // of anyone, and the architect signs off and retro completes at that head as at any other. The
 // move into merging starts the merger and asks it, once, to merge the base forward. Its merge
 // landing tells it so and asks the reviewer to read the merge and approve the new head, and
-// GitHub's merge of that head closes the issue. Across the whole run the implementer is sent no
+// GitHub's merge of that head queues the issue's close, which leaves merging once Dispatch shows it
+// done (this branch's closeMerged and closeLanded). Across the whole run the implementer is sent no
 // merge-forward message, is started for no phase but retro, and counts no move back.
 func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	t.Parallel()
@@ -575,18 +576,23 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	}
 
 	apply(6*time.Minute, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge"})
+	if got := storedIssue(t, pool, "LEGION-208"); got.Phase != phase.Merging || got.PendingClose == nil {
+		t.Fatalf("after GitHub merged the pull request the issue is in %s with close %+v, want merging with its close queued", got.Phase, got.PendingClose)
+	}
+	// A move into implementing writes in_progress (PhaseStatus), so a status write of it is the
+	// trace of any phase handed back to the implementer. They are read before the close lands,
+	// whose boot finishes the rows it finds.
+	if statuses := queuedStatuses(t, pool); slices.Contains(statuses, "in_progress") || !slices.Contains(statuses, "retro") || !slices.Contains(statuses, "done") {
+		t.Fatalf("the run wrote the statuses %q, want retro and done and never in_progress: no phase went back to the implementer", statuses)
+	}
+	landClose(t, pool, readsAfter(7*time.Minute), "LEGION-208")
 	if got := issuePhase(t, pool); got != phase.Done {
-		t.Fatalf("after GitHub merged the pull request the issue is in %s, want done", got)
+		t.Fatalf("once Dispatch shows the issue done it is in %s, want done", got)
 	}
 	for _, message := range mergeForwardMessages(t, pool) {
 		if message.Role == claim.RoleImplementer {
 			t.Fatalf("merge-forward message %+v went to the implementer, want none: the conflict was the merger's", message)
 		}
-	}
-	// A move into implementing writes in_progress (PhaseStatus), so a status write of it is the
-	// trace of any phase handed back to the implementer.
-	if statuses := queuedStatuses(t, pool); slices.Contains(statuses, "in_progress") || !slices.Contains(statuses, "retro") || !slices.Contains(statuses, "done") {
-		t.Fatalf("the run wrote the statuses %q, want retro and done and never in_progress: no phase went back to the implementer", statuses)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {
 		t.Fatalf("the implementer counts %d moves back, want none", pass)
@@ -1549,11 +1555,11 @@ func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
 			confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
 			pr := recordedPR(t, pool, "LEGION-208")
 			issue := storedIssue(t, pool, "LEGION-208")
-			if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
+			if why := leftMergeForwardAt(issue, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
 				t.Fatalf("the merger's ask in merging is undelivered: %s", why)
 			}
 			issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Merging}
-			if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
+			if why := leftMergeForwardAt(issue, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why != "" {
 				t.Fatalf("the merger's ask in a hold from merging is undelivered: %s", why)
 			}
 
@@ -1564,7 +1570,7 @@ func TestAMergersMergeForwardMessageEndsWhenTheIssueMovesBack(t *testing.T) {
 			if issue.Phase != target {
 				t.Fatalf("the backward move left the issue in %s, want %s", issue.Phase, target)
 			}
-			if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why == "" {
+			if why := leftMergeForwardAt(issue, &pr, claim.RoleMerger, record.MergeForwardAsk, conflictHead); why == "" {
 				t.Errorf("a queued merger ask still reaches %s after the backward move", target)
 			}
 		})
@@ -1582,10 +1588,10 @@ func TestALandedMergeForwardKeepsItsReviewAfterABackwardMove(t *testing.T) {
 		To: phase.Retro, Reason: "retro needs to read the merged code"})
 	pr := recordedPR(t, pool, "LEGION-208")
 	issue := storedIssue(t, pool, "LEGION-208")
-	if why := leftMergeForwardAt(issue, false, &pr, claim.RoleMerger, record.MergeForwardLanded, conflictHead); why == "" {
+	if why := leftMergeForwardAt(issue, &pr, claim.RoleMerger, record.MergeForwardLanded, conflictHead); why == "" {
 		t.Fatal("the queued merger landing still reaches retro after the backward move")
 	}
-	if why := leftMergeForwardAt(issue, false, &pr, claim.RoleReviewer, record.MergeForwardReview, conflictHead); why != "" {
+	if why := leftMergeForwardAt(issue, &pr, claim.RoleReviewer, record.MergeForwardReview, conflictHead); why != "" {
 		t.Fatalf("the review of the merge went undelivered: %s", why)
 	}
 	if !mergeForwardReviewOwed(pr) {

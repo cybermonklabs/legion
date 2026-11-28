@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -16,14 +18,14 @@ import (
 )
 
 // seedRunningRoot is the state an idle release binds to, and the opposite of a close's: the
-// root's issue row in the workflow at generation, not lingering.
+// root's issue row in the workflow at generation.
 func seedRunningRoot(t *testing.T, store *Store, generation int) {
 	t.Helper()
 	_, err := store.Pool().Exec(context.Background(), `insert into issues
 		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 		values ($1, $1, 'LEGION', 'root', 'implementing', $2, 'in_progress', 'A', 1)
 		on conflict (key) do update set generation = excluded.generation, status = excluded.status,
-			phase = excluded.phase, linger_until = null`, rootIssue, generation)
+			phase = excluded.phase`, rootIssue, generation)
 	if err != nil {
 		t.Fatalf("seed running root: %v", err)
 	}
@@ -99,19 +101,14 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 			change:    "update issues set phase='done', status='done' where key='LEGION-208'",
 		},
 		{
-			name: "the tree lingers", state: supervise.StateSuspended, want: ReleaseCancel,
-			wantCause: ReleaseCauseUnauthorized,
-			change:    "update issues set linger_until = now() + interval '1 hour' where key='LEGION-208'",
-		},
-		{
 			name: "a re-admission moved the generation", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
 			change:    "update issues set generation=2 where key='LEGION-208'",
 		},
 		{
-			name: "the tree's cleanup is reserved", state: supervise.StateSuspended, want: ReleaseCancel,
+			name: "the issue's own cleanup is reserved", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
-			change:    "update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208'",
+			change:    "insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started) values ('legion', 'LEGION-208', 1, 'workflow', true)",
 		},
 		{
 			// R4's boundary never saw this one: the start ran before the role stop that would
@@ -156,9 +153,9 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 		{
 			// A pending check is a wait, and a wait never stands in for a cancel the store decides
 			// first: a reserved cleanup deletes the Sandbox itself.
-			name: "the tree's cleanup is reserved while the check is queued", state: supervise.StateSuspended, want: ReleaseCancel,
+			name: "the issue's own cleanup is reserved while the check is queued", state: supervise.StateSuspended, want: ReleaseCancel,
 			wantCause: ReleaseCauseUnauthorized,
-			change: `update tree_lifecycles set cleanup_started = true where tree = 'LEGION-208';
+			change: `insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started) values ('legion', 'LEGION-208', 1, 'workflow', true);
 				insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values
 				(5,'issue_bundle','LEGION-208','{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"architect"}',
 				1,now() + interval '1 hour','the workspace could not be read')`,
@@ -189,7 +186,7 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 					t.Fatal(err)
 				}
 			}
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: 10}
 			decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if tc.wantWait != "" {
 				if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), tc.wantWait) || decision.Act == ReleaseActs {
@@ -230,7 +227,7 @@ func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartO
 			t.Fatal(err)
 		}
 	}
-	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+	release := IssueReleased{Issue: rootIssue, Generation: 1, Row: 10}
 
 	queue(30, `{"op":"start","tree":"LEGION-208","role":"architect","generation":1,"news":true}`)
 	if decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow); err != nil || decision.Act != ReleaseActs {
@@ -263,7 +260,7 @@ func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
 		(9,'supervise','LEGION-208','{"op":"release","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`); err != nil {
 		t.Fatal(err)
 	}
-	act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}, record.OutOfWorkflow)
+	act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: rootIssue, Generation: 1, Row: 10}, record.OutOfWorkflow)
 	if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), "role stop effects") || act {
 		t.Fatalf("suspension = %t, %v; want it to wait for the release's role stop", act, err)
 	}
@@ -385,7 +382,7 @@ func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, bound
 func releaseRoleThroughTheStore(t *testing.T, st *Store, issue string, role claim.Role) (first, boundary, last int64) {
 	t.Helper()
 	ctx := context.Background()
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", issue, func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: role, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(fmt.Sprintf(`{"tree":%q,"generation":1,"treeGeneration":1,"role":%q}`, issue, role))},
 			{Kind: "supervise", Payload: []byte(fmt.Sprintf(`{"op":"release","tree":%q,"role":%q,"generation":1}`, issue, role)), Boundary: true},
@@ -613,7 +610,7 @@ func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *tes
 	if decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundaryA); err != nil || decision.Act != ReleaseOver {
 		t.Fatalf("the cancelled release's role stop = %s, %v; want %s", decision.Act, err, ReleaseOver)
 	}
-	stale := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: lastA}
+	stale := IssueReleased{Issue: rootIssue, Generation: 1, Row: lastA}
 	if decision, err := st.IssueRelease(ctx, "legion", stale, record.OutOfWorkflow); err != nil || decision.Act != ReleaseOver {
 		t.Fatalf("the cancelled release's teardown = %s, %v; want %s", decision.Act, err, ReleaseOver)
 	}
@@ -1070,7 +1067,7 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 		{name: "still released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, want: ReleaseActs},
 		{name: "resumed by rule, ready again", state: supervise.StateReady, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
 		{name: "resumed by rule, idle again", state: supervise.StateIdle, want: ReleaseCancel, cause: ReleaseCauseOvertaken},
-		// A close, a linger or an operator that took the claim over re-stamps the source: that
+		// A close, a stop or an operator that took the claim over re-stamps the source: that
 		// suspension is theirs to end, and the release is over either way.
 		{name: "taken over by another path", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon,
 			want: ReleaseCancel, cause: ReleaseCauseOvertaken},
@@ -1095,7 +1092,7 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 				t.Fatalf("the role stop = %s for %s, want %s for %s", stop.Act, stop.Cause, tc.want, tc.cause)
 			}
 
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 			teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if tc.want == ReleaseActs {
 				if err != nil || teardown.Act != ReleaseActs {
@@ -1241,7 +1238,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 				rootIssue, first, boundary); err != nil {
 				t.Fatalf("finish the release's run rows: %v", err)
 			}
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 			teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if err != nil {
 				t.Fatalf("IssueRelease: %v", err)
@@ -1282,7 +1279,7 @@ func rootClaim(t *testing.T, st *Store, role claim.Role, state supervise.ClaimSt
 func releaseTwoRolesThroughTheStore(t *testing.T, st *Store) (boundary, stop, last int64) {
 	t.Helper()
 	ctx := context.Background()
-	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(pods.IdleView) (IdleReleaseMark, error) {
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(_ context.Context, _ pgx.Tx, _ pods.IdleView) (IdleReleaseMark, error) {
 		return IdleReleaseMark{Generation: 1, Role: claim.RoleImplementer, Rows: []IdleReleaseRow{
 			{Kind: "issue_bundle", Payload: []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"implementer"}`)},
 			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"LEGION-208","role":"implementer","generation":1}`), Boundary: true},
@@ -1419,7 +1416,7 @@ func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *test
 			}
 			stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
 
-			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+			release := IssueReleased{Issue: rootIssue, Generation: 1, Row: last}
 			teardown, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
 			if err != nil {
 				t.Fatalf("IssueRelease: %v", err)

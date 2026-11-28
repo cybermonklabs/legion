@@ -856,7 +856,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	t.Run("a retirement of the waiting claim does not wait either and retires it", aRetirementOfTheWaitingClaim)
 	t.Run("a release of the pod during a wait does not wait", aReleaseOfThePodDuringAWait)
 	t.Run("a deletion of the pod during a wait does not wait", aDeletionOfThePodDuringAWait)
-	t.Run("a close of the tree during a wait does not wait", aCloseOfTheTreeDuringAWait)
+	t.Run("a close of the waiting claim's issue during a wait does not wait", aCloseOfTheIssueDuringAWait)
 	t.Run("a grant that reaches a machine the daemon's stop ended starts nothing, and the pod goes to the next start as a failed launch",
 		aGrantAfterTheDaemonsStop)
 	t.Run("a start granted and cut before it ran names what cut it to the next start", aGrantedStartCutBeforeItRan)

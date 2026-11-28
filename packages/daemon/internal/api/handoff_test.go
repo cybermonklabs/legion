@@ -204,19 +204,25 @@ func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writ
 }
 
 // seedIssueAt records key as a root at the given phase, on acme/widgets, which is where the handoff
-// route reads the phase a completion finishes.
+// route reads the phase a completion finishes, with its row of the copy of Dispatch's issues.
 func seedIssueAt(t *testing.T, h *harness, key string, at phase.Phase) {
 	t.Helper()
 	seedIssueOn(t, h, key, at, "acme/widgets")
 }
 
-// seedIssueOn records key as a root at the given phase on repo, the repository its record names.
+// seedIssueOn records key as a root at the given phase on repo, the repository its record names,
+// and writes its row of the copy of Dispatch's issues, with no parent: the daemon reads who acts
+// on an issue from the Dispatch chain (R15 of dispatch://INFRA-3320), so a root with no copy row
+// stands on an unknown chain.
 func seedIssueOn(t *testing.T, h *harness, key string, at phase.Phase, repo string) {
 	t.Helper()
 	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
+		if err := record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: key, Repo: repo, DefaultBranch: "main", GitHubRepo: repo, Tree: key, Project: testProject, Title: key, Phase: at, Generation: 1, Status: "in_progress",
-		})
+		}); err != nil {
+			return err
+		}
+		return seedCopy(tx, key, "", "in_progress")
 	})
 	if err != nil {
 		t.Fatalf("seed %s at %s: %v", key, at, err)
@@ -1371,35 +1377,6 @@ func TestHandoffCompleteRefusesExpiredAndRevokedGrants(t *testing.T) {
 	refused(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented again", Commit: "ccddee", HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}), http.StatusForbidden, "GRANT_REVOKED")
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("handoff facts = %#v, want only the completion made before the claim was replaced", got)
-	}
-}
-
-// A completion the workflow refused while the child's tree lingered is recorded as processed under
-// its key. Re-admission starts a new generation of the tree, bumping only the root's generation,
-// and restarts the child's worker in the phase it stood in; the same completion there belongs to
-// the new generation, so the key names the tree's generation and the completion is applied rather
-// than answered already received.
-func TestHandoffCompleteAppliesAfterReadmissionTheCompletionALingeringTreeRefused(t *testing.T) {
-	github := newHandoffGitHub(t)
-	h, facts := newHandoffHarness(t, github, nil, &intake.Refusal{Status: http.StatusConflict, Code: "TREE_LINGERING", Message: "the tree LEGION-208 is lingering after it left the workflow"})
-	seedTree(t, h, "LEGION-208", "LEGION-209")
-	// A worker's task carries its issue's run, and a claim serving no run is refused before the
-	// workflow sees the completion, so the tree is at a run of its own.
-	for _, key := range []string{"LEGION-208", "LEGION-209"} {
-		setIssue(t, h, key, func(issue *record.Issue) { issue.Generation = 1 })
-	}
-	planner := newLiveClaim(t, h, "LEGION-209", claim.RolePlanner)
-	request := HandoffCompleteRequest{GrantID: planner.grant(t), Summary: "planned", HandoffID: planner.writeHandoff("plan", 1), HandoffVersion: 1}
-	refused(t, h.complete(request), http.StatusConflict, "TREE_LINGERING")
-
-	facts.mu.Lock()
-	facts.refusal = nil
-	facts.mu.Unlock()
-	setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Generation++ })
-	request.GrantID = planner.grant(t)
-	completion(t, h.complete(request))
-	if got := facts.recorded(); len(got) != 2 {
-		t.Fatalf("handoff facts = %#v, want the refused completion and the new generation's", got)
 	}
 }
 

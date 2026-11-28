@@ -623,13 +623,18 @@ func (s State) MarshalJSON() ([]byte, error) {
 }
 
 // DaemonInfo is the running daemon itself: which project it coordinates, the schema its store is
-// migrated to, its boot history, and the state event its snapshot reflects.
+// migrated to, its boot history, ConvertedAt, when the project's first boot on this release
+// finished converting the store off the stored tree (R22 of dispatch://INFRA-3320, the
+// tree_conversions row the conversion records last), absent while no conversion has finished,
+// before the first boot and after a rollback's step deleted the row, and the state event its
+// snapshot reflects.
 type DaemonInfo struct {
-	Project       string    `json:"project"`
-	SchemaVersion int       `json:"schemaVersion"`
-	Boots         int       `json:"boots"`
-	FirstBootAt   time.Time `json:"firstBootAt"`
-	StartedAt     time.Time `json:"startedAt"`
+	Project       string     `json:"project"`
+	SchemaVersion int        `json:"schemaVersion"`
+	Boots         int        `json:"boots"`
+	FirstBootAt   time.Time  `json:"firstBootAt"`
+	StartedAt     time.Time  `json:"startedAt"`
+	ConvertedAt   *time.Time `json:"convertedAt,omitempty"`
 	// StateSeq is the sequence of the newest state event the project's daemon committed
 	// (record.Store.StatePublication, state_publication.last_seq), read in the same
 	// repeatable-read snapshot as the rest of the body: every state event at or below it is in
@@ -702,8 +707,8 @@ type Admission struct {
 	// again — except while it waits on another issue (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
 	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose start a
-	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged root
-	// standing in merging while the rest of its tree runs — and one whose phase has left the
+	// closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a merged issue
+	// standing in merging while a Dispatch child of it is not done — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
 	// An issue the daemon has started that waits on another issue in a phase that keeps a slot is
 	// missing from here too, other than the three roots that keep their slot through such a wait
@@ -711,21 +716,20 @@ type Admission struct {
 	// admit.releaseSlotsForWaits) and stands in `waiting` and in `blocked`, which is how a reader
 	// tells it from an issue a person parked, which stands in none of the three.
 	Active []string `json:"active"`
-	// Waiting is the admission line, in the line's own order: by priority first (the priority
-	// Dispatch resolves for each issue, or with an older Dispatch release its own priority else
-	// its tree root's for line order alone, else after P3), and within one priority the issues
-	// whose work came back, oldest first, then the issues whose first phase can start, by their
-	// tree root's Dispatch rank. It carries children as well as roots, for the same reason `active` does. An owed
+	// Waiting lists issues by the priority Dispatch resolves for each, or with an older Dispatch
+	// release its own priority else its top issue's for line order alone, else after P3.
+	// Within each priority, returning work goes first by age, then first starts by top and own
+	// rank. It carries children as well as roots, for the same reason `active` does. An owed
 	// start in it holds no row and waits for one, as does an issue released for what it waits
 	// on; an issue in it that holds a row already (the kinds record.LineEntry.Holds names)
 	// stands in both lists until the pass that promotes it, which takes no second row.
 	Waiting []string `json:"waiting"`
-	// Trees is the root of every live tree the daemon judges (record.TreeLive), sorted by key: a
-	// tree whose lifecycle stands open under the workflow and does not linger, one whose root
-	// waits in the line, and one whose root waits on a person. A slot is no longer one per tree,
-	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
-	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
-	// a reader such as the controller which trees run. Never null; empty when no tree is live.
+	// Trees is the roots in Legion's work (R22 of dispatch://INFRA-3320), sorted by key: each
+	// issue of the project in Legion's work with no issue above it in Legion's work on a known
+	// Dispatch chain (record.Chains.IsRoot). A slot is no longer one per tree, so a root can hold
+	// no slot at all — one still waiting in the line for its first start holds none, and neither
+	// does an issue under it — and `active` alone does not tell a reader such as the controller
+	// which roots are in work. Never null; empty when no root is in work.
 	Trees []string `json:"trees,omitzero"`
 	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for
 	// (INFRA-225), by issue key: a waiting root admission skips, a child the workflow holds at
@@ -826,20 +830,20 @@ type Issue struct {
 	// write is queued, and go on differing where one was lost until the status repair puts it
 	// back, so a reader who wants the status Dispatch shows must read Dispatch.
 	Status string `json:"status"`
-	// Tree is the key of the root of the issue's tree, which equals Key on a root. Since a child
-	// holds a slot of its own, neither `admission.active` nor `admission.waiting` says any more
-	// which tree an issue belongs to, and a reader needs it to tell a child from a root and to
-	// find the members of a tree that lingers. Absent on an issue the workflow does not record
+	// Tree is the issue's gate root (R22 of dispatch://INFRA-3320, record.Chains.StateTree): the
+	// nearest issue at or above it in Legion's work that holds its own design gate, and for an
+	// issue out of Legion's work the nearest issue above it that the daemon records and that holds
+	// its own gate, else the issue itself; it equals Key on a gate root. Dispatch's Legion board and
+	// metrics group by it. Absent on an issue the workflow does not record
 	// (an operator's claim, Unrecorded), which stands in no tree.
 	Tree string `json:"tree,omitempty"`
-	// TreeRuns is whether the tree this root roots is running under the workflow, as the daemon's
-	// own rule answers it (record.TreeRuns): its lifecycle stands open under the workflow, the
-	// root does not linger, and the root does not wait in the line for that tree to be opened
-	// (record.QueuedRoot). It is on every root the record holds of this daemon's project and on
-	// no other issue, since no other field of the record decides it in every case: a root a
-	// re-admission left at todo waiting for a slot runs nothing whatever its architect's claim
-	// reads, and a root a person answered runs while it waits in the line for its resume
-	// (dispatch://INFRA-3320, R4). A pointer, so a tree that does not run writes `false`. It is
+	// TreeRuns is whether this gate root runs under the workflow, as the daemon's own rule answers
+	// it (record.TreeRuns): it is in Legion's work and does not wait in the line for a slot it does
+	// not hold, for its first start (record.QueuedRoot) or after a stop. It is on every gate root
+	// the record holds of this daemon's project and on no other issue, since no other field of the
+	// record decides it in every case: a root waiting for a slot runs nothing whatever its
+	// architect's claim reads, and a root a person answered runs while it waits in the line for its
+	// resume (dispatch://INFRA-3320, R4). A pointer, so a tree that does not run writes `false`. It is
 	// absent from the body the route serves a caller below gateBasisContract (api's stateFor,
 	// withoutGateBasis).
 	TreeRuns *bool `json:"treeRuns,omitempty"`
@@ -875,29 +879,21 @@ type Issue struct {
 	// the last two is no architect's to retry or escalate: a later version of the plan
 	// starts a stopped task again, and a parent's retro starts once none of those holds it. A
 	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
-	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
-	// reason, and the view shows it again once the tree is re-admitted.
+	// Absent otherwise. It and HeldFrom are both facts of the issue's own record (R17 and R20 of
+	// dispatch://INFRA-3320), shown whatever the issue's tree is doing.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
-	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
-	// the reason is a decision someone must act on, which a lingering tree has none of, while the
-	// phase is a fact of the record that costs one word, so a reader of this body is held to the
-	// simple rule that every issue at `phase: held` names the phase that stopped.
+	// issue that is not held, so a reader of this body is held to the simple rule that every issue
+	// at `phase: held` names the phase that stopped.
 	HeldFrom string `json:"heldFrom,omitempty"`
-	// LingerUntil is when the linger of a tree whose work finished runs out
-	// (record.Issue.LingerUntil), and is absent for every issue that is not a lingering root:
-	// only a root carries a linger, and re-admission clears it. It is what keeps HoldReason's
-	// own suppression honest — a held issue of a lingering tree is served no reason, so without
-	// this key an absent reason reads either as a hold nobody has given a reason or as a tree
-	// that lingers, and a reader of the two cannot tell which. The controller's texts turn on
-	// that difference.
+	// LingerUntil was when the linger of a tree whose work finished ran out. No tree lingers in
+	// this release (R20 of dispatch://INFRA-3320), so the key is written no more; it stays on the
+	// type, optional to every reader, so an older strict reader still parses the state.
 	LingerUntil *time.Time `json:"lingerUntil,omitempty"`
-	// Ancestry is the keys of a labelled root's Dispatch parent chain, from its parent upward
-	// (record.Issue.Ancestry), and is absent for every issue the record holds none for — a root
-	// that ran as a tree of its own, and every member of a tree. It is what a root held under an
-	// unreleased child of a live tree is held by: that root waits for no slot while any live root
-	// stands on its chain, and until now the chain reached no surface at all, so the wait had no
-	// reading on this wire.
+	// Ancestry was the keys of a labelled root's Dispatch parent chain for the release before's
+	// ancestry hold (record.Issue.Ancestry). This release stores no chain and writes the key no
+	// more (R15 of dispatch://INFRA-3320); it stays on the type, optional to every reader, so an
+	// older strict reader still parses the state.
 	Ancestry  []string   `json:"ancestry,omitempty"`
 	Architect *ClaimView `json:"architect,omitempty"`
 	// Priority is the issue's own Dispatch priority (record.Issue.Priority): its number, 0 for P0
@@ -970,8 +966,8 @@ type Issue struct {
 	// `memory` answer records no draw, which is a hand-over settling a unit at no arm: that tree
 	// answered none of the three before contract 141 and answers none of them now, so a reader
 	// counting the trees a group reached counts the same trees it did. The draw is made once, for
-	// the unit, and every issue of a tree shows its tree's: an issue's memory group is its tree's
-	// (contract 49). They are the one experiment's answer spelled out for the readers that knew
+	// the unit, and each issue shows the answer it holds itself, the one it took at its first start
+	// from the nearest issue above it that held one, or drew (contract 49). They are the one experiment's answer spelled out for the readers that knew
 	// it before any experiment was declared; Assignments below carries that row, and the settled
 	// row these three leave out.
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
@@ -1784,9 +1780,9 @@ type WaitingLineView struct {
 	RootKey   string     `json:"rootKey,omitempty"`
 	// Priority is the priority that placed the member (record.LineEntry.Priority): the priority
 	// Dispatch resolves for the issue (or, with an older Dispatch release that sends no
-	// `resolved_priority`, the issue's own else its tree root's for line order alone), as a number
-	// from 0 for P0 to 3 for P3, or null for a member with none, whose band stands after P3. It is
-	// the first key of the whole line; Part, PartPlace and PartLength count within its band.
+	// `resolved_priority`, the issue's own else its top issue's for line order alone), as a number
+	// from 0 for P0 to 3 for P3, or null for none. The band with no priority stands after P3.
+	// PartPlace and PartLength count within the band.
 	Priority *PriorityView `json:"priority,omitempty"`
 	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
 	// put it in the line and when, where it stands in its own part, and what that place means

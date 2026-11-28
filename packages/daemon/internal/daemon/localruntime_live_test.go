@@ -34,7 +34,7 @@
 //     is the same pane a runtime with no GitHubCredential function opens.
 //   - ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no
 //     repository on its host; this runtime makes the claim's working directory itself.
-//   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
+//   - PodDrift, ReplacePod and CleanupIssue hold nothing per place or per issue, so each answers
 //     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
 // Every child is started in a process group of its own (Setpgid) and every stop signals that
@@ -696,8 +696,8 @@ func (r *localRuntime) ReplacePod(context.Context, runtime.Known, func(context.C
 	return nil
 }
 
-// CleanupTree holds nothing per tree.
-func (r *localRuntime) CleanupTree(context.Context, string) error { return nil }
+// CleanupIssue holds nothing per issue.
+func (r *localRuntime) CleanupIssue(context.Context, string) error { return nil }
 
 // parseLocalIncarnation reads the `<pid>:<start ticks>` an incarnation is, as the tmux runtime
 // spells it.

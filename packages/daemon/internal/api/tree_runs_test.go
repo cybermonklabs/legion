@@ -40,20 +40,22 @@ func (projectedState) State(ctx context.Context, tx pgx.Tx) (api.State, []superv
 
 func (projectedState) ObservedState(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	observed, err := projection.Observe(ctx, projection.ObservedInputs{Tx: tx, Store: record.NewStore(), Project: treeRunsProject,
-		Steps: config.DesignGateRootIssues.Steps(), Now: treeRunsNow})
+		Steps: config.DesignGateRootIssues.Steps()})
 	return observed, nil, err
 }
 
 // The served `treeRuns` is the daemon's own answer to whether a root's tree runs (record.TreeRuns,
 // dispatch://INFRA-3320, R4), on every root it records, read through the route a session reads
-// its record from, over the state the projection builds from a real store. Five roots, each a
-// case no other field of the record decides alone: a root whose tree runs, true; a root whose
-// tree finished and lingers, false, though its lifecycle still stands open; a root a person moved
-// to the backlog, which the leave left lingering at done (workflow's beginLinger) with Dispatch
-// showing backlog, false, though its lifecycle stands open too; a root a re-admission left at todo
-// waiting in the line for its tree to be opened again, false, though the lifecycle of the run that
-// ended stands open as well; and a root a person answered, which waits in the line for its
-// architect's resume, true, since its tree runs while it waits there. A child carries no such
+// its record from, over the state the projection builds from a real store and the copy of
+// Dispatch's issues, from which every chain is read (R15). Five roots, each a case no other field
+// of the record decides alone: a root whose tree runs, true; a root whose run finished, false,
+// though its lifecycle still stands open; a root a person moved to the backlog, which keeps its
+// phase out of Legion's work (R20) with Dispatch showing backlog, false, though its lifecycle
+// stands open too; a root a person moved to the backlog and back to todo, which stands in its phase
+// again and waits in the line among the work that came back for the slot its stop freed, with the
+// start it owes its implementer (R20), false, though its phase carries its run and its lifecycle
+// stands open as well; and a root a person answered, which waits in the line for its architect's
+// resume holding its slot, true, since its tree runs while it waits there. A child carries no such
 // key.
 func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 	ctx := context.Background()
@@ -65,36 +67,44 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 	}
 	root := func(key string, at phase.Phase, status string, generation uint64, rank string) record.Issue {
 		return record.Issue{Key: key, Tree: key, Project: treeRunsProject, Title: key, Phase: at, Generation: generation, Status: status,
-			Rank: rank, HandedOver: true, LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+			DispatchStatus: status, Rank: rank, HandedOver: true, LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	}
-	const running, lingering, readmitted, answered, child, parked = "LEGION-300", "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"
-	lingerUntil := treeRunsNow.Add(time.Hour)
+	const running, finished, returned, answered, child, parked = "LEGION-300", "LEGION-301", "LEGION-302", "LEGION-303", "LEGION-304", "LEGION-305"
 	answeredAt := treeRunsNow.Add(-10 * time.Minute)
 	parent := running
 
 	issues := []record.Issue{
 		root(running, phase.Planning, "in_progress", 1, "A"),
-		root(lingering, phase.Done, "done", 1, "B"),
-		root(readmitted, phase.Admitted, "todo", 2, "C"),
+		root(finished, phase.Done, "done", 1, "B"),
+		root(returned, phase.Implementing, "in_progress", 1, "C"),
 		root(answered, phase.AwaitingPerson, "in_progress", 1, "D"),
 		{Key: child, Tree: running, Parent: &parent, Project: treeRunsProject, Title: child, Phase: phase.Admitted, Generation: 1,
-			Status: "todo", Rank: "E", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
-		root(parked, phase.Done, "backlog", 1, "F"),
+			Status: "todo", DispatchStatus: "todo", Rank: "E", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
+		root(parked, phase.Planning, "backlog", 1, "F"),
 	}
-	issues[1].LingerUntil = &lingerUntil
+	// The returned root's return wrote in_progress, its implementing's status, which Dispatch, still
+	// showing the person's todo, has not echoed yet.
+	issues[2].DispatchStatus = "todo"
 	issues[3].Awaiting = &record.Awaiting{Ask: "ask-303", Since: record.EventMark{Seq: 5, At: treeRunsNow.Add(-time.Hour)},
 		AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk}
-	issues[5].DispatchStatus, issues[5].LingerUntil = "backlog", &lingerUntil
 	if err := store.Transact(ctx, st.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		for _, issue := range issues {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
+			parent := ""
+			if issue.Parent != nil {
+				parent = *issue.Parent
+			}
+			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: treeRunsProject, Seq: 1,
+				Status: record.Carry(issue.DispatchStatus), Parent: record.Carry(parent), Labels: record.Carry([]string{})}); err != nil {
+				return err
+			}
 		}
-		// Every one of the five trees once opened, and none has been cleaned up: the lingering
-		// tree, the parked one and the re-admitted one stand open from the run that ended, which
-		// is why the lifecycle alone would call each of them running.
-		for _, tree := range []string{running, lingering, readmitted, answered, parked} {
+		// Every one of the five trees once opened, and none has been cleaned up: the finished
+		// tree, the parked one and the returned one stand open from their runs, which is why the
+		// lifecycle alone would call each of them running.
+		for _, tree := range []string{running, finished, returned, answered, parked} {
 			if _, err := records.OpenTreeLifecycle(ctx, tx, token, tree, treelifecycle.AuthorityWorkflow); err != nil {
 				return err
 			}
@@ -106,7 +116,14 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 				return err
 			}
 		}
-		return nil
+		// The start the returned root's return owes its implementer, held until a slot comes: what
+		// puts it in the line among the work that came back (record.Waiting, LineReturning).
+		start, err := record.NewOutboxRow(returned, record.SuperviseRequest{Op: "start", Tree: returned, Role: claim.RoleImplementer,
+			Generation: 1, Phase: phase.Implementing, NeedsSlot: true, Task: "Continue LEGION-302. Issue: LEGION-302. Phase: implementing."}, treeRunsNow)
+		if err != nil {
+			return err
+		}
+		return records.EnqueueStart(ctx, tx, start)
 	}); err != nil {
 		t.Fatalf("record the roots: %v", err)
 	}
@@ -133,7 +150,7 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 
 	// The two roots the line holds are the line's: a test of a root waiting in the line that
 	// found it in no line would prove nothing of that case.
-	for _, key := range []string{readmitted, answered} {
+	for _, key := range []string{returned, answered} {
 		if body.Issues[key].WaitingLine == nil {
 			t.Fatalf("%s stands in no place of the waiting line in %s; this test proves nothing of a root that waits there", key, recorder.Body)
 		}
@@ -143,9 +160,9 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 		runs bool
 	}{
 		{running, true},
-		{lingering, false},
+		{finished, false},
 		{parked, false},
-		{readmitted, false},
+		{returned, false},
 		{answered, true},
 	} {
 		served := body.Issues[tc.key].TreeRuns
