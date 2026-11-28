@@ -802,15 +802,18 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 		}
 	}
 	assertStoredPeers("before eviction")
+	// Make every row eligible for the close's tail compaction without waiting for it to age.
+	ageUpdatesThrough(t, database, artifactID, everyVersion, time.Hour)
+	doneWaiting()
 	// The resident room never took the retired instance's update, so it stands behind the head.
 	// Evict it before the service's cleanup can settle it.
-	// Make every row eligible for the close's tail compaction without waiting for it to age.
-	ageUpdatesThrough(t, database, artifactID, storedHead(t, database, artifactID), compactTail+time.Second)
-	doneWaiting()
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("evict the room: %v", err)
 	}
 	waitForNoLiveDocument(t, service, artifactID)
+	if rows := storedUpdateCount(t, database, artifactID); rows != 1 {
+		t.Fatalf("round-%03d: room-close compaction left %d stored updates, want 1", round+1, rows)
+	}
 	assertStoredPeers("after eviction")
 }
 

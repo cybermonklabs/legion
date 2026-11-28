@@ -21,10 +21,11 @@ import (
 // work can keep it alive. Shutdown counts tell the report whether a test ever tried to shut it
 // down and whether every call has returned, without reading the service's internal state.
 
-// The leak-check child replaces the clock for the report and installs a callback to move it
-// between collection passes. The report runs after m.Run, when the child's test has ended.
 var (
-	leakReportClock   = clock.Real()
+	// leakReportClock measures the report's elapsed time.
+	leakReportClock = clock.Real()
+	// leakReportAfterGC is a hook a child sets to run after a collection pass that still sees
+	// a live service and will keep waiting.
 	leakReportAfterGC func(elapsed time.Duration)
 )
 
@@ -157,12 +158,15 @@ func reportLeakedServices() bool {
 	var built int
 	var live []liveService
 	neverShutDown := func(s liveService) bool { return !s.shutdownStarted() }
+	done := func() bool {
+		built, live = liveServices()
+		return len(live) == 0 || slices.ContainsFunc(live, neverShutDown)
+	}
 	asks := 0
 	// InMain already prints its error to stderr if the shared wait gives up.
 	_ = testwait.InMain("the document services to finish Shutdown and be collected", func() bool {
 		asks++
-		built, live = liveServices()
-		if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
+		if done() {
 			return true
 		}
 		for _, service := range live {
@@ -170,14 +174,12 @@ func reportLeakedServices() bool {
 				return false
 			}
 		}
-		// This depends on testwait's 10 ms pace: 25 asks give a collection pair about
-		// every 250 ms, as with the old leakWaitStep.
+		// At testwait's 10 ms pace, 25 asks give one collection pair about every 250 ms.
 		if asks%25 != 0 {
 			return false
 		}
 		collect()
-		built, live = liveServices()
-		if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
+		if done() {
 			return true
 		}
 		if leakReportAfterGC != nil {

@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -46,17 +45,12 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
-	service := New(Deps{
+	service := newSeamService(t, Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Identity: headerIdentity(database),
 		Origins:  testOrigins,
 		Clock:    clocktest.Held(),
-	})
-	testcleanup.Add(t, func() {
-		if err := service.Shutdown(testwait.Context(t)); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
 	})
 	return service, database, tracer
 }

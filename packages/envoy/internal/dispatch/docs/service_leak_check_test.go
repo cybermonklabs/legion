@@ -58,7 +58,7 @@ func TestTheLeakCheckWaitsForAShutDownServiceAndFailsOneNeverShutDown(t *testing
 			leakCheckHoldEnded,
 			fmt.Sprintf("docs: 1 services built, 0 still alive after %s", leakCheckHold),
 		}},
-		{child: "never-shut-down", wantExit: 1, want: []string{
+		{child: "never-shut-down", guard: time.Minute, wantExit: 1, want: []string{
 			"docs: 2 services built, 1 still alive after",
 			"docs: a service built by docs.TestLeakCheckChild is still alive: its Shutdown never started",
 			"docs: a service still alive fails this run",
