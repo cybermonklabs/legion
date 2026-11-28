@@ -1837,8 +1837,8 @@ of its own, and gates nothing
 ## Which lane a job runs in: the pull request or the merge queue
 
 A pull request's run is a fast filter: the builds, the vets, the format, typecheck and lint
-checks, and the fast tests. The merge queue runs every job its paths select on the tree the
-change lands as, so a slow test runs once, in the queue, and main stays green. The rule that
+checks, and the fast tests. The merge queue runs a job when the queue's own generator selects it,
+on the tree the change lands as, so a slow test runs once, in the queue, and main stays green. The rule that
 sorts a job, read off its pull-request runs (attempt 1, every leg of the job that ran succeeded,
 a job's time from its first leg's start to its last leg's end; the numbers below are
 2026-11-22's):

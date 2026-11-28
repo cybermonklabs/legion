@@ -229,6 +229,9 @@ check "full-ci still turns it on" "$(is "$(off_under "$broken" full-ci | tr '\n'
 # computed filters with one line added by hand, which must still be accepted) hand it a file no
 # generator wrote.
 statement='Say what decided each slow suite on this run'
+# The scripts a copied tree runs lane-verdicts.py with: it and every module of this directory it
+# imports, directly or through another (ci_filter_coverage.py imports the last three).
+verdicts_modules=(lane-verdicts.py ci_router_outputs.py ci_filter_coverage.py audited_scripts.py go_build_tags.py workflow_paths.py)
 # statement_of <workflow> <event> [--filters-file <file>] <argument>...: lane-verdicts.py run once over
 # the env that workflow's statement step is handed on that run. The step's FILTERS_FILE must be the
 # file the workflow's paths-filter step reads (--filter-step's `filters`); a case whose step reads
@@ -251,8 +254,7 @@ statement_of() {
     verdicts="${workflow%/workflows/*}/scripts/lane-verdicts.py"
     if [ ! -e "$verdicts" ]; then
       mkdir -p "${verdicts%/*}"
-      cp "$script_dir/lane-verdicts.py" "$script_dir/ci_router_outputs.py" "$script_dir/ci_filter_coverage.py" \
-        "$script_dir/go_build_tags.py" "$script_dir/workflow_paths.py" "${verdicts%/*}/"
+      cp "${verdicts_modules[@]/#/$script_dir/}" "${verdicts%/*}/"
     fi
   fi
   said_by=harness
@@ -892,14 +894,27 @@ echo "case: an engine that does not import still has its fail-open file read, an
 # Review 6089168911: the fail-open file is what the generator writes when the filter engine fails,
 # and then the engine may not import. The script reads that line without it, and imports the
 # engine only to check a computed header, which it then refuses rather than trusts.
+# import_error <dir>: `import ci_filter_coverage` run from <dir>: empty when it imports, else its
+# failure as lane-verdicts.py names it, `<type>: <message>`, whose message a SyntaxError ends with
+# the file and line it names.
+import_error() {
+  (cd "$1" && python3 -c '
+try:
+    import ci_filter_coverage
+except Exception as error:
+    print(f"{type(error).__name__}: {error}")')
+}
 engine="$work/engine-does-not-import"
 mkdir -p "$engine/.github/workflows" "$engine/.github/scripts"
 cp "$repo/.github/workflows/ci.yaml" "$engine/.github/workflows/"
-cp "$script_dir/lane-verdicts.py" "$script_dir/ci_router_outputs.py" "$script_dir/ci_filter_coverage.py" \
-  "$script_dir/go_build_tags.py" "$script_dir/workflow_paths.py" "$engine/.github/scripts/"
+cp "${verdicts_modules[@]/#/$script_dir/}" "$engine/.github/scripts/"
+# The copy imports before the break is planted, so a module verdicts_modules leaves out fails
+# here, by name, rather than as the break.
+fresh=$(import_error "$engine/.github/scripts")
+check "the fresh copy imports ci_filter_coverage${fresh:+ (it fails: $fresh)}" "$(is "$fresh" "")"
 printf '\ndef broken(:\n' >> "$engine/.github/scripts/go_build_tags.py"
 check "the copied engine does not import" \
-  "$(is "$(cd "$engine/.github/scripts" && python3 -c 'import ci_filter_coverage' >/dev/null 2>&1 && echo imports)" "")"
+  "$(contains "$(import_error "$engine/.github/scripts")" '^SyntaxError: .*(go_build_tags\.py, line ')"
 statement_of "$engine/.github/workflows/ci.yaml" merge_group --filters-file "$work/fallback.yaml"
 check "  on its fail-open file the script exits 0" "$(is "$said_status" 0)"
 check "  every line is its output" "$(is "$(lines_hold "$(outputs --event merge_group)")" "")"
