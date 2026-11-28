@@ -1654,9 +1654,9 @@ func TestLegionGhHandsGhThePrePushHooksVariables(t *testing.T) {
 // help reads (ghVisibilityRead): the read's real gh, the shim, leads back once and that run
 // refuses. It holds through the leak guard too, which blanks the variable for its children. The
 // guard's own read for a push a real gh makes, whose `legion leak-check pre-push` runs under the
-// variable, is two `legion gh` starts deep: the one the read runs through the wrapper, and the one
-// the shim that read runs, for its help read or for the read itself under the token, leads back
-// to, which refuses. The shared check's own read, which the check makes itself, is three deep: the
+// variable, is one `legion gh` start deep: the hook's guard runs the read's real gh, the shim,
+// itself (ghGuardRead), under the variable again, and the `legion gh` the shim leads back to
+// refuses. The shared check's own read, which the check makes itself, is three deep: the
 // `legion gh` that answers it (answerVisibilityRead), the one that answer's REST read runs through
 // the wrapper, and the one that read's shim leads back to, which refuses. A refusal that let the
 // guard's reads through under the variable loops under the token until the cap stops it.
@@ -1733,8 +1733,8 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	}{
 		{"the guard's REST read under GH_TOKEN", true, leakguard.VisibilityReadWithHeadersArgs(slug), 1},
 		{"the guard's GraphQL read under GH_TOKEN", true, leakguard.VisibilityGraphQLArgs(slug), 1},
-		{"the pre-push hook of a push the real gh makes", false, nil, 2},
-		{"the pre-push hook of a push the real gh makes under GH_TOKEN", true, nil, 2},
+		{"the pre-push hook of a push the real gh makes", false, nil, 1},
+		{"the pre-push hook of a push the real gh makes under GH_TOKEN", true, nil, 1},
 	} {
 		t.Run("a shim that runs the wrapper: "+tc.name, func(t *testing.T) {
 			if err := os.Remove(starts); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -2494,8 +2494,9 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken
 // that a read with the bundle's directory would be refused for a repository the caller's token
 // writes — is this refusal.
 //
-// One gate holds it: the routing in the ghVisibilityCall arm, which refuses the unheld owner from
-// the read's own repository. ghTargetOf never reads these reads, which read no gh help
+// One gate holds it: the routing of ghVisibilityReadChild, which the ghVisibilityCall mode and the
+// guard of `legion gh` (ghGuardRead) both run, and which refuses the unheld owner from the read's
+// own repository. ghTargetOf never reads these reads, which read no gh help
 // (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads).
 func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerToken(t *testing.T) {
 	t.Parallel()

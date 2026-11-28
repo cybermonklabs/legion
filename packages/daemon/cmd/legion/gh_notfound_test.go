@@ -130,7 +130,7 @@ func saysWhatWasRead(t *testing.T, tc visibilityReadCase, printed, what string) 
 // `legion gh` in a process of its own, for a GET of the repository and for a PATCH of one of its
 // pull requests. The stand-in check passes both and is no copy of the one the read rule was
 // proven against, so the guard reads the destination's visibility for the GET as for the write.
-// That read goes through the pane's `gh` wrapper to `legion gh`, which runs the stand-in real gh;
+// That read runs the stand-in real gh, which `legion gh`'s guard runs itself (ghGuardRead);
 // after gh could not reach GitHub, the guard reads through the stand-in curl that
 // LEGION_CMD_TEST_CURL names, with the token `legion gh auth git-credential get` answers from acme's
 // directory, which the stand-in checks. GitHub's 404 refuses the call, exit 2, with `legion gh: `
@@ -179,9 +179,9 @@ func TestGhTellsAVisibilityRead404AsNotFound(t *testing.T) {
 }
 
 // `legion leak-check pre-push origin https://github.com/acme/no-such-repo.git`, in process, as the
-// image's hook runs it, with git's line for a ref the push deletes. The guard's REST read goes
-// through the pane's `gh` wrapper to `legion gh`, which runs the stand-in real gh, and after gh
-// could not reach GitHub through the stand-in curl leakguardCurl names. GitHub's 404 refuses the
+// image's hook runs it, with git's line for a ref the push deletes. The guard's REST read runs
+// the stand-in real gh, which the command's guard runs itself (ghGuardRead), and after gh could
+// not reach GitHub the stand-in curl leakguardCurl names. GitHub's 404 refuses the
 // push, exit 2, with the not-found words for the push to origin; a 500 each way refuses it, exit
 // 2, with the setup error. The real gh ran the guard's REST read and nothing else, and git never
 // ran: no ls-remote reads a repository GitHub answered 404 for.
@@ -215,8 +215,8 @@ func TestLeakCheckPrePushTellsAVisibilityRead404AsNotFound(t *testing.T) {
 var refusedRefDeletion = "refs/heads/work " + noSHA + " refs/heads/legion/" + leakguardtest.RulesHost + " " + noSHA + "\n"
 
 // pushVisibilityReadEnv readies the in-process `legion leak-check pre-push` of a push to
-// noSuchRepo, whose visibility the guard reads as read says: through the pane's `gh` wrapper to
-// `legion gh`, which runs the stand-in real gh, and after gh could not reach GitHub through the
+// noSuchRepo, whose visibility the guard reads as read says: with the stand-in real gh, which the
+// command's guard runs itself (ghGuardRead), and after gh could not reach GitHub through the
 // stand-in curl leakguardCurl names, under a stand-in check that passes and the fixture rule file
 // (leakguardtest.WriteRules), in a working directory of the test's own, with a git that records
 // each run and fails: with no rule file named the guard reads no destination's visibility. It

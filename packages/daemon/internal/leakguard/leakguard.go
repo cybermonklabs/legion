@@ -85,6 +85,20 @@ type Options struct {
 	// ls-remote, and one that failed on its connection (a *transportError) to curl and ls-remote
 	// (Guard.Visibility), which a test stands gh, curl and git in for on Env's PATH.
 	Visibility func(ctx context.Context, slug string) (Visibility, error)
+	// GhRead is the gh of the guard's own two reads through gh, the REST read with headers and
+	// the GraphQL read (Guard.ghVisibility, Guard.graphQLVisibility): asked for slug, it answers
+	// the program each read runs, with gh's arguments as ever, and the whole environment it runs
+	// with (GhReadChild). environ is the environment the guard would otherwise have started `gh`
+	// from PATH with (Guard.env, ghReadEnv on top), which in a pane or a pod is the wrapper that
+	// runs `legion gh`, so an answer can hand its program what that `legion gh` would have handed
+	// the real gh. Nil is the ordinary case: each read runs `gh` from Env's PATH. cmd/legion's
+	// `legion gh` and `legion leak-check` fill it to run each read with the real gh themselves,
+	// routed as `legion gh` routes the read (its ghVisibilityReadChild), so the read starts no
+	// second `legion gh`. An error is that routing's refusal, before any gh runs: an
+	// *OwnerNotServedError alone is read as the line `legion gh` prints for it is
+	// (Guard.unservedOwner), with no credential, and any other error refuses the read, naming it
+	// (Guard.ghReadRefused).
+	GhRead func(slug string, environ []string) (GhReadChild, error)
 	// Clock supplies the time and bounded wait of a rate-limited visibility read. Nil is wall time.
 	Clock Clock
 	// OnVisibility observes the source of a successful visibility answer. A caller uses it for
@@ -108,7 +122,8 @@ type Options struct {
 	// reads, and the git commands a push's records are read with. Nil means this process's own
 	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)
 	// and the read through curl (Guard.CurlGet), which keep only the entries lsRemoteInherits and
-	// TokenChildKeeps allow. The guard adds to it the names that make a credential prompt fail closed
+	// TokenChildKeeps allow, and a gh read GhRead answers, which runs with that answer's
+	// environment alone. The guard adds to it the names that make a credential prompt fail closed
 	// (promptsNothing) and RunByRealGhVar blanked, and each child's own names on top of those. It
 	// is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
@@ -186,12 +201,15 @@ const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 //
 // RunByRealGhVar is blanked because the guard, and not the real gh, is what runs its children. A
 // real gh's own push reaches the guard with that variable set: gh's git inherits it, and git's
-// pre-push hook runs `legion leak-check pre-push`. The guard's visibility reads run `gh`, which in
-// a pod is `legion gh`, and the shared check's own read reaches `legion gh` too (its
+// pre-push hook runs `legion leak-check pre-push`. The guard's visibility reads run `gh` from
+// PATH, which in a pod is `legion gh`, where the caller names no gh of its own for them
+// (Options.GhRead), and the shared check's own read reaches `legion gh` too (its
 // answerVisibilityRead, which reads through a guard of its own). Under the variable every one of
 // them would be refused, and so would the push. Blanking it stays bounded: `legion gh` runs each
-// read with a real gh it gives the variable again, so a real gh that leads back to `legion gh` is
-// still refused one start later.
+// read with a real gh it gives the variable again, and so does the GhRead of `legion gh` and
+// `legion leak-check`, whose answer's environment is built from this one (its
+// ghVisibilityReadChild), so a real gh that leads back to `legion gh` is still refused one start
+// later.
 func (g *Guard) env(base []string, inherit func(base []string) func(name, value string) bool, extra ...string) []string {
 	out := make([]string, 0, len(base)+5+len(extra))
 	if inherit == nil {

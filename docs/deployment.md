@@ -303,6 +303,7 @@ Under tmux one user runs every role and the copies are in that user's `$XDG_STAT
 It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
 Where the links end at a file not named `gh`, such as the `mise` binary a mise shim links to, which picks the gh it runs on each run, it keeps nothing and reads every help from gh.
 The leak guard's own visibility reads and `gh api rate_limit` read no help at all.
+In `legion gh` and `legion leak-check`, the leak guard runs those two reads with the real gh itself, with the gh directory `legion gh` routes the read's repository to and the environment `legion gh` would hand gh for it, so a guarded call starts one `legion gh`, not two; elsewhere the guard runs `gh` from `PATH`, and the guard that answers the shared check's own visibility read reaches `legion gh` with them that way.
 Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
 the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
 the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
@@ -310,8 +311,8 @@ the exact `gh api rate_limit`;
 and `gh auth git-credential`, which answers from the bundle.
 The guard's reads use the caller's token because a push made with the token writes the repository they read,
 and the bundle may hold no directory for that repository's owner.
-Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused with the line that names that owner,
-`legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`, exit 2,
+Without such a token, the leak guard's own REST read of a repository whose owner the bundle holds no directory for is refused before any gh runs, with the refusal that names that owner, which `legion gh` prints as
+`legion gh: the role's GitHub App is not installed on "<owner>": <LEGION_GH_OWNERS_DIR> holds no gh directory for it`, exit 2, where the read reaches it,
 and the guard then reads that repository's visibility with an unauthenticated `git ls-remote`, which makes no API request:
 its exit 0 alone reads public, and any other outcome refuses the write as a setup error naming both reads.
 The guard makes no unauthenticated REST read of it, because GitHub allows 60 of those an hour to one address.
@@ -741,11 +742,11 @@ shim is compiled and passes, and where mise has no gh for the directory it runs 
 the pane's wrapper, or that is another `legion gh` wrapper script, exits 2 before anything runs, and
 every real gh it runs carries `LEGION_GH_RUN_BY_REAL_GH`, under which a `legion gh` that gh leads
 back to exits 2 and runs nothing.
-The leak guard blanks that variable for every child it runs, so a push the real gh makes still
-passes the pre-push hook's visibility read, whose own real gh carries the variable again. Its help
-read of the real gh runs in a process group of its own, which a read past its timeout stops whole,
-and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak
-guard's children whole.
+The leak guard blanks that variable for every child it runs but the real gh of its own visibility
+read, which carries it again, so a push the real gh makes still passes the pre-push hook's
+visibility read. Its help read of the real gh runs in a process group of its own, which a read past
+its timeout stops whole, and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops
+that group and the leak guard's children whole.
 
 The daemon runs tmux itself: the first `tmux` on its `PATH`, with the pane environment, whose XDG
 directories are under the state directory. A mise shim, or a wrapper script that hands the call to

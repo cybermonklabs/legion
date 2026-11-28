@@ -92,18 +92,23 @@ const (
 // another way (readWithoutREST). A gh read that failed on its connection to GitHub, with no answer
 // from GitHub (ghTransportFailure), is read without gh (readWithoutGh). A read `legion gh` refuses
 // because the project's gh bundle holds no directory for the repository's owner
-// (Guard.unservedOwner) is read with no credential (readUnservedOwner). A read GitHub answered 404
-// (notFoundError) is read no other way. The answer is kept as gh's is.
+// (Guard.unservedOwner), as the line it prints or as the caller's GhRead refusal
+// (Guard.ghReadRefused), is read with no credential (readUnservedOwner). A read GitHub answered
+// 404 (notFoundError) is read no other way. The answer is kept as gh's is.
 //
 // The header-bearing read is:
 //
 //	gh api --hostname github.com repos/<slug> --include --jq .visibility
 //
-// run with PUBLIC_LEAK_CHECK_VISIBILITY_READ=<slug> in its environment. A pod's gh is `legion
-// gh`, which calls this guard, so this read must not be mistaken for the shared check's callback
-// or it would recurse. The callback's exact argv is separate (VisibilityReadArgs): it has no
-// `--include`, while this reader needs the headers to detect a near rate limit. `legion gh`
-// answers the callback by the same rule (FreshVisibility). The caller reaches this through
+// run with PUBLIC_LEAK_CHECK_VISIBILITY_READ=<slug> in the environment `gh` starts from
+// (ghReadEnv). In `legion gh` and `legion leak-check`, which name the gh of the guard's reads
+// (Options.GhRead), the guard runs the real gh itself, with the gh directory of the repository's
+// owner, as `legion gh` routes the read, and no second `legion gh` starts for it. Elsewhere it
+// runs `gh` from PATH, and a pod's gh is `legion gh`, which calls this guard, so this read must
+// not be mistaken for the shared check's callback or it would recurse. The
+// callback's exact argv is separate (VisibilityReadArgs): it has no `--include`, while this reader
+// needs the headers to detect a near rate limit. `legion gh` answers the callback by the same rule
+// (FreshVisibility), with a guard that runs `gh` from PATH. The caller reaches this through
 // Guard.scanThrough, which lets no slug the exemption would refuse get this far.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
 	return g.visibility(ctx, slug, true)
@@ -530,27 +535,72 @@ func VisibilityGraphQLArgs(slug string) []string {
 // the host for a gh that has no configuration of its own to read it from, beside the --hostname
 // the argv already carries; and NO_COLOR=1 with CLICOLOR_FORCE=0, which keep gh's output plain. A
 // caller's CLICOLOR_FORCE=1 makes gh 2.98.0 colour the --include headers and the JSON body, and
-// neither read could then be read.
+// neither read could then be read. Where the caller answers the read's gh (Options.GhRead), these
+// are in the environment it is handed, and what of them reaches its program is its answer's.
 func ghReadEnv(slug string) []string {
 	return []string{VisibilityReadVar + "=" + slug, "GH_HOST=github.com", "NO_COLOR=1", "CLICOLOR_FORCE=0"}
 }
 
+// GhReadChild is the gh one of the guard's gh reads runs where the caller answers it
+// (Options.GhRead): Program, an absolute path, run with the read's arguments, gh's own name
+// aside, and Env, the whole environment it runs with, to which the guard adds nothing.
+type GhReadChild struct {
+	Program string
+	Env     []string
+}
+
+// ghReadChild is the child of the guard's gh read of slug whose arguments, gh's own name aside,
+// are args: `gh` from the base environment's PATH with ghReadEnv on top of the guard's own names,
+// and where the caller fills Options.GhRead, the program and the whole environment it answers for
+// slug, handed the environment that `gh` would have started from. An error is that answer's
+// refusal, and no gh runs.
+func (g *Guard) ghReadChild(slug string, args []string) (child, error) {
+	if g.opts.GhRead == nil {
+		return child{argv: append([]string{"gh"}, args...), env: ghReadEnv(slug)}, nil
+	}
+	read, err := g.opts.GhRead(slug, g.env(g.base(), nil, ghReadEnv(slug)...))
+	if err != nil {
+		return child{}, err
+	}
+	return child{argv: append([]string{read.Program}, args...), environ: read.Env}, nil
+}
+
+// ghReadRefused is the guard's REST read of slug that Options.GhRead refused with err before any
+// gh ran, read as the same refusal is read where `legion gh` prints it (Guard.unservedOwner): an
+// *OwnerNotServedError alone, for slug's owner as `legion gh` names it and for the bundle the
+// guard's environment names, is the *unservedOwnerError the guard then reads with no credential
+// (readUnservedOwner). An OwnerNotServedError wrapped in a longer refusal, a configured rename's
+// whose new owner the bundle holds no directory for (cmd/legion's ghConfigDirFor), is no
+// such refusal, which is why this asserts the type rather than unwraps it, and neither is any
+// other error: each refuses the read, naming it.
+func (g *Guard) ghReadRefused(slug string, err error) error {
+	if notServed, ok := err.(*OwnerNotServedError); ok {
+		if unserved := g.unservedOwner(2, ownerNotServedLine(notServed.Owner, notServed.OwnersDir)+"\n", slug); unserved != nil {
+			return unserved
+		}
+	}
+	return fmt.Errorf("gh api repos/%s was refused before gh ran: %w", shownText(slug), err)
+}
+
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
-// own. gh runs under a bound of the guard's own (ghReadContext), which leaves part of the caller's
-// bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
-// to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
-// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A
-// reported failure that is a TLS handshake timeout tells Options.OnTLSTimeout its host, read from
-// gh's line (tlstimeout.HostInLine), where the caller set one. A gh that exited non-zero after
-// GitHub's status line 404, and was no rate limit, is a *notFoundError. A gh that the caller's
-// bound stopped is the *stoppedError run answers, since no bound is left for another read.
+// own: `gh` from PATH, or the gh the caller answers for the read (Options.GhRead, ghReadChild),
+// whose refusal is read as `legion gh`'s is (ghReadRefused). gh runs under a bound of the guard's
+// own (ghReadContext), which leaves part of the caller's bound to the read through curl. A rate
+// limit is a *rateLimitError. A failure on gh's connection to GitHub with no answer from GitHub is
+// a *transportError: one gh reports (ghTransportFailure), or a stop by the guard's own bound before
+// GitHub sent a status line (ghStoppedByItsBound). A reported failure that is a TLS handshake
+// timeout tells Options.OnTLSTimeout its host, read from gh's line (tlstimeout.HostInLine), where
+// the caller set one. A gh that exited non-zero after GitHub's status line 404, and was no rate
+// limit, is a *notFoundError. A gh that the caller's bound stopped is the *stoppedError run
+// answers, since no bound is left for another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
+	read, err := g.ghReadChild(slug, VisibilityReadWithHeadersArgs(slug))
+	if err != nil {
+		return "", g.ghReadRefused(slug, err)
+	}
 	bounded, cancel := ghReadContext(ctx)
 	defer cancel()
-	status, printed, err := g.run(bounded, child{
-		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
-		env:  ghReadEnv(slug),
-	})
+	status, printed, err := g.run(bounded, read)
 	if err != nil {
 		if unreached := ghStoppedByItsBound(ctx, err, printed); unreached != nil {
 			return "", unreached
@@ -586,11 +636,13 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 // OwnerNotServedError is the refusal `legion gh` makes of a call naming a repository of Owner, an
 // owner the project's gh bundle under OwnersDir holds no directory for (cmd/legion's
 // ownerGHConfigDir): the role's GitHub App is not installed on Owner, so no directory of the
-// bundle is Owner's own. `legion gh` prints it after `legion gh: `, alone, and exits 2. It is
-// exported because the guard reads exactly that answer to its REST read as such an owner
-// (Guard.unservedOwner), and reads the repository's visibility with no credential instead: words
-// written from a second copy could part from the ones `legion gh` prints, and a write to another
-// owner's public repository would again be refused before it was scanned.
+// bundle is Owner's own. `legion gh` prints it after `legion gh: `, alone, and exits 2, and the
+// GhRead of `legion gh` and `legion leak-check` answers it alone (Options.GhRead). It is exported
+// because the guard reads exactly that answer to its REST read as such an owner
+// (Guard.unservedOwner, Guard.ghReadRefused), and reads the repository's visibility with no
+// credential instead: words written from a second copy could part from the ones `legion gh`
+// prints, and a write to another owner's public repository would again be refused before it was
+// scanned.
 type OwnerNotServedError struct {
 	Owner     string
 	OwnersDir string
@@ -661,21 +713,24 @@ func (e *notFoundError) Error() string {
 }
 
 // graphQLVisibility reads slug's visibility from GitHub's GraphQL API through gh, as the same
-// installation as the REST read and with the same variables (ghReadEnv), under the caller's
-// bound, and answers what graphQLAnswer reads of it. `legion gh` runs it with the token of the
-// repository VisibilityReadVar names, or with the caller's GH_TOKEN or GITHUB_TOKEN where one is
-// set, as it runs the REST read (its ghVisibilityRead). GraphQL's budget is separate from the
-// core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed installation 171972716 with
-// 12,221 of its 12,500 GraphQL points left, and GraphQL reads have answered while core reads were
-// refused. A gh that the caller's bound stops refuses the call: no bound is left for another
-// read.
+// installation as the REST read and with the same variables (ghReadEnv), with the same gh
+// (ghReadChild), under the caller's bound, and answers what graphQLAnswer reads of it. `legion
+// gh` runs it with the token of the repository VisibilityReadVar names, or with the caller's
+// GH_TOKEN or GITHUB_TOKEN where one is set, as it runs the REST read (its ghVisibilityRead and
+// ghVisibilityReadChild). A refusal of the caller's GhRead refuses the call: the REST read before
+// it was answered, so no refusal of an owner (ghReadRefused) is read here. GraphQL's budget is
+// separate from the core REST one: at 2026-11-15T09:34:29Z `gh api rate_limit` showed
+// installation 171972716 with 12,221 of its 12,500 GraphQL points left, and GraphQL reads have
+// answered while core reads were refused. A gh that the caller's bound stops refuses the call: no
+// bound is left for another read.
 func (g *Guard) graphQLVisibility(ctx context.Context, slug string) (Visibility, error) {
+	read, err := g.ghReadChild(slug, VisibilityGraphQLArgs(slug))
+	if err != nil {
+		return "", fmt.Errorf("gh api graphql for %s was refused before gh ran: %w", shownText(slug), err)
+	}
 	var stderr bytes.Buffer
-	status, printed, err := g.run(ctx, child{
-		argv:   append([]string{"gh"}, VisibilityGraphQLArgs(slug)...),
-		env:    ghReadEnv(slug),
-		stderr: &stderr,
-	})
+	read.stderr = &stderr
+	status, printed, err := g.run(ctx, read)
 	if err != nil {
 		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
 	}

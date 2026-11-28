@@ -213,11 +213,12 @@ func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, lin
 // A push a real gh makes — `gh repo create --source=. --push` — runs git's pre-push hook, `legion
 // leak-check pre-push`, under the variable `legion gh` gives every real gh it runs
 // (leakguard.RunByRealGhVar), since gh's git inherits it. With a rule file named, the guard reads
-// the destination's visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the
-// variable for that read, so the read reaches the real gh and the push is cleared. Under the
-// variable the read would be refused as a real gh leading back to `legion gh`, and the push with
-// it, leaving the repository gh created empty. The command runs as its own process, so the
-// fixture's rule file is named in that process's environment.
+// the destination's visibility with the real gh, which it runs itself (ghGuardRead), and it
+// blanks the variable in what it hands that read, so the read is not refused and the push is
+// cleared. Under the variable a read made through `gh` on PATH, `legion gh` in a pane or pod,
+// would be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
+// repository gh created empty. The command runs as its own process, so the fixture's rule file is
+// named in that process's environment.
 func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
@@ -561,14 +562,15 @@ func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
 }
 
 // `legion leak-check pre-push` to a repository whose owner the gh bundle holds no directory for:
-// the guard's REST read goes through the pod's `gh`, `legion gh`, which refuses it, exit 2, naming
-// the owner, and the real gh never runs. The guard then reads the visibility with git's
-// ls-remote and no credential, once. Where ls-remote lists the refs, the repository is public and
-// the push goes on to the scan, which refuses this push's ref name, exit 3. Where GitHub asks
-// ls-remote for a credential, as it does for a private repository, the push is refused as a setup
-// failure naming both reads, exit 2. A push to a repository of an owner the bundle holds is read
-// by the real gh, as before, and git never runs. The fixture rule file is named
-// (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no destination's visibility.
+// the guard's REST read is refused by `legion gh`'s routing of it (ghGuardRead,
+// ghVisibilityReadChild), naming the owner, and the real gh never runs. The guard then reads the
+// visibility with git's ls-remote and no credential, once. Where ls-remote lists the refs, the
+// repository is public and the push goes on to the scan, which refuses this push's ref name,
+// exit 3. Where GitHub asks ls-remote for a credential, as it does for a private repository, the
+// push is refused as a setup failure naming both reads, exit 2. A push to a repository of an
+// owner the bundle holds is read by the real gh, as before, and git never runs. The fixture rule
+// file is named (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no
+// destination's visibility.
 func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	root, defaultDir := gitCredentialBundle(t)
@@ -606,9 +608,12 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+			// The stand-in real gh names its record by its path: the command runs in this test's
+			// own process, and the guard runs the real gh itself, so gh's environment holds none
+			// of the variables a run of this binary as `legion` hands it (ghChildTestEnviron).
 			stub := filepath.Join(bin, "real-gh")
 			script := ghStandInHelp(help) +
-				"echo rest >> \"$GH_STANDIN_RECORD\"\n" +
+				"echo rest >> " + shellWord(record) + "\n" +
 				"printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' private\nexit 0\n"
 			if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
 				t.Fatal(err)
