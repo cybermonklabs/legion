@@ -36,6 +36,7 @@ import {
   TIMER_RECORD_ROOTS,
   type TimerStep,
 } from "@legion/test-fixtures/timer-record";
+import { settled } from "@legion/test-fixtures/wait";
 import { connect, headers, StringCodec } from "nats";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
@@ -159,6 +160,29 @@ function wakeClearedAfter(pane: LegionPaneProgress, turn: number): boolean {
   const armed = reports.findIndex((wake) => wake !== null);
   return armed >= 0 && reports.slice(armed + 1).includes(null);
 }
+
+/** Whether the pane's newest turn left no reminder wake: the last activity report after that
+ *  turn's model request names none. A settle whose owed check answered that nothing is owed arms
+ *  no timer and reports that; one that armed a wait, a WAITING line's, reports the wake, and its
+ *  timer, once its check decides not to remind, clears it and reports that (`armReminder` and
+ *  `wakeChanged` in pi-shared's phase-reminder.ts). Either way no timer of the reminder is left
+ *  to remind the session. */
+function noWakeAfterNewestTurn(pane: LegionPaneProgress): boolean {
+  return wakeReportsAfter(pane, pane.turns().length).at(-1) === null;
+}
+
+/**
+ * The settle of each step of a row whose steps end with nothing owed, or with nothing read
+ * (`LegionPaneOptions.settledWhen`): the harness's own fact, the host ending a run after the
+ * newest turn the gateway took, and the pane's report that no reminder wake is left after that
+ * turn (`noWakeAfterNewestTurn`). That report is the session's own word that nothing of the
+ * reminder follows: the reminder starts a turn only from a timer it armed or from a settle's
+ * continuation, the settle has run, and no timer of it is left.
+ */
+const SETTLED_WITH_NO_WAKE: NonNullable<LegionPaneOptions["settledWhen"]> = {
+  what: "the newest turn's settle, and an activity report after that turn that names no reminder wake",
+  done: noWakeAfterNewestTurn,
+};
 
 /** The listener's answer to a publish it accepted: an envelope, which the client parses before
  * it answers its caller (`EnvelopeSchema`, packages/contracts/src/envelope.ts). */
@@ -341,11 +365,6 @@ function refuseNotCurrentPhase(record: StallRecord): Response {
  */
 const RECORD_ANSWER_MS = OWED_READ_BOUND_MS + 1_000;
 
-/** How long a pane whose runs make a `legion` call that reads the issue's record waits for the
- * gateway to fall quiet: past that read and the tool's other requests after it, so the call is
- * not taken for a run that has settled. */
-const QUIET_PAST_RECORD_MS = RECORD_ANSWER_MS + 4_000;
-
 /** What a step of a stall pane's life (`StallStep`) is handed. */
 interface StallScene {
   /** The stand-in daemon's record of STALL-2, which the step may move. */
@@ -376,13 +395,16 @@ function sessionOf(requests: readonly Request[]): string {
 // reads 5-6 s) and runs it to its settle, so it needs more than Bun's 5000 ms default in every
 // mode: `bun run test`'s workers declare 300000 ms (`test-timeout-preload.ts`), but a run of this
 // file alone takes no worker and keeps 5000 ms. Each case therefore takes a guard of its own, as
-// the cases of `legion-stall-watchdog-omp.test.ts` do. A case that settles on a fact
-// (`settledWhen`) calls `useRowGuard` for the shared wait's deadline, which the pane's settle and
-// its spans end at, and passes the same value as `test`'s third argument for Bun's row kill; a
-// case that settles on the gateway's silence (`quietMs`) passes that guard alone. A case that
-// starts the pane a second time (`pane.resume`) runs two cold panes, and takes 360000 ms. The
-// afterEach, whose cleanup kills a real Oh My Pi, passes the guard as its own hook timeout.
+// the cases of `legion-stall-watchdog-omp.test.ts` do: the case calls `useRowGuard` for the shared
+// wait's deadline, which the pane's settle (`settledWhen`) and its spans end at, and passes the
+// same value as `test`'s third argument for Bun's row kill, and the afterEach, whose cleanup kills
+// a real Oh My Pi, passes it as its own hook timeout.
 const COLD_PANE_GUARD_MS = 300_000;
+
+/** The guard of a case that starts the pane a second time (`pane.resume`): it starts two cold
+ * panes, so it keeps the minute past `COLD_PANE_GUARD_MS` that `main` gave such a case. The guard
+ * covers the panes' starts as well as the waits, which end at it (`useRowGuard`). */
+const TWO_LIFE_GUARD_MS = 360_000;
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -425,14 +447,11 @@ function legionToolDescription(request: Request): string {
 }
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
- * `legion`, `settledWhen`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead
- * of this file's own routes, the stand-in's open-ask snapshot, the claim's role, the stand-in
- * daemon's record and completion answer, and the prompts and steps of the pane's first life. */
+ * `legion`, `settledWhen`, `selfCheck` and environment, what the stand-in answers ahead of this
+ * file's own routes, the stand-in's open-ask snapshot, the claim's role, the stand-in daemon's
+ * record and completion answer, and the prompts and steps of the pane's first life. */
 interface PaneOptions
-  extends Pick<
-    LegionPaneOptions,
-    "legion" | "settledWhen" | "quietMs" | "selfCheck" | "env" | "answer"
-  > {
+  extends Pick<LegionPaneOptions, "legion" | "settledWhen" | "selfCheck" | "env" | "answer"> {
   /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
@@ -564,7 +583,6 @@ async function stallPane(
       dispatch: true,
       legion: options.legion,
       settledWhen: options.settledWhen,
-      quietMs: options.quietMs,
       selfCheck: options.selfCheck,
       // The record's module first, so it holds every timer the plugins arm.
       extensions:
@@ -1332,7 +1350,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_WAITING_MS: "500" },
-        quietMs: 4_000,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         answer: (url) =>
           url.pathname === "/legion/v1/claims/owed"
             ? new Response("upstream connect error", { status: 503 })
@@ -1373,7 +1391,8 @@ test.skipIf(skip)(
 /** The limits the both-sides rows run on: the reminder after a reminder and the wait a WAITING
  * reply buys each last half a second, and the architect is told at the second reminder of a run,
  * the least the limit takes. So a reminder, a timer's reminder or an architect notice that a row
- * earned would come inside its quiet wait. */
+ * earned would come within a second of the settle that earned it, before the timer that carried it
+ * could report its wake cleared (`SETTLED_WITH_NO_WAKE`). */
 const QUICK_LIMITS = {
   LEGION_STALL_REMINDER_MS: "500",
   LEGION_STALL_WAITING_MS: "500",
@@ -1486,6 +1505,7 @@ const DISPATCH_CLI = path.resolve(import.meta.dir, "../../envoy-client/bin/dispa
 test.skipIf(skip)(
   "a role whose completion was refused HANDOFF_NOT_CURRENT_PHASE is reminded of nothing, and its WAITING lines after it change nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await stallPane(
       setup(),
       [
@@ -1503,7 +1523,7 @@ test.skipIf(skip)(
         record: { phase: "testing" },
         complete: refuseNotCurrentPhase,
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_RECORD_MS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: [
           "Implement STALL-2.",
           (scene) => scene.roleMessage("The tester has taken STALL-2 and runs its tests now."),
@@ -1534,6 +1554,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a role whose completion is recorded while another role pushes the head is reminded of nothing and its architect is told nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     let origin = "";
     let pushed = "";
     const pane = await stallPane(
@@ -1547,7 +1568,7 @@ test.skipIf(skip)(
       ],
       {
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_RECORD_MS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: [
           "Implement STALL-2.",
           async (scene) => {
@@ -1586,6 +1607,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a tester the daemon moves out of its phase while in a turn is reminded of nothing at its next turn end, with no handoff_complete call",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const record: StallRecord = { phase: "testing" };
     const pane = await stallPane(
       setup(),
@@ -1609,7 +1631,7 @@ test.skipIf(skip)(
         role: "tester",
         record,
         env: QUICK_LIMITS,
-        quietMs: 4_000,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: [
           "Test STALL-2.",
           (scene) =>
@@ -1637,6 +1659,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a reviewer whose own request_backward_move moved the issue back is reminded of nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const record: StallRecord = { phase: "reviewing" };
     const pane = await stallPane(
       setup(),
@@ -1661,7 +1684,13 @@ test.skipIf(skip)(
         ],
         NEVER,
       ],
-      { role: "reviewer", record, env: QUICK_LIMITS, quietMs: 4_000, prompt: "Review STALL-2." }
+      {
+        role: "reviewer",
+        record,
+        env: QUICK_LIMITS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
+        prompt: "Review STALL-2.",
+      }
     );
 
     expect(pane.turns()).toHaveLength(3);
@@ -1688,6 +1717,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a finished role relaunched over its transcript is reminded of nothing",
   async () => {
+    useRowGuard(TWO_LIFE_GUARD_MS);
     const record: StallRecord = { phase: "planning" };
     const pane = await stallPane(
       setup(),
@@ -1696,7 +1726,7 @@ test.skipIf(skip)(
         role: "planner",
         record,
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_RECORD_MS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: "Plan STALL-2.",
       }
     );
@@ -1724,7 +1754,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  360_000
+  TWO_LIFE_GUARD_MS
 );
 
 // A role whose completion was taken answers the daemon's update round in testing, a phase it does
@@ -1734,6 +1764,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a role that answered an update round in a phase that is not current runs in the replacement process with no reminder, and its architect gets no notice",
   async () => {
+    useRowGuard(TWO_LIFE_GUARD_MS);
     const pane = await stallPane(
       setup(),
       [
@@ -1750,7 +1781,7 @@ test.skipIf(skip)(
       ],
       {
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_RECORD_MS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: ["Implement STALL-2.", (scene) => scene.roleMessage(UPDATE_ASK)],
       }
     );
@@ -1777,7 +1808,7 @@ test.skipIf(skip)(
     expect(pane.owedAnswers()).toEqual([OWES_NOTHING, OWES_NOTHING]);
     await expectRemindedOfNothing(pane);
   },
-  360_000
+  TWO_LIFE_GUARD_MS
 );
 
 // INFRA-4567's implementer: its completion is taken and moves STALL-2 on to testing, and just
@@ -1787,6 +1818,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a finished role woken by a role-topic message after its accepted completion, holding a task with no phase, is reminded of nothing and its architect is told nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await stallPane(
       setup(),
       [
@@ -1798,7 +1830,7 @@ test.skipIf(skip)(
       ],
       {
         env: QUICK_LIMITS,
-        quietMs: QUIET_PAST_RECORD_MS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: [
           "Implement STALL-2.",
           (scene) => scene.roleMessage("Thank you for the change: the tester has STALL-2 now."),
@@ -1823,6 +1855,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a finished role that writes a handoff record after its accepted completion is reminded of nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const body = JSON.stringify({
       schemaVersion: 1,
       phase: "implement",
@@ -1841,7 +1874,7 @@ test.skipIf(skip)(
         [{ type: "text", text: "Recorded version 2 of the implement handoff." }],
         NEVER,
       ],
-      { env: QUICK_LIMITS, quietMs: QUIET_PAST_RECORD_MS }
+      { env: QUICK_LIMITS, settledWhen: SETTLED_WITH_NO_WAKE }
     );
 
     expect(pane.turns()).toHaveLength(3);
@@ -1866,6 +1899,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a finished planner that ends a turn of work its architect asked for is reminded of nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await stallPane(
       setup(),
       [
@@ -1883,7 +1917,7 @@ test.skipIf(skip)(
         role: "planner",
         record: { phase: "implementing" },
         env: QUICK_LIMITS,
-        quietMs: 4_000,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         prompt: [
           relaunched("role planner reports generation 5 exited (code 1)"),
           (scene) =>
@@ -1922,14 +1956,6 @@ function reportedWake(body: Record<string, unknown>): unknown {
     : undefined;
 }
 
-/** Waits for `signal`, and fails the row with `never` if it has not come in 30 seconds. */
-async function within30s(signal: Promise<void>, never: string): Promise<void> {
-  // A real clock, deliberately: what is awaited is the real Oh My Pi process's own timer, so only
-  // a deadline on that clock says it never came. The wait ends as soon as the signal comes.
-  const came = await Promise.race([signal.then(() => true), Bun.sleep(30_000).then(() => false)]);
-  if (!came) throw new Error(never);
-}
-
 /**
  * The boot's resume reminder of a fresh session, which the fresh-session rows watch through the
  * stand-in (`answer`). `asked` waits for the first `POST /legion/v1/claims/owed` the pane makes:
@@ -1958,14 +1984,11 @@ function bootReminder(): {
       return undefined;
     },
     asked: () =>
-      within30s(
-        asked.promise,
-        "the boot's resume reminder never asked the daemon what the claim owes"
-      ),
+      settled("the boot's resume reminder to ask the daemon what the claim owes", asked.promise),
     cleared: () =>
-      within30s(
-        cleared.promise,
-        "the boot's resume reminder never reported that it armed no reminder wake"
+      settled(
+        "the boot's resume reminder to report, after its question, that it armed no reminder wake",
+        cleared.promise
       ),
   };
 }
@@ -1980,6 +2003,7 @@ function bootReminder(): {
 test.skipIf(skip)(
   "a fresh session whose record already stands in another role's phase is reminded of nothing at startup or at a later turn end, and its architect is told nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const boot = bootReminder();
     const pane = await stallPane(
       setup(),
@@ -1987,7 +2011,7 @@ test.skipIf(skip)(
       {
         record: { phase: "testing" },
         env: FRESH_LIMITS,
-        quietMs: 4_000,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         answer: boot.answer,
         prompt: [
           async (scene) => {
@@ -2022,6 +2046,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the control of a fresh session: one whose record stands in its own phase is reminded at startup and at its turn end, and its architect is told",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const boot = bootReminder();
     const owed = { owes: true, work: STALL_WORK };
     const record: StallRecord = { phase: "implementing" };
@@ -2036,7 +2061,7 @@ test.skipIf(skip)(
       {
         record,
         env: FRESH_LIMITS,
-        quietMs: QUIET_PAST_RECORD_MS,
+        settledWhen: SETTLED_WITH_NO_WAKE,
         answer: boot.answer,
         prompt: [() => boot.asked()],
       }
