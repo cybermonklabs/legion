@@ -102,7 +102,7 @@ function template(page: string, slug: string): string {
 
 /** The reference the dashboard reads the page of href as. */
 function referenceOf(href: string): string {
-  const route = referenceRouteFromHref(href, origin);
+  const route = referenceRouteFromHref(href, [origin]);
   if (route === undefined) {
     throw new Error(`the dashboard reads ${href} as no reference`);
   }
@@ -113,7 +113,7 @@ function referenceOf(href: string): string {
 export function renderDashboardPages(): string {
   const tabs = ISSUE_TABS.flatMap((tab) => {
     const href = `/issues/${key}/${tab}`;
-    const route = referenceRouteFromHref(href, origin);
+    const route = referenceRouteFromHref(href, [origin]);
     // A tab whose page names nothing in text - Dashboard's, a page of the web alone, which the
     // route table opens as its tab and reads as no reference (`parseIssuePath`, `pageRoutes`) -
     // has no reference for a reader to take, so the file names it nowhere.

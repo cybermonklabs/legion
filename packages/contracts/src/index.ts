@@ -21,6 +21,7 @@ export * from "./reference-spans";
 export * from "./related-forms";
 export * from "./repo";
 export * from "./slack";
+export * from "./step-answers";
 export * from "./subject";
 export * from "./subject-project";
 export * from "./tool-schema";

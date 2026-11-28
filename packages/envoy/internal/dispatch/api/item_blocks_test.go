@@ -216,7 +216,7 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 		}
 	}
 	owed := oweBlockGrammar(t, database, "comment", comment.ID)
-	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, testOrigins); err != nil || !indexed {
 		t.Fatalf("reindex the comment = %v (%v), want it indexed", indexed, err)
 	}
 	requireCommentBlocks(t, database, comment.ID, "first indexing", "b1@1 b2@1", 1)
@@ -264,7 +264,7 @@ func TestReindexingAnEditedMessageStampsItsBlocksAtTheEdit(t *testing.T) {
 	}
 
 	owed := oweBlockGrammar(t, database, "message", message.ID)
-	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed, testOrigins); err != nil || !indexed {
 		t.Fatalf("reindex the message = %v (%v), want it indexed", indexed, err)
 	}
 

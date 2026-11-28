@@ -340,7 +340,7 @@ func TestAVersionsBlocksCarryTheParentOfATaskBlock(t *testing.T) {
 // (pmdoc.UseManifestForTest). The test's end stops a process the test did not.
 func versionBlocksProcess(t *testing.T, database *store.Store) (http.Handler, func()) {
 	t.Helper()
-	service := docs.New(docs.Deps{Store: database, ServerURL: testServerURL, Settle: 20 * time.Millisecond})
+	service := docs.New(docs.Deps{Store: database, Origins: testOrigins, Settle: 20 * time.Millisecond})
 	deps, err := NewDeps(DepsInput{
 		Store:       database,
 		Identity:    headerIdentity(database),
