@@ -541,11 +541,12 @@ async function expectReadableWithKeyboardUp(
   const layout = await liveViewLayout(page);
   expect(layout.threadScrollHeight).toBeGreaterThan(layout.threadClientHeight);
   await scrollThreadTo(page, 0);
-  const first = await frontLiveView(page).getByText("Turn 0:").boundingBox();
-  if (first === null) throw new Error("the first turn is not laid out");
+  const firstTop = await frontLiveView(page)
+    .getByText("Turn 0:")
+    .evaluate((turn) => turn.getBoundingClientRect().top);
   const scrolled = await liveViewLayout(page);
-  expect(first.y).toBeGreaterThanOrEqual(Math.max(scrolled.threadTop, scrolled.visualTop));
-  expect(first.y).toBeLessThan(scrolled.composerTop);
+  expect(firstTop).toBeGreaterThanOrEqual(Math.max(scrolled.threadTop, scrolled.visualTop));
+  expect(firstTop).toBeLessThan(scrolled.composerTop);
   await scrollThreadTo(page, "bottom");
   await expectNewestTurnWholeOnScreen(page);
 }
