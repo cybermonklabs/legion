@@ -43,7 +43,7 @@ func TestARelaySocketForwardsAFrameAndPublishesItsReceipt(t *testing.T) {
 	client.subscribeOwn(session)
 
 	stored, seq := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
-	frame := client.next(5 * time.Second)
+	frame := client.frame("the stored event's frame")
 	if frame.Op != "msg" || frame.sid(t) != 1 || frame.Subject != bus.DeliverSubject(session) {
 		t.Fatalf("the socket sent %s, want a msg of sid 1 on %s", frame.raw, bus.DeliverSubject(session))
 	}
@@ -75,7 +75,7 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
 	_, seq := rig.owner.storeEvent(t, contracts.LegacyAgentSubject(session))
-	frame := client.next(5 * time.Second)
+	frame := client.frame("the stored event's frame")
 	if frame.Op != "msg" {
 		t.Fatalf("the socket sent %s, want a msg", frame.raw)
 	}
@@ -88,7 +88,7 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 		t.Fatalf("flush the watcher: %v", err)
 	}
 	client.pub(frame.Reply, strings.Repeat("not a receipt ", 4096))
-	if got := client.next(5 * time.Second); got.Op != "err" || got.Code != relayErrPublishNotGranted {
+	if got := client.frame("the answer to a pub whose body is no reply word"); got.Op != "err" || got.Code != relayErrPublishNotGranted {
 		t.Fatalf("a pub of a body that is no reply word was answered %s, want err %s", got.raw, relayErrPublishNotGranted)
 	}
 	if msg, err := heard.NextMsg(500 * time.Millisecond); err == nil {
@@ -96,6 +96,56 @@ func TestARelaySocketPublishesOnlyAReceiptsWord(t *testing.T) {
 	}
 	client.pub(frame.Reply, relayReplyDone)
 	awaitAcked(t, rig.owner.consumers, session, seq)
+}
+
+// A forwarded frame's receipt subject may be published on for relaySocketReplyWindow from the
+// moment its frame was forwarded, read on the sockets' clock, and not after: with the rig's clock
+// at exactly the window's end the socket publishes the client's receipt, and 1 ms later it refuses
+// the same receipt publish_not_granted. The socket checks its token once a day, so no check runs
+// while the clock moves. Control: the window's test reading < for <=; the receipt at the window's
+// end is refused, and the row fails naming the err frame.
+func TestARelaySocketTakesAReceiptUntilItsReplyWindowEnds(t *testing.T) {
+	t.Parallel()
+	rig := newRelaySocketRig(t, withCheckEvery(relaySocketPastTheBinary))
+	const session = "ses_edge_reply_window"
+	client, _ := rig.open(t, session)
+	client.subscribeOwn(session)
+	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	frame := client.frame("the frame whose receipt the socket remembers")
+	if frame.Op != "msg" || frame.Reply != sent.Reply {
+		t.Fatalf("the socket sent %s, want the msg %s", frame.raw, sent.Reply)
+	}
+	// The socket remembered the receipt where the rig's clock stands, which nothing has moved.
+	forwarded := rig.clock.Now()
+	watcher := testnats.Connect(t, rig.owner.url)
+	heard := make(chan *natsgo.Msg, 2)
+	if _, err := watcher.ChanSubscribe(frame.Reply, heard); err != nil {
+		t.Fatalf("watch %s: %v", frame.Reply, err)
+	}
+	if err := watcher.Flush(); err != nil {
+		t.Fatalf("flush the watcher: %v", err)
+	}
+
+	rig.clock.Set(forwarded.Add(relaySocketReplyWindow))
+	client.pub(frame.Reply, relayReplyReceived)
+	testwait.Until(t, "the receipt published at the window's end", func() (string, bool) {
+		select {
+		case msg := <-heard:
+			if string(msg.Data) != relayReplyReceived {
+				t.Fatalf("the replica published %q on %s, want the client's %q", msg.Data, frame.Reply, relayReplyReceived)
+			}
+			return string(msg.Data), true
+		default:
+		}
+		client.requireNothingYet("a receipt at the window's end")
+		return "nothing published yet", false
+	})
+
+	rig.clock.Set(forwarded.Add(relaySocketReplyWindow + time.Millisecond))
+	client.pub(frame.Reply, relayReplyReceived)
+	if got := client.frame("the answer to a receipt 1 ms past the window"); got.Op != "err" || got.Code != relayErrPublishNotGranted || got.SID != nil {
+		t.Fatalf("a receipt 1 ms past the window was answered %s, want err %s naming no sid", got.raw, relayErrPublishNotGranted)
+	}
 }
 
 // Row 2, in one process: a sub to another session's relay subject and to the session's own
@@ -160,7 +210,7 @@ func TestARelaySocketRefusesASubjectAndAReplyItWasNotGranted(t *testing.T) {
 		t.Fatalf("flush the watcher: %v", err)
 	}
 	client.pub(never, relayReplyDone)
-	if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != "publish_not_granted" || frame.SID != nil {
+	if frame := client.frame("the answer to a pub to a reply never forwarded"); frame.Op != "err" || frame.Code != "publish_not_granted" || frame.SID != nil {
 		t.Fatalf("a pub to a reply never forwarded was answered %s, want err publish_not_granted naming no sid", frame.raw)
 	}
 	if msg, err := heard.NextMsg(500 * time.Millisecond); err == nil {
@@ -206,15 +256,20 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 }
 
 // Rows 4, 5, 7, 8, 9 and 10, in one process, each on its own socket: the broker's answer for the
-// socket's token changes, and the socket closes with the code the wire gives that case within a
-// second of the first check that reads it (the rig's verifier clock moved past the five seconds a
-// live answer is reused for, so the next check asks the broker). The last two cases are the
-// negative controls of all of them: an answer that has not changed, and one whose not-held
-// deadline is still ahead, keep the socket open. Each row's own control is the check of its case
-// removed, and the socket stays open.
+// socket's token changes, and the socket closes with the code the wire gives that case at the first
+// check that reads it, on the rig's clock: the first check past the five seconds the answer its
+// upgrade cached is reused for, where the row leaves the clock, or, for a token whose exp passed, the
+// check at that exp. Before the change five checks keep the socket, each one witnessed by the ping
+// its verdict sends; a check before the cached answer's end reads that answer, and keeps it too. The
+// last two cases are the negative controls of all of them: an answer that has not changed, and one
+// whose not-held deadline is still ahead, keep the socket open at the first check that asks the
+// broker afresh (the broker's count of answers grows, and that check's ping comes) and at the ten
+// checks after it. Each row's own control is the check of its case removed, and the socket stays
+// open. "its token's exp passed" has the broker answer the token not live before the clock reaches
+// its exp, so the close rests on the verdict reading that answer at the exp as the expiry; "its
+// token was revoked" is its control, the same answer read before the exp, a refusal.
 func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
-	// Not parallel: it requires each socket to close within 1 s (closeCode(time.Second)) of the
-	// broker's changed answer, and to stay open through quiet windows of 500 ms and 1 s.
+	t.Parallel()
 	type outcome struct {
 		code int
 		text string
@@ -225,11 +280,13 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 		name  string
 		life  time.Duration
 		later func(rig *relaySocketRig, session, token string)
-		want  *outcome
+		// atExpiry is whether the check that reads the change is the one at the token's exp,
+		// rather than the first past the cached answer.
+		atExpiry bool
+		want     *outcome
 	}{
-		{name: "its token's exp passed", life: 2 * time.Second, want: &expired,
+		{name: "its token's exp passed", life: 2 * time.Second, atExpiry: true, want: &expired,
 			later: func(rig *relaySocketRig, session, token string) {
-				rig.clock.advance(3 * time.Second)
 				rig.broker.Says(token, ciphertoken.Introspection{})
 			}},
 		{name: "its token was revoked", life: time.Hour, want: &refused,
@@ -245,6 +302,10 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 		{name: "its projects became another", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketOtherProject))
+			}},
+		{name: "its projects grew", life: time.Hour, want: &refused,
+			later: func(rig *relaySocketRig, session, token string) {
+				rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketOtherProject, relaySocketProject))
 			}},
 		{name: "its session changed", life: time.Hour, want: &refused,
 			later: func(rig *relaySocketRig, session, token string) {
@@ -271,25 +332,41 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 		{name: "its not-held answer's deadline is ahead", life: time.Hour,
 			later: func(rig *relaySocketRig, session, token string) {
 				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
-				answer.NotHeldUntil = rig.clock.now().Add(time.Hour).Unix()
+				answer.NotHeldUntil = rig.clock.Now().Add(time.Hour).Unix()
 				rig.broker.Says(token, answer)
 			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rig := newRelaySocketRig(t)
+			t.Parallel()
+			rig := newRelaySocketRig(t, withPongFloor(relaySocketPastTheBinary))
 			const session = "ses_edge_checked"
 			token := "access-token-of-a-checked-socket"
-			rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), row.life, relaySocketProject))
+			answer := relaySocketAnswer(session, rig.caller.JKT(), row.life, relaySocketProject)
+			// The exp is dated on the rig's clock, which the answer's cache and the socket read, so a
+			// short-lived token's exp falls inside the five seconds its upgrade's answer is reused
+			// for, however long the rig took to build.
+			answer.ExpiresAt = rig.clock.Now().Add(row.life).Unix()
+			rig.broker.Says(token, answer)
 			client := rig.openWith(t, session, token)
-			client.stillOpen(5*relaySocketTestCheck, "before the answer changed")
+			checks := rig.checksOf(t, client, session)
+			for range 5 {
+				checks.keep(t, "a check before the answer changed")
+			}
 
 			row.later(rig, session, token)
-			rig.clock.advance(ciphertoken.AffirmativeCacheTTL + time.Second)
+			at := checks.atOrAfter(checks.origin.Add(ciphertoken.AffirmativeCacheTTL))
+			if row.atExpiry {
+				at = time.Unix(answer.ExpiresAt, 0)
+			}
+			checks.skipTo(t, at, "the checks the cached answer serves")
 			if row.want == nil {
-				client.stillOpen(10*relaySocketTestCheck, "an answer that stands")
+				checks.keepFresh(t, "the first check past the cached answer")
+				for range 10 {
+					checks.keep(t, "a check after the answer was read afresh")
+				}
 				return
 			}
-			code, text := client.closeCode(time.Second)
+			code, text := checks.closeAt(t, at, "the close at the first check that reads the changed answer")
 			if code != row.want.code || text != row.want.text {
 				t.Fatalf("the socket closed %d %q, want %d %q\n%s", code, text, row.want.code, row.want.text, rig.logs.String())
 			}
@@ -308,8 +385,7 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 // socket of one session is refused 429 (control: the fourth opens); and a socket the listener
 // closes at its stop is closed 1012, and an upgrade after the stop is refused 503 by serve.
 func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
-	// Not parallel: it requires each socket the listener's stop closed to show its 1012 close
-	// within 2 s (closeCode(2 * time.Second)).
+	t.Parallel()
 	rig := newRelaySocketRig(t)
 	const session, other = "ses_edge_upgrade", "ses_not_the_tokens"
 	token := "access-token-of-the-upgrading-session"
@@ -360,7 +436,7 @@ func TestARelaySocketUpgradeIsRefusedAsTheWireSays(t *testing.T) {
 
 	rig.sockets.stop()
 	for _, client := range open {
-		if code, text := client.closeCode(2 * time.Second); code != websocket.CloseServiceRestart || text != relaySocketReasonStopping {
+		if code, text := client.closeNext("the close of a socket the listener's stop closed"); code != websocket.CloseServiceRestart || text != relaySocketReasonStopping {
 			t.Fatalf("a socket the listener's stop closed got %d %q, want %d %q", code, text, websocket.CloseServiceRestart, relaySocketReasonStopping)
 		}
 	}
@@ -415,9 +491,12 @@ func TestARelaySocketRefusesASessionThatIsNotOneSubjectToken(t *testing.T) {
 // relaySocketCloseGrace of the close's start: after a revoke, its connection is dropped within one
 // check and the grace of the broker's answer changing, and the listener's stop returns within the
 // grace. A write blocked on such a client holds the connection for up to relaySocketWriteWait, so
-// neither the close nor the watch's ping may wait for it. Control: end taking the data writers'
-// lock, or the watch writing its ping in line; the socket stays open until the blocked write's 10 s
-// run out, and the row fails naming how long it took.
+// neither the close nor the watch's ping may wait for it. A close frame the socket could still
+// write, between two of the blocked frame's fragments, leaves the connection to the grace, whose
+// callback runs on the rig's clock: the row moves that clock to the grace's end once the callback
+// is armed there. Control: end taking the data writers' lock, or the watch writing its ping in
+// line; the socket stays open until the blocked write's 10 s run out, and the row fails naming how
+// long it took.
 func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 	// Not parallel: it requires the listener's stop to return within 2 s (relaySocketCloseGrace +
 	// 1 s) and the socket to drop within 2.2 s of a revoke.
@@ -453,7 +532,13 @@ func TestARelaySocketWhoseClientReadsNothingClosesWithinTheGrace(t *testing.T) {
 
 			started := time.Now()
 			row.close(t, rig, token)
-			if !testwait.Holds(row.within, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+			graceEnds := rig.clock.Now().Add(relaySocketCloseGrace)
+			if !testwait.Holds(row.within, 10*time.Millisecond, func() bool {
+				if slices.ContainsFunc(rig.clock.Armed(), graceEnds.Equal) {
+					rig.clock.Set(graceEnds)
+				}
+				return rig.holds(session) == 0
+			}) {
 				t.Fatalf("the socket was still open %s after %s, want it dropped within %s", time.Since(started).Round(time.Millisecond), row.name, row.within)
 			}
 			t.Logf("the socket was dropped %s after %s", time.Since(started).Round(time.Millisecond), row.name)
@@ -712,7 +797,7 @@ func TestARelaySocketStaysOpenWhenTheNATSClientDropsAFrameAheadOfItsQueue(t *tes
 	}
 	t.Logf("nats.go kept %d and dropped %d of the %d frames sent", kept, dropped, sent)
 	for i := range kept {
-		if frame := client.next(5 * time.Second); frame.Op != "msg" {
+		if frame := client.frame("a frame nats.go kept"); frame.Op != "msg" {
 			t.Fatalf("frame %d of the %d nats.go kept reached the client as %s, want a msg", i+1, kept, frame.raw)
 		}
 	}
@@ -837,42 +922,62 @@ func TestARelaySocketClosesOnABinaryFrame(t *testing.T) {
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
 	client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
-	if code, text := client.closeCode(5 * time.Second); code != websocket.CloseUnsupportedData || text != relaySocketReasonTextOnly {
+	if code, text := client.closeNext("the close a binary frame gets"); code != websocket.CloseUnsupportedData || text != relaySocketReasonTextOnly {
 		t.Fatalf("a binary frame closed the socket %d %q, want %d %q", code, text, websocket.CloseUnsupportedData, relaySocketReasonTextOnly)
 	}
 }
 
 // A socket whose subscription its connection lost closes 1013 nats_unavailable at its next check,
-// on which its client opens it again after 5 s, on whichever replica answers. Control: the
-// subscription's check removed; the socket stays open, and the row fails naming it.
+// on which its client opens it again after 5 s, on whichever replica answers. The row closes the
+// connection, waits until the socket's subscription reads as lost (the state the check reads), and
+// moves the rig's clock to the socket's first check and leaves it there: the close must come from
+// that one check, with nothing before it. The reader's own deadline, on the real clock, is raised
+// past the test binary's (withPongFloor), so nothing but a check closes the socket. Control: the
+// subscription's check removed; the socket stays open, and the row fails naming the close it waited
+// for.
 func TestARelaySocketClosesWhenItsSubscriptionIsLost(t *testing.T) {
-	// Not parallel: it requires the socket to close within 2 s (closeCode(2 * time.Second)) of
-	// its NATS connection's close, its check running every 100 ms (relaySocketTestCheck).
-	rig := newRelaySocketRig(t)
+	t.Parallel()
+	rig := newRelaySocketRig(t, withPongFloor(relaySocketPastTheBinary))
 	const session = "ses_edge_lost_subscription"
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
+	checks := rig.checksOf(t, client, session)
 	rig.client.Close()
-	if code, text := client.closeCode(2 * time.Second); code != websocket.CloseTryAgainLater || text != relaySocketReasonNATSUnavailable {
+	testwait.Until(t, "the socket's subscription to read as lost once its connection closed", func() (bool, bool) {
+		subscribed := checks.socket.subscribed()
+		return subscribed, !subscribed
+	})
+	if code, text := checks.closeAt(t, checks.next, "the close at the first check after the subscription was lost"); code != websocket.CloseTryAgainLater || text != relaySocketReasonNATSUnavailable {
 		t.Fatalf("a socket whose subscription was lost closed %d %q, want %d %q", code, text, websocket.CloseTryAgainLater, relaySocketReasonNATSUnavailable)
 	}
 }
 
-// An open socket closes 4401 at its token's expiry, not at the next check, which here is an hour
-// away: its client trades for a fresh token at once. The stand-in answers the token live all
-// along with exp the whole second at or before its expiry, as the real broker answers it for up
-// to a second past that exp, so the close rests on the socket reading the exp and not on the
-// broker's refusal. Control: the verdict reading only the broker's refusal as expired; the socket
-// stays open past the exp, and the row fails naming it.
+// An open socket closes 4401 at its token's expiry, not at the next check, which here is a day
+// away: its client trades for a fresh token at once. The stand-in answers the token live all along
+// with exp the whole second at or before its expiry, as the real broker answers it for up to a
+// second past that exp, so the close rests on the socket reading the exp and not on the broker's
+// refusal. The token lives an hour, and the socket's expiry timer runs on the rig's clock, armed
+// for the exp itself: one nanosecond short of it the timer is still armed, the socket's watch not
+// woken, and at it the socket closes 4401 credential_expired, with no check between. Controls: the
+// verdict reading only the broker's refusal as expired, and the socket stays open past the exp,
+// which the row names; the expiry left on the real clock's timer, and the row fails waiting for the
+// timer armed at the exp.
 func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
-	// Not parallel: it requires the socket to close within 4 s (closeCode(4 * time.Second)) of
-	// opening with a token that expires in 2 s.
-	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	t.Parallel()
+	rig := newRelaySocketRig(t, withCheckEvery(relaySocketPastTheBinary))
 	const session = "ses_edge_expiring"
-	token := "access-token-that-expires-in-two-seconds"
-	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), 2*time.Second, relaySocketProject))
+	token := "access-token-that-expires-in-an-hour"
+	answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+	rig.broker.Says(token, answer)
 	client := rig.openWith(t, session, token)
-	if code, text := client.closeCode(4 * time.Second); code != relaySocketCloseExpired || text != relaySocketReasonExpired {
+	expires := time.Unix(answer.ExpiresAt, 0)
+	rig.clock.AwaitArmedAt(t, "the socket's expiry timer", expires)
+	rig.clock.Set(expires.Add(-time.Nanosecond))
+	if armed := rig.clock.Armed(); !slices.ContainsFunc(armed, expires.Equal) {
+		t.Fatalf("one nanosecond short of the token's exp %v the clock holds the timers %v: the socket's expiry timer is gone", expires, armed)
+	}
+	rig.clock.Set(expires)
+	if code, text := client.closeNext("the close at the token's exp"); code != relaySocketCloseExpired || text != relaySocketReasonExpired {
 		t.Fatalf("the socket closed %d %q at its token's expiry, want %d %q\n%s", code, text, relaySocketCloseExpired, relaySocketReasonExpired, rig.logs.String())
 	}
 }
@@ -882,46 +987,54 @@ func TestAnOpenSocketClosesAtItsTokensExpiry(t *testing.T) {
 // (Bun's WebSocket fires close only then) reopens at once, a 4401's "at once" included. Two closes
 // the listener begins, each on its own socket: a 4403 the check writes (the token revoked) and a
 // 1003 the reader writes (a binary frame). The client answers the close as gorilla/websocket does,
-// and the row times the end of the connection from the close frame. Control: the reader leaving
-// the connection to end's grace once end has run (read's conn.Close removed); each case's
-// connection ends a whole grace after the close, and the row fails naming how long.
+// and the row proves by order that the answer ended the connection: the grace's callback runs on
+// the rig's clock, which the row does not move once the close has begun, so the connection ends
+// with the clock short of the grace's end and the callback still armed there. The socket checks its
+// token once a day, so the reader's own deadline (pongWait, on the real clock) is past the test
+// binary's, and the token outlives that first check, which reads the revoke. Controls: the reader
+// leaving the connection to end's grace once end has run (read's conn.Close removed), or the
+// client withholding its answer; the connection does not end, and the row fails naming the wait.
 func TestARelaySocketDropsItsConnectionWhenTheClientAnswersTheClose(t *testing.T) {
-	// Not parallel: it requires the connection to end within 250 ms (relaySocketCloseGrace/4) of
-	// the client's answer to the close.
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
-		close func(rig *relaySocketRig, client *relaySocketClient, token string)
+		close func(t *testing.T, rig *relaySocketRig, checks *socketChecks, token string) (int, string)
 		code  int
 		text  string
 	}{
 		{name: "a 4403 the check writes", code: relaySocketCloseRefused, text: relaySocketReasonRefused,
-			close: func(rig *relaySocketRig, _ *relaySocketClient, token string) { rig.revoke(token) }},
+			close: func(t *testing.T, rig *relaySocketRig, checks *socketChecks, token string) (int, string) {
+				rig.revoke(token)
+				return checks.closeAt(t, checks.next, "the close at the first check after the revoke")
+			}},
 		{name: "a 1003 the reader writes", code: websocket.CloseUnsupportedData, text: relaySocketReasonTextOnly,
-			close: func(_ *relaySocketRig, client *relaySocketClient, _ string) {
-				client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
+			close: func(_ *testing.T, _ *relaySocketRig, checks *socketChecks, _ string) (int, string) {
+				checks.client.sendRaw(websocket.BinaryMessage, []byte(`{"op":"unsub","sid":1}`))
+				return checks.client.closeNext("the close a binary frame gets")
 			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			rig := newRelaySocketRig(t)
-			client, token := rig.open(t, "ses_edge_close_answered")
-			row.close(rig, client, token)
-			if code, text := client.closeCode(5 * time.Second); code != row.code || text != row.text {
+			t.Parallel()
+			rig := newRelaySocketRig(t, withCheckEvery(relaySocketPastTheBinary))
+			const session = "ses_edge_close_answered"
+			token := "access-token-of-a-socket-whose-close-is-answered"
+			rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), 2*relaySocketPastTheBinary, relaySocketProject))
+			client := rig.openWith(t, session, token)
+			checks := rig.checksOf(t, client, session)
+			if code, text := row.close(t, rig, checks, token); code != row.code || text != row.text {
 				t.Fatalf("the socket closed %d %q, want %d %q", code, text, row.code, row.text)
 			}
-			closed := time.Now()
+			graceEnds := rig.clock.Now().Add(relaySocketCloseGrace)
 			raw := client.conn.NetConn()
-			if err := raw.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-				t.Fatalf("set the read deadline: %v", err)
-			}
-			_, err := raw.Read(make([]byte, 1))
-			ended := time.Since(closed)
-			if !errors.Is(err, io.EOF) {
+			ended := make(chan error, 1)
+			go func() {
+				_, err := raw.Read(make([]byte, 1))
+				ended <- err
+			}()
+			if err := testwait.Receive(t, "the listener to drop the connection once the client answered its close", ended); !errors.Is(err, io.EOF) {
 				t.Fatalf("the connection after the answered close read %v, want the listener's end of it (EOF)", err)
 			}
-			if ended > relaySocketCloseGrace/4 {
-				t.Fatalf("the connection ended %s after the answered close, want it dropped at the client's answer, well inside the %s grace", ended.Round(time.Millisecond), relaySocketCloseGrace)
-			}
-			t.Logf("the connection ended %s after the answered close", ended.Round(time.Millisecond))
+			rig.clock.AwaitArmedAt(t, "the close's grace, which the clock has not reached", graceEnds)
 		})
 	}
 }
@@ -985,11 +1098,11 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 	// A pub of a reply never forwarded, padded to just under the bound, is read and refused.
 	padding := strings.Repeat("a", relaySocketReadLimit-200)
 	client.send(map[string]any{"op": "pub", "subject": "notifications.envoy.relayreply.padded", "data": "", "padding": padding})
-	if frame := client.next(5 * time.Second); frame.Code != "publish_not_granted" {
+	if frame := client.frame("the answer to a frame under the bound"); frame.Code != "publish_not_granted" {
 		t.Fatalf("a frame under the bound was answered %s, want it read and refused publish_not_granted", frame.raw)
 	}
 	client.send(map[string]any{"op": "pub", "subject": "notifications.envoy.relayreply.padded", "data": "", "padding": padding + strings.Repeat("a", 400)})
-	if code, _ := client.closeCode(5 * time.Second); code != websocket.CloseMessageTooBig {
+	if code, _ := client.closeNext("the close a frame over the bound gets"); code != websocket.CloseMessageTooBig {
 		t.Fatalf("a frame over the bound closed the socket %d, want %d", code, websocket.CloseMessageTooBig)
 	}
 }
@@ -1024,11 +1137,10 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 				client.sendRaw(websocket.TextMessage, []byte(frame))
 			}
 			client.closeQueued()
-			bound := testwait.Remaining(t, 30*time.Second)
-			if frame := client.next(bound); frame.Op != "err" || frame.Code != relayErrBadFrame {
+			if frame := client.frame("the err frame ahead of the close"); frame.Op != "err" || frame.Code != relayErrBadFrame {
 				t.Fatalf("%s was answered %s, want err %s", row.frame, frame.raw, relayErrBadFrame)
 			}
-			if code, text := client.closeCode(bound); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
+			if code, text := client.closeNext("the close behind the err frame"); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
 				t.Fatalf("%s closed the socket %d %q, want %d %q", row.frame, code, text, websocket.ClosePolicyViolation, relayErrBadFrame)
 			}
 		})
@@ -1057,7 +1169,7 @@ func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 	held := rig.client.Connection().NumSubscriptions()
 	client.sub(1, bus.DeliverSubject(session))
 	client.sub(2, bus.DeliverSubject(session))
-	frame := client.next(5 * time.Second)
+	frame := client.frame("the answer to the second sub")
 	if frame.Op != "err" || frame.Code != relayErrSubscriptionLimit || frame.sid(t) != 2 {
 		t.Fatalf("a second sub was answered %s, want err %s for sid 2", frame.raw, relayErrSubscriptionLimit)
 	}
@@ -1065,7 +1177,7 @@ func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
 		t.Fatalf("the replica holds %d subscriptions for the socket, want the one it took", now-held)
 	}
 	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
-	if got := client.next(5 * time.Second); got.Op != "msg" || got.sid(t) != 1 {
+	if got := client.frame("the frame published once"); got.Op != "msg" || got.sid(t) != 1 {
 		t.Fatalf("the socket sent %s, want a msg under sid 1", got.raw)
 	}
 	client.none(time.Second, "a frame sent once")
@@ -1087,7 +1199,7 @@ func TestARelaySocketHandlesASubWholeBeforeItReadsTheNextFrame(t *testing.T) {
 	client, _ := rig.open(t, session)
 	client.sub(1, bus.DeliverSubject(session))
 	client.sub(2, bus.DeliverSubject("ses_someone_else"))
-	if frame := client.next(5 * time.Second); frame.Code != "subject_not_granted" || frame.sid(t) != 2 {
+	if frame := client.frame("the answer to the second sub"); frame.Code != "subject_not_granted" || frame.sid(t) != 2 {
 		t.Fatalf("the second sub was answered %s, want err subject_not_granted for sid 2", frame.raw)
 	}
 	sent := publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
@@ -1145,7 +1257,7 @@ func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 
 	want := natsgo.Header{"X-Repeated": {"first", "second", "third"}, "lower-case-Name": {"kept"}}
 	publishRelayFrame(t, rig.owner.url, session, want)
-	frame := client.next(5 * time.Second)
+	frame := client.frame("the frame of the message carrying headers")
 	if len(frame.Headers) != len(want) {
 		t.Fatalf("the frame carries the headers %v, want exactly %v", frame.Headers, want)
 	}
@@ -1156,7 +1268,7 @@ func TestARelaySocketCarriesEveryValueOfAHeaderInOrder(t *testing.T) {
 	}
 
 	bare := publishRelayFrame(t, rig.owner.url, session, nil)
-	frame = client.next(5 * time.Second)
+	frame = client.frame("the frame of the message carrying only the relay's header")
 	if subjects := frame.Headers[relayHeaderSubject]; len(frame.Headers) != 1 || !slices.Equal(subjects, bare.Header.Values(relayHeaderSubject)) {
 		t.Fatalf("a frame of a message carrying only the relay's header is %s, want exactly %s %v", frame.raw, relayHeaderSubject, bare.Header.Values(relayHeaderSubject))
 	}

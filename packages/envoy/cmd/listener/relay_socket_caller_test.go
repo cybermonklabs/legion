@@ -46,7 +46,7 @@ func TestAReplicaServesOnePersonNoMoreSocketsThanTheirCap(t *testing.T) {
 	client, _ := rig.openAs(t, relaySocketOtherPerson, other)
 	client.subscribeOwn(other)
 	sent := publishRelayFrame(t, rig.owner.url, other, natsgo.Header{})
-	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != sent.Reply {
+	if frame := client.frame("the other person's frame"); frame.Op != "msg" || frame.Reply != sent.Reply {
 		t.Fatalf("the other person's socket was sent %s, want the msg %s", frame.raw, sent.Reply)
 	}
 }
@@ -95,7 +95,7 @@ func TestOnePersonsSocketsHoldNoMoreThanTheirShareOfTheBudget(t *testing.T) {
 	t.Logf("the person's sockets hold %d bytes of their %d share; the replica holds %d of its %d", sockets[0].caller.buffered.Load(), share, rig.sockets.buffered.Load(), budget)
 
 	flood(t, rig.owner.url, other, 1)
-	if frame := client.next(5 * time.Second); frame.Op != "msg" {
+	if frame := client.frame("the other person's frame"); frame.Op != "msg" {
 		t.Fatalf("the other person's socket was sent %s, want its msg", frame.raw)
 	}
 }
@@ -241,7 +241,7 @@ func TestARelaySocketForwardsNoFrameWhoseReceiptNamesAnotherSession(t *testing.T
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the frames: %v", err)
 	}
-	if frame := client.next(5 * time.Second); frame.Op != "msg" || frame.Reply != own.Reply {
+	if frame := client.frame("the first frame forwarded to the session"); frame.Op != "msg" || frame.Reply != own.Reply {
 		t.Fatalf("the socket sent %s first, want the msg %s of its own session: a frame whose receipt is no receipt of the session was forwarded", frame.raw, own.Reply)
 	}
 	client.none(500*time.Millisecond, "after the session's own frame")
