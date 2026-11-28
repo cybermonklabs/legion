@@ -19,7 +19,8 @@ import (
 // (delivery.intakeHoldTTL, intakeHoldRenew and intakeHoldMargin). The hold lasts 15 s on the
 // database's clock after each renewal, is renewed every 5 s, and reports itself lost 2 s before it
 // lapses, so the holder stops writing before any standby can take it. The renewal is also the
-// bound on the holder's own statements of the hold: the take and the release.
+// bound on the holder's own statements of the hold: the take and the release, though a test
+// process may shorten the release's (Config.ReleaseTimeout).
 var holdOptions = duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second}
 
 const (
@@ -83,6 +84,21 @@ type Config struct {
 	retry <-chan time.Time
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
+	// ReleaseTimeout bounds the holder's release of its hold as Run stops (runner.end): zero, as
+	// every deployment leaves it, is holdOptions.Renew, five seconds, and a larger value is cut to
+	// holdOptions.Renew, so it can only shorten the release (releaseBound). Only a test process
+	// sets it (cmd/dispatch's DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT), since a test whose
+	// database stops answering at shutdown waits the release out before the process exits.
+	ReleaseTimeout time.Duration
+}
+
+// releaseBound is how long the holder's release of its hold may take (runner.end): one renewal
+// interval, holdOptions.Renew, or c.ReleaseTimeout where that is set and shorter.
+func (c Config) releaseBound() time.Duration {
+	if c.ReleaseTimeout > 0 && c.ReleaseTimeout < holdOptions.Renew {
+		return c.ReleaseTimeout
+	}
+	return holdOptions.Renew
 }
 
 // Run fills the keyword table in a serving process until ctx ends, under the fill's hold
@@ -351,10 +367,11 @@ func (r *runner) release(hold *duty.Hold) {
 
 // end releases hold (duty.Hold.Release): it stops the renewal and deletes the hold's row while it
 // still names this holder, notifying the standbys. It runs on a context of its own, bounded by
-// one renewal interval, since it must reach the database when the process's context has ended.
-// It answers whether the release reached the database.
+// one renewal interval or a shorter Config.ReleaseTimeout (releaseBound), since it must reach the
+// database when the process's context has ended. It answers whether the release reached the
+// database.
 func (r *runner) end(hold *duty.Hold) bool {
-	releasing, cancel := context.WithTimeout(context.Background(), holdOptions.Renew)
+	releasing, cancel := context.WithTimeout(context.Background(), r.cfg.releaseBound())
 	defer cancel()
 	if err := hold.Release(releasing); err != nil {
 		r.fill.logger.Error("dispatch: the keyword fill could not release its hold", "holder", r.fill.holder, "error", err)

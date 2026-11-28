@@ -209,6 +209,20 @@ type bootConfig struct {
 	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
 	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
+	// ShutdownProbe bounds each health probe by which the shutdown learns that the database has
+	// stopped answering (silenceBounds.probeTimeout), zero for the store's own two-second probe and
+	// drainPollInterval's 250 ms between two; set, main pauses an eighth of it between two probes,
+	// the ratio of drainPollInterval to the store's probe, and never longer than drainPollInterval.
+	// Only DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT, under the test hooks, sets it, since a test whose
+	// database stops answering waits silentProbes probes out before the process exits; it can only
+	// shorten a probe, since store.Pool.HealthyWithin keeps its own bound past a longer context.
+	ShutdownProbe time.Duration
+	// SearchFillReleaseTimeout bounds the keyword fill's release of its hold as the process stops
+	// (textversions.Config.ReleaseTimeout), zero for the hold's renewal interval, five seconds; only
+	// DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT, under the test hooks, sets it, since a test whose
+	// database stops answering at shutdown waits the release out. The fill cuts a longer one to
+	// its renewal interval, so it can only shorten the release.
+	SearchFillReleaseTimeout time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -1372,12 +1386,13 @@ func main() {
 		go func() {
 			defer close(fillStopped)
 			if err := textversions.Run(ctx, textversions.Config{
-				Leases:   textVersionsLeases,
-				Horizon:  background.EventHorizon(),
-				Latency:  answersLatency,
-				Serving:  serving,
-				Events:   textVersionsEventsWake,
-				Released: textVersionsReleasedWake,
+				Leases:         textVersionsLeases,
+				Horizon:        background.EventHorizon(),
+				Latency:        answersLatency,
+				Serving:        serving,
+				Events:         textVersionsEventsWake,
+				Released:       textVersionsReleasedWake,
+				ReleaseTimeout: boot.SearchFillReleaseTimeout,
 			}); err != nil {
 				slog.Error("dispatch: start the keyword fill", "error", err)
 			}
@@ -1493,8 +1508,16 @@ func main() {
 	if boot.HTTPDrain > 0 {
 		httpDrain = boot.HTTPDrain
 	}
+	// The shutdown's health probes run at production's bounds (the zero silenceBounds) unless a test
+	// process shortens each probe (bootConfig.ShutdownProbe); the pause between two probes then
+	// keeps drainPollInterval's ratio to the store's two-second probe, 250 ms to 2 s, an eighth, and
+	// is never longer than drainPollInterval, so the setting can only shorten the wait.
+	var probes silenceBounds
+	if boot.ShutdownProbe > 0 {
+		probes = silenceBounds{probeTimeout: boot.ShutdownProbe, pause: min(boot.ShutdownProbe/8, drainPollInterval)}
+	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain, probes); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1786,6 +1809,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
+		{"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT", &boot.ShutdownProbe},
+		{"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT", &boot.SearchFillReleaseTimeout},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err

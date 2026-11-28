@@ -62,8 +62,14 @@ const promptShutdown = 3 * time.Second
 
 // quickHTTPDrain is the HTTP drain (DISPATCH_TEST_HTTP_DRAIN) of a process whose request in flight
 // holds the drain for its whole share, in place of httpDrainBeforeDocuments' eleven seconds: the
-// order of the shutdown's steps is the same at either length.
-const quickHTTPDrain = 3 * time.Second
+// order of the shutdown's steps is the same at either length, since each row that sets it holds
+// its request until the drain's line and reads that order from the process's lines. Two rows set
+// it: TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument, whose request waits
+// behind the issue's lock until the drain's line, and
+// TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget, whose keyword fill's release
+// on the frozen database (quickFillRelease) ends inside it, as a deployment's five-second release
+// ends inside its eleven-second drain.
+const quickHTTPDrain = 200 * time.Millisecond
 
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
@@ -120,7 +126,7 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 const inFlightSettleDelay = 4 * time.Second
 
 // A request in flight can hold the HTTP drain for its whole share of the budget, here a title change
-// queued behind another writer's lock on the issue for the 3 s drain (quickHTTPDrain). The edit's
+// queued behind another writer's lock on the issue for the drain (quickHTTPDrain). The edit's
 // own settlement timer fires four seconds in (inFlightSettleDelay), and its settlement waits behind
 // the same lock before the signal. The document service starts once the drain's share ends and
 // finds that timer already fired, so it has no timer to stop: it runs its own settlement of the
@@ -548,7 +554,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil, httpDrainBeforeDocuments)
+		}, func() {}, func() {}, nil, httpDrainBeforeDocuments, silenceBounds{})
 	}()
 	select {
 	case <-entered:
@@ -680,7 +686,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, silenceBounds{})
 	}()
 	select {
 	case <-done:
@@ -840,7 +846,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments, silenceBounds{})
 	}()
 	cancel()
 	select {
@@ -1053,22 +1059,54 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 	}
 }
 
+// quickFillRelease bounds the keyword fill's release of its hold as the process stops
+// (DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT, textversions.Config.ReleaseTimeout) in the row below,
+// in place of the hold's five-second renewal interval: against quickHTTPDrain it keeps a
+// deployment's five seconds against its eleven-second drain, 5 : 11, so on the frozen database the
+// release ends inside the drain, as it does in a deployment.
+const quickFillRelease = 90 * time.Millisecond
+
+// quickShutdownProbe bounds each health probe by which the shutdown learns that the database has
+// stopped answering (silenceBounds.probeTimeout; DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT for a
+// process) in the two rows below, in place of the store's two seconds, with an eighth of it between
+// two probes (silenceBounds.pause), the ratio of drainPollInterval to the store's probe:
+// silentProbes failed probes in a row decide it at either length.
+const quickShutdownProbe = 120 * time.Millisecond
+
+// quickShutdownSlack is what the row below allows past its drain and its probes: the shutdown's
+// fixed part on this real binary - the signal reaching the process, the document service returning
+// with no room to settle, the waits between the drain and the first probe, and the exit after the
+// warning. The rule that sizes it is twice the largest fixed part 20 runs of the row measure, and
+// at least 250 ms.
+const quickShutdownSlack = 500 * time.Millisecond
+
 // A database that stops answering - a failover, a partition - holds every connection waiting on it,
 // and closing the pool waits for every connection in use. Here that is an issue create's: it waits
 // in Postgres on another writer's lock on its project's row when the relay stops forwarding, so
 // whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the
 // document service starts one HTTP drain (quickHTTPDrain here) after the signal, with no document
-// to settle: the issue it would create has none yet. Dispatch then gives up on the connection when
-// silentProbes health probes in a row have failed with no connection taken back meanwhile, so it
-// exits well inside a runtime's grace period instead of being killed, and says why.
+// to settle: the issue it would create has none yet. The keyword fill runs, as in a deployment, and
+// its release of its hold on the frozen database (quickFillRelease here) ends inside that drain; the
+// shutdown waits for it (waitBackground) before it probes, so a release that outlasted the drain
+// and the slack, or never ended, would hold the exit past the bound. Dispatch then gives up on the
+// connection when silentProbes health probes in a row, each within quickShutdownProbe here and an
+// eighth of it apart, have failed with no connection taken back meanwhile, so it exits well inside a
+// runtime's grace period instead of being killed, and says why. The row waits for the process's
+// exit, and logs the signal's time beside the process's WARN lines, each with its own time, so a run
+// reads the time from the signal to the drain's line, from it to the warning, and from the warning
+// to the exit.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	// Not parallel: it holds a step to a wall-clock bound load could break (the shutdown budget the
-	// exit is compared against, with 5 s of slack).
+	// exit is compared against, with quickShutdownSlack of slack).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	process := startDispatchProcessWith(t, relay.url, dispatchOptions{
-		Env: map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
+		Env: map[string]string{
+			"DISPATCH_TEST_HTTP_DRAIN":                  quickHTTPDrain.String(),
+			"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": quickFillRelease.String(),
+			"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT":      quickShutdownProbe.String(),
+		},
 	})
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
@@ -1097,11 +1135,12 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	signalled := process.Terminate(t)
 	process.WaitExit(t, "SIGTERM with the database unanswering")
 	exited := time.Since(signalled)
-	t.Logf("exited %v after SIGTERM", exited)
-	// The request in flight holds the HTTP drain for its whole share, then the document service
-	// returns at once with no room to settle, and each failed probe takes its two seconds and a
-	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := quickHTTPDrain + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
+	t.Logf("SIGTERM at %s; exited %v after it", signalled.Format(time.RFC3339Nano), exited)
+	// The request in flight holds the HTTP drain for its whole share, and the keyword fill's release
+	// ends inside it; then the document service returns at once with no room to settle, and each
+	// failed probe takes its quickShutdownProbe and the pause after it, an eighth of that.
+	// quickShutdownSlack is the rest of the exit on this real binary.
+	if bound := quickHTTPDrain + silentProbes*(quickShutdownProbe+quickShutdownProbe/8) + quickShutdownSlack; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()
@@ -1118,16 +1157,25 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	}
 }
 
+// closeSlack is what the row below allows past its probes and their pauses: closePool's overrun on
+// them in process - starting the close, the last probe's return and the warning. quickShutdownSlack's
+// rule sizes it from this row's own 20 runs: twice the largest overrun they measure, and at least
+// 250 ms.
+const closeSlack = 500 * time.Millisecond
+
 // A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
 // as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
 // waits for it. On a database that has stopped answering it never comes back, so closePool gives up
 // on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
-// back, and says so, instead of waiting on it until the runtime kills Dispatch. The test's pool pings
+// back, and says so, instead of waiting on it until the runtime kills Dispatch. The probes run within
+// quickShutdownProbe each and an eighth of it apart, drainPollInterval's ratio to the store's own
+// probe, since the rule closePool follows is the same at either length. The test's pool pings
 // every connection it hands out, as pgxpool pings one idle for over a second, so the late taker is
 // held by a ping the frozen database never answers without the test waiting out that second.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
 	// Not parallel: it replaces the process's default logger (logtest.SetDefault); and it holds a step
-	// to a wall-clock bound load could break (the 3 x (250 ms + 2 s) + 3 s bound on closing the pool).
+	// to a wall-clock bound load could break (silentProbes x (pause + probeTimeout) + closeSlack on
+	// closing the pool, 3 x (15 ms + 120 ms) + 500 ms).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
@@ -1164,12 +1212,13 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		}
 	}
 
+	probes := silenceBounds{probeTimeout: quickShutdownProbe, pause: quickShutdownProbe / 8}
 	logged := capturedLog(t)
 	started := time.Now()
-	closePool(pool)
+	closePool(pool, probes)
 	took := time.Since(started)
 	t.Logf("closePool returned %v after it began", took)
-	if bound := silentProbes*(drainPollInterval+2*time.Second) + 3*time.Second; took > bound {
+	if bound := silentProbes*(probes.pause+probes.probeTimeout) + closeSlack; took > bound {
 		t.Errorf("closePool returned %v after it began with the database unanswering, want within %v", took, bound)
 	}
 	select {

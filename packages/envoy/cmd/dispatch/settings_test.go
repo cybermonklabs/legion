@@ -2235,6 +2235,34 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				`DISPATCH_TEST_HTTP_DRAIN="11.001s" (expected at most 11s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v, want 0 (the store's two-second probe and drainPollInterval between two)", boot.ShutdownProbe)
+			}
+			const quick = 120 * time.Millisecond
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": quick.String()}); boot.ShutdownProbe != quick {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT: ShutdownProbe = %v, want %v", boot.ShutdownProbe, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "120ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.SearchFillReleaseTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT unset: SearchFillReleaseTimeout = %v, want 0 (the fill's hold renewal interval, five seconds)", boot.SearchFillReleaseTimeout)
+			}
+			const quick = 90 * time.Millisecond
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": quick.String()}); boot.SearchFillReleaseTimeout != quick {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT: SearchFillReleaseTimeout = %v, want %v", boot.SearchFillReleaseTimeout, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "90ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")
