@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -398,25 +399,32 @@ func TestSamplerMarksNoReadThatFailedOnceTheStepEnded(t *testing.T) {
 	}
 }
 
-// TestSamplerHeapReadDelaysNoSample: under -heap-samples, Dispatch's heap endpoint answers 7 units
-// after it is asked, past the 5-unit sample interval, and the goroutine reads keep their 5-unit
-// cadence meanwhile. The heap read lands in the first sample after it ended, with its own end time,
-// and no second heap read starts before the next 15-unit slot, past the 12-unit run.
+// TestSamplerHeapReadDelaysNoSample: under -heap-samples, Dispatch's heap endpoint answers 7 s
+// after it is asked, past the 5 s sample interval, and the goroutine reads keep their 5 s cadence
+// meanwhile. The heap read lands in the first sample after it ended, with its own end time, and no
+// second heap read starts before the next 15 s slot, past the 12 s run.
 //
-// A unit is production's second scaled by 3/50 (60 ms), so the sampler runs at sampleEvery 300 ms
-// and heapEvery 900 ms in place of sampleInterval (5 s) and heapReadEvery (15 s), and the run takes
-// 720 ms rather than 12 s. Every duration of the row, the lateness each sample is allowed (1 unit)
-// among them, is a whole number of units, so their ratios 5 : 7 : 12 : 15 : 1 are production's.
+// The sampler runs production's sampleInterval and heapReadEvery on a clocktest.Fake
+// (sampler.clock), its run's context ends at 12 s on the same fake, and the heap endpoint answers
+// once the fake has passed 7 s from the ask, or once the row ends, which releases it. The row moves
+// the fake one deadline at a time, each only once the code has armed it: the loop's next tick,
+// which its clock.Ticker arms once the sample before it is stored; the heap endpoint's answer;
+// readHeaps' next slot, which it arms once it has handed the ended read to the loop; and the run's
+// end. The fake stands still while the loop works, so each sample's time is its tick's exactly,
+// where the row on the wall clock let a sample be up to a second late. A loop that waited for the
+// heap read would arm its next tick only once the read had ended, which nothing but the row's move
+// to 7 s ends, so the row's wait for that tick fails naming it.
 func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 	const (
-		unit         = time.Second * 3 / 50 // 60 ms
-		interval     = 5 * unit             // 300 ms: the sample interval
-		heapDelay    = 7 * unit             // 420 ms: how long the heap endpoint takes to answer
-		run          = 12 * unit            // 720 ms: the sampler's run
-		heapInterval = 15 * unit            // 900 ms: the heap read interval
-		tolerance    = 1 * unit             // 60 ms: how late a sample may be
+		heapDelay = 7 * time.Second  // how long the heap endpoint takes to answer
+		run       = 12 * time.Second // the sampler's run
 	)
+	start := time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
 	heapBody := heapProfileBody(t)
+	// release ends a heap request the fake never answered once the row ends, so that srv.Close,
+	// which waits for every handler, waits for none that a row which failed early left on the fake.
+	release := make(chan struct{})
 	var mu sync.Mutex
 	var heapAsked []time.Time
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -425,15 +433,16 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 			fmt.Fprint(w, "goroutine profile: total 7\n")
 		case "/debug/pprof/heap":
 			mu.Lock()
-			heapAsked = append(heapAsked, time.Now())
+			heapAsked = append(heapAsked, fake.Now())
 			mu.Unlock()
 			if r.URL.RawQuery != "" {
 				http.Error(w, "the sampler reads the binary profile only", http.StatusBadRequest)
 				return
 			}
 			select {
-			case <-time.After(heapDelay):
+			case <-fake.After(heapDelay):
 				w.Write(heapBody)
+			case <-release:
 			case <-r.Context().Done():
 			}
 		case "/varz":
@@ -443,23 +452,44 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
+	defer close(release)
 
-	start := time.Now()
 	s := newSampler(endpoints{pprof: srv.URL, natsMon: srv.URL, pg: unreachablePG, pids: map[string]int{}})
 	s.heapSamples = true
-	s.sampleEvery, s.heapEvery = interval, heapInterval
-	ctx, cancel := context.WithTimeout(context.Background(), run)
+	s.clock = fake
+	ctx, cancel := fake.WithTimeout(context.Background(), run)
 	defer cancel()
-	s.loop(ctx, start, start.Add(time.Minute), log.New(io.Discard, "", 0))
+	looped := make(chan struct{})
+	go func() {
+		defer close(looped)
+		s.loop(ctx, start, start.Add(time.Minute), log.New(io.Discard, "", 0))
+	}()
+
+	// Sample 0 is taken at once, and readHeaps starts its first read at once beside it. The loop
+	// arms each tick once the sample before it is stored.
+	fake.AwaitArmedAt(t, "the loop's tick for sample 1", start.Add(sampleInterval))
+	fake.AwaitArmedAt(t, "the heap endpoint's answer to the read readHeaps started at once", start.Add(heapDelay))
+	fake.Set(start.Add(sampleInterval))
+	fake.AwaitArmedAt(t, "the loop's tick for sample 2", start.Add(2*sampleInterval))
+	// The endpoint answers between samples 1 and 2. readHeaps hands the ended read to the loop and
+	// then arms its next slot, one heapReadEvery after its first read began: past the run's end.
+	fake.Set(start.Add(heapDelay))
+	fake.AwaitArmedAt(t, "readHeaps' next slot", start.Add(heapReadEvery))
+	fake.Set(start.Add(2 * sampleInterval))
+	// The tick after sample 2 falls at 15 s too, beside readHeaps' slot: both armed there is the
+	// read that sample 2 is stored, so the run's end cannot drop it.
+	fake.AwaitArmedCountAt(t, "the loop's tick after sample 2 and readHeaps' next slot", start.Add(3*sampleInterval), 2)
+	fake.Set(start.Add(run))
+	testwait.Receive(t, "the sampler's loop to return once its run has ended", looped)
 
 	ss := s.all()
 	if len(ss) != 3 {
-		t.Fatalf("%d samples in %s, want 3: one each %s while the heap read is in flight", len(ss), run, interval)
+		t.Fatalf("%d samples in the %s run, want 3: one each %s while the heap read is in flight", len(ss), run, sampleInterval)
 	}
 	for i, x := range ss {
-		want := time.Duration(i) * interval
-		if late := x.At.Sub(start) - want; late < 0 || late > tolerance {
-			t.Errorf("sample %d at %s past the start, want %s within %s: the heap read in flight delayed it", i, x.At.Sub(start), want, tolerance)
+		want := time.Duration(i) * sampleInterval
+		if late := x.At.Sub(start) - want; late != 0 {
+			t.Errorf("sample %d at %s past the start, %s late; want %s exactly, the moment of its tick, where the fake stood while the loop took it", i, x.At.Sub(start), late, want)
 		}
 		if x.Goroutines != 7 || slices.Contains(x.FailedReads, readGoroutines) || slices.Contains(x.FailedReads, readHeap) {
 			t.Errorf("sample %d: goroutines %d, failed reads %v; want 7 goroutines, no failed goroutine or heap read", i, x.Goroutines, x.FailedReads)
@@ -475,14 +505,14 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 		t.Errorf("sample 2 heap live %v bytes, %v objects, in window %v; want the profile's 4 MiB in 7 objects, in the window",
 			got.HeapLiveBytes, got.HeapLiveObjects, got.HeapInWindow)
 	}
-	if ended := got.HeapAt.Sub(start); ended < heapDelay || got.HeapAt.After(got.At.Add(tolerance)) || !got.HeapAt.After(ss[1].At) {
-		t.Errorf("sample 2 (at %s) carries a heap read that ended %s past the start, want its own end, after %s, after sample 1 and within %s of sample 2",
-			got.At.Sub(start), ended, heapDelay, tolerance)
+	if ended := got.HeapAt.Sub(start); ended < heapDelay || got.HeapAt.After(got.At) || !got.HeapAt.After(ss[1].At) {
+		t.Errorf("sample 2 (at %s) carries a heap read that ended %s past the start, want its own end, after %s, after sample 1 and not after sample 2",
+			got.At.Sub(start), ended, heapDelay)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(heapAsked) != 1 {
-		t.Errorf("heap asked at %v, want once: the next %s slot is past the %s run", heapAsked, heapInterval, run)
+		t.Errorf("heap asked at %v, want once: the next %s slot is past the %s run", heapAsked, heapReadEvery, run)
 	}
 }
 

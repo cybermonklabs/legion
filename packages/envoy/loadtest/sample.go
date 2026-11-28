@@ -19,6 +19,8 @@ import (
 
 	"github.com/google/pprof/profile"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // clkTck is the kernel's USER_HZ, the unit of /proc/<pid>/stat CPU times.
@@ -100,29 +102,13 @@ type sampler struct {
 	exits   map[string]stackExit // by name, the stack processes found gone
 	// restarting names the process stack.sh is restarting: its absence is not an exit.
 	restarting string
-	// sampleEvery and heapEvery, when set, are how far apart the loop takes its samples and
-	// readHeaps starts its heap reads, in place of sampleInterval and heapReadEvery: a test sets
-	// them short, so it runs production's cadence in a fraction of production's time. Zero, in
-	// every sampler but a test's, is production's cadence (interval, heapInterval).
-	sampleEvery, heapEvery time.Duration
-}
-
-// interval is how far apart the loop takes its samples: sampleEvery where a test set it, and
-// sampleInterval, production's, where it is zero.
-func (s *sampler) interval() time.Duration {
-	if s.sampleEvery != 0 {
-		return s.sampleEvery
-	}
-	return sampleInterval
-}
-
-// heapInterval is how far apart readHeaps starts its heap reads: heapEvery where a test set it,
-// and heapReadEvery, production's, where it is zero.
-func (s *sampler) heapInterval() time.Duration {
-	if s.heapEvery != 0 {
-		return s.heapEvery
-	}
-	return heapReadEvery
+	// clock is what the sampler's cadence runs on: the loop's ticks, sampleInterval apart, and the
+	// time each sample stamps, and readHeaps' slots, heapReadEvery apart, and the time each heap
+	// read stamps as it ends. Nil, in every sampler but a test's, is clock.Real(); a test hands a
+	// clocktest.Fake and moves it through production's intervals, each tick once the loop has
+	// armed it. The reads' own request bounds (shortClient, heapReadTimeout) stay on the wall
+	// clock: they bound real requests.
+	clock clock.Clock
 }
 
 // stackExit is a stack process that exited during the step: the first check that found it gone.
@@ -225,7 +211,7 @@ func (s *sampler) setRestarting(name string) {
 	s.mu.Unlock()
 }
 
-// sampleNow makes the loop take its next sample at once, and the samples after it its interval
+// sampleNow makes the loop take its next sample at once, and the samples after it sampleInterval
 // apart from there.
 func (s *sampler) sampleNow() {
 	select {
@@ -407,23 +393,29 @@ func boxBusy(ctx context.Context, window time.Duration) (float64, bool) {
 	return (busy1 - busy0) / (total1 - total0), true
 }
 
-// loop samples every interval until ctx ends. A failed read is marked in its sample and logged as
-// readErrors does, one count each for the Postgres, the pprof and the NATS reads. A read that
-// failed once ctx had ended is neither marked nor counted, as poll does. Under heapSamples the
-// heap reads run in readHeaps; each sample takes the one that has ended since the last sample, if
-// any, in place of reading the heap itself. A heap read that ends once the last sample is taken
-// is lost. Without heapSamples readHeaps never starts, so the window holds no request to
-// /debug/pprof/heap and no sample carries a heap read.
+// loop samples every sampleInterval on the sampler's clock until ctx ends: the first sample at
+// once, and each after it on a clock.Ticker, which arms the next tick only once the sample before
+// it is stored. A failed read is marked in its sample and logged as readErrors does, one count
+// each for the Postgres, the pprof and the NATS reads. A read that failed once ctx had ended is
+// neither marked nor counted, as poll does. Under heapSamples the heap reads run in readHeaps;
+// each sample takes the one that has ended since the last sample, if any, in place of reading the
+// heap itself. A heap read that ends once the last sample is taken is lost. Without heapSamples
+// readHeaps never starts, so the window holds no request to /debug/pprof/heap and no sample
+// carries a heap read.
 func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.Logger) {
 	var pg *pgx.Conn
 	pgErrs := readErrors{name: "sampler: postgres", lg: lg}
 	pprofErrs := readErrors{name: "sampler: pprof", lg: lg}
 	natsErrs := readErrors{name: "sampler: nats", lg: lg}
 	heaps, heapsDone := make(chan heapRead, 1), make(chan struct{})
+	clk := s.clock
+	if clk == nil {
+		clk = clock.Real()
+	}
 	if s.heapSamples {
 		go func() {
 			defer close(heapsDone)
-			s.readHeaps(ctx, heaps)
+			s.readHeaps(ctx, clk, heaps)
 		}()
 	} else {
 		close(heapsDone)
@@ -437,14 +429,25 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		natsErrs.done()
 		<-heapsDone // loop returns only once ctx has ended, which ends readHeaps
 	}()
-	every := s.interval()
-	inWindow := func(at time.Time) bool { return !at.Before(winStart) && !at.After(winEnd.Add(every)) }
-	t := time.NewTicker(every)
-	defer t.Stop()
+	inWindow := func(at time.Time) bool { return !at.Before(winStart) && !at.After(winEnd.Add(sampleInterval)) }
+	ticks := clock.NewTicker(clk, sampleInterval, true)
+	defer func() { ticks.Stop() }() // the ticker current at return: a kick replaces it
 	self := os.Getpid()
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticks.C():
+			ticks.Took()
+		case <-s.kick:
+			// sampleNow: a grid of its own from this moment, whose first tick, at once, is the
+			// next sample, and whose next one is sampleInterval on.
+			ticks.Stop()
+			ticks = clock.NewTicker(clk, sampleInterval, true)
+			continue
+		}
 		s.refreshPIDs()
-		sm := sample{At: time.Now(), CPUTicks: map[string]float64{}, RSSKiB: map[string]float64{}, PGConns: map[string]int{}, NATS: map[string]float64{}}
+		sm := sample{At: clk.Now(), CPUTicks: map[string]float64{}, RSSKiB: map[string]float64{}, PGConns: map[string]int{}, NATS: map[string]float64{}}
 		sm.InWindow = inWindow(sm.At)
 		// failed marks and counts a failed read, unless it failed because ctx ended.
 		failed := func(read string, errs *readErrors, err error) {
@@ -524,13 +527,7 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		}
 		s.samples = append(s.samples, sm)
 		s.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		case <-s.kick:
-			t.Reset(every)
-		}
+		ticks.Next()
 	}
 }
 
@@ -548,23 +545,23 @@ type heapRead struct {
 	err            error
 }
 
-// readHeaps reads Dispatch's heap at once, then at each heapInterval slot after, one read at a
-// time: a slot that falls while a read is in flight, or waits for a sample to take it, is skipped.
-// It hands each ended read to out, and returns once ctx has ended.
-func (s *sampler) readHeaps(ctx context.Context, out chan<- heapRead) {
-	every := s.heapInterval()
-	for next := time.Now(); sleepUntil(ctx, next); {
+// readHeaps reads Dispatch's heap at once, then at each heapReadEvery slot after on clk, one read
+// at a time: a slot that falls while a read is in flight, or waits for a sample to take it, is
+// skipped. It hands each ended read to out, stamped with clk's moment, and returns once ctx has
+// ended.
+func (s *sampler) readHeaps(ctx context.Context, clk clock.Clock, out chan<- heapRead) {
+	for next := clk.Now(); sleepUntilOn(ctx, clk, next); {
 		var h heapRead
 		h.bytes, h.objects, h.err = heapLive(ctx, s.pprof)
-		h.at = time.Now()
+		h.at = clk.Now()
 		select {
 		case out <- h:
 		case <-ctx.Done():
 			return
 		}
-		next = next.Add(every)
-		if behind := time.Since(next); behind > 0 {
-			next = next.Add(behind.Truncate(every) + every)
+		next = next.Add(heapReadEvery)
+		if behind := clk.Now().Sub(next); behind > 0 {
+			next = next.Add(behind.Truncate(heapReadEvery) + heapReadEvery)
 		}
 	}
 }
