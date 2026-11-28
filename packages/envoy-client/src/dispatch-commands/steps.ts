@@ -16,8 +16,8 @@ function orDash(value: string | null): string {
  *  format character such as a bidi override would show the line in another order, a character
  *  that shows nothing (`BLANK`) would make an id read as another, and a `##[` would start a
  *  workflow command in a runner's log. */
-const plainWord =
-  /^(?!.*##\[)[^\s"\\\p{Cc}\p{Cf}\p{Cs}\p{Mn}\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0\u2800]+$/u;
+// CONTROL (fb8-blank): the rule of 99e646da, which quotes no blank letter.
+const plainWord = /^(?!.*##\[)[^\s"\\\p{Cc}\p{Cf}\p{Cs}\p{Mn}]+$/u;
 
 /** A character that shows nothing, which `oneLineJson` writes as it stands: JSON escapes no such
  *  character, and `printableJson` escapes none either, since a mark is a letter's own in the prose
