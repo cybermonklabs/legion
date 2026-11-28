@@ -2819,11 +2819,12 @@ So each step runs in legs, one job per leg, all at the same time, each over the 
 `.github/go-legs.yaml` lists for it under packages/envoy, longest first, by area, so that a change
 to one area's code can run that area's legs:
 
-- envoy-go's unit step, through `packages/envoy/scripts/database-skips.sh --count-table`, in five
-  legs: the broker's command cmd/cipherd with the writer hold's client and the NATS auth service,
-  the rest of the broker, the Legion state intake (`internal/dispatch/legion`) in two, a group of
-  its tests each (`.github/go-legs/packages/envoy/internal/dispatch/legion.yaml`), and Dispatch's
-  other packages with the rest of the module. The step kept go test's four `-p` slots: a leg is slot-bound as the
+- envoy-go's unit step, through `packages/envoy/scripts/database-skips.sh --count-table`, in six
+  legs: the broker's command cmd/cipherd in two, a group of its tests each
+  (`.github/go-legs/packages/envoy/cmd/cipherd.yaml`), the rest of the broker with the writer
+  hold's client and the NATS auth service, the Legion state intake (`internal/dispatch/legion`) in
+  two, a group of its tests each (`.github/go-legs/packages/envoy/internal/dispatch/legion.yaml`),
+  and Dispatch's other packages with the rest of the module. The step kept go test's four `-p` slots: a leg is slot-bound as the
   one step was, so more slots on one runner would add load where more runners add none.
 - envoy-go's other steps, which ran one after another before the unit step and after it, each on a
   runner of its own beside the legs: envoy-go-alone, the rows that measure time; envoy-go-race-impossible,
@@ -2879,26 +2880,37 @@ commands and lighter packages beside `internal/dispatch/legion`, which ran 909-9
 every test serial: its seeded model of the read rule
 (`TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute`, #4432)
 508 s and its other 119 tests 414 s, where cmd/dispatch took 326 s. So its tests run in two groups,
-the model alone and the rest, in legs 3 and 4, modelled at 508 and 414 s from each test's longest
+the model alone and the rest, in legs 4 and 5, modelled at 508 and 414 s from each test's longest
 time in those runs. A leg that runs a group runs that package alone, so Dispatch's other packages,
-1,529 s of package time in those runs, run in leg 5 with the rest of the module: 1,876 s there,
-469 s over four cores, cmd/dispatch the longest, where leg 2's 1,541 s took 377-394 s of step in
-the same runs. #5888 has since run the model's seeds beside each other, each on a rig of its own,
-and the whole package took 617 s in main's run 46059758378 where it had taken 909-919 s, so the
-model's leg now ends well inside its modelled 508 s.
+1,529 s of package time in those runs, run in leg 6 with the rest of the module: 1,876 s there,
+469 s over four cores, cmd/dispatch the longest, where the rest of the broker's 1,541 s took
+377-394 s of step in the same runs. #5888 has since run the model's seeds beside each other, each
+on a rig of its own, and the whole package took 617 s in main's run 46059758378 where it had taken
+909-919 s, so the model's leg now ends well inside its modelled 508 s.
+
+The broker's command outgrew its leg next. In the every-job runs 46089673909, 46089678099 and
+46089682298 (2026-11-28, at da8c086f7b2c), leg 1 took 13.7-13.9 minutes as a job: cmd/cipherd ran
+733-737 s of it, every one of its 206 tests serial, beside the NATS auth service (192-196 s) and
+the writer hold's client (68-73 s). So its tests run in two groups, in legs 1 and 2, dealt by
+`.github/scripts/go_legs_groups.py` from those runs and modelled at 373 s each from each test's
+longest time in them, and the two packages beside it join the rest of the broker in leg 3: 1,824 s
+of package time at the medians of those runs, 456 s over four cores, cmd/cipher the longest at
+426 s. A leg that runs a group of cmd/cipherd's tests still counts their skips: go_legs.py pipes
+the group in as `-run=^(...)$` beside the package, and database-skips.sh counts the skips of the
+tests that pattern selects, so each test of the package is counted in the one leg that runs it.
 
 The rules the legs keep are the daemon's
 ([ci-job-daemon-go.md](ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs)): each package
 runs once, in one leg, which `.github/scripts/go_legs.py` holds against `go list ./...` in each leg;
 a package the file names in no place runs in the last leg of the job `unlisted` names (here
-envoy-go, whose leg 5 is Dispatch's other packages and the rest of the module), with a warning in every leg, since envoy-go is
+envoy-go, whose leg 6 is Dispatch's other packages and the rest of the module), with a warning in every leg, since envoy-go is
 held back on a pull request and a package added with no line would otherwise pass the pull
 request and fail every leg of both jobs in the merge group; the gate's Run for the plain legs is
 built from the module's `go list ./...` rather than from the file
 (`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only such a package's test
 files still starts envoy-go; a package added under one of the race lane's trees
 (`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) with no race leg
-line would run in leg 5 without the race detector that `./<tree>/...` gave it on main, so
+line would run in leg 6 without the race detector that `./<tree>/...` gave it on main, so
 `.github/scripts/ci_job_reads.py#hold_envoy_legs` refuses it as that file is imported: the
 ci-filters job fails naming it, and the changes job's generation falls open and selects every
 job, which the lint job fails on without naming the package; each leg runs in its step's mode;
@@ -3343,16 +3355,24 @@ last in 56% of the pull requests that ran no held suite. Each suite starts its o
 listener, a Dispatch server, as each needs), so none waits on another, and they split into legs
 of one matrix, each on a runner of its own with the same rig: the Postgres service, the Bun
 install, Go with the go-envoy cache and the contracts build, about one minute. A step's
-`if: matrix.leg == <n>` puts each suite in exactly one leg, and the legs are balanced from the
-serial job's step times (job 139688693306, in the called file's header) so each ends within 5
-minutes (dispatch://INFRA-5794/spec#b-r5): leg 1 the role takeover smoke, the pi-envoy stall test,
-the moved-approval advice and the keyed resend (153 s); leg 2 envoy-client's connection options,
-the broker credential tests and the comment mention (169 s); leg 3 the session state rig, the
-claude-envoy stall test and the design-gate advice (182 s). Three suites came after that job and
-have no time in it: the two CI results suites (#4184) run together in leg 1, the lightest, so the
-second compiles its stack from the Go build cache the first fills, and the role topics across a
-relaunch (#5749) in leg 2, away from the role takeover smoke, the other suite of real Oh My Pi
-clients. Rebalance them from the legs' own step times. The job `envoy-session-stall` of the called
+`if: matrix.leg == <n>` puts each suite in exactly one leg, and the legs were first balanced from
+the serial job's step times (job 139688693306) into three legs, each to end within 5 minutes
+(dispatch://INFRA-5794/spec#b-r5). The two CI results suites (#4184) and the role topics across a
+relaunch (#5749) came after that job, and with them leg 1 took 5.5-5.8 minutes in the every-job
+runs at da8c086f7b2c (46089673909, 46089678099 and 46089682298). So the suites run in four legs,
+balanced from their step times in run 46089678099 (jobs 140807592925, 140807592983 and
+140807592911, in the called file's header), the rig 43-49 s of each leg. A Dispatch-stack suite
+that is its leg's first builds the server, about 27 s of the moved-approval advice's 35 s there,
+and the next ones in the leg reuse that build (the keyed resend after it took 8 s), so the
+Dispatch-stack suites that can share a leg do. Leg 1 is the role takeover smoke (113 s) with the
+design-gate advice (36 s), which builds the server, then the moved-approval advice and the keyed
+resend, about 8 s each: 165 s. Leg 2 is envoy-client's connection options (104 s), the broker
+credential tests (44 s) and the comment mention (37 s): 185 s. Leg 3 is the session state rig
+(86 s), the claude-envoy stall test (72 s) and the role topics (15 s), away from the role takeover
+smoke, the other suite of real Oh My Pi clients: 173 s. Leg 4 is the two CI results suites (100 and
+12 s), together so the second compiles its stack from the Go build cache the first fills, with the
+pi-envoy stall test (34 s): 146 s. The longest leg then comes to about 3.9 minutes with its rig.
+Rebalance them from the legs' own step times. The job `envoy-session-stall` of the called
 file waits for the legs and passes only when each passed, so the check-run name
 `envoy-session-stall / envoy-session-stall` and ci-ok's reading of it are what they were; its
 error carries the words runner-shutdown.sh reads, so a leg the platform killed still reads as a

@@ -10,16 +10,24 @@ name: CI job envoy-session-stall
 # The suites run in legs, all at the same time: envoy-session-stall-legs runs once per leg, each
 # leg with the same rig (Postgres, the Bun install, Go and the contracts build) and the suites its
 # steps' `if: matrix.leg == <n>` give it, so each suite runs in exactly one leg. The legs are
-# balanced from the step times of the one serial job they replace (job 139688693306: the role
-# takeover smoke 109 s, the NATS connection options 106 s, the session state rig 84 s, claude-envoy
-# 73 s, the broker credential 46 s, pi-envoy 31 s, design-gate 25 s, the comment mention 17 s, the
-# keyed resend 7 s, the moved approval 6 s), so each leg ends within 5 minutes. Three suites came
-# after that job and have no time in it: the two CI results suites run together in leg 1, the
-# lightest, so the second compiles its stack from the Go build cache the first fills, and the role
-# topics across a relaunch in leg 2, away from the role takeover smoke, the other suite of real Oh
-# My Pi clients. Rebalance them from the legs' own step times. The job envoy-session-stall waits
-# for the legs and passes only when every leg passed: it carries the check-run name
-# `envoy-session-stall / envoy-session-stall` that the one job had before the legs.
+# balanced from the suites' step times in the every-job run 46089678099 (2026-11-28, at
+# da8c086f7b2c; jobs 140807592925, 140807592983 and 140807592911, which ran them in three legs,
+# the rig 43-49 s of each): the role takeover smoke 113 s, the NATS connection options 104 s, the
+# CI result through the broker 100 s, the session state rig 86 s, claude-envoy 72 s, the broker
+# credential 44 s, the comment mention 37 s, design-gate 36 s, the moved approval 35 s, pi-envoy
+# 34 s, the role topics across a relaunch 15 s, the ci-result refusal 12 s and the keyed resend
+# 8 s. A Dispatch-stack suite that is its leg's first builds the server, about 27 s of the moved
+# approval's 35 s, and the next ones in the leg reuse that build: the keyed resend after it took
+# 8 s. So leg 1 is the role takeover smoke with three such suites, design-gate, which builds the
+# server, then the moved approval and the keyed resend, about 8 s each (165 s); leg 2 the NATS
+# connection options, the broker credential and the comment mention (185 s); leg 3 the session
+# state rig, claude-envoy and the role topics (173 s), the role topics away from the role takeover
+# smoke, the other suite of real Oh My Pi clients; leg 4 the two CI results suites and pi-envoy
+# (146 s), the two together so the second compiles its stack from the Go build cache the first
+# fills. With the rig the longest leg comes to about 3.9 minutes, within 5; rebalance them from the
+# legs' own step times. The job envoy-session-stall waits for the legs and passes only when every
+# leg passed: it carries the check-run name `envoy-session-stall / envoy-session-stall` that the
+# one job had before the legs.
 # why: .github/ci-notes/ci.md#why-the-session-stall-suites-run-in-legs
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run this job's own result
@@ -55,7 +63,7 @@ jobs:
       # One leg's failure leaves the others running, so each reports its own suites.
       fail-fast: false
       matrix:
-        leg: [1, 2, 3]
+        leg: [1, 2, 3, 4]
     timeout-minutes: 15
     services:
       postgres:
@@ -134,7 +142,7 @@ jobs:
       # Through the package's own test script, so the file's hooks get the one --timeout that
       # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
       - name: Stall test of pi-envoy
-        if: matrix.leg == 1
+        if: matrix.leg == 4
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
       # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
@@ -143,7 +151,7 @@ jobs:
       # holds the role after its pod is killed and its session relaunched, and after a new session
       # claims the role, and never reaches a session holding another role.
       - name: Role topics across a relaunch
-        if: matrix.leg == 2
+        if: matrix.leg == 3
         run: bun run test extensions/role-topics.test.ts
         working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
@@ -161,7 +169,7 @@ jobs:
       # the server this suite starts is built from this tree, so what it asserts is the sentence a
       # person reads in a terminal rather than one rendered from a stub.
       - name: Design-gate advice of the real CLI against a real Dispatch
-        if: matrix.leg == 3
+        if: matrix.leg == 1
         run: bun test src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
       # The moved-approval-request advice over the same real CLI and real Dispatch
@@ -182,14 +190,14 @@ jobs:
       # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
       # on this job's Postgres; it needs no container and no fixed port.
       - name: A CI job's result through the real broker and a real Dispatch
-        if: matrix.leg == 1
+        if: matrix.leg == 4
         run: bun test src/__tests__/ci-results.live.test.ts
         working-directory: packages/envoy-client
       # The same stack, for a commit whose spec file's name holds a line break and a workflow
       # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
       # job's log that runs the command is a workflow command to its runner.
       - name: A CI job's refused result prints no workflow command
-        if: matrix.leg == 1
+        if: matrix.leg == 4
         run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
