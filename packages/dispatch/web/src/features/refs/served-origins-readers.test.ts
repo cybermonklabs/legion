@@ -11,6 +11,7 @@ import { api } from "../../api/client";
 import { hereHref, setDispatchOrigins } from "../../api/origins";
 import type { IssueReferenceSummary } from "../../api/types";
 import { joinSplitLinks } from "../issue-page/joined-links";
+import { KeepNewIssuePage } from "../issue-page/new-page-parameter";
 import { RowText } from "../issue-page/RowText";
 import { citedReferences as rowCitedReferences } from "../issue-page/row-references";
 import { headRefs } from "./head-refs";
@@ -234,6 +235,46 @@ async function rowClick(origin: string) {
   }
 }
 
+/** A plain click on a rendered body's link to CORE-2's activity at `origin`, from CORE-2's
+ *  address with `?issue_page=new`, as `new-page-parameter.tsx`'s `KeepNewIssuePage` hears it on
+ *  the document: whether the browser was left to follow it, and where the router stands after. The
+ *  unit suite's document loads no page, so the browser's own follow is stopped once the click has
+ *  been read. */
+function newPageClick(origin: string) {
+  const view = render(
+    createElement(
+      MemoryRouter,
+      { initialEntries: ["/issues/CORE-2?issue_page=new"] },
+      createElement(
+        KeepNewIssuePage,
+        null,
+        createElement("a", { href: `${origin}/issues/CORE-2/activity#top` }, "the activity"),
+        createElement(Place)
+      )
+    )
+  );
+  let left = false;
+  const stop = (event: Event) => {
+    left = !event.defaultPrevented;
+    event.preventDefault();
+  };
+  try {
+    document.addEventListener("click", stop);
+    act(() => {
+      view.container
+        .querySelector("a")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    return {
+      at: view.container.querySelector("[data-place]")?.textContent,
+      leftToTheBrowser: left,
+    };
+  } finally {
+    document.removeEventListener("click", stop);
+    view.unmount();
+  }
+}
+
 /** The words of each anchor `joined-links.ts`'s `joinSplitLinks` leaves of a link to CORE-1 at
  *  `origin` that the painter drew as three pieces, the middle one bold. A link the reference pass
  *  reads keeps its three anchors, which that pass's portals draw into; any other is joined into
@@ -312,6 +353,12 @@ const readers: readonly (readonly [string, (origin: string) => unknown, unknown,
     rowClick,
     { at: "/projects/CORE?view=board#top", leftToTheBrowser: false },
     { at: "/issues/CORE-1", leftToTheBrowser: true },
+  ],
+  [
+    "new-page-parameter.tsx's click on a rendered link from an address with ?issue_page=new",
+    newPageClick,
+    { at: "/issues/CORE-2/activity?issue_page=new#top", leftToTheBrowser: false },
+    { at: "/issues/CORE-2?issue_page=new", leftToTheBrowser: true },
   ],
   [
     "joined-links.ts's joinSplitLinks, which leaves a link the reference pass reads in its pieces",
