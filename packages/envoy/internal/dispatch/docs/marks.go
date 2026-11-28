@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -235,6 +236,20 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 func wallMarkTimer(d time.Duration) (<-chan time.Time, func() bool) {
 	timer := time.NewTimer(d)
 	return timer.C, timer.Stop
+}
+
+// markTimerOn is the timer VerifyMark arms for a browser's update on a service whose Deps.Clock is
+// c (Service.markTimer): wallMarkTimer where c is nil, as in production, and where a test hands a
+// clock, a timer of d on c, and the function that stops it, so the test fires the wait by moving
+// c past d.
+func markTimerOn(c clock.Clock) func(time.Duration) (<-chan time.Time, func() bool) {
+	if c == nil {
+		return wallMarkTimer
+	}
+	return func(d time.Duration) (<-chan time.Time, func() bool) {
+		timer := c.NewTimer(d)
+		return timer.C(), timer.Stop
+	}
 }
 
 // anchorTree is the document a mark is verified against: the stored document for a comment's

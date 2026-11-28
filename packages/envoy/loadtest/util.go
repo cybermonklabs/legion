@@ -64,14 +64,15 @@ func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
 }
 
 // writeJSONFile writes v to path as indented JSON with the given mode, which it also sets on a
-// file that already exists; a failure is logged, not returned.
+// file that already exists; a failure is logged, not returned. The file is data, never a program,
+// so the mode carries no execute bit.
 func writeJSONFile(path string, v any, mode os.FileMode, lg *log.Logger) {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err == nil {
-		err = os.WriteFile(path, append(b, '\n'), mode)
+		err = os.WriteFile(path, append(b, '\n'), mode&^0o111)
 	}
 	if err == nil {
-		err = os.Chmod(path, mode)
+		err = os.Chmod(path, mode&^0o111)
 	}
 	if err != nil {
 		lg.Printf("write %s: %v", path, err)

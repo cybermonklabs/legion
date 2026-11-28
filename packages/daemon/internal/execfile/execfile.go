@@ -9,37 +9,30 @@
 // script and run it meet this as soon as they overlap.
 //
 // syscall.ForkLock is the lock Go's own fork takes for writing; a holder for reading keeps every
-// fork of this process out until it lets go. Write and Append hold it for reading from the open to
-// the close, so a fork happens either before the file is opened or after it is closed, and no child
-// ever holds its write descriptor. internal/leakguard's private copy of the shared check
-// (writeCopyFile) holds the lock the same way.
+// fork of this process out until it lets go. Write and Append are the envoy module's
+// programfile.Write and programfile.Append, the one place that holds it for reading from the open
+// to the close, so a fork happens either before the file is opened or after it is closed, and no
+// child ever holds its write descriptor. The code a deployment runs writes such a file with
+// programfile.Write itself (internal/runtime/workerbin's scripts, internal/leakguard's private
+// copy of the shared check).
 package execfile
 
 import (
+	"bytes"
 	"os"
-	"syscall"
+
+	"github.com/sjawhar/envoy/programfile"
 )
 
-// Write writes body to path with mode, as os.WriteFile does, with no fork of this process between
-// the file's open and its close.
+// Write writes body to path, over a file already there, with no fork of this process between the
+// file's open and its close. The file gets mode exactly (programfile.Write): where os.WriteFile
+// takes the umask off a new file's mode and keeps an existing file's, this sets mode on both.
 func Write(path string, body []byte, mode os.FileMode) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
-	return os.WriteFile(path, body, mode)
+	return programfile.Write(path, os.O_TRUNC, mode, bytes.NewReader(body))
 }
 
 // Append adds body to the end of the existing file at path, with no fork of this process between
-// the file's open and its close.
+// the file's open and its close (programfile.Append).
 func Append(path string, body []byte) error {
-	syscall.ForkLock.RLock()
-	defer syscall.ForkLock.RUnlock()
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		return err
-	}
-	_, err = file.Write(body)
-	if closeErr := file.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return programfile.Append(path, bytes.NewReader(body))
 }

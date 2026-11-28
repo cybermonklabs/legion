@@ -26,11 +26,11 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret
-// Manager, or, with AGENT_SECRETS_CREATE_STORE=aws, on secrets.Local through the AWS backend.
+// Manager, or, with AGENT_SECRETS_CREATE_STORE=aws, on awstest.Local through the AWS backend.
 // AGENT_SECRETS_CREATE_ADD makes the GCP store answer AddSecretVersion "unavailable" without
 // storing the value, or "lost" (Unavailable) once it has stored it. AGENT_SECRETS_CREATE_HOLD,
 // <method>:<duration>, holds each call of that method that long before the store answers it, so a
@@ -81,7 +81,7 @@ func TestCreateSignalHelper(t *testing.T) {
 		hold = func() { time.Sleep(d) }
 	}
 	if os.Getenv("AGENT_SECRETS_CREATE_STORE") == "aws" {
-		local := secrets.NewLocal()
+		local := awstest.NewLocal()
 		served := servedBy(local)
 		startSecretBroker(t, func(name string) Reread {
 			fmt.Println("REREAD", name)
@@ -155,11 +155,11 @@ func acknowledgeSignals() <-chan struct{} {
 	return signalled
 }
 
-// announcedCreate is secrets.Local printing CALL CreateSecret at each CreateSecret, and, where held,
+// announcedCreate is awstest.Local printing CALL CreateSecret at each CreateSecret, and, where held,
 // answering it only once hold returns, or with its context's error once that ends first, as the AWS
 // SDK does.
 type announcedCreate struct {
-	*secrets.Local
+	*awstest.Local
 	held bool
 	hold func()
 }

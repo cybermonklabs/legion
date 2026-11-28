@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // A project document upload and another write to the same document, started together, both
@@ -163,7 +164,7 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			where datname = current_database() and `+lockwaittest.Waiting+`
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
