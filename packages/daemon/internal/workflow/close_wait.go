@@ -612,6 +612,41 @@ func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue recor
 	return e.startLook(ctx, tx, issue, check, wakeRead, "in which each check passes, made after the check closed as not run", true)
 }
 
+// lookADayAfterNotRun is a periodic turn of the controller's tick: each issue in verifying whose
+// production check of its generation and newest merge closed not_run a day ago or more, with no
+// look open, has one more look opened, with no event.
+func (e *Engine) lookADayAfterNotRun(ctx context.Context, tx pgx.Tx, issues []record.Issue) error {
+	if e.checkRole() == "" {
+		return nil
+	}
+	now := e.now()
+	for _, listed := range issues {
+		if listed.Phase != phase.Verifying {
+			continue
+		}
+		issue, err := e.store.Issue(ctx, tx, listed.Key)
+		if err != nil {
+			return err
+		}
+		if issue == nil || issue.Phase != phase.Verifying {
+			continue
+		}
+		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		if check == nil || check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation ||
+			check.MergeSHA != issue.Merge.SHA || now.Before(check.ClosedAt.Add(24*time.Hour)) {
+			continue
+		}
+		check.ClosedAt, check.Outcome = nil, ""
+		if err := e.startLook(ctx, tx, *issue, check, wakeNamed, "a day after the check closed as not run", true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // closeWaitNoResult tells the owning architect once, at the close of the production check of issue,
 // which waits in verifying, where the check closed as not run or a check still has no pass in the
 // newest read: each such check with its answer and reason, and the check's outcome (D5, D6).

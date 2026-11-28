@@ -147,6 +147,9 @@ func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result
 	if err := e.correctStatuses(ctx, tx, issues, running, "tick"); err != nil {
 		return intake.Result{}, err
 	}
+	if err := e.lookADayAfterNotRun(ctx, tx, issues); err != nil {
+		return intake.Result{}, err
+	}
 	if err := e.judgeEachVerifying(ctx, tx, issues); err != nil {
 		return intake.Result{}, err
 	}
