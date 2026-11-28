@@ -168,7 +168,11 @@ interface Outcome {
  * miss. */
 interface CheckRow {
   readonly deadline: number;
-  /** `read` is called at the check's deadline, before its signal aborts, and a text it answers
+  /** `read` is called each time the row reads its miss (`missed`): from the row's own timer at
+   * the check's deadline, before its signal aborts, and from the check itself, which may read its
+   * miss once its work has ended. Where the timer read it first, the abort ends the check's work
+   * and the check can read it again, so `read` can run twice for one row, the second outcome
+   * thrown away, and a reading with a side effect must bear a second run. A text it answers
    * follows the missed budget in the detail, after `; `. A check that leaves none, and one whose
    * reading answers undefined, reads the missed budget alone. */
   onDeadline(read: () => string | undefined): void;
@@ -510,9 +514,13 @@ const checkGitHub: Check = async (host, input, signal, row) => {
       { cwd: input.cwd, signal, env }
     );
     if (result.code !== 0) {
-      // A failure at or after the deadline is the row's miss, though it came before the row's own
-      // timer, which started once the call had been started: `legion gh` ended it there. It reads
-      // as that timer's miss, with the step read now, before the directory is removed below.
+      // A call that failed at or after the deadline reads as the row's miss, whatever ended it,
+      // which this branch does not ask: `legion gh` may have stopped it at that deadline
+      // (LEGION_GH_DEADLINE) before the row's own timer fired, since that timer started only once
+      // the call had been started; the timer's abort may have ended it, where the row has taken
+      // its miss already and this one is thrown away; or it may have failed on its own that late.
+      // It reads as that timer's miss, with the step read now: the reading reads the step and
+      // removes the directory itself, so the `finally` below finds nothing left to remove.
       if (Date.now() >= row.deadline) return row.missed();
       return failed(`gh viewer login failed: ${commandFailure(result)}`);
     }
@@ -782,13 +790,14 @@ async function withinBudget<T>(work: Promise<T>, ms: number, onDeadline: () => T
  * Measures the six live rows concurrently: each check under `budgets.checkMs` (its signal is
  * aborted at the deadline), the whole report under `budgets.reportMs`. A check that throws, or
  * is still pending at its deadline, is a failing row with the reason; the function itself never
- * throws. A check is told its own deadline, and may leave a reading that deadline makes before it
- * aborts the check's signal, which follows the missed budget in the detail (`CheckRow`): the
- * `github` row's names the step `legion gh` was in, and that row reads the same miss for a call
- * `legion gh` ended at the deadline (`CheckRow.missed`). Every row's detail is cleaned here
- * (`cleanDetail`), the one place every check's outcome passes, so no branch of a check quotes a
- * credential into the report. `measuredAt` is when the measuring started, `elapsedMs` how long it
- * took, and the rows are in `LIVE_CAPABILITIES` order.
+ * throws. A check is told its own deadline, and may leave a reading, which runs each time the row
+ * reads its miss: from the row's timer at the deadline, before it aborts the check's signal, or
+ * from the check itself (`CheckRow.missed`). What it answers follows the missed budget in the
+ * detail (`CheckRow`): the `github` row's names the step `legion gh` was in, and that row reads a
+ * call that exited non-zero at or after the deadline as the same miss, whatever ended the call.
+ * Every row's detail is cleaned here (`cleanDetail`), the one place every check's outcome passes,
+ * so no branch of a check quotes a credential into the report. `measuredAt` is when the measuring
+ * started, `elapsedMs` how long it took, and the rows are in `LIVE_CAPABILITIES` order.
  */
 export async function measureCapabilities(
   host: CapabilityHost,

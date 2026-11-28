@@ -109,8 +109,10 @@ const (
 // not be mistaken for the shared check's callback or it would recurse. The
 // callback's exact argv is separate (VisibilityReadArgs): it has no `--include`, while this reader
 // needs the headers to detect a near rate limit. `legion gh` answers the callback by the same rule
-// (FreshVisibility), with a guard that runs `gh` from PATH. The caller reaches this through
-// Guard.scanThrough, which lets no slug the exemption would refuse get this far.
+// (FreshVisibility), with a guard that runs its reads with the real gh itself, as the guard over
+// a guarded call does (cmd/legion's answerVisibilityRead and ghGuardRead), and runs `gh` from
+// PATH only where PATH's first gh is not the wrapper that runs `legion gh`. The caller reaches
+// this through Guard.scanThrough, which lets no slug the exemption would refuse get this far.
 func (g *Guard) Visibility(ctx context.Context, slug string) (Visibility, error) {
 	return g.visibility(ctx, slug, true)
 }

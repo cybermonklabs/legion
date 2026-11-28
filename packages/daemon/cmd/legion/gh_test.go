@@ -2009,8 +2009,10 @@ func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 	return 0, false
 }
 
-// A signal that reaches `legion gh` before it has armed its own forwarding ends the command
-// there, with the status a shell reads a death by that signal as, and gh is never started.
+// A signal that reaches `legion gh` before it has armed its own forwarding stops the guard's read
+// of the repository's visibility, whose real gh this test starts on purpose, before that read
+// answers, and ends the command there, with the status a shell reads a death by that signal as,
+// 128+<signal>.
 // Until that arming the signal's reader is main's own signal.NotifyContext for a SIGINT or a
 // SIGTERM, and hangupCancels for a SIGHUP: each cancels the command's context with a cause naming
 // the signal and raises it no further, and the context the child is given has that cancellation
@@ -2020,12 +2022,15 @@ func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 // The window is everything this command does before the child, and here it is held open in the
 // guard's read of the repository's visibility, which this command makes before it answers: its
 // guard runs that read with the real gh itself (ghGuardRead), and the stand-in real gh records
-// that it is holding and waits for GH_STANDIN_RELEASE, up to ten seconds, and a tick more once
-// that file is there, before it answers the read and records it. That read reads no gh help of
-// its own (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads), so the hold is in the read itself
-// rather than in a help the stand-in answers. The signal lands inside the hold rather than in a
-// race, and stops the read's gh with the guard's other children. The call is the shared check's
-// own visibility read, the one call the guard never sees, so the whole of the held work is this
+// that it is holding and waits for GH_STANDIN_RELEASE, up to ten seconds, and then two seconds
+// more before it answers the read and records it. That read reads no gh help of its own
+// (TestLegionGhReadsNoHelpForTheGuardsVisibilityReads), so the hold is in the read itself rather
+// than in a help the stand-in answers. The signal lands inside the hold rather than in a race,
+// and stops the read's gh with the guard's other children. The release comes after the signal: a
+// run that took the signal stops the stand-in in far less than those two seconds, which cost such
+// a run nothing, while a run that did not take it still has the read answered and recorded and
+// exits 0 on the visibility it read, and both fail it. The call is the shared check's own
+// visibility read, the one call the guard never sees, so the whole of the held work is this
 // command's own: the check of these runs refuses everything, and a run that reached it would exit
 // 2 rather than on the signal.
 //
@@ -2034,7 +2039,7 @@ func statusSignalMask(t *testing.T, status []byte, name string) (uint64, bool) {
 // cancels, which endedBySignal reads the cause of. A command line that handed runGh another
 // context fails the SIGINT and the SIGTERM rows: they answer the visibility, exit 0, with gh run
 // for the read.
-func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
+func TestLegionGhStopsTheGuardsReadAndEndsOnASignalThatCameBeforeTheForwarding(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -2056,12 +2061,13 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 			ghRecord, release := filepath.Join(records, "gh"), filepath.Join(records, "release")
 			// The stand-in holds its visibility read, which the guard runs, and then answers it as
 			// the prefix does, recording the read: a record of it is a read the signal did not
-			// stop.
+			// stop. After the release it sleeps two seconds before it answers, far longer than a
+			// run that took the signal needs to stop it.
 			stub := filepath.Join(t.TempDir(), "gh")
 			holding := "#!/bin/sh\ncase \" $* \" in\n" + ghVisibilityReadArgv + ")\n" +
 				"  printf 'gh held\\n' >>\"$GH_STANDIN_RECORD\"\n  ticks=0\n" +
 				"  while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
-				"  sleep 0.05;;\nesac\n" + strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n")
+				"  sleep 2;;\nesac\n" + strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n")
 			if err := execfile.Write(stub, []byte(holding), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -2084,8 +2090,8 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 				return strings.Contains(readRecord(t, ghRecord), "gh held\n")
 			})
 			// The signal goes to this one pid, as the forwarding test's does, and the hold is
-			// released after it: the hold waits a tick of its own once the file is there, so
-			// the signal is taken while the run is still inside the window.
+			// released after it: the hold sleeps two seconds of its own once the file is there,
+			// so the signal is taken while the run is still inside the window.
 			if err := command.Process.Signal(tc.signal); err != nil {
 				t.Fatal(err)
 			}

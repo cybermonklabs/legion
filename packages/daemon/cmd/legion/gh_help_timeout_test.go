@@ -20,11 +20,12 @@ import (
 // before gh too, though each of those runs in a process group of its own, which no such signal
 // reaches: the git reads of the repository's configuration and remotes, the resolver's help read,
 // the shared check the leak guard runs, and the guard's read of the destination's visibility,
-// which goes back through `legion gh` to the real gh. `legion gh pr create` is started here as the
-// leader of a group of its own, with -R acme/widgets but in the row of the remotes read, which is
-// what reads the repository from the remotes, and in each row one stand-in holds that work
-// (signalWhileHeld): gh, the shared check, or a git ahead of the real one on PATH that holds the
-// one read and runs the real git for every other.
+// which the guard runs with the real gh itself (ghGuardRead), the pane's wrapper being first on
+// PATH. `legion gh pr create` is started here as the leader of a group of its own, with -R
+// acme/widgets but in the row of the remotes read, which is what reads the repository from the
+// remotes, and in each row one stand-in holds that work (signalWhileHeld): gh, the shared check,
+// or a git ahead of the real one on PATH that holds the one read and runs the real git for every
+// other.
 //
 // A SIGINT to the group, a Ctrl-C, cancels the command's context (main's signal.NotifyContext),
 // which stops the held work's group, and `legion gh` ends with 130. A SIGHUP
