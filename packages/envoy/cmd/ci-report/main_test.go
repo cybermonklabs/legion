@@ -253,15 +253,16 @@ func TestEachAnswerOfTheDispatchCommand(t *testing.T) {
 		{"a call that exits 0 and prints neither an id nor a landed write fails its check and exits 1",
 			"no-id", 1, p.answered(0, "the dispatch command exited 0 and printed no stored result with an id"), "0 results written, 3 calls failed", 0},
 		{"a write the airlock refused prints its words on each recorded check and exits 1",
-			"refuse", 1, p.answered(1, airlockRefusal), "0 results written, 3 calls failed", 0},
+			"refuse", 1, p.answered(1, noPlaceholderLine), "0 results written, 3 calls failed", 0},
 		// The result grant lasts at most 15 minutes from the step's start, and the airlock refuses
-		// each write after its end GRANT_NOT_LIVE, 407 at the CONNECT, which the command prints
-		// with the tunnel's status and no code. The line of such a call names the grant's end and
-		// the code, and so does the line of the airlock's own GRANT_NOT_LIVE inside an open tunnel
-		// and of a write whose outcome GRANT_NOT_LIVE left unknown. The airlock's 503 at the
-		// CONNECT is a grant it could not read just then, no end of the grant, and its line holds
-		// the command's words alone. A write whose outcome a refused tunnel left unknown carries no
-		// status, so its line names both and not the grant's end alone.
+		// each write after its end with its code GRANT_NOT_LIVE, 407 at the CONNECT and inside an
+		// open tunnel, which the command prints as the code of its airlock_refused line. The line of
+		// such a call names the grant's end and the code, and so does the line of a write whose
+		// outcome GRANT_NOT_LIVE left unknown. The reporter reads the code and not the status: the
+		// airlock's 503 at the CONNECT is a grant it could not read just then, and its 407 with
+		// another code is no end of the grant, and the line of each holds the command's words
+		// alone. A write whose outcome a refused tunnel left unknown carries no status, so its line
+		// names both and not the grant's end alone.
 		{"a write refused 407 at the CONNECT names the grant's end and GRANT_NOT_LIVE on its line",
 			"grant-ended", 1, p.answered(1, grantEndedWhy(tunnelRefused407Line)), "0 results written, 3 calls failed", 3},
 		{"a write the airlock refused GRANT_NOT_LIVE inside an open tunnel names the grant's end on its line",
@@ -272,6 +273,8 @@ func TestEachAnswerOfTheDispatchCommand(t *testing.T) {
 			"tunnel-unknown", 1, p.answered(1, tunnelRefusedWhileOut), "0 results written, 3 calls failed", 0},
 		{"a 503 of the tunnel is no end of the grant, and its line holds the command's words alone",
 			"tunnel-503", 1, p.answered(1, tunnelRefused503Line), "0 results written, 3 calls failed", 0},
+		{"a 407 of the tunnel whose code is not GRANT_NOT_LIVE is no end of the grant, and its line holds the command's words alone",
+			"tunnel-407-other", 1, p.answered(1, tunnelRefused407Line), "0 results written, 3 calls failed", 0},
 		{"a grant that ends after the first call keeps that call's result and names the end on each later line",
 			"ends-after-first", 1, p.endsAfterFirst(), "1 results written, 2 calls failed", 2},
 	} {

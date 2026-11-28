@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +22,7 @@ import (
 // to <n>.bearers, and the names of the ACTIONS_ID_TOKEN_* variables set, one a line, to <n>.oidc,
 // in the directory CI_REPORT_STUB_DIR names, n counting from 0. Then it prints what the real
 // command prints for the answer CI_REPORT_STUB_MODE names (stubModes), and exits as it does.
-const stubDispatch = `#!/bin/sh
+var stubDispatch = `#!/bin/sh
 calls="$CI_REPORT_STUB_DIR"
 n=0
 while [ -e "$calls/$n.args" ]; do n=$((n + 1)); done
@@ -35,13 +37,14 @@ while [ $# -gt 0 ]; do
   shift
 done
 case $CI_REPORT_STUB_MODE in
-refuse) echo "` + airlockRefusal + `"; exit 1 ;;
-grant-ended) echo "` + tunnelRefused407Line + `"; exit 1 ;;
-ends-after-first) if [ "$n" -ge 1 ]; then echo "` + tunnelRefused407Line + `"; exit 1; fi ;;
-grant-refused) echo "` + grantRefusedLine + `"; exit 1 ;;
+refuse) printf '%s\n' ` + shellWord(airlockLine(403, "NO_PLACEHOLDER", noPlaceholderLine)) + `; exit 1 ;;
+grant-ended) printf '%s\n' ` + shellWord(airlockLine(407, grantNotLive, tunnelRefused407Line)) + `; exit 1 ;;
+ends-after-first) if [ "$n" -ge 1 ]; then printf '%s\n' ` + shellWord(airlockLine(407, grantNotLive, tunnelRefused407Line)) + `; exit 1; fi ;;
+grant-refused) printf '%s\n' ` + shellWord(airlockLine(407, grantNotLive, grantRefusedLine)) + `; exit 1 ;;
 grant-ended-unknown) echo '{"write_outcome_unknown":"GRANT_NOT_LIVE"}'; exit 1 ;;
 tunnel-unknown) echo '{"write_outcome_unknown":"AIRLOCK_TUNNEL_REFUSED"}'; exit 1 ;;
-tunnel-503) echo "` + tunnelRefused503Line + `"; exit 1 ;;
+tunnel-503) printf '%s\n' ` + shellWord(airlockLine(503, "GRANT_UNREADABLE", tunnelRefused503Line)) + `; exit 1 ;;
+tunnel-407-other) printf '%s\n' ` + shellWord(airlockLine(407, "PROXY_CREDENTIAL", tunnelRefused407Line)) + `; exit 1 ;;
 landed) echo '{"landed_without_answer":"` + contracts.IdempotencyKeyCommitted + `"}'; exit 0 ;;
 answer-lost) echo '{"landed_without_answer":"` + answerLost + `"}'; exit 0 ;;
 no-id) echo '{"landed_without_answer":""}'; exit 0 ;;
@@ -72,17 +75,20 @@ EOF
 // stubModes names what the stub prints in each CI_REPORT_STUB_MODE, as the real command prints it:
 //   - store, or no mode: a stored row, whole and over many lines, with the id row-<check> and the
 //     run that recorded it, its session and principal; exit 0;
-//   - refuse: the airlock's refusal of a request with no placeholder (airlockRefusal); exit 1;
-//   - grant-ended: the airlock's 407 at the CONNECT to a grant that is not live
+//   - refuse: the airlock's 403 NO_PLACEHOLDER, its refusal of a request with no placeholder
+//     inside an open tunnel (noPlaceholderLine); exit 1;
+//   - grant-ended: the airlock's 407 GRANT_NOT_LIVE at the CONNECT to a grant that is not live
 //     (tunnelRefused407Line); exit 1;
 //   - ends-after-first: a stored row for the first call, and grant-ended for each later one, as
 //     when the grant ends between two calls;
-//   - grant-refused: the airlock's own GRANT_NOT_LIVE inside an open tunnel (grantRefusedLine);
-//     exit 1;
+//   - grant-refused: the airlock's own 407 GRANT_NOT_LIVE inside an open tunnel
+//     (grantRefusedLine); exit 1;
 //   - grant-ended-unknown: {"write_outcome_unknown":"GRANT_NOT_LIVE"}; exit 1;
 //   - tunnel-unknown: {"write_outcome_unknown":"AIRLOCK_TUNNEL_REFUSED"}, a later tunnel refused
 //     after an attempt went out, with no status; exit 1;
-//   - tunnel-503: the airlock's 503 at the CONNECT (tunnelRefused503Line); exit 1;
+//   - tunnel-503: the airlock's 503 GRANT_UNREADABLE at the CONNECT (tunnelRefused503Line); exit 1;
+//   - tunnel-407-other: a 407 at the CONNECT whose code is PROXY_CREDENTIAL, the airlock's answer
+//     to a CONNECT that carries no placeholder (tunnelRefused407Line); exit 1;
 //   - landed: {"landed_without_answer":"KEY_COMMITTED"}; exit 0;
 //   - answer-lost: {"landed_without_answer":"ANSWER_LOST"}, a 2xx whose body the command could
 //     not read; exit 0;
@@ -90,30 +96,53 @@ EOF
 //   - unknown: {"write_outcome_unknown":"ECONNRESET"}, a write that went out and got no answer;
 //     exit 1; unknown-exit-0 the same line with exit 0;
 //   - hang: a line on standard error, then 30 s with no end, as a command that hangs.
-const stubModes = "store refuse grant-ended ends-after-first grant-refused grant-ended-unknown tunnel-unknown tunnel-503 landed answer-lost no-id unknown unknown-exit-0 hang"
+const stubModes = "store refuse grant-ended ends-after-first grant-refused grant-ended-unknown tunnel-unknown tunnel-503 tunnel-407-other landed answer-lost no-id unknown unknown-exit-0 hang"
 
-// airlockRefusal is what the stub prints in refuse mode: the airlock proxy's refusal, before it
+// airlockLine is the line the real command prints for a refusal of the airlock proxy before the
+// write left it: {"airlock_refused":{"status","code","said"}}, with the answer's status, the
+// airlock's code and the words a person reads (`airlockRefused` in
+// packages/envoy-client/src/dispatch-commands/job-result.ts).
+func airlockLine(status int, code, said string) string {
+	var line bytes.Buffer
+	encoder := json.NewEncoder(&line)
+	encoder.SetEscapeHTML(false)
+	refused := struct {
+		Status int    `json:"status"`
+		Code   string `json:"code"`
+		Said   string `json:"said"`
+	}{status, code, said}
+	if err := encoder.Encode(map[string]any{"airlock_refused": refused}); err != nil {
+		panic(err)
+	}
+	return strings.TrimSuffix(line.String(), "\n")
+}
+
+// shellWord is s as one word of sh, in single quotes.
+func shellWord(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// noPlaceholderLine is the said of the stub's refuse mode: the airlock proxy's refusal, before it
 // sent anything on, of a request that does not carry the grant's placeholder as its one
 // Authorization header, as the real command prints it (packages/envoy-client/src/__tests__/
 // dispatch-job-result.test.ts, "the airlock's refusal inside an open connection prints its code
 // and its words").
-const airlockRefusal = "NO_PLACEHOLDER: airlock: a request to this host carries the grant's [redacted] as its one Authorization header, DPoP ; this one does not…; nothing was stored"
+const noPlaceholderLine = "NO_PLACEHOLDER: airlock: a request to this host carries the grant's [redacted] as its one Authorization header, DPoP ; this one does not…; nothing was stored"
 
-// tunnelRefused407Line is what the real command prints when the airlock refused its tunnel 407 at
-// the CONNECT, its answer to a placeholder whose result grant is not live: the tunnel's status and
-// no code (dispatch-job-result.test.ts, "a CONNECT the proxy refuses with 407 ends the write at
-// once").
+// tunnelRefused407Line is the said of the real command's line when the airlock refused its tunnel
+// 407 at the CONNECT: the tunnel's status and the command's code (dispatch-job-result.test.ts, "a
+// CONNECT the proxy refuses with 407 ends the write at once").
 const tunnelRefused407Line = "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (407 Proxy Authentication Required); nothing was sent to Dispatch"
 
-// tunnelRefused503Line is what the real command prints when the airlock refused its tunnel 503 at
-// the CONNECT, a grant it could not read just then, which is no end of the grant
+// tunnelRefused503Line is the said of the real command's line when the airlock refused its tunnel
+// 503 at the CONNECT, a grant it could not read just then, which is no end of the grant
 // (dispatch-job-result.test.ts, "a CONNECT the proxy refuses with 503 is asked again within the
 // bound").
 const tunnelRefused503Line = "AIRLOCK_TUNNEL_REFUSED: the airlock proxy refused the connection (503 Service Unavailable); nothing was sent to Dispatch"
 
-// grantRefusedLine is what the real command prints for the airlock's own GRANT_NOT_LIVE inside an
-// open tunnel, before the write left it: "<code>: <words>; nothing was stored" (`refuse` of an
-// AirlockRefusedError in job-result.ts), with the airlock's words of dispatch-job-result.test.ts.
+// grantRefusedLine is the said of the real command's line for the airlock's own GRANT_NOT_LIVE
+// inside an open tunnel, before the write left it: "<code>: <words>; nothing was stored", with the
+// airlock's words of dispatch-job-result.test.ts.
 const grantRefusedLine = "GRANT_NOT_LIVE: airlock: grant is expired, revoked, or its session ended (answer 7f3a); nothing was stored"
 
 // answerLost is the code that the dispatch command gives a write whose 2xx it got and whose body

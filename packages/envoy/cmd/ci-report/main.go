@@ -40,12 +40,14 @@
 // answer lost, which the command prints as {"landed_without_answer":"<code>"} with exit 0, is a
 // stored result whose id is unknown: its result_id is empty and why says so. why says why a check
 // got no call, and holds what the command printed on both streams when a call failed: the command
-// prints a refusal of Dispatch's or of the airlock proxy's on standard output. A refused call
-// stored nothing. A write whose outcome is unknown, which the command prints as
-// {"write_outcome_unknown":"<code>"} with exit 1 when the write went out and no answer said
-// whether Dispatch stored the result (a 2xx that names no key back among them, whatever it holds),
-// is a failed call whose why names the code, and it is never read as a stored result: it may be
-// stored, and a second run of the step is safe, since Dispatch keeps each result.
+// prints Dispatch's refusal on standard output, and the airlock proxy's refusal before the write
+// left it as {"airlock_refused":{"status","code","said"}} with exit 1, whose said is the line
+// that why holds. A refused call stored nothing. A write whose outcome is unknown, which the
+// command prints as {"write_outcome_unknown":"<code>"} with exit 1 when the write went out and no
+// answer said whether Dispatch stored the result (a 2xx that names no key back among them,
+// whatever it holds), is a failed call whose why names the code, and it is never read as a stored
+// result: it may be stored, and a second run of the step is safe, since Dispatch keeps each
+// result.
 //
 // The action runs it under `agent-secrets result-grant`, which trades the job's own GitHub token
 // for the placeholder of a result grant and gives it to the reporter's environment, and so to
@@ -53,16 +55,15 @@
 // airlock proxy; the airlock puts the run's results token in its place. The reporter reads no
 // broker setting and makes no exchange: it hands its environment to the command as it is, less
 // ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN (oidcRequest), which
-// result-grant passes on and the command does not read. The
-// grant lasts at most 15 minutes from the step's start, and the airlock refuses each write after
-// its end with GRANT_NOT_LIVE, 407 at the CONNECT, which the command prints as
-// "AIRLOCK_TUNNEL_REFUSED: ... (407 ...)", with the tunnel's status and not the airlock's code; so
-// does a broker of another results entry than the one that made the grant. The why of such a
-// call, and of a write whose outcome GRANT_NOT_LIVE left unknown, starts with "GRANT_NOT_LIVE: "
-// and names the grant's end (grantRefused, grantEnded, grantEndedWhileOut). A write whose outcome
-// a refused tunnel left unknown, {"write_outcome_unknown":"AIRLOCK_TUNNEL_REFUSED"}, carries no
-// status, so its why names the tunnel's refusal and both statuses it can be
-// (tunnelRefusedWhileOut), and does not start with GRANT_NOT_LIVE. The command itself
+// result-grant passes on and the command does not read. The grant lasts at most 15 minutes from
+// the step's start, and the airlock refuses each write after its end with its code GRANT_NOT_LIVE,
+// at the CONNECT and inside an open tunnel, which the command prints as the airlock_refused
+// line's code; so does a broker of another results entry than the one that made the grant. The
+// why of such a call, and of a write whose outcome GRANT_NOT_LIVE left unknown, starts with
+// "GRANT_NOT_LIVE: " and names the grant's end (grantEnded, grantEndedWhileOut). A write whose
+// outcome a refused tunnel left unknown, {"write_outcome_unknown":"AIRLOCK_TUNNEL_REFUSED"},
+// carries no status and no code, so its why names the tunnel's refusal and both statuses it can
+// be (tunnelRefusedWhileOut), and does not start with GRANT_NOT_LIVE. The command itself
 // asks again within its one bound of 60 s for an airlock that answers 5xx and for Dispatch's
 // check of the run's token, so the step adds no retry of its own. A call still running after
 // callBound, a little over that bound, is ended, and its why says so: a command that hangs cannot
@@ -362,18 +363,20 @@ type caller struct {
 
 // record runs the dispatch command once for the check of p, and answers its exit status, the
 // id of the stored result, what its line says of the call, and whether the call stored the
-// result. A refused call stored nothing, and its words are what it wrote on both streams: the
-// command prints a refusal of Dispatch or of the airlock proxy on standard output (`refuse` in
-// packages/envoy-client/src/dispatch-commands/job-result.ts), and its warnings on standard error.
-// A write whose outcome is unknown, {"write_outcome_unknown":"<code>"}, is a failed call that
-// names the code, whatever the exit status: it may be stored, and a second run of the step is
-// safe, since Dispatch keeps each result. A call whose result grant was not live says so first
-// (grantRefused, grantEnded, grantEndedWhileOut), and a write whose outcome a refused tunnel left
-// unknown names both statuses of that refusal (tunnelRefusedWhileOut). A call that runs past
-// c.bound is ended with exit -1, and it is a failed call whose outcome is unknown, since the write
-// may have gone out. Of a call that stored its result it reads only the stored row's id, and it
-// never prints the rest. A write that landed with its answer lost,
-// {"landed_without_answer":"<code>"} with exit 0, stored the result, and its id is unknown.
+// result. A refused call stored nothing, and its words are what it wrote on both streams, its
+// warnings on standard error first (printed): Dispatch's refusal on standard output, and the
+// airlock proxy's as the said of its airlock_refused line (airlockRefusal; `airlockRefused` in
+// packages/envoy-client/src/dispatch-commands/job-result.ts). A write whose outcome is unknown,
+// {"write_outcome_unknown":"<code>"}, is a failed call that names the code, whatever the exit
+// status: it may be stored, and a second run of the step is safe, since Dispatch keeps each
+// result. A call that the airlock refused with grantNotLive, the code of its airlock_refused
+// line, says so first (grantEnded), and so does a write whose outcome grantNotLive left unknown
+// (grantEndedWhileOut); a write whose outcome a refused tunnel left unknown names both statuses
+// of that refusal (tunnelRefusedWhileOut). A call that runs past c.bound is ended with exit -1,
+// and it is a failed call whose outcome is unknown, since the write may have gone out. Of a call
+// that stored its result it reads only the stored row's id, and it never prints the rest. A write
+// that landed with its answer lost, {"landed_without_answer":"<code>"} with exit 0, stored the
+// result, and its id is unknown.
 func (c caller) record(p Planned) (code int, id, why string, stored bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.bound)
 	defer cancel()
@@ -385,11 +388,9 @@ func (c caller) record(p Planned) (code int, id, why string, stored bool) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
-	// words is what the command printed on both streams, its warnings first.
-	words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
 	if err != nil && ctx.Err() != nil {
 		why = fmt.Sprintf("the dispatch command did not end within %s, so the step ended it: the write may have gone out, and no answer said whether Dispatch stored it; a second run of the step is safe, since Dispatch keeps each result", c.bound)
-		if words != "" {
+		if words := printed(stderr.String(), stdout.String()); words != "" {
 			why += ". The dispatch command printed: " + words
 		}
 		return -1, "", why, false
@@ -399,12 +400,14 @@ func (c caller) record(p Planned) (code int, id, why string, stored bool) {
 		return -1, "", err.Error(), false
 	}
 	code = cmd.ProcessState.ExitCode()
-	// The command's first line on standard output: a stored row, a landed write, or a write whose
-	// outcome is unknown; a refusal is "<CODE>: <message>", which is no JSON.
+	// The command's first line on standard output: a stored row, a landed write, a write whose
+	// outcome is unknown, or the airlock's refusal; Dispatch's refusal is "<CODE>: <message>",
+	// which is no JSON.
 	var line struct {
-		ID      string `json:"id"`
-		Landed  string `json:"landed_without_answer"`
-		Unknown string `json:"write_outcome_unknown"`
+		ID      string          `json:"id"`
+		Landed  string          `json:"landed_without_answer"`
+		Unknown string          `json:"write_outcome_unknown"`
+		Airlock *airlockRefusal `json:"airlock_refused"`
 	}
 	decoded := json.NewDecoder(bytes.NewReader(stdout.Bytes())).Decode(&line) == nil
 	switch {
@@ -419,10 +422,15 @@ func (c caller) record(p Planned) (code int, id, why string, stored bool) {
 		}
 		return code, "", fmt.Sprintf("the write went out and no answer said whether Dispatch stored it (%s): a second run of the step is safe, since Dispatch keeps each result", line.Unknown), false
 	case code != 0:
+		said, airlock := stdout.String(), decoded && line.Airlock != nil
+		if airlock {
+			said = line.Airlock.Said
+		}
+		words := printed(stderr.String(), said)
 		if words == "" {
 			words = fmt.Sprintf("the dispatch command ended with %s and printed nothing", cmd.ProcessState)
 		}
-		if grantRefused(stdout.String()) {
+		if airlock && line.Airlock.Code == grantNotLive {
 			words = grantEnded + " The dispatch command printed: " + words
 		}
 		return code, "", words, false
@@ -432,6 +440,22 @@ func (c caller) record(p Planned) (code int, id, why string, stored bool) {
 		return 0, "", fmt.Sprintf("the result was stored, and its answer was lost on the way back (%s), so its id is unknown", line.Landed), true
 	}
 	return 0, "", "the dispatch command exited 0 and printed no stored result with an id", false
+}
+
+// printed is what the command printed on both streams, its warnings on standard error first.
+func printed(stderr, stdout string) string {
+	return strings.TrimSpace(strings.TrimSpace(stderr) + "\n" + strings.TrimSpace(stdout))
+}
+
+// airlockRefusal is what the reporter reads of the line {"airlock_refused":{"status","code",
+// "said"}}, which the command prints for a refusal of the airlock proxy before the write left it
+// (`airlockRefused` in packages/envoy-client/src/dispatch-commands/job-result.ts): Code, the
+// airlock's own code of the refusal (its Cipher-Proxy-Code), empty where it named none, and Said,
+// the line a person reads, which the reporter prints. It reads no status: the code says what the
+// airlock refused, and a status says that of no airlock in particular.
+type airlockRefusal struct {
+	Code string `json:"code"`
+	Said string `json:"said"`
 }
 
 // grantNotLive is the airlock proxy's code for a placeholder whose result grant is not live: the
@@ -461,22 +485,6 @@ const tunnelRefused = "AIRLOCK_TUNNEL_REFUSED"
 // airlock that could not read the grant, which the command asks again until its bound ends. So
 // the why names both, and does not say that the grant ended.
 const tunnelRefusedWhileOut = tunnelRefused + ": the airlock refused the tunnel of a later attempt of the write after an earlier attempt went out, so no answer said whether Dispatch stored it: a second run of the step is safe, since Dispatch keeps each result. The dispatch command prints no status for the refusal: a 407 there is the step's result grant not live (GRANT_NOT_LIVE), ended at most 15 minutes after the step started, and a 503 an airlock that could not read the grant"
-
-// tunnelRefused407 is the line the dispatch command prints when the airlock proxy refused its
-// tunnel with 407, its answer at the CONNECT to a placeholder whose result grant is not live
-// (AirlockTunnelRefusedError in packages/envoy-client/src/dispatch-http.ts). The line holds the
-// tunnel's status and not the airlock's code, and for a placeholder the airlock reads, 407 at the
-// CONNECT is grantNotLive alone: the airlock's other 407s are of a proxy request with no
-// placeholder, which agent-secrets result-grant always gives, and of a secret's grant.
-var tunnelRefused407 = regexp.MustCompile(`^` + tunnelRefused + `: [^\n]*\(407[ )]`)
-
-// grantRefused reports whether stdout, what a failed call printed, is the airlock's refusal of a
-// placeholder whose result grant is not live, before the write left it: the 407 at the CONNECT
-// (tunnelRefused407), or the airlock's own answer inside an open tunnel, "GRANT_NOT_LIVE: ...;
-// nothing was stored".
-func grantRefused(stdout string) bool {
-	return tunnelRefused407.MatchString(stdout) || strings.HasPrefix(stdout, grantNotLive+": ")
-}
 
 // writeLine writes l to w as one JSON line. encoding/json writes each control character of C0 in a
 // value as an escape, so no line break reaches the log, and the line starts with "{", so it starts

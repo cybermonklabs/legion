@@ -963,6 +963,9 @@ describe.skipIf(!dispatchStackEnabled)("a result grant that ended ends the proxy
       tunnelRefused: said.includes("AIRLOCK_TUNNEL_REFUSED"),
       status: said.includes("407 Proxy Authentication Required"),
       nothingSent: said.includes("nothing was sent to Dispatch"),
+      // The command prints the status and the airlock's own code of the refusal at the CONNECT,
+      // which a program such as ci-report reads in place of the words.
+      printedCode: said.includes('{"airlock_refused":{"status":407,"code":"GRANT_NOT_LIVE",'),
       stored: (await live.results(at)).length,
       refusals: refusals.map((record) => ({
         status: record.status,
@@ -980,6 +983,7 @@ describe.skipIf(!dispatchStackEnabled)("a result grant that ended ends the proxy
       tunnelRefused: true,
       status: true,
       nothingSent: true,
+      printedCode: true,
       stored: 1,
       refusals: [
         {

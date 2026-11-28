@@ -385,7 +385,7 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 		if run.reportCode != 1 {
 			t.Errorf("step report exits %d, want 1", run.reportCode)
 		}
-		fromTheFile(t, run, p.answered(1, airlockRefusal))
+		fromTheFile(t, run, p.answered(1, noPlaceholderLine))
 	})
 
 	t.Run("a write after the grant's end fails the step, and its line names the end", func(t *testing.T) {

@@ -2642,10 +2642,11 @@ export const dispatchToolSpecs = [
       "not finish. The command prints the stored result as JSON, an in-toto statement of the " +
       "run. A write that reached Dispatch with no answer that says whether it stored the result " +
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
-      "second run is safe, because Dispatch keeps each result. A tunnel the airlock proxy refuses " +
-      "prints AIRLOCK_TUNNEL_REFUSED with its status, and an answer the proxy gives itself before " +
-      "the write left it (Cipher-Proxy-Forwarded: false) prints its code and its words; each " +
-      "says nothing reached Dispatch and exits 1, and a 5xx of either is asked again. An answer the " +
+      "second run is safe, because Dispatch keeps each result. A refusal of the airlock proxy " +
+      "before the write left it, a tunnel it refuses or an answer it gives itself " +
+      '(Cipher-Proxy-Forwarded: false), prints {"airlock_refused":{"status":<status>,' +
+      '"code":<its Cipher-Proxy-Code, or null>,"said":"<its words>"}}, says nothing reached ' +
+      "Dispatch and exits 1, and a 5xx of it is asked again. An answer the " +
       "proxy gives itself after the write may have left it (Cipher-Proxy-Forwarded: unknown) is " +
       "asked again under the same key and, if no answer settles it, prints " +
       '{"write_outcome_unknown":"<code>"} and exits 1. A call that Dispatch\'s check of the ' +
