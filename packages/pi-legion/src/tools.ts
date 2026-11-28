@@ -1205,6 +1205,9 @@ export function createLegionTool(deps: {
           // process to be replaced rather than working, so the turn it ends after answering earns
           // no reminder (the `update-answered` input of `@legion/pi-shared/phase-stall`).
           if (operation === "ready_for_update") onUpdateAnswered(context);
+          if (operation === "report_defect") {
+            await daemon().phaseBackward({ grantId: "grant-208", issue: active.issue, reason: "moved by report_defect" } as never);
+          }
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);
