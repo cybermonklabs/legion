@@ -176,6 +176,13 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"harness_case_times_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/harness_case_times.test.sh .github/scripts/harness_case_times.test.sh
 
+      # Beside the reader above, and like it needing no Go: the reader of the envoy-go jobs'
+      # spread and its factors runs on bash, Python and jq, over fixtures captured from real runs
+      # and served by a stand-in gh, and reads no network.
+      - name: Test the Go CPU record's reader
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cpu_record_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go_cpu_record.test.sh .github/scripts/go_cpu_record.test.sh
+
       - name: Test third-party notices
         run: bun test scripts/third-party-notices.test.ts
 
