@@ -141,7 +141,7 @@ func TestARefusedWriteKeepsTheHeadsETags(t *testing.T) {
 // of the head's two listings is read with the ETag GitHub answered the first pass with, GitHub
 // answers 304 to each, and the head's record is left exactly where it was.
 func TestNothingChangedSoNothingIsReadInFull(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -244,7 +244,7 @@ func TestAWriteThatDidNotLandIsNotHiddenBehindAnETag(t *testing.T) {
 // status and conclusion under a later updated_at -- is written and settles once, and a pass over
 // the answers as they now stand writes nothing and settles nothing more.
 func TestGitHubsOwnNewsIsWrittenOnce(t *testing.T) {
-	// Not parallel: it holds a 2 s quiet window (noSettlement), which load could make it miss.
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
