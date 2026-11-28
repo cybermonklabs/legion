@@ -112,8 +112,9 @@ export interface ModelFallback {
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
   /**
    * The return to the model the session fell back from, at the thinking level the session ran at
-   * before the fallback (`FallbackArming.thinkingLevel`), which this runner makes in one place:
-   * one check of whether the arming is due, with these triggers.
+   * before the fallback (`FallbackArming.thinkingLevel`) unless that level changed since the
+   * fallback's switch, which this runner makes in one place: one check of whether the arming is
+   * due, with these triggers.
    *
    * - The host's `before_agent_start`, for any arming: it runs before the first request of a run
    *   a prompt starts.
@@ -167,6 +168,10 @@ interface NewestChange {
   /** The thinking level the session ran at before the first step of this walk (`levelBefore`), or
    * undefined when the branch records none: the level an arming sets again with the model. */
   readonly walkedFromLevel: string | undefined;
+  /** Whether the branch holds a `thinking_level_change` after this entry's own switch
+   * (`levelChangedAfter`): a level a person or the host set since, which a return of this entry's
+   * arming leaves where it is. */
+  readonly levelChangedSince: boolean;
 }
 
 /** A `model_change` as `getBranch()` hands it back (`ModelChangeEntry`, `src/pi-types.ts`). The
@@ -255,7 +260,25 @@ function newestModelChange(ctx: ModelFallbackContext): NewestChange | undefined 
     previous: isModelChange(before) ? before : undefined,
     walkedFrom: isModelChange(from) ? from : undefined,
     walkedFromLevel: levelBefore(branch, start),
+    levelChangedSince: levelChangedAfter(branch, at),
   };
+}
+
+/**
+ * Whether the level changed after the switch the `model_change` at `at` made: whether the branch
+ * holds a `thinking_level_change` after it other than the one that switch wrote itself. A switch
+ * writes its level, when it changes one, as the entry right after its `model_change` (the host's
+ * walk at `session/turn-recovery.ts:3153-3155`, `setModel` at `session/model-controls.ts:331-349`
+ * at tag `v18.18.6-sami.20261127-055727`), so that entry is the fallback's own, and any later one
+ * is a person's `/thinking` or another change since.
+ */
+function levelChangedAfter(branch: readonly unknown[], at: number): boolean {
+  let index = at + 1;
+  if (isThinkingLevelChange(branch[index])) index += 1;
+  for (; index < branch.length; index += 1) {
+    if (isThinkingLevelChange(branch[index])) return true;
+  }
+  return false;
 }
 
 /** The index of the first step of the walk ending at `at`, as the branch records it: the steps of
@@ -710,10 +733,13 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       return;
     }
     // The switch kept the level the fallback model ran at (`ModelFallbackDeps.setThinkingLevel`),
-    // so the level the session ran at before the fallback is set again with its model. An arming
-    // that records no level (the branch named none, or an older build armed it) sets the model
-    // alone, as before.
-    if (arming.thinkingLevel !== undefined) deps.setThinkingLevel(arming.thinkingLevel);
+    // so the level the session ran at before the fallback is set again with its model, while the
+    // session still runs at the fallback's own level. A level changed since (a person's
+    // `/thinking`) is not the fallback's move, and the return leaves it, as it leaves a model
+    // changed since. An arming that records no level (the branch named none, or an older build
+    // armed it) sets the model alone, as before.
+    if (arming.thinkingLevel !== undefined && !newest.levelChangedSince)
+      deps.setThinkingLevel(arming.thinkingLevel);
     // `restore` can replace the state while the switch is awaited: this arming's return is not
     // that state's to record.
     if (state.arming !== arming) return;

@@ -38,8 +38,9 @@ export interface FallbackArming {
   readonly cause: FallbackCause;
   /** The thinking level the session ran at before the fallback's first step (`xhigh`, `auto`, as
    * the session's `thinking_level_change` entry names it), which the return sets again with the
-   * model. Absent when the branch records no level before the fallback, and in a record an older
-   * build wrote: the return then sets the model alone. */
+   * model unless the level changed after the fallback's switch. Absent when the branch records no
+   * level before the fallback, and in a record an older build wrote: the return then sets the
+   * model alone. */
   readonly thinkingLevel?: string;
 }
 

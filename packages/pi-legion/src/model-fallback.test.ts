@@ -54,6 +54,9 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const chainList = new Map<string, string[]>();
   /** The family the host's catalog gives each selector; a selector absent here names none. */
   const families = new Map<string, string>();
+  /** The default thinking level a selector's model names (`thinking.defaultLevel`); a selector
+   * absent here names none. */
+  const defaultLevels = new Map<string, string>();
   const hostModel = (selector: string): HostModel => {
     const family = families.get(selector);
     return family === undefined
@@ -147,8 +150,12 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
       // `pi.setModel` clears the active retry fallback and appends an ordinary `model_change`
       // (`session/model-controls.ts:327-331` at the pinned tag), never a fallback claim.
       append(`${next.provider}/${next.id}`, "default", false);
-      // It keeps the level the session runs at for a model that names no default level of its
-      // own, and so writes no `thinking_level_change` (`session/model-controls.ts:347-349`).
+      // It sets the level the model names as its default, and otherwise keeps the level the
+      // session runs at; it writes a `thinking_level_change` only for a level that changes
+      // (`session/model-controls.ts:347-349`).
+      const defaultLevel = defaultLevels.get(`${next.provider}/${next.id}`);
+      if (defaultLevel !== undefined && defaultLevel !== live.thinkingLevel)
+        appendLevel(defaultLevel);
       return true;
     },
     setThinkingLevel: (level) => {
@@ -194,6 +201,7 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     chain,
     chainList,
     families,
+    defaultLevels,
     suppressed,
     unresolvable,
     live,
@@ -935,20 +943,42 @@ describe("the thinking level the return sets", () => {
     expect(pane.last()?.arming).toBeUndefined();
   });
 
-  test("is the level before the plugin's own walk, not one set on the fallback model since", async () => {
+  test("is the level before the plugin's own walk, not the fallback model's default", async () => {
     const pane = fixture(OPUS);
     pane.thinkingLevel("high");
     pane.chain.set(OPUS, SONNET);
+    // The fallback model names a default level, which `pi.setModel` sets with it.
+    pane.defaultLevels.set(SONNET, "low");
     await pane.runner.turnSettled(REFUSED, pane.ctx);
+    expect(pane.live.thinkingLevel).toBe("low");
     expect(pane.last()?.arming?.thinkingLevel).toBe("high");
-    // The operator's `/thinking` on the fallback model.
-    pane.thinkingLevel("low");
 
     pane.live.now += HOUR;
     await pane.runner.maybeRestore(pane.ctx);
 
     expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
     expect(pane.live.thinkingLevel).toBe("high");
+  });
+
+  // The return undoes the fallback's own move and nothing after it: a level changed since the
+  // fallback's switch is not that move, as a model changed since is not.
+  test("leaves a level a person set during the fallback", async () => {
+    const pane = fixture(SOL);
+    pane.modelChange(SOL);
+    pane.thinkingLevel("xhigh");
+    pane.hostFallback(KIMI);
+    pane.thinkingLevel("max");
+    pane.runner.armFromEvent(applied(SOL, KIMI, "default", REFUSAL_REASON), pane.ctx);
+    // A person's `/thinking` on the fallback model.
+    pane.thinkingLevel("high");
+
+    pane.live.now += HOUR;
+    await pane.runner.maybeRestore(pane.ctx);
+
+    expect(pane.setModelCalls).toEqual([SOL]);
+    expect(pane.setThinkingLevelCalls).toEqual([]);
+    expect(pane.live.thinkingLevel).toBe("high");
+    expect(pane.last()?.arming).toBeUndefined();
   });
 
   test("stays the level before the first step when a second step continues the walk", async () => {

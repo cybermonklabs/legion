@@ -6,8 +6,9 @@ body: |-
   Kimi K3.1 Pro at `max` ran Sol at `max` after the return. The plugin now records the level from
   the session's transcript when the fallback starts (the newest `thinking_level_change` before the
   walk's first step, with `auto` kept as `auto`), keeps it in the transcript record with the
-  arming, and sets it again after the model. A record that an older build wrote has no level, and
-  its return sets the model alone, as before.
+  arming, and sets it again after the model. A level changed after the fallback's switch, by a
+  person's `/thinking` for example, is not the fallback's move, and the return leaves it. A record
+  that an older build wrote has no level, and its return sets the model alone, as before.
 time: 2026-11-28T18:50:00Z
 custom:
   Issue: fallback-return-thinking-level
