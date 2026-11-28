@@ -1495,12 +1495,10 @@ A job whose go test ran and that kept no file, or whose upload failed, fails at 
 A new `go test` step of ci.yaml's run keeps its events in the same way: its job has the install step (`.github/actions/install-gotestsum`) before it and the upload step after it.
 No check refuses a step that does not; the reviewer of the pull request holds that line.
 
-The pinned gotestsum is the `tool` of the Go module in `.github/actions/install-gotestsum`, and that module's `go.mod` holds its version.
-To build it on a workstation:
-
-```sh
-GOWORK=off go -C .github/actions/install-gotestsum build -o <directory>/gotestsum gotest.tools/gotestsum
-```
+The `gotestsum` and `gotestsum-aarch64` rows of `.github/ci-tools.yaml` pin gotestsum. `.github/actions/install-gotestsum` installs it in CI.
+On a Linux workstation, download the release tarball from `primary` in the row for your architecture: `gotestsum` for x86_64 or `gotestsum-aarch64` for arm64.
+Run `sha256sum` on the entire tarball and compare its output with the row's `digest`.
+Only if the digest matches, extract the `gotestsum` member into a directory on your `PATH`.
 
 Anyone can download this repository's artifacts for 90 days, its default retention, and GitHub's log masking does not reach them: the events hold every test's output, the `t.Log` lines of a passing test among them.
 So a `go test` step gives its tests no secret, whether through the workflow's, the job's or the step's `env`, through `$GITHUB_ENV`, or in a file that an earlier step writes.

@@ -1,19 +1,33 @@
 name: Install gotestsum
 description: >-
-  Builds the gotestsum version pinned in this action's Go module and puts it on PATH for later
-  steps. It uses the Go already on PATH and its own module and build caches, so it can run
-  before or after the job restores its Go caches.
+  Installs gotestsum, the tool that records go test events, and puts it on PATH for the job's
+  later steps.
+
+  The `gotestsum` row of .github/ci-tools.yaml, or its `gotestsum-aarch64` row on an arm64 runner,
+  names the version, the one sha256 of the whole release tarball that both sources are checked
+  against, and the second source this install reads when GitHub's release assets do not serve the
+  bytes: the copy of that tarball in ghcr.io/cybermonklabs/legion/ci.
 runs:
   using: composite
   steps:
-    - name: Build the pinned gotestsum
+    - name: Install gotestsum
       shell: bash
       run: |
         set -euo pipefail
-        mkdir -p "$RUNNER_TEMP/gotestsum/bin"
-        env -u GOOS -u GOARCH \
-          GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOENV=off \
-          GOMODCACHE="$RUNNER_TEMP/gotestsum/mod" GOCACHE="$RUNNER_TEMP/gotestsum/build" \
-          go -C "$GITHUB_ACTION_PATH" build -buildvcs=false -o "$RUNNER_TEMP/gotestsum/bin/gotestsum" gotest.tools/gotestsum
-        echo "$RUNNER_TEMP/gotestsum/bin" >> "$GITHUB_PATH"
-        "$RUNNER_TEMP/gotestsum/bin/gotestsum" --version
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64) row=gotestsum ;;
+          aarch64 | arm64) row=gotestsum-aarch64 ;;
+          *)
+            echo "::error::install-gotestsum: .github/ci-tools.yaml holds no gotestsum row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        tarball="$RUNNER_TEMP/$(basename "$(ci_tools_field "$row" primary)")"
+        ci_tools_fetch "$row" "$tarball"
+        mkdir -p "$RUNNER_TEMP/gotestsum"
+        tar -xzf "$tarball" -C "$RUNNER_TEMP/gotestsum" gotestsum
+        echo "$RUNNER_TEMP/gotestsum" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/gotestsum/gotestsum" --version

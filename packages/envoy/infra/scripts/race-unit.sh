@@ -34,7 +34,7 @@ fi
 case "$1" in
 run)
 	if ! command -v gotestsum >/dev/null; then
-		echo 'race-unit.sh: gotestsum is not on PATH; use .github/actions/install-gotestsum or run GOWORK=off go -C .github/actions/install-gotestsum build -o <dir>/gotestsum gotest.tools/gotestsum' >&2
+		echo 'race-unit.sh: gotestsum is not on PATH. Use .github/actions/install-gotestsum in CI or install the release in the gotestsum row of .github/ci-tools.yaml.' >&2
 		exit 127
 	fi
 	flags=(-json -count=1)

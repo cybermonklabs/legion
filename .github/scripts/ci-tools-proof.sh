@@ -189,9 +189,9 @@
 #   install-bound
 #       The seconds no timed install may reach, printed and nothing else.
 #       INSTALL_BOUND below is the one place that number is written, and the `tool-fallback`
-#       job's control over its eight installs with nowhere to go reads it through this verb, so
-#       the bound the rig holds the eighteen corrupted cases to and the bound that step holds
-#       those eight installs to cannot drift apart.
+#       job's control over its nine installs with nowhere to go reads it through this verb, so
+#       the bound the rig holds the twenty corrupted cases to and the bound that step holds
+#       those nine installs to cannot drift apart.
 #
 #   report <case> --outcome <the step's outcome> --row <row>
 #          [--expect-source <name>] [--expect-untried <name>]
@@ -277,7 +277,7 @@ stand_in="$stand_in_bin/curl"
 # The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
 # and no case installs them, so nothing would serve their payload. The -aarch64 rows are the
 # `tool-fallback-arm` job's, whose installs read their real sources and no origin of this rig's.
-STAGED_ROWS="crane changie mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli helm"
+STAGED_ROWS="crane changie gotestsum mise jj bun-linux-x64 elan uv pulumi-docker pulumi-cli helm"
 
 # The hosts both jobs fault, written here and in no step of .github/workflows/ci.yaml:
 # github.com, where a release download starts, the two githubusercontent.com hosts it ends at,
@@ -364,7 +364,7 @@ RESERVED_SUFFIX=".invalid"
 PROBE_BOUND=15
 
 # The seconds no timed install may reach, read by `report` over the mark `corrupt` wrote. The
-# twenty-six installs whose control accepts a failure are the timed ones; the head's own nine,
+# twenty-nine installs whose control accepts a failure are the timed ones; the head's own ten,
 # which no control lets fail, are not checked against it.
 # Every install of a case carries `continue-on-error: true` and `timeout-minutes: 11`, and a
 # step the runner ends at that bound leaves `outcome=failure` behind it, which is the outcome
@@ -378,7 +378,7 @@ PROBE_BOUND=15
 # It is the one wall-clock bound `report` and the control step judge an install by, and this line
 # is the one place it is written. Two other bounds are not it: `timeout-minutes: 11`, which the
 # runner enforces on the step rather than reading after it, and `PROBE_BOUND` above, which
-# bounds the probe's two requests. The `tool-fallback` job holds its eight
+# bounds the probe's two requests. The `tool-fallback` job holds its nine
 # installs with nowhere to go to the same seconds, and its control step reads them from here
 # through the `install-bound` verb rather than writing a second number that nothing keeps equal
 # to this one.
@@ -1528,7 +1528,7 @@ seed_mise_jj() {
 # ---------------------------------------------------------------- install-bound
 
 # install_bound: the bound above, printed and nothing else, for the one reader outside this
-# script: the step of the `tool-fallback` job that holds the eight installs with nowhere to go
+# script: the step of the `tool-fallback` job that holds the nine installs with nowhere to go
 # to the same seconds `report` holds a case's install to.
 install_bound() {
   printf '%s\n' "$INSTALL_BOUND"

@@ -382,7 +382,13 @@ def setup_go(job, gomod, workflow=""):
 
 
 def install_gotestsum(job, workflow=""):
-    return reads((".github/actions/install-gotestsum/**", at(job, "Install gotestsum", workflow)))
+    return reads(
+        (".github/actions/install-gotestsum/**", at(job, "Install gotestsum", workflow)),
+        (".github/ci-tools.yaml", "`.github/actions/install-gotestsum/action.yml#ci_tools_fetch` fetches the tarball "
+                                  "of the gotestsum row, or gotestsum-aarch64 on an arm64 runner"),
+        (".github/scripts/ci-tools.sh", "`.github/actions/install-gotestsum/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` "
+                                        "sources it, and ci_tools_fetch reads that row's two sources"),
+    )
 
 
 def go_test_events(job, workflow=""):
@@ -2636,7 +2642,7 @@ TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
 # .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
 TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
 TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
-TOOL_NOWHERE_STEP = "Check all eight installs with nowhere to go failed, and failed in their own time"
+TOOL_NOWHERE_STEP = "Check all nine installs with nowhere to go failed, and failed in their own time"
 TOOL_VERSIONS_STEP = "Check every tool is the version its row pins"
 TOOL_FINAL_STEP = "Print what every tool answers now"
 TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
