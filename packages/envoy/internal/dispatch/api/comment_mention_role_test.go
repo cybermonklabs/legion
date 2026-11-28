@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -32,7 +33,7 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 	ctx := context.Background()
 	listener, _ := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
+		envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true, clock: clocktest.Held(),
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "A role route owed before a mention", "before")
 	earlier := decodeMentionedComment(t, sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{

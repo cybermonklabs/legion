@@ -840,6 +840,43 @@ const legionPodHold = z.object({
   detail: nonEmptyString.optional(),
 });
 
+/** `api.ClaimLeftView` — why the newest claim release that judged the issue's Dispatch holder left
+ * that holder's claim (daemon API entry 20261127202231 (claim-left), dispatch://INFRA-3144). A
+ * move of the issue out of the workflow, and each session the daemon leaves behind, queue the
+ * release of the issue's Dispatch claim; a release that takes the claim, or that finds none, clears
+ * the entry, and nothing else does, so `at` dates it and a reader takes the claim's current holder
+ * from Dispatch. `holder` is the holder Dispatch named, `<kind>:<id>`, absent where it named none
+ * (`unread`, and a read Dispatch refused). `reason` is one word for each way a release leaves a
+ * claim on purpose: `unread`, a claim Dispatch shows with no actor; `person`, a person holds it;
+ * `daemon`, the daemon's own session; `controller`, a session the project controller's claim
+ * recorded; `other-tree`, a session a claim of another tree recorded, current or left behind;
+ * `unattributed`, no claim of the daemon's project holds the holder's name; `operator-tree`, the
+ * operator holds the issue's tree; `issue-runs`, the move's release ran once the issue was in the
+ * workflow again; `works-now`, the left session's release found that session the current session
+ * of a claim of the tree again; `held-an-hour`, Dispatch refused the release for an hour; and
+ * `refused`, Dispatch refused the read or the release with an answer no retry repairs. `at` is
+ * when the release left the claim. The daemon always writes `reason` and `at`; the reader takes
+ * every member as optional, since no plugin code reads them (LEGION_ANSWER_READS). */
+const legionClaimLeft = z.object({
+  holder: nonEmptyString.optional(),
+  reason: z
+    .enum([
+      "unread",
+      "person",
+      "daemon",
+      "controller",
+      "other-tree",
+      "unattributed",
+      "operator-tree",
+      "issue-runs",
+      "works-now",
+      "held-an-hour",
+      "refused",
+    ])
+    .optional(),
+  at: timestamp.optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -1071,6 +1108,12 @@ const legionIssue = z.object({
    * and a caller whose plugin declares a contract below 246 is served every issue without it
    * (the daemon's `withoutPodHold`), which is why a reader takes it as optional. */
   podHold: legionPodHold.optional(),
+  /** Why the newest claim release that judged the issue's Dispatch holder left that holder's claim
+   * (`legionClaimLeft`): absent where no release left one, or where the newest that judged the
+   * holder took the claim or found none. A daemon before entry 20261127202231 (claim-left) writes
+   * none, and a caller whose contract is below that entry is served every issue without it (the
+   * daemon's `withoutClaimLeft`), which is why a reader takes it as optional. */
+  claimLeft: legionClaimLeft.optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, its boot history, and

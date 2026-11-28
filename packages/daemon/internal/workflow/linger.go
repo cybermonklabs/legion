@@ -278,17 +278,24 @@ func leftNotice(child record.Issue, status string, pr *record.PullRequest, membe
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
 // its key: its record's phase is done, so todo with the label re-admits it as a closed root's does,
-// and its task, where it has one, ends as a leave's does; nothing else is written. Its claims, its
-// pod and its tree's cleanup are the operator's, which share the root's tokens and names, so no
-// suspend, IssueSuspend, linger close or disarm is queued for the workflow's record, and the
-// workflow never ran a phase of it to check in production.
+// and its task, where it has one, ends as a leave's does. Its claims, its pod and its tree's
+// cleanup are the operator's, which share the root's tokens and names, so no suspend,
+// IssueSuspend, linger close or disarm is queued for the workflow's record, and the workflow never
+// ran a phase of it to check in production. The one row it queues is the move's Dispatch claim
+// release (releaseOutOfWorkflowClaim), as every move short of a close does: it releases nothing while the
+// operator holds the tree, and writes why into the root's record (operator-tree), so a role that
+// reads the record learns why the claim stays; and if the operator's hold has ended by the time it
+// runs, it judges the claim as any move's row does.
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
 	// The record's phase is done, and its task ends with its run where it stands, as every leave's
 	// does (endTaskWithLeave), though the workflow never started it: the operator's tree runs the
 	// work under this key. A todo re-admits it as a closed root's does.
-	return e.endTaskWithLeave(ctx, tx, &root, status)
+	if err := e.endTaskWithLeave(ctx, tx, &root, status); err != nil {
+		return err
+	}
+	return e.releaseOutOfWorkflowClaim(ctx, tx, root, status)
 }
 
 // LeaveUnslotted takes out of the workflow a root admission found in it with neither a slot nor a

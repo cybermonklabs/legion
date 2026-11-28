@@ -115,14 +115,18 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			kinds: map[string]int{},
 		},
 		{
-			// The claims of a tree the operator runs are the operator's to release with the rest
-			// of its cleanup, as its pod and its workspaces are.
+			// The move out of the workflow queues the release even while the operator holds the
+			// tree, and queues nothing else: the operator's claims, pod and workspaces are its own
+			// to clean up. The row releases nothing while the operator holds the tree, and records
+			// why in the issue's record (operator-tree), so a reader of the record learns why the
+			// claim stays.
 			name:     "a root whose tree the operator holds",
 			operator: true,
 			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
 				return engine.leave(ctx, tx, root, "backlog")
 			},
-			kinds: map[string]int{},
+			releases: []string{"LEGION-208"},
+			kinds:    withRelease(map[string]int{}),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

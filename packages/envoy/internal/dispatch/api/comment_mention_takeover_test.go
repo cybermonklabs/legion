@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -164,6 +165,39 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 	}
 }
 
+// mentionBackoffClock names the sleeps separately from lookup deadlines: the first backoff and
+// a lookup's bound are both 250 ms, so the pending deadlines alone cannot tell them apart.
+type mentionBackoffClock struct {
+	*clocktest.Fake
+	t        *testing.T
+	sleeping chan time.Time
+}
+
+func (c *mentionBackoffClock) Sleep(ctx context.Context, d time.Duration) error {
+	select {
+	case c.sleeping <- c.Now().Add(d):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return c.Fake.Sleep(ctx, d)
+}
+
+// A refused lookup must end with its listener's refusal, never a deadline fired by the driver.
+// Check before the caller's cancel, so a premature clock move fails even if later delivery repairs
+// the missing creation-time resolution and the route assertions still pass.
+func (c *mentionBackoffClock) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	lookup, cancel := c.Fake.WithTimeout(ctx, d)
+	if d != mentionLookupTimeout {
+		return lookup, cancel
+	}
+	return lookup, func() {
+		if err := lookup.Err(); err != nil {
+			c.t.Errorf("mention lookup released with an expired context: %v", err)
+		}
+		cancel()
+	}
+}
+
 // A comment on an issue routed to s1 that mentions s1, written while the listener is replaced
 // for longer than the take-over window, decides its route on the mention's failed resolution: the
 // mention reached nobody, so suppress_route stays off and the route fan-out carries the comment to
@@ -175,7 +209,9 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) {
 	t.Parallel()
 	listener := startTakeOverListener(t)
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
+	start := time.Now()
+	clock := &mentionBackoffClock{Fake: clocktest.New(start), t: t, sleeping: make(chan time.Time, 2)}
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Routed resume", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
@@ -196,7 +232,43 @@ func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) 
 			})
 		})
 	}
-	writes.Wait()
+	finished := make(chan struct{})
+	go func() {
+		writes.Wait()
+		close(finished)
+	}()
+	var sleeping []time.Time
+	testwait.Until(t, "both comments to run out the take-over window (the armed deadlines)", func() ([]time.Time, bool) {
+		select {
+		case <-finished:
+			return clock.Armed(), true
+		default:
+		}
+		for len(sleeping) < len(responses) {
+			select {
+			case at := <-clock.sleeping:
+				sleeping = append(sleeping, at)
+			default:
+				return clock.Armed(), false
+			}
+		}
+		// Every lookup has returned before its Sleep observation. Wait for both actual sleep
+		// timers too, under the lock that starts the move, rather than cutting a lookup whose
+		// request has not yet reached the listener.
+		armed, moved := clock.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
+			if !slices.Equal(armed, sleeping) {
+				return time.Time{}, false
+			}
+			return armed[0], true
+		})
+		if moved {
+			sleeping = sleeping[:0]
+		}
+		return armed, false
+	})
+	if took := clock.Now().Sub(start); took != deps.ListenerTakeoverWindow {
+		t.Fatalf("pre-commit take-over used %s, want the whole %s window", took, deps.ListenerTakeoverWindow)
+	}
 	listener.refuse(false)
 	comments := make([]mentionedCommentRead, len(responses))
 	for index, response := range responses {

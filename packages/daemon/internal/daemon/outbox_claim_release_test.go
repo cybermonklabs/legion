@@ -22,13 +22,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The issue a claim release row answers: a child the daemon took out of the workflow, in its root's tree, held by
-// the tree's own architect session. The project's controller holds a claim of its own, on no
-// issue and no tree.
+// The issue a claim release row answers: a child the daemon took out of the workflow, in its root's
+// tree, held by the tree's own architect session. The tree's architect recorded another session
+// before the one it records now, which it left behind, and so did a claim of another tree. The
+// project's controller holds a claim of its own, on no issue and no tree.
 const (
 	claimTree              = "LEGION-1"
 	claimIssue             = "LEGION-2"
 	claimTreeSession       = "ses-architect"
+	claimTreeLeftSession   = "ses-architect-before"
+	claimOtherLeftSession  = "ses-elsewhere-before"
 	claimControllerSession = "ses-controller"
 )
 
@@ -141,7 +144,10 @@ type claimReleaseRig struct {
 
 // newClaimReleaseRig seeds the tree and its issue out of the workflow and builds the runner over them. Every
 // session the holder cases name is recorded: the tree's own architect, one that claims only in
-// another tree, and the project's controller, whose claims row carries no tree at all.
+// another tree, and the project's controller, whose claims row carries no tree at all. The tree's
+// architect and the claim of another tree each hold a session in claim_sessions that they left
+// behind. The runner's project is the claims' own spelling of it, which the executor reads
+// claim_sessions by.
 func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answer func(int) error) *claimReleaseRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -149,12 +155,14 @@ func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answ
 	logs := &syncBuffer{}
 	client := &claimReleaseDispatch{outboxDispatch: &outboxDispatch{}, t: t, shown: shown, forbidden: forbidden, answer: answer}
 	rig := &claimReleaseRig{t: t, pool: pool, client: client, clock: microClock(), logs: logs}
-	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client,
+	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", project: "LEGION", records: records, dispatch: client,
 		log: slog.New(slog.NewJSONHandler(logs, nil)), now: rig.clock.Now}
 	putOutboxIssue(t, pool, records, claimReleaseRoot())
 	seedSessionClaim(t, pool, "architect-claim", "LEGION", claimTree, claimTree, claimTreeSession)
 	seedSessionClaim(t, pool, "other-tree-claim", "LEGION", "LEGION-9", "LEGION-9", "ses-elsewhere")
 	seedControllerClaim(t, pool, "LEGION", claimControllerSession)
+	holdSessionName(t, pool, "LEGION", claimTreeLeftSession, "architect-claim")
+	holdSessionName(t, pool, "LEGION", claimOtherLeftSession, "other-tree-claim")
 	return rig
 }
 
@@ -164,31 +172,79 @@ func (r *claimReleaseRig) records(issue record.Issue) {
 	putOutboxIssue(r.t, r.pool, record.NewStore(), issue)
 }
 
-// heldByOperator opens the tree's lifecycle under the operator's authority, as an operator root
-// spawn under the root's key does (treelifecycle.AuthorityOperator).
-func (r *claimReleaseRig) heldByOperator() {
-	r.t.Helper()
+// openTreeUnderOperator opens claimTree's lifecycle under the operator's authority, as an operator
+// root spawn under the root's key does (treelifecycle.AuthorityOperator).
+func openTreeUnderOperator(t *testing.T, pool *store.Pool) {
+	t.Helper()
 	token, err := claim.ProjectToken("LEGION")
 	if err != nil {
-		r.t.Fatalf("the project token of LEGION: %v", err)
+		t.Fatalf("the project token of LEGION: %v", err)
 	}
-	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator)
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := record.NewStore().OpenTreeLifecycle(ctx, tx, token, claimTree, treelifecycle.AuthorityOperator)
 		return err
 	}); err != nil {
-		r.t.Fatalf("open %s under the operator: %v", claimTree, err)
+		t.Fatalf("open %s under the operator: %v", claimTree, err)
 	}
 }
 
-// due queues the issue's release row, written age ago on the test's clock and due now.
+// due queues the issue's release row of a move out of the workflow, written age ago on the test's
+// clock and due now.
 func (r *claimReleaseRig) due(age time.Duration) {
 	r.t.Helper()
+	r.dueRow(age, record.ClaimRelease{})
+}
+
+// dueRow queues the issue's release row carrying payload, written age ago on the test's clock and
+// due now.
+func (r *claimReleaseRig) dueRow(age time.Duration, payload record.ClaimRelease) {
+	r.t.Helper()
 	at := r.clock.Now().Add(-age)
-	row := mustOutboxRow(r.t, claimIssue, record.ClaimRelease{}, at)
+	row := mustOutboxRow(r.t, claimIssue, payload, at)
 	row.CreatedAt = at
 	enqueueOutbox(r.t, r.pool, record.NewStore(), row)
 	if err := r.pool.QueryRow(context.Background(), "select id from outbox order by id desc limit 1").Scan(&r.row); err != nil {
 		r.t.Fatalf("read back the release row's id: %v", err)
+	}
+}
+
+// claimLeft is the issue's entry of the claim the newest judging release left, as the store reads
+// the record (record.Issue.ClaimLeft): nil for none, and for an issue the daemon records nothing
+// for.
+func (r *claimReleaseRig) claimLeft() *record.ClaimLeft {
+	r.t.Helper()
+	var left *record.ClaimLeft
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := record.NewStore().Issue(ctx, tx, claimIssue)
+		if issue != nil {
+			left = issue.ClaimLeft
+		}
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the record of %s: %v", claimIssue, err)
+	}
+	return left
+}
+
+// wantClaimLeft holds the issue's entry to the decision table's: reason with holder, written at
+// the rig's clock now (read to the second), or none where reason is "".
+func (r *claimReleaseRig) wantClaimLeft(reason record.ClaimLeftReason, holder string) {
+	r.t.Helper()
+	left := r.claimLeft()
+	if reason == "" {
+		if left != nil {
+			r.t.Fatalf("the record of %s names claimLeft %+v, want none", claimIssue, *left)
+		}
+		return
+	}
+	if left == nil {
+		r.t.Fatalf("the record of %s names no claimLeft, want %s with holder %q", claimIssue, reason, holder)
+	}
+	if left.Reason != reason || left.Holder != holder {
+		r.t.Fatalf("the record of %s names claimLeft %s with holder %q, want %s with holder %q", claimIssue, left.Reason, left.Holder, reason, holder)
+	}
+	if now := r.clock.Now(); left.At.Before(now.Add(-time.Second)) || left.At.After(now.Add(time.Second)) {
+		r.t.Fatalf("the record of %s names claimLeft at %s, want the executor's clock, %s", claimIssue, left.At, now)
 	}
 }
 
@@ -203,19 +259,20 @@ func (r *claimReleaseRig) run() {
 // left is how many rows the issue has left.
 func (r *claimReleaseRig) left() int { return outboxRowsOf(r.t, r.pool, claimIssue) }
 
-// loggedOnce holds the log to the one executor line the case names: every other line of the
-// executor's must be absent, so a case that names none leaves the log quiet of all four.
-func (r *claimReleaseRig) loggedOnce(text string) map[string]any {
-	r.t.Helper()
+// executorLoggedOnce holds logs to the one executor line text names, and answers that line: every
+// other line of the executor's must be absent, so a text of "" holds all four absent and answers
+// nil.
+func executorLoggedOnce(t *testing.T, logs *syncBuffer, text string) map[string]any {
+	t.Helper()
 	var named map[string]any
 	for _, line := range []string{claimUnreadLine, claimUnattributedLine, claimGaveUpLine, claimRefusedLine} {
-		got := loggedLines(r.t, r.logs.String(), line)
+		got := loggedLines(t, logs.String(), line)
 		want := 0
 		if line == text {
 			want = 1
 		}
 		if len(got) != want {
-			r.t.Fatalf("logged %q %d times, want %d: %s", line, len(got), want, r.logs.String())
+			t.Fatalf("logged %q %d times, want %d: %s", line, len(got), want, logs.String())
 		}
 		if want == 1 {
 			named = got[0]
@@ -240,8 +297,10 @@ func outOfWorkflowIssue() record.Issue {
 		Generation: 1, Status: "backlog"}
 }
 
-// seedSessionClaim records session working in tree, under project, the claim row
-// SessionClaimsTree and SessionClaimsAnywhere read.
+// seedSessionClaim records session working in tree, under project, the claim row the executor's
+// reads of a tree's sessions take, with the claim_sessions hold of that session the registration
+// that recorded it held first (supervise's holdRecorded); a name another claim already holds is
+// left held for that one.
 func seedSessionClaim(t *testing.T, pool *store.Pool, token, project, tree, issue, session string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
@@ -250,22 +309,36 @@ func seedSessionClaim(t *testing.T, pool *store.Pool, token, project, tree, issu
 		token, project, tree, issue, session); err != nil {
 		t.Fatalf("record the claim of %s in %s: %v", session, tree, err)
 	}
+	holdSessionName(t, pool, project, session, token)
 }
 
 // seedControllerClaim records session as the project's controller: the one claims row with no
-// issue and no tree (migration 0032_controller_claim), which SessionClaimsAnywhere accounts for
-// while SessionClaimsTree, which matches on a tree, never can.
+// issue and no tree (migration 0032_controller_claim), which no read of a tree's sessions can
+// find, with the claim_sessions hold of its session.
 func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string) {
 	t.Helper()
 	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatalf("the project token of %s: %v", project, err)
 	}
+	controller := string(claim.ControllerToken(token))
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
 		session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
 		values ($1, $2, '', '', 'controller', 1, $3, '', 'working', 0, 0, 0, 0)`,
-		string(claim.ControllerToken(token)), project, session); err != nil {
+		controller, project, session); err != nil {
 		t.Fatalf("record the controller claim of %s in %s: %v", session, project, err)
+	}
+	holdSessionName(t, pool, project, session, controller)
+}
+
+// holdSessionName holds session's id (kind session) in claim_sessions for the claim token, under
+// project as claims.project spells it, as supervise's holdRecorded holds every name a claim records
+// before the claim records it; a name some claim already holds stays that claim's.
+func holdSessionName(t *testing.T, pool *store.Pool, project, session, token string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `insert into claim_sessions (project, kind, name, claim)
+		values ($1, 'session', $2, $3) on conflict do nothing`, project, session, token); err != nil {
+		t.Fatalf("hold %s for %s: %v", session, token, err)
 	}
 }
 
@@ -281,11 +354,13 @@ func TestReleaseClaimRow(t *testing.T) {
 	t.Run("its own lane", testReleaseClaimLane)
 }
 
-// Only a claim held by a session the daemon records in the issue's own tree is released. A
-// person's claim is theirs, the daemon's own session is a legitimate holder, a session of another
-// tree owns its own issue, the project controller's claims row carries no tree so no issue's
-// claim is ever attributed to it, and a holder the daemon cannot attribute, or one Dispatch names
-// no actor for, is left where it is and logged.
+// Only a claim held by a session the daemon records in the issue's own tree is released, its
+// current session or one a claim of the tree left behind. A person's claim is theirs, the daemon's
+// own session is a legitimate holder, a session another tree's claim recorded — its current one
+// or one it left behind — owns its own issue, a session the project controller's claim recorded
+// is the controller's, and a holder no claim_sessions row holds, or one Dispatch names no actor
+// for, is left where it is and logged. Each claim left is in the issue's record with its reason
+// and its holder, and a release, or a claim that is gone, leaves none.
 func testReleaseClaimHolders(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -293,15 +368,25 @@ func testReleaseClaimHolders(t *testing.T) {
 		released bool
 		logged   string
 		holder   string
+		// left is the reason the issue's record gives for the claim left, "" for none.
+		left record.ClaimLeftReason
 	}{
 		{name: "a session of the issue's own tree", shown: dispatch.Issue{Claim: sessionClaim(claimTreeSession)}, released: true},
-		{name: "a person", shown: dispatch.Issue{Claim: &dispatch.Claim{Kind: "user", ID: "alice"}}},
-		{name: "the daemon's own session", shown: dispatch.Issue{Claim: sessionClaim(dispatch.DaemonSession(claimIssue))}},
-		{name: "a session of another tree", shown: dispatch.Issue{Claim: sessionClaim("ses-elsewhere")}},
-		{name: "the project controller's session", shown: dispatch.Issue{Claim: sessionClaim(claimControllerSession)}},
-		{name: "a holder no claims row accounts for", shown: dispatch.Issue{Claim: sessionClaim("ses-stranger")},
-			logged: claimUnattributedLine, holder: "session:ses-stranger"},
-		{name: "a claim Dispatch names no actor for", shown: dispatch.Issue{ClaimUnread: true}, logged: claimUnreadLine},
+		{name: "a session the issue's own tree left behind", shown: dispatch.Issue{Claim: sessionClaim(claimTreeLeftSession)}, released: true},
+		{name: "a person", shown: dispatch.Issue{Claim: &dispatch.Claim{Kind: "user", ID: "alice"}},
+			holder: "user:alice", left: record.ClaimLeftPerson},
+		{name: "the daemon's own session", shown: dispatch.Issue{Claim: sessionClaim(dispatch.DaemonSession(claimIssue))},
+			holder: "session:" + dispatch.DaemonSession(claimIssue), left: record.ClaimLeftDaemon},
+		{name: "a session of another tree", shown: dispatch.Issue{Claim: sessionClaim("ses-elsewhere")},
+			holder: "session:ses-elsewhere", left: record.ClaimLeftOtherTree},
+		{name: "a session a claim of another tree left behind", shown: dispatch.Issue{Claim: sessionClaim(claimOtherLeftSession)},
+			holder: "session:" + claimOtherLeftSession, left: record.ClaimLeftOtherTree},
+		{name: "the project controller's session", shown: dispatch.Issue{Claim: sessionClaim(claimControllerSession)},
+			holder: "session:" + claimControllerSession, left: record.ClaimLeftController},
+		{name: "a holder no claim_sessions row holds", shown: dispatch.Issue{Claim: sessionClaim("ses-stranger")},
+			logged: claimUnattributedLine, holder: "session:ses-stranger", left: record.ClaimLeftUnattributed},
+		{name: "a claim Dispatch names no actor for", shown: dispatch.Issue{ClaimUnread: true}, logged: claimUnreadLine,
+			left: record.ClaimLeftUnread},
 		{name: "no claim at all", shown: dispatch.Issue{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,7 +407,8 @@ func testReleaseClaimHolders(t *testing.T) {
 			if left := rig.left(); left != 0 {
 				t.Fatalf("rows left = %d, want the release row ended", left)
 			}
-			line := rig.loggedOnce(tc.logged)
+			rig.wantClaimLeft(tc.left, tc.holder)
+			line := executorLoggedOnce(t, rig.logs, tc.logged)
 			if line == nil {
 				return
 			}
@@ -344,8 +430,9 @@ func testReleaseClaimHolders(t *testing.T) {
 // Dispatch still shows it out of the workflow. A tree the operator holds is the operator's whole — its own
 // root spawn shares the tree's key, so its session is a session of the issue's tree here — and
 // the workflow may act on none of its claims. The holder is the tree's own architect session in
-// each of the three, the one holder the daemon would otherwise take the claim from. An issue the
-// daemon records nothing for is one it can attribute nothing of, and it says nothing either.
+// each of the three, the one holder the daemon would otherwise take the claim from, and the
+// issue's record says why it stays. An issue the daemon records nothing for is one it can
+// attribute nothing of, and it says nothing either: there is no record to say it in.
 func testReleaseClaimRecord(t *testing.T) {
 	live := outOfWorkflowIssue()
 	live.Status, live.Phase = "in_progress", phase.Implementing
@@ -357,10 +444,11 @@ func testReleaseClaimRecord(t *testing.T) {
 		recorded *record.Issue
 		// operatorHolds opens the issue's tree under the operator's authority.
 		operatorHolds bool
+		left          record.ClaimLeftReason
 	}{
-		{name: "the daemon records the issue live in the workflow", recorded: &live},
-		{name: "its tree runs again at a later generation", recorded: &readmitted},
-		{name: "the operator holds the stopped issue's tree", recorded: &outOfWorkflow, operatorHolds: true},
+		{name: "the daemon records the issue live in the workflow", recorded: &live, left: record.ClaimLeftIssueRuns},
+		{name: "its tree runs again at a later generation", recorded: &readmitted, left: record.ClaimLeftIssueRuns},
+		{name: "the operator holds the stopped issue's tree", recorded: &outOfWorkflow, operatorHolds: true, left: record.ClaimLeftOperatorTree},
 		{name: "the daemon records nothing for the issue"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,7 +457,7 @@ func testReleaseClaimRecord(t *testing.T) {
 				rig.records(*tc.recorded)
 			}
 			if tc.operatorHolds {
-				rig.heldByOperator()
+				openTreeUnderOperator(t, rig.pool)
 			}
 			rig.due(0)
 			rig.run()
@@ -380,103 +468,168 @@ func testReleaseClaimRecord(t *testing.T) {
 			if left := rig.left(); left != 0 {
 				t.Fatalf("rows left = %d, want the release row ended", left)
 			}
-			rig.loggedOnce("")
+			holder := ""
+			if tc.left != "" {
+				holder = "session:" + claimTreeSession
+			}
+			rig.wantClaimLeft(tc.left, holder)
+			executorLoggedOnce(t, rig.logs, "")
 		})
 	}
 }
 
-// What the daemon makes of Dispatch's answer to the DELETE: the holder still holding the claim
-// is a wait the row rides out until the hour it is given runs out; a contended one, which
-// Dispatch applied nothing for and judged nobody by, is a wait of its own the hour never ends; a
-// refusal no retry repairs ends the row with that refusal logged; and an outage, whatever its
-// shape, is ridden out and the next attempt releases the claim.
+// claimReleaseShape is one of the two rows a claim release is queued as, with the holder Dispatch
+// shows when the row takes the claim from a session of the issue's tree: the row of a move out of
+// the workflow, meeting the tree architect's current session, and the row of a session the daemon
+// left behind, meeting that session.
+type claimReleaseShape struct {
+	name    string
+	payload record.ClaimRelease
+	holder  string
+}
+
+var claimReleaseShapes = []claimReleaseShape{
+	{name: "the row of a move out of the workflow", payload: record.ClaimRelease{}, holder: claimTreeSession},
+	{name: "the row of a session left behind", payload: record.ClaimRelease{Session: claimTreeLeftSession}, holder: claimTreeLeftSession},
+}
+
+// What the daemon makes of Dispatch's answer to the DELETE, for both rows a release is queued as:
+// the holder still holding the claim is a wait the row rides out until the hour it is given runs
+// out, when the claim is left and the record says why; a contended one, which Dispatch applied
+// nothing for and judged nobody by, is a wait of its own the hour never ends; a refusal no retry
+// repairs ends the row with that refusal logged and recorded, naming the holder; and an outage,
+// whatever its shape, is ridden out and the next attempt releases the claim. A wait records
+// nothing, and a release leaves no entry.
 func testReleaseClaimAnswers(t *testing.T) {
 	// A claim release's backoff climbs to record.RetryBackoffMost, so one advance of the cap brings
 	// every attempt but the one the hour ends on due again.
 	const capped = record.RetryBackoffMost
-	for _, tc := range []struct {
-		name string
-		// age is how old the row already is at its first attempt.
-		age      time.Duration
-		answers  []error
-		attempts int
-		// between is how far the clock moves before each attempt after the first.
-		between time.Duration
-		deletes int
-		settled string
-		logged  string
-		holder  string
-		refusal map[string]any
-	}{
-		{name: "a 409 ISSUE_CLAIMED, then the holder is gone", answers: []error{claimConflict(dispatch.IssueClaimed)},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
-		// A contended release applied nothing and judged nobody, so it is a routine retry rather
-		// than a failure, and no evidence about the holder: it never spends the hour.
-		{name: "a 409 CLAIM_CONTENDED, then Dispatch applies it", answers: []error{claimConflict(dispatch.ClaimContended)},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
-		{name: "a 409 ISSUE_CLAIMED that never clears", answers: []error{claimConflict(dispatch.IssueClaimed), claimConflict(dispatch.IssueClaimed)},
-			attempts: 2, between: time.Hour, deletes: 2, settled: "outbox row waits",
-			logged: claimGaveUpLine, holder: "session:" + claimTreeSession},
-		{name: "a row already older than an hour at its first attempt", age: 2 * time.Hour,
-			answers: []error{claimConflict(dispatch.IssueClaimed)}, attempts: 1, deletes: 1,
-			logged: claimGaveUpLine, holder: "session:" + claimTreeSession},
-		{name: "a 404", answers: []error{&dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND"}},
-			attempts: 1, deletes: 1, logged: claimRefusedLine,
-			refusal: map[string]any{"status": float64(http.StatusNotFound), "code": "ISSUE_NOT_FOUND"}},
-		{name: "a 503", answers: []error{&dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE"}},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a closed connection", answers: []error{errors.New("read tcp 10.0.0.1:443: connection reset by peer")},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 401", answers: []error{&dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED"}},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 403", answers: []error{&dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN"}},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 408", answers: []error{&dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT"}},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 429", answers: []error{&dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED"}},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(claimTreeSession)},
-				false, answersInTurn(tc.answers...))
-			rig.records(outOfWorkflowIssue())
-			rig.due(tc.age)
-			for attempt := range tc.attempts {
-				if attempt > 0 {
-					rig.clock.advance(tc.between)
+	for _, shape := range claimReleaseShapes {
+		for _, tc := range []struct {
+			name string
+			// age is how old the row already is at its first attempt.
+			age      time.Duration
+			answers  []error
+			attempts int
+			// between is how far the clock moves before each attempt after the first.
+			between time.Duration
+			deletes int
+			settled string
+			logged  string
+			// namesHolder is that the logged line names the shape's holder.
+			namesHolder bool
+			refusal     map[string]any
+			// left is the reason the issue's record gives for the claim left, "" for none; such an
+			// entry names the shape's holder.
+			left record.ClaimLeftReason
+		}{
+			{name: "a 409 ISSUE_CLAIMED, then the holder is gone", answers: []error{claimConflict(dispatch.IssueClaimed)},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
+			// A contended release applied nothing and judged nobody, so it is a routine retry rather
+			// than a failure, and no evidence about the holder: it never spends the hour.
+			{name: "a 409 CLAIM_CONTENDED, then Dispatch applies it", answers: []error{claimConflict(dispatch.ClaimContended)},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
+			{name: "a 409 ISSUE_CLAIMED that never clears", answers: []error{claimConflict(dispatch.IssueClaimed), claimConflict(dispatch.IssueClaimed)},
+				attempts: 2, between: time.Hour, deletes: 2, settled: "outbox row waits",
+				logged: claimGaveUpLine, namesHolder: true, left: record.ClaimLeftHeldAnHour},
+			{name: "a row already older than an hour at its first attempt", age: 2 * time.Hour,
+				answers: []error{claimConflict(dispatch.IssueClaimed)}, attempts: 1, deletes: 1,
+				logged: claimGaveUpLine, namesHolder: true, left: record.ClaimLeftHeldAnHour},
+			{name: "a 404", answers: []error{&dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND"}},
+				attempts: 1, deletes: 1, logged: claimRefusedLine,
+				refusal: map[string]any{"status": float64(http.StatusNotFound), "code": "ISSUE_NOT_FOUND"}, left: record.ClaimLeftRefused},
+			{name: "a 503", answers: []error{&dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE"}},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+			{name: "a closed connection", answers: []error{errors.New("read tcp 10.0.0.1:443: connection reset by peer")},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+			{name: "a 401", answers: []error{&dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED"}},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+			{name: "a 403", answers: []error{&dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN"}},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+			{name: "a 408", answers: []error{&dispatch.Error{Status: http.StatusRequestTimeout, Code: "TIMEOUT"}},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+			{name: "a 429", answers: []error{&dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED"}},
+				attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+		} {
+			t.Run(shape.name+", "+tc.name, func(t *testing.T) {
+				rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(shape.holder)},
+					false, answersInTurn(tc.answers...))
+				rig.records(outOfWorkflowIssue())
+				rig.dueRow(tc.age, shape.payload)
+				for attempt := range tc.attempts {
+					if attempt > 0 {
+						rig.clock.advance(tc.between)
+					}
+					rig.run()
 				}
-				rig.run()
-			}
 
-			if got := rig.client.releases(); len(got) != tc.deletes {
-				t.Fatalf("claim releases = %v, want %d", got, tc.deletes)
-			}
-			if left := rig.left(); left != 0 {
-				t.Fatalf("rows left = %d, want the release row ended", left)
-			}
-			for _, settled := range []string{"outbox row waits", "outbox row failed"} {
-				lines := loggedLines(t, rig.logs.String(), settled)
-				if (len(lines) > 0) != (settled == tc.settled) {
-					t.Fatalf("logged %q %d times, want %t: %s", settled, len(lines), settled == tc.settled, rig.logs.String())
+				if got := rig.client.releases(); len(got) != tc.deletes {
+					t.Fatalf("claim releases = %v, want %d", got, tc.deletes)
 				}
-			}
-			line := rig.loggedOnce(tc.logged)
-			if line == nil {
-				return
-			}
-			if line["issue"] != claimIssue {
-				t.Fatalf("%q names issue %v, want %s", tc.logged, line["issue"], claimIssue)
-			}
-			if tc.holder != "" && line["holder"] != tc.holder {
-				t.Fatalf("%q names holder %v, want %s", tc.logged, line["holder"], tc.holder)
-			}
-			for key, want := range tc.refusal {
-				if line[key] != want {
-					t.Fatalf("%q names %s %v, want %v", tc.logged, key, line[key], want)
+				if left := rig.left(); left != 0 {
+					t.Fatalf("rows left = %d, want the release row ended", left)
 				}
-			}
-		})
+				for _, settled := range []string{"outbox row waits", "outbox row failed"} {
+					lines := loggedLines(t, rig.logs.String(), settled)
+					if (len(lines) > 0) != (settled == tc.settled) {
+						t.Fatalf("logged %q %d times, want %t: %s", settled, len(lines), settled == tc.settled, rig.logs.String())
+					}
+				}
+				holder := ""
+				if tc.left != "" {
+					holder = "session:" + shape.holder
+				}
+				rig.wantClaimLeft(tc.left, holder)
+				line := executorLoggedOnce(t, rig.logs, tc.logged)
+				if line == nil {
+					return
+				}
+				if line["issue"] != claimIssue {
+					t.Fatalf("%q names issue %v, want %s", tc.logged, line["issue"], claimIssue)
+				}
+				if tc.namesHolder && line["holder"] != "session:"+shape.holder {
+					t.Fatalf("%q names holder %v, want session:%s", tc.logged, line["holder"], shape.holder)
+				}
+				for key, want := range tc.refusal {
+					if line[key] != want {
+						t.Fatalf("%q names %s %v, want %v", tc.logged, key, line[key], want)
+					}
+				}
+			})
+		}
 	}
+
+	// The plan's answer to R1 against R4 for a live session of another issue of the tree: the
+	// root's architect, live, holds a stopped child's claim. It works a claim of the tree, but the
+	// child is out of the workflow, so the move's row asks Dispatch to release it, and Dispatch
+	// refuses 409 ISSUE_CLAIMED while it reads that session live. The row waits each time, writing
+	// nothing, until the hour from the row's creation, when it leaves the claim and the record
+	// names held-an-hour.
+	t.Run("the root's architect session, live, holds a stopped child's claim", func(t *testing.T) {
+		rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(claimTreeSession)},
+			false, func(int) error { return claimConflict(dispatch.IssueClaimed) })
+		rig.records(outOfWorkflowIssue())
+		rig.due(0)
+		for range 3 {
+			rig.run()
+			if left := rig.claimLeft(); left != nil {
+				t.Fatalf("the release waiting on the live architect within the hour wrote claimLeft %+v, want none yet", *left)
+			}
+			rig.clock.advance(20 * time.Minute)
+		}
+		rig.run()
+
+		if got := rig.client.releases(); len(got) != 4 {
+			t.Fatalf("claim releases = %v, want four, each refused while the architect lives", got)
+		}
+		if left := rig.left(); left != 0 {
+			t.Fatalf("rows left = %d, want the release row ended at the hour", left)
+		}
+		rig.wantClaimLeft(record.ClaimLeftHeldAnHour, "session:"+claimTreeSession)
+		if line := executorLoggedOnce(t, rig.logs, claimGaveUpLine); line["holder"] != "session:"+claimTreeSession {
+			t.Fatalf("%q names holder %v, want session:%s", claimGaveUpLine, line["holder"], claimTreeSession)
+		}
+	})
 }
 
 // A release waiting on a holder that has not stopped waits on a lane of its own

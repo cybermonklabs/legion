@@ -308,11 +308,19 @@ type OwedStart struct {
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
-// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
-// it carries. The holder and the issue's record are read when the row runs, not when it is
-// queued, so a re-admission, a second move to backlog or a person who claims the issue meanwhile each end
-// the row on their own, with no generation or holder to fence it.
-type ClaimRelease struct{}
+// ClaimRelease releases the issue's Dispatch claim; the row's issue column names the issue. The
+// holder and the issue's record are read when the row runs, not when it is queued, so a
+// re-admission, a second move to backlog or a person who claims the issue meanwhile each end the
+// row on their own, with no generation or holder to fence it.
+type ClaimRelease struct {
+	// Session, when set, is the session the daemon left behind for a claim of the issue: store's
+	// putClaim queued the row in the claim write that moved the claim off it, and the row acts only
+	// while Dispatch shows that session as the holder. Empty is the row of a move out of the
+	// workflow and of the boot pass, which judge whatever holder Dispatch shows. A release before
+	// this one decodes the payload strictly (DisallowUnknownFields) and would retry a row that
+	// carries it for ever, so the way back of 20261127193428_claim_left deletes those rows.
+	Session string `json:"session,omitempty"`
+}
 
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
