@@ -430,8 +430,8 @@ func (r *relay) Close(t testing.TB) {
 		// listening, not just this descriptor, so an inherited copy then neither answers a dial
 		// nor blocks an SO_REUSEADDR bind such as Gate.Open's beside its reservation. A child can
 		// still hold a copy for a moment after Close returns: Go releases ForkLock when the vfork
-		// parent resumes, which Linux does in exec_mmap before do_close_on_exec, and a child that
-		// exits without exec holds its copies until it exits.
+		// parent resumes, which Linux before 7.3 does in exec_mmap, before do_close_on_exec (7.3
+		// closes them first), and a child that exits without exec holds its copies until it exits.
 		//
 		// The fork lock is for gVisor, which keeps a shut-down listener's port bound while any
 		// copy is open but closes close-on-exec descriptors before it resumes the vfork parent.
