@@ -551,7 +551,7 @@ func TestThePinnedOhMyPiReplaysSavedResponsesBlockItemIDs(t *testing.T) {
 	t.Fatal("reader did not retain the signed block turn")
 }
 
-const attachmentFixturePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2rkAAAAASUVORK5CYII="
+const attachmentFixturePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
 
 func setStandInModalities(t *testing.T, rig *ompRig, textOnly bool) {
 	t.Helper()

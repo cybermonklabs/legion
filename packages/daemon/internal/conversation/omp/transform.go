@@ -24,7 +24,7 @@ type target struct {
 	anthropicEffort   bool
 	anthropicReplay   bool
 	anthropicFallback bool
-	blobResolver      func(string) ([]byte, error)
+	anthropicSigned   bool
 }
 
 // toRequest applies the pinned history transforms and projects the target encoder's
@@ -33,6 +33,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 	if t.api == conversation.AnthropicMessages {
 		t.prefixBinding = anthropicPrefixBinding(t.model)
 		t.anthropicSystem, t.anthropicEffort = anthropicControlSupport(t.model)
+		t.anthropicSigned = t.anthropicReplay && hasSignedAnthropicCompaction(messages, t)
 	}
 	messages = dropMalformedToolCalls(messages)
 	latest := -1
@@ -58,7 +59,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		var err error
 		switch m.role {
 		case "user":
-			out[i], err = userMessage(m, t)
+			out[i] = userMessage(m, t)
 			if t.api == conversation.OpenAIResponses && out[i].Native != nil &&
 				out[i].Native.Kind == conversation.OpenAIResponsesHistory {
 				native := *out[i].Native
@@ -69,10 +70,8 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 			rewritten := latestRewrite != nil && m.timestamp != nil && *m.timestamp <= *latestRewrite
 			out[i], err = assistantMessage(m, t, i == latest, rewritten, ids)
 		case "toolResult":
-			out[i], err = toolResultMessage(m, t)
-			if err == nil {
-				out[i].Content[0].ToolCallID = ids.result(m.toolCallID)
-			}
+			out[i] = toolResultMessage(m, t)
+			out[i].Content[0].ToolCallID = ids.result(m.toolCallID)
 		}
 		if err != nil {
 			return nil, err
@@ -116,13 +115,10 @@ func replaceHistoryImages(blocks []block) []block {
 }
 
 // userMessage converts the saved text and inline images. Both encoders omit blank input text.
-func userMessage(m llmMessage, t target) (conversation.Message, error) {
+func userMessage(m llmMessage, t target) conversation.Message {
 	msg := conversation.Message{Role: conversation.User, Native: m.native}
 	for _, b := range m.blocks {
-		converted, keep, err := inputBlock(b, t)
-		if err != nil {
-			return conversation.Message{}, err
-		}
+		converted, keep := inputBlock(b, t)
 		if keep && (converted.Type != conversation.Text || !blank(converted.Text)) {
 			msg.Content = append(msg.Content, converted)
 		}
@@ -131,6 +127,14 @@ func userMessage(m llmMessage, t target) (conversation.Message, error) {
 	case conversation.AnthropicMessages:
 		msg.Content = anthropicInput(msg.Content, t.textOnly)
 		selectAnthropicCompaction(&msg, t)
+		if m.native == nil {
+			if native := replayAnthropicCompaction(m.payload, t); native != nil {
+				msg.Role, msg.Content, msg.Native = conversation.Assistant, nil, native
+			}
+		}
+		if msg.Native != nil && msg.Native.Kind == conversation.AnthropicCompaction {
+			return msg
+		}
 		if m.developer {
 			markAnthropicDeveloper(&msg, m.attribution, m.payload, m.stringInput, t)
 		}
@@ -142,29 +146,29 @@ func userMessage(m llmMessage, t target) (conversation.Message, error) {
 			msg.Native = responsesInputHistory(m.payload, t.provider)
 		}
 	}
-	return msg, nil
+	return msg
 }
 
-func toolResultMessage(m llmMessage, t target) (conversation.Message, error) {
+func toolResultMessage(m llmMessage, t target) conversation.Message {
 	result := conversation.Block{Type: conversation.ToolResult, ToolCallID: m.toolCallID, ToolName: m.toolName, IsError: m.isError,
 		ProviderMetadata: m.providerMetadata}
+	if unreadableComputerScreenshot(result.ProviderMetadata) {
+		result.ProviderMetadata = nil
+	}
 	for _, b := range m.blocks {
-		converted, keep, err := inputBlock(b, t)
-		if err != nil {
-			return conversation.Message{}, err
-		}
+		converted, keep := inputBlock(b, t)
 		if keep {
 			result.Content = append(result.Content, converted)
 		}
 	}
-	return conversation.Message{Role: conversation.Tool, Content: []conversation.Block{result}}, nil
+	return conversation.Message{Role: conversation.Tool, Content: []conversation.Block{result}}
 }
 
 // inputBlock selects the image source the target encoder uses.
-func inputBlock(b block, t target) (conversation.Block, bool, error) {
+func inputBlock(b block, t target) (conversation.Block, bool) {
 	switch b.Type {
 	case "text":
-		return conversation.Block{Type: conversation.Text, Text: b.Text}, true, nil
+		return conversation.Block{Type: conversation.Text, Text: b.Text}, true
 	case "image":
 		image := conversation.Block{Type: conversation.Image, Detail: b.Detail}
 		// File IDs are scoped to the provider family of the encoder.
@@ -175,16 +179,15 @@ func inputBlock(b block, t target) (conversation.Block, bool, error) {
 		} else if b.URL != "" {
 			image.ImageURL = b.URL
 		} else {
-			var err error
-			image.ImageData, err = resolveImageBlob(b.Data, t.blobResolver)
-			if err != nil {
-				return conversation.Block{}, false, err
+			if reason := inlineImageFailure(b.MimeType, b.Data); reason != "" {
+				return conversation.Block{Type: conversation.Text, Text: imageOmission(b.MimeType, reason)}, true
 			}
+			image.ImageData = b.Data
 			image.MediaType = b.MimeType
 		}
-		return image, true, nil
+		return image, true
 	}
-	return conversation.Block{}, false, nil
+	return conversation.Block{}, false
 }
 
 // assistantMessage replays an assistant turn after the common history transforms
@@ -234,6 +237,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				// Anthropic's latest turn replays byte for byte.
 				thinking.Signature = b.ThinkingSignature
 			case anthropicTarget:
+				if thinking.Signature == "" && blank(thinking.Text) {
+					continue
+				}
 				if t.signing && blank(thinking.Signature) {
 					continue
 				}
@@ -369,7 +375,7 @@ func nativeHistory(m llmMessage, t target) (*conversation.Native, error) {
 	case "cursorHistory", "geminiNativeContent":
 		return nil, nil
 	case string(conversation.AnthropicCompaction):
-		return assistantAnthropicCompaction(m.payload, t), nil
+		return replayAnthropicCompaction(m.payload, t), nil
 	default:
 		return nil, conversation.Unknown("providerPayload type %q", payload.Type)
 	}

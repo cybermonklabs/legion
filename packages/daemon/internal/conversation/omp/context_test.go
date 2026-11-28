@@ -226,7 +226,7 @@ func TestContextPlacesNotesAfterAllRetainedToolResults(t *testing.T) {
 
 func contextBeforeRequest(t *testing.T, f *fixture) *sessionContext {
 	t.Helper()
-	parsed, err := parseSession(f.bytes())
+	parsed, err := parseSession(f.bytes(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,11 +239,11 @@ func contextBeforeRequest(t *testing.T, f *fixture) *sessionContext {
 
 func TestReadReplaysUserSteeringAndKeepsSkillImagesTogether(t *testing.T) {
 	f := newFixture()
-	f.add(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Please stop."},{"type":"image","data":"iVBO","mimeType":"image/png"}],"steering":true}}`)
-	f.add(`{"type":"custom_message","customType":"skill-prompt","attribution":"user","content":[{"type":"text","text":"Read this."},{"type":"image","data":"iVBO","mimeType":"image/png"}]}`)
-	f.add(`{"type":"custom_message","content":[{"type":"image","data":"iVBO","mimeType":"image/png"}]}`)
+	f.add(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Please stop."},{"type":"image","data":"` + attachmentFixturePNG + `","mimeType":"image/png"}],"steering":true}}`)
+	f.add(`{"type":"custom_message","customType":"skill-prompt","attribution":"user","content":[{"type":"text","text":"Read this."},{"type":"image","data":"` + attachmentFixturePNG + `","mimeType":"image/png"}]}`)
+	f.add(`{"type":"custom_message","content":[{"type":"image","data":"` + attachmentFixturePNG + `","mimeType":"image/png"}]}`)
 	f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
-	image := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "iVBO"}
+	image := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG}
 	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
 		{Role: conversation.User, Content: []conversation.Block{text("<system-notice>\nUser interjection during work: priority; supersedes conflicting prior instructions. Re-read; ensure current work reflects user intent.\n</system-notice>\nPlease stop."), image}},
 		{Role: conversation.User, Content: []conversation.Block{text("Read this."), image}},

@@ -146,8 +146,9 @@ type parsed struct {
 // last record) is skipped, and the first record must be the session header. Unlike the loader,
 // a well-formed record of a type, or a header version, the pinned Oh My Pi does not write refuses
 // the session.
-func parseSession(content []byte) (*parsed, error) {
+func parseSession(content []byte, resolve func(string) ([]byte, error)) (*parsed, error) {
 	var p parsed
+	blobs := sessionBlobs{read: resolve}
 	first := true
 	sawHeader := false
 	for len(content) > 0 {
@@ -201,6 +202,16 @@ func parseSession(content []byte) (*parsed, error) {
 		}
 		if e.Type == "message" && e.Message == nil {
 			return nil, conversation.Unknown("message entry %s with no message", e.ID)
+		}
+		restored, err := blobs.restoreEntry(line)
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(restored, line) {
+			e = entry{}
+			if err := json.Unmarshal(restored, &e); err != nil {
+				return nil, conversation.Unknown("a restored session record Oh My Pi's entry shape does not fit: %v", err)
+			}
 		}
 		p.entries = append(p.entries, &e)
 	}

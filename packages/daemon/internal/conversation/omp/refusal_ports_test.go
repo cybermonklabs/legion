@@ -39,7 +39,7 @@ func TestReadExecutionMessages(t *testing.T) {
 		name, message, want string
 		image               bool
 	}{
-		{"bash", `{"role":"bashExecution","command":"printf plum","output":"plum","exitCode":2,"images":[{"type":"image","mimeType":"image/png","data":"cGx1bQ=="}],"meta":{"truncation":{"direction":"tail","truncatedBy":"bytes","totalLines":4,"outputLines":1,"maxBytes":1280,"shownRange":{"start":4,"end":4},"artifactId":"a1"}}}`, "Ran `printf plum`\n```\nplum\n```\n\nCommand exited with code 2\n\n[Showing lines 4-4 of 4 (1.3KB limit). Read artifact://a1 for full output]", true},
+		{"bash", `{"role":"bashExecution","command":"printf plum","output":"plum","exitCode":2,"images":[{"type":"image","mimeType":"image/png","data":"` + attachmentFixturePNG + `"}],"meta":{"truncation":{"direction":"tail","truncatedBy":"bytes","totalLines":4,"outputLines":1,"maxBytes":1280,"shownRange":{"start":4,"end":4},"artifactId":"a1"}}}`, "Ran `printf plum`\n```\nplum\n```\n\nCommand exited with code 2\n\n[Showing lines 4-4 of 4 (1.3KB limit). Read artifact://a1 for full output]", true},
 		{"bash cancelled", `{"role":"bashExecution","command":"printf plum","output":"","exitCode":2,"cancelled":true}`, "Ran `printf plum`\n(no output)\n\n(command cancelled)", false},
 		{"python", `{"role":"pythonExecution","code":"print('plum')","output":"plum","exitCode":3}`, "Ran Python:\n```python\nprint('plum')\n```\nOutput:\n```\nplum\n```\n\nExecution failed with code 3", false},
 		{"python cancelled", `{"role":"pythonExecution","code":"print('plum')","output":"","exitCode":3,"cancelled":true}`, "Ran Python:\n```python\nprint('plum')\n```\n(no output)\n\n(execution cancelled)", false},
@@ -51,7 +51,7 @@ func TestReadExecutionMessages(t *testing.T) {
 			f.add(`{"type":"message","message":{"role":"pythonExecution","code":"hidden","excludeFromContext":true}}`)
 			want := user(tc.want)
 			if tc.image {
-				want.Content = append(want.Content, conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "cGx1bQ=="})
+				want.Content = append(want.Content, conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG})
 			}
 			assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{claude(text("start")), want})
 		})
@@ -59,8 +59,8 @@ func TestReadExecutionMessages(t *testing.T) {
 }
 
 func TestReadLegacyHookAndFileMention(t *testing.T) {
-	const image = `{"type":"image","mimeType":"image/png","data":"cGx1bQ=="}`
-	inline := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "cGx1bQ=="}
+	const image = `{"type":"image","mimeType":"image/png","data":"` + attachmentFixturePNG + `"}`
+	inline := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG}
 	for _, tc := range []struct {
 		name, record string
 		want         []conversation.Message
@@ -88,20 +88,23 @@ func TestReadAnthropicFallbackSegments(t *testing.T) {
 	const first = `{"type":"thinking","thinking":"old thought","thinkingSignature":"b2xk"}`
 	const second = `{"type":"thinking","thinking":"new thought","thinkingSignature":"bmV3"}`
 	const boundary = `{"type":"fallback","from":{"model":"claude-one"},"to":{"model":"claude-two"}}`
-	f := newFixture()
-	f.add(claudeEntry("stop", `[`+first+`,`+boundary+`,`+second+`,{"type":"text","text":"answer"}]`))
 	old := conversation.Block{Type: conversation.Thinking, Text: "old thought", Signature: "b2xk"}
 	fresh := conversation.Block{Type: conversation.Thinking, Text: "new thought", Signature: "bmV3"}
 	for _, tc := range []struct {
-		name string
-		opts Options
-		want []conversation.Block
+		name  string
+		opts  Options
+		after string
+		want  []conversation.Block
 	}{
-		{"collapse", Options{}, []conversation.Block{fresh, text("answer")}},
-		{"nonofficial", Options{AnthropicServerSideFallback: true, NonOfficialAnthropicEndpoint: true}, []conversation.Block{fresh, text("answer")}},
-		{"enabled", Options{AnthropicServerSideFallback: true}, []conversation.Block{old, {Type: conversation.AnthropicFallback, NativeBlock: json.RawMessage(boundary)}, fresh, text("answer")}},
+		{"collapse", Options{}, second, []conversation.Block{fresh, text("answer")}},
+		{"nonofficial", Options{AnthropicServerSideFallback: true, NonOfficialAnthropicEndpoint: true}, second, []conversation.Block{fresh, text("answer")}},
+		{"enabled", Options{AnthropicServerSideFallback: true}, second, []conversation.Block{old, {Type: conversation.AnthropicFallback, NativeBlock: json.RawMessage(boundary)}, fresh, text("answer")}},
+		{"empty unsigned thinking", Options{ReplayUnsignedThinking: true}, `{"type":"thinking","thinking":" \t"}`, []conversation.Block{old, text("answer")}},
+		{"no final reasoning", Options{}, `{"type":"text","text":"later"}`, []conversation.Block{old, text("later"), text("answer")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(claudeEntry("stop", `[`+first+`,`+boundary+`,`+tc.after+`,{"type":"text","text":"answer"}]`))
 			s, err := Read(f.bytes(), tc.opts)
 			if err != nil {
 				t.Fatal(err)
@@ -165,7 +168,7 @@ func TestReadImageSourcePrecedence(t *testing.T) {
 	const inputs = `[{"type":"text","text":"images"},` +
 		`{"type":"image","url":"https://example.invalid/p.png","mimeType":"image/bmp","data":"b25l","providerFile":{"provider":"anthropic","id":"file_a"}},` +
 		`{"type":"image","url":"https://example.invalid/q.png","mimeType":"image/png","data":"dHdv","providerFile":{"provider":"openai","id":"file_o"}},` +
-		`{"type":"image","mimeType":"image/png","data":"dGhyZWU=","providerFile":{"provider":"google","id":"file_g"}}]`
+		`{"type":"image","mimeType":"image/png","data":"` + attachmentFixturePNG + `","providerFile":{"provider":"google","id":"file_g"}}]`
 	for _, tc := range []struct {
 		provider, api, model string
 		want                 []conversation.Block
@@ -179,7 +182,7 @@ func TestReadImageSourcePrecedence(t *testing.T) {
 			f.add(assistantEntry(tc.provider, tc.api, tc.model, "stop", `[{"type":"text","text":"seen"}]`))
 			want := user("images")
 			want.Content = append(want.Content, tc.want...)
-			want.Content = append(want.Content, conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "dGhyZWU="})
+			want.Content = append(want.Content, conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG})
 			assertMessages(t, read(t, f.bytes()).Messages[:1], []conversation.Message{want})
 		})
 	}
@@ -187,14 +190,18 @@ func TestReadImageSourcePrecedence(t *testing.T) {
 
 func TestReadResolvesImageBlob(t *testing.T) {
 	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const invalidBase64 = "[image omitted: undecodable image/png data (invalid base64 image data)]"
 	for _, tc := range []struct {
-		name, data, want string
+		name, data, note string
 		resolve          bool
 	}{
-		{"resolved", blobPrefix + hash, "cGx1bQ==", true},
-		{"missing", blobPrefix + hash, blobPrefix + hash, true},
-		{"no resolver", blobPrefix + hash, blobPrefix + hash, false},
-		{"invalid", blobPrefix + "../plum", blobPrefix + "../plum", true},
+		{"resolved", blobPrefix + hash, "", true},
+		{"missing", blobPrefix + hash, invalidBase64, true},
+		{"no resolver", blobPrefix + hash, invalidBase64, false},
+		{"invalid", blobPrefix + "../plum", invalidBase64, true},
+		{"base64 not an image", "cGx1bQ==", "[image omitted: undecodable image/png data (Image: unrecognised format (expected JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC or AVIF))]", false},
+		{"noncanonical base64", "cGx1bR==", invalidBase64, false},
+		{"empty data", "", "[image omitted: undecodable image/png data (empty image data)]", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
@@ -209,7 +216,7 @@ func TestReadResolvesImageBlob(t *testing.T) {
 					if tc.name == "missing" {
 						return nil, nil
 					}
-					return []byte("plum"), nil
+					return base64.StdEncoding.DecodeString(attachmentFixturePNG)
 				}
 			}
 			s, err := Read(f.bytes(), opts)
@@ -217,7 +224,11 @@ func TestReadResolvesImageBlob(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := user("image")
-			want.Content = append(want.Content, conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: tc.want})
+			if tc.note != "" {
+				want.Content = append(want.Content, text(tc.note))
+			} else {
+				want.Content = append(want.Content, conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG})
+			}
 			assertMessages(t, s.Messages[:1], []conversation.Message{want})
 		})
 	}
@@ -245,12 +256,16 @@ func TestReadSQLResolvesImageBlobs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a, b := bytes.Repeat([]byte{0x61}, 96), bytes.Repeat([]byte{0x62}, 95)
-	whole := bytes.Join([][]byte{b, a, b}, nil)
+	a, err := base64.StdEncoding.DecodeString(attachmentFixturePNG)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := bytes.Repeat([]byte{0x62}, 95)
+	whole := bytes.Join([][]byte{a, b, a, b}, nil)
 	ka, kb, key := ompsessions.Summarize(a).SHA256, ompsessions.Summarize(b).SHA256, ompsessions.Summarize(whole).SHA256
 	insert(ka, a, len(a))
 	insert(kb, b, len(b))
-	insert(key, []byte(kb+ka+kb), len(whole))
+	insert(key, []byte(ka+kb+ka+kb), len(whole))
 	f := newFixture()
 	f.add(fmt.Sprintf(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"images"},{"type":"image","mimeType":"image/png","data":%q},{"type":"image","mimeType":"image/png","data":%q}]}}`, blobPrefix+ka, blobPrefix+key))
 	f.add(claudeEntry("stop", `[{"type":"text","text":"seen"}]`))

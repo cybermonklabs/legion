@@ -881,10 +881,10 @@ func TestReadCarriesOpenAIReasoningNativeAndForeignReasoningAsText(t *testing.T)
 // Inline images reach the request as their media type and data.
 func TestReadCarriesImages(t *testing.T) {
 	f := newFixture()
-	f.add(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","data":"iVBORw0K","mimeType":"image/png"}],"timestamp":1}}`)
+	f.add(`{"type":"message","message":{"role":"user","content":[{"type":"text","text":"look"},{"type":"image","data":"` + attachmentFixturePNG + `","mimeType":"image/png"}],"timestamp":1}}`)
 	f.add(claudeEntry("stop", `[{"type":"text","text":"seen"}]`))
 	s := read(t, f.bytes())
-	if got := s.Messages[0].Content; len(got) != 2 || !reflect.DeepEqual(got[1], conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "iVBORw0K"}) {
+	if got := s.Messages[0].Content; len(got) != 2 || !reflect.DeepEqual(got[1], conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG}) {
 		t.Errorf("user content = %+v", got)
 	}
 }
@@ -1012,7 +1012,7 @@ func TestReadConvertsCustomMessagesAndPrunes(t *testing.T) {
 	f.add(userEntry("request"))
 	f.add(`{"type":"custom_message","customType":"envoy-message","content":"A message arrived.","display":true}`)
 	f.add(`{"type":"custom_message","customType":"prewalk-plan","content":"plan","display":false}`)
-	f.add(`{"type":"custom_message","customType":"screenshot","content":[{"type":"text","text":"Screen:"},{"type":"image","data":"iVBO","mimeType":"image/png"}],"display":true}`)
+	f.add(`{"type":"custom_message","customType":"screenshot","content":[{"type":"text","text":"Screen:"},{"type":"image","data":"` + attachmentFixturePNG + `","mimeType":"image/png"}],"display":true}`)
 	f.add(`{"type":"custom_message","customType":"collab-prompt","content":"Stop   \n\n\n\nnow","display":true,"attribution":"user"}`)
 	f.add(claudeEntry("toolUse", `[{"type":"toolCall","id":"toolu_01","name":"xd://codegraph","arguments":{}}]`))
 	result := f.add(`{"type":"message","message":{"role":"toolResult","toolCallId":"toolu_01","toolName":"xd://codegraph","content":[{"type":"text","text":"a long output"},{"type":"text","text":" continued"}],"isError":false,"timestamp":3}}`)
@@ -1032,7 +1032,7 @@ func TestReadConvertsCustomMessagesAndPrunes(t *testing.T) {
 		user("request"),
 		user("A message arrived."),
 		user("Screen:"),
-		{Role: conversation.User, Content: []conversation.Block{text("Images attached to screenshot."), {Type: conversation.Image, MediaType: "image/png", ImageData: "iVBO"}}},
+		{Role: conversation.User, Content: []conversation.Block{text("Images attached to screenshot."), {Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG}}},
 		user("<system-notice>\nUser interjection during work: priority; supersedes conflicting prior instructions. Re-read; ensure current work reflects user intent.\n</system-notice>\nStop\nnow"),
 		claude(call("toolu_01", "codegraph", `{}`)),
 		{Role: conversation.Tool, Content: []conversation.Block{{Type: conversation.ToolResult, ToolCallID: "toolu_01", ToolName: "codegraph", Content: []conversation.Block{text("[Uneventful result elided]")}}}},

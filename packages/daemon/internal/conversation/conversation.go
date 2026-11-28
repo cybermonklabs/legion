@@ -54,7 +54,8 @@ const (
 	// ToolResult is a call's result: ToolCallID, ToolName, Content (Text and Image blocks) and
 	// IsError.
 	ToolResult BlockType = "tool_result"
-	// Image is an image: MediaType and ImageData, base64.
+	// Image carries inline MediaType and base64 ImageData, an ImageFileID, or an
+	// ImageURL. Detail records the requested image detail when present.
 	Image BlockType = "image"
 	// ToolAddition and ToolRemoval change tool availability in a saved message. ToolName
 	// is the logical name before the sender applies the endpoint's wire naming rules.

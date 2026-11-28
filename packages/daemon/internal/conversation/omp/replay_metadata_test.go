@@ -12,7 +12,7 @@ import (
 
 func TestReadCarriesResponsesBlockToolMetadata(t *testing.T) {
 	const callMetadata = `{"type":"computer","providerItemId":"cu_desktop","actions":[{"type":"screenshot"}],"pendingSafetyChecks":[{"id":"check_1","code":"example","message":"Check the screen."}]}`
-	const resultMetadata = `{"type":"computer","screenshot":{"type":"computer_screenshot","image_url":"data:image/png;base64,eA=="},"acknowledgedSafetyChecks":[{"id":"check_1","code":"example","message":"Check the screen."}]}`
+	const resultMetadata = `{"type":"computer","screenshot":{"type":"computer_screenshot","image_url":"data:image/png;base64,` + attachmentFixturePNG + `"},"acknowledgedSafetyChecks":[{"id":"check_1","code":"example","message":"Check the screen."}]}`
 	f := newFixture()
 	f.add(userEntry("Inspect the workspace."))
 	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", "toolUse", `[`+
@@ -46,6 +46,46 @@ func TestReadCarriesResponsesBlockToolMetadata(t *testing.T) {
 			t.Fatalf("computer result = %+v, want paired result with metadata %s", result, resultMetadata)
 		}
 	})
+}
+
+func TestReadRestoresToolImageMetadata(t *testing.T) {
+	const url = "data:image/png;base64," + attachmentFixturePNG
+	hash := strings.Repeat("a", 64)
+	ref := blobPrefix + hash
+	noncanonical := blobPrefix + strings.ToUpper(hash)
+	metadata := `{"type":"computer","screenshot":{"type":"computer_screenshot","image_url":` + quote(ref) +
+		`},"other":{"image_url":[` + quote(ref) + `,` + quote(noncanonical) + `],"text":` + quote(ref) + `}}`
+	f := newFixture()
+	f.add(assistantEntry("openai", conversation.OpenAIResponses, "gpt-test", "toolUse", `[{"type":"toolCall","id":"call_desktop|cu_desktop","name":"computer","arguments":{}}]`))
+	f.add(withMessageFields(toolResultEntry("call_desktop|cu_desktop", "computer", "captured", false), `,"providerMetadata":`+metadata))
+	var calls int
+	s, err := Read(f.bytes(), Options{BlobResolver: func(key string) ([]byte, error) {
+		if key != hash {
+			t.Fatalf("resolver received %q, want canonical hash %q", key, hash)
+		}
+		calls++
+		return []byte(url), nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Screenshot struct {
+			URL string `json:"image_url"`
+		}
+		Other struct {
+			URLs []string `json:"image_url"`
+			Text string
+		}
+	}
+	raw := s.Messages[1].Content[0].ProviderMetadata
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Screenshot.URL != url || len(got.Other.URLs) != 2 ||
+		got.Other.URLs[0] != url || got.Other.URLs[1] != noncanonical || got.Other.Text != ref || calls != 1 {
+		t.Fatalf("metadata = %s, resolver calls = %d, want both URL sites restored from one read", raw, calls)
+	}
 }
 
 func TestReadPlacesAnthropicCompactionFileNotes(t *testing.T) {

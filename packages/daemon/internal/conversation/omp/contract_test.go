@@ -369,7 +369,7 @@ type reminderJournal struct {
 func readReminderJournal(t *testing.T, content []byte) reminderJournal {
 	t.Helper()
 	journal := reminderJournal{prefixes: map[string]int{}, controls: map[string]int{}}
-	p, err := parseSession(content)
+	p, err := parseSession(content, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -769,7 +769,7 @@ func TestThePinnedOhMyPiDropsThinkingOnClaudeResume(t *testing.T) {
 			}, "the initial signed thinking")
 			now := time.Now()
 			if tc.compaction {
-				parsed, err := parseSession(sessionContent(t, file))
+				parsed, err := parseSession(sessionContent(t, file), nil)
 				if err != nil {
 					t.Fatal(err)
 				}

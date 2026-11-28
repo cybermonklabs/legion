@@ -156,7 +156,7 @@ func corpusTarget(content []byte, family string) (target, string, bool) {
 			}
 		}
 	}
-	if p, err := parseSession(content); err == nil {
+	if p, err := parseSession(content, nil); err == nil {
 		if built, err := buildContext(p.entries); err == nil {
 			if model, ok := strings.CutPrefix(built.model, route.provider+"/"); ok && built.api == route.api {
 				setModel(model)
@@ -415,7 +415,7 @@ func TestCorpusExcludesOnlyNewRequestNoticesFromHistoryCheck(t *testing.T) {
 // Use the contract tests' journal matching rules without printing invalid records.
 func corpusReminders(content []byte) (reminderJournal, bool) {
 	j := reminderJournal{prefixes: map[string]int{}, controls: map[string]int{}}
-	p, err := parseSession(content)
+	p, err := parseSession(content, nil)
 	if err != nil {
 		return j, false
 	}

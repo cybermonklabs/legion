@@ -13,6 +13,7 @@
 // The `legion sessions import` command copies session files into the table with Import.
 // HasTable checks whether the session table is readable, Titles lists session titles and headers
 // from the table, and Describe and DescribeFile read metadata from session content or files.
+// ReadBlob reads and verifies the bytes of an image stored under its SHA-256 hash.
 //
 // Every statement runs in a transaction that one message opens and pins, OpenRead or OpenWrite
 // (open.go), which sets back for the transaction each setting of LeftSettings that another client

@@ -12,8 +12,8 @@ import (
 func TestResponsesHistoryShaping(t *testing.T) {
 	const api = conversation.OpenAIResponses
 	model := target{api: api, provider: "openai", model: "gpt-test"}
-	image := block{Type: "image", MimeType: "image/png", Data: "eA=="}
-	neutralImage := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "eA=="}
+	image := block{Type: "image", MimeType: "image/png", Data: attachmentFixturePNG}
+	neutralImage := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: attachmentFixturePNG}
 	textBlock := func(s string) block { return block{Type: "text", Text: s} }
 	var prompt = llmMessage{role: "user", blocks: []block{image, textBlock("  "), textBlock("first"), image, textBlock("last")}}
 	var tool = llmMessage{role: "assistant", api: api, provider: model.provider, model: model.model, stopReason: "toolUse", blocks: []block{{Type: "toolCall", ID: "opaque|fc_a", Name: "read"}}}

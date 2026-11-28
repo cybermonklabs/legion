@@ -25,6 +25,10 @@ func selectAnthropicCompaction(m *conversation.Message, t target) {
 	if t.anthropicReplay && m.Native.Provider == t.provider &&
 		json.Unmarshal(m.Native.Payload, &state) == nil &&
 		(compactionString(state.Signature) != "" || compactionString(state.EncryptedContent) != "") {
+		if t.anthropicSigned && compactionString(state.Signature) == "" {
+			m.Native = nil
+			return
+		}
 		m.Role, m.Content = conversation.Assistant, nil
 		return
 	}
@@ -37,19 +41,50 @@ func compactionString(raw json.RawMessage) string {
 	return s
 }
 
-// An assistant can carry the compaction block before its other output.
-func assistantAnthropicCompaction(raw json.RawMessage, t target) *conversation.Native {
+// Signed state anywhere in the request disables legacy ciphertext replay.
+func hasSignedAnthropicCompaction(messages []llmMessage, t target) bool {
+	for _, m := range messages {
+		if m.role != "assistant" && m.role != "user" {
+			continue
+		}
+		if m.native != nil && m.native.Kind == conversation.AnthropicCompaction {
+			var state struct {
+				Signature json.RawMessage `json:"signature"`
+			}
+			if m.native.Provider == t.provider && json.Unmarshal(m.native.Payload, &state) == nil &&
+				compactionString(state.Signature) != "" {
+				return true
+			}
+		}
+		if state, ok := parseAnthropicCompaction(m.payload, t.provider); ok && state.Signature != nil {
+			return true
+		}
+	}
+	return false
+}
+
+type anthropicCompactionState struct {
+	Type             conversation.NativeKind `json:"type"`
+	Provider         string                  `json:"provider"`
+	Content          string                  `json:"content"`
+	Signature        *string                 `json:"signature"`
+	EncryptedContent *string                 `json:"encryptedContent"`
+}
+
+func parseAnthropicCompaction(raw json.RawMessage, provider string) (state anthropicCompactionState, ok bool) {
+	if json.Unmarshal(raw, &state) != nil {
+		return state, false
+	}
+	return state, state.Type == conversation.AnthropicCompaction && state.Provider == provider && state.Content != ""
+}
+
+// replayAnthropicCompaction selects native replay for a recorded message payload.
+func replayAnthropicCompaction(raw json.RawMessage, t target) *conversation.Native {
 	if t.api != conversation.AnthropicMessages || !t.anthropicReplay {
 		return nil
 	}
-	var state struct {
-		Provider         string  `json:"provider"`
-		Content          string  `json:"content"`
-		Signature        *string `json:"signature"`
-		EncryptedContent *string `json:"encryptedContent"`
-	}
-	if json.Unmarshal(raw, &state) != nil || state.Provider != t.provider || state.Content == "" ||
-		(state.Signature == nil && state.EncryptedContent == nil) {
+	state, ok := parseAnthropicCompaction(raw, t.provider)
+	if !ok || (state.Signature == nil && (t.anthropicSigned || state.EncryptedContent == nil)) {
 		return nil
 	}
 	return &conversation.Native{Kind: conversation.AnthropicCompaction, Provider: state.Provider, Payload: raw}

@@ -87,6 +87,7 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // With ReplayAnthropicCompaction, Read replaces eligible summary text with the
 // native compaction block, inserts its file notes, then places developer messages.
 // It also retains an assistant's eligible native compaction before its other output.
+// Signed compaction anywhere in the context disables legacy encrypted replay.
 // Without it, Read returns the summary text and does not insert separate file notes.
 //
 // AnthropicServerSideFallback supplies the current request's beta choice.
@@ -108,6 +109,7 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // as an empty string. It needs the endpoint and authentication policy to encode tool names
 // and to add the tool-result id alias where required. Read selects the target API's
 // file reference, then a URL, then inline image data. BlobResolver supplies saved bytes.
+// Read replaces unreadable inline images with a text note.
 // For Responses, Read carries the recorded detail. The sender defaults unrecorded detail
 // to auto and clamps original to auto if the resolved endpoint does not support original.
 // The session does not record images.blockImages or whether a route strips images
@@ -123,6 +125,7 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // choose between native items and blocks. An incremental assistant payload adds its items.
 // An assistant snapshot replaces the earlier wire input. Eligible user or developer payloads,
 // including compaction summaries, use their items in place of the message's fallback blocks.
+// Read replaces unreadable native data-URI images in user or developer replay with text.
 // Read carries the same-model Responses text phase and the saved message and tool item IDs
 // on blocks. The sender decides which IDs to keep, omit, or invent and hashes IDs over 64
 // characters. It needs the message-ID preservation option, the presence of replayable
@@ -130,6 +133,8 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //
 // The sender needs the resolved target identity and compatibility policy: image and computer
 // support, custom tool format, current tool declarations and wire names, and thinking mode.
+// Read clears unreadable computer screenshot metadata. The sender then selects its
+// result fallback after choosing the call kind.
 // On a model alias the reader cannot infer the wire model identity from the journal ID.
 //
 // Read inserts an interrupted-output placeholder after a native function or custom call
@@ -184,15 +189,15 @@ type Options struct {
 	// AnthropicServerSideFallback enables fallback boundaries on the official endpoint.
 	AnthropicServerSideFallback bool
 	// BlobResolver reads a canonical SHA-256 digest from the session's blob store.
-	// Return nil bytes and no error if the blob is absent. With no resolver or
-	// no blob, Read leaves the reference unchanged, as Oh My Pi does.
+	// Return nil bytes and no error if the blob is absent. Read replaces an
+	// unresolved inline image block with Oh My Pi's undecodable-image note.
 	// ReadSQL uses the session database if no resolver is supplied.
 	BlobResolver func(hash string) ([]byte, error)
 }
 
 // Read reads a session's content.
 func Read(content []byte, opts Options) (*Session, error) {
-	p, err := parseSession(content)
+	p, err := parseSession(content, opts.BlobResolver)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +236,6 @@ func Read(content []byte, opts Options) (*Session, error) {
 		textOnly:          opts.TextOnly,
 		anthropicReplay:   opts.ReplayAnthropicCompaction,
 		anthropicFallback: opts.AnthropicServerSideFallback,
-		blobResolver:      opts.BlobResolver,
 	})
 	if err != nil {
 		return nil, err

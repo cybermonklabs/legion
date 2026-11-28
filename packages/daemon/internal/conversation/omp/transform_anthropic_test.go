@@ -9,9 +9,8 @@ import (
 
 func TestAnthropicHistoryShaping(t *testing.T) {
 	target := ompAnthropicTarget()
-	image := block{Type: "image", MimeType: " Image/JPG ", Data: "eA=="}
-	jpeg := conversation.Block{Type: conversation.Image, MediaType: "image/jpeg", ImageData: image.Data}
-	png := conversation.Block{Type: conversation.Image, MediaType: "image/png", ImageData: "eQ=="}
+	image := block{Type: "image", MimeType: "image/png", Data: attachmentFixturePNG}
+	png := conversation.Block{Type: conversation.Image, MediaType: image.MimeType, ImageData: image.Data}
 	textBlock := func(s string) block { return block{Type: "text", Text: s} }
 	prompt := func(parts ...block) llmMessage { return llmMessage{role: "user", blocks: parts} }
 	assistant := func(parts ...block) llmMessage {
@@ -67,14 +66,18 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 		check(t, []llmMessage{one, prompt(textBlock(" \t")), two}, turn(one, text("one")), user("Continue."), turn(two, text("two")))
 	})
 	t.Run("inline image type normalization", func(t *testing.T) {
-		check(t, []llmMessage{prompt(textBlock("look"), image)}, userBlocks(text("look"), jpeg))
+		raw := conversation.Block{Type: conversation.Image, MediaType: " Image/JPG ", ImageData: "eA=="}
+		want := conversation.Block{Type: conversation.Image, MediaType: "image/jpeg", ImageData: raw.ImageData}
+		assertMessages(t, []conversation.Message{userBlocks(anthropicInput([]conversation.Block{text("look"), raw}, false)...)},
+			[]conversation.Message{userBlocks(text("look"), want)})
 	})
 	t.Run("image only input has leading text", func(t *testing.T) {
-		check(t, []llmMessage{prompt(textBlock("\t"), image)}, userBlocks(text("(see attached image)"), jpeg))
+		check(t, []llmMessage{prompt(textBlock("\t"), image)}, userBlocks(text("(see attached image)"), png))
 	})
 	t.Run("unsupported historical media becomes text", func(t *testing.T) {
-		pdf := block{Type: "image", MimeType: "application/pdf", Data: "eA=="}
-		check(t, []llmMessage{prompt(pdf, image)}, userBlocks(text("(see attached image)"), text("[unsupported image: application/pdf]"), jpeg))
+		pdf := conversation.Block{Type: conversation.Image, MediaType: "application/pdf", ImageData: "eA=="}
+		assertMessages(t, []conversation.Message{userBlocks(anthropicInput([]conversation.Block{pdf, png}, false)...)},
+			[]conversation.Message{userBlocks(text("(see attached image)"), text("[unsupported image: application/pdf]"), png)})
 	})
 	t.Run("text only coalesces adjacent image notes and joins text", func(t *testing.T) {
 		f := newFixture()
@@ -89,13 +92,12 @@ func TestAnthropicHistoryShaping(t *testing.T) {
 		})
 	})
 	t.Run("error images follow the whole tool result run", func(t *testing.T) {
-		pngBlock := block{Type: "image", MimeType: png.MediaType, Data: png.ImageData}
 		source := assistant(callBlock("a"), callBlock("b"), callBlock("c"))
 		check(t, []llmMessage{source, toolResult("a", true, image), toolResult("b", false, textBlock("ok")),
-			toolResult("c", true, textBlock("failed"), pngBlock), prompt(textBlock("next"))},
+			toolResult("c", true, textBlock("failed"), image), prompt(textBlock("next"))},
 			turn(source, call("a", "read", `{}`), call("b", "read", `{}`), call("c", "read", `{}`)),
 			result("a", "read", "(see attached image)", true), result("b", "read", "ok", false), result("c", "read", "failed", true),
-			userBlocks(text("Attached image(s) from the tool result(s) above:"), jpeg, png), user("next"))
+			userBlocks(text("Attached image(s) from the tool result(s) above:"), png, png), user("next"))
 	})
 	t.Run("result blank text drops", func(t *testing.T) {
 		source := assistant(callBlock("x"))

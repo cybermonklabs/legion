@@ -185,6 +185,50 @@ func replayFunctionArguments(raw string) string {
 	return string(diagnostic)
 }
 
+// omitUnreadableImages modifies only replay items. A user or developer payload
+// can carry an image even when its generic message content contains only text.
+func (i *responsesHistoryItem) omitUnreadableImages() {
+	if i.kind == "input_image" {
+		if note := imageURIOmission(i.stringField("image_url")); note != "" {
+			i.kind = "input_text"
+			clear(i.fields)
+			i.fields["type"] = json.RawMessage(`"input_text"`)
+			i.fields["text"], _ = json.Marshal(note)
+			i.raw, _ = json.Marshal(i.fields)
+			return
+		}
+	}
+	content := i.fields["content"]
+	if !startsJSON(content, '[') {
+		return
+	}
+	var parts []json.RawMessage
+	if json.Unmarshal(content, &parts) != nil {
+		return
+	}
+	changed := false
+	for at, raw := range parts {
+		var part struct {
+			Type     string `json:"type"`
+			ImageURL string `json:"image_url"`
+		}
+		if json.Unmarshal(raw, &part) != nil || part.Type != "input_image" {
+			continue
+		}
+		if note := imageURIOmission(part.ImageURL); note != "" {
+			parts[at], _ = json.Marshal(struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{"input_text", note})
+			changed = true
+		}
+	}
+	if changed {
+		i.fields["content"], _ = json.Marshal(parts)
+		i.raw, _ = json.Marshal(i.fields)
+	}
+}
+
 // shapeNativeResponsesItems repairs and filters the replay copy. It leaves the
 // saved Payload alone.
 func shapeNativeResponsesItems(raw []json.RawMessage, assistant bool) []json.RawMessage {
@@ -199,8 +243,11 @@ func shapeNativeResponsesItems(raw []json.RawMessage, assistant bool) []json.Raw
 		if json.Unmarshal(r, &item.fields) != nil || item.fields == nil {
 			continue
 		}
-		kind := item.stringField("type")
-		item.kind = kind
+		item.kind = item.stringField("type")
+		if !assistant {
+			item.omitUnreadableImages()
+		}
+		kind := item.kind
 		switch kind {
 		case "function_call", "custom_tool_call":
 			name := item.stringField("name")
