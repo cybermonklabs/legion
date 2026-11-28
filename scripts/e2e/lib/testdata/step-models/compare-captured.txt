@@ -1,0 +1,24 @@
+SM7DBA47-1: 5 steps in 1 tasks
+a 1 step implementer implementation attempt 1 legion-sm7dba47-sm7dba47-1-implementer smimplementera/smimplementera-model 2026-11-25T07:17:10.778917Z 2026-11-25T07:17:23.719034857Z passed set smimplementera/smimplementera-model answered smimplementera/smimplementera-model=3(100%)
+a 2 step tester testing attempt 1 legion-sm7dba47-sm7dba47-1-tester anthropic/claude-model 2026-11-25T07:17:23.720478Z 2026-11-25T07:18:21.568716976Z failed set anthropic/claude-model answered anthropic/claude-model=3(100%)
+a 1 step implementer implementation attempt 2 legion-sm7dba47-sm7dba47-1-implementer smimplementera/smimplementera-model 2026-11-25T07:18:21.569572Z 2026-11-25T07:18:35.25930468Z passed set smimplementera/smimplementera-model answered smimplementera/smimplementera-model=3(100%)
+a 2 step tester testing attempt 2 legion-sm7dba47-sm7dba47-1-tester anthropic/claude-model 2026-11-25T07:18:35.260135Z 2026-11-25T07:18:48.109810674Z failed set anthropic/claude-model answered anthropic/claude-model=3(100%)
+a 1 step implementer implementation attempt 3 legion-sm7dba47-sm7dba47-1-implementer smimplementera/smimplementera-model 2026-11-25T07:18:48.121969Z 2026-11-25T07:19:06.710538372Z stopped set smimplementera/smimplementera-model answered smimplementera/smimplementera-model=4(100%)
+SM7DBA47-2: 4 steps in 1 tasks
+a 1 step implementer implementation attempt 1 legion-sm7dba47-sm7dba47-2-implementer smimplementerb/smimplementerb-model 2026-11-25T07:17:10.865215Z 2026-11-25T07:17:23.49095943Z passed set smimplementerb/smimplementerb-model answered smimplementerb/smimplementerb-model=3(100%)
+a 2 step tester testing attempt 1 legion-sm7dba47-sm7dba47-2-tester anthropic/claude-model 2026-11-25T07:17:23.492042Z 2026-11-25T07:18:23.980438749Z failed set anthropic/claude-model answered anthropic/claude-model=3(100%)
+a 1 step implementer implementation attempt 2 legion-sm7dba47-sm7dba47-2-implementer smimplementerb/smimplementerb-model 2026-11-25T07:18:23.981555Z 2026-11-25T07:18:37.017940737Z passed set smimplementerb/smimplementerb-model answered smimplementerb/smimplementerb-model=3(100%)
+a 2 step tester testing attempt 2 legion-sm7dba47-sm7dba47-2-tester anthropic/claude-model 2026-11-25T07:18:37.022979Z 2026-11-25T07:18:53.064563133Z stopped set anthropic/claude-model answered anthropic/claude-model=3(100%)
+GAP: SM7DBA47-1 a 1 step attempt 1 (omp): no start read. end read 2026-11-25T07:17:23.70675031Z: the last response ended 0.173 s before it, the next 3.091 s after it. Not taken: it has 0 start reads, not one.
+GAP: SM7DBA47-1 a 1 step attempt 2 (omp): start read 2026-11-25T07:18:21.560710583Z: the last response ended 54.763 s before it, the next 6.905 s after it. end read 2026-11-25T07:18:35.24898563Z: the last response ended 0.442 s before it, the next 3.093 s after it. Not taken: a response ended within 2 s of its end read.
+GAP: SM7DBA47-2 a 1 step attempt 1 (omp): no start read. end read 2026-11-25T07:17:23.484141959Z: the last response ended 0.097 s before it, the next 3.095 s after it. Not taken: it has 0 start reads, not one.
+GAP: SM7DBA47-2 a 1 step attempt 2 (omp): start read 2026-11-25T07:18:23.959260552Z: the last response ended 57.380 s before it, the next 6.558 s after it. end read 2026-11-25T07:18:37.001100659Z: the last response ended 0.248 s before it, the next 3.233 s after it. Not taken: a response ended within 2 s of its end read.
+GAP: SM7DBA47-1 a 2 step attempt 1 (claude): no start read. end read 2026-11-25T07:18:21.556575103Z: the last response ended 0.118 s before it, the next 3.210 s after it. Not taken: it has 0 start reads, not one.
+GAP: SM7DBA47-1 a 2 step attempt 2 (claude): start read 2026-11-25T07:18:35.242610028Z: the last response ended 10.476 s before it, the next 6.520 s after it. end read 2026-11-25T07:18:48.076084704Z: the last response ended 0.156 s before it, the next 3.256 s after it. Not taken: a response ended within 2 s of its end read.
+GAP: SM7DBA47-2 a 2 step attempt 1 (claude): no start read. end read 2026-11-25T07:18:23.953148053Z: the last response ended 0.263 s before it, the next 3.166 s after it. Not taken: it has 0 start reads, not one.
+c-real: UNKNOWN: took no step of harness omp
+c-real: UNKNOWN: took no step of harness claude
+PASS: live-at-both-reads: harness omp: SM7DBA47-1 a 1 step attempt 3: smimplementera/smimplementera-model=4
+PASS: live-at-both-reads: harness claude: SM7DBA47-2 a 2 step attempt 2: anthropic/claude-model=3
+c-real: UNKNOWN
+live-at-both-reads: PASS

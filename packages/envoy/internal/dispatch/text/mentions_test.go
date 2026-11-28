@@ -262,7 +262,7 @@ func TestMentionsReadsTheBareAndShortGrammar(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := Mentions(test.body, "https://dispatch.test", grammarResolver())
+			got, err := Mentions(test.body, NewOrigins("https://dispatch.test"), grammarResolver())
 			if err != nil {
 				t.Fatalf("Mentions(%q) error: %v", test.body, err)
 			}
@@ -281,7 +281,7 @@ func TestMentionsReadsTheBareAndShortGrammar(t *testing.T) {
 // references of one body come back in the order the body writes them.
 func TestMentionsReportsEveryMentionAtItsOffsetInBodyOrder(t *testing.T) {
 	body := "dispatch://CORE-1/ask/2a7f1c90 then CORE-1 and #q2, again CORE-1."
-	got, err := Mentions(body, "https://dispatch.test", grammarResolver())
+	got, err := Mentions(body, NewOrigins("https://dispatch.test"), grammarResolver())
 	if err != nil {
 		t.Fatalf("Mentions() error: %v", err)
 	}
@@ -299,11 +299,11 @@ func TestMentionsReportsEveryMentionAtItsOffsetInBodyOrder(t *testing.T) {
 // A nil resolver reads nothing bare and resolves nothing short, so Mentions is ExtractAt.
 func TestMentionsWithoutAResolverIsExtractAt(t *testing.T) {
 	body := "CORE-1 and #q2 and dispatch://CORE-1/ask/2a7f1c90."
-	got, err := Mentions(body, "https://dispatch.test", nil)
+	got, err := Mentions(body, NewOrigins("https://dispatch.test"), nil)
 	if err != nil {
 		t.Fatalf("Mentions() error: %v", err)
 	}
-	if want := ExtractAt(body, "https://dispatch.test"); !reflect.DeepEqual(got, want) {
+	if want := ExtractAt(body, NewOrigins("https://dispatch.test")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Mentions() = %#v; want ExtractAt() = %#v", got, want)
 	}
 }
@@ -312,7 +312,7 @@ func TestMentionsAsksTheResolverOnceForEachKind(t *testing.T) {
 	resolver := &countingResolver{mapResolver: grammarResolver()}
 	body := "CORE-1, CORE-2 and CORE-1 again; #q1, #q2 and #q1_; " +
 		"dispatch://CORE-1/ask/2a7f1c90 and dispatch://CORE-1/spec#b-5da04f23."
-	got, err := Mentions(body, "https://dispatch.test", resolver)
+	got, err := Mentions(body, NewOrigins("https://dispatch.test"), resolver)
 	if err != nil {
 		t.Fatalf("Mentions() error: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestMentionsAsksTheResolverOnceForEachKind(t *testing.T) {
 		"A whole id: dispatch://CORE-1/ask/" + askID + ".",
 		"",
 	} {
-		if _, err := Mentions(body, "https://dispatch.test", quiet); err != nil {
+		if _, err := Mentions(body, NewOrigins("https://dispatch.test"), quiet); err != nil {
 			t.Fatalf("Mentions(%q) error: %v", body, err)
 		}
 	}
@@ -357,7 +357,7 @@ func TestMentionsReturnsTheResolversError(t *testing.T) {
 		"See dispatch://CORE-1/ask/2a7f1c90.",
 	} {
 		resolver := &countingResolver{mapResolver: grammarResolver(), err: failure}
-		if _, err := Mentions(body, "https://dispatch.test", resolver); !errors.Is(err, failure) {
+		if _, err := Mentions(body, NewOrigins("https://dispatch.test"), resolver); !errors.Is(err, failure) {
 			t.Errorf("Mentions(%q) error = %v; want %v", body, err, failure)
 		}
 	}
@@ -384,7 +384,7 @@ func TestMentionsReadsAWhitespaceReferenceAsWhitespace(t *testing.T) {
 		"a;CORE-1":           0,
 		";CORE-1":            0,
 	} {
-		got, err := Mentions(body, "https://dispatch.test", resolver)
+		got, err := Mentions(body, NewOrigins("https://dispatch.test"), resolver)
 		if err != nil {
 			t.Fatalf("Mentions(%q) error: %v", body, err)
 		}

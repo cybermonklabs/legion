@@ -43,7 +43,6 @@ from ci_filter_coverage import (
     CACHE_WORKFLOW,
     CACHE_WORKFLOWS,
     REPO,
-    REQUIRED_CHECKS,
     WORKFLOW,
     RepositoryInputError,
     around_reason,
@@ -62,7 +61,7 @@ from ci_filter_coverage import (
     step_workdir,
     where_if,
 )
-from workflow_paths import events
+from workflow_paths import REQUIRED_CHECKS, events
 
 
 # ---------------------------------------------------------------- the conditions ci.yaml cannot hold

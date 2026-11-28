@@ -177,7 +177,7 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
-		ServerURL: "https://dispatch.example",
+		Origins:   testOrigins,
 		Settle:    time.Hour,
 		TestHooks: true,
 	})

@@ -236,6 +236,54 @@ func TestTheLineNamesTheAddressAndUserAgentAndKeepsThePathEscaped(t *testing.T) 
 	}
 }
 
+// The line names the Host the request was sent to as the client wrote it, its case and its port
+// kept, so an operator reads which of the server's addresses each caller uses, and a Host is the
+// caller's own text, so the line keeps at most fieldBytes of it.
+func TestTheLineNamesTheHostAsWritten(t *testing.T) {
+	long := strings.Repeat("h", 4*fieldBytes) + ".example.test"
+	for _, row := range []struct{ name, host, want string }{
+		{"a mixed-case host", "B.Example.Test", "B.Example.Test"},
+		{"a host with a port", "b.example.test:8443", "b.example.test:8443"},
+		{"a very long host", long, long[:fieldBytes]},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			logged := capture(t)
+			request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
+			request.Host = row.host
+			Handler("/api/v1/whoami", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+				ServeHTTP(httptest.NewRecorder(), request)
+			got := line(t, logged)
+			carries(t, got, ` host=`+row.want+` `)
+		})
+	}
+}
+
+// A request refused before any route read it writes the line every request writes, under the
+// route RefusedRoute, with what its refusal answered, and with the connection's own address: the
+// X-Forwarded-For that would name another is the header the refusal is about.
+func TestARefusedRequestWritesTheLineWithTheConnectionsAddress(t *testing.T) {
+	logged := capture(t)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/issues", nil)
+	request.Host = "B.Example.Test:8443"
+	request.RemoteAddr = "127.0.0.1:40000"
+	request.Header.Set("X-Forwarded-For", "198.51.100.8")
+	request.Header.Set("User-Agent", "dispatch-cli/1.0")
+	response := httptest.NewRecorder()
+	Refused(response, request, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, "refused")
+	})
+	if response.Code != http.StatusBadRequest || response.Body.String() != "refused" {
+		t.Fatalf("the refusal answered %d %q, want the 400 it wrote", response.Code, response.Body.String())
+	}
+	got := line(t, logged)
+	carries(t, got, `method=POST`, `route=`+RefusedRoute+` `, `path=/api/v1/issues `, `caller_kind=anonymous`, `host=B.Example.Test:8443 `,
+		`address=127.0.0.1 `, `peer=127.0.0.1 `, `user_agent=dispatch-cli/1.0`, `status=400`, `bytes=7`)
+	if strings.Contains(got, "198.51.100.8") {
+		t.Fatalf("a refused request's line %q names the address its X-Forwarded-For wrote", got)
+	}
+}
+
 // A search's line names the keyed hash and the shape it noted, the last noting winning, as a
 // broadened second run replaces the first run's shape; a search noted on a detached context names
 // nothing on the line.

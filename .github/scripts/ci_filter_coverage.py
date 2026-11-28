@@ -51,7 +51,7 @@ from pathlib import Path
 import yaml
 from audited_scripts import Unreadable, reading_of
 from go_build_tags import constraint_names, decode_stream, go_files, go_skips_dir, is_tag, platforms
-from workflow_paths import PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
+from workflow_paths import REQUIRED_CHECKS, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns
 
 WORKFLOW = ".github/workflows/ci.yaml"
 # The workflow that fills, on a push to main, the Go cache families WORKFLOW's jobs restore.
@@ -2028,7 +2028,13 @@ ENV_ALLOWED = frozenset({
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that
     # run go commands among them, and around_job reads a job's env. go reads it nowhere.
     "JOB_TIMEOUT_MINUTES",
-    "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
+    "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN",
+    # Where a live test writes its evidence: the daemon's own log file, and the step-models
+    # chain's directory. The chain writes its records, transcripts, captures and verdicts to that
+    # directory. Each is read at run time by the test that writes it. So go compiles the same
+    # files and runs the same tests with it set as without.
+    "LEGION_E2E_DAEMON_LOG", "LEGION_E2E_STEP_MODELS_EVIDENCE",
+    "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-build's edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
@@ -2619,7 +2625,6 @@ CALLER_VALUE = re.compile(r"\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\}\}")
 # alone: on a dispatch of main too it is `pr-title (dispatch)`, which main's ruleset does not read.
 # What keeps a skipped pr-title from posting a pass named pr-title is that its name is an
 # expression at all.
-REQUIRED_CHECKS = ("ci-ok", "pr-title")
 VERDICT_JOB = "ci-ok"
 REF_OUTPUT = "ref_is_main"
 REF_OUTPUT_VALUE = "${{ steps.ref.outputs.is_main }}"

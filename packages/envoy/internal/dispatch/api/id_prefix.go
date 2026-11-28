@@ -143,7 +143,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		// the message routes already read.
 		who := actor.Recorded()
 		viewer := refs.Viewer{
-			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), ServerURL: s.deps.ServerURL,
+			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), Origins: s.deps.Origins,
 		}
 		if id != "" {
 			scope := refs.Scope{}
