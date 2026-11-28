@@ -2170,10 +2170,12 @@ const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
 /** A model request's `endedAt`, as the daemon reads it, so that one bad request does not cost its
  * batch (`modelRequestField`): a `LegionInstant`, since Go's `time.Time` decode refuses a time with
  * no seconds, which `timestamp` alone takes, and never Go's zero time, which `modelRequestsProblem`
- * refuses through `EndedAt.IsZero()`: that instant at any offset, with a fraction of zeros or
- * none. Either refusal is a 400 for the whole report. */
+ * refuses through `EndedAt.IsZero()`: that instant at any offset, where the fraction's first nine
+ * digits are zeros or there is none, whatever digits follow, since Go's decode keeps nanoseconds
+ * and drops every digit after the ninth. Either refusal is a 400 for the whole report. */
 const modelRequestEndedAt = LegionInstant.refine(
-  (text) => /\.\d*[1-9]/.test(text) || Date.parse(text.replace(/\.\d+/, "")) !== GO_ZERO_TIME_MS,
+  (text) =>
+    /\.\d{0,8}[1-9]/.test(text) || Date.parse(text.replace(/\.\d+/, "")) !== GO_ZERO_TIME_MS,
   { error: "endedAt is required" }
 );
 
