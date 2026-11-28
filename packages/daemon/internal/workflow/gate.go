@@ -1328,14 +1328,13 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // (dispatch://INFRA-3320, R2), so the opening then says which approval each such step stands on,
 // and never that a person approved it: gateOpenedMessage writes the opening either way.
 //
-// No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
-// closed (the daemon's supervise row) and releases it at the opening, and every other worker
-// decides for itself what the version means for the work in hand. A phase no worker holds names
-// nobody. The gate is the root's, so the root's architect is told, once. A member in accepting is
-// passed over, since that phase is an architect's own: the root's is the root's architect, told
-// once as such, and a child's own architect is sent no message of the root's gate (the opening
-// reaches it only by the news it is owed, settleChildArchitectOpenings); that gate's merge hold
-// reaches the child's merger once it holds merging.
+// No phase is moved and no turn is interrupted: no value of the hold holds the merge, so the
+// merger goes on as every other phase does, and every worker decides for itself what the version
+// means for the work in hand. A phase no worker holds names nobody. The gate is the root's, so the
+// root's architect is told, once. A member in accepting is passed over, since that phase is an
+// architect's own: the root's is the root's architect, told once as such, and a child's own
+// architect is sent no message of the root's gate (the opening reaches it only by the news it is
+// owed, settleChildArchitectOpenings).
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
@@ -1359,19 +1358,16 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // nothing (the daemon's settlementOf).
 //
 // What the move does beyond telling is the deployment's hold (Config.Hold, `gates.hold`). Under
-// `merge`, the default, it is what this comment says, with two fixes, which both mark the close
-// message to a merger to wait for the merger's session (record.RoleMessage.Wake, mergersToWake).
-// The message to a merger whose claim the idle release suspended wakes it, so it can take its pull
-// request out of GitHub's merge queue rather than leave it to merge a head the gate holds. And the
-// message to a merger that may be launching, its claim live or its start running in a lane, waits
-// for its session rather than finishing on a role nobody holds yet: the outbox reads the gate once
-// before a start acts, so a start of the merger can read it open, and launch the merger with its
-// task after this close. Each message of the close is marked as a close message
+// `start`, the default, it is what this comment says: the first phase of each issue that has not
+// started waits (record.Waiting), every running phase goes on, the merge among them, and the close
+// message says "Your phase goes on." (gateClosedSentence). Its message to a role whose claim the
+// idle release suspended wakes nothing, as no role message does (record.RoleMessage): a released
+// merger is not woken for it. Each message of the close is marked as a close message
 // (record.RoleMessage.Close), and the outbox publishes none of them once the gate opened again, so
 // no role reads "closed" after the open message. Under `work` the move is the work hold's close or
-// its opening, with recipients and texts of their own (workHoldClose, workHoldOpen), and the close
-// stops such a merger at its ready instead. The work hold's opening decides the opening of each
-// holder by openingDelivery too, so each holder is told the opening once under either hold.
+// its opening, with recipients and texts of their own (workHoldClose, workHoldOpen); that close
+// stops no merger either. The work hold's opening decides the opening of each holder by
+// openingDelivery too, so each holder is told the opening once under either hold.
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -1420,22 +1416,14 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// version this event carries is that step's document's, and a message naming the spec would
 	// send a reader to the wrong one (INFRA-1272).
 	if !open {
-		woken, err := e.mergersToWake(ctx, tx, *root, members, addressed)
-		if err != nil {
-			return err
-		}
 		body := gateClosedSentence(root.Tree, step, document, version)
 		for _, to := range addressed {
-			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body, Close: true, Wake: woken[to.token]}); err != nil {
+			if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body, Close: true}); err != nil {
 				return err
 			}
 		}
 		e.logOnCommit(ctx, "workflow: the design gate moved and every phase worker of the tree and the root's architect are told", "issue", key, "tree", root.Tree,
 			"step", string(step), "version", version, "open", open, "told", len(addressed))
-		if len(woken) > 0 {
-			e.logOnCommit(ctx, "workflow: the design gate closed and its message waits for the session of each merger of the tree that may run, and wakes a released one", "tree", root.Tree,
-				"version", version, "mergers", len(woken))
-		}
 		return nil
 	}
 	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, root.Tree)
@@ -1479,69 +1467,18 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	return nil
 }
 
-// mergersToWake is the claim token of each merger of addressed, under `merge`, whose close message
-// waits for the merger's session (record.RoleMessage.Wake), read with the role's queued rows at
-// its member's generation (RoleRuns):
-//
-//   - a merger whose claim is released, which the message wakes;
-//   - a merger whose claim is live, launching among them, whose session may not hold the role's
-//     topic yet;
-//   - and a merger whose start a lane runs now (StartUnderWay's running), which read the gate open
-//     before this close, or reads it now, and which may launch the merger with its task after it.
-//
-// The row waits while the claim is not gone, and the merger reads the close once its session
-// holds its topic. A merger with no claim yet, or whose claim runs nothing and is not released (an
-// operator or the daemon suspended it, or it failed or retired), is waited for only while its
-// issue can be woken and a lane runs a start of it (StartUnderWay's running), or the record holds
-// a claim of it that is not gone: that start creates, resumes or retries the claim, and a start
-// that ends without a running claim, because its issue left the workflow or its tree lingers,
-// ends the row (internal/daemon's closeWaitsForAMerger). A merger whose start is only queued is
-// not waited for: that start reads the closed gate at its next attempt and waits at the fence
-// through the whole hold, so it launches nothing, and a message that waited for it would hold the
-// issue's pod from its idle release until the gate opens. Once the start passes the fence after
-// the opening, the merger takes its task as any start gives it.
-// A merger an operator or the daemon suspended, or a failed or retired one, with no start running,
-// is not woken and is not waited for. root is the tree root, which StopActs reads for a tree
-// close, and members are the tree's members, whose generations key the reads.
-func (e *Engine) mergersToWake(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue,
-	addressed []addressedRole) (map[claim.Token]bool, error) {
-	generations := make(map[string]uint64, len(members))
-	for _, member := range members {
-		generations[member.Key] = member.Generation
-	}
-	var keys []record.RoleRunKey
-	for _, to := range addressed {
-		if role, _ := to.token.Role(); role == claim.RoleMerger {
-			keys = append(keys, record.RoleRunKey{Token: to.token, Issue: to.issue, Role: role, Generation: generations[to.issue]})
-		}
-	}
-	woken := make(map[claim.Token]bool, len(keys))
-	for batch := range slices.Chunk(keys, strandedRoleRunBatchSize) {
-		runs, err := e.store.RoleRuns(ctx, tx, batch)
-		if err != nil {
-			return nil, err
-		}
-		for token, run := range runs {
-			held := treeClaim{run: run}
-			if _, running := StartUnderWay(run, root); held.live() || held.state().Released() || running {
-				woken[token] = true
-			}
-		}
-	}
-	return woken, nil
-}
-
 // gateOpenedMessage is the message of an opening of tree's standing gate at the approval of
 // version of step's document, and the one writer of its words for both of its senders: the role
 // message at the opening (tellGateMoved) and the news task that carries the opening in its place
 // (RenderNews, gateAtSend). onBasis is the gated steps that stand open on an ancestor's approval.
-// Every opening keeps the two parts that roles/merger.md quotes as the release of a merge: `The
-// design gate of <tree> opened:` and `every step the deployment gates now stands open`. Where the
-// step whose move opened the gate stands on a person's approval, that approval is named first, as
-// the person's clause. Where onBasis is empty, that clause is the whole cause of the opening, and
-// the message says the design worked to is the approved one. Otherwise each step on a basis is
-// named after it with the ancestor's approval it stands on, and with the root's version that no
-// person approved.
+// Every opening begins `The design gate of <tree> opened:` and says `every step the deployment
+// gates now stands open`, whatever approval opened it, so a reader tells an opening from a close
+// by those words. Where the step whose move opened the gate stands on a person's approval, that
+// approval is named first, as the person's clause. Where onBasis is empty, that clause is the
+// whole cause of the opening, and the message says the design worked to is the approved one.
+// Otherwise each step on a basis is named after it with the ancestor's approval it stands on, and
+// with the root's version that no person approved. It says nothing of a merge: no value of the
+// hold holds one, so the opening releases none.
 func gateOpenedMessage(tree string, step record.DesignStep, document string, version int, onBasis []record.DesignGate) string {
 	var body strings.Builder
 	fmt.Fprintf(&body, "The design gate of %s opened: ", tree)
@@ -1552,7 +1489,7 @@ func gateOpenedMessage(tree string, step record.DesignStep, document string, ver
 	if len(onBasis) == 0 {
 		body.WriteString(", so the design you are working to is the approved one")
 	}
-	body.WriteString(". A merge the closed gate held is released.")
+	body.WriteString(".")
 	for _, gate := range onBasis {
 		body.WriteString(" " + basisSentence(gate))
 	}
@@ -1703,11 +1640,11 @@ func nothingChangedSince(took int) string {
 // version of step's document, now with its reviewer. Its two senders are gateOpenedMessage's: the
 // role message at the close, and a news task composed while the gate stood open and sent after a
 // later version closed it (RenderNews), which says closed rather than an opening that no longer
-// stands. The merger's prompt quotes its opening words as what holds a merge. It is the close's
-// first sentence (gateClosedHead), which the work hold's texts begin with too, and the merge
-// hold's own ending.
+// stands. It is the close's first sentence (gateClosedHead), which the work hold's texts begin
+// with too, and "Your phase goes on.": the close message under `start`, and under `work` the one
+// to a merger, which no value of the hold holds (workHoldClose).
 func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
-	return gateClosedHead(tree, step, document, version) + " Your phase goes on; the merge waits until every gated step stands open again."
+	return gateClosedHead(tree, step, document, version) + " " + phaseGoesOn
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
@@ -1815,12 +1752,12 @@ func raisesApproval(before record.DesignGate, held bool, after record.DesignGate
 // criteria row its architect registered beside a deployment that gates spec and not criteria) is
 // closed with a row of its own (classify.StandingGate). So a new version of a registered
 // Verification document closes it as a new spec version does. It is the one predicate the message
-// and the merger's start hold both read — the hold asks it as the outbox's treeGate, and the
-// merger's start as mergerWaitsForTheDesignGate — so a member is never told the gate opened while
-// the hold still holds its merger, nor left untold when the hold lets it go. A step the deployment
-// gates that nothing has registered holds the tree's work (FirstClosedStep) but names no document,
-// so nobody can be asked about it and nothing can be said of it: it is why the message reads
-// StandingGate rather than DesignGatesOpen, and the one difference between them.
+// and the work hold both read — the hold asks it as the outbox's treeGate — so a member is never
+// told the gate opened while the hold still holds its work, nor left untold when the hold lets it
+// go. A step the deployment gates that nothing has registered holds the tree's work
+// (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can be
+// said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the one
+// difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
 	_, held := classify.StandingGate(e.cfg.Steps, gates)
 	return !held

@@ -107,9 +107,11 @@ type outbox struct {
 	// (record.RequiredSteps).
 	gatedSteps []record.DesignStep
 	// gateHold is what a closed standing design gate holds of its tree (`gates.hold`,
-	// config.Gates.Holds), set by attach after newOutbox: config.HoldMerge, the merger's start
-	// alone, or config.HoldWork, every phase worker of the tree (startWaitsForTheHold, the work
-	// hold). The zero value, a runner a test builds by hand, is HoldMerge.
+	// config.Gates.Holds), set by attach after newOutbox: config.HoldStart, under which no start
+	// row waits on the gate (the first phase of an issue that has not started waits at admission),
+	// or config.HoldWork, every phase worker of the tree but the merger (startWaitsForTheHold, the
+	// work hold). No value holds the merger. The zero value, a runner a test builds by hand, is
+	// HoldStart.
 	gateHold config.Hold
 	log      *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -2263,8 +2265,8 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // holder the listener calls only unresponsive (notify.ErrHolderUnresponsive): its session is past
 // the listener's live window but still holds the role, so the message is kept for it rather than
 // dropped as a message to a role nobody holds (dispatch://INFRA-392). The one exception is the
-// work hold's close message that carries a stop and is not a merger's: at a holder the listener
-// calls unresponsive, that row ends and posts its stop (see below).
+// work hold's close message that carries a stop: at a holder the listener calls unresponsive, that
+// row ends and posts its stop (see below).
 //
 // A role whose claim is released ends the row before the publish, with no wake (record.RoleMessage
 // says why). The claim is read from its machine's View, as wakeForDelivery reads it. One window is
@@ -2295,38 +2297,26 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // while its claim is not gone (supervise.Claim.Gone) or is released with an issue that can be
 // woken. A row whose debt has ended takes the path above unchanged.
 //
-// The design gate's close message to a merger whose claim was released when the gate closed
-// (record.RoleMessage.Wake) is the one message a released role is woken for, under either hold,
-// so the merger can take its pull request out of GitHub's merge queue: the row wakes the claim
-// (wakeForTheClose) and waits for its woken session, a holder that does not hold the role's topic
-// yet being a routine wait while the claim has not gone. A holder the listener calls unresponsive
-// keeps the row waiting too. The row publishes once the merger's session holds the topic and
-// answers. It is the one start of a merger the closed gate lets through. The close marks the
-// message to a merger that may be launching too, under `merge` (workflow's mergersToWake) and
-// under `work`, where it marks every merger it tells (workflow's workHoldClose): the row wakes
-// nothing of it and waits for its session the same way.
-//
 // The work hold's close message carries the stop of the phase worker it tells to end its turn
 // (record.RoleMessage.Stop), which the row queues once it ends (postHoldStop), its deadline the
 // hold's grace after that moment (workflow.HoldStopGrace). The row ends where the message reached
-// the claim, or met no session that holds the role, a holder that refuses the delivery mode or a
-// denied forward. Where the message is not a merger's, a holder the listener calls unresponsive
-// ends the row too: the stop does not wait for that session. A merger's message
-// (record.RoleMessage.Wake) waits for the merger's session while its claim is not gone, and waits
-// for a holder the listener calls unresponsive, so the stop follows the message: the merger takes
-// its pull request out of GitHub's merge queue on this message alone. A claim released since the
-// close, which the message is not worth a wake to, is stopped at once, as the close stops a
-// released worker that is not a merger.
+// the claim, or met no session that holds the role, a holder the listener calls unresponsive, a
+// holder that refuses the delivery mode or a denied forward: the stop does not wait for that
+// session. A claim released since the close, which the message is not worth a wake to, is stopped
+// at once, as the close stops a released worker. No close message wakes its role: a merger, which
+// no value of the hold holds, is told "Your phase goes on." and carries no stop, and a released
+// merger is told nothing, as a released role is told no other message (workflow's tellGateMoved
+// and workHoldClose).
 //
 // A close message (record.RoleMessage.Close: every message of the gate's close, the architect's
 // among them) reads its tree's standing design gate at the head of each attempt, just before it
-// wakes a merger or publishes, and finishes unpublished, with one log line and no stop, where the
-// gate no longer stands closed, or where a newer close of the gate stands (closeOutrun). Its
-// row can wait for minutes, for a woken merger's pod or on the backoff of a publish the holder did
-// not confirm, and the gate can open in that time, a carried approval with no person in the loop.
-// Role messages run as they come due, not in the order they were queued, so the open message can
-// go first: a close published then would be the role's last word, and the open message that went
-// first, or that met no holder, would never follow it.
+// publishes, and finishes unpublished, with one log line and no stop, where the gate no longer
+// stands closed, or where a newer close of the gate stands (closeOutrun). Its row can wait for
+// minutes on the backoff of a publish the holder did not confirm, and the gate can open in that
+// time, a carried approval with no person in the loop. Role messages run as they come due, not in
+// the order they were queued, so the open message can go first: a close published then would be
+// the role's last word, and the open message that went first, or that met no holder, would never
+// follow it.
 //
 // What each delivery came to is deliverRoleMessage's one outcome, and this posts the stop on that
 // outcome alone, so no exit of the delivery can forget the stop or post one it must not.
@@ -2360,16 +2350,14 @@ const (
 	messageNoOutcome roleMessageOutcome = iota
 	// messageReached is a row that ended at its claim: the message was published, or met no session
 	// that holds the role, a holder that refuses the delivery mode or a denied forward. A close
-	// message that carries a stop and is not a merger's ends here too at a holder the listener
-	// calls unresponsive. A stop it carries names its deadline from now.
+	// message that carries a stop ends here too at a holder the listener calls unresponsive. A stop
+	// it carries names its deadline from now.
 	messageReached
 	// messageNotReached is a row that ended before its publish at a claim released since the close,
 	// which the message is not worth a wake to. A stop it carries takes the claim over at once.
 	messageNotReached
-	// messageEnded is a row that ended with no stop: a released merger whose issue can be woken no
-	// more, which is a close's to stop, a merger that runs nothing and that no start can launch
-	// while the gate is closed (closeWaitsForAMerger), and a close message that closeOutrun finds
-	// outrun before its publish: its tree's gate open again, or a newer close of the gate standing.
+	// messageEnded is a row that ended with no stop: a close message that closeOutrun finds outrun
+	// before its publish, its tree's gate open again or a newer close of the gate standing.
 	messageEnded
 )
 
@@ -2404,14 +2392,6 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 				return messageNoOutcome, r.parkedWait(turn, fmt.Sprintf("%s's role message for %s, owed to the role since pause %d stopped it, waits for the role's launch, which the wake pacing holds until %s",
 					row.Issue, payload.Role, stopped, turn.UTC().Format(time.RFC3339)))
 			}
-		case payload.Wake:
-			done, err := r.wakeForTheClose(ctx, row, payload, held)
-			if err != nil {
-				return messageNoOutcome, err
-			}
-			if done {
-				return messageEnded, nil
-			}
 		case held.Released():
 			r.log.Info("outbox role message finished undelivered: its role's pod is released, and the message is not worth a wake",
 				"row", row.ID, "issue", row.Issue, "role", payload.Role)
@@ -2419,20 +2399,17 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 		}
 	}
 	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
-	if errors.Is(err, notify.ErrHolderUnresponsive) && (payload.Stop == nil || payload.Wake) {
+	if errors.Is(err, notify.ErrHolderUnresponsive) && payload.Stop == nil {
 		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
 		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
-		// executor's own unresponsive branch does (notice_exceptions.go). The close message to a
-		// merger (record.RoleMessage.Wake) waits too, with its stop not posted: the merger takes its
-		// pull request out of GitHub's merge queue on this message alone, so the message must
-		// reach the merger before the stop does.
+		// executor's own unresponsive branch does (notice_exceptions.go).
 		return messageNoOutcome, wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
 			row.Issue, payload.Role, notify.StateUnresponsive, err)
 	}
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
 		// The listener has not heard from the holder inside its live window, but the session is
 		// not dead and can still be in a turn (notify.ErrHolderUnresponsive). The work hold's stop
-		// that any other close message carries does not wait for that session: the row ends as at
+		// that a close message carries does not wait for that session: the row ends as at
 		// a role no session holds, and its stop names its deadline from now (roleMessage), so a
 		// turn still running is cut then.
 		r.log.Info("outbox role message finished undelivered: its role's holder is unresponsive, and the work hold's stop it carries is posted",
@@ -2448,14 +2425,6 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 		// every attempt from the seventh (waitWarnAttempts).
 		return messageNoOutcome, routineWaiting{err: wait.Errorf("%s's role message for %s waits for the role's session to hold its topic: pause %d stopped the role, which is coming back or has not claimed its topic yet: %w",
 			row.Issue, payload.Role, stopped, err)}
-	}
-	if payload.Wake && errors.Is(err, notify.ErrNoHolder) && r.supervisor != nil && !r.supervisedClaim(token).Gone() {
-		// The merger woken for this message, or launching under either hold, says it is ready
-		// before its plugin claims the role's topic: a routine wait, as for a row a pause owes its
-		// role, which the merger's session ends. Under `work` the stop the row carries waits with
-		// it, so the merger reads the close before it is stopped.
-		return messageNoOutcome, routineWaiting{err: wait.Errorf("%s's close message for its merger %s waits for the merger's session to hold its topic: %w",
-			row.Issue, payload.Role, err)}
 	}
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
@@ -2476,7 +2445,7 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 }
 
 // closeOutrun is whether a design gate's close message (record.RoleMessage.Close) is outrun at the
-// head of an attempt, before the attempt wakes a merger or publishes (deliverRoleMessage). Then the
+// head of an attempt, before the attempt publishes (deliverRoleMessage). Then the
 // message is not published, and one line names the row, the issue, the role and the tree. A close
 // of either hold is read the same way: the standing gate is what both holds close on. The tree is
 // the one the message's stop names (record.HoldStop.Tree), the tree whose hold the close was, where
@@ -2495,9 +2464,8 @@ func (r *outbox) deliverRoleMessage(ctx context.Context, row record.OutboxRow, p
 //
 // A record that holds no hold of the tree outruns no message. A hold that no longer stands while
 // the gate stays closed outruns no message either. The boot ends the hold that way where the
-// deployment moved to `merge`. The message is published then, so a merger still takes its pull
-// request out of GitHub's merge queue, and postHoldStop makes no stop under a hold other than
-// `work`.
+// deployment moved to `start`. The message is published then, and postHoldStop makes no stop
+// under a hold other than `work`.
 func (r *outbox) closeOutrun(ctx context.Context, row record.OutboxRow, payload record.RoleMessage) (bool, error) {
 	var tree string
 	if payload.Stop != nil {
@@ -2533,97 +2501,6 @@ func (r *outbox) closeOutrun(ctx context.Context, row record.OutboxRow, payload 
 		"row", row.ID, "issue", row.Issue, "role", payload.Role, "tree", tree, "step", payload.Stop.Step, "version", payload.Stop.HoldVersion,
 		"standingStep", hold.Step, "standing", hold.Version)
 	return true, nil
-}
-
-// wakeForTheClose is the design gate's close message to a merger marked to wait for its session
-// (record.RoleMessage.Wake), before its publish, and answers whether the row is done for this
-// attempt. A claim still released is woken (wakeReleasedFor, past the hold's fence, since this wake
-// is the one start of a merger the closed gate lets through), and the row waits for it on its
-// backoff; a woken launch the wake pacing parked over no process is waited for until its turn
-// (parkedWait). A released claim whose issue can be woken no more — it left the workflow, or its
-// tree lingers — is told nothing, and the row ends with no stop (messageEnded): that claim is a
-// close's to stop. A merger that runs nothing and is not released has no session a publish can
-// reach: this daemon holds no claim of it, or its claim is one the daemon or an operator
-// suspended, a failed or a retired one (supervise.Claim.Gone). The row waits for it while a start
-// may still launch it, and otherwise ends with no stop (closeWaitsForAMerger). A claim not
-// released, launching or ready, goes on to the publish.
-func (r *outbox) wakeForTheClose(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (bool, error) {
-	var turn time.Time
-	switch {
-	case held.Released():
-		waits, woken, err := r.wakeReleasedFor(ctx, claim.Token(payload.Role), "the design gate's close message for "+row.Issue, row.HeldByPause, true)
-		switch {
-		case err != nil:
-			return true, err
-		case !woken.IsZero():
-			turn = woken
-		case waits:
-			return true, wait.Errorf("%s's close message waits for its released merger %s's pod to come back", row.Issue, payload.Role)
-		default:
-			r.log.Info("outbox role message finished undelivered: its released merger's issue can be woken no more",
-				"row", row.ID, "issue", row.Issue, "role", payload.Role)
-			return true, nil
-		}
-	case held.State == "" || held.Gone():
-		waits, err := r.closeWaitsForAMerger(ctx, row, payload, held)
-		if err == nil && waits {
-			err = routineWaiting{err: wait.Errorf("%s's close message waits for a start of its merger %s to launch the merger", row.Issue, payload.Role)}
-		}
-		return true, err
-	default:
-		parkedTurn, parked := parkedLaunch(held)
-		if !parked {
-			return false, nil
-		}
-		turn = parkedTurn
-	}
-	return true, r.parkedWait(turn, fmt.Sprintf("%s's close message for its woken merger %s waits for the merger's launch, which the wake pacing holds until %s",
-		row.Issue, payload.Role, turn.UTC().Format(time.RFC3339)))
-}
-
-// closeWaitsForAMerger is whether a close message marked to wait for its merger's session
-// (record.RoleMessage.Wake) still waits, where held, this daemon's view of the merger's claim,
-// runs nothing and is not released: no claim, or one the daemon or an operator suspended, a
-// failed or a retired one. The close marks the message to a merger whose start a lane runs
-// (workflow's mergersToWake), and under `work` to a merger whose start is under way, queued or
-// run by a lane (workflow's workHoldClose). That start may create, resume or retry the claim
-// after the close. The issue and its tree root are read as a wake reads them (wakeableIssue), and
-// then the role's queued rows and claim in one transaction. The outbox writes a claim before it
-// deletes the start row, so that read finds the start or the claim. The row waits while the issue
-// can be woken and a lane runs a start of the merger (workflow.StartUnderWay's running), or while
-// the record holds a claim of the merger that is not gone (supervise.IsGone), which a start
-// launched after held was read. A start that is only queued does not keep the row waiting: it
-// reads the closed gate at its next attempt and waits at the fence through the hold, as
-// mergersToWake reads it. Otherwise no start launches the merger while the gate stays closed, so
-// the row ends with one log line and no stop.
-func (r *outbox) closeWaitsForAMerger(ctx context.Context, row record.OutboxRow, payload record.RoleMessage, held supervise.ClaimView) (bool, error) {
-	token := claim.Token(payload.Role)
-	role, ok := token.Role()
-	if !ok {
-		return false, fmt.Errorf("%s's close message names no role a token can carry: %s", row.Issue, payload.Role)
-	}
-	issue, root, wakeable, err := r.wakeableIssue(ctx, row.Issue)
-	if err != nil {
-		return false, fmt.Errorf("read the merger %s of %s's close message: %w", payload.Role, row.Issue, err)
-	}
-	waits := false
-	if wakeable {
-		var run record.RoleRun
-		if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-			var err error
-			run, err = r.records.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-			return err
-		}); err != nil {
-			return false, fmt.Errorf("read the merger %s of %s's close message: %w", payload.Role, row.Issue, err)
-		}
-		_, running := workflow.StartUnderWay(run, root)
-		waits = running || (run.Claim != nil && !supervise.IsGone(run.Claim.State))
-	}
-	if !waits {
-		r.log.Info("outbox role message finished undelivered: its merger runs nothing, and no start of it can launch it while the gate is closed",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "state", held.State)
-	}
-	return waits, nil
 }
 
 // heldMessageOwed is the held role message's debt, and the one statement of it (R4 of
@@ -2662,7 +2539,7 @@ func (r *outbox) heldMessageOwed(ctx context.Context, row record.OutboxRow, view
 		return 0, err
 	}
 	if view.Released() {
-		if _, _, wakeable, err := r.wakeableIssue(ctx, view.Issue); err != nil || !wakeable {
+		if _, wakeable, err := r.wakeableIssue(ctx, view.Issue); err != nil || !wakeable {
 			return 0, err
 		}
 	}
@@ -3688,7 +3565,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// Under `work`, any other start of a phase worker's claim that a start ran against before
 		// this row waits while that start is the opening's, still in flight behind an operator's
 		// task (openingMayBeInFlight, waitForOpeningInFlight); this costs that start one read
-		// transaction, and a `merge` deployment pays nothing.
+		// transaction, and a `start` deployment pays nothing.
 		if found {
 			switch held := machine.Claim(); {
 			case held.WorkHeld() || payload.Opening != "":
@@ -5310,7 +5187,8 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 }
 
 // holdIsWork is whether the deployment's hold is `work` (config.HoldWork): a closed standing gate
-// holds every phase worker of its tree, not the merger alone.
+// holds every phase worker of its tree but the merger, not only the first phase of each issue that
+// has not started.
 func (r *outbox) holdIsWork() bool { return r.gateHold == config.HoldWork }
 
 // treeGate is the standing design gate of tree as the record holds it now: the steps the
@@ -5322,12 +5200,11 @@ func (r *outbox) holdIsWork() bool { return r.gateHold == config.HoldWork }
 // Verification document holds the tree as a new spec version does. A tree with no row for a step
 // — nothing registered one, or the project's design gate is off, which registers it approved —
 // holds nothing on that step: nobody can be waiting on a document the record does not know. It is
-// the one predicate every fence of the hold reads (startWaitsForTheHold,
-// mergerWaitsForTheDesignGate, deliverHeld, wakeReleasedFor), read just before the row acts, as
-// every other fence of a row is, in a transaction of its own. A row that writes what the gate
-// decides, or reads the tree's work hold record beside it, reads it in its own transaction
-// instead (treeGateTx). The hold's stop reads no gate: its decision reads whether the tree's work
-// hold row stands (holdStop).
+// the one predicate every fence of the hold reads (startWaitsForTheHold, deliverHeld,
+// wakeReleasedFor), read just before the row acts, as every other fence of a row is, in a
+// transaction of its own. A row that writes what the gate decides, or reads the tree's work hold
+// record beside it, reads it in its own transaction instead (treeGateTx). The hold's stop reads no
+// gate: its decision reads whether the tree's work hold row stands (holdStop).
 func (r *outbox) treeGate(ctx context.Context, tree string) (record.TreeGate, error) {
 	var gate record.TreeGate
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -5362,10 +5239,10 @@ func (r *outbox) treeGateTx(ctx context.Context, tx pgx.Tx, tree string) (record
 //     finishes it, since the start that brings that agent back carries the news. The generation,
 //     the phase, the workflow and the linger have fenced it before this, as they fence any start.
 //  2. A start waits at the fence of its tree's closed standing design gate (startWaitsForTheHold):
-//     a merger's under either hold while the gate is closed or its news is not recorded
-//     (mergerWaitsForTheDesignGate), and every phase worker's under `work` while the gate is
-//     closed. The fence comes after the refusal, so a news-only start that reaches no claim
-//     finishes rather than waits.
+//     every phase worker's but the merger's under `work` while the gate is closed, and a merger's,
+//     under either hold and whatever the gate, while its news is not recorded
+//     (mergerWaitsForTheDesignGate). The fence comes after the refusal, so a news-only start that
+//     reaches no claim finishes rather than waits.
 //  3. Every phase start (an entry's work, the held phase's retry among them), every start of the
 //     work hold's opening (record.SuperviseRequest.Opening) and every news-only start carries the
 //     news its role is owed, read from the record as it stands now (newsForStart), with no
@@ -5469,17 +5346,19 @@ func (r *outbox) settleHeldOpening(ctx context.Context, issue record.Issue, role
 	return nil
 }
 
-// mergerWaitsForTheDesignGate is the merger's fence of the design gate under either hold, for the
-// reason startWaitsForTheHold gives: it answers a wait error for a merger whose tree's standing
-// gate is closed (treeGate, record.TreeGate.Standing), and nil for every other role.
+// mergerWaitsForTheDesignGate is the merger's one wait at the fence of its start
+// (startWaitsForTheHold), under either hold, and nil for every other role. It reads no gate: no
+// value of the hold holds the merge (dispatch://INFRA-904/spec#b-d1672de0-a9f8-40f8-9ad3-b2fa2f432219),
+// so a merger starts, is woken and merges while its tree's standing gate is closed, as when no
+// version waits.
 //
-// It also waits while the merger's member is owed news of the approved design that no start can
-// carry yet, its change set not recorded, read or unavailable, or its earlier version neither read
-// nor recorded unread with no reconcile of the tree pending (mergerNewsWait): a merger released
-// without the change list could merge before it reads what changed. That wait ends within the
-// design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
-// unavailable, and a review history it cannot read is recorded unread (designChangesAttempts), and
-// the start then carries the news (newsForStart).
+// It waits while the merger's member is owed news of the approved design that no start can carry
+// yet, its change set not recorded, read or unavailable, or its earlier version neither read nor
+// recorded unread with no reconcile of the tree pending (mergerNewsUnrecorded): a merger released
+// without the change list could merge before it reads what changed. That wait reads the daemon's
+// own record and waits on no person. It ends within the design_changes row's bounded attempts,
+// since a pair Dispatch cannot read is recorded unavailable, and a review history it cannot read
+// is recorded unread (designChangesAttempts), and the start then carries the news (newsForStart).
 //
 // A merger's start reads this rule (startWaitsForTheHold), and so does every held message to a
 // released merger (deliverHeld: a merge-queue removal, a merge forward's hold and landed, and a
@@ -5489,19 +5368,6 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	if role != claim.RoleMerger {
 		return nil
 	}
-	gate, err := r.treeGate(ctx, issue.Tree)
-	if err != nil {
-		return err
-	}
-	if _, closed := gate.Standing(); closed {
-		return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
-	}
-	return r.mergerNewsWait(ctx, issue)
-}
-
-// mergerNewsWait is the merger's wait for the news of the approved design it is owed and no start
-// can carry yet (mergerNewsUnrecorded), nil where it is owed none of that.
-func (r *outbox) mergerNewsWait(ctx context.Context, issue record.Issue) error {
 	unrecorded, err := r.mergerNewsUnrecorded(ctx, issue)
 	if err != nil || !unrecorded {
 		return err
@@ -5510,30 +5376,24 @@ func (r *outbox) mergerNewsWait(ctx context.Context, issue record.Issue) error {
 }
 
 // startWaitsForTheHold is the one fence a start carries against its tree's closed standing design
-// gate, and the one a delivery's wake of a released role carries too (wakeReleasedFor). Under
-// either hold it holds the merger, which merges nothing
-// while its tree's design gate is closed, because a new version of the spec is with its reviewer
-// and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
-// wait, which leaves the row on its backoff as a check start waits on its look (checkLookHolds),
-// and nil for every start the gate does not hold. Under `work` it holds the start of every role of
-// the tree but the architect's and the controller's as well (claim.HeldByWorkHold), from the close.
-// It decides by the role alone, not by the list of roles (claim.Roles), so a kind of step that a
-// later change adds, and that starts a worker through the outbox, is held with no new code here.
-// No phase of the tree starts while the gate is closed, so its member's first phase, the next
-// phase of a transition, a retry, an owed entry, a wake and every other start of such a role wait.
-// A production check's look (checkLook) is not held: its issue has left the workflow. That wait is
-// routine (routineWaiting): the gate's opening ends it, and the state says why each held issue
-// waits.
+// gate, and the one a delivery's wake of a released role carries too (wakeReleasedFor). It answers
+// a wait, which leaves the row on its backoff as a check start waits on its look
+// (checkLookHolds), and nil for every start the gate does not hold. Under `work` it holds the start
+// of every role of the tree but the architect's, the controller's and the merger's
+// (claim.HeldByWorkHold), from the close. It decides by the role alone, not by the list of roles
+// (claim.Roles), so a kind of step that a later change adds, and that starts a worker through the
+// outbox, is held with no new code here. No phase of the tree but the merge starts while the gate
+// is closed, so its member's first phase, the next phase of a transition, a retry, an owed entry,
+// a wake and every other start of such a role wait. A production check's look (checkLook) is not
+// held: its issue has left the workflow. That wait is routine (routineWaiting): the gate's opening
+// ends it, and the state says why each held issue waits. Under `start` it holds nothing for the
+// gate: the first phase of an issue that has not started waits at admission (record.Waiting).
 //
-// Under either hold the merger waits for its news as well, once the gate is open
-// (mergerWaitsForTheDesignGate, mergerNewsWait). So under `work` the opening's start of a merger
-// the hold stopped waits until what changed in the approved design is recorded, and carries that
-// news.
-//
-// An architect is never held, nor is the controller, and neither is the merger's one start the
-// closed gate lets through, its wake for the close message, which is no start row (roleMessage,
-// wakeForTheClose). The gate's opening releases the row's next try, within the outbox's backoff
-// (64 seconds at most), and tells every phase worker of the tree and the root's architect as well
+// No value of the hold holds the merger: its start, and its wake for a CI settlement, a hook
+// prompt or a merge-queue message, go on while the gate is closed. Under either hold the merger
+// waits for its news alone (mergerWaitsForTheDesignGate). An architect is never held, nor is the
+// controller. The gate's opening releases the row's next try, within the outbox's backoff (64
+// seconds at most), and tells every phase worker of the tree and the root's architect as well
 // (workflow's tellGateMoved).
 func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, role claim.Role, checkLook int) error {
 	if !r.holdIsWork() || checkLook != 0 || !claim.HeldByWorkHold(role) {
@@ -5547,10 +5407,7 @@ func (r *outbox) startWaitsForTheHold(ctx context.Context, issue record.Issue, r
 		return routineWaiting{err: wait.Errorf("the %s of %s waits for the work hold of its tree to end: version %d of the %s document (%s) of %s closed the design gate",
 			role, issue.Key, closed.LatestVersion, closed.Step.OrSpec(), closed.ArtifactID, issue.Tree)}
 	}
-	if role != claim.RoleMerger {
-		return nil
-	}
-	return r.mergerNewsWait(ctx, issue)
+	return nil
 }
 
 // openingStartFindsNoHold is whether a start of the work hold's opening
@@ -5682,7 +5539,7 @@ func (r *outbox) heldClaimStartTask(ctx context.Context, row record.OutboxRow, i
 //   - A record that shows a hold that stands means the tree holds work: the start waits, as it
 //     waits at the fence, and no start row lifts the hold. The record says so, and no read of the
 //     gate: the close writes it and the opening deletes it (workflow's workHoldClose,
-//     tellAndEndWorkHold), and the boot ends it where the deployment moved to `merge`.
+//     tellAndEndWorkHold), and the boot ends it where the deployment moved to `start`.
 //   - Any other start ends the hold for the claim (supervise.Machine.EndHold) and goes on as an
 //     ordinary start. EndHold drops a stop not yet made, and starts a claim the hold stopped with
 //     one task: the start's own work behind the opening's sentences, or the task the claim kept
@@ -5747,10 +5604,10 @@ func (r *outbox) startOfAHeldClaim(ctx context.Context, row record.OutboxRow, pa
 // openingMayBeInFlight is whether a start that carries no opening's sentences, of held, a claim the
 // work hold does not hold, reads whether the claim's own start of the opening is in flight
 // (waitForOpeningInFlight): only under `work` (holdIsWork), only for a role the hold stops, every
-// role but the architect's and the controller's (claim.HeldByWorkHold), and only where a start ran
-// against the claim before this row (supervise.Claim.LastStartRow), since the opening's start in
-// flight is the claim's last start. That read is one transaction at each attempt of such a start,
-// and a `merge` deployment makes none.
+// role but the architect's, the controller's and the merger's (claim.HeldByWorkHold), and only
+// where a start ran against the claim before this row (supervise.Claim.LastStartRow), since the
+// opening's start in flight is the claim's last start. That read is one transaction at each
+// attempt of such a start, and a `start` deployment makes none.
 func (r *outbox) openingMayBeInFlight(held supervise.Claim, row record.OutboxRow) bool {
 	return r.holdIsWork() && claim.HeldByWorkHold(held.Role) && held.LastStartRow != 0 && held.LastStartRow < row.ID
 }
@@ -5858,11 +5715,11 @@ func (r *outbox) roleRunAndRoot(ctx context.Context, tx pgx.Tx, role claim.Role,
 }
 
 // holdStop runs the work hold's stop of a claim (a suspend row of the source hold): the close's
-// stop of a released worker that is not a merger, which no message reaches, and the stop a close
+// stop of a released worker, which no message reaches, and the stop a close
 // message carries, which the outbox queued with its deadline once the message reached the claim
 // (postHoldStop). Under any hold but `work`, the hold holds no running work: the row makes no
 // stop and finishes with one line, as postHoldStop does. This check reads the deployment's word
-// alone, no gate and no hold row. After a restart into `merge`, the boot ends the tree's hold
+// alone, no gate and no hold row. After a restart into `start`, the boot ends the tree's hold
 // beside the outbox (workflow's workHoldBooted), so the row can run while the tree's work hold row
 // still stands. Under `work`, each attempt posts the stop (supervise.RequestSuspend, By hold)
 // with the deadline and the moment of the message the row stored, and the version that closed
@@ -5951,17 +5808,15 @@ func (r *outbox) logHoldNotWork(row record.OutboxRow, stop record.SuperviseReque
 // postHoldStop queues the work hold's stop a close message carries (record.RoleMessage.Stop) once
 // the message's row ends: published to the claim, or met by no session that holds the role, a
 // holder that refuses the delivery mode, a denied forward, or a holder the listener calls
-// unresponsive where the message is not a merger's (deliverRoleMessage). It builds the stop's
-// suspend row from the message's stop (record.HoldStop.Suspend), the row the close writes for a
-// claim no message reaches. reached says the message reached its claim then, and that moment is
-// the one the stop names its deadline from, the hold's grace on (workflow.HoldStopGrace), and the
-// turn it waits for, the one the message starts in a ready or idle claim
-// (supervise.RequestSuspend.TurnAfter); a merger's message is published once the merger's session
-// holds its topic, so the grace of a woken or launching merger counts from its start. A message
-// that reached no claim, a released one's, names neither, and its stop takes the claim over at
-// once. The stop is queued only while the tree's standing gate still stands closed
+// unresponsive (deliverRoleMessage). It builds the stop's suspend row from the message's stop
+// (record.HoldStop.Suspend), the row the close writes for a claim no message reaches. reached says
+// the message reached its claim then, and that moment is the one the stop names its deadline
+// from, the hold's grace on (workflow.HoldStopGrace), and the turn it waits for, the one the
+// message starts in a ready or idle claim (supervise.RequestSuspend.TurnAfter). A message that
+// reached no claim, a released one's, names neither, and its stop takes the claim over at once.
+// The stop is queued only while the tree's standing gate still stands closed
 // (record.TreeGate.Standing), read in the same transaction (treeGateTx) and under `work` alone,
-// since under `merge` the hold holds no running work: a stop not yet made when the gate opens
+// since under `start` the hold holds no running work: a stop not yet made when the gate opens
 // again is not made. The row the stop is written as stores the deadline, so a restart posts it
 // again as stored. The transaction is a store.Transact of its own, so the records wake the
 // supervise lane once the row has committed (projectRecords.wakeOnCommit, store.OnCommit), and

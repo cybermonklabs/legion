@@ -64,11 +64,10 @@ type Config struct {
 	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.
 	Steps []record.DesignStep
 	// Hold is what a closed standing gate holds of its tree (`gates.hold`, config.Gates.Holds):
-	// config.HoldMerge, the merger's start and the first phase of each member that has not
-	// started, which today's hold has always been; or config.HoldWork, the tree's running work as
-	// well, which the close stops and the opening starts again (work_hold.go). Every word but
-	// HoldWork holds what HoldMerge holds, the empty word of an engine built without it among them
-	// (holdIsWork).
+	// config.HoldStart, the first phase of each member that has not started; or config.HoldWork,
+	// the tree's running work but the merge as well, which the close stops and the opening starts
+	// again (work_hold.go). No word holds the merge. Every word but HoldWork holds what HoldStart
+	// holds, the empty word of an engine built without it among them (holdIsWork).
 	Hold           config.Hold
 	ReviewRoundCap int
 	Linger         time.Duration

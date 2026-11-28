@@ -165,9 +165,9 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 			stop, timed, versioned, opening,
 			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Close: true, Stop: &messageStop},
 			RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Close: true, Stop: &versionedStop},
-			RoleMessage{Role: "legion-LEGION-210-merger", Body: "End your turn now.", Close: true, Wake: true, Stop: &HoldStop{
-				Tree: "LEGION-208", Role: claim.RoleMerger, Generation: 4, Step: DesignStepCriteria, Reason: "the work hold"}},
-			RoleMessage{Role: "legion-LEGION-210-merger", Body: "Your phase goes on.", Close: true, Wake: true},
+			RoleMessage{Role: "legion-LEGION-210-tester", Body: "End your turn now.", Close: true, Stop: &HoldStop{
+				Tree: "LEGION-208", Role: claim.RoleTester, Generation: 4, Step: DesignStepCriteria, Reason: "the work hold"}},
+			RoleMessage{Role: "legion-LEGION-210-merger", Body: "Your phase goes on.", Close: true},
 		} {
 			row, err := NewOutboxRow("LEGION-209", payload, time.Time{})
 			if err != nil {
@@ -228,7 +228,6 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 		stopOf := func(stop HoldStop) RoleMessage {
 			return RoleMessage{Role: "legion-LEGION-209-implementer", Body: "End your turn now.", Close: true, Stop: &stop}
 		}
-		wakeOfNoClose := RoleMessage{Role: "legion-LEGION-210-merger", Body: "The checks of your head settled.", Wake: true}
 		stopOfNoClose := stopOf(versionedStop)
 		stopOfNoClose.Close = false
 		noTree, noRole, noStep, otherStep, negativeStop := versionedStop, versionedStop, versionedStop, versionedStop, versionedStop
@@ -256,7 +255,6 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 			"a message whose stop names no step":            {stopOf(noStep), "step"},
 			"a message whose stop names no gated step":      {stopOf(otherStep), "step"},
 			"a message whose stop names a negative version": {stopOf(negativeStop), "negative"},
-			"a wake on a message that is no close":          {wakeOfNoClose, "close"},
 			"a stop on a message that is no close":          {stopOfNoClose, "close"},
 		} {
 			if _, err := NewOutboxRow("LEGION-209", tc.payload, time.Time{}); err == nil || !strings.Contains(err.Error(), tc.says) {

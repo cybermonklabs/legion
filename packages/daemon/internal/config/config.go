@@ -1342,7 +1342,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		WorkerWakesPerMinute: defaultWorkerWakesPerMinute,
 		GitHubGraphQLShare:   DefaultGitHubGraphQLShare,
 		EnvoyURL:             defaultEnvoyURL,
-		Gates:                Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldMerge},
+		Gates:                Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldStart},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateGrace:       defaultPodUpdateGrace,

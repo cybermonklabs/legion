@@ -39,10 +39,11 @@ import (
 // backoff) or is a request the hold's end makes moot, since that end starts the claim itself
 // (EndHold).
 //
-// The project's controller's resume or retry of a phase worker is refused by the tree's hold, not
-// by the claim's source alone (workHoldRefuses): a claim the controller suspended, before the
-// close or after the hold's stop, is no claim the hold stopped, and the controller starts no phase
-// worker of a tree whose work hold stands (decision 16 of dispatch://INFRA-4528's plan).
+// The project's controller's resume or retry of a phase worker the hold holds is refused by the
+// tree's hold, not by the claim's source alone (workHoldRefuses): a claim the controller suspended,
+// before the close or after the hold's stop, is no claim the hold stopped, and the controller
+// starts no phase worker but the merger of a tree whose work hold stands (decision 16 of
+// dispatch://INFRA-4528's plan; decision 28: no value of the hold holds the merge).
 //
 // A claim the hold's stop is only held over — in a turn, a compaction, idle waiting for the turn
 // its message starts, or a launch held until its ready — is not answered here: its stop is held
@@ -94,16 +95,17 @@ func (m *Machine) WorkHoldRefusal(ctx context.Context, by SuspendSource) error {
 
 // workHoldRefuses is the one statement of the controller's part of the work hold (decision 16 of
 // dispatch://INFRA-4528's plan): the controller is no operator, so under `gates.hold: work`, while
-// the standing design gate of the claim's tree is closed, it starts no phase worker of that tree.
-// It is decided by the tree's hold (Store.WorkHoldStands, read under the claim-write deadline as
-// readWorkHold reads it), not by the claim's source alone: a claim the controller suspended before
-// the close, which the hold's stop does not take over (suspensionRank), or after it, taking the
-// hold's stop over, is held as a claim the hold stopped is (WorkHeld, which needs no read). The
-// answer wraps ErrHeldByWorkHold and names the two ways out, the gate's opening and an operator's
-// own act. It is nil for every asker but the controller — the operator's own act overrides the
-// hold — and for an architect or the controller's own claim, which the hold never holds: it holds
-// every role but those two (claim.HeldByWorkHold), decided by the role alone. A read of the tree's
-// hold that fails is an error the caller refuses with: a start the read did not clear may not run.
+// the standing design gate of the claim's tree is closed, it starts no phase worker of that tree
+// but the merger. It is decided by the tree's hold (Store.WorkHoldStands, read under the
+// claim-write deadline as readWorkHold reads it), not by the claim's source alone: a claim the
+// controller suspended before the close, which the hold's stop does not take over
+// (suspensionRank), or after it, taking the hold's stop over, is held as a claim the hold stopped
+// is (WorkHeld, which needs no read). The answer wraps ErrHeldByWorkHold and names the two ways
+// out, the gate's opening and an operator's own act. It is nil for every asker but the controller
+// — the operator's own act overrides the hold — and for an architect, a merger or the controller's
+// own claim, which the hold never holds: it holds every role but those three (claim.HeldByWorkHold),
+// decided by the role alone. A read of the tree's hold that fails is an error the caller refuses
+// with: a start the read did not clear may not run.
 func (m *Machine) workHoldRefuses(ctx context.Context, c Claim, by SuspendSource) error {
 	if by != SuspendedByController || !claim.HeldByWorkHold(c.Role) {
 		return nil
@@ -119,7 +121,7 @@ func (m *Machine) workHoldRefuses(ctx context.Context, c Claim, by SuspendSource
 			return nil
 		}
 	}
-	return fmt.Errorf("the work hold of %s holds every phase worker of the tree while its standing design gate is closed, and the controller starts none of them; the gate's opening, or an operator's own resume or retry, starts %s: %w",
+	return fmt.Errorf("the work hold of %s holds every phase worker of the tree but the merger while its standing design gate is closed, and the controller starts none of them; the gate's opening, or an operator's own resume or retry, starts %s: %w",
 		c.Tree, c.Token, ErrHeldByWorkHold)
 }
 
@@ -162,7 +164,7 @@ func (m *Machine) workHoldRefuses(ctx context.Context, c Claim, by SuspendSource
 //     or a newer stop or a newer run undid that start), a start with no opening's sentences ends
 //     the hold here, and its worker is never told that the hold stopped its turn, and is told the
 //     gate's open message only where its issue's holder row still owes the opening then (the
-//     outbox's startNewsOf). Under `merge`, where the boot ended the hold, a start waits for the
+//     outbox's startNewsOf). Under `start`, where the boot ended the hold, a start waits for the
 //     start of the opening only while the claim is stopped: a later start that records itself
 //     first finishes that start of the opening, and the worker is not told the boot's sentence.
 //   - Any other claim — one an operator's suspension or the daemon's own took over, one the hold

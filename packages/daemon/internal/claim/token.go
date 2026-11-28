@@ -85,20 +85,23 @@ func IsRole(role Role) bool {
 func IsPhaseWorker(role Role) bool { return role != RoleArchitect && IsRole(role) }
 
 // HeldByWorkHold reports whether role is one the work hold (`gates.hold: work`) holds: every
-// non-empty role but the architect's and the controller's. It decides by the role alone, not by
-// Roles, so a role a later change adds, whose worker starts through the outbox, is held with no
-// new code in the hold. The hold's own readers read it: internal/daemon's start fence
-// (startWaitsForTheHold) and openingMayBeInFlight, internal/workflow's treeClaims, and
-// supervise's workHoldRefuses. Two readers on the hold's path read Roles instead, through IsRole:
+// non-empty role but the architect's, the controller's and the merger's. No value of the hold
+// holds the merge, so the merger goes on while its tree's standing gate is closed, as the
+// architects and the controller do. It decides by the role alone, not by Roles, so a role a later
+// change adds, whose worker starts through the outbox, is held with no new code in the hold. The
+// hold's own readers read it: internal/daemon's start fence (startWaitsForTheHold) and
+// openingMayBeInFlight, internal/workflow's treeClaims and workHoldClose, and supervise's
+// workHoldRefuses. Two readers on the hold's path read Roles instead, through IsRole:
 // internal/record's validateOutboxPayload, which refuses a close message's stop of a role outside
 // Roles, and internal/api's restartWorkedPhase, which restarts the phase of a phase worker alone
-// (IsPhaseWorker) and leaves the hold's refusal of the controller's restart to workHoldRefuses.
-// Neither departs from this for a claim that can run, since internal/runtime's
-// validateClaimShape refuses the spawn of any role outside Roles: over Roles, IsPhaseWorker is
-// true of exactly the roles this holds, and internal/workflow's workHoldClose writes no stop of
-// an architect for the validation's IsRole to admit.
+// (IsPhaseWorker) and leaves the hold's refusal of the controller's restart to workHoldRefuses,
+// which refuses none of the merger's. Neither departs from this for a claim that can run, since
+// internal/runtime's validateClaimShape refuses the spawn of any role outside Roles: over Roles,
+// the roles this holds are the phase workers but the merger (IsPhaseWorker), and
+// internal/workflow's workHoldClose writes no stop of an architect or a merger for the
+// validation's IsRole to admit.
 func HeldByWorkHold(role Role) bool {
-	return role != "" && role != RoleArchitect && role != RoleController
+	return role != "" && role != RoleArchitect && role != RoleController && role != RoleMerger
 }
 
 // NewToken is the token of the claim on issue's role: `legion-<project>-<issue project,

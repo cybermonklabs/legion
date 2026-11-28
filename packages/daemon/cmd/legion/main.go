@@ -256,7 +256,7 @@ func pluginsLine(cfg config.Config) string {
 // start` writes its own, so a URL a refusal quotes loses its query and its userinfo in both
 // commands. The OK line names the design-gate steps the file resolved to, in the order it named
 // them (`design-gate-steps=`, `none` for a deployment that gates none), then what a closed gate
-// holds (`design-gate-hold=`, the `gates.hold` word, `merge` for a file that names none), and each
+// holds (`design-gate-hold=`, the `gates.hold` word, `start` for a file that names none), and each
 // NATS nkey seed's public key when there is one, never the seed.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its

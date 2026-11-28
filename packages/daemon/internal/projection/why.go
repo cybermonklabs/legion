@@ -247,9 +247,10 @@ func heldTrees(own []record.Issue, holds []record.WorkHold) map[string]record.Wo
 }
 
 // workHeld is whether the work hold holds issue's work (api.WhyHeld): its tree runs and
-// the hold holds it (heldTrees), and its phase is a phase worker's, whom the hold stops. An issue
-// whose phase is its architect's — a root writing its design, a member in accepting — or that has
-// not started is no issue the hold stops, and is answered as it would be without the hold.
+// the hold holds it (heldTrees), and its phase is a phase worker's whom the hold stops
+// (claim.HeldByWorkHold). An issue whose phase is its architect's — a root writing its design, a
+// member in accepting — or its merger's, whom no value of the hold holds, or that has not started
+// is no issue the hold stops, and is answered as it would be without the hold.
 func workHeld(issue record.Issue, running map[string]struct{}, holds map[string]record.WorkHold) bool {
 	if _, held := holds[issue.Tree]; !held {
 		return false
@@ -257,8 +258,7 @@ func workHeld(issue record.Issue, running map[string]struct{}, holds map[string]
 	if _, runs := running[issue.Tree]; !runs {
 		return false
 	}
-	role := phase.RoleFor(issue.Phase)
-	return role != "" && role != claim.RoleArchitect
+	return claim.HeldByWorkHold(phase.RoleFor(issue.Phase))
 }
 
 // workHeldReason is the sentence of an issue the work hold holds (api.WhyHeld): its phase, its

@@ -85,7 +85,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                                  {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}:                {calls: 1, test: "TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"},
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:               {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
-	{file: "internal/daemon/outbox.go", fn: "outbox.settleHeldOpening"}:               {calls: 1, test: "TestWorkHoldOpeningStartOfAMergerWaitsForItsNews"},
+	{file: "internal/daemon/outbox.go", fn: "outbox.settleHeldOpening"}:               {calls: 1, test: "TestWorkHoldOpeningStartsRetryTellsTheOpeningOnceToAHolderOfANewPhase"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                       {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                           {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/projection/why.go", fn: "workHeld"}:                              {calls: 1, test: "TestWorkHoldShowsWhyInTheState"},

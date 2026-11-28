@@ -513,7 +513,7 @@ type RepositoryRenameSettings struct {
 
 // GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
 // `gates.design` named them, and `[]` for a deployment that gates none. Hold is the word of
-// `gates.hold`, `merge` for a deployment that names none.
+// `gates.hold`, `start` for a deployment that names none.
 type GatesSettings struct {
 	Design []record.DesignStep `json:"design"`
 	Hold   config.Hold         `json:"hold"`

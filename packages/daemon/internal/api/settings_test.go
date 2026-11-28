@@ -673,7 +673,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("github_apps = %+v, want none", settings.GitHubApps)
 	}
 	top := keysOf(t, encoded)
-	for key, want := range map[string]string{"provider_keys": "[]", "omp_launch_prefix": "[]", "nats_urls": "[]", "repository_renames": "[]", "projects": "{}", "capabilities": `{"decided":{}}`, "gates": `{"design":["spec"],"hold":"merge"}`} {
+	for key, want := range map[string]string{"provider_keys": "[]", "omp_launch_prefix": "[]", "nats_urls": "[]", "repository_renames": "[]", "projects": "{}", "capabilities": `{"decided":{}}`, "gates": `{"design":["spec"],"hold":"start"}`} {
 		if got := string(top[key]); got != want {
 			t.Errorf("%s = %s, want %s", key, got, want)
 		}

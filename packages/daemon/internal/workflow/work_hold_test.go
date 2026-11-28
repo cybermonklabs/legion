@@ -35,12 +35,13 @@ import (
 )
 
 // The work hold (`gates.hold: work`, steps 1 to 7 of its spec under `work`, and its plan's
-// decisions 13 to 19) as the workflow writes it: at the close, the record of the hold,
-// a message to every live architect and phase worker of the tree carrying each worker's stop, and
-// the stop of a released worker that is not a merger; at the opening, today's open message to
-// every live holder and one start for each claim the hold stopped; at the boot, the close a tree
-// was owed and the opening a tree no longer held is owed. The rows are asserted, not the outbox's
-// run of them, which internal/daemon's tests hold (t-6).
+// decisions 13 to 19 and 28) as the workflow writes it: at the close, the record of the hold,
+// a message to every live architect and phase worker of the tree carrying each worker's stop but
+// the merger's, whom no value of the hold holds, and the stop of a released worker that is not a
+// merger; at the opening, today's open message to every live holder and one start for each claim
+// the hold stopped; at the boot, the close a tree was owed and the opening a tree no longer held is
+// owed. The rows are asserted, not the outbox's run of them, which internal/daemon's tests hold
+// (t-6).
 
 // holdNow is the clock of every engine of these tests, and so the moment a close records.
 var holdNow = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
@@ -48,7 +49,8 @@ var holdNow = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 // workHoldWords is the sentence the close message adds under `work`, after today's first one
 // (spec step 2), and which every opening task repeats.
 const workHoldWords = "The deployment holds the tree's work until every gated step stands open again: no phase " +
-	"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or 2 minutes after this message."
+	"but the merge starts, and the daemon stops each phase worker but the merger, with its session kept, when its turn ends " +
+	"or 2 minutes after this message."
 
 // holdWords is every text the hold sends about one gated document: tree is the root whose gate it
 // is, step its step and document its id. Each text is written out word for word here, never read
@@ -67,8 +69,9 @@ func (w holdWords) closed(version int) string {
 		"so the design you are working to may change.", w.tree, version, w.step, w.document)
 }
 
-// mergeClose is today's close message, which `merge` keeps word for word (H1).
-func (w holdWords) mergeClose(version int) string {
+// startClose is today's close message under `start`, which says the phase goes on, and which a
+// merger is told under `work` too (H1, H15).
+func (w holdWords) startClose(version int) string {
 	return gateMovedBodyOf(w.tree, w.step, w.document, version, false)
 }
 
@@ -97,7 +100,7 @@ func (w holdWords) opening(closedAt, openedAt int) string {
 }
 
 // bootOpened is what the boot says in place of today's open message where a tree no longer holds
-// work although its gate did not open: the deployment moved to `merge`, or turned the gate off.
+// work although its gate did not open: the deployment moved to `start`, or turned the gate off.
 func (w holdWords) bootOpened() string {
 	return "The deployment no longer holds the work of " + w.tree + "'s tree."
 }
@@ -152,7 +155,8 @@ func holdEngine(project string, hold config.Hold, steps []record.DesignStep, log
 //     its implementer at work, its tester released with its idle pod, and its reviewer suspended
 //     by an operator;
 //   - LEGION-210, merging: its merger released while its pull request sits in the merge queue, its
-//     implementer suspended by the daemon, and its tester failed;
+//     implementer suspended by the daemon, and its tester failed; no value of the hold holds the
+//     merger, so it is told nothing and woken for nothing;
 //   - LEGION-211, at admitted, a member no phase of which has started, which holds no claim;
 //   - LEGION-212, closed, whose implementer is at work on the production check's look.
 type holdRig struct {
@@ -257,10 +261,10 @@ func stopByTheHold(t *testing.T, pool *pgxpool.Pool, token string) {
 	}
 }
 
-// legionStops is every claim of the rig the hold stops: the live phase workers and the two
-// released ones.
+// legionStops is every claim of the rig the hold stops: the live phase workers and the released
+// tester. The released merger is none: no value of the hold holds the merge.
 var legionStops = []heldClaim{
-	{"LEGION-209", claim.RolePlanner}, {"LEGION-209", claim.RoleImplementer}, {"LEGION-209", claim.RoleTester}, {"LEGION-210", claim.RoleMerger},
+	{"LEGION-209", claim.RolePlanner}, {"LEGION-209", claim.RoleImplementer}, {"LEGION-209", claim.RoleTester},
 }
 
 // close writes version of LEGION-208's spec, which closes its standing gate.
@@ -363,8 +367,9 @@ func otherOpening(issue record.Issue, role claim.Role, opening string) record.Su
 }
 
 // legionCloseMessages is every message of the rig's close under `work`, by the issue whose row
-// carries it: every live architect and phase worker of an in-workflow member, and the released
-// merger, woken for it; each marked as a close message, and each worker's carrying its stop.
+// carries it: every live architect and phase worker of an in-workflow member, each marked as a
+// close message, and each worker's carrying its stop. The released merger is told nothing and
+// woken for nothing (decision 28).
 func legionCloseMessages(t *testing.T, version int) map[string][]record.RoleMessage {
 	stop := func(role claim.Role) *record.HoldStop {
 		return legionHold.messageStop(role, 4, version)
@@ -376,8 +381,7 @@ func legionCloseMessages(t *testing.T, version int) map[string][]record.RoleMess
 			{Role: treeRoleToken(t, "LEGION-209", claim.RolePlanner), Body: legionHold.workerClose(version), Close: true, Stop: stop(claim.RolePlanner)},
 			{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: legionHold.workerClose(version), Close: true, Stop: stop(claim.RoleImplementer)},
 		},
-		"LEGION-210": {{Role: treeRoleToken(t, "LEGION-210", claim.RoleMerger), Body: legionHold.workerClose(version), Close: true, Wake: true,
-			Stop: stop(claim.RoleMerger)}},
+		"LEGION-210": nil,
 		"LEGION-211": nil,
 		"LEGION-212": nil,
 	}
@@ -413,15 +417,17 @@ func holdStartsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.Super
 
 // I4: the hold holds for every step a deployment can gate. For each step of record.DesignSteps,
 // gated alone, a new version of the step's approved document closes the standing gate: under
-// `work` the hold applies, under `merge` today's hold does. Then the gate opens, once by a
-// person's approval and once by Dispatch's carried approval after an exact undo, in F3's shape
-// (testdata/dispatch-carried-approval.json): under `work` the claim the hold stopped is started
-// with one task, under `merge` today's open message goes out. A step added to DesignSteps later is
-// in the loop.
+// `work` the work hold applies, under `start` the first-phase hold does, and under both the
+// member in merging goes on: its merger is told "Your phase goes on." and nothing stops it
+// (decision 28). Then the gate opens, once by a person's approval and once by Dispatch's carried
+// approval after an exact undo, in F3's shape (testdata/dispatch-carried-approval.json): under
+// `work` the claim the hold stopped is started with one task, under `start` today's open message
+// goes out, and under both the merger, which nothing stopped, is started by nothing. A step added
+// to DesignSteps later is in the loop.
 func TestWorkHoldHoldsForEveryGatedStep(t *testing.T) {
 	t.Parallel()
 	for _, step := range record.DesignSteps {
-		for _, hold := range []config.Hold{config.HoldWork, config.HoldMerge} {
+		for _, hold := range []config.Hold{config.HoldWork, config.HoldStart} {
 			for _, opening := range []string{"a person's approval", "Dispatch's carried approval after an exact undo"} {
 				t.Run(fmt.Sprintf("%s/%s/%s", step, hold, opening), func(t *testing.T) {
 					rig := newCarriedRig(t, step, hold)
@@ -430,8 +436,9 @@ func TestWorkHoldHoldsForEveryGatedStep(t *testing.T) {
 						rig.wantWorkClose()
 						rig.stopped()
 					} else {
-						rig.wantMergeClose()
+						rig.wantStartClose()
 					}
+					rig.wantTheMergeGoesOn()
 					if opening == "a person's approval" {
 						rig.apply("approved-46", stepApproval(carriedRoot, carriedDocument, 46, record.EventMark{Seq: 1457}))
 					} else {
@@ -440,8 +447,9 @@ func TestWorkHoldHoldsForEveryGatedStep(t *testing.T) {
 					if hold == config.HoldWork {
 						rig.wantWorkOpening()
 					} else {
-						rig.wantMergeOpening()
+						rig.wantStartOpening()
 					}
+					rig.wantTheMergeGoesOn()
 				})
 			}
 		}
@@ -483,7 +491,8 @@ func CarriedApprovalCapture(t *testing.T) intake.Fact {
 }
 
 // carriedRig is F3's root at work: ACME-2694 implementing, its implementer and its architect at
-// work, and step gated alone on F3's document, approved at version 24.
+// work, and step gated alone on F3's document, approved at version 24; and its child ACME-2695 in
+// merging, its merger live.
 type carriedRig struct {
 	t      *testing.T
 	pool   *pgxpool.Pool
@@ -510,6 +519,11 @@ func newCarriedRig(t *testing.T, step record.DesignStep, hold config.Hold) carri
 	})
 	seedHoldClaim(t, pool, "acme", carriedRoot, carriedRoot, claim.RoleArchitect, supervise.StateWorking, "")
 	seedHoldClaim(t, pool, "acme", carriedRoot, carriedRoot, claim.RoleImplementer, supervise.StateWorking, "")
+	merging := record.Issue{Key: carriedMerging, Parent: new(carriedRoot), Repo: "sjawhar/legion", DefaultBranch: "main",
+		GitHubRepo: "sjawhar/legion", Tree: carriedRoot, Project: "ACME", Title: "the merging child", Phase: phase.Merging,
+		Generation: 1, Status: PhaseStatus(phase.Merging), Rank: "V"}
+	seedIssue(t, pool, merging)
+	seedHoldClaim(t, pool, "acme", carriedRoot, carriedMerging, claim.RoleMerger, supervise.StateIdle, "")
 	return carriedRig{t: t, pool: pool, engine: holdEngine("ACME", hold, []record.DesignStep{step}, nil),
 		words: holdWords{tree: carriedRoot, step: step, document: carriedDocument}, issue: issue}
 }
@@ -540,6 +554,38 @@ func (r carriedRig) token(role claim.Role) string {
 	return string(token)
 }
 
+// carriedMerging is the rig's child in merging, whose merger is live.
+const carriedMerging = "ACME-2695"
+
+// childOwed is the told row of the rig's child that owes the opening, owed news of step's
+// document at the opening (the rig records no told row): none for criteria, whose news is owed
+// to the tree root alone (record's OwedNews, design_news.go), and the child's holder row for every
+// other step.
+func (r carriedRig) childOwed() []string {
+	if r.words.step == record.DesignStepCriteria {
+		return nil
+	}
+	return []string{carriedMerging + "/holder"}
+}
+
+// wantTheMergeGoesOn holds the rig's child in merging to no value of the hold holding its merge
+// (decision 28): its live merger is told the close as `start` words it, "Your phase goes on.",
+// first, with no stop and no wake, and nothing stops or starts it at the close or the opening.
+// After the opening it may be told the open message too (openingDelivery).
+func (r carriedRig) wantTheMergeGoesOn() {
+	r.t.Helper()
+	token, err := claim.NewToken("acme", carriedMerging, claim.RoleMerger)
+	if err != nil {
+		r.t.Fatalf("the merger token of %s: %v", carriedMerging, err)
+	}
+	closed := record.RoleMessage{Role: string(token), Body: r.words.startClose(45), Close: true}
+	if got := roleMessagesOf(r.t, r.pool, carriedMerging); len(got) == 0 || !reflect.DeepEqual(got[0], closed) {
+		r.t.Fatalf("the merger of %s was told %s, want the close message %s first", carriedMerging, asJSON(got), asJSON(closed))
+	}
+	wantSupervise(r.t, r.pool, carriedMerging, "suspend", nil)
+	wantSupervise(r.t, r.pool, carriedMerging, "start", nil)
+}
+
 func (r carriedRig) wantWorkClose() {
 	r.t.Helper()
 	wantMessages(r.t, r.pool, carriedRoot, []record.RoleMessage{
@@ -553,15 +599,15 @@ func (r carriedRig) wantWorkClose() {
 	}
 }
 
-func (r carriedRig) wantMergeClose() {
+func (r carriedRig) wantStartClose() {
 	r.t.Helper()
 	wantMessages(r.t, r.pool, carriedRoot, []record.RoleMessage{
-		{Role: r.token(claim.RoleImplementer), Body: r.words.mergeClose(45), Close: true},
-		{Role: r.token(claim.RoleArchitect), Body: r.words.mergeClose(45), Close: true},
+		{Role: r.token(claim.RoleImplementer), Body: r.words.startClose(45), Close: true},
+		{Role: r.token(claim.RoleArchitect), Body: r.words.startClose(45), Close: true},
 	})
 	wantSupervise(r.t, r.pool, carriedRoot, "suspend", nil)
 	if hold := workHoldOf(r.t, r.pool, carriedRoot); hold != nil {
-		r.t.Fatalf("under merge the record holds %+v, want no hold of the work", hold)
+		r.t.Fatalf("under start the record holds %+v, want no hold of the work", hold)
 	}
 }
 
@@ -573,15 +619,17 @@ func (r carriedRig) stopped() {
 
 // wantWorkOpening holds the rig to its opening under `work`: the architect, a live holder owed news
 // (the rig records no told row), is sent no open message and its told row owes the opening, which
-// the task carrying its news leads with (openingDelivery); the implementer the hold stopped is
-// started with the one task, which carries the opening, so its told row owes none.
+// the task carrying its news leads with (openingDelivery), and so does the child's merger, which
+// the hold did not stop, where it is owed news of the step (childOwed); the implementer the hold
+// stopped is started with the one task, which
+// carries the opening, so its told row owes none.
 func (r carriedRig) wantWorkOpening() {
 	r.t.Helper()
 	wantMessages(r.t, r.pool, carriedRoot, []record.RoleMessage{
 		{Role: r.token(claim.RoleArchitect), Body: r.words.architectClose(45), Close: true},
 		{Role: r.token(claim.RoleImplementer), Body: r.words.workerClose(45), Close: true, Stop: r.words.messageStop(claim.RoleImplementer, 1, 45)},
 	})
-	assertOpeningsOwed(r.t, r.pool, carriedRoot, carriedRoot+"/architect")
+	assertOpeningsOwed(r.t, r.pool, carriedRoot, append([]string{carriedRoot + "/architect"}, r.childOwed()...)...)
 	wantSupervise(r.t, r.pool, carriedRoot, "start", []record.SuperviseRequest{
 		phaseOpening(r.issue, claim.RoleImplementer, r.words.opening(45, 46))})
 	if hold := workHoldOf(r.t, r.pool, carriedRoot); hold != nil {
@@ -589,33 +637,34 @@ func (r carriedRig) wantWorkOpening() {
 	}
 }
 
-// wantMergeOpening holds the rig to its opening under `merge`: each holder is owed news (the rig
+// wantStartOpening holds the rig to its opening under `start`: each holder is owed news (the rig
 // records no told row), so it is sent no open message and its told row owes the opening, which the
 // task carrying its news leads with (openingDelivery).
-func (r carriedRig) wantMergeOpening() {
+func (r carriedRig) wantStartOpening() {
 	r.t.Helper()
 	wantMessages(r.t, r.pool, carriedRoot, []record.RoleMessage{
-		{Role: r.token(claim.RoleImplementer), Body: r.words.mergeClose(45), Close: true},
-		{Role: r.token(claim.RoleArchitect), Body: r.words.mergeClose(45), Close: true},
+		{Role: r.token(claim.RoleImplementer), Body: r.words.startClose(45), Close: true},
+		{Role: r.token(claim.RoleArchitect), Body: r.words.startClose(45), Close: true},
 	})
-	assertOpeningsOwed(r.t, r.pool, carriedRoot, carriedRoot+"/architect", carriedRoot+"/holder")
+	assertOpeningsOwed(r.t, r.pool, carriedRoot, append([]string{carriedRoot + "/architect", carriedRoot + "/holder"}, r.childOwed()...)...)
 	wantSupervise(r.t, r.pool, carriedRoot, "start", nil)
 }
 
-// H1, H16: under `merge` the close is today's, word for word, to each phase holder and the root's
-// architect, and stops nothing; the one change is the released merger's message, marked to wake
-// it, so it can take its pull request out of the merge queue (decision 13). The opening marks no
-// wake: each holder, owed news since the rig records no told row, is told it by the task that
-// carries its news (openingDelivery), so it is sent no open message and its told row owes it.
-func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
+// H1, H16: under `start` the close is today's without "the merge waits until every gated step
+// stands open again.", word for word, to each phase holder and the root's architect, the released
+// merger's holder among them, and stops nothing; no message is marked to wake its role, so the
+// outbox wakes no released merger for it (decision 28). At the opening each holder, owed news since
+// the rig records no told row, is told it by the task that carries its news (openingDelivery), so
+// it is sent no open message and its told row owes it.
+func TestStartHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHoldRig(t)
-	engine := rig.engine(config.HoldMerge)
+	engine := rig.engine(config.HoldStart)
 	rig.close(engine, 4)
 	closed := map[string][]record.RoleMessage{
-		"LEGION-208": {{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.mergeClose(4), Close: true}},
-		"LEGION-209": {{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: legionHold.mergeClose(4), Close: true}},
-		"LEGION-210": {{Role: treeRoleToken(t, "LEGION-210", claim.RoleMerger), Body: legionHold.mergeClose(4), Close: true, Wake: true}},
+		"LEGION-208": {{Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect), Body: legionHold.startClose(4), Close: true}},
+		"LEGION-209": {{Role: treeRoleToken(t, "LEGION-209", claim.RoleImplementer), Body: legionHold.startClose(4), Close: true}},
+		"LEGION-210": {{Role: treeRoleToken(t, "LEGION-210", claim.RoleMerger), Body: legionHold.startClose(4), Close: true}},
 	}
 	for issue, want := range closed {
 		wantMessages(t, rig.pool, issue, want)
@@ -624,7 +673,7 @@ func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 		wantSupervise(t, rig.pool, issue, "suspend", nil)
 	}
 	if hold := workHoldOf(t, rig.pool, "LEGION-208"); hold != nil {
-		t.Fatalf("under merge the record holds %+v, want no hold of the work", hold)
+		t.Fatalf("under start the record holds %+v, want no hold of the work", hold)
 	}
 
 	rig.open(engine, 4)
@@ -637,12 +686,39 @@ func TestMergeHoldKeepsTodaysTextsAndStopsNothing(t *testing.T) {
 	}
 }
 
-// H8, H13, H15, decision 15: the close stops every phase-worker claim of every in-workflow member
-// of the tree, idle claims of finished phases too: a live worker's stop rides on its message for
-// the outbox to post once the message reached it; a released merger's too, woken for it; a
-// released worker that is not a merger is stopped at once, with no message. A claim an operator or
-// the daemon suspended, or a failed one, is stopped by nothing (H17, H27), and a closed member's
-// look is left alone (H29).
+// H2, H15, decision 28: no value of the hold holds the merge. A merger in a turn at the close is
+// told the close as `start` words it, "Your phase goes on.", under `work` too, and carries no stop:
+// no suspend row names it, and no opening start is written for it, since nothing stopped it.
+func TestWorkHoldStopsNoMergerUnderEitherValue(t *testing.T) {
+	t.Parallel()
+	for _, hold := range []config.Hold{config.HoldStart, config.HoldWork} {
+		t.Run(string(hold), func(t *testing.T) {
+			rig := newHoldRig(t)
+			merger := treeRoleToken(t, "LEGION-210", claim.RoleMerger)
+			if _, err := rig.pool.Exec(t.Context(), `update claims set state = 'working', suspended_by = '' where token = $1`, merger); err != nil {
+				t.Fatalf("put the merger in a turn: %v", err)
+			}
+			engine := rig.engine(hold)
+			rig.close(engine, 4)
+			wantMessages(t, rig.pool, "LEGION-210", []record.RoleMessage{{Role: merger, Body: legionHold.startClose(4), Close: true}})
+			wantSupervise(t, rig.pool, "LEGION-210", "suspend", nil)
+			if hold == config.HoldWork {
+				rig.stopsMade(legionStops...)
+			}
+			rig.open(engine, 4)
+			if starts := holdStartsOf(t, rig.pool, "LEGION-210"); len(starts) != 0 {
+				t.Fatalf("the opening starts %s of the merging member, want nothing: nothing stopped its merger", asJSON(starts))
+			}
+		})
+	}
+}
+
+// H8, H13, H15, decision 15: the close stops every phase-worker claim but the merger's of every
+// in-workflow member of the tree, idle claims of finished phases too: a live worker's stop rides
+// on its message for the outbox to post once the message reached it; a released worker that is not
+// a merger is stopped at once, with no message; the released merger is stopped by nothing
+// (decision 28). A claim an operator or the daemon suspended, or a failed one, is stopped by
+// nothing (H17, H27), and a closed member's look is left alone (H29).
 func TestWorkHoldStopsEveryPhaseWorkerOfTheTree(t *testing.T) {
 	t.Parallel()
 	rig := newHoldRig(t)
@@ -681,7 +757,7 @@ func TestWorkHoldStopsNoArchitect(t *testing.T) {
 				continue
 			}
 			told++
-			if message.Stop != nil || message.Wake || message.Body != legionHold.architectClose(4) {
+			if message.Stop != nil || message.Body != legionHold.architectClose(4) {
 				t.Fatalf("the architect of %s is told %s, want the architect's close and no stop", issue, asJSON(message))
 			}
 		}
@@ -696,8 +772,8 @@ func TestWorkHoldStopsNoArchitect(t *testing.T) {
 	}
 }
 
-// H12, decision 14: every live architect and phase worker of the tree is told the close, and so
-// is the released merger, woken for it; each text is the one its recipient is owed, word for word.
+// H12, decision 14: every live architect and phase worker of the tree is told the close, and the
+// released merger is told nothing; each text is the one its recipient is owed, word for word.
 func TestWorkHoldTellsEveryArchitectAndEveryWorker(t *testing.T) {
 	t.Parallel()
 	rig := newHoldRig(t)
@@ -860,12 +936,15 @@ func legionOpeningStarts(implementing record.Issue, opening string) []record.Sup
 // no open message, and its told row owes the opening, which the task carrying its news leads with
 // (openingDelivery). LEGION-209's own architect holds no told row and is sent the open message.
 // The holders the hold stopped are told the opening by the one task that starts each, so their
-// told rows owe none.
+// told rows owe none. The released merger, which nothing stopped, is started by nothing, and its
+// holder row, owed news, owes the opening too.
 func wantLegionOpening(t *testing.T, rig holdRig, opening string, told bool) {
 	t.Helper()
-	implementing, merging := storedIssue(t, rig.pool, "LEGION-209"), storedIssue(t, rig.pool, "LEGION-210")
+	implementing := storedIssue(t, rig.pool, "LEGION-209")
 	wantSupervise(t, rig.pool, "LEGION-209", "start", legionOpeningStarts(implementing, opening))
-	wantSupervise(t, rig.pool, "LEGION-210", "start", []record.SuperviseRequest{phaseOpening(merging, claim.RoleMerger, opening)})
+	if starts := holdStartsOf(t, rig.pool, "LEGION-210"); len(starts) != 0 {
+		t.Fatalf("the opening starts %s of the merging member, want nothing: the hold stopped no merger", asJSON(starts))
+	}
 	if starts := holdStartsOf(t, rig.pool, "LEGION-208"); len(starts) != 0 {
 		t.Fatalf("the opening starts %s of the root, want nothing: no claim of it was held", asJSON(starts))
 	}
@@ -883,7 +962,7 @@ func wantLegionOpening(t *testing.T, rig holdRig, opening string, told bool) {
 	wantMessages(t, rig.pool, "LEGION-209", append(closeMessages["LEGION-209"],
 		record.RoleMessage{Role: treeRoleToken(t, "LEGION-209", claim.RoleArchitect), Body: legionHold.opened(4)}))
 	wantMessages(t, rig.pool, "LEGION-210", closeMessages["LEGION-210"])
-	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect")
+	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-210/holder")
 }
 
 // H11, F3: Dispatch's carried approval after an exact undo opens the gate as a person's approval
@@ -901,9 +980,9 @@ func TestWorkHoldStartsItsClaimsWhenTheChangeIsUndone(t *testing.T) {
 
 // H32: a gate that opens before the outbox made a stop makes none: the opening writes no stop and
 // starts no claim the hold never stopped, every live claim is told the gate opened, a holder owed
-// news by the task that carries that news (openingDelivery), the released merger whose stop was
-// not made among them, and with the record gone the stops still queued read a tree that holds no
-// work.
+// news by the task that carries that news (openingDelivery), the released merger, which the hold
+// does not stop, among them, and with the record gone the stops still queued read a tree that holds
+// no work.
 func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 	t.Parallel()
 	rig := newHoldRig(t)
@@ -936,7 +1015,7 @@ func TestWorkHoldMakesNoStopAfterTheGateOpens(t *testing.T) {
 	})
 }
 
-// The work hold's opening tells each holder the opening once, as tellGateMoved does under `merge`
+// The work hold's opening tells each holder the opening once, as tellGateMoved does under `start`
 // for every holder it addresses, live or not: a holder that the hold did not stop and that is
 // owed news is sent no open message, and its told row owes the opening, so the task that carries
 // its news leads with the opened sentence. Here the root's architect is owed news, since the rig
@@ -962,7 +1041,7 @@ func TestWorkHoldOpeningOwesTheOpeningToAHolderOwedNewsThatIsNotLive(t *testing.
 			}
 			rig.open(engine, 4)
 			wantMessages(t, rig.pool, "LEGION-208", legionCloseMessages(t, 4)["LEGION-208"])
-			assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect")
+			assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-210/holder")
 		})
 	}
 }
@@ -1016,7 +1095,7 @@ func TestWorkHoldSendsEachStoppedClaimOneTask(t *testing.T) {
 	}
 }
 
-// H25: a deployment that moved from `merge` to `work` while a tree's gate stood closed has the
+// H25: a deployment that moved from `start` to `work` while a tree's gate stood closed has the
 // hold applied at the boot: the record, the messages and the stops, as at a close.
 func TestWorkHoldAppliesAtTheBoot(t *testing.T) {
 	t.Parallel()
@@ -1054,18 +1133,18 @@ func TestWorkHoldStartsNothingAtTheBoot(t *testing.T) {
 	}
 }
 
-// H26: a tree whose hold the deployment no longer applies — it moved to `merge`, or turned the gate
+// H26: a tree whose hold the deployment no longer applies — it moved to `start`, or turned the gate
 // off — has its hold ended at the boot: each claim the hold stopped starts with its task, which
 // names the version that closed the gate and says the deployment no longer holds the tree's work,
 // each live holder is told so, and the record goes.
-func TestWorkHoldEndsUnderMergeAtTheBoot(t *testing.T) {
+func TestWorkHoldEndsUnderStartAtTheBoot(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		hold  config.Hold
 		steps []record.DesignStep
 	}{
-		{name: "moved to merge", hold: config.HoldMerge, steps: config.DesignGateRootIssues.Steps()},
+		{name: "moved to start", hold: config.HoldStart, steps: config.DesignGateRootIssues.Steps()},
 		{name: "turned the gate off", hold: config.HoldWork, steps: config.DesignGateOff.Steps()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1284,7 +1363,7 @@ func TestWorkHoldStartAfterTheOpeningNamesTheVersionOfTheOpening(t *testing.T) {
 	rig.close(engine, 4)
 	rig.open(engine, 4)
 	// The opening read the implementer live and owed news, so its told row owes the opening, as it
-	// does the root architect's and the released merger's, whose stop was not made.
+	// does the root architect's and the released merger's, which the hold does not stop.
 	assertOpeningsOwed(t, rig.pool, "LEGION-208", "LEGION-208/architect", "LEGION-209/holder", "LEGION-210/holder")
 	if starts := holdStartsOf(t, rig.pool, "LEGION-209"); len(starts) != 0 {
 		t.Fatalf("the opening started %s, want nothing: it read the implementer live", asJSON(starts))
@@ -1479,8 +1558,9 @@ func projectHeld(t *testing.T, pool *pgxpool.Pool) api.State {
 }
 
 // H36, decision 17: the state shows why each held issue waits, `why: held` with the version that
-// closed the gate, for each member whose work is a phase worker's; the root, whose architect works
-// on, carries no such answer, and none does once the gate opens.
+// closed the gate, for each member whose work is a phase worker's but the merger's; the root, whose
+// architect works on, and the member in merging, whose merger goes on (decision 28), carry no such
+// answer, and none does once the gate opens.
 func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	t.Parallel()
 	rig := newHoldRig(t)
@@ -1488,13 +1568,15 @@ func TestWorkHoldShowsWhyInTheState(t *testing.T) {
 	rig.close(engine, 4)
 	rig.stopsMade(legionStops...)
 	state := projectHeld(t, rig.pool)
-	for key, want := range map[string]*api.WhyView{"LEGION-209": heldWhy(phase.Implementing), "LEGION-210": heldWhy(phase.Merging)} {
+	for key, want := range map[string]*api.WhyView{"LEGION-209": heldWhy(phase.Implementing)} {
 		if got := state.Issues[key].Why; !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s's why is %s, want %s", key, asJSON(got), asJSON(want))
 		}
 	}
-	if why := state.Issues["LEGION-208"].Why; why != nil && why.State == api.WhyHeld {
-		t.Fatalf("the root's why is %s, want no held answer: its architect works on", asJSON(why))
+	for _, key := range []string{"LEGION-208", "LEGION-210"} {
+		if why := state.Issues[key].Why; why != nil && why.State == api.WhyHeld {
+			t.Fatalf("%s's why is %s, want no held answer: its architect or its merger works on", key, asJSON(why))
+		}
 	}
 	rig.open(engine, 4)
 	for key, view := range projectHeld(t, rig.pool).Issues {

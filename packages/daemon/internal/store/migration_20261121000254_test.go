@@ -27,7 +27,7 @@ const workHoldsRelease = "the release that records each tree the work hold holds
 // and reads it back. The way back, the last paragraph of the migration's header
 // (migrations.WayBack), leaves the outbox as the release before decodes it: it deletes each
 // queued stop of the hold, takes the hold's keys off every other row — a start's opening
-// sentences, a role message's close mark, wake and stop — and leaves each row that carries none of
+// sentences, a role message's close mark and stop — and leaves each row that carries none of
 // them as it was. Then it drops the table and deletes the migration's own version row, so the
 // roll-forward runs it again and finds the table empty.
 func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testing.T) {
@@ -68,8 +68,8 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 		`"deadline":"2026-11-21T00:04:54Z","turnAfter":"2026-11-21T00:02:54Z"}`
 	daemonStop := `{"op":"suspend","tree":"LEGION-208","role":"planner","generation":4,"reason":"the tree closed"}`
 	opening := `{"op":"start","tree":"LEGION-208","role":"reviewer","generation":4,"task":"The work hold stopped your turn.\n\nThe issue's other roles may ask you questions.","opening":"The work hold stopped your turn."}`
-	held := `{"role":"legion-LEGION-208-merger","body":"End your turn now.","close":true,"wake":true,` +
-		`"stop":{"tree":"LEGION-208","role":"merger","generation":4,"step":"spec","reason":"the work hold","holdVersion":4}}`
+	held := `{"role":"legion-LEGION-208-implementer","body":"End your turn now.","close":true,` +
+		`"stop":{"tree":"LEGION-208","role":"implementer","generation":4,"step":"spec","reason":"the work hold","holdVersion":4}}`
 	architect := `{"role":"legion-LEGION-208-architect","body":"The design gate of LEGION-208 closed.","close":true}`
 	plain := `{"role":"legion-LEGION-208-architect","body":"The design gate of LEGION-208 opened."}`
 	for _, row := range [][2]string{{"supervise", stop}, {"supervise", timed}, {"supervise", daemonStop}, {"supervise", opening},
@@ -94,7 +94,6 @@ func TestTheWorkHoldsRecordAndItsWayBackLeaveWhatTheReleaseBeforeReads(t *testin
 	want := []map[string]any{decoded(daemonStop), decoded(opening), decoded(held), decoded(architect), decoded(plain)}
 	delete(want[1], "opening")
 	delete(want[2], "close")
-	delete(want[2], "wake")
 	delete(want[2], "stop")
 	delete(want[3], "close")
 	var got []map[string]any

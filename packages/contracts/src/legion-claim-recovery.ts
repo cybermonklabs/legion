@@ -27,11 +27,12 @@ const nonEmptyString = z.string().min(1);
  * (`NO_CLAIM`).
  *
  * The controller's door gives `HELD_BY_WORK_HOLD` (409) to its resume, its retry and its
- * `fresh_session` of a phase worker of a tree whose work hold stands (`gates.hold: work`, the
- * tree's standing design gate closed), whatever suspended the worker — the hold's stop, or the
- * controller's own suspension before the close or after it — before it reads anything else of the
- * claim, and the agent is left as it was. The gate's opening starts a worker the hold stopped, and
- * an operator's own resume or retry starts any worker of the tree. A worker the controller
+ * `fresh_session` of a phase worker but the merger of a tree whose work hold stands (`gates.hold:
+ * work`, the tree's standing design gate closed; no value of the hold holds the merge), whatever
+ * suspended the worker — the hold's stop, or the controller's own suspension before the close or
+ * after it — before it reads anything else of the claim, and the agent is left as it was. The
+ * gate's opening starts a worker the hold stopped, and an operator's own resume or retry starts
+ * any worker of the tree. A worker the controller
  * suspended stays suspended: the opening does not start it, and the controller's own resume or
  * `fresh_session` does once the gate is open. The same is true of a live worker whose
  * `fresh_session` the gate's close met after the controller's suspension and before its forget:

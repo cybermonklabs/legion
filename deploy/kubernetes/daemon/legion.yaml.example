@@ -290,7 +290,7 @@ gates:
                                        # refused at load. legion config check prints the resolved
                                        # list, design-gate-steps=decisions,criteria, or
                                        # design-gate-steps=none when the list is empty.
-  hold: merge                          # what a new version of an approved document of a gated
+  hold: start                          # what a new version of an approved document of a gated
                                        # step holds until a person approves that version, or
                                        # until an exact undo. merge, the default, holds the
                                        # merger's start and the first phase of each issue that

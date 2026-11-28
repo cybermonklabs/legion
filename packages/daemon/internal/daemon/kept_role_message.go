@@ -170,7 +170,7 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
 // roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
 // unresponsive (notify.ErrHolderUnresponsive) but ends there the work hold's close message that
-// carries a stop and is not a merger's, and ends the row for a holder that refuses the delivery
+// carries a stop, and ends the row for a holder that refuses the delivery
 // mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
 // removal from the merge queue and of a change of the merge holds, hold the row for a topic with

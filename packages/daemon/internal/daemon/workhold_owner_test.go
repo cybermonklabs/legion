@@ -232,7 +232,7 @@ func wantTheTreeListed(t *testing.T, what string, catchUp record.Notice) {
 
 // H37: a member whose plan is `implementer reviewer`, released and not started, stands at admitted
 // under its tree's closed gate. Admission's pass offers it no slot, so its first step does not
-// start, under `merge` (record.Waiting) and under `work`; the gate's opening offers it one, and its
+// start, under `start` (record.Waiting) and under `work`; the gate's opening offers it one, and its
 // implementer starts once.
 func firstStepStartsOnlyAtTheOpening(t *testing.T, hold config.Hold) {
 	t.Helper()
@@ -275,9 +275,9 @@ func firstStepStartsOnlyAtTheOpening(t *testing.T, hold config.Hold) {
 	}
 }
 
-func TestMergeHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
+func TestStartHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
 	t.Parallel()
-	firstStepStartsOnlyAtTheOpening(t, config.HoldMerge)
+	firstStepStartsOnlyAtTheOpening(t, config.HoldStart)
 }
 
 func TestWorkHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
@@ -565,19 +565,19 @@ func TestWorkHoldHoldsAMergeHoldsChangeOfTheOwnersAcceptanceUntilTheOpening(t *t
 	}
 }
 
-// Decision 13 beside H45: under `merge` nothing of this changes. The reviewer's handoff that moves
+// Decision 28 beside H45: under `start` nothing of this changes. The reviewer's handoff that moves
 // the root into its owner's place with the gate closed tells the architect at once.
-func TestMergeHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
+func TestStartHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range ownersPlaceCases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := inReviewOfAnOwnersPlan(t, config.HoldMerge, tc.steps)
+			r := inReviewOfAnOwnersPlan(t, config.HoldStart, tc.steps)
 			r.close(4)
 			r.runOnce()
 			r.reviewerCompletes()
 			r.drain()
 			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer {
-				t.Fatalf("under merge the architect was told the phase-finished notices %+v with the gate closed, want the reviewer's, once", got)
+				t.Fatalf("under start the architect was told the phase-finished notices %+v with the gate closed, want the reviewer's, once", got)
 			}
 		})
 	}
@@ -658,21 +658,21 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 		wantTheTreeListed(t, "the catch-up the architect was told once the gate closed", published[0])
 	})
 
-	// A deployment moves from `merge` to `work` while the root's gate stands closed. The close
-	// under `merge` wrote no work hold row, and the boot's fact, which writes it
+	// A deployment moves from `start` to `work` while the root's gate stands closed. The close
+	// under `start` wrote no work hold row, and the boot's fact, which writes it
 	// (workflow.workHoldBooted), is applied beside the outbox, so a row can run before it
-	// (restartBeforeTheBoot). The catch-up queued under `merge` asks for the acceptance, and its
+	// (restartBeforeTheBoot). The catch-up queued under `start` asks for the acceptance, and its
 	// delivery under `work` before the boot composes it again with the gate it reads: the record's
 	// hold does not stand, and the live gate, closed under `work`, is what leaves the clause out.
 	t.Run("delivered while the gate stands closed and the boot has not yet applied the hold", func(t *testing.T) {
-		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldMerge))
+		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldStart))
 		r.live(claim.RoleArchitect)
 		r.close(4)
 		r.drain()
 		r.architectReady()
 		built := r.builtCatchUps()
 		if len(built) != 1 || !strings.HasSuffix(built[0].Reason, acceptanceAsked) {
-			t.Fatalf("the ready under merge queued the catch-ups %+v, want one asking for the acceptance: %q", built, acceptanceAsked)
+			t.Fatalf("the ready under start queued the catch-ups %+v, want one asking for the acceptance: %q", built, acceptanceAsked)
 		}
 		r.restartBeforeTheBoot()
 		r.deploy(config.HoldWork)
@@ -693,11 +693,11 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 	})
 }
 
-// Decision 21's twin under `merge`: nothing of this changes, and the catch-up the architect's ready
+// Decision 21's twin under `start`: nothing of this changes, and the catch-up the architect's ready
 // builds with the gate closed asks for its acceptance as ever.
-func TestMergeHoldCatchUpAsksForTheAcceptanceAsEver(t *testing.T) {
+func TestStartHoldCatchUpAsksForTheAcceptanceAsEver(t *testing.T) {
 	t.Parallel()
-	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldMerge))
+	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldStart))
 	r.live(claim.RoleArchitect)
 	r.close(4)
 	r.drain()
@@ -705,7 +705,7 @@ func TestMergeHoldCatchUpAsksForTheAcceptanceAsEver(t *testing.T) {
 	r.drain()
 	published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
 	if len(published) != 1 || !strings.HasSuffix(published[0].Reason, acceptanceAsked) {
-		t.Fatalf("under merge the architect was told the catch-ups %+v, want one asking for the acceptance: %q", published, acceptanceAsked)
+		t.Fatalf("under start the architect was told the catch-ups %+v, want one asking for the acceptance: %q", published, acceptanceAsked)
 	}
 }
 

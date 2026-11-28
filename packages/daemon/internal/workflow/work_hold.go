@@ -18,29 +18,31 @@ import (
 )
 
 // The work hold (`gates.hold: work`) as the workflow writes it. Under that hold a tree's closed
-// standing design gate holds its running work as well as its merge: at the close every phase
-// worker of the tree is told to end its turn and is stopped with its session kept, and at the
-// opening each claim the hold stopped is started again with one task. The workflow writes the
-// rows; the outbox runs them (internal/daemon's outbox, its suspend and start ops and its
-// role message), and supervise holds the claim (supervise.SuspendedByHold, Machine.EndHold).
+// standing design gate holds its running work as well as the first phase of each issue that has
+// not started: at the close every phase worker of the tree but the merger is told to end its turn
+// and is stopped with its session kept, and at the opening each claim the hold stopped is started
+// again with one task. No value of the hold holds the merge: the merger is told "Your phase goes
+// on.", as under `start`, and goes on. The workflow writes the rows; the outbox runs them
+// (internal/daemon's outbox, its suspend and start ops and its role message), and supervise holds
+// the claim (supervise.SuspendedByHold, Machine.EndHold).
 //
-// The hold is the deployment's word (Config.Hold) over the one predicate the merge hold reads too
-// (record.TreeGate.Standing, the standing gate), which the hold asks under `work` alone
-// (holdIsWork). The record keeps the hold of each tree (record.WorkHold): the close writes it,
-// and the boot reads it to tell a tree whose close was never applied from one whose drain is
-// under way (workHoldBooted). The opening deletes the hold that stands and keeps it, with what
-// ended it, as the record of the tree's last opening (record.Store.OpenWorkHold). Every start of a
-// claim the hold stopped builds its task from that record (heldClaimOpening), so a claim the
+// The hold is the deployment's word (Config.Hold) over the one predicate the close message reads
+// under `start` too (record.TreeGate.Standing, the standing gate), which the hold asks under
+// `work` alone (holdIsWork). The record keeps the hold of each tree (record.WorkHold): the close
+// writes it, and the boot reads it to tell a tree whose close was never applied from one whose
+// drain is under way (workHoldBooted). The opening deletes the hold that stands and keeps it, with
+// what ended it, as the record of the tree's last opening (record.Store.OpenWorkHold). Every start
+// of a claim the hold stopped builds its task from that record (heldClaimOpening), so a claim the
 // opening did not start gets the task the opening gave, and the outbox builds the task's
 // sentences again from the record when the start runs (HeldClaimOpening), so a start queued at
 // one opening gives the words of the latest.
 
 // HoldStopGrace is how long after the work hold's close message reached a claim a turn still
-// running is cut: long enough for a worker to end its turn at its next step and for a merger to
-// take its pull request out of the merge queue. The outbox names each stop's deadline that far
-// after the message reached the claim (internal/daemon's postHoldStop), the close names the
-// deadline of the stop of a start under way that far after the close (workHoldClose), and the
-// close message names it to the worker (workHoldSentence).
+// running is cut: long enough for a worker to end its turn at its next step. The outbox names
+// each stop's deadline that far after the message reached the claim (internal/daemon's
+// postHoldStop), the close names the deadline of the stop of a start under way that far after the
+// close (workHoldClose), and the close message names it to the worker (workHoldSentence). The
+// hold stops no merger, so nothing counts it from a merger's start.
 const HoldStopGrace = 2 * time.Minute
 
 // The sentences of the hold's texts beside today's gate messages (gateClosedHead,
@@ -49,16 +51,19 @@ var (
 	// workHoldSentence follows today's first sentence of the close under `work`, and every opening
 	// task repeats it. The time it names is HoldStopGrace.
 	workHoldSentence = fmt.Sprintf("The deployment holds the tree's work until every gated step stands open again: no phase "+
-		"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or %d minutes after this message.",
-		int(HoldStopGrace/time.Minute))
+		"but the merge starts, and the daemon stops each phase worker but the merger, with its session kept, when its turn ends "+
+		"or %d minutes after this message.", int(HoldStopGrace/time.Minute))
 )
 
 const (
 	// workerCloseEnd ends the close message to a phase worker, and architectCloseEnd the one to an
 	// architect, whom the hold does not stop: its own work goes on, and what it reports (a
 	// sign-off, a move back) is recorded while the start that report makes waits for the opening.
+	// phaseGoesOn ends the close message under `start`, and under `work` the one to a merger,
+	// whom no value of the hold holds (gateClosedSentence).
 	workerCloseEnd    = "End your turn now."
 	architectCloseEnd = "Your own work goes on, and a step that you report starts nothing until every gated step stands open again."
+	phaseGoesOn       = "Your phase goes on."
 	// holdStoppedSentence and checkTurnSentence frame today's open message in the opening task.
 	holdStoppedSentence = "The work hold stopped your turn."
 	checkTurnSentence   = "Check what your turn already did: a tool call may not have finished."
@@ -69,8 +74,8 @@ const (
 // gateClosedHead is today's first sentence of the close message: the tree whose gate closed, and
 // the version, the step and the document that closed it. The step and its own document, never
 // "spec version": under more than one gated step the version is that step's document's, and a
-// message naming the spec would send a reader to the wrong one. The merge hold's close message is
-// this sentence and its own ending (gateClosedSentence).
+// message naming the spec would send a reader to the wrong one. The close message under `start`
+// is this sentence and "Your phase goes on." (gateClosedSentence).
 func gateClosedHead(tree string, step record.DesignStep, document string, version int) string {
 	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change.", tree, version, step, document)
@@ -87,7 +92,7 @@ func workCloseMessage(hold record.WorkHold, architect bool) string {
 }
 
 // bootOpenedSentence is what the boot's end of a tree's hold says in place of today's open
-// message: the tree's gate still stands where it stood, and the deployment moved to `merge` or
+// message: the tree's gate still stands where it stood, and the deployment moved to `start` or
 // turned the gate off. That is true at that end alone, so no other path says it.
 func bootOpenedSentence(tree string) string {
 	return "The deployment no longer holds the work of " + tree + "'s tree."
@@ -168,7 +173,7 @@ func lastOpening(hold *record.WorkHold, root record.Issue) *record.WorkHold {
 // a hold of root's generation that no opening has ended. The close writes it in the transaction
 // that closes the gate under `work`, and the opening ends it in the transaction that opens the
 // gate, so a reader of the record in a fact's transaction reads the hold as that fact moves it;
-// under `merge` no close writes one. root is the tree root as the caller read it in tx
+// under `start` no close writes one. root is the tree root as the caller read it in tx
 // (TreeCatchUp), nil where the record does not hold it, and such a tree has no hold.
 func workHoldStands(ctx context.Context, tx pgx.Tx, store record.Store, root *record.Issue) (bool, error) {
 	if root == nil {
@@ -250,11 +255,12 @@ func (c treeClaim) live() bool {
 // whether or not the store holds a claim of it, since a start under way or a holder owed news can
 // have none yet (workHoldClose, heldOpeningMessage). A stored claim is read by the token and role
 // the store holds it under, so the hold tells, stops and starts every worker claim of a member,
-// not the roles of one list alone: every role but the architect's and the controller's, idle claims
-// of finished steps among them. A member out of the workflow is left out, a closed one whose
-// production check a role looks at among them: the hold holds no work of an issue that has left
-// the workflow. A role of claim.Roles whose token cannot be built is logged and left out, as
-// tellGateMoved leaves such a holder untold.
+// not the roles of one list alone: every role the hold holds, which is every role but the
+// architect's, the controller's and the merger's, idle claims of finished steps among them. A
+// merger of claim.Roles is read too, and told the close, which stops nothing of it. A member out
+// of the workflow is left out, a closed one whose production check a role looks at among them:
+// the hold holds no work of an issue that has left the workflow. A role of claim.Roles whose
+// token cannot be built is logged and left out, as tellGateMoved leaves such a holder untold.
 func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) ([]treeClaim, error) {
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {
@@ -317,18 +323,15 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //   - every live architect, the root's and each member's own, the close and "Your own work goes
 //     on, and a step that you report starts nothing until every gated step stands open again.":
 //     the hold stops no architect;
-//   - every live phase worker that is not a merger, a claim of every role the hold holds but the
-//     merger's (claim.HeldByWorkHold, treeClaims), idle claims of a finished phase among them, the
-//     close and "End your turn now.", carrying its stop (record.RoleMessage.Stop), which the outbox
+//   - every live merger the close message of `start`, today's first sentence and "Your phase goes
+//     on." (gateClosedSentence), with no stop: no value of the hold holds the merge, so the hold
+//     stops no merger, and a merger in a turn goes on with it. A merger whose claim the idle
+//     release suspended, or that runs nothing, is told nothing and woken for nothing, as a
+//     released role is told no other message (record.RoleMessage);
+//   - every live phase worker that is not a merger, a claim of every role the hold holds
+//     (claim.HeldByWorkHold, treeClaims), idle claims of a finished phase among them, the close
+//     and "End your turn now.", carrying its stop (record.RoleMessage.Stop), which the outbox
 //     posts once the message reached the claim, with the deadline HoldStopGrace on;
-//   - every merger it reaches the same message, marked to wait for the merger's session
-//     (record.RoleMessage.Wake): a live merger, a released one, which the message wakes, and one
-//     that is neither while a start of it is under way (StartUnderWay), which may launch the
-//     merger with its task after this close. The merger takes its pull request out of the merge
-//     queue only on this message, so the message waits while the claim is not gone and its
-//     session does not hold the role's topic yet, or while its holder is unresponsive. The outbox
-//     posts the stop once the message ended, so the stop follows the message (internal/daemon's
-//     deliverRoleMessage, closeWaitsForAMerger, postHoldStop);
 //   - a released worker that is not a merger nothing: a wake would bring its pod back only to stop
 //     it, so its stop is written at once, with the deadline HoldStopGrace after this close and no
 //     turn, and the hold takes its `released` source over with its session and its pending task
@@ -336,7 +339,7 @@ func (e *Engine) treeClaims(ctx context.Context, tx pgx.Tx, root record.Issue) (
 //     stop then holds the launch until its ready, and cuts a turn at the deadline where a restart
 //     or a failed attempt of the stop lets the ready come first;
 //   - a phase worker that is not a merger, neither live nor released, and whose run holds a start
-//     under way (StartUnderWay), nothing, and its stop is written at once, with the deadline
+//     under way (startUnderWay), nothing, and its stop is written at once, with the deadline
 //     HoldStopGrace after this close and no turn: the start read the gate open before this close,
 //     and it may create, resume or retry the claim after it. The stop's row is newer than the
 //     start's, so it still acts on the claim that start launches (StopActs), and the outbox runs
@@ -369,6 +372,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 		return err
 	}
 	reason, workerClose, architectClose := holdReason(hold), workCloseMessage(hold, false), workCloseMessage(hold, true)
+	mergerClose := gateClosedSentence(hold.Tree, hold.Step, hold.ArtifactID, hold.Version)
 	stopOf := func(c treeClaim) record.HoldStop {
 		return record.HoldStop{Tree: c.issue.Tree, Role: c.role, Generation: c.issue.Generation, Step: hold.Step, Reason: reason, HoldVersion: hold.Version}
 	}
@@ -376,7 +380,7 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 	told, stopped := 0, 0
 	for _, c := range claims {
 		var how string
-		underWay, _ := StartUnderWay(c.run, root)
+		underWay := startUnderWay(c.run, root)
 		switch {
 		case c.role == claim.RoleArchitect && c.live():
 			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: architectClose, Close: true}); err != nil {
@@ -386,17 +390,14 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 			continue
 		case c.role == claim.RoleArchitect:
 			continue
-		case c.role == claim.RoleMerger && (c.live() || c.state().Released() || underWay):
-			how = "told to end its turn once its session holds its topic"
-			if c.state().Released() {
-				how = "woken from its release to end its turn"
-			}
-			stop := stopOf(c)
-			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: workerClose,
-				Close: true, Wake: true, Stop: &stop}); err != nil {
+		case !claim.HeldByWorkHold(c.role) && c.live():
+			if err := e.enqueue(ctx, tx, c.issue.Key, record.RoleMessage{Role: string(c.token), Body: mergerClose, Close: true}); err != nil {
 				return err
 			}
 			told++
+			continue
+		case !claim.HeldByWorkHold(c.role):
+			continue
 		case c.live():
 			how = "told to end its turn"
 			stop := stopOf(c)
@@ -452,7 +453,7 @@ type gateOpening struct {
 // (workHoldBooted). fallback is the hold the end names where the tree holds no work_holds row.
 //
 // At the gate's opening (opened, nil at the boot's end, which opens no gate) each holder is told
-// the opening once, as under `merge` (heldOpening): a holder the hold did not stop by
+// the opening once, as under `start` (heldOpening): a holder the hold did not stop by
 // openingDelivery, live or not, a claim the hold stopped by the task that starts it, and a child's
 // architect that holds a member owed news by that news (settleChildArchitectOpenings). Each
 // architect whose member stands in its owner's acceptance is told that the acceptance is its own
@@ -637,7 +638,7 @@ func (e *Engine) readHeldOpening(ctx context.Context, tx pgx.Tx, root record.Iss
 //
 //   - a holder the hold did not stop, the root's architect or the role that holds its member's
 //     phase, is told as openingDelivery decides, as tellGateMoved decides for every holder under
-//     `merge`. Owed news, it is sent nothing and its told row owes the opening, which the task
+//     `start`. Owed news, it is sent nothing and its told row owes the opening, which the task
 //     carrying its news leads with, whether its claim is live or not: a released claim, a claim
 //     that failed, retired or that an operator suspended, and a role with no claim among them.
 //     A live holder owed no news is sent the opened message, and its row is settled as told. A
@@ -798,11 +799,11 @@ func (e *Engine) startHeldPhase(ctx context.Context, tx pgx.Tx, c treeClaim, ope
 //     (openStoppedClaims);
 //   - a tree that holds work (the hold is `work` and the tree's standing gate stands closed,
 //     record.TreeGate.Standing) with no hold that stands is closed now: the deployment moved from
-//     `merge` to `work` while its gate stood closed;
+//     `start` to `work` while its gate stood closed;
 //   - a tree that holds work with its hold that stands starts nothing: its drain is under way,
 //     and every stop stands as its row stored it;
 //   - a tree that holds no work with its hold that stands has its hold ended: the deployment
-//     moved to `merge` or turned the gate off. Every live holder is told so, and each claim the
+//     moved to `start` or turned the gate off. Every live holder is told so, and each claim the
 //     hold stopped starts with its task;
 //   - and a tree that holds neither starts each claim the hold stopped that no start covers yet,
 //     with no message (openStoppedClaims with 0): the task the tree's last opening gave, or the
@@ -811,7 +812,7 @@ func (e *Engine) startHeldPhase(ctx context.Context, tx pgx.Tx, c treeClaim, ope
 //     version that record names, else 0.
 //
 // It reads no gate of its own: the gate of each running tree is the one the boot's read holds
-// (phaseOwners.gates), which nothing the boot writes before this moves, and under `merge` no tree
+// (phaseOwners.gates), which nothing the boot writes before this moves, and under `start` no tree
 // holds work whatever its gate. The trees whose claims a tree that holds neither may start are
 // read once for the project (Store.WorkHeldTrees), so a tree with no claim the hold stopped reads
 // nothing more.

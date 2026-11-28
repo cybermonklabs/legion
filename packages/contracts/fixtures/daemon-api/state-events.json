@@ -289,7 +289,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -658,7 +658,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -1033,7 +1033,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -1408,7 +1408,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -1783,7 +1783,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -2163,7 +2163,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -2561,7 +2561,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -2959,7 +2959,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -3348,7 +3348,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -3750,7 +3750,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {
@@ -4153,7 +4153,7 @@
             "design": [
               "spec"
             ],
-            "hold": "merge"
+            "hold": "start"
           },
           "github_apps": {
             "implement": {

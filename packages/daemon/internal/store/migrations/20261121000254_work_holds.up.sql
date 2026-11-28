@@ -11,7 +11,7 @@
 -- The release before never names work_holds. It does not know the keys the hold writes on an
 -- outbox row either: a supervise suspend's `suspendedBy`, `deadline`, `turnAfter` and
 -- `holdVersion` (the last on the hold's stop alone), a start's `opening`, and a role message's
--- `close`, `wake` and `stop`. It decodes every payload strictly
+-- `close` and `stop`. It decodes every payload strictly
 -- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row left carrying one of them is retried
 -- for ever, and record.Postgres.RoleRuns, which decodes every supervise row of the issues an
 -- admission pass reads, fails every pass of its issue with it.
@@ -25,8 +25,8 @@
 -- The way back deletes each queued stop of the hold, which the release before would run as the
 -- daemon's own stop and which a claim it rolls back to has no hold for, and takes the hold's keys
 -- off every other row it left: a start keeps its task, which already carries the opening's
--- sentences, and a close message is published as the message it is, with no close mark, no stop
--- behind it and no wake. Then it drops the table and deletes this migration's row, which makes
+-- sentences, and a close message is published as the message it is, with no close mark and no
+-- stop behind it. Then it drops the table and deletes this migration's row, which makes
 -- the version the store reports (store.SchemaVersionTx) that release's own again; at the
 -- roll-forward store.apply finds no row of this version and runs this file again. What it costs
 -- is the holds themselves: after the roll-forward a tree that holds work and has no row is closed
@@ -35,7 +35,7 @@
 -- begin;
 -- delete from outbox where kind = 'supervise' and payload->>'suspendedBy' = 'hold';
 -- update outbox set payload = payload - 'suspendedBy' - 'deadline' - 'turnAfter' - 'opening' where kind = 'supervise' and payload ?| array['suspendedBy', 'deadline', 'turnAfter', 'opening'];
--- update outbox set payload = payload - 'close' - 'wake' - 'stop' where kind = 'role_message' and payload ?| array['close', 'wake', 'stop'];
+-- update outbox set payload = payload - 'close' - 'stop' where kind = 'role_message' and payload ?| array['close', 'stop'];
 -- drop table if exists work_holds;
 -- delete from schema_version where version = 20261121000254;
 -- commit;

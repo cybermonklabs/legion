@@ -1045,15 +1045,15 @@ func (g TreeGate) Open() bool {
 // on nothing. So the standing gate skips it and names the first registered unapproved step after
 // it, while the work stays held. ok is false when no required step holds a closed row, which is
 // every required step open or every closed one unregistered. So a criteria row a person has not
-// approved holds the tree under the work hold too, as it holds the merge.
+// approved holds the tree under the work hold too, as a spec row does.
 //
 // A deployment that gates no step asks no person about anything, so the empty list stands on no
 // gate: ok is false whatever rows the root holds. The empty list still holds the tree's work until
 // the spec step is registered, which is classify.FirstClosedStep's answer, not this one.
 //
 // It is the one rule every reader of the standing gate asks, through classify.StandingGate or
-// this method: the root's wait and its resume, the gate's messages, the merger's start and the work
-// hold. The work hold (`gates.hold: work`) holds the tree's work while this gate stands closed,
+// this method: the root's wait and its resume, the gate's messages and the work hold. The work
+// hold (`gates.hold: work`) holds the tree's work but the merge while this gate stands closed,
 // and each of its readers asks it under that word alone (the workflow's and the outbox's
 // holdIsWork), so the close, the opening, the boot and the outbox's fences hold the tree by the
 // same row.

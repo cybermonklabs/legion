@@ -20,14 +20,15 @@ import (
 // task. It says the daemon queued that task, not that it gave it: the start takes the slot mark
 // the slot rule gives `merging` (StartOrOwe), which is none, since merging is past the issue's
 // review (record.KeepsSlot), so admission holds nothing of it; but the daemon's outbox holds it
-// while the tree's design gate is closed (the outbox's startWaitsForTheHold), so the boot
-// may give the merger nothing yet.
+// while the merger is owed news of the approved design whose change set is not recorded yet (the
+// outbox's mergerWaitsForTheDesignGate, which startWaitsForTheHold reads), so the boot may give
+// the merger nothing yet. No value of the design gate's hold holds the merger's start.
 const cutoverMergerTold = "The cutover from a Legion build with the phase `awaiting_merge` left the merger of this issue stopped. " +
 	"The idle release stopped the pod of the merger while the issue waited for its merge. " +
 	"Nothing would start the merger again. " +
 	"The cutover owed the merger its merging task. " +
 	"At its boot, the daemon queued that task. " +
-	"The merger starts when the design gate of its tree allows it."
+	"The merger starts at once or, where the approved design of its tree changed, once the daemon has recorded what changed."
 
 // cutoverMergerRepair is the boot's one-time repair of the mergers the `awaiting_merge` cutover
 // left stopped (intake.CutoverMergerRepair, dispatch://INFRA-3274/spec R2). A build with that

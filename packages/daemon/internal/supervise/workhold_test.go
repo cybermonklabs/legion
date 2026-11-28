@@ -38,9 +38,6 @@ const (
 	resumeTask = "Continue Implement LEGION-209. Issue: LEGION-209. Phase: implementing. Resume the existing phase work."
 )
 
-// mergerToken is the merger's claim of the harness's issue.
-const mergerToken claim.Token = "legion-LEGION-209-merger"
-
 // holdStop is the work hold's stop of h's claim as the outbox posts it, once the close has written
 // the tree's work hold row (closeHold): the message that asked the agent to end its turn reached
 // the claim at after, and the stop is cut holdGrace later.
@@ -253,44 +250,6 @@ func TestWorkHoldStopsAnIdleClaimAfterTheTurnItsMessageStarts(t *testing.T) {
 		h.wantHeld()
 		h.wantCalls("Suspend", 1)
 	})
-}
-
-// M4: a released merger the daemon woke for the close message is stopped as an idle claim is,
-// its 2 minutes counted from its start: not at its ready, which stops a launch the hold meets
-// before the message (M12), and not at 2 minutes after the close, long past by the time its pod
-// came back, but when the turn the message starts ends, or 2 minutes after the merger came up.
-func TestWorkHoldCountsAWokenMergersDeadlineFromItsStart(t *testing.T) {
-	c := queuedClaim()
-	c.Token, c.Role = mergerToken, claim.RoleMerger
-	h := newHarnessOf(t, c)
-	suspendedBy(h, SuspendedByReleased)
-	closed := h.clock.Now()
-	h.advance(10 * time.Minute)
-
-	h.must(RequestRuleResume{Claim: h.token, Reason: "a wake for the close message of LEGION-208"})
-	h.relaunched()
-	started := h.clock.Now()
-	if started.Sub(closed) <= holdGrace {
-		t.Fatalf("the merger came up %s after the close, want it past the close's own 2 minutes", started.Sub(closed))
-	}
-	if err := h.handle(holdStop(h, started)); !errors.Is(err, ErrSuspendHeld) {
-		t.Fatalf("the hold's stop of the woken merger answered %v, want it held for the turn its message starts", err)
-	}
-	h.wantState(StateReady)
-	h.wantCalls("Suspend", 1)
-
-	h.must(StreamTurnStart{Claim: h.token})
-	h.advance(holdGrace - time.Second)
-	h.wantState(StateWorking)
-	h.wantCalls("Suspend", 1)
-
-	h.advance(time.Second)
-
-	h.wantHeld()
-	h.wantCalls("Suspend", 2)
-	if got := h.claim().Role; got != claim.RoleMerger {
-		t.Fatalf("the held claim is the %s's, want the merger's", got)
-	}
 }
 
 // M5: the deadline is stored in the stop the outbox posts, which it posts again after a restart

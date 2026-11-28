@@ -783,8 +783,8 @@ out=$(HOME="$omp_home" OMP_PROFILE="$profile" PATH="$realbin:$PATH" "$work/legio
   fail "legion config check refused the run's legion.yaml: $out"
 # The OK line names the design-gate steps the file resolved to and what a closed gate holds; this
 # run's `gates.design` is root-issues, which is the single step spec, and it names no `gates.hold`,
-# which is merge.
-[ "$(head -n 1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec design-gate-hold=merge" ] || fail "legion config check said: $out"
+# which is start.
+[ "$(head -n 1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec design-gate-hold=start" ] || fail "legion config check said: $out"
 note "$(head -n 1 <<<"$out")"
 start_daemon
 daemon_state >"$evidence/boot-state.json" || fail "legion state does not answer"

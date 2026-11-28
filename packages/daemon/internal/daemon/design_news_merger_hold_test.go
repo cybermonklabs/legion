@@ -11,12 +11,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // A merger released before it reads what changed could merge it, so its start waits while its
@@ -50,126 +48,6 @@ func TestTheMergersStartWaitsWhileItsMembersChangeSetIsUnrecorded(t *testing.T) 
 	task, news := pendingNews(t, machine)
 	if !strings.HasPrefix(task, own+"\n\n") || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
 		t.Fatalf("the merger's task = %q carrying %+v, want its own text and the spec from 4 to 5", task, news)
-	}
-}
-
-// mergerOpened is today's open message at the approval of version 5 of LEGION-600's spec, which
-// the tree's record of its last opening names as what ended the hold.
-const mergerOpened = "The design gate of LEGION-600 opened: a person approved version 5 of its spec document (artifact-600), " +
-	"and every step the deployment gates now stands open, so the design you are working to is the approved one. " +
-	"A merge the closed gate held is released."
-
-// recordOpening records the tree's last opening: the hold the close of version 5 wrote, ended by
-// the approval of version 5 (record.Store.OpenWorkHold). It answers the record as a start reads it.
-func (r *newsReconcileRig) recordOpening() *record.WorkHold {
-	r.t.Helper()
-	var hold *record.WorkHold
-	r.inTx(func(tx pgx.Tx) error {
-		if err := r.records.PutWorkHold(r.ctx, tx, record.WorkHold{Project: "LEGION", Tree: reconcileRoot, RootGeneration: 1,
-			Step: record.DesignStepSpec, ArtifactID: reconcileDoc, Version: 5, ClosedAt: time.Now().UTC()}); err != nil {
-			return err
-		}
-		if err := r.records.OpenWorkHold(r.ctx, tx, reconcileRoot, time.Now().UTC(), mergerOpened); err != nil {
-			return err
-		}
-		var err error
-		hold, err = r.records.TreeWorkHold(r.ctx, tx, reconcileRoot)
-		return err
-	})
-	return hold
-}
-
-// Under `gates.hold: work`, the opening's start of a merger the hold stopped waits as every start
-// of a merger waits (mergerWaitsForTheDesignGate): while its member is owed news whose change set
-// is not recorded yet, the hold stands on the claim and nothing launches. Once the pair is
-// recorded, the same row ends the hold and starts the merger with one task: the opening's
-// sentences the start builds from the tree's record of its last opening (workflow.HeldClaimOpening),
-// which carry the open message, then its work and the news, which carries that work without the
-// sentences, so each send renders it again behind them. The start tells the opening, so it settles
-// the merger's told row first (settleHeldOpening), and the news carries no second opening.
-func TestWorkHoldOpeningStartOfAMergerWaitsForItsNews(t *testing.T) {
-	t.Parallel()
-	r := newNewsReconcileRig(t)
-	r.runner.gateHold = config.HoldWork
-	root := r.member(reconcileRoot, "", phase.Merging)
-	r.told(reconcileRoot, record.AudienceHolder, 4)
-	hold := r.recordOpening()
-	settled := r.toldOf(reconcileRoot, record.AudienceHolder).Opening
-	r.holder(reconcileRoot, claim.RoleMerger, supervise.StateSuspended, supervise.SuspendedByHold, 1)
-	machine := r.machine(reconcileRoot, claim.RoleMerger, supervise.StateSuspended, supervise.SuspendedByHold, 1)
-	const queued = "The work hold of LEGION-600's tree has ended."
-	const own = "Merge it."
-	row := mustOutboxRow(t, reconcileRoot, record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleMerger,
-		Generation: 1, Phase: phase.Merging, Task: supervise.OpeningTask(queued, own), Opening: queued}, time.Now())
-	// The row's id is the one its delivery carries, so the start's own delivery, made after the
-	// hold's end queued the one task under that id and row, queues nothing more (supervise's given).
-	row.ID = 41
-
-	if err := r.runner.execute(r.ctx, row); !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the opening's start of the merger with its news unrecorded = %v, want it held (wait.ErrWaiting)", err)
-	}
-	if !machine.Claim().WorkHeld() || len(r.rt.CallsOf("Resume")) != 0 {
-		t.Fatalf("the merger is %+v after the held start, want it still stopped by the hold and nothing launched", machine.Claim())
-	}
-
-	r.record(reconcilePair, "")
-	if err := r.runner.execute(r.ctx, row); err != nil {
-		t.Fatalf("the opening's start of the merger once its news is recorded = %v, want it run", err)
-	}
-	opening, _ := workflow.HeldClaimOpening(hold, root)
-	if !strings.Contains(opening, mergerOpened) {
-		t.Fatalf("the opening's sentences %q, want the open message the record names", opening)
-	}
-	task, news := pendingNews(t, machine)
-	if !strings.HasPrefix(task, opening+"\n\n"+own+"\n\n") || !strings.Contains(task, "version 5, since version 4, which your phase last took") {
-		t.Fatalf("the merger's one task = %q, want the opening's sentences, its work, then the news of the spec from 4 to 5", task)
-	}
-	if news.Task != own || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) || len(news.Openings) != 0 {
-		t.Fatalf("the merger's task carries %+v, want its work alone and the spec from 4 to 5, and no second opening", news)
-	}
-	if pending := machine.Claim().Pending; pending == nil || pending.Opening != opening || machine.Claim().WorkHeld() {
-		t.Fatalf("the merger holds %+v, held %v; want the hold ended and the task marked with the opening's sentences", pending, machine.Claim().WorkHeld())
-	}
-	if told := r.toldOf(reconcileRoot, record.AudienceHolder); told.OpeningOwed || told.Opening != settled+1 {
-		t.Fatalf("the merger's told row owes the opening %v under number %d, want it settled as told once, under %d",
-			told.OpeningOwed, told.Opening, settled+1)
-	}
-}
-
-// An opening's start that finds no claim the hold stopped settles no opening: it gives no
-// opening's sentences. Here the start of the first opening was still queued when a newer start
-// started the merger. The gate then closed and opened again, and that second opening read the
-// merger live and owed news, so its told row owes the opening, which the task that carries its
-// news leads with, and the merger's stop held for its turn was dropped. The first opening's start
-// then finishes without acting (openingStartFindsNoHold) and leaves the second opening owed. Its
-// first attempt waits for the merger's news, and the second finds the same. A restart cannot
-// change the outcome: the row reads the claim and the record when it runs, and keeps nothing.
-func TestWorkHoldOpeningStartOfAMergerANewerStartStartedLeavesTheOpeningOwed(t *testing.T) {
-	t.Parallel()
-	r := newNewsReconcileRig(t)
-	r.runner.gateHold = config.HoldWork
-	r.member(reconcileRoot, "", phase.Merging)
-	r.told(reconcileRoot, record.AudienceHolder, 4)
-	r.recordOpening()
-	r.owesOpening(reconcileRoot, record.AudienceHolder)
-	r.holder(reconcileRoot, claim.RoleMerger, supervise.StateIdle, "", 1)
-	machine := r.machine(reconcileRoot, claim.RoleMerger, supervise.StateIdle, "", 1)
-	const first = "The design gate of LEGION-600 opened: a person approved version 4 of its spec document (artifact-600)."
-	row := mustOutboxRow(t, reconcileRoot, record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleMerger,
-		Generation: 1, Phase: phase.Merging, Task: supervise.OpeningTask(first, "Merge it."), Opening: first}, time.Now())
-
-	if err := r.runner.execute(r.ctx, row); !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the first opening's start with the merger's news unrecorded = %v, want it held (wait.ErrWaiting)", err)
-	}
-	r.record(reconcilePair, "")
-	if err := r.runner.execute(r.ctx, row); err != nil {
-		t.Fatalf("the first opening's start once the merger's news is recorded = %v, want it finished", err)
-	}
-	if c := machine.Claim(); c.Pending != nil || c.State != supervise.StateIdle {
-		t.Fatalf("the merger is %s holding %+v, want it idle and given nothing by the first opening's start", c.State, c.Pending)
-	}
-	if told := r.toldOf(reconcileRoot, record.AudienceHolder); !told.OpeningOwed {
-		t.Fatalf("the merger's told row is %+v, want it still owing the second opening", told)
 	}
 }
 

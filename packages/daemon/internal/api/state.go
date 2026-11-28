@@ -701,8 +701,8 @@ type Admission struct {
 	// retro and merging hold none, and a step after accepting whose phase keeps one waits for one
 	// again — except while it waits on another issue (record.KeepsSlot, blockers.waitsOf). So one tree with three started children holds
 	// three of these, and an issue at work, one held and one waiting on a person are each here,
-	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose start a
-	// closed design gate holds (the outbox's startWaitsForTheHold) and a merged root
+	// while one in accepting, retro or merging — a merger at work in merging, one in merging whose
+	// start waits for its news of the approved design (the outbox's startWaitsForTheHold) and a merged root
 	// standing in merging while the rest of its tree runs — and one whose phase has left the
 	// workflow, done or a status Dispatch took it out of the workflow with, are in neither list.
 	// An issue the daemon has started that waits on another issue in a phase that keeps a slot is
@@ -1814,8 +1814,8 @@ type WhyState string
 // The five states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), the work
 // hold holds its tree's work (WhyHeld), it waits in the admission line (WhyWaiting), something
 // holds it where it stands (WhyBlocked), or it stands in neither the line nor the work at all
-// (WhyUnlisted). WhyHeld is an issue whose work is a phase worker's in a running tree the work
-// hold holds (`gates.hold: work`, record.WorkHold); its sentence names the version that closed
+// (WhyUnlisted). WhyHeld is an issue whose work is a phase worker's but the merger's in a running
+// tree the work hold holds (`gates.hold: work`, record.WorkHold); its sentence names the version that closed
 // the tree's design gate.
 const (
 	WhyClaimStopped WhyState = "claim_stopped"

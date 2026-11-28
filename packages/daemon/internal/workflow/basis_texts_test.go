@@ -48,7 +48,7 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 			name:   "a registration on an approved basis opens the gate",
 			steps:  config.DesignGateRootIssues.Steps(),
 			quote:  "The design gate of <tree> opened: every step the deployment gates now stands open",
-			want:   "The design gate of LEGION-208 opened: every step the deployment gates now stands open. A merge the closed gate held is released." + basisOpening,
+			want:   "The design gate of LEGION-208 opened: every step the deployment gates now stands open." + basisOpening,
 			took:   map[record.DesignStep]int{record.DesignStepSpec: 4},
 			opened: 4,
 		},
@@ -57,7 +57,7 @@ func TestAGateOpeningOnAnAncestorsApprovalNamesItAndNoPersonsApprovalOfTheRoot(t
 			steps: twoSteps(),
 			quote: "The design gate of <tree> opened: a person approved version <n> of its <step> document (<id>), and every step the deployment gates now stands open",
 			want: "The design gate of LEGION-208 opened: a person approved version 2 of its criteria document (artifact-criteria), " +
-				"and every step the deployment gates now stands open. A merge the closed gate held is released." + basisOpening,
+				"and every step the deployment gates now stands open." + basisOpening,
 			took:   map[record.DesignStep]int{record.DesignStepSpec: 4, record.DesignStepCriteria: 2},
 			opened: 2,
 		},

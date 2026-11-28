@@ -140,14 +140,13 @@ const dequeueRetry = 20 * time.Millisecond
 //     phase (workflow's claimFailed, which the boot replays for the claim stored failed), so a
 //     failed merger stands with its issue in merging only once the architect's retry of that
 //     phase has put the issue back, and only while the start the retry writes, which relaunches
-//     the claim, waits. The test applies that retry as the API applies it, and the issue's closed
-//     design gate holds the start (the outbox's startWaitsForTheHold), so the claim is
-//     still failed when the row reads it.
-//  9. The design gate closed and the merger's pod released: a merger the gate holds may not know
-//     the gate closed, and woken by the message it could enqueue the pull request again against
-//     the gate. The row neither wakes it nor publishes while the gate is closed, and once the test
-//     opens the gate, with what changed in the version it approves recorded, the merger is woken
-//     and told once.
+//     the claim, waits. The test applies that retry as the API applies it, and the merger's news
+//     of the approved design, whose change set is not recorded (the outbox's
+//     mergerWaitsForTheDesignGate), holds the start, so the claim is still failed when the row
+//     reads it.
+//  9. The design gate closed and the merger's pod released: no value of the hold holds the merge
+//     (decision 28 of dispatch://INFRA-4528's plan), so the row wakes the merger while the gate is
+//     closed and tells it once, as when no version waits.
 //  10. The issue's tree lingers: its root has closed, and a linger leaves every member where it
 //     stood, so the issue still stands in merging, but the close suspended the tree's merger, and
 //     the workflow no longer works the phase. An issue that is its own root leaves merging when that
@@ -186,7 +185,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	unread := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	leaves := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	retired := rig.seed(t, phase.Merging, supervise.StateRetired, false)
-	failed := rig.seed(t, phase.Merging, supervise.StateFailed, true)
+	failed := rig.seed(t, phase.Merging, supervise.StateFailed, false)
+	rig.oweNews(t, failed)
 	gated := rig.seed(t, phase.Merging, supervise.StateSuspended, true)
 	lingering := rig.seedUnderSecondRoot(t, true)
 	closed := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -328,24 +328,10 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 	}
 
-	t.Run("a closed design gate holds the released merger's message until it opens", func(t *testing.T) {
+	t.Run("a closed design gate holds nothing of the released merger's message", func(t *testing.T) {
 		issue := gated
 		reads := rig.publish(t, issue, issue.head)
-		rig.await(t, "the message's row held over two tries", func() bool {
-			return rig.attempts(t, issue.key, record.OutboxKindMergeQueueRemoval) >= 2
-		})
-		if held := rig.lastError(t, issue.key, record.OutboxKindMergeQueueRemoval); !strings.Contains(held, "design gate") {
-			t.Fatalf("the message's row waits on %q, want the design gate", held)
-		}
-		if resumed, resumes := podResumes(t, rig.pool, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
-			t.Fatalf("while the gate is closed %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
-		}
-		rig.nothingPublished(t, issue)
-		rig.recordChanges(t, issue)
-		approved := 2
-		putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
-			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
-		rig.await(t, "the merger woken for the message once the gate opened", func() bool {
+		rig.await(t, "the merger woken for the message while the gate is closed", func() bool {
 			return rig.wakes(t, issue.key) >= 1
 		})
 		rig.registerWoken(t, issue)
@@ -837,7 +823,8 @@ func (r *dequeueRig) nobodyWoken(t *testing.T, issue dequeueIssue) {
 // applied through the engine as the API's route applies it, once the boot's replay of the
 // merger's stored failure (replayTerminal, workflow's claimFailed) has held the phase. The retry
 // puts the issue back in merging and writes the start that relaunches the failed merger, which
-// the issue's closed design gate holds, so the merger's claim stays failed.
+// the merger's unrecorded news of the approved design holds (oweNews), so the merger's claim
+// stays failed.
 func (r *dequeueRig) retryHeld(t *testing.T, issue dequeueIssue) {
 	t.Helper()
 	r.await(t, "the boot's replay of the merger's failure to hold the phase", func() bool {

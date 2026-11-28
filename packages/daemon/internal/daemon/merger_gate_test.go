@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -13,17 +12,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// A new version of an approved spec closes the tree's design gate, and what may merge is what the
-// person's review of that version decides: the merger's start waits while the gate is closed and
-// runs when it opens again (dispatch://INFRA-714/spec R5). The start is held, not dropped: the row
-// stays on its backoff with nobody spawned, and the same row starts the merger once the approval
-// lands. The merger took version 3 and what changed up to version 4 is recorded, so the news it is
-// owed holds nothing back once the gate opens (mergerWaitsForTheDesignGate).
-func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
+// A new version of an approved spec closes the tree's design gate, and no value of the hold holds
+// the merge (decision 28 of dispatch://INFRA-4528's plan): the merger's start runs while the gate
+// is closed, as when no version waits. The merger took version 3 and what changed up to version 4
+// is recorded, so the news it is owed holds nothing back (mergerWaitsForTheDesignGate, which reads
+// no gate).
+func TestTheMergersStartGoesOnWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -49,35 +46,20 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleMerger,
 		Generation: issue.Generation, Phase: phase.Merging, Task: "Merge it."}, time.Now())
 
-	err := runner.execute(context.Background(), row)
-	if !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the merger's start under a closed gate = %v, want it held (wait.ErrWaiting)", err)
-	}
-	if spawns := len(runtime.CallsOf("Spawn")); spawns != 0 {
-		t.Fatalf("the runtime spawned %d sessions while the gate was closed, want none", spawns)
-	}
-
-	// The person approves version 4, which opens the gate.
-	approvedNow := 4
-	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: &approvedNow})
-
 	if err := runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("the merger's start once the gate opened = %v, want it run", err)
+		t.Fatalf("the merger's start under a closed gate = %v, want it run: no value of the hold holds the merge", err)
 	}
 	if spawns := len(runtime.CallsOf("Spawn")); spawns != 1 {
-		t.Fatalf("the runtime spawned %d sessions once the gate opened, want the merger's one", spawns)
+		t.Fatalf("the runtime spawned %d sessions while the gate was closed, want the merger's one", spawns)
 	}
 }
 
-// A step an ancestor's approval opened (dispatch://INFRA-3320, R1 and R2) releases the merger's
-// start as a person's approval of the root's own version does: the gate holds the start while the
-// step stands closed at the root's new version, and the same row starts the merger once the step
-// opens on the basis, which records the root's version registered as the step's approved version
-// and keeps the person's approval of the older version apart (record.OpenOnBasis). No person
-// approved version 4 of the root's document here. The merger took version 3 and what changed up to
-// version 4 is recorded, so the news it is owed holds nothing back once the step opens
+// A step an ancestor's approval can open (dispatch://INFRA-3320, R1 and R2) holds no merge either:
+// while the step stands closed at the root's new version, which no person approved, the merger's
+// start runs, as when no version waits (decision 28). The merger took version 3 and what changed
+// up to version 4 is recorded, so the news it is owed holds nothing back
 // (mergerWaitsForTheDesignGate).
-func TestTheMergersStartRunsOnceItsStepOpensOnABasis(t *testing.T) {
+func TestTheMergersStartGoesOnWhileItsStepStandsClosedBeforeABasis(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -102,38 +84,19 @@ func TestTheMergersStartRunsOnceItsStepOpensOnABasis(t *testing.T) {
 	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleMerger,
 		Generation: issue.Generation, Phase: phase.Merging, Task: "Merge it."}, time.Now())
 
-	if err := runner.execute(context.Background(), row); !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the merger's start under the closed step = %v, want it held (wait.ErrWaiting)", err)
-	}
-	if spawns := len(runtime.CallsOf("Spawn")); spawns != 0 {
-		t.Fatalf("the runtime spawned %d sessions while the step was closed, want none", spawns)
-	}
-
-	// The root's architect registers version 4 on the person's approval of version 5 of its
-	// ancestor's primary document.
-	opened := record.OpenOnBasis(closed, record.GateBasis{Issue: "LEGION-100", ArtifactID: "artifact-100", Version: 5,
-		Approval: record.EventMark{Seq: 40, At: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}, Approver: "user:alice",
-		Serves: []string{"dispatch://LEGION-100/spec#b-p2@v5"}, Reason: "The checks serve P2.", Session: "ses-architect",
-		RegisteredAt: time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)})
-	if !opened.OnBasis() || !record.GateOpen(opened) {
-		t.Fatalf("the step the basis opened = %+v, want it open on the basis", opened)
-	}
-	putOutboxGate(t, pool, records, opened)
-
 	if err := runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("the merger's start once the step opened on the basis = %v, want it run", err)
+		t.Fatalf("the merger's start under the closed step = %v, want it run: no value of the hold holds the merge", err)
 	}
 	if spawns := len(runtime.CallsOf("Spawn")); spawns != 1 {
-		t.Fatalf("the runtime spawned %d sessions once the step opened on the basis, want the merger's one", spawns)
+		t.Fatalf("the runtime spawned %d sessions while the step was closed, want the merger's one", spawns)
 	}
 }
 
 // Under `root-issues` a root that registered its Verification document as criteria holds its
-// tree on that document too (record.TreeSteps), so a new version of it holds the merger's start
-// as a new spec version does, with the spec itself approved, and the approval of that version
-// runs the same row. The merger took the spec at 4 and the checks at 1, and what changed in the
-// checks from 1 to 2 is recorded.
-func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed(t *testing.T) {
+// tree on that document too (record.TreeSteps), and a new version of it holds no merge, as a new
+// spec version holds none (decision 28): the merger's start runs. The merger took the spec at 4
+// and the checks at 1, and what changed in the checks from 1 to 2 is recorded.
+func TestTheMergersStartGoesOnWhileItsTreesRegisteredVerificationDocumentIsClosed(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -158,20 +121,11 @@ func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed
 	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleMerger,
 		Generation: issue.Generation, Phase: phase.Merging, Task: "Merge it."}, time.Now())
 
-	if err := runner.execute(context.Background(), row); !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the merger's start under a closed Verification document = %v, want it held (wait.ErrWaiting)", err)
-	}
-	if spawns := len(runtime.CallsOf("Spawn")); spawns != 0 {
-		t.Fatalf("the runtime spawned %d sessions while the Verification document was closed, want none", spawns)
-	}
-
-	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, Step: record.DesignStepCriteria, ArtifactID: "artifact-208-verification",
-		LatestVersion: 2, ApprovedVersion: new(2)})
 	if err := runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("the merger's start once the Verification document is approved = %v, want it run", err)
+		t.Fatalf("the merger's start under a closed Verification document = %v, want it run: no value of the hold holds the merge", err)
 	}
 	if spawns := len(runtime.CallsOf("Spawn")); spawns != 1 {
-		t.Fatalf("the runtime spawned %d sessions once the Verification document was approved, want the merger's one", spawns)
+		t.Fatalf("the runtime spawned %d sessions while the Verification document was closed, want the merger's one", spawns)
 	}
 }
 

@@ -36,19 +36,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The work hold (`gates.hold: work`, steps 1 to 7 of its spec under `work`) and
-// the merge hold's one fix (decision 13) as the outbox runs the rows the workflow writes for them:
-// the close's messages and stops, every start of a phase worker of a held tree, and the opening's
-// starts. Each test runs the daemon's own engine, admission and outbox over a database of its own,
-// with a supervisor whose claims live in the daemon's real store and whose runtime is the fake
-// one, on a clock the test holds (heldClock): every deadline the daemon names is a timer the test
-// fires.
+// The work hold (`gates.hold: work`, steps 1 to 7 of its spec under `work`) and the start hold
+// (`start`) as the outbox runs the rows the workflow writes for them: the close's messages and
+// stops, every start of a phase worker of a held tree, the opening's starts, and the merger's
+// starts and wakes, which no value of the hold holds (decision 28). Each test runs the daemon's
+// own engine, admission and outbox over a database of its own, with a supervisor whose claims live
+// in the daemon's real store and whose runtime is the fake one, on a clock the test holds
+// (heldClock): every deadline the daemon names is a timer the test fires.
 
 // holdSentence is the sentence the close message adds under `work` after today's first one, which
 // every opening task repeats after that first sentence (spec step 2). It is written out here, never
 // read from the code under test.
 const holdSentence = "The deployment holds the tree's work until every gated step stands open again: no phase " +
-	"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or 2 minutes after this message."
+	"but the merge starts, and the daemon stops each phase worker but the merger, with its session kept, when its turn ends " +
+	"or 2 minutes after this message."
 
 // architectCloseEnding ends the close message under `work` to an architect, which the hold stops
 // not (decision 14). It is written out here, never read from the code under test.
@@ -468,16 +469,16 @@ func (r *workHoldRig) workerClose(version int) string {
 	return r.closedSentence(version) + " " + holdSentence + " End your turn now."
 }
 
-// mergeClose is today's close message, which `merge` keeps word for word.
-func (r *workHoldRig) mergeClose(version int) string {
-	return r.closedSentence(version) + " Your phase goes on; the merge waits until every gated step stands open again."
+// startClose is today's close message under `start`, which a merger is told under `work` too.
+func (r *workHoldRig) startClose(version int) string {
+	return r.closedSentence(version) + " Your phase goes on."
 }
 
 // openedMessage is today's open message at version of the root's spec.
 func (r *workHoldRig) openedMessage(version int) string {
 	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its spec document (%s), "+
-		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-		"A merge the closed gate held is released.", r.tree.key, version, r.tree.document)
+		"and every step the deployment gates now stands open, so the design you are working to is the approved one.",
+		r.tree.key, version, r.tree.document)
 }
 
 // openedTo is the open role message at version of the root's spec as role's live claim is told it
@@ -786,31 +787,25 @@ func awaitingChildrenAtTheClose(t *testing.T) *workHoldRig {
 	return r
 }
 
-// cutoverMergerAtTheClose is a tree in merging under `work` whose merger the `awaiting_merge`
-// cutover left released, level with the entry its phases row names, that row holding the READY
-// head its completion named (workflow's cutoverMergerRepair), when the close at version 4 has just
-// closed the gate: the close's message to the released merger, which wakes it, is queued and not
-// run yet. Admission passes over a released claim level with its entry, so only the repair starts
-// it.
-func cutoverMergerAtTheClose(t *testing.T) *workHoldRig {
-	t.Helper()
-	r := mergingWithAReleasedMerger(t, config.HoldWork)
+// cutoverMergerRepaired is the cutover's repair of the merger the `awaiting_merge` cutover left
+// released in r, whose merger's phase row holds a READY head: the repair writes the merger's start.
+func cutoverMergerRepaired(r *workHoldRig) {
+	r.t.Helper()
 	r.inTx(func(tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleMerger, Claim: r.token(claim.RoleMerger),
 			HandoffCommit: "head1"})
 	})
-	r.close(4)
-	return r
+	r.apply("cutover", intake.CutoverMergerRepair{})
 }
 
 // I3: every writer of a start row or a wake of a phase worker the plan lists, driven against a
-// tree under the hold, starts no turn while the gate is closed, and each runs once the gate opens:
-// the role it was for is started, once, with the one task the opening gives it, and nothing it
-// wrote is left waiting. A writer acts after the close's stops were made, or where it says so
-// before them (early), in the window in which the hold's stop of a released worker is queued and
-// not made yet. The released merger's wake for the close message, the one start the closed gate
-// lets through, is TestWorkHoldWakesAReleasedMerger's; a writer whose tree holds a released merger
-// counts that wake (woken).
+// tree under the hold, starts no turn of a role but the merger while the gate is closed, and each
+// runs once the gate opens: the role it was for is started, once, with the one task the opening
+// gives it, and nothing it wrote is left waiting. A writer acts after the close's stops were made,
+// or where it says so before them (early), in the window in which the hold's stop of a released
+// worker is queued and not made yet. Every start and wake of a merger goes on while the gate is
+// closed, under each value of the hold (decision 28): mergerGoesOnWhileTheGateIsClosed holds them,
+// for TestStartHoldWakesAReleasedMergerForItsWork and TestWorkHoldWakesAReleasedMergerForItsWork.
 func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 	t.Parallel()
 	type writer struct {
@@ -833,10 +828,6 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		// where held is nil.
 		rig  func(t *testing.T) *workHoldRig
 		held []claim.Role
-		// woken is how often the close's message launched each of held before the hold stopped it:
-		// once for a released merger, which wake readies, tells and stops after an early act.
-		woken int
-		wake  func(r *workHoldRig)
 		// afterOpening is a request of the writer's that a claim the opening does not start reaches
 		// once the gate is open, and that is taken then.
 		afterOpening func(r *workHoldRig)
@@ -962,16 +953,6 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			enqueueOutbox(r.t, r.pool, r.records, record.OutboxRow{Kind: record.OutboxKind(resume.Kind), Issue: r.tree.key,
 				Payload: resume.Payload, NextAt: r.clock.Now()})
 		}},
-		{name: "the cutover's repair of a merger it left released", early: true, rig: cutoverMergerAtTheClose,
-			held: []claim.Role{claim.RoleMerger}, woken: 1, starts: claim.RoleMerger, act: func(r *workHoldRig) {
-				r.apply("cutover", intake.CutoverMergerRepair{})
-			}, wake: func(r *workHoldRig) {
-				wakeTheMerger(r)
-				r.runOnce()
-				if fired := r.clock.fire(holdGrace); fired != 1 {
-					r.t.Fatalf("fired %d timers at the 2 minutes, want the woken merger's stop's one", fired)
-				}
-			}},
 		// The controller's agent actions (#4065, api's agentDoor) and claimstart's restart of a
 		// retired phase worker (restartWorkedPhase): each is refused 409 HELD_BY_WORK_HOLD while the
 		// gate is closed, whatever suspended the worker, and writes no start row; once the gate
@@ -1026,16 +1007,13 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			if w.early {
 				act()
 			}
-			if w.wake != nil {
-				w.wake(r)
-			}
 			r.drain()
 			if !w.early {
 				act()
 				r.drain()
 			}
 			for _, role := range held {
-				r.wantHeld(role, w.woken, "while the gate is closed")
+				r.wantHeld(role, 0, "while the gate is closed")
 			}
 			for _, kind := range w.left {
 				if got := r.rows(kind, "", ""); got != 1 {
@@ -1047,7 +1025,7 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 			r.drain()
 			opening := r.opening(4, 4)
 			for _, role := range held {
-				if got := r.launches(role) - w.woken; got != 1 {
+				if got := r.launches(role); got != 1 {
 					t.Fatalf("the runtime started the %s %d times once the gate opened, want once", role, got)
 				}
 				c := r.machine(role).Claim()
@@ -1133,9 +1111,10 @@ func TestWorkHoldStartsAnArchitect(t *testing.T) {
 // the role alone, not by the list of roles a claim can be on (claim.Roles). While the gate is
 // closed it holds the start of a role that list does not name, as a kind of step a later change
 // adds would start one, with the same routine wait it gives each role of the list but the
-// architect, and it holds neither the architect's start nor the controller's. Once the gate opens,
-// the start of the role no list names goes. The fence is read directly, as each start row and
-// each wake of a released claim reads it.
+// architect and the merger, and it holds neither the architect's start, nor the controller's, nor
+// the merger's (decision 28: no value of the hold holds the merge). Once the gate opens, the start
+// of the role no list names goes. The fence is read directly, as each start row and each wake of a
+// released claim reads it.
 func TestWorkHoldHoldsTheStartOfARoleNoListNames(t *testing.T) {
 	t.Parallel()
 	const unlisted claim.Role = "security-reviewer"
@@ -1147,7 +1126,7 @@ func TestWorkHoldHoldsTheStartOfARoleNoListNames(t *testing.T) {
 	r.drain()
 	held := []claim.Role{unlisted}
 	for _, role := range claim.Roles {
-		if role != claim.RoleArchitect {
+		if role != claim.RoleArchitect && role != claim.RoleMerger {
 			held = append(held, role)
 		}
 	}
@@ -1158,7 +1137,7 @@ func TestWorkHoldHoldsTheStartOfARoleNoListNames(t *testing.T) {
 			t.Fatalf("the fence of a start of the %s with the gate closed = %v, want the work hold's routine wait %q", role, err, want)
 		}
 	}
-	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleController} {
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleController, claim.RoleMerger} {
 		if err := r.runner.startWaitsForTheHold(r.ctx, r.issue(), role, 0); err != nil {
 			t.Fatalf("the fence of a start of the %s with the gate closed = %v, want nil: the hold holds no %s", role, err, role)
 		}
@@ -1181,103 +1160,95 @@ func mergingWithAReleasedMerger(t *testing.T, hold config.Hold) *workHoldRig {
 	return r
 }
 
-// wakeTheMerger runs the close's message to the released merger to the merger: the message's
-// first attempt wakes it, its agent becomes ready, and the next attempt publishes the message,
-// both at the same moment of the clock. It answers that moment.
-func wakeTheMerger(r *workHoldRig) time.Time {
-	r.t.Helper()
-	r.runOnce()
-	if got := r.launches(claim.RoleMerger); got != 1 {
-		r.t.Fatalf("the close's message started the released merger %d times, want once: the wake for it is the one start the closed gate lets through", got)
-	}
-	if got := r.published(claim.RoleMerger); len(got) != 0 {
-		r.t.Fatalf("the merger was told %q before its pod came back, want nothing yet", got)
-	}
-	r.clock.advance(65 * time.Second)
-	readyClaimAs(r.t, r.sup, r.token(claim.RoleMerger), claim.RoleMerger, "ses-merger")
-	ready := r.clock.Now()
-	r.runOnce()
-	return ready
-}
-
-// Decision 13, H16: under `merge` a released merger is woken for the close message, so it can take
-// its pull request out of GitHub's merge queue, and is told today's close word for word once its
-// agent is ready. The hold stops it not. Every other start of the merger waits while the gate is
-// closed — here its phase's start — and runs once the gate opens.
-func TestMergeHoldWakesAReleasedMerger(t *testing.T) {
-	t.Parallel()
-	r := mergingWithAReleasedMerger(t, config.HoldMerge)
-	r.close(4)
-	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-		Task: "Merge the pull request."})
-	wakeTheMerger(r)
-	if got := r.published(claim.RoleMerger); len(got) != 1 || got[0] != r.mergeClose(4) {
-		t.Fatalf("the woken merger was told %q, want today's close, %q", got, r.mergeClose(4))
-	}
-	r.drain()
-	if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-		t.Fatalf("under merge the outbox holds the stops %+v of the merger, want none", stops)
-	}
-	if c := r.machine(claim.RoleMerger).Claim(); c.State != supervise.StateReady || c.SuspensionHeld {
-		t.Fatalf("the woken merger is %s, a stop held %v; want it ready and not stopped", c.State, c.SuspensionHeld)
-	}
-	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 1 {
-		t.Fatalf("the merger's phase start ran with the gate closed (%d rows left), want it waiting", got)
-	}
-	if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 0 {
-		t.Fatalf("the merger was prompted %+v with the gate closed, want nothing", prompts)
-	}
-
-	r.approve(4, 12)
-	r.drain()
-	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 0 {
-		t.Fatalf("the merger's phase start still waits (%d rows) once the gate opened, want it run", got)
-	}
-	if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, "Merge the pull request.") {
-		t.Fatalf("the merger was prompted %+v once the gate opened, want its phase's task", prompts)
-	}
-}
-
-// Decision 13, H16: under `work` a released merger is woken for the close message too, and is told
-// the work close once its agent is ready; its stop is posted then, so its 2 minutes count from its
-// start (M4): it is stopped by the hold when the turn the message starts ends, or 2 minutes after
-// it became ready, its session kept.
-func TestWorkHoldWakesAReleasedMerger(t *testing.T) {
-	t.Parallel()
-	for _, end := range []string{"its turn ends", "2 minutes after its start"} {
-		t.Run(end, func(t *testing.T) {
-			r := mergingWithAReleasedMerger(t, config.HoldWork)
+// mergerGoesOnWhileTheGateIsClosed holds rows H2, H15 and H16 and I3's merger part under hold
+// (decision 28): no value of the hold holds the merge. The close neither wakes a released merger
+// nor stops it, and tells it nothing; and each start and wake of the merger goes on while the gate
+// stays closed, launching it once: a CI settlement's wake (deliveryWake), a merge-queue removal
+// and a merge-holds change (deliverHeld, through merge_queue_removal.go and merge_holds.go), a
+// start of its phase, and the cutover's repair of a merger it left released (the boot's start of a
+// merger). A merger in a turn at the close is told "Your phase goes on." and is not stopped.
+func mergerGoesOnWhileTheGateIsClosed(t *testing.T, hold config.Hold) {
+	t.Helper()
+	merger := claim.RoleMerger
+	t.Run("a merger in a turn at the close", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Merging, hold))
+		r.working(merger)
+		r.close(4)
+		r.drain()
+		if got := r.published(merger); len(got) != 1 || got[0] != r.startClose(4) {
+			t.Fatalf("the merger in a turn was told %q, want %q", got, r.startClose(4))
+		}
+		if stops := r.holdStops(merger); len(stops) != 0 {
+			t.Fatalf("the outbox holds the stops %+v of the merger, want none: no value of the hold holds the merge", stops)
+		}
+		if c := r.machine(merger).Claim(); c.State != supervise.StateWorking || c.WorkHeld() || c.SuspensionHeld {
+			t.Fatalf("the merger is %s, held %v, a stop held %v; want it at work and not stopped", c.State, c.WorkHeld(), c.SuspensionHeld)
+		}
+	})
+	for _, w := range []struct {
+		name string
+		act  func(r *workHoldRig)
+	}{
+		{name: "a CI settlement's wake", act: func(r *workHoldRig) {
+			r.apply("settled", intake.PullRequestChecks{Repo: "acme/widgets", Number: 42, HeadSHA: "head1", Generation: 1,
+				Snapshot: "head1-snapshot", CheckRuns: []record.AttemptRun{{Name: "build", ID: 1}}})
+		}},
+		{name: "a merge-queue removal", act: func(r *workHoldRig) { r.enqueue(record.MergeQueueRemoval{Number: 42, Head: "head1"}) }},
+		{name: "a merge-holds change", act: func(r *workHoldRig) { r.enqueue(record.MergeHoldsChanged{Project: r.tree.project}) }},
+		{name: "a start of its phase", act: func(r *workHoldRig) {
+			r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: merger, Generation: 1, Phase: phase.Merging,
+				Task: "Merge the pull request."})
+		}},
+		{name: "the cutover's repair of a merger it left released", act: cutoverMergerRepaired},
+	} {
+		t.Run(w.name, func(t *testing.T) {
+			r := mergingWithAReleasedMerger(t, hold)
 			r.close(4)
-			ready := wakeTheMerger(r)
-			if got := r.published(claim.RoleMerger); len(got) != 1 || got[0] != r.workerClose(4) {
-				t.Fatalf("the woken merger was told %q, want the work close, %q", got, r.workerClose(4))
+			r.drain()
+			if got := r.launches(merger); got != 0 {
+				t.Fatalf("the close woke the released merger %d times, want none: no close message wakes it", got)
 			}
-			stops := r.holdStops(claim.RoleMerger)
-			if len(stops) != 1 || !stops[0].Deadline.Equal(ready.Add(holdGrace)) || !stops[0].TurnAfter.Equal(ready) {
-				t.Fatalf("the merger's stops are %+v, want one cut at %s, 2 minutes from its start at %s", stops, ready.Add(holdGrace), ready)
+			if got := r.published(merger); len(got) != 0 {
+				t.Fatalf("the released merger was told %q, want nothing", got)
 			}
+			if stops := r.holdStops(merger); len(stops) != 0 {
+				t.Fatalf("the outbox holds the stops %+v of the merger, want none: no value of the hold holds the merge", stops)
+			}
+			w.act(r)
 			r.runOnce()
-			if c := r.machine(claim.RoleMerger).Claim(); c.State != supervise.StateReady || !c.WorkHeld() {
-				t.Fatalf("the merger once its stop ran is %s, held %v; want it ready, its stop held for the turn the message starts", c.State, c.WorkHeld())
+			if got := r.launches(merger); got != 1 {
+				t.Fatalf("%s launched the released merger %d times with the gate closed, want once: no value of the hold holds the merge", w.name, got)
 			}
-			if live, _ := r.clock.armed(holdGrace); live != 1 {
-				t.Fatalf("%d timers are armed for the 2 minutes, want the merger's stop's one", live)
+			r.clock.advance(65 * time.Second)
+			readyClaimAs(t, r.sup, r.token(merger), merger, "ses-merger")
+			r.drain()
+			if c := r.machine(merger).Claim(); c.State == supervise.StateSuspended || c.WorkHeld() || c.SuspensionHeld {
+				t.Fatalf("the woken merger is %s by %q, held %v, a stop held %v; want it running and not stopped",
+					c.State, c.SuspendedBy, c.WorkHeld(), c.SuspensionHeld)
 			}
-			switch end {
-			case "its turn ends":
-				r.handle(claim.RoleMerger, supervise.StreamTurnStart{Claim: r.token(claim.RoleMerger)})
-				endTurn(r.ctx, t, r.machine(claim.RoleMerger), r.token(claim.RoleMerger))
-			default:
-				if fired := r.clock.fire(holdGrace); fired != 1 {
-					t.Fatalf("fired %d timers at the 2 minutes, want the merger's stop's one", fired)
-				}
+			if stops := r.holdStops(merger); len(stops) != 0 {
+				t.Fatalf("the outbox holds the stops %+v of the woken merger, want none", stops)
 			}
-			r.wantHeld(claim.RoleMerger, 1, "after the stop")
-			if c := r.machine(claim.RoleMerger).Claim(); c.Session != "ses-merger" {
-				t.Fatalf("the stopped merger holds the session %q, want its own kept", c.Session)
+			if got := r.launches(merger); got != 1 {
+				t.Fatalf("the runtime started the merger %d times, want the one wake", got)
 			}
 		})
 	}
+}
+
+// H16, I3, decision 28: under `start` a released merger is woken for its own work while the gate
+// is closed, and never for the close message (mergerGoesOnWhileTheGateIsClosed).
+func TestStartHoldWakesAReleasedMergerForItsWork(t *testing.T) {
+	t.Parallel()
+	mergerGoesOnWhileTheGateIsClosed(t, config.HoldStart)
+}
+
+// H16, I3, decision 28: under `work` too a released merger is woken for its own work while the
+// gate is closed, never for the close message, and the hold stops no merger
+// (mergerGoesOnWhileTheGateIsClosed).
+func TestWorkHoldWakesAReleasedMergerForItsWork(t *testing.T) {
+	t.Parallel()
+	mergerGoesOnWhileTheGateIsClosed(t, config.HoldWork)
 }
 
 // Spec step 4: a project's pause and its resume end no work hold. The resume posts the end of
@@ -2338,13 +2309,13 @@ func (r *workHoldRig) restartBeforeTheBoot() {
 	r.runner.supervisor = r.sup
 }
 
-// A restart into `merge` while the close's stop of a released tester is still queued. The daemon
+// A restart into `start` while the close's stop of a released tester is still queued. The daemon
 // applies the boot's fact beside the outbox, so the stop's row runs before the boot ends the tree's
-// hold, and the tree's work hold row still stands. Under `merge` the hold holds no running work,
+// hold, and the tree's work hold row still stands. Under `start` the hold holds no running work,
 // so the row makes no stop (holdStop) and finishes with one line that names the tester and the
 // version. The boot then ends the hold and finds no claim that the hold stopped. The tester stays
 // released, and no start tells it that the deployment no longer holds the tree's work.
-func TestWorkHoldMakesNoStopAfterARestartIntoMergeBeforeTheBoot(t *testing.T) {
+func TestWorkHoldMakesNoStopAfterARestartIntoStartBeforeTheBoot(t *testing.T) {
 	t.Parallel()
 	r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 	logs := &testlog.Buffer{}
@@ -2356,11 +2327,11 @@ func TestWorkHoldMakesNoStopAfterARestartIntoMergeBeforeTheBoot(t *testing.T) {
 	}
 
 	r.restartBeforeTheBoot()
-	r.deploy(config.HoldMerge)
+	r.deploy(config.HoldStart)
 	r.runOnce()
 
 	if c := r.machine(claim.RoleTester).Claim(); !c.Released() {
-		t.Errorf("before the boot the tester is %s by %q, want it still released: `merge` holds no running work", c.State, c.SuspendedBy)
+		t.Errorf("before the boot the tester is %s by %q, want it still released: `start` holds no running work", c.State, c.SuspendedBy)
 	}
 	if stops := r.holdStops(claim.RoleTester); len(stops) != 0 {
 		t.Errorf("the tester's stops are %+v, want the row finished", stops)
@@ -2619,45 +2590,6 @@ func TestWorkHoldCutsAStartPastTheFenceAtTheDeadlineOfTheClose(t *testing.T) {
 	}
 }
 
-// The same window under `merge`, which stops nothing: a start of the merger that read the gate
-// open before the close launches the merger with its task after it. The close read no claim of
-// the merger, so its message would meet no session that holds the role and finish undelivered.
-// It waits for the merger's session instead, as a woken merger's close does, and the merger is
-// told today's close once its session holds its topic.
-func TestMergeHoldTellsAMergerWhoseStartReadTheGateBeforeTheClose(t *testing.T) {
-	t.Parallel()
-	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
-	merger := r.token(claim.RoleMerger)
-	r.conn(claim.RoleMerger)
-	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
-	closed := r.closeWhileProvisioning(4)
-	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-		Task: "Merge the pull request."})
-	r.runOnce()
-	if !closed() {
-		t.Fatal("the merger's start provisioned no workspace, so the close was never made")
-	}
-	if got := r.launches(claim.RoleMerger); got != 1 {
-		t.Fatalf("the start launched the merger %d times, want once: it read the gate open before the close", got)
-	}
-	r.runOnce()
-	if got := r.published(claim.RoleMerger); len(got) != 0 {
-		t.Fatalf("the merger was told %q before its session held its topic, want nothing yet", got)
-	}
-	// A role message's row names its role by the claim token.
-	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
-		t.Fatalf("the close message to the merger left %d rows before the merger's session held its topic, want it waiting", got)
-	}
-
-	r.clock.advance(65 * time.Second)
-	readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
-	r.publisher.setAbsent()
-	r.runOnce()
-	if got := r.published(claim.RoleMerger); len(got) != 1 || got[0] != r.mergeClose(4) {
-		t.Fatalf("the merger was told %q, want today's close, %q", got, r.mergeClose(4))
-	}
-}
-
 // closeAtAStart is the rig's store with one act run at the claim write that records a start of
 // one claim (supervise.Machine.StartedBy), once: the start read the gate open and has not brought
 // the claim back yet. Every other call goes straight to the store.
@@ -2674,83 +2606,6 @@ func (s closeAtAStart) PutClaim(ctx context.Context, c supervise.Claim) error {
 		s.act()
 	}
 	return s.Store.PutClaim(ctx, c)
-}
-
-// The same window under `merge`, for a merger whose claim runs nothing and is not released: the
-// daemon suspended it, which a start resumes by rule, or it failed, which a start retries. The
-// close commits while a lane runs the merger's start, after the start read the gate open and
-// before it brings the merger back, so the close marks its message to the merger to wait for the
-// merger's session (workflow's mergersToWake). The message's first attempt runs then, while the
-// claim is still gone and no session holds the role. It waits for the start rather than finish
-// undelivered. The start brings the merger back with its merging task, the message reaches the
-// merger's session once the merger is back, and the merger is prompted with its task after that.
-func TestMergeHoldTellsAGoneMergerWhoseStartRunsAtTheClose(t *testing.T) {
-	t.Parallel()
-	suspended := supervise.Claim{Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended,
-		SuspendedBy: supervise.SuspendedByDaemon, Session: "ses-merger", SessionFile: "/tmp/merger.jsonl"}
-	failed := supervise.Claim{Generation: 1, ServingGeneration: 1, State: supervise.StateFailed, Failure: "pane exited",
-		Session: "ses-merger", SessionFile: "/tmp/merger.jsonl"}
-	for _, tc := range []struct {
-		name    string
-		gone    supervise.Claim
-		restart bool
-	}{
-		{name: "suspended by the daemon", gone: suspended},
-		{name: "failed", gone: failed},
-		{name: "suspended by the daemon/a restart before its ready", gone: suspended, restart: true},
-		{name: "failed/a restart before its ready", gone: failed, restart: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
-			merger := r.token(claim.RoleMerger)
-			r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
-			r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-				Task: "Merge the pull request."})
-			made := &atomic.Bool{}
-			r.sup.deps.Store = closeAtAStart{Store: r.trees, token: merger, row: r.newestRow(), made: made, act: func() {
-				r.close(4)
-				r.runOnce()
-			}}
-			r.create(claim.RoleMerger, tc.gone)
-			r.runOnce()
-			if !made.Load() {
-				t.Fatal("the merger's start recorded no start, so the close was never made")
-			}
-			if got := r.launches(claim.RoleMerger); got != 1 {
-				t.Fatalf("the start launched the merger %d times, want once: it read the gate open before the close", got)
-			}
-			// A role message's row names its role by the claim token.
-			if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
-				t.Fatalf("the close message to the merger (%s) left %d rows once its first attempt ran, want it waiting for the start", tc.name, got)
-			}
-			if got := r.published(claim.RoleMerger); len(got) != 0 {
-				t.Fatalf("the merger was told %q before it was back, want nothing yet", got)
-			}
-
-			if tc.restart {
-				// The close message's wait is its row, so a daemon restart while the merger launches
-				// keeps it, and the restarted daemon publishes it to the merger that is back.
-				r.restart()
-			}
-			r.publisher.setAbsent()
-			r.clock.advance(65 * time.Second)
-			r.runOnce()
-			if got := r.published(claim.RoleMerger); len(got) != 1 || got[0] != r.mergeClose(4) {
-				t.Fatalf("the merger back from its start was told %q, want today's close, %q", got, r.mergeClose(4))
-			}
-			if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 0 {
-				t.Fatalf("the merger was prompted %+v before its ready, want nothing yet", prompts)
-			}
-			readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
-			r.machine(claim.RoleMerger).Wait()
-			if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, "Merge the pull request.") {
-				t.Fatalf("at its ready the merger was prompted %+v, want its merging task once, after the close", prompts)
-			}
-			if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 0 {
-				t.Fatalf("the close message to the merger left %d rows once it was told, want it finished", got)
-			}
-		})
-	}
 }
 
 // Spec step 7 ("names the version that closed the gate. It carries today's open message."), for a
@@ -2855,53 +2710,13 @@ func (p *notConfirmedOnce) Publish(ctx context.Context, topic, message string, p
 }
 
 // A close message that meets its tree's gate open again before its publish is not published, and
-// posts no stop, under both `gates.hold` words. The close's message to a released merger wakes it,
-// and the gate opens while its pod comes back: the open message meets the launching merger, which
-// holds no topic yet, and finishes undelivered. The close's row then finds the gate open and
-// finishes with one line, so the merger's last word is not "closed". A live worker's close message
-// whose publish its holder did not confirm finds the gate open at its retry in the same way: the
-// worker is told the opening alone. So does the architect's close message under `work`, which
-// carries no stop and no wake: it is marked as a close message (record.RoleMessage.Close).
+// posts no stop. A live worker's close message whose publish its holder did not confirm finds the
+// gate open at its retry: the worker is told the opening alone. So does the architect's close
+// message under `work`, which carries no stop: it is marked as a close message
+// (record.RoleMessage.Close).
 func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 	t.Parallel()
 	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
-	for _, hold := range []config.Hold{config.HoldMerge, config.HoldWork} {
-		t.Run("a woken merger under "+string(hold), func(t *testing.T) {
-			r := mergingWithAReleasedMerger(t, hold)
-			logs := &testlog.Buffer{}
-			r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
-			merger := r.token(claim.RoleMerger)
-			r.close(4)
-			r.runOnce()
-			if got := r.launches(claim.RoleMerger); got != 1 {
-				t.Fatalf("the close's message started the released merger %d times, want once", got)
-			}
-			r.approve(4, 12)
-			r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
-			r.runOnce()
-			r.publisher.setAbsent()
-			r.clock.advance(65 * time.Second)
-			readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
-			r.runOnce()
-
-			if got := r.published(claim.RoleMerger); len(got) != 0 {
-				t.Fatalf("the merger was told %q, want nothing: the gate opened before the close was published", got)
-			}
-			if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
-				t.Fatalf("the outbox still holds %d role messages, want the close finished", got)
-			}
-			if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-				t.Fatalf("the outbox holds the stops %+v of the merger, want none", stops)
-			}
-			if lines := loggedMessages(t, logs.String(), unpublished); len(lines) != 1 || lines[0]["role"] != string(merger) {
-				t.Fatalf("the outbox logged %v, want one line naming the merger", lines)
-			}
-			r.drain()
-			if c := r.machine(claim.RoleMerger).Claim(); c.State != supervise.StateReady || c.WorkHeld() || c.SuspensionHeld {
-				t.Fatalf("the merger is %s, held %v, a stop held %v; want it ready and not stopped", c.State, c.WorkHeld(), c.SuspensionHeld)
-			}
-		})
-	}
 	t.Run("a retried close to a live worker", func(t *testing.T) {
 		r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
 		logs := &testlog.Buffer{}
@@ -2983,7 +2798,7 @@ func TestGatesHoldPublishesNoCloseMessageOnceTheGateOpensAgain(t *testing.T) {
 func TestGatesHoldKeepsTheCloseMessageOfAnIssueTheRecordDoesNotHold(t *testing.T) {
 	t.Parallel()
 	const unpublished = "outbox role message finished unpublished: the design gate opened again before its close message was published"
-	for _, hold := range []config.Hold{config.HoldMerge, config.HoldWork} {
+	for _, hold := range []config.Hold{config.HoldStart, config.HoldWork} {
 		t.Run(string(hold), func(t *testing.T) {
 			r := newWorkHoldRig(t, legionTree(phase.Implementing, hold))
 			logs := &testlog.Buffer{}
@@ -2994,7 +2809,7 @@ func TestGatesHoldKeepsTheCloseMessageOfAnIssueTheRecordDoesNotHold(t *testing.T
 				t.Fatal(err)
 			}
 			enqueueOutbox(t, r.pool, r.records, mustOutboxRow(t, unrecorded,
-				record.RoleMessage{Role: string(token), Body: r.mergeClose(4), Close: true}, r.clock.Now()))
+				record.RoleMessage{Role: string(token), Body: r.startClose(4), Close: true}, r.clock.Now()))
 			r.runOnce()
 
 			var rows, attempts int
@@ -3018,46 +2833,6 @@ func TestGatesHoldKeepsTheCloseMessageOfAnIssueTheRecordDoesNotHold(t *testing.T
 				}
 			}
 		})
-	}
-}
-
-// Under `merge`, a close message to a merger with no claim waits while a lane runs a start of the
-// merger, and not while that start is only queued. Here the start runs at the
-// close, so the close marks its message to wait, and its provision then fails: the start row
-// waits on its backoff, and its next attempt reads the closed gate and waits at the fence through
-// the hold. So the message's attempt after that finds no lane running the start and no claim,
-// and the row finishes with one line and no stop rather than wait until the gate opens.
-func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueuedAfterTheClose(t *testing.T) {
-	t.Parallel()
-	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
-	merger := r.token(claim.RoleMerger)
-	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
-	closed := false
-	r.runner.provision = func(context.Context, workspace.Request) (workspace.Workspace, error) {
-		if !closed {
-			closed = true
-			r.close(4)
-		}
-		return workspace.Workspace{}, errors.New("the workspace could not be provisioned")
-	}
-	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-		Task: "Merge the pull request."})
-	r.runOnce()
-	if !closed {
-		t.Fatal("the merger's start provisioned no workspace, so the close was never made")
-	}
-	r.clock.advance(65 * time.Second)
-	r.runOnce()
-
-	// A role message's row names its role by the claim token.
-	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 0 {
-		t.Fatalf("the close message to the merger left %d rows while its start waits at the fence, want it finished", got)
-	}
-	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 1 {
-		t.Fatalf("the merger's start left %d rows, want it waiting at the fence", got)
-	}
-	if got := r.launches(claim.RoleMerger); got != 0 {
-		t.Fatalf("the runtime started the merger %d times, want none", got)
 	}
 }
 
@@ -3279,173 +3054,6 @@ func TestWorkHoldOpeningOverAnEarlierOpeningsTaskGivesTheNewestSentencesOnce(t *
 	r.wantStarted(claim.RoleImplementer, launched, r.opening(5, 5)+"\n\n"+work+"\n\n"+r.heldNews(phase.Implementing, 3, 5))
 }
 
-// The merger's news under `work`, for a merger whose cut turn left it a task no turn took. The
-// holders took the approved version 3 (withNews). The merger is at work on its merge task when the
-// gate closes, and its turn does not end within the 2 minutes, so the hold's stop cuts it. The
-// claim keeps the task, which its cut turn did not finish. The opening's start waits until what
-// changed in the approved version is recorded, as every start of a merger waits, and then starts
-// the merger with one task: the opening's sentences, the kept merge task, and the news of version
-// 4 after it, so the merger reads what changed before it merges. A restart before the opening
-// reads the kept task back from the store, and a first attempt of the opening's start that waits
-// for the news to be recorded gives the same task.
-func TestWorkHoldOpeningGivesAMergerTheNewsWithTheTaskItsCutTurnKept(t *testing.T) {
-	t.Parallel()
-	const mergeTask = "Merge the pull request of LEGION-208."
-	for _, miss := range []string{"none", "a restart before the opening", "a first attempt that waits for the news"} {
-		t.Run(miss, func(t *testing.T) {
-			r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork).withNews())
-			token := r.token(claim.RoleMerger)
-			r.live(claim.RoleMerger)
-			r.handle(claim.RoleMerger, supervise.RequestDeliver{Claim: token, Task: mergeTask, ID: "outbox:9001", Row: 9001,
-				Phase: phase.Merging, Generation: 1, Entry: 1})
-			r.handle(claim.RoleMerger, supervise.StreamTurnStart{Claim: token})
-			r.close(4)
-			r.runOnce()
-			r.runOnce()
-			if fired := r.clock.fire(holdGrace); fired != 1 {
-				t.Fatalf("fired %d timers at the 2 minutes, want the merger's stop's one", fired)
-			}
-			r.wantHeld(claim.RoleMerger, 1, "2 minutes after the close message")
-			if c := r.machine(claim.RoleMerger).Claim(); c.Pending == nil || c.Pending.Task != mergeTask || !c.Pending.ConfirmedAt.IsZero() {
-				t.Fatalf("the stopped merger keeps %+v, want the merge task its cut turn worked, unconfirmed", c.Pending)
-			}
-			launched := 1
-			if miss == "a restart before the opening" {
-				// The restart's supervisor runs on a runtime of its own, whose launches count from none.
-				r.restart()
-				launched = 0
-			}
-
-			r.approve(4, 12)
-			if miss == "a first attempt that waits for the news" {
-				if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = $2 where issue = $1 and kind = 'design_changes'`,
-					r.tree.key, r.clock.Now().Add(10*time.Minute)); err != nil {
-					t.Fatalf("put the reconcile of the news on its backoff: %v", err)
-				}
-				r.runOnce()
-				r.wantHeld(claim.RoleMerger, launched, "while what changed is not recorded")
-				if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 1 {
-					t.Fatalf("the outbox holds %d starts of the merger, want the opening's start waiting for the news", got)
-				}
-				r.clock.advance(11 * time.Minute)
-			}
-			r.drain()
-			task := r.opening(4, 4) + "\n\n" + mergeTask + "\n\n" + r.heldNews(phase.Merging, 3, 4)
-			r.wantStarted(claim.RoleMerger, launched, task)
-			readyClaimAs(t, r.sup, token, claim.RoleMerger, "ses-merger")
-			r.machine(claim.RoleMerger).Wait()
-			if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) == 0 || !strings.HasSuffix(prompts[len(prompts)-1].Message, task) {
-				t.Fatalf("at its ready the merger was prompted %+v, want the one task with the news after the merge task", prompts)
-			}
-		})
-	}
-}
-
-// Under `merge`, a merger whose start is only queued at the close, its lane running nothing of
-// it, is not waited for. That start reads the closed gate at its next attempt and waits at the
-// fence through the hold, so it launches nothing, and a close message that waited for the
-// merger's session would wait the whole hold and keep the issue's pod from its idle release. The
-// message meets no session that holds the role and finishes, the start waits for the gate, and
-// once the gate opens the start launches the merger with its task.
-func TestMergeHoldWaitsForNoMergerWhoseStartIsOnlyQueued(t *testing.T) {
-	t.Parallel()
-	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
-	merger := r.token(claim.RoleMerger)
-	r.conn(claim.RoleMerger)
-	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
-	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-		Task: "Merge the pull request."})
-	r.close(4)
-	r.drain()
-	// A role message's row names its role by the claim token.
-	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 0 {
-		t.Fatalf("the close message to the merger left %d rows, want it finished: nothing launches the merger while the gate is closed", got)
-	}
-	if got := r.launches(claim.RoleMerger); got != 0 {
-		t.Fatalf("the runtime started the merger %d times with the gate closed, want none", got)
-	}
-	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 1 {
-		t.Fatalf("the merger's start left %d rows with the gate closed, want it waiting at the fence", got)
-	}
-
-	r.approve(4, 12)
-	r.drain()
-	if got := r.launches(claim.RoleMerger); got != 1 {
-		t.Fatalf("the runtime started the merger %d times once the gate opened, want once", got)
-	}
-	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleMerger); got != 0 {
-		t.Fatalf("the merger's start still waits (%d rows) once the gate opened, want it run", got)
-	}
-	readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
-	r.publisher.setAbsent()
-	r.drain()
-	if got := r.published(claim.RoleMerger); len(got) != 0 {
-		t.Fatalf("the merger was told %q, want nothing: it launched after the gate opened", got)
-	}
-	if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, "Merge the pull request.") {
-		t.Fatalf("the merger was prompted %+v once the gate opened, want its phase's task", prompts)
-	}
-}
-
-// Under `merge`, the close marks its message to a merger whose start a lane runs, so the message
-// waits for the merger's session (workflow's mergersToWake). Here that start never creates the
-// claim: the close commits while the start provisions its workspace, the provision fails, and the
-// start row then goes before it runs again, as a start of an issue that left the workflow goes.
-// While the start is under way, the message waits. Once no start of the merger is under way and
-// no claim of it exists, nothing creates the claim while the gate stays closed, so the message
-// finishes with one line and no stop rather than wait until the gate opens.
-func TestMergeHoldEndsTheCloseOfAMergerWhoseStartCreatesNoClaim(t *testing.T) {
-	t.Parallel()
-	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldMerge))
-	logs := &testlog.Buffer{}
-	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
-	merger := r.token(claim.RoleMerger)
-	r.publisher.setAbsent(notify.RoleTopicPrefix + string(merger))
-	closed := false
-	r.runner.provision = func(context.Context, workspace.Request) (workspace.Workspace, error) {
-		if !closed {
-			closed = true
-			r.close(4)
-		}
-		return workspace.Workspace{}, errors.New("the workspace could not be provisioned")
-	}
-	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-		Task: "Merge the pull request."})
-	r.runOnce()
-	if !closed {
-		t.Fatal("the merger's start provisioned no workspace, so the close was never made")
-	}
-	// A role message's row names its role by the claim token.
-	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
-		t.Fatalf("the close message to the merger left %d rows while its start is under way, want it waiting", got)
-	}
-
-	r.inTx(func(tx pgx.Tx) error {
-		_, err := tx.Exec(r.ctx, `delete from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-			and payload->>'role' = $2`, r.tree.key, string(claim.RoleMerger))
-		return err
-	})
-	r.clock.advance(65 * time.Second)
-	r.runOnce()
-
-	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 0 {
-		t.Fatalf("the close message to the merger left %d rows once no start of it was under way, want it finished", got)
-	}
-	const ended = "outbox role message finished undelivered: its merger runs nothing, and no start of it can launch it while the gate is closed"
-	if lines := loggedMessages(t, logs.String(), ended); len(lines) != 1 || lines[0]["role"] != string(merger) {
-		t.Fatalf("the outbox logged %v, want one line naming the merger", lines)
-	}
-	if got := r.launches(claim.RoleMerger); got != 0 {
-		t.Fatalf("the runtime started the merger %d times, want none", got)
-	}
-	if got := r.published(claim.RoleMerger); len(got) != 0 {
-		t.Fatalf("the merger was told %q, want nothing", got)
-	}
-	if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-		t.Fatalf("the outbox holds the stops %+v of the merger, want none", stops)
-	}
-}
-
 // launchingWithATask is the implementer's claim as a start leaves it once it spawned the claim
 // with its task, the task of the root's phase at entry 1, which no turn has taken: stored
 // launching at generation 1, before the daemon recorded its process. A restart in that instant
@@ -3649,222 +3257,6 @@ func TestWorkHoldStopsTheBootsReleasedLaunchAtItsReady(t *testing.T) {
 	}
 }
 
-// wantMergerToldThenStopped holds the merger to the close of version 4, published to its session
-// at told before any stop of it: it was told the work close once and is not stopped, and its one
-// stop, queued once the message reached it, waits for the turn the message starts and cuts that
-// turn 2 minutes after told. The stop's row then holds the merger for that turn, and the 2 minutes
-// stop it, with its session kept.
-func (r *workHoldRig) wantMergerToldThenStopped(told time.Time) {
-	r.t.Helper()
-	if got := r.published(claim.RoleMerger); len(got) != 1 || got[0] != r.workerClose(4) {
-		r.t.Fatalf("the merger was told %q, want the work close, %q", got, r.workerClose(4))
-	}
-	if c := r.machine(claim.RoleMerger).Claim(); c.State == supervise.StateSuspended || c.WorkHeld() {
-		r.t.Fatalf("when the close reached it the merger is %s by %q, held %v; want it not stopped yet", c.State, c.SuspendedBy, c.WorkHeld())
-	}
-	stops := r.holdStops(claim.RoleMerger)
-	if len(stops) != 1 || !stops[0].Deadline.Equal(told.Add(holdGrace)) || !stops[0].TurnAfter.Equal(told) {
-		r.t.Fatalf("the merger's stops are %+v, want one queued once the close reached it, cut at %s", stops, told.Add(holdGrace))
-	}
-	launched := r.launches(claim.RoleMerger)
-	r.runOnce()
-	if c := r.machine(claim.RoleMerger).Claim(); c.State == supervise.StateSuspended || !c.WorkHeld() {
-		r.t.Fatalf("once its stop ran the merger is %s, held %v; want its stop held for the turn the close starts", c.State, c.WorkHeld())
-	}
-	if fired := r.clock.fire(holdGrace); fired != 1 {
-		r.t.Fatalf("fired %d timers at the 2 minutes, want the merger's stop's one", fired)
-	}
-	r.wantHeld(claim.RoleMerger, launched, "2 minutes after the close reached it")
-	if c := r.machine(claim.RoleMerger).Claim(); c.Session != "ses-merger" {
-		r.t.Fatalf("the stopped merger holds the session %q, want its own kept", c.Session)
-	}
-}
-
-// Under `work`, the close message to a merger whose launch is under
-// way at the close, its session not holding the role's topic yet, is marked to wait for the
-// merger's session, as a woken merger's is, and carries the merger's stop. The merger takes its
-// pull request out of GitHub's merge queue on this message alone. So the message waits rather
-// than end at a role no session holds, and no stop is posted meanwhile. Once the merger is ready
-// and its session holds its topic, the merger is told the close, and only then is its stop
-// posted. The wait is the message's row: a daemon restart while the merger launches keeps it, and
-// a first publish its holder did not confirm is retried on the row's backoff.
-func TestWorkHoldTellsALaunchingMergerTheCloseBeforeItsStop(t *testing.T) {
-	t.Parallel()
-	for _, miss := range []string{"", "a restart while the merger launches", "a first publish its holder did not confirm"} {
-		name := miss
-		if name == "" {
-			name = "the merger's session comes up"
-		}
-		t.Run(name, func(t *testing.T) {
-			r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork))
-			merger := r.token(claim.RoleMerger)
-			topic := notify.RoleTopicPrefix + string(merger)
-			r.create(claim.RoleMerger, supervise.Claim{State: supervise.StateQueued})
-			r.handle(claim.RoleMerger, supervise.RequestSpawn{Claim: merger})
-			r.publisher.setAbsent(topic)
-			if miss == "a first publish its holder did not confirm" {
-				r.runner.notices = &notConfirmedOnce{holderPublisher: r.publisher, topic: topic}
-			}
-			r.close(4)
-			r.runOnce()
-			r.clock.advance(65 * time.Second)
-			r.runOnce()
-			// A role message's row names its role by the claim token.
-			if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
-				t.Fatalf("the close message to the launching merger left %d rows, want it waiting for the merger's session", got)
-			}
-			if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-				t.Fatalf("the outbox holds the stops %+v of the merger before it was told the close, want none", stops)
-			}
-
-			if miss == "a restart while the merger launches" {
-				r.restart()
-			}
-			readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
-			r.publisher.setAbsent()
-			r.clock.advance(65 * time.Second)
-			told := r.clock.Now()
-			r.runOnce()
-			r.wantMergerToldThenStopped(told)
-		})
-	}
-}
-
-// Under `work`, a merger's close message whose holder the listener
-// reports unresponsive waits for that holder, with its stop not posted, where a worker's close
-// that is not a merger's ends and posts its stop (TestWorkHoldStopsAWorkerWhoseHolderIsUnresponsive).
-// The merger takes its pull request out of the merge queue on this message alone. This holds for
-// the released merger the close wakes, and for a merger live at the close, whose message the
-// close marks in the same way (record.RoleMessage.Wake). Once the holder answers, the merger is
-// told the close, and only then is its stop posted. A daemon restart while the holder is
-// unresponsive keeps the row, and a first publish its holder did not confirm is retried on the
-// row's backoff: neither ends the wait.
-func TestWorkHoldWaitsForAnUnresponsiveMergerBeforeItsStop(t *testing.T) {
-	t.Parallel()
-	for _, merger := range []string{"a woken released merger", "a live merger"} {
-		for _, miss := range []string{"", "a restart while its holder is unresponsive", "a first publish its holder did not confirm"} {
-			name := merger
-			if miss != "" {
-				name += "/" + miss
-			}
-			t.Run(name, func(t *testing.T) {
-				var r *workHoldRig
-				if merger == "a woken released merger" {
-					r = mergingWithAReleasedMerger(t, config.HoldWork)
-				} else {
-					r = newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork))
-					r.live(claim.RoleMerger)
-				}
-				token := r.token(claim.RoleMerger)
-				topic := notify.RoleTopicPrefix + string(token)
-				r.close(4)
-				if merger == "a woken released merger" {
-					// The message's first attempt wakes the merger, and its agent becomes ready.
-					r.runOnce()
-					r.clock.advance(65 * time.Second)
-					readyClaimAs(t, r.sup, token, claim.RoleMerger, "ses-merger")
-				}
-				if miss == "a first publish its holder did not confirm" {
-					r.runner.notices = &notConfirmedOnce{holderPublisher: r.publisher, topic: topic}
-					r.runOnce()
-					r.clock.advance(65 * time.Second)
-				}
-				r.runner.notices = &unresponsiveHolder{holderPublisher: r.publisher, topic: topic}
-				waits := func(when string) {
-					t.Helper()
-					r.runOnce()
-					// A role message's row names its role by the claim token.
-					if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(token)); got != 1 {
-						t.Fatalf("%s the close message to the merger left %d rows, want it waiting for the merger's holder", when, got)
-					}
-					if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-						t.Fatalf("%s the outbox holds the stops %+v of the merger, want none before it is told the close", when, stops)
-					}
-					if got := r.published(claim.RoleMerger); len(got) != 0 {
-						t.Fatalf("%s the merger was told %q, want nothing yet", when, got)
-					}
-				}
-				waits("while its holder is unresponsive")
-				if miss == "a restart while its holder is unresponsive" {
-					r.restart()
-					r.clock.advance(65 * time.Second)
-					waits("after the restart")
-				}
-
-				r.runner.notices = r.publisher
-				r.clock.advance(65 * time.Second)
-				told := r.clock.Now()
-				r.runOnce()
-				r.wantMergerToldThenStopped(told)
-			})
-		}
-	}
-}
-
-// Under `work`, a merger whose start read the gate open before
-// the close launches the merger after it, its pull request still in GitHub's merge queue. The
-// close reads no claim of the merger, live or released, and a start of it under way
-// (StartUnderWay). It writes no stop of that merger at once, which would stop the merger at its
-// ready before it reads the close. Its close message carries the stop instead, and waits for the
-// merger's session, as a woken merger's message does. The start launches the merger with its
-// task, the merger is told the close once its session holds its topic, and only then is its stop
-// posted. A daemon restart before the merger's ready keeps the message's row, and a first publish
-// its holder did not confirm is retried on the row's backoff.
-func TestWorkHoldTellsAMergerWhoseStartReadTheGateBeforeTheCloseBeforeItsStop(t *testing.T) {
-	t.Parallel()
-	for _, miss := range []string{"", "a restart before its ready", "a first publish its holder did not confirm"} {
-		name := miss
-		if name == "" {
-			name = "the merger's session comes up"
-		}
-		t.Run(name, func(t *testing.T) {
-			r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork))
-			merger := r.token(claim.RoleMerger)
-			topic := notify.RoleTopicPrefix + string(merger)
-			r.conn(claim.RoleMerger)
-			r.publisher.setAbsent(topic)
-			closed := r.closeWhileProvisioning(4)
-			r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleMerger, Generation: 1, Phase: phase.Merging,
-				Task: "Merge the pull request."})
-			r.runOnce()
-			if !closed() {
-				t.Fatal("the merger's start provisioned no workspace, so the close was never made")
-			}
-			if got := r.launches(claim.RoleMerger); got != 1 {
-				t.Fatalf("the start launched the merger %d times, want once: it read the gate open before the close", got)
-			}
-			if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-				t.Fatalf("the close left the stops %+v of the merger, want none: its close message carries its stop", stops)
-			}
-			if miss == "a first publish its holder did not confirm" {
-				r.runner.notices = &notConfirmedOnce{holderPublisher: r.publisher, topic: topic}
-			}
-			r.runOnce()
-			// A role message's row names its role by the claim token.
-			if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
-				t.Fatalf("the close message to the merger left %d rows before its session held its topic, want it waiting", got)
-			}
-			if got := r.published(claim.RoleMerger); len(got) != 0 {
-				t.Fatalf("the merger was told %q before its session held its topic, want nothing yet", got)
-			}
-
-			if miss == "a restart before its ready" {
-				r.restart()
-			}
-			r.clock.advance(65 * time.Second)
-			readyClaimAs(t, r.sup, merger, claim.RoleMerger, "ses-merger")
-			r.machine(claim.RoleMerger).Wait()
-			if prompts := r.conn(claim.RoleMerger).Prompts(); len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, "Merge the pull request.") {
-				t.Fatalf("at its ready the merger was prompted %+v, want its start's task: the start read the gate open", prompts)
-			}
-			r.publisher.setAbsent()
-			told := r.clock.Now()
-			r.runOnce()
-			r.wantMergerToldThenStopped(told)
-		})
-	}
-}
-
 // openedBeforeGatesRead is the runner's record store with act run once, armed, right before the
 // next read of a tree's design gates: the opening commits after the attempt opened its
 // transaction and before that transaction's first read. Every other call goes straight to the
@@ -3988,50 +3380,6 @@ func TestWorkHoldPublishesNoCloseOfAnotherDocumentThatANewerCloseOutran(t *testi
 		if stop.HoldVersion != 2 {
 			t.Fatalf("the outbox holds the stop %+v, want only the stop of the criteria's close", stop)
 		}
-	}
-}
-
-// A restart into `merge` while the work close message to a live merger is still queued, the
-// gate still closed. The boot ends the tree's work hold, since `merge` holds no running work, and
-// the gate stays closed. The merger takes its pull request out of GitHub's merge queue on the
-// close message alone, so a hold that ended with the gate still closed does not outrun the
-// message: the merger is told the close, and then the boot's sentence that the deployment no
-// longer holds the tree's work. Under `merge` the message's stop is not made, and one line names
-// the merger and the version that closed the gate.
-func TestWorkHoldTellsAMergerTheCloseAfterARestartIntoMerge(t *testing.T) {
-	t.Parallel()
-	const unmade = "outbox: the deployment's hold is no longer `work`, which holds no running work; the work hold's stop is not made"
-	r := newWorkHoldRig(t, legionTree(phase.Merging, config.HoldWork))
-	logs := &testlog.Buffer{}
-	r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
-	r.live(claim.RoleMerger)
-	merger := r.token(claim.RoleMerger)
-	r.close(4)
-	// A role message's row names its role by the claim token.
-	if got := r.rows(record.OutboxKindRoleMessage, "", claim.Role(merger)); got != 1 {
-		t.Fatalf("the close left %d messages to the merger, want its one close message queued", got)
-	}
-
-	r.restartBeforeTheBoot()
-	r.deploy(config.HoldMerge)
-	r.apply("boot", intake.DaemonBooted{})
-	r.drain()
-
-	bootOpened := "The deployment no longer holds the work of " + r.tree.key + "'s tree."
-	if got := r.published(claim.RoleMerger); len(got) != 2 || got[0] != r.workerClose(4) || got[1] != bootOpened {
-		t.Fatalf("the merger was told %q, want the work close and then that the deployment no longer holds the tree's work", got)
-	}
-	if got := r.rows(record.OutboxKindRoleMessage, "", ""); got != 0 {
-		t.Fatalf("the outbox still holds %d role messages, want each published", got)
-	}
-	if stops := r.holdStops(claim.RoleMerger); len(stops) != 0 {
-		t.Fatalf("the outbox holds the stops %+v of the merger, want none: `merge` holds no running work", stops)
-	}
-	if lines := loggedMessages(t, logs.String(), unmade); len(lines) != 1 || lines[0]["role"] != string(claim.RoleMerger) || lines[0]["version"] != float64(4) {
-		t.Fatalf("the outbox logged %v, want one line naming the merger and version 4", lines)
-	}
-	if c := r.machine(claim.RoleMerger).Claim(); c.State == supervise.StateSuspended || c.WorkHeld() || c.SuspensionHeld {
-		t.Fatalf("the merger is %s by %q, held %v, a stop held %v; want it running and not stopped", c.State, c.SuspendedBy, c.WorkHeld(), c.SuspensionHeld)
 	}
 }
 

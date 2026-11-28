@@ -6,9 +6,9 @@ package daemon
 // hold opens or the work is pushed. The round holds no task of a claim the hold does not stop
 // meanwhile: an answer to the round is told once, on its role's topic, that the round waits for
 // the hold, and holds none of its claim's tasks from then on, and the round does not ask it again
-// at each sweep. A launch goes into the pod the hold keeps, so the issue's architect goes on there,
-// and a released merger woken for the close message gets it there and is stopped 2 minutes after
-// its start. Once a read finds the held work pushed, or at the opening, the round asks again each
+// at each sweep. A launch goes into the pod the hold keeps, so the issue's architect goes on there;
+// no merger is woken for the close message (decision 28). Once a read finds the held work pushed,
+// or at the opening, the round asks again each
 // claim it asks, whether or not the hold lifted an answer, a claim the opening started included,
 // under a bound of the round's own length from that ask; the opening's own launch into the kept
 // pod keeps it for that ask; and the round replaces the pod only once each claim it asks has
@@ -572,60 +572,6 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 		h.awaitReplacedOnce("after the woken architect answered again")
 	})
 
-	t.Run("a released merger woken for the close message", func(t *testing.T) {
-		merger := claim.RoleMerger
-		h := newHeldRoundRig(t, phase.Merging)
-		h.liveInPod(architect)
-		h.liveInPod(implementer)
-		h.handle(implementer, supervise.StreamTurnStart{Claim: h.token(implementer)})
-		h.released(merger)
-		h.unpushed()
-		h.opensOver(heldAccountDrift, architect, implementer)
-		h.close(4)
-		h.rt.ScriptResume(fake.SpawnResult{Locator: h.locator(merger)})
-		// The close's first run wakes the released merger for its message, into the pod the round
-		// is open over, and posts the implementer's stop, which its turn's end makes.
-		h.runOnce()
-		if got := h.launches(merger); got != 1 {
-			t.Fatalf("the close's message started the released merger %d times, want once", got)
-		}
-		h.wantInPod(merger)
-		h.runOnce()
-		endTurn(h.ctx, t, h.machine(implementer), h.token(implementer))
-		h.until("the implementer's stop to be made at its turn's end", func() bool {
-			h.runOnce()
-			c := h.machine(implementer).Claim()
-			return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByHold
-		})
-		h.wantHeld(implementer, 1, "after its turn under the close")
-		h.clock.advance(65 * time.Second)
-		readyClaimAs(t, h.sup, h.token(merger), merger, "ses-merger")
-		ready := h.clock.Now()
-		h.runOnce()
-		if got := h.published(merger); len(got) != 1 || got[0] != h.workerClose(4) {
-			t.Fatalf("the merger woken into the kept pod was told %q, want the work close, %q", got, h.workerClose(4))
-		}
-		stops := h.holdStops(merger)
-		if len(stops) != 1 || !stops[0].Deadline.Equal(ready.Add(holdGrace)) {
-			t.Fatalf("the merger's stops are %+v, want one cut at %s, 2 minutes from its start at %s", stops, ready.Add(holdGrace), ready)
-		}
-		h.runOnce()
-		if fired := h.clock.fire(holdGrace); fired == 0 {
-			t.Fatal("no timer was armed for the merger's 2 minutes")
-		}
-		h.wantHeld(merger, 1, "2 minutes after its start")
-		h.wantNotReplaced("while the work hold stands")
-		h.asked(architect)
-		h.answers(architect)
-		h.wantLateAccountNotice(architect)
-		h.takesTask(architect, "Continue your work on the old service account.", "the task during the service-account hold")
-		h.pushed()
-		h.askedAgain(architect, "after the held work was pushed")
-		h.asked(architect)
-		h.answers(architect)
-		h.awaitReplacedOnce("after the merger received the close and the architect answered again")
-	})
-
 	t.Run("under dispatch_token_broker every launch into the pod is refused", func(t *testing.T) {
 		h := newHeldRoundRig(t, phase.Implementing)
 		h.liveInPod(architect)
@@ -679,7 +625,7 @@ func TestWorkHoldKeepsTheRoundsPodAndHoldsNoTaskOfAClaimItDoesNotStop(t *testing
 
 func TestWorkHoldNonBreakingRoundKeepsThePodAndEnds(t *testing.T) {
 	t.Parallel()
-	const architect, implementer, merger = claim.RoleArchitect, claim.RoleImplementer, claim.RoleMerger
+	const architect, implementer = claim.RoleArchitect, claim.RoleImplementer
 
 	t.Run("a live architect receives its held task", func(t *testing.T) {
 		h := newHeldRoundRig(t, phase.Implementing)
@@ -707,11 +653,10 @@ func TestWorkHoldNonBreakingRoundKeepsThePodAndEnds(t *testing.T) {
 		}
 	})
 
-	t.Run("a released architect and a merger woken by the close", func(t *testing.T) {
+	t.Run("a released architect", func(t *testing.T) {
 		h := newHeldRoundRig(t, phase.Merging)
 		h.liveInPod(architect)
 		h.liveInPod(implementer)
-		h.released(merger)
 		h.unpushed()
 		h.opensOver(podUpdateDrift, architect, implementer)
 		h.asked(architect)
@@ -719,8 +664,8 @@ func TestWorkHoldNonBreakingRoundKeepsThePodAndEnds(t *testing.T) {
 		h.handle(architect, supervise.RequestSuspend{Claim: h.token(architect), By: supervise.SuspendedByReleased,
 			Reason: "the issue's pod is released"})
 		h.close(4)
-		// Make the close's stop before draining the merger's close message. Neither the
-		// merger's wake nor a sweep can get the replacement decision before the launch below.
+		// Make the close's stop before the launch below, so no sweep can get the replacement
+		// decision before it.
 		h.handle(implementer, supervise.RequestSuspend{Claim: h.token(implementer), By: supervise.SuspendedByHold,
 			Reason: "the design gate closed", Deadline: h.clock.Now()})
 		h.wantHeld(implementer, 1, "after the close")
@@ -743,19 +688,10 @@ func TestWorkHoldNonBreakingRoundKeepsThePodAndEnds(t *testing.T) {
 		h.takesTask(architect, "A person answered your question: keep the field optional.", "a person's answer in the kept pod")
 		h.takesTask(architect, "Resume your work on the design.", "the resume task in the kept pod")
 
-		h.rt.ScriptResume(fake.SpawnResult{Locator: h.locator(merger)})
-		h.runOnce()
-		h.wantInPod(merger)
-		h.clock.advance(65 * time.Second)
-		readyClaimAs(t, h.sup, h.token(merger), merger, "ses-merger")
-		h.runOnce()
-		if got := h.published(merger); len(got) != 1 || got[0] != h.workerClose(4) {
-			t.Fatalf("the merger in the kept pod got %q, want the close message %q", got, h.workerClose(4))
-		}
 		if told := h.publishedHolding(architect, heldRoundWaits); len(told) != 0 {
 			t.Fatalf("the architect got a work-hold notice in a non-breaking round: %q", told)
 		}
-		h.wantNotReplaced("after both roles started in the kept pod")
+		h.wantNotReplaced("after the architect started in the kept pod")
 	})
 }
 

@@ -3,6 +3,8 @@ package supervise
 import (
 	"errors"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // The claims of a tree whose work hold stands that the project's controller may meet, each by the
@@ -147,5 +149,26 @@ func TestWorkHoldLetsTheControllerStartItsClaimOnceTheTreeOpens(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// Decision 28: no value of the hold holds the merge, so the hold refuses the controller nothing
+// of a merger (workHoldRefuses, claim.HeldByWorkHold). A merger the controller suspended while its
+// tree's work hold stands is resumed by the controller's resume, as when no hold stands.
+func TestWorkHoldLetsTheControllerResumeAMergerWhileTheTreeIsHeld(t *testing.T) {
+	c := queuedClaim()
+	c.Token, c.Role = "legion-LEGION-209-merger", claim.RoleMerger
+	h := newHarnessOf(t, c)
+	suspendedBy(h, SuspendedByController)
+	h.store.closeHold(h.claim().Tree)
+	resumes := len(h.calls("Resume"))
+
+	if err := h.handle(RequestResume{Claim: h.token, By: SuspendedByController}); errors.Is(err, ErrHeldByWorkHold) {
+		t.Fatalf("the controller's resume of the merger answered %v, want it taken: the hold holds no merger", err)
+	}
+
+	h.wantState(StateLaunching)
+	if got := len(h.calls("Resume")); got != resumes+1 {
+		t.Fatalf("resumes = %d, want one more for the controller's resume of the merger", got-resumes)
 	}
 }

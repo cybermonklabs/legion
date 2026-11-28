@@ -235,7 +235,7 @@ func RenderNews(news News) string {
 
 // gateAtSend is the gate sentence of tree as gates stand now. The standing gate is closed when a
 // step the tree is gated on holds a row that is not open (classify.StandingGate, the predicate the
-// merger's hold reads too), and the sentence names that row's latest version, the one with its
+// work hold reads too), and the sentence names that row's latest version, the one with its
 // reviewer. Otherwise it is open, and the sentence is the opened message of the approval that
 // opened it: the row whose approval Dispatch recorded last (record.EventMark.After), the later
 // step in the tree's order where the marks cannot tell, with each step that stands open on an

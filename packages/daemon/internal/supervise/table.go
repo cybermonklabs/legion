@@ -567,9 +567,7 @@ type RequestReady struct {
 // Deadline, and handed nothing meanwhile (sendPending). A TurnAfter with no Deadline is refused
 // (suspendRequest): a stop that waits for a turn no message starts would never be made. It changes
 // nothing for a claim in a turn or a compaction, whose end the stop waits for anyway, nor for a
-// launch, which is stopped at its ready before any task (holdSuspendUntilReady): a caller that
-// woke the claim for the message — the released merger the hold wakes — posts its stop once the
-// claim is up, with the deadline counted from then.
+// launch, which is stopped at its ready before any task (holdSuspendUntilReady).
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A

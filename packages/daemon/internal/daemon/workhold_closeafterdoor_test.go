@@ -136,7 +136,7 @@ func wantHeldByTheWorkHold(r *workHoldRig, route string, role claim.Role, record
 // start of token: what holds it, that refusal before what the request did to the agent, and the
 // two ways out after it, written out here, never read from the code under test (api's
 // holdSentences, refuseHold).
-const workHoldWords = "a phase worker of a tree whose work hold stands (`gates.hold: work`), and the controller starts no phase worker of that tree while its standing design gate is closed"
+const workHoldWords = "a phase worker of a tree whose work hold stands (`gates.hold: work`), and the controller starts no phase worker of that tree but the merger while its standing design gate is closed"
 
 func heldByTheWorkHold(token claim.Token) string {
 	return string(token) + " is " + workHoldWords + ", so "

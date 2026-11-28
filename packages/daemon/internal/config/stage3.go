@@ -64,11 +64,12 @@ func (gate DesignGate) Steps() []record.DesignStep {
 type Hold string
 
 const (
-	// HoldMerge is the default and the hold the gate had before the key: the merger's start and
-	// the first phase of each issue that has not started wait, and every running phase goes on.
-	HoldMerge Hold = "merge"
-	// HoldWork also holds the tree's running work: no phase starts, and the daemon stops each
-	// phase worker of the tree with its session kept, while the architects go on.
+	// HoldStart is the default: the first phase of each issue that has not started waits, and
+	// every running phase goes on, the merge among them. No value of the hold holds the merge.
+	HoldStart Hold = "start"
+	// HoldWork also holds the tree's running work: no phase but the merge starts, and the daemon
+	// stops each phase worker of the tree but the merger with its session kept, while the
+	// architects go on.
 	HoldWork Hold = "work"
 )
 
@@ -79,9 +80,9 @@ type Gates struct {
 	// and resolves to the single step spec, as the gate held before a deployment could name a
 	// list; a non-nil empty list is `off` and gates no step.
 	Design []record.DesignStep
-	// Hold is the word `gates.hold` names, HoldMerge for a file that names none. The empty word
+	// Hold is the word `gates.hold` names, HoldStart for a file that names none. The empty word
 	// is the unset field of a Config built without its Gates field; read the hold through Holds,
-	// which takes it as HoldMerge.
+	// which takes it as HoldStart.
 	Hold Hold
 }
 
@@ -102,11 +103,11 @@ func (g Gates) Steps() []record.DesignStep {
 }
 
 // Holds is what a closed standing gate holds of its tree: the word the deployment named, and
-// HoldMerge for the unset field, so a Config built without its Gates field holds what the gate
-// held before a deployment could name a hold.
+// HoldStart for the unset field, so a Config built without its Gates field holds what a file that
+// names no hold holds.
 func (g Gates) Holds() Hold {
 	if g.Hold == "" {
-		return HoldMerge
+		return HoldStart
 	}
 	return g.Hold
 }
@@ -458,7 +459,7 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 	if err != nil {
 		return nil, err
 	}
-	gates := Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldMerge}
+	gates := Gates{Design: DesignGateRootIssues.Steps(), Hold: HoldStart}
 	if design := fields["design"]; design != nil {
 		steps, err := readDesignSteps(design, key+".design")
 		if err != nil {
@@ -476,17 +477,17 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 	return &gates, nil
 }
 
-// readHold is `gates.hold`: `merge` or `work`. Any other value is refused, and the refusal quotes
+// readHold is `gates.hold`: `start` or `work`. Any other value is refused, and the refusal quotes
 // it as the file wrote it: a scalar's own text, which is what the loader's other refusals quote of
 // a word or a number (readString), and a list or a mapping in YAML's flow style (flowText). An
-// absent key, and a key that names nothing, are `merge`, which readGates applies.
+// absent key, and a key that names nothing, are `start`, which readGates applies.
 func readHold(value *yaml.Node, key string) (Hold, error) {
 	if value.Kind == yaml.ScalarNode && value.Tag == "!!str" {
-		if word := Hold(value.Value); word == HoldMerge || word == HoldWork {
+		if word := Hold(value.Value); word == HoldStart || word == HoldWork {
 			return word, nil
 		}
 	}
-	return "", fmt.Errorf("%s must be %s or %s (got %q)", key, HoldMerge, HoldWork, flowText(value))
+	return "", fmt.Errorf("%s must be %s or %s (got %q)", key, HoldStart, HoldWork, flowText(value))
 }
 
 // flowText is value as YAML's flow style writes it, which is how a refusal quotes a value that may
