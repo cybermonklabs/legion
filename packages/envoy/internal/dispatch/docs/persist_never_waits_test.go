@@ -1,20 +1,26 @@
 package docs
 
 import (
-	"context"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // persistBuffer is the size of ygo's per-room persistence channel: the number of committed updates
 // the room's persistence worker could be behind before a commit's hand-off to it had to wait.
 const persistBuffer = 256
+
+// fillPersistBuffer commits as many peer updates into live as ygo's persistence channel holds.
+func fillPersistBuffer(live *crdt.Doc) {
+	for index := range persistBuffer {
+		live.Transact(func(tx *crdt.Transaction) { tx.GetMap("backpressure").Set(tx, "counter", index) }, "peer")
+	}
+}
 
 // A settlement commits its block-id stamp into the room while it holds the document's advisory
 // lock, and the room's persistence worker, behind a full buffer of browser commits, waits on that
@@ -23,23 +29,13 @@ const persistBuffer = 256
 // commit blocked on the full buffer while the worker blocked on the lock the committer held, and
 // neither moved until the lock holder's database session was ended (INFRA-6061's lock path).
 func TestASettlementsCommitDoesNotWaitOnAWorkerWaitingOnItsLock(t *testing.T) {
-	// Not parallel: it counts the advisory-lock waiters in pg_locks, where another test's waiters
-	// would count as its own.
-	ctx := context.Background()
+	// Not parallel: settleWithin reads every goroutine's stack in the process when it fails.
 	service, room := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, room, "before")
 	settleCurrentGeneration(t, service, room)
 	editLiveTree(t, service, room, appendUnidentifiedBlocks(t, "added"))
 	live := service.srv.GetDoc(room)
-	pool := service.persistence.(*PgVersioned).pool()
-	lockWaiters := func() int {
-		var n int
-		if err := pool.QueryRow(ctx, `select count(*) from pg_locks where locktype = 'advisory' and not granted`).Scan(&n); err != nil {
-			t.Errorf("read pg_locks: %v", err)
-		}
-		return n
-	}
 	var held bool
 	service.afterSettleLock = func(got string) {
 		if got != room || held {
@@ -48,16 +44,12 @@ func TestASettlementsCommitDoesNotWaitOnAWorkerWaitingOnItsLock(t *testing.T) {
 		held = true
 		// A browser's edit: the worker's append of it waits on the lock this settlement holds.
 		editAsPeer(t, service, room, replaceRun("before", "before, edited"))
-		testwait.Eventually(t, "the worker's append to wait on the document's lock", func() bool { return lockWaiters() > 0 })
-		for index := range persistBuffer {
-			live.Transact(func(tx *crdt.Transaction) { tx.GetMap("backpressure").Set(tx, "counter", index) }, "peer")
-		}
+		testwait.Eventually(t, "the worker's append to wait on the document's lock", func() bool { return waitingAdvisoryLocks(t, service.store) > 0 })
+		fillPersistBuffer(live)
 	}
 	settleWithin(t, service, room, func() {
 		// Ending the lock holder's session lets the worker take the lock, and the cycle unwinds.
-		if _, err := pool.Exec(ctx, `select pg_terminate_backend(pid) from pg_locks where locktype = 'advisory' and granted and pid <> pg_backend_pid()`); err != nil {
-			t.Logf("end the lock holder: %v", err)
-		}
+		endRoomLockHolders(t, service)
 	})
 	service.afterSettleLock = nil
 	if !held {
@@ -103,9 +95,7 @@ func TestASettlementsSecondRepairDoesNotWaitOnAWorkerWaitingOnItsStamp(t *testin
 			}
 			return false
 		})
-		for index := range persistBuffer {
-			live.Transact(func(tx *crdt.Transaction) { tx.GetMap("backpressure").Set(tx, "counter", index) }, "peer")
-		}
+		fillPersistBuffer(live)
 	}
 	settleWithin(t, service, room, func() { service.purgeSuppressedPersistence(room) })
 	service.afterSettleReconcile = nil
@@ -134,9 +124,8 @@ func settleWithin(t *testing.T, service *Service, room string, unwind func()) {
 		return
 	case <-time.After(roomWait(t)):
 	}
-	buffer := make([]byte, 1<<22)
 	var parked string
-	for _, stack := range strings.Split(string(buffer[:runtime.Stack(buffer, true)]), "\n\n") {
+	for _, stack := range goroutinetest.Traces() {
 		if strings.Contains(stack, "provider/websocket.(*Server).loadRoom") && strings.Contains(stack, "settle") {
 			parked = stack
 		}
