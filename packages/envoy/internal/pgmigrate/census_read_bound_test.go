@@ -212,9 +212,10 @@ const readBoundPlantKey = 6354
 // control also finds no refusal. Each row also checks the statement_timeout its savepoint's end
 // started under, which spySavepoint reads before it sends the plant: 5s in the failing row and
 // 30s in the control. The plant waits for a lock the failing row never releases, so any longer
-// bound, CensusStatementTimeout among them, would cancel it too, only later, with the same
-// SQLSTATE and the same name; without that check the row would pass and not tell the reads' bound
-// from a longer one.
+// bound up to the transaction's one-minute lock_timeout, CensusStatementTimeout among them, would
+// cancel it too, only later, with the same SQLSTATE and the same name; without that check the row
+// would pass and not tell the reads' bound from a longer one. Above that minute, or under no bound
+// at all, the lock_timeout ends the plant with 55P03, which the SQLSTATE check already fails.
 func TestCensusTableFailsByNameWhenTheEndOfItsReadsOutlastsTheReadBound(t *testing.T) {
 	t.Parallel()
 	locking := Locking{Timeout: time.Minute}
