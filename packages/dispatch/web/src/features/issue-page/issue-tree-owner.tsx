@@ -2,15 +2,20 @@ import {
   createContext,
   type ReactNode,
   useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
+import { flushSync } from "react-dom";
 
+import { TREE_FILTERS } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { createAgentTitleSelector } from "../refs/agent-registry";
 import { AgentTitleScope } from "../refs/agent-title-scope";
+import { askForTask } from "./drawn-in-slices";
 import { HeldChipLinesProvider } from "./held-chip-lines";
 import { type IssueTreeView, useIssueTree } from "./useIssueTree";
 
@@ -21,9 +26,13 @@ interface OwnedTree {
   readonly tree: IssueTreeView;
 }
 
-/** The owner's tree, for every reader under it (`useOwnedIssueTree`); none where no owner stands
- *  above. */
+/** The owner's tree as it is, for every reader under the stage (`useOwnedIssueTree`); none where
+ *  no owner stands above. */
 const IssueTreeOwner = createContext<OwnedTree | undefined>(undefined);
+
+/** The owner's tree as it published it to the rest of the page (`usePublishedLater`), for every
+ *  reader outside the stage; none where no owner stands above. */
+const IssuePageTree = createContext<OwnedTree | undefined>(undefined);
 
 /**
  * The owner of the issue's tree: the page's root mounts it once, around the slots it draws
@@ -38,6 +47,13 @@ const IssueTreeOwner = createContext<OwnedTree | undefined>(undefined);
  *
  * It holds for every chip under it the line the tree holds for each block it names, so a chip
  * holds its place before the names read names it (`held-chip-lines.tsx`).
+ *
+ * The stage's readers - the view the address draws, and what stands above its rows - read the
+ * tree in the commit that receives it, so a read that answers draws the view's first screen in
+ * that commit. Every other reader - the Contents list and its summary, the view row's counts,
+ * Details, the block room - reads it as the owner published it to the rest of the page, a task
+ * after that commit (`usePublishedLater`): that commit holds only the work of the view's first
+ * screen, and none of the page's around it.
  */
 export function IssueTreeOwnerProvider({
   children,
@@ -51,16 +67,67 @@ export function IssueTreeOwnerProvider({
   // One value for as long as the tree says the same, so a reader is drawn again only when it
   // changes.
   const owned = useMemo((): OwnedTree => ({ key, tree }), [key, tree]);
+  const published = usePublishedLater(owned);
+  useViewTreesBuilt(tree);
   const [agentTitles] = useState(createAgentTitleSelector);
   return (
     <IssueTreeOwner.Provider value={owned}>
-      <AgentTitleScope select={agentTitles}>
-        <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
-          {children}
-        </HeldChipLinesProvider>
-      </AgentTitleScope>
+      <IssuePageTree.Provider value={published}>
+        <AgentTitleScope select={agentTitles}>
+          <HeldChipLinesProvider namesFailed={tree.namesFailure !== undefined} root={tree.root}>
+            {children}
+          </HeldChipLinesProvider>
+        </AgentTitleScope>
+      </IssuePageTree.Provider>
     </IssueTreeOwner.Provider>
   );
+}
+
+/**
+ * `value` as the rest of the page reads it: the value it held as the page mounted, and from then
+ * on each new one in a task of its own after the commit that holds it, at background priority, so
+ * input, the frame that commit draws and the slices of its rows go first (`askForTask`). The task
+ * commits it there (`flushSync`), so what its readers draw again is that task's own work. Values
+ * that come while that task waits are published as one, the latest when it runs, and one that
+ * comes after it ran waits for a task of its own.
+ */
+function usePublishedLater<T>(value: T): T {
+  const [published, setPublished] = useState(value);
+  const latest = useRef(value);
+  latest.current = value;
+  const behind = published !== value;
+  useEffect(() => {
+    if (!behind || published === latest.current) return undefined;
+    return askForTask(() => flushSync(() => setPublished(latest.current)), "background");
+  }, [behind, published]);
+  return published;
+}
+
+/**
+ * Builds the tree of each filter's view the page holds (`TreeViews.trees`, each built when first
+ * read), one in each task at background priority, once the reads the tree is built from have
+ * settled and its names are held, so a press on a held view draws its first screen from a built
+ * tree and its commit builds none. A tree changed before its task ran is built anew from the
+ * change on; one built already is a lookup (`useIssueTree.ts`' `builtTree`).
+ */
+function useViewTreesBuilt({ namesHeld, pending, root }: IssueTreeView): void {
+  useEffect(() => {
+    const views = root.views;
+    const trees = views?.trees;
+    if (pending || !namesHeld || views === undefined || trees === undefined) return undefined;
+    const held = TREE_FILTERS.filter((filter) => views[filter] !== undefined);
+    let cancel: (() => void) | undefined;
+    const buildFrom = (at: number): void => {
+      const filter = held[at];
+      if (filter === undefined) return;
+      cancel = askForTask(() => {
+        void trees[filter];
+        buildFrom(at + 1);
+      }, "background");
+    };
+    buildFrom(0);
+    return () => cancel?.();
+  }, [namesHeld, pending, root]);
 }
 
 /**
@@ -68,14 +135,18 @@ export function IssueTreeOwnerProvider({
  * issue's tree stands above (`IssueTreeOwnerProvider`), and else the reader's own
  * `useIssueTree(issue)`, as every reader built it before the owner. So a slot drawn with no owner
  * above it - a case that mounts one slot under the page's providers - reads, and sends, what it
- * did then, and two such readers still share one tree (`useIssueTree.ts`'s `builtTree`).
+ * did then, and two such readers still share one tree (`useIssueTree.ts`'s `builtTree`). A reader
+ * under the stage (`TreeBuildsContext`) reads the owner's tree as it is, and every other reader
+ * the tree the owner published to the rest of the page.
  */
 export function useOwnedIssueTree(issue: IssueDetails): IssueTreeView {
-  const owned = useContext(IssueTreeOwner);
+  const builds = useContext(TreeBuildsContext);
+  // Whether a stage stands above is fixed for a mounted reader's life, as the owner is (below).
+  const owned = useContext(builds === undefined ? IssuePageTree : IssueTreeOwner);
   const ownersTree = owned !== undefined && owned.key === issue.key ? owned.tree : undefined;
   // biome-ignore lint/correctness/useHookAtTopLevel: whether an owner of this issue's tree stands above is fixed for a mounted reader's life. The page mounts the owner once, with its slots, under the issue's key (`IssueOutlinePage.tsx`), and hands it and every slot the one issue, so a reader cannot move into or out of it, or to another issue under it, without mounting again.
   const tree = ownersTree ?? useIssueTree(issue, true);
-  useTellBuilding(tree.building || tree.openingViewPending);
+  useTellBuilding(builds, tree.building || tree.openingViewPending);
   return tree;
 }
 
@@ -128,9 +199,9 @@ export function useTreesBuilt(): boolean {
   return useSyncExternalStore(builds?.subscribe ?? noSubscribe, builds?.idle ?? alwaysIdle);
 }
 
-/** Tells the stage above, where one stands, whether this reader's tree is still being built. */
-function useTellBuilding(building: boolean): void {
-  const builds = useContext(TreeBuildsContext);
+/** Tells `builds`, the stage's above the reader where one stands, whether this reader's tree is
+ *  still being built. */
+function useTellBuilding(builds: TreeBuilds | undefined, building: boolean): void {
   const [reader] = useState(() => ({}));
   useLayoutEffect(() => {
     if (builds === undefined) return;

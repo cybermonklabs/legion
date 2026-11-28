@@ -17,6 +17,7 @@ import {
   pageQuietText,
 } from "../../theme/classes";
 import { dialogOpen, useMediaQuery } from "../shell/useDialog";
+import { afterPaint } from "./drawn-in-slices";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
@@ -114,6 +115,8 @@ export function IssuePresets({
   const chooser = useRef<HTMLButtonElement>(null);
   const wasOpen = useRef<OpenMenu>(undefined);
   const leftByTab = useRef(false);
+  // Whether the menu closed with a view chosen in it, whose drawing the closing commit holds.
+  const choseView = useRef(false);
   // The ids a control's name and signal are read by; one prefix per drawn row, since two issue
   // pages in one document would otherwise write the same ids.
   const ids = useId();
@@ -136,8 +139,17 @@ export function IssuePresets({
       leftByTab.current = false;
       return;
     }
+    // On the page (`ViewPress`), the commit that closes the menu on a view chosen draws that view:
+    // a focus given there lays the whole view out inside the press's task, so the control takes
+    // the focus back, where the drawing took it away, once the frame is painted, as the frame
+    // lays the view out anyway.
+    const chose = choseView.current;
+    choseView.current = false;
+    if (chose && viewPress !== undefined) {
+      return afterPaint(() => returnMenuFocus(wrapper.current, chooser.current));
+    }
     returnMenuFocus(wrapper.current, chooser.current);
-  }, [open]);
+  }, [open, viewPress]);
 
   useEffect(() => {
     if (open === undefined) return;
@@ -298,7 +310,10 @@ export function IssuePresets({
                       // Focusing after either change forces layout of the whole issue again.
                       returnMenuFocus(wrapper.current, chooser.current);
                       setOpen(undefined);
-                      if (preset !== shown || preset === "conversation") press(preset);
+                      if (preset !== shown || preset === "conversation") {
+                        choseView.current = true;
+                        press(preset);
+                      }
                     }}
                     role="menuitemradio"
                     tabIndex={-1}

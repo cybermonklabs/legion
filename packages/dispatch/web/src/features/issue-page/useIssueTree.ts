@@ -251,10 +251,26 @@ function cachedOutlineReferences(reads: IssueTreeReads): readonly string[] | und
   return undefined;
 }
 
-function prepareOutline(reads: IssueTreeReads): void {
+/** Builds the tree of `reads` (`builtTree`) and notes the addresses it cites where a tree built
+ *  from the same reads but the names has noted them already. Answers whether they are noted: where
+ *  they are not, the name walk is still to run (`noteOutlineReferences`). */
+function buildOutline(reads: IssueTreeReads): boolean {
   const known = cachedOutlineReferences(reads);
   const root = builtTree(reads);
-  outlineReferences.set(root, known ?? treeReferences(root, reads.asks));
+  if (known !== undefined) outlineReferences.set(root, known);
+  return known !== undefined;
+}
+
+/** Notes the addresses the tree of `reads` cites (`treeReferences`), which the batched names read
+ *  is given: the name walk, which the page runs in a task of its own after the tree's build. */
+function noteOutlineReferences(reads: IssueTreeReads): void {
+  const root = builtTree(reads);
+  if (!outlineReferences.has(root)) outlineReferences.set(root, treeReferences(root, reads.asks));
+}
+
+/** The tree of `reads` and the addresses it cites, at once (`buildOutline`). */
+function prepareOutline(reads: IssueTreeReads): void {
+  if (!buildOutline(reads)) noteOutlineReferences(reads);
 }
 
 /** Construction listens to the same cache keys as the hook's observers. */
@@ -294,6 +310,17 @@ function cachedBuiltTree(reads: IssueTreeReads): TreeNode | undefined {
     ?.root;
 }
 
+/** The tree built for `reads` once the name walk has noted what it cites
+ *  (`noteOutlineReferences`): the tree a reader may be handed. Undefined between the build and
+ *  the walk, so a render that comes between them - another read's, the owner's publication to
+ *  the rest of the page - hands out no tree whose names read is not yet asked. */
+function walkedTree(reads: IssueTreeReads): TreeNode | undefined {
+  const root = cachedBuiltTree(reads);
+  return reads.tree === undefined || (root !== undefined && outlineReferences.has(root))
+    ? root
+    : undefined;
+}
+
 /**
  * `buildIssueTree` of `reads`, built once for one set of reads: a tree already built from the
  * same answer of the tree read and the same other reads, each the same object, is that tree.
@@ -313,10 +340,11 @@ function builtTree(reads: IssueTreeReads): TreeNode {
   return root;
 }
 
-/** Build from the latest cache inputs in a task of its own. Publish in a separate
- *  task, so React can draw without sharing a task with the build. A cache hit draws
- *  without waiting, including when the reader returns to Conversation. While
- *  replacing the tree, keep the last result for this outline.
+/** Build from the latest cache inputs in a task of its own, walk the built tree for the addresses
+ *  it cites in the next (`noteOutlineReferences`), and publish in a third, so React draws without
+ *  sharing a task with the build or the walk, and no one task holds both. A cache hit draws
+ *  without waiting, including when the reader returns to Conversation. While replacing the tree,
+ *  keep the last result for this outline.
  *
  *  A standalone slot (`standalone`, no tree owner above it) builds in its layout effect instead,
  *  in the commit that receives a read: from its mount where it mounted on an answer already held
@@ -345,7 +373,7 @@ function useBuiltTree(
     readonly root: TreeNode;
     readonly source: TreeAnswer | undefined;
   }>(undefined);
-  const cached = cachedBuiltTree(reads);
+  const cached = walkedTree(reads);
   const renderedCached = useRef<TreeNode | undefined>(undefined);
   renderedCached.current = cached;
   if (cached !== undefined) last.current = { keys, root: cached, source: reads.tree };
@@ -366,6 +394,12 @@ function useBuiltTree(
     if (layoutBuilds) return;
     let cancelBuild: (() => void) | undefined;
     let cancelPublish: (() => void) | undefined;
+    // A state update can draw at the checkpoint of the task that asks for it, so the publication
+    // is a task of its own.
+    const publish = () => {
+      cancelPublish?.();
+      cancelPublish = askForTask(() => flushSync(() => setPublished((count) => count + 1)));
+    };
     const build = () => {
       if (cancelBuild !== undefined) return;
       cancelBuild = askForTask(() => {
@@ -380,22 +414,39 @@ function useBuiltTree(
             : rendered.targets === undefined
               ? latest
               : { ...latest, targets: rendered.targets };
-        let builtAny = false;
-        if (candidate !== undefined && cachedBuiltTree(candidate) === undefined) {
-          prepareOutline(candidate);
-          builtAny = true;
-        } else if (rendered.tree !== undefined && cachedBuiltTree(rendered) === undefined) {
-          // If the rendered reads differ from the cache (for example a disabled query or a held
-          // answer), build the rendered reads themselves so `cachedBuiltTree(rendered)` hits.
-          prepareOutline(rendered);
-          builtAny = true;
+        // If the rendered reads differ from the cache (for example a disabled query or a held
+        // answer), build the rendered reads themselves so `cachedBuiltTree(rendered)` hits.
+        const target =
+          candidate !== undefined && cachedBuiltTree(candidate) === undefined
+            ? candidate
+            : rendered.tree !== undefined && cachedBuiltTree(rendered) === undefined
+              ? rendered
+              : undefined;
+        if (target === undefined) {
+          // A tree built whose name walk was called off before it ran walks now.
+          const unwalked = [candidate, rendered].find(
+            (reads) => reads?.tree !== undefined && walkedTree(reads) === undefined
+          );
+          if (unwalked !== undefined) {
+            noteOutlineReferences(unwalked);
+            publish();
+            return;
+          }
+          // Only publish when another caller populated the shared cache since this hook last
+          // rendered; otherwise do not schedule another render.
+          if (walkedTree(rendered) !== renderedCached.current) publish();
+          return;
         }
-        // Only publish when a new tree was built or another caller populated the shared cache
-        // since this hook last rendered; otherwise do not schedule another render.
-        if (!builtAny && cachedBuiltTree(rendered) === renderedCached.current) return;
-        // A state update can draw at this task's microtask checkpoint. Publish separately.
-        cancelPublish?.();
-        cancelPublish = askForTask(() => flushSync(() => setPublished((count) => count + 1)));
+        if (buildOutline(target)) {
+          publish();
+          return;
+        }
+        // The name walk in a task of its own, then the publication.
+        cancelBuild = askForTask(() => {
+          cancelBuild = undefined;
+          noteOutlineReferences(target);
+          publish();
+        });
       });
     };
     const unsubscribe = client.getQueryCache().subscribe((event) => {
@@ -415,6 +466,7 @@ function useBuiltTree(
       cancelPublish?.();
     };
   }, [client, keys, latestReads, layoutBuilds]);
+  // Building, or built and not yet walked (`walkedTree`), which the next task does.
   const building = cached === undefined;
   useEffect(() => {
     if (building && !layoutBuilds) schedule.current?.();
@@ -746,6 +798,20 @@ export function useIssueTree(issue: IssueDetails, warmMount = false): IssueTreeV
       heldViews.current.views !== views)
   ) {
     heldViews.current = { keys: inputHashes, sources: withNames, views };
+  } else if (
+    built.building &&
+    heldViews.current !== undefined &&
+    heldViews.current.keys === inputHashes &&
+    heldViews.current.views !== views &&
+    views?.decisions === heldViews.current.views?.decisions &&
+    holdsPlanTask(views?.plan) === heldViews.current.sources.holdsPlanTask
+  ) {
+    // A filter's view answer that comes while the outline is built again for another read is
+    // published at once, over the tree the outline holds and the reads that tree was built from,
+    // so the view the reader pressed draws its first screen from it before that build. An answer
+    // that changes what the tree reads of it - the Plan view's plan tasks, which mark statements,
+    // or the decisions - waits for the build, as above.
+    heldViews.current = { ...heldViews.current, views };
   }
   const drawn = heldViews.current?.keys === inputHashes ? heldViews.current : undefined;
   const openingViewPending =

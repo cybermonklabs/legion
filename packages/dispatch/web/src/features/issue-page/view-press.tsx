@@ -9,7 +9,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
-import { askForTask, holdSlices } from "./drawn-in-slices";
+import { afterPaint, askForTask, holdSlices } from "./drawn-in-slices";
 import type { Preset } from "./page-words";
 import { readOut } from "./tree-read/tree-read";
 
@@ -22,25 +22,31 @@ import { readOut } from "./tree-read/tree-read";
  * what the page holds, a read the load sent and that is still out included, which the view draws
  * as loading itself. Where one is out, the press's commit has the control read as current and the
  * view's place read busy, with
- * the view the press left still drawn as it was and drawing no further row (`holdSlices`); the
- * address moves once the last of those reads answers or is refused, in the task of that answer:
- * one commit takes the busy mark off and the next draws the view (`flushSync`), with no frame
- * painted between them. A press on another view while one waits replaces it, and the answer the
- * first waited on is kept for its view.
+ * the view the press left still drawn as it was and drawing no further row (`holdSlices`). Once
+ * the press's frame is painted, or once those reads answer where they answer first, the view the
+ * press left goes off the page in a task of its own (`ViewPress.left`), its place still busy, and
+ * the next task moves the address: one commit takes the busy mark off and draws the view
+ * pressed, in its loading state while its read is out, or its first screen where the read has
+ * answered. So taking the old view down and drawing the new one are never one task. A press on
+ * another view while one waits replaces it, and the answer the first waited on is kept for its
+ * view.
  *
  * So no render of the view is split over tasks, between which a read's answer or a slice would
- * start it again, and the commit that draws the view is the one that takes the view it left off
- * the screen (`slots/stage.tsx`' `StageViews`). The view pressed, while one waits, is a store of
- * its own rather than a context's value: only the view row and the stage's box read it
- * (`usePendingView`), and a change of it makes React walk no other part of the page.
+ * start it again. The view pressed and whether the view left is off, while one waits, are a store
+ * of their own rather than a context's value: only the view row and the stage's box read them
+ * (`usePendingView`, `useViewLeft`), and a change of them makes React walk no other part of the
+ * page.
  */
 export interface ViewPress {
   /** Turns `to` on by `move`, which moves the address: at once where none of `sent`, the reads the
-   *  press sent, is out with no answer held, and else once they answer. */
+   *  press sent, is out with no answer held, and else in two tasks after the press's frame. */
   readonly press: (to: Preset, move: () => void, sent: readonly Query[]) => void;
   /** The view a press turned on while it waits on that view's reads; undefined while none does. */
   readonly pending: () => Preset | undefined;
-  /** Calls `listener` each time `pending` changes; answers how to stop. */
+  /** Whether the view a waiting press left is off the page, its place empty until the address
+   *  moves. */
+  readonly left: () => boolean;
+  /** Calls `listener` each time `pending` or `left` changes; answers how to stop. */
   readonly subscribe: (listener: () => void) => () => void;
 }
 
@@ -68,20 +74,30 @@ export function ViewPressProvider({ children }: { children: ReactNode }): ReactN
 /** A press and its one wait. */
 function pagePress(queryClient: QueryClient): PagePress {
   let pending: Preset | undefined;
+  let left = false;
   let stopWait: (() => void) | undefined;
   const listeners = new Set<() => void>();
+  const tell = () => {
+    for (const listener of listeners) listener();
+  };
   // While a press waits, the view it left draws no row (`holdSlices`).
   const setPending = (to: Preset | undefined) => {
     if (to === pending) return;
     pending = to;
     holdSlices(to !== undefined);
-    for (const listener of listeners) listener();
+    tell();
+  };
+  const setLeft = (off: boolean) => {
+    if (off === left) return;
+    left = off;
+    tell();
   };
   const stop = () => {
     stopWait?.();
     stopWait = undefined;
   };
   const press: PagePress = {
+    left: () => left,
     pending: () => pending,
     press: (to, move, sent) => {
       stop();
@@ -90,6 +106,7 @@ function pagePress(queryClient: QueryClient): PagePress {
         if (pending !== undefined) {
           flushSync(() => {
             setPending(undefined);
+            setLeft(false);
             move();
           });
         } else {
@@ -98,32 +115,42 @@ function pagePress(queryClient: QueryClient): PagePress {
         return;
       }
       setPending(to);
-      let moved = false;
-      const finish = () => {
-        if (moved) return;
-        moved = true;
-        stop();
+      let leaving = false;
+      // The view pressed, in the task after the one that took the view left off the page.
+      const arrive = () => {
+        leaving = true;
+        stopWait = undefined;
         flushSync(() => {
           setPending(undefined);
+          setLeft(false);
           move();
         });
       };
-      // After the press's own loading frame paints, unmount the old view and mount the new view
-      // in its loading state while the read is still in flight, so neither the old view's unmount
-      // nor its remaining work runs after the read answers. If the read answers before that frame,
-      // move immediately in the task of that answer.
-      let cancelTask: (() => void) | undefined;
-      const frame = window.requestAnimationFrame(() => {
-        cancelTask = askForTask(finish);
-      });
+      // The view left goes off the page in a task of its own, its place still busy, and the view
+      // pressed is drawn in the next, ahead of the page's work asked for at background priority -
+      // its publication of the tree, its slices, its counts.
+      const leave = () => {
+        if (leaving) return;
+        leaving = true;
+        stop();
+        flushSync(() => setLeft(true));
+        stopWait = askForTask(arrive);
+      };
+      // Once the press's own loading frame is painted, take the old view down and then mount the
+      // new view in its loading state while the read is still in flight, so neither the old view's
+      // unmount nor its remaining work runs after the read answers. If the read answers before
+      // that frame, take it down in the task of that answer. A read refused before that frame
+      // leaves the view no rows to draw, only its failed read's line, so the address moves at
+      // once in the task of the refusal, as it did before the split.
+      const cancelLeave = afterPaint(leave);
       const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
         if (event.type !== "updated" || !out.includes(event.query) || out.some(readOut)) return;
         stop();
-        queueMicrotask(finish);
+        const refused = out.some((query) => query.state.data === undefined);
+        queueMicrotask(refused ? () => leaving || arrive() : leave);
       });
       stopWait = () => {
-        window.cancelAnimationFrame(frame);
-        cancelTask?.();
+        cancelLeave();
         unsubscribe();
       };
     },
@@ -149,5 +176,13 @@ export function usePendingView(): Preset | undefined {
   return useSyncExternalStore(press?.subscribe ?? NO_SUBSCRIPTION, press?.pending ?? NO_PENDING);
 }
 
+/** Whether the view a waiting press left is off the page (`ViewPress.left`), so the stage's box
+ *  draws nothing in its place; false outside the page. */
+export function useViewLeft(): boolean {
+  const press = useViewPress();
+  return useSyncExternalStore(press?.subscribe ?? NO_SUBSCRIPTION, press?.left ?? NOT_LEFT);
+}
+
 const NO_SUBSCRIPTION = () => () => {};
 const NO_PENDING = () => undefined;
+const NOT_LEFT = () => false;

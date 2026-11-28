@@ -706,3 +706,17 @@ export function askForTask(run: () => void, priority: TaskPriority = "user-visib
   const timer = setTimeout(run, 0);
   return () => clearTimeout(timer);
 }
+
+/** Calls `then` once the browser has painted the frame it draws next: in the task that frame's
+ *  animation callback queues, as the page reads a frame painted, and ahead of the page's work
+ *  asked for at background priority (`askForTask`). Answers how to call it off. */
+export function afterPaint(then: () => void): () => void {
+  let painted: number | undefined;
+  const frame = requestAnimationFrame(() => {
+    painted = window.setTimeout(then, 0);
+  });
+  return () => {
+    cancelAnimationFrame(frame);
+    window.clearTimeout(painted);
+  };
+}

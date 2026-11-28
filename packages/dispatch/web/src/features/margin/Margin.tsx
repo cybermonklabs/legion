@@ -264,7 +264,10 @@ function DetailsDrawer({
   setOpenNow.current = setOpen;
   // The phone's sheet covers the page, so it is a dialog: the focus stays inside it, the page
   // under it does not scroll, and Escape closes it and gives the focus back (`useDialog`).
+  // Its focus is asked for in the frame after the commit that opens it (`focusInFrame`): focused
+  // in that commit, the sheet laid its whole panel out inside the press's task.
   const sheet = useDialog<HTMLElement>({
+    focusInFrame: true,
     initialFocusRef: closeButton,
     onClose: () => setOpenNow.current(false),
     open: open && isPhoneViewport,

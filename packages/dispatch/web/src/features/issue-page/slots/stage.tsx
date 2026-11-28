@@ -16,6 +16,7 @@ import { focusOnDocument } from "../../shell/roving";
 import { ChildrenSection } from "../children-section";
 import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
+import { afterPaint } from "../drawn-in-slices";
 import { giveFirstFocus } from "../first-focus";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -26,7 +27,7 @@ import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
 import { useTellViewDrawn, type ViewDrawnTeller } from "../tree-read/tree-read";
 import { ViewReadProvider } from "../tree-read/view-read";
-import { usePendingView } from "../view-press";
+import { usePendingView, useViewLeft } from "../view-press";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
 import { useDroppedAddress, useFollowing } from "./following";
@@ -462,7 +463,9 @@ export function ViewStage({
  * page's body, where nothing says where the reader was. While a press on the view row waits on
  * the reads of the view it turned on (`ViewPress`), the box reads busy, from the press's own
  * commit to the commit that draws that view in its place: the box alone draws again for it, and
- * not the slot it holds.
+ * not the slot it holds. From the task that takes the view the press left off the page to that
+ * commit, the box draws nothing in its place (`useViewLeft`), so the old view's take-down and the
+ * new view's drawing are two tasks, and no view is kept hidden in the document.
  *
  * Inside the stage (`FirstRowDrawn`), the box watches for the slot's first row until it holds
  * one, and tells the stage's mark that its view has drawn once the browser has painted it. Once
@@ -481,6 +484,7 @@ function StageBox({
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
   const pressed = usePendingView() !== undefined;
+  const left = useViewLeft();
   const teller = useContext(FirstRowDrawn);
   useEffect(() => {
     const stage = box.current;
@@ -519,7 +523,7 @@ function StageBox({
   return (
     <FailedLineLeaves.Provider value={lineLeaves}>
       <div aria-busy={pressed || undefined} className="contents" ref={box}>
-        {children}
+        {left ? null : children}
       </div>
     </FailedLineLeaves.Provider>
   );
@@ -533,19 +537,6 @@ const VIEW_ROW = "[data-node-row]";
  *  the box may stop watching. Undefined outside a stage (`ViewStage` drawn alone), where the box
  *  watches for nothing. */
 const FirstRowDrawn = createContext<ViewDrawnTeller | undefined>(undefined);
-
-/** Calls `then` once the browser has painted the frame it draws next: in the task that frame's
- *  animation callback queues, as the page reads a frame painted. Answers how to call it off. */
-function afterPaint(then: () => void): () => void {
-  let painted: number | undefined;
-  const frame = requestAnimationFrame(() => {
-    painted = window.setTimeout(then, 0);
-  });
-  return () => {
-    cancelAnimationFrame(frame);
-    window.clearTimeout(painted);
-  };
-}
 
 /** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame
  *  where it still holds the focus (`bringOnScreen`). The frame is for the chord that opens a view:

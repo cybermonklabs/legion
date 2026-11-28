@@ -11,6 +11,7 @@ import { IssueOutlinePage } from "./IssueOutlinePage";
 import { presetPath } from "./issue-address";
 import * as issueTreeModule from "./issue-tree";
 import { TWO_THREADS } from "./outline-fixtures";
+import * as rowReferences from "./row-references";
 import { type TasksByHand, tasksByHand } from "./slices-fixtures";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
@@ -57,11 +58,40 @@ let tasks: TasksByHand;
 let treeRead: Held<TreeAnswer>;
 let commentsRead: Held<Comment[]>;
 let builds: ReturnType<typeof spyOn<typeof issueTreeModule, "buildIssueTree">>;
+/** Every call of the name walk's reader of a text's citations, which only the walk makes
+ *  (`useIssueTree.ts`'s `treeReferences`). */
+let walks: ReturnType<typeof spyOn<typeof rowReferences, "citedReferences">>;
 
 /** How many `buildIssueTree` calls built from an answered tree read (ignoring the empty issue
  *  placeholder built before the tree read answered). */
 function treeBuilds(): number {
   return builds.mock.calls.filter(([reads]) => reads.tree !== undefined).length;
+}
+
+/** What one task the page asked for did. */
+interface TaskRan {
+  readonly built: boolean;
+  readonly drew: boolean;
+  readonly walked: boolean;
+}
+
+/** Runs the tasks held one at a time until one draws the outline's rows, and answers what each
+ *  did: whether it built a tree, walked one for the addresses it cites, and drew the rows. The
+ *  tasks the page asks for beside these - its publication of the tree to the slots beside the
+ *  stage (`issue-tree-owner.tsx`) - are among them. */
+async function tasksToTheRows(view: RenderResult): Promise<TaskRan[]> {
+  const ran: TaskRan[] = [];
+  while (ran.length < 20 && view.container.querySelector(OUTLINE_ROW) === null) {
+    const built = treeBuilds();
+    const walked = walks.mock.calls.length;
+    if (!(await tasks.runNext())) break;
+    ran.push({
+      built: treeBuilds() > built,
+      drew: view.container.querySelector(OUTLINE_ROW) !== null,
+      walked: walks.mock.calls.length > walked,
+    });
+  }
+  return ran;
 }
 
 beforeEach(() => {
@@ -78,6 +108,7 @@ beforeEach(() => {
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
   ];
   builds = spyOn(issueTreeModule, "buildIssueTree");
+  walks = spyOn(rowReferences, "citedReferences");
   restoreViewport = stubViewport(DESKTOP_WIDTH);
   tasks = tasksByHand();
 });
@@ -86,6 +117,7 @@ afterEach(() => {
   tasks.restore();
   restoreViewport();
   builds.mockRestore();
+  walks.mockRestore();
   for (const stub of stubs.reverse()) stub.mockRestore();
 });
 
@@ -104,8 +136,9 @@ function drawPage(preset: "conversation" | "spec" = "conversation"): RenderResul
 }
 
 // When the tree read answers, the render that receives the answer builds no tree and draws no
-// row; a task of its own builds the tree, and a separate task commits the first screen of rows
-// with zero `buildIssueTree` calls inside that commit.
+// row; a task of its own builds the tree, the next walks it for the addresses it cites (the
+// batched names read's set), and a third commits the first screen of rows with zero
+// `buildIssueTree` calls inside that commit.
 test("the tree is built in a task of its own, and the first drawing's commit builds none", async () => {
   const view = drawPage();
   await act(async () => commentsRead.resolve([...TWO_THREADS]));
@@ -123,27 +156,38 @@ test("the tree is built in a task of its own, and the first drawing's commit bui
   ).toBeNull();
   expect(tasks.pending(), "no task was scheduled to build the tree").toBeGreaterThan(0);
 
-  // Task 1: builds the tree outside React's render, without drawing the first screen in the same
-  // task.
+  // Task 1: builds the tree outside React's render, without drawing the first screen or walking
+  // the tree for the addresses it cites in the same task.
+  const walkedBefore = walks.mock.calls.length;
   expect(await tasks.runNext(), "the build task did not run").toBe(true);
   expect(treeBuilds(), "the build task did not build the tree once").toBe(1);
   expect(
     view.container.querySelector(OUTLINE_ROW),
     "the first screen was drawn inside the same task that built the tree"
   ).toBeNull();
+  expect(walks.mock.calls.length, "the build task walked the tree for the addresses it cites").toBe(
+    walkedBefore
+  );
 
-  // Task 2: commits the first screen from the already-built tree, calling `buildIssueTree` zero
-  // times in the commit.
-  const buildsBeforeCommit = treeBuilds();
-  expect(await tasks.runNext(), "the publish task did not run").toBe(true);
+  // The tasks after it, to the one that draws the rows: the next walks the built tree for the
+  // addresses it cites, building no tree and drawing no row, and the one that commits the first
+  // screen from the already-built tree calls `buildIssueTree` zero times in the commit.
+  const after = await tasksToTheRows(view);
   expect(
-    view.container.querySelectorAll(OUTLINE_ROW).length,
+    after.at(-1)?.drew,
     "the first screen of rows did not draw once the built tree was published"
-  ).toBeGreaterThan(0);
-  expect(
-    treeBuilds() - buildsBeforeCommit,
-    "the commit that drew the first screen called buildIssueTree"
-  ).toBe(0);
+  ).toBe(true);
+  expect(after.at(-1)?.built, "the commit that drew the first screen called buildIssueTree").toBe(
+    false
+  );
+  const walk = after.findIndex((task) => task.walked);
+  expect(walk, "no task walked the built tree for the addresses it cites").toBeGreaterThan(-1);
+  expect(after[walk], "the name walk's task built a tree or drew the rows").toEqual({
+    built: false,
+    drew: false,
+    walked: true,
+  });
+  expect(treeBuilds(), "a task after the build task built the tree again").toBe(1);
 });
 
 // Two reads answering before the build task runs coalesce into one tree build for the combined
@@ -156,13 +200,14 @@ test("two reads answering before the build task runs build the tree once for the
   await act(async () => commentsRead.resolve([...TWO_THREADS]));
   expect(treeBuilds(), "buildIssueTree ran before the build task").toBe(0);
 
-  // Build task runs once for the combined reads, then publish task draws the rows with 0 builds.
+  // Build task runs once for the combined reads; the tasks after it, the name walk's and the one
+  // that draws the rows among them, build none.
   await tasks.runNext();
   expect(treeBuilds(), "two reads before the build task built more than one tree").toBe(1);
-  const beforeCommit = treeBuilds();
-  await tasks.runNext();
+  const after = await tasksToTheRows(view);
+  expect(after.at(-1)?.drew).toBe(true);
   expect(view.container.querySelectorAll(OUTLINE_ROW).length).toBeGreaterThan(0);
-  expect(treeBuilds() - beforeCommit).toBe(0);
+  expect(after.filter((task) => task.built)).toEqual([]);
 });
 
 // A slot drawn with no tree owner above it keeps `useIssueTree`'s contract: it builds its tree in
