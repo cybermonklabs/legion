@@ -2,6 +2,7 @@
 # Sourced by the `.test.sh` harnesses beside it (release-push, check-bun-version): the counters,
 # the per-case reporter, and the two predicates they both spell the same way. Each harness keeps
 # its own fixtures — what they share is only how a case is reported and counted.
+# (INFRA-6293 tester scratch: a comment that selects every harness step at the merge base; never merged.)
 #
 # A harness sources this, runs its cases with `check <description> <true|false>`, and ends with
 # `summary <what was tested>`, which prints the tally and exits non-zero if anything failed.
