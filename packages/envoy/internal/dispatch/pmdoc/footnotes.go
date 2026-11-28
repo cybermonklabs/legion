@@ -23,8 +23,17 @@ import (
 // left is one the document defines outside block, so block's markdown read apart from the
 // document reads a call of it as text unless a definition of it stands beside that markdown
 // (WithStandInDefinitions).
+//
+// It walks block once, so its time grows with the calls block holds, not with their square: a
+// set of the labels called so far leaves out a repeat, byte for byte, as the walk meets it, and a
+// set of the keys of block's own definitions leaves out after the walk each label called whose key
+// is among them, every label folded by the one keyer the reading makes (footnoteKeyer).
 func CalledFootnoteLabels(block *Node) []string {
-	var called, defined []string
+	var (
+		called        []string
+		seen, defined map[string]struct{}
+		keyer         footnoteKeyer
+	)
 	Walk(block, func(node *Node) bool {
 		if node.Type != "footnote_reference" && node.Type != "footnote_definition" {
 			return true
@@ -33,9 +42,18 @@ func CalledFootnoteLabels(block *Node) []string {
 		switch {
 		case !ok:
 		case node.Type == "footnote_definition":
-			defined = append(defined, footnoteLabelKey(label))
-		case !slices.Contains(called, label):
-			called = append(called, label)
+			if defined == nil {
+				defined = map[string]struct{}{}
+			}
+			defined[keyer.key(label)] = struct{}{}
+		default:
+			if _, repeated := seen[label]; !repeated {
+				if seen == nil {
+					seen = map[string]struct{}{}
+				}
+				seen[label] = struct{}{}
+				called = append(called, label)
+			}
 		}
 		return true
 	})
@@ -43,7 +61,8 @@ func CalledFootnoteLabels(block *Node) []string {
 		return called
 	}
 	return slices.DeleteFunc(called, func(label string) bool {
-		return slices.Contains(defined, footnoteLabelKey(label))
+		_, own := defined[keyer.key(label)]
+		return own
 	})
 }
 
