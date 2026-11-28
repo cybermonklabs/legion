@@ -157,6 +157,22 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
     pattern: "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
     commands: ["architecture-sync"],
   },
+  // `dispatch spec-source --action add` names a spec source and `--action remove` takes it off.
+  {
+    method: "PUT",
+    pattern: "/api/v1/projects/{key}/spec-sources/{owner}/{repo}",
+    commands: ["spec-source"],
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/v1/projects/{key}/spec-sources/{owner}/{repo}",
+    commands: ["spec-source"],
+  },
+  {
+    method: "POST",
+    pattern: "/api/v1/issues/{key}/spec-import-level",
+    commands: ["spec-import-level"],
+  },
 ];
 
 /** Each row of {@link WRITE_ROUTES} in its order, with its pattern split at `/` once, here. */

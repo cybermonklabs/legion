@@ -2408,6 +2408,10 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   // The route, and the older route where Dispatch has no route for the newer one.
   syncArchitectureSources: "architecture-sync",
   syncArchitectureSource: "architecture-sync",
+  // `dispatch spec-source --action add` and `--action remove`, and `dispatch spec-import-level`.
+  putSpecSource: "spec-source",
+  deleteSpecSource: "spec-source",
+  importSpecLevel: "spec-import-level",
   // The host plugins' reply to a delivery. No command calls it, but its reply to a message is the
   // request that `messageReply` sends.
   deliveryReply: "message",

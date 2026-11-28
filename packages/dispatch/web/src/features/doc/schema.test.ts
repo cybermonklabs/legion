@@ -49,12 +49,12 @@ function withoutAttributes(schema: BlockSchema, type: string, names: string[]): 
   };
 }
 
-/** The manifest without the elements this build introduces, those read from its own version: the
- *  issue tree's criterion block, the attributes the tree adds to the requirement, the plan task and
- *  the check, and the issue item of a plan task's `needs`. */
-function withoutTheTreeElements(schema: BlockSchema): BlockSchema {
-  const older = (element: BlockElementVersions | undefined) =>
-    (element?.since ?? 1) < compiledBlockSchema.version;
+/** The manifest without the elements read from version `from` or later, as the build before that
+ *  version declares it: from 9, the issue tree's criterion block, the attributes the tree adds to
+ *  the requirement, the plan task and the check, and the issue item of a plan task's `needs`; from
+ *  10, the component and conclusion blocks and the change request's attributes too. */
+function withoutElementsSince(schema: BlockSchema, from: number): BlockSchema {
+  const older = (element: BlockElementVersions | undefined) => (element?.since ?? 1) < from;
   return {
     ...schema,
     types: schema.types.filter(older).map((type) => ({
@@ -115,14 +115,17 @@ test("the compiled manifest is the page's own, and it creates everything it read
 // Decisions, readings and shaped pointers are read from version 7 and created from version 8;
 // the issue tree's criterion block, its `parent`, `serves`, `size`, `skills` and `docs`
 // attributes and the issue item kind of a plan task's `needs` are read and created from version
-// 9. This build's manifest is version 9, so it creates all of them and its R is 9. The build of
-// version 8 creates decisions, readings and shaped pointers and none of version 9's elements: the
-// same manifest at version 8 has R 7, the version they were introduced in. The build of version
-// 7, slice 2's, the one that reads them first, reads them and creates none: the same manifest at
-// version 7 leaves them out of R, which stands where the same manifest without them has it, and
-// at version 6 R is 5 as well. The check block's `subject` and `program` are read from version 6
-// and created from version 10, one above this build's: this manifest reads them and creates
-// neither, so they count toward no R below 10, and the manifest raised to 10 counts them.
+// 9; the component and conclusion blocks and the change request's attributes are read and created
+// from version 10. This build's manifest is version 10, so it creates all of them and its R is 10.
+// The build of version 9 creates the issue tree's elements and none of version 10's: the same
+// manifest at version 9 has R 9. The build of version 8 creates decisions, readings and shaped
+// pointers and none of version 9's elements: the same manifest at version 8 has R 7, the version
+// they were introduced in. The build of version 7, slice 2's, the one that reads them first, reads
+// them and creates none: the same manifest at version 7 leaves them out of R, which stands where
+// the same manifest without them has it, and at version 6 R is 5 as well. The check block's
+// `subject` and `program` are read from version 6 and created from version 11, one above this
+// build's: this manifest reads them and creates neither, so they count toward no R below 11, and
+// the manifest raised to 11 counts them.
 test("the compiled manifest reads the new blocks before it creates them, and reads check.subject and check.program without creating them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
@@ -137,14 +140,15 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
     "component",
     "conclusion",
   ]);
-  expect(compiledBlockSchema.version).toBe(9);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(9);
+  expect(compiledBlockSchema.version).toBe(10);
+  expect(schemaCreatable(compiledBlockSchema)).toBe(10);
+  expect(schemaCreatable({ ...compiledBlockSchema, version: 9 })).toBe(9);
   expect(schemaCreatable({ ...compiledBlockSchema, version: 8 })).toBe(7);
   expect(schemaCreatable({ ...compiledBlockSchema, version: 7 })).toBe(5);
   expect(schemaCreatable({ ...compiledBlockSchema, version: 6 })).toBe(5);
   const version = compiledBlockSchema.version;
-  const createsFirst: BlockSchema = { ...compiledBlockSchema, version: version - 1 };
-  const readsFirst: BlockSchema = { ...compiledBlockSchema, version: version - 2 };
+  const createsFirst: BlockSchema = { ...compiledBlockSchema, version: 8 };
+  const readsFirst: BlockSchema = { ...compiledBlockSchema, version: 7 };
   const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
   const decision = compiledBlockSchema.types.find(({ name }) => name === "decision");
   const reading = compiledBlockSchema.types.find(({ name }) => name === "reading");
@@ -190,7 +194,7 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
   const raised = raisedByOne(compiledBlockSchema);
   expect(schemaCreatable(raised)).toBe(version);
   // Only once every element read from a later version than the marks is gone does R show them.
-  const beforeTheNewBlocks = withoutTheNewBlocks(withoutTheTreeElements(raised));
+  const beforeTheNewBlocks = withoutTheNewBlocks(withoutElementsSince(raised, 9));
   expect(schemaCreatable(withoutTheMarks(beforeTheNewBlocks))).toBeLessThan(
     schemaCreatable(beforeTheNewBlocks)
   );
