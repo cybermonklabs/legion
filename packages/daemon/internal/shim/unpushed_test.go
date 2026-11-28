@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
+
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -427,7 +429,7 @@ func recordingGit(t *testing.T) string {
 		}
 	}
 	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'" + record + "'\nexec '" + real + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording git: %v", err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

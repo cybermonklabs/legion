@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/rest"
 
+	"github.com/sjawhar/envoy/testexec"
+
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -143,7 +145,7 @@ func TestKubeClientCallsTheExecCommandOfItsUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\nprintf 'called\\n' >>'" + calls + "'\ncat <<'CREDENTIAL'\n" + string(credential) + "\nCREDENTIAL\n"
-	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+	if err := testexec.WriteFile(command, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the credential command: %v", err)
 	}
 	kubeconfig := filepath.Join(dir, "kubeconfig")
