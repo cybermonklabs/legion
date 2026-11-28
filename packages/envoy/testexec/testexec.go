@@ -36,8 +36,8 @@ func WriteFile(name string, data []byte, perm os.FileMode) error {
 // the run's error. A run refused as busy, whose error is ETXTBSY, is counted and the trials go on;
 // any other error fails the test at once, naming the run. At the end the test fails if any run was
 // refused, naming how many and the first refusal's error. Nothing is run again. A machine with no
-// true command fails the test, and one whose kernel runs a program held open for writing skips or
-// fails it as busyRunVerdict says, since no run there can meet the fault.
+// true command fails the test, and so does one whose kernel runs a program held open for writing,
+// as busyRunVerdict says, since no run there can meet the fault.
 func RunsBeside(t testing.TB, runs int, run func(i int) error) {
 	t.Helper()
 	forkBeside(t)
@@ -73,11 +73,8 @@ func forkBeside(t testing.TB) {
 	if err != nil {
 		t.Fatalf("no true command to fork beside the test: %v", err)
 	}
-	switch skip, fail := busyRunVerdict(runHeldOpen(t), os.Getenv("GITHUB_ACTIONS") == "true"); {
-	case fail != "":
+	if fail := busyRunVerdict(runHeldOpen(t)); fail != "" {
 		t.Fatal(fail)
-	case skip != "":
-		t.Skip(skip)
 	}
 	var stop atomic.Bool
 	var forks sync.WaitGroup
@@ -94,29 +91,24 @@ func forkBeside(t testing.TB) {
 	})
 }
 
-// busyRunVerdict says whether a test of RunsBeside runs, skips or fails, from answer, the error of
-// a run of a program the process held open for writing, where ci says GITHUB_ACTIONS is set. It
-// answers both empty to run the test, or the reason to skip or to fail it, saying what the run
-// answered. ETXTBSY runs the test: the kernel refuses such a run, as Linux does every time. A run
-// (nil) means no run of the test can meet the fault: the test skips, as under gVisor, except under
-// GITHUB_ACTIONS, where it fails, since CI's runners refuse such a run and one that does not is a
-// broken runner, never a green job with the proof gone from it. Under gVisor in a build pod on
-// 2026-11-23, the five daemon fork tests passed with the fault present. Any other answer, such as
-// EACCES from a TMPDIR mounted noexec or ENOENT from a machine with no /bin/sh, fails the test.
-func busyRunVerdict(answer error, ci bool) (skip, fail string) {
-	const (
-		ran   = "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, "
-		blind = "so no run of this test can meet the fault it looks for"
-	)
+// busyRunVerdict says whether a test of RunsBeside runs or fails, from answer, the error of a run
+// of a program the process held open for writing. It answers empty to run the test, or the reason
+// to fail it, saying what the run answered. ETXTBSY runs the test: the kernel refuses such a run,
+// as Linux does every time. A run (nil) means no run of the test can meet the fault, as under
+// gVisor, so the test fails, naming the native kernel it needs: a test that skipped there would
+// pass with the proof gone from it. Under gVisor in a build pod on 2026-11-23, the five daemon fork
+// tests passed with the fault present. Any other answer, such as EACCES from a TMPDIR mounted
+// noexec or ENOENT from a machine with no /bin/sh, fails the test too.
+func busyRunVerdict(answer error) (fail string) {
+	const blind = "so no run of this test can meet the fault it looks for"
 	switch {
 	case errors.Is(answer, syscall.ETXTBSY):
-		return "", ""
-	case answer == nil && ci:
-		return "", ran + blind + "; under GITHUB_ACTIONS that is a broken runner, not a test to skip"
+		return ""
 	case answer == nil:
-		return ran + "as gVisor does, " + blind, ""
+		return "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, as gVisor does, " +
+			blind + "; run it on a native Linux kernel, which refuses such a run (a build pod's --class build-nosandbox-spot)"
 	default:
-		return "", "a run of a program this process held open for writing answered " + answer.Error() +
+		return "a run of a program this process held open for writing answered " + answer.Error() +
 			", neither ETXTBSY nor a run, " + blind
 	}
 }

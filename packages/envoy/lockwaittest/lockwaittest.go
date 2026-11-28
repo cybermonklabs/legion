@@ -20,8 +20,7 @@
 // 45206462019); how far into its wait that read fell was not measured.
 //
 // Any wait event reads nothing while a signal wakes its backend, a lock's or not: an idle holder's
-// Client/ClientRead too. A test that decides on one sample of a wait event reads it again, within
-// a bound, until it holds.
+// Client/ClientRead too.
 //
 // # The check
 //

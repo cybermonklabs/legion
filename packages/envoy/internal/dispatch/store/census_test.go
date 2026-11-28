@@ -19,7 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 var censusBase = fstest.MapFS{
@@ -1945,19 +1944,6 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 // A holder's refusal carries its diagnosis, read when the census refused: its state, transaction
 // start, xid, wait and query from pg_stat_activity, and every lock it holds from pg_locks. The
 // query is printed with its literals taken out, so a value it carries never reaches the report.
-//
-// The holder waits for its client, idle in its transaction, until the test ends, but its wait event
-// is not a fact it holds for the whole wait: a signal that wakes its backend (the process-signal
-// barrier a dropdb sends to every backend, as the tests beside this one drop their databases)
-// takes it out of the wait until it waits again, and Postgres, reading it then, answers its wait as
-// null. So the census runs through a relay (waitRelay) that keeps the wait Postgres answered the
-// census's diagnosis query, as Postgres sent it, and the refusal must print that wait: the wait for
-// the client where Postgres answered it, none where Postgres answered null. Only a census whose
-// diagnosis Postgres answered with no wait is taken again: Postgres's answer, which no census code
-// writes or moves, says the holder was out of its wait when the census read it. Every census the
-// row reads is held to everything else: the refusal, the holder's state, transaction start, query
-// and locks, which a wake does not change, and a report that prints no literal of the holder's
-// query, awake or asleep.
 func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1976,61 +1962,29 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	if _, err := held.Exec(ctx, "select count(*) from things where kind = '"+sentinel+"'"); err != nil {
 		t.Fatal(err)
 	}
-	relay, relayed := relayWaits(t, url, sentinel)
 	time.Sleep(1100 * time.Millisecond)
+	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
 	pid := "pid " + strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
-	steady := []string{
+	got := refusals(report)
+	if len(got) != 1 {
+		t.Fatalf("refusals = %v, want the one old holder", got)
+	}
+	for _, want := range []string{
 		"has held a lock on things for ",
 		"; diagnosis of " + pid + ", read when refused: state idle in transaction, xact_start 20",
-		", backend_xid none, wait_event ",
-		", query \"select count(*) from things where kind = ?\"; its locks: ",
+		", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: ",
 		"relation things AccessShareLock granted",
 		"virtualxid ExclusiveLock granted",
+	} {
+		if !strings.Contains(got[0], want) {
+			t.Errorf("refusal lacks %q:\n%s", want, got[0])
+		}
 	}
-	reads, unwaited := 0, 0
-	refusal := testwait.UntilPolling(t, 100*time.Millisecond, "a census whose diagnosis of "+pid+" Postgres answered with its wait for its client", func() (string, bool) {
-		report, err := census(ctx, relayed, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
-		if err != nil {
-			t.Fatalf("census: %v", err)
-		}
-		reads++
-		answers := relay.take()
-		if out := reportText(report); strings.Contains(out, sentinel) {
-			t.Fatalf("census %d prints a literal of the holder's query:\n%s", reads, out)
-		}
-		got := refusals(report)
-		if len(got) != 1 {
-			t.Fatalf("census %d: refusals = %v, want the one old holder", reads, got)
-		}
-		for _, want := range steady {
-			if !strings.Contains(got[0], want) {
-				t.Fatalf("census %d: refusal lacks %q:\n%s", reads, want, got[0])
-			}
-		}
-		if len(answers) != 1 {
-			t.Fatalf("census %d: Postgres answered %d diagnoses of %s, %v, where the census reads one:\n%s", reads, len(answers), pid, answers, got[0])
-		}
-		switch answered := answers[0]; {
-		case answered.is("Client", "ClientRead"):
-			if !strings.Contains(got[0], ", wait_event Client/ClientRead, ") {
-				t.Fatalf("census %d: Postgres answered the census's diagnosis of %s with %s, and the refusal prints another wait:\n%s", reads, pid, answered, got[0])
-			}
-			return got[0], true
-		case answered.eventType == nil && answered.event == nil:
-			if !strings.Contains(got[0], ", wait_event none, ") {
-				t.Fatalf("census %d: Postgres answered the census's diagnosis of %s with %s, and the refusal prints a wait:\n%s", reads, pid, answered, got[0])
-			}
-			// A wake took the holder out of its wait as Postgres read it: the one case taken again.
-			unwaited++
-			return got[0], false
-		default:
-			t.Fatalf("census %d: Postgres answered the census's diagnosis of %s with %s, which is neither its wait for its client nor none:\n%s", reads, pid, answered, got[0])
-			return "", false
-		}
-	})
-	t.Logf("%d censuses read; Postgres answered %d of their diagnoses of %s with no wait, each taken again", reads, unwaited, pid)
-	if want := ", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: "; !strings.Contains(refusal, want) {
-		t.Errorf("refusal lacks %q:\n%s", want, refusal)
+	if out := reportText(report); strings.Contains(out, sentinel) {
+		t.Errorf("the report prints a literal of the holder's query:\n%s", out)
 	}
 }
 

@@ -1116,10 +1116,9 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 
 A Go test that waits for a backend to queue on a lock, or checks that one still waits, reads it
 through `lockwaittest.Waiting` or `WaitingOn` or `pg_blocking_pids`, never from `wait_event_type`
-or `wait_event`, which read nothing each time the waiter is woken. A test reads one sample of any
-wait event again, within a bound, until it holds. Envoy's `internal/textcheck` holds Envoy, Envoy's
-infra and the daemon to this; `lockwaittest`'s package documentation gives why and what was
-measured, and the check's doc comment the forms it names and misses.
+or `wait_event`, which read nothing each time the waiter is woken. Envoy's `internal/textcheck`
+holds Envoy, Envoy's infra and the daemon to this; `lockwaittest`'s package documentation gives why
+and what was measured, and the check's doc comment the forms it names and misses.
 
 ## A file a test runs
 
@@ -1138,9 +1137,10 @@ writes needs nothing. Each module's `internal/textcheck` holds its files to this
 read the test files of a package whose tests run one at a time, so a test there whose own
 goroutines start a command needs `testexec.WriteFile` by hand, as does a write in a form the guard
 does not see, and such a write in the code a deployment runs needs `programfile.Write`. A test of a
-place that writes such a file runs it with `testexec.RunsBeside`. The package docs say the rest:
-`programfile.Write` the writer's contract, `testexec.Unguarded` the forms the guard names and
-misses and what it leaves out, and `testexec.RunsBeside` when such a test skips.
+place that writes such a file runs it with `testexec.RunsBeside`, which fails on a kernel that runs a
+file held open for writing, as gVisor does: such a test needs a native Linux kernel. The package docs
+say the rest: `programfile.Write` the writer's contract, `testexec.Unguarded` the forms the guard
+names and misses and what it leaves out, and `testexec.RunsBeside` what it does on each kernel.
 
 ## A Go test that opens a NATS client
 

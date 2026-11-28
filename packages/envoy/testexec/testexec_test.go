@@ -28,8 +28,8 @@ func writeUnder(t *testing.T, root, path, body string) {
 // TestAnExecutableWrittenWhileTheProcessForksRuns is c-exec's guarantee: a program WriteFile writes,
 // and a test then runs, is not refused as busy (ETXTBSY) while the process forks, because WriteFile
 // takes the fork lock through programfile.Write. RunsBeside forks true beside 400 writes-and-runs and
-// fails on any ETXTBSY (it skips under gVisor, where the kernel refuses no such run, and fails under
-// GITHUB_ACTIONS if even the probe run is not refused, a broken runner). If WriteFile ever wrote with
+// fails on any ETXTBSY. It also fails where even the probe run is not refused, as under gVisor, since
+// no run there can meet the fault: the test needs a native Linux kernel. If WriteFile ever wrote with
 // os.WriteFile again, every fake command a test writes with it would be back in the flake this pull
 // request exists to remove, and nothing else would catch it: the lock's other holder, programfile.Write,
 // has its own guard, but WriteFile's use of it is guarded only here. This is the test c-exec names.
@@ -456,29 +456,27 @@ func TestUnguardedReadsTheModulePathAsGoDoes(t *testing.T) {
 	}
 }
 
-// RunsBeside runs its test only where a run of a busy program was refused with ETXTBSY: each row
-// is an answer such a run can give, and the verdict busyRunVerdict's doc gives it.
+// RunsBeside runs its test only where a run of a busy program was refused with ETXTBSY, and fails
+// it on any other answer, a run included: each row is an answer such a run can give, and the
+// verdict busyRunVerdict's doc gives it. No answer skips the test.
 func TestRunsBesideRunsOnlyWhereABusyRunIsRefused(t *testing.T) {
 	t.Parallel()
 	refused := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.ETXTBSY}
 	noexec := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.EACCES}
 	noShell := &os.PathError{Op: "fork/exec", Path: "/tmp/held-open", Err: syscall.ENOENT}
 	for _, row := range []struct {
-		what       string
-		answer     error
-		ci         bool
-		skip, fail string
+		what   string
+		answer error
+		fail   string
 	}{
-		{"refused", refused, false, "", ""},
-		{"refused, in CI", refused, true, "", ""},
-		{"ran", nil, false, "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, as gVisor does", ""},
-		{"ran, in CI", nil, true, "", "under GITHUB_ACTIONS that is a broken runner"},
-		{"noexec", noexec, false, "", "answered fork/exec /tmp/held-open: permission denied, neither ETXTBSY nor a run"},
-		{"no shell, in CI", noShell, true, "", "answered fork/exec /tmp/held-open: no such file or directory, neither ETXTBSY nor a run"},
+		{"refused", refused, ""},
+		{"ran", nil, "this kernel ran a program this process held open for writing rather than refuse it with ETXTBSY, as gVisor does, so no run of this test can meet the fault it looks for; run it on a native Linux kernel"},
+		{"noexec", noexec, "answered fork/exec /tmp/held-open: permission denied, neither ETXTBSY nor a run"},
+		{"no shell", noShell, "answered fork/exec /tmp/held-open: no such file or directory, neither ETXTBSY nor a run"},
 	} {
-		skip, fail := busyRunVerdict(row.answer, row.ci)
-		if (skip == "") != (row.skip == "") || !strings.Contains(skip, row.skip) || (fail == "") != (row.fail == "") || !strings.Contains(fail, row.fail) {
-			t.Errorf("%s: busyRunVerdict = skip %q, fail %q; want skip with %q, fail with %q", row.what, skip, fail, row.skip, row.fail)
+		fail := busyRunVerdict(row.answer)
+		if (fail == "") != (row.fail == "") || !strings.Contains(fail, row.fail) {
+			t.Errorf("%s: busyRunVerdict = %q; want a failure with %q", row.what, fail, row.fail)
 		}
 	}
 }
