@@ -2,7 +2,10 @@ import { SHELL_BAR_BOTTOM_PROPERTY } from "../shell/useShellBarBottom";
 
 /** Where the widened side panel starts (R1, A6): the top left corner of the room the shell's
  *  navigation leaves free, as CSS lengths. The panel runs from there to the window's right and
- *  bottom edges, so the navigation stays in view and reachable beside it or above it. */
+ *  bottom edges. A column of navigation beside it stays in view. A top bar above it scrolls with
+ *  the page, and the panel starts where that bar ends in the window, so once the page has
+ *  scrolled past the bar the panel starts at the window's top and covers the window, and the
+ *  bar's Menu is out of view until the person scrolls back or docks the panel. */
 export interface WideInset {
   readonly left: string;
   readonly top: string;
@@ -34,12 +37,13 @@ const BELOW_BAR: WideInset = { left: "0px", top: `var(${SHELL_BAR_BOTTOM_PROPERT
 
 /**
  * Where the side panel starts once the person widens it (A6), or undefined where it cannot widen
- * because it fills the window already. The panel always leaves the navigation reachable:
+ * because it fills the window already:
  *
  * - at the edge of a column of navigation beside the page: the icon rail where the frame draws it
  *   at any width from `md`, else, from `xl`, the sidebar, or the rail it folds to;
  * - below `xl` with no rail, where the navigation is a header and a drawer above the page, under
- *   the shell's top bar and across the whole width;
+ *   the shell's top bar and across the whole width, which is the window's top once the page has
+ *   scrolled past that bar (`WideInset`);
  * - nowhere below `sm`.
  */
 export function wideInsetOf({

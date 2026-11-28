@@ -1037,11 +1037,12 @@ function PaletteDialog({
   // Words that are an issue's key, or that name a hit, ask no model: their hit is the next step.
   const namesItsHit = ISSUE_KEY.test(searchText) || bestResults.length > 0;
   // Dispatch's short answer to the words (useGoingBar), which only reads, beside the hits, and
-  // the line on top Jev chooses for them.
+  // the line on top Jev chooses for them. A filing that is out holds the line's first row, under
+  // which no short answer is drawn (`doOrFilingOnTop`), so the pause asks none while it is out.
   const { answers, answersOff, decidesOff, deciding, enterLine, line, shownAnswer, stale } =
     useGoingBar({
       context: scope.context,
-      enabled: queryEnabled && !namesItsHit,
+      enabled: queryEnabled && !namesItsHit && filing === undefined,
       login,
       project: filters.project ?? "",
       showHits,
@@ -1070,7 +1071,6 @@ function PaletteDialog({
   // key once its hit is listed above it. Its first row reads Ask, Do or File as a new issue;
   // where it reads Do or File, the second reads Ask, so the person can always ask instead. A
   // filing that is out, or that failed, takes the first row's place, and nothing else changes.
-  // A filing line draws no short answer: Enter on it files the words, and answers nothing.
   const lineOffered = answers && queryEnabled && (!ISSUE_KEY.test(searchText) || showHits);
   const askRow: LineRow = {
     id: LINE_ASK_OPTION_ID,
@@ -1105,17 +1105,14 @@ function PaletteDialog({
     lineRows = lineOffered ? [first, askRow] : [first];
   } else if (lineOffered) {
     // The filing says what it will do: the project it files in, then the issue it files under,
-    // where the page's issue becomes the parent (`filingParent`). Where the chip names no project,
-    // the parent's key names it: an issue's key is its project's key, a hyphen and a number.
+    // where the page's issue becomes the parent (`filingParent`).
     const parent = filingParent(searchText, scope.context.issue ?? "");
-    const fileProject =
-      project === "" && parent !== undefined ? parent.slice(0, parent.lastIndexOf("-")) : project;
     const fileLabel =
-      fileProject === ""
+      project === ""
         ? "File as a new issue"
         : parent === undefined
-          ? `File as a new issue in ${fileProject}`
-          : `File as a new issue in ${fileProject}, under ${parent}`;
+          ? `File as a new issue in ${project}`
+          : `File as a new issue in ${project}, under ${parent}`;
     const first: LineRow = {
       id: LINE_OPTION_ID,
       kind: "line",
@@ -1135,7 +1132,10 @@ function PaletteDialog({
     };
     lineRows = line === "ask" ? [first] : [first, askRow];
   }
-  const filingOnTop = lineRows[0]?.line === "file" || filing !== undefined;
+  // The short answer is Ask's (R3): its card shows under the line Ask, and where no line is
+  // listed, as over the empty box, which draws the last answer again; never under Do or a filing
+  // line, which act on the words rather than answer them.
+  const doOrFilingOnTop = lineRows[0] !== undefined && lineRows[0].line !== "ask";
   // Continue on the empty box: the newest conversation History lists, where it is from the last
   // hour, by its first question.
   const newest = conversations.data?.rows?.[0];
@@ -1620,10 +1620,10 @@ function PaletteDialog({
                 </p>
               ) : null}
               {/* The short answer of the pause (R3), as a compact card above the hits and outside
-                  the list, with Open in panel; none under a filing line, whose Enter files the
-                  words and answers nothing, and no button on an answer to words typed past, nor
-                  on the last answer drawn again while the box is empty. */}
-              {shownAnswer === undefined || filingOnTop ? null : (
+                  the list, with Open in panel: under the line Ask, never under Do or a filing line
+                  (`doOrFilingOnTop`), and no button on an answer to words typed past, nor on the
+                  last answer drawn again while the box is empty. */}
+              {shownAnswer === undefined || doOrFilingOnTop ? null : (
                 <AnswerPanel
                   answer={shownAnswer}
                   onOpenInPanel={

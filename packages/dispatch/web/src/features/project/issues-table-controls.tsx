@@ -29,7 +29,7 @@ import {
   textSecondaryOnCanvas,
   toolbarControlHeight,
 } from "../../theme/classes";
-import { useMediaQuery } from "../shell/useDialog";
+import { SM_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
@@ -579,12 +579,6 @@ export function IssueTablePager<TData>({
     </div>
   );
 }
-
-/** Tailwind's `sm` itself: true exactly when the selection bar's `sm:` classes put it at the foot
- *  of the screen rather than under the header. In `rem`, for `MD_VIEWPORT_QUERY`'s reason
- *  (`features/shell/useDialog.ts`): Tailwind declares `sm` as `40rem`, so only a `rem` query
- *  switches with those classes at any default font size. */
-const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
 /**
  * The selection toolbar, over the page, not in it: selecting a row moves nothing else. Its

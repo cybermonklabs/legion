@@ -209,6 +209,31 @@ test("Jev answering within 500 ms of the pause makes the line Do, it stays Do, a
   }
 });
 
+// The short answer is Ask's (R3): its card shows above the hits while the line on top reads Ask,
+// and goes once Jev names Do, whose Enter acts on the words rather than answers them, so a Do
+// line never sits under an answer saying Dispatch holds none.
+test("the line Do draws no short answer, though the card showed while the line read Ask", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await typeAndPause(user, "mark the astrolabe started");
+    expect(screen.getByTestId("going-answer")).toBeInTheDocument();
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "do"));
+    act(() =>
+      streams[0]?.send({
+        data: { text: "Dispatch holds no answer to the question\\." },
+        event: "text",
+      })
+    );
+    act(() => streams[0]?.send({ data: { items: 0, words: 7 }, event: "end" }));
+    await tick(0);
+    expect(screen.queryByTestId("going-answer")).toBeNull();
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("Jev answering after 500 ms is dropped, and the line reads Ask", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -768,6 +793,35 @@ test("over an issue's page the filing line names the issue it files under, and d
     const box = screen.getByRole("combobox", { name: "Search" });
     expect(box.className.split(" ")).toContain("[&::-webkit-search-cancel-button]:ms-2");
   } finally {
+    bar.unmount();
+  }
+});
+
+// A filing that is out holds the line's first row, under which no short answer is drawn, so the
+// pause over words typed while it is out asks none: they cost no model call, and Ask stays the
+// second row for them.
+test("while a filing is out, the pause over new words asks no short answer", async () => {
+  const user = userOnFakeClock();
+  createGoingRun.mockResolvedValue(newIssueRun("run-filing"));
+  const { stream } = holdRunStreams();
+  const bar = renderBar();
+  try {
+    await enterOnFile(user);
+    await waitFor(() => expect(lineRow()).toHaveAttribute("data-line", "filing"));
+    expect(spies.createGoingRequest).toHaveBeenCalledTimes(1);
+
+    const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+    await user.clear(box);
+    await user.keyboard("who looks after the astrolabe");
+    await tick(MEANING_PAUSE_MS);
+    expect(lineRow()).toHaveAttribute("data-line", "filing");
+    expect(lineWords("search-option-line-ask")).toHaveTextContent(
+      "Ask who looks after the astrolabe"
+    );
+    expect(spies.createGoingRequest).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("going-answer")).toBeNull();
+  } finally {
+    stream.mockRestore();
     bar.unmount();
   }
 });

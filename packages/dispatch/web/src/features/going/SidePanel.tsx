@@ -7,7 +7,8 @@ import type { GoingContextInput } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { issueProject } from "../../lib/issue-key";
 import { borderDefault, card, dangerText } from "../../theme/classes";
-import { nodeRouteFromHref, routeProjectOf } from "../refs/routes";
+import { useIssuePageChoice } from "../issue-page/choice";
+import { nodeRouteFromHref, routeProjectOf, unknownToShell } from "../refs/routes";
 import { useFollowInPlace } from "../refs/useFollowInPlace";
 import { issueOfPage, scopeOfPage } from "../search/bar-scope";
 import { ConversationView } from "./ConversationView";
@@ -71,30 +72,38 @@ function clickedItem(target: EventTarget | null): GoingContextInput | undefined 
 /** The context of the next request at the side: the page the panel sits beside, and the item a
  *  click on that page named (`clicked`, while the person is still on the page it was clicked on),
  *  which takes the place of the page's own issue and project: a click on a project's document
- *  names no issue. */
+ *  names no issue. The page's issue and project follow the reader's issue page (`newPage`), as
+ *  the bar's do (`useBarScope`): where they draw today's page, an address of the new issue page
+ *  alone is in no issue or project, as on `main` (`unknownToShell`). */
 function contextOf(
   pathname: string,
   search: string,
-  clicked: ClickedItem | undefined
+  clicked: ClickedItem | undefined,
+  newPage: boolean
 ): GoingContextInput {
   const page: GoingContextInput = {
     block: "",
-    issue: issueOfPage(pathname, search) ?? "",
+    issue: issueOfPage(pathname, search, newPage) ?? "",
     path: pathname,
-    project: routeProjectOf(pathname) ?? "",
+    project: unknownToShell(pathname, newPage) ? "" : (routeProjectOf(pathname) ?? ""),
   };
   return clicked === undefined ? page : { ...page, issue: "", ...clicked.context };
 }
 
 /** What the context chip in the panel's box says (design v3, state 10): the item a click on the
  *  page named - its key, or the project of a click that names no issue - else what the page puts
- *  under the bar, as the bar's chip says it (`scopeOfPage`), and "this page" on a page of no
- *  project. */
-function chipWords(pathname: string, search: string, clicked: ClickedItem | undefined): string {
+ *  under the bar, as the bar's chip says it for the reader's issue page (`scopeOfPage`,
+ *  `newPage`), and "this page" on a page of no project. */
+function chipWords(
+  pathname: string,
+  search: string,
+  clicked: ClickedItem | undefined,
+  newPage: boolean
+): string {
   const named = clicked?.context;
   if (named?.issue !== undefined && named.issue !== "") return named.issue;
   if (named?.project !== undefined && named.project !== "") return `the project ${named.project}`;
-  return scopeOfPage(pathname, search, undefined, []) ?? "this page";
+  return scopeOfPage(pathname, search, undefined, [], newPage) ?? "this page";
 }
 
 /**
@@ -131,8 +140,9 @@ export function SidePanel({ wideInset }: { readonly wideInset?: WideInset }): Re
   const side = going.place === "side";
   const wide = going.wide && wideInset !== undefined;
   const clicked = going.clicked?.path === location.pathname ? going.clicked : undefined;
-  const context = contextOf(location.pathname, location.search, clicked);
-  const chip = chipWords(location.pathname, location.search, clicked);
+  const newPage = useIssuePageChoice()[0] === "outline";
+  const context = contextOf(location.pathname, location.search, clicked, newPage);
+  const chip = chipWords(location.pathname, location.search, clicked, newPage);
   const asking = useAsk(context);
   const cardKeys = usePlanCardKeys();
   // A link in the panel - an item's chip in an answer, a row of the plan - opens its item in the
@@ -195,7 +205,8 @@ export function SidePanel({ wideInset }: { readonly wideInset?: WideInset }): Re
     // The panel clips what overflows it (`overflow-clip`), so no script, focus or scroll into
     // view can scroll its header and its box out of place: only the conversation scrolls
     // (review B1). Widened, it fills the room from `wideInset` (`left` and `top`) to the window's
-    // right and bottom edges, so the shell's navigation beside or above it stays reachable.
+    // right and bottom edges: beside a column of navigation, which stays in view, or under a top
+    // bar, which scrolls with the page (`WideInset`).
     <aside
       aria-label="Command bar at the side"
       className={`fixed top-0 right-0 bottom-0 z-40 flex flex-col overflow-clip border-l shadow-2xl ${wide ? "w-auto" : "w-full sm:w-[420px]"} ${card} ${borderDefault}`}

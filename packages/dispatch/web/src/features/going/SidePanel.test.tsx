@@ -9,6 +9,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import type { GoingPlanAnswer, GoingRun } from "../../api/types";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import {
   goingState,
   handOffToPanel,
@@ -53,21 +54,22 @@ const started: GoingRun = {
   words: "what does the runbook say",
 };
 
-/** The panel at the side of `PAGE`, beside `page`, alice signed in, on a client that keeps a read
- *  fresh for 30 s as the app's does (`main.tsx`). `wideInset` is where the shell says the room for
- *  a widened panel starts, which is what lets the panel offer to widen. */
-function renderPanel(page: ReactNode = null, wideInset?: WideInset): void {
+/** The panel at the side of `path` (`PAGE` unless a row names another), beside `page`, alice
+ *  signed in, on a client that keeps a read fresh for 30 s as the app's does (`main.tsx`).
+ *  `wideInset` is where the shell says the room for a widened panel starts, which is what lets
+ *  the panel offer to widen. */
+function renderPanel(page: ReactNode = null, wideInset?: WideInset, path = PAGE): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  window.history.pushState({}, "", PAGE);
+  window.history.pushState({}, "", path);
   setPlace("side");
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter
         future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
-        initialEntries={[PAGE]}
+        initialEntries={[path]}
       >
         {page}
         <SidePanel wideInset={wideInset} />
@@ -149,6 +151,54 @@ test("a click on an issue on the page makes it the box's chip and the context of
   } finally {
     starts.restore();
   }
+});
+
+/** Where alice's browser keeps her issue page (`useIssuePageChoice`): `outline` is the new one. */
+const ALICE_ISSUE_PAGE = userPreferenceStorageKey("alice", "issue.page");
+
+/** Threads' list of `PAGE`'s issue: an address of the new issue page alone (`unknownToShell`). */
+const THREADS = `${PAGE}/threads`;
+
+/** Asks from the panel at the side of `THREADS` for a reader whose issue page is `choice`, and
+ *  answers the chip's words and the context the request went with. */
+async function askBesideThreads(
+  choice: "outline" | "tabs"
+): Promise<{ chip: string | null; context: unknown }> {
+  const user = userEvent.setup();
+  const starts = answerStarts();
+  window.localStorage.setItem(ALICE_ISSUE_PAGE, choice);
+  try {
+    renderPanel(null, undefined, THREADS);
+    const chip = screen.getByTestId("going-box-chip").textContent;
+    await user.type(
+      screen.getByRole("textbox", { name: "Ask the command bar" }),
+      `${started.words}{Enter}`
+    );
+    await waitFor(() => expect(starts.start).toHaveBeenCalledTimes(1));
+    return { chip, context: starts.start.mock.calls[0]?.[0].context };
+  } finally {
+    window.localStorage.removeItem(ALICE_ISSUE_PAGE);
+    starts.restore();
+  }
+}
+
+// The panel's chip and context follow the reader's issue page as the bar's do (`useBarScope`,
+// R1): on the new issue page, Threads' list is its issue's page, so the panel names that issue as
+// the bar over the same page does.
+test("on the new issue page, Threads' list names its issue in the box's chip and in the next request", async () => {
+  expect(await askBesideThreads("outline")).toEqual({
+    chip: "CORE-1",
+    context: { block: "", issue: "CORE-1", path: THREADS, project: "CORE" },
+  });
+});
+
+// On today's issue page an address of the new page alone is in no issue or project, as on `main`
+// (`unknownToShell`): the panel names neither, as the bar does not.
+test("on today's issue page, Threads' list sends no issue and no project, and the chip says this page", async () => {
+  expect(await askBesideThreads("tabs")).toEqual({
+    chip: "this page",
+    context: { block: "", issue: "", path: THREADS, project: "" },
+  });
 });
 
 test("the panel is 420 px wide; Open over the page moves it back, and its × closes it", async () => {
