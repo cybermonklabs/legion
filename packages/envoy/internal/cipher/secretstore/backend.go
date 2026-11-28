@@ -16,13 +16,18 @@ type Config interface {
 	// Settings is the store's own fields of GET /v1/settings, by JSON name, each "" left out:
 	// settingsfields.Of of the store's SettingsFields struct.
 	Settings() map[string]string
+	// SecondPrefix is BROKER_SECRETS_SECOND_PREFIX as the store read it (SecondPrefixVariable),
+	// "" for none: the prefix a move of the store leaves or reaches, which config.Load holds to
+	// what any two prefixes keep and the grant re-checks count a frozen source under. A store that
+	// refuses the variable answers "".
+	SecondPrefix() string
 }
 
 // SecondPrefixVariable is BROKER_SECRETS_SECOND_PREFIX, the prefix a deployment's move of its store
 // leaves or reaches (config.Config.SecretsSecondPrefix): a grant frozen under it counts as one of
-// the source the broker serves under BROKER_SECRETS_PREFIX. config.Load reads it whatever the
-// store, and holds it to what any two prefixes keep; each store's ParseConfig says whether the
-// store reads one at all, and of what form.
+// the source the broker serves under BROKER_SECRETS_PREFIX. Each store's ParseConfig reads it or
+// refuses it (Config.SecondPrefix), so no store ignores it, which
+// backends.TestEachStoreTakesAStandOnTheSecondPrefix holds every registered store to.
 const SecondPrefixVariable = "BROKER_SECRETS_SECOND_PREFIX"
 
 // OpenEnv is what cipherd hands every store it opens.
@@ -63,9 +68,9 @@ type Backend interface {
 	Variables() []string
 	// ParseConfig reads the store's configuration from getenv, prefix being
 	// BROKER_SECRETS_PREFIX, and refuses one the store cannot read with, naming the variable. It
-	// takes a stand on SecondPrefixVariable too, which config.Load reads for every store: a store
-	// whose sources a move to another prefix keeps holds a set value to its prefix form, and one
-	// whose sources such a move changes refuses every value.
+	// takes a stand on SecondPrefixVariable too: a store whose sources a move to another prefix
+	// keeps reads a set value, held to its prefix form where it has one, and answers it as
+	// Config.SecondPrefix; a store whose sources such a move changes refuses every value.
 	ParseConfig(prefix string, getenv func(string) string) (Config, error)
 	// OpenStore opens the store cfg, a Config this Backend parsed, describes.
 	OpenStore(ctx context.Context, cfg Config, env OpenEnv) (Opened, error)

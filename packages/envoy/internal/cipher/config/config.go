@@ -3204,7 +3204,6 @@ func Load(getenv func(string) string) (Config, error) {
 		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
 		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
 		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
-		SecretsSecondPrefix:       getenv("BROKER_SECRETS_SECOND_PREFIX"),
 		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
@@ -3467,6 +3466,9 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.Secrets, err = backend.ParseConfig(secretsPrefix, getenv); err != nil {
 		return Config{}, err
 	}
+	// The store reads BROKER_SECRETS_SECOND_PREFIX or refuses it (Backend.ParseConfig), so its
+	// answer is the one reading of the setting.
+	cfg.SecretsSecondPrefix = cfg.Secrets.SecondPrefix()
 	if err := secondPrefixRefusal(cfg.Secrets.Prefix(), cfg.SecretsSecondPrefix); err != nil {
 		return Config{}, err
 	}

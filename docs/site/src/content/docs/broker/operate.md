@@ -1578,10 +1578,12 @@ type, another secret id, or a prefix that is neither of the two.
 
 The broker refuses to start, naming the setting, on a value under `aws-secrets-manager` (an AWS
 Secrets Manager source is an ARN whose random suffix a move to another name always changes), on a
-value that is no Secret Manager prefix (`projects/<project number>/secrets/<secret-id prefix>-`), on
-`BROKER_SECRETS_PREFIX` itself, and on a prefix that starts with `BROKER_SECRETS_PREFIX` or that
-`BROKER_SECRETS_PREFIX` starts with. Empty, its default, the broker counts a frozen source only when
-it is the one served.
+value under `gcp-secret-manager` that is no Secret Manager prefix
+(`projects/<project number>/secrets/<secret-id prefix>-`), on `BROKER_SECRETS_PREFIX` itself, and
+on a prefix that starts with `BROKER_SECRETS_PREFIX` or that `BROKER_SECRETS_PREFIX` starts with.
+Empty, its default, the broker counts a frozen source only when it is the one served. Each store
+says whether it reads the setting: the memory store, the development store, reads it too, so a
+local run or a test can rehearse a move before a deployment makes one.
 
 The move takes four steps:
 

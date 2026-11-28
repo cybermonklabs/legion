@@ -77,3 +77,43 @@ func TestSourceRuleOnSecretManagerSourcesIsMains(t *testing.T) {
 		}
 	}
 }
+
+// TestSourceRuleOnMemorySources holds sourceRule.counts on the memory store's sources,
+// memory:<name> (memory.Source), where the configured prefix stands behind the store's own lead:
+// a move from the second prefix counts, stored and minted, with the lead kept; and a source with
+// no lead or another one, the setting empty, a source under the configured prefix where the
+// policy serves the second's, and the bare prefixes do not.
+//
+// The named reverts: cut the prefix from the start of the store source alone, as main did, and the
+// two moves do not count; drop the lead from what frozen must hold, and the row with no lead
+// counts.
+func TestSourceRuleOnMemorySources(t *testing.T) {
+	const (
+		lead       = "memory:"
+		configured = "example/agent-secrets/"
+		second     = "example/old-secrets/"
+	)
+	moved := sourceRule{prefix: configured, second: second}
+	unset := sourceRule{prefix: configured}
+	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }
+	for _, row := range []struct {
+		name           string
+		rule           sourceRule
+		frozen, served string
+		counts         bool
+	}{
+		{"a stored source under the second prefix with the same remainder", moved, lead + second + "deel-api-key", lead + configured + "deel-api-key", true},
+		{"a minted source of the same type under the second prefix", moved, app(lead + second + "app-key"), app(lead + configured + "app-key"), true},
+		{"an equal stored source with the setting empty", unset, lead + configured + "deel-api-key", lead + configured + "deel-api-key", true},
+
+		{"a source under the second prefix with no lead", moved, second + "deel-api-key", lead + configured + "deel-api-key", false},
+		{"a source under the second prefix behind another lead", moved, "other:" + second + "deel-api-key", lead + configured + "deel-api-key", false},
+		{"a source under the second prefix with the setting empty", unset, lead + second + "deel-api-key", lead + configured + "deel-api-key", false},
+		{"a source under the configured prefix where the policy serves one under the second", moved, lead + configured + "deel-api-key", lead + second + "deel-api-key", false},
+		{"a source that is the second prefix itself, where the policy serves the configured prefix itself", moved, lead + second, lead + configured, false},
+	} {
+		if got := row.rule.counts(row.frozen, row.served); got != row.counts {
+			t.Errorf("%s: counts(%q, %q) = %t, want %t", row.name, row.frozen, row.served, got, row.counts)
+		}
+	}
+}

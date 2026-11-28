@@ -34,6 +34,9 @@ type config struct{ prefix, keyARN string }
 func (c config) Store() string  { return Name }
 func (c config) Prefix() string { return c.prefix }
 
+// SecondPrefix is none: ParseConfig refuses BROKER_SECRETS_SECOND_PREFIX with this store.
+func (c config) SecondPrefix() string { return "" }
+
 // Settings are the key's ARN, with the account and region it names.
 func (c config) Settings() map[string]string {
 	region, account := KeyARNParts(c.keyARN)

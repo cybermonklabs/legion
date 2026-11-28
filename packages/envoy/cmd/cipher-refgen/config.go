@@ -55,13 +55,13 @@ var brokerVar = regexp.MustCompile(`^BROKER_[A-Z0-9_]+$`)
 // "BROKER_X, BROKER_X_FILE: …".
 var documentedVars = regexp.MustCompile(`^((?:BROKER_[A-Z0-9_]+)(?:, BROKER_[A-Z0-9_]+)*): (.*)$`)
 
-// readConfig reads every BROKER_* variable config.Load, cmd/cipherd and each secret store's own
-// package read (any BROKER_* name they spell out as a string is one they read): each one's
-// description from the doc comment that opens with its name (a Config field's, or a comment in
-// cmd/cipherd or in the store's package), its default and accepted range from Load's own tables,
-// and the variables Load refuses because they were removed. It refuses a variable the code reads
-// that no comment documents, a comment that documents a variable nothing reads, and a removed
-// variable with no reason.
+// readConfig reads every BROKER_* variable config.Load, cmd/cipherd, the shared secretstore package
+// and each secret store's own package read (any BROKER_* name they spell out as a string is one
+// they read): each one's description from the doc comment that opens with its name (a Config
+// field's, or a comment in cmd/cipherd or in a store package), its default and accepted range from
+// Load's own tables, and the variables Load refuses because they were removed. It refuses a
+// variable the code reads that no comment documents, a comment that documents a variable nothing
+// reads, and a removed variable with no reason.
 func readConfig(root string) ([]variable, error) {
 	cfg, err := parseDir(root, configDir)
 	if err != nil {
@@ -71,12 +71,19 @@ func readConfig(root string) ([]variable, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Each store's package, in registry file order: its own variables, documented there.
+	// The shared store package, which names the variable every store takes a stand on
+	// (secretstore.SecondPrefixVariable), then each store's package, in registry file order: its
+	// own variables, documented there.
+	shared, err := parseDir(root, strings.TrimSuffix(storeDir, "/"))
+	if err != nil {
+		return nil, err
+	}
 	ids, err := storeIDs(root)
 	if err != nil {
 		return nil, err
 	}
-	stores := make([]*source, 0, len(ids))
+	stores := make([]*source, 0, 1+len(ids))
+	stores = append(stores, shared)
 	for _, id := range ids {
 		store, err := parseDir(root, storeDir+id)
 		if err != nil {

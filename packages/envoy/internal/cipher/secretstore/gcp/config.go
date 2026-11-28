@@ -26,11 +26,13 @@ type SettingsFields struct {
 	GCPProject string `json:"gcp_project,omitempty"`
 }
 
-// config is the GCP store's configuration: the prefix, and the agent-secrets key's resource name.
-type config struct{ prefix, keyName string }
+// config is the GCP store's configuration: the prefix, the second prefix a move leaves or reaches
+// ("" for none), and the agent-secrets key's resource name.
+type config struct{ prefix, second, keyName string }
 
-func (c config) Store() string  { return Name }
-func (c config) Prefix() string { return c.prefix }
+func (c config) Store() string        { return Name }
+func (c config) Prefix() string       { return c.prefix }
+func (c config) SecondPrefix() string { return c.second }
 
 // Settings are the key's name and the project the prefix names.
 func (c config) Settings() map[string]string {
@@ -53,10 +55,11 @@ func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretsto
 	if err := ValidKeyName(keyName); err != nil {
 		return nil, fmt.Errorf("%s: %w", keyVariable, err)
 	}
-	if second := getenv(secretstore.SecondPrefixVariable); second != "" {
+	second := getenv(secretstore.SecondPrefixVariable)
+	if second != "" {
 		if err := ValidPrefix(second); err != nil {
 			return nil, fmt.Errorf("%s: %w", secretstore.SecondPrefixVariable, err)
 		}
 	}
-	return config{prefix: prefix, keyName: keyName}, nil
+	return config{prefix: prefix, second: second, keyName: keyName}, nil
 }

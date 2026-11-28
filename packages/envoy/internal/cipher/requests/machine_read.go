@@ -598,6 +598,14 @@ func (m *Machine) sourceRule() sourceRule {
 // a stored source against a minted one or the reverse, and one under the configured prefix where
 // the policy serves the second's, since the policy lists under the configured prefix alone. Such a
 // source no longer names the secret the policy decides about, so its grant ends (sourceMoved).
+//
+// The configured prefix is read where it first appears in served's store source, not only at its
+// start, and the part before it must open frozen's too: a store whose source is the secret's name
+// behind a lead of its own, as the memory store's memory:<name> is, counts a move as Secret
+// Manager does. A Secret Manager source is its resource name, projects/<number>/secrets/<id>, which
+// a Secret Manager prefix opens, and an id holds no "/", so there the prefix is at the start alone
+// and the lead is empty: TestSourceRuleOnSecretManagerSourcesIsMains holds every such answer to
+// main's.
 func (r sourceRule) counts(frozen, served string) bool {
 	if frozen == served {
 		return true
@@ -613,8 +621,12 @@ func (r sourceRule) counts(frozen, served string) bool {
 	if err != nil || frozenMinted != servedMinted || frozenType != servedType {
 		return false
 	}
-	rest, under := strings.CutPrefix(servedStore, r.prefix)
-	return under && rest != "" && frozenStore == r.second+rest
+	at := strings.Index(servedStore, r.prefix)
+	if at < 0 {
+		return false
+	}
+	lead, rest := servedStore[:at], servedStore[at+len(r.prefix):]
+	return rest != "" && frozenStore == lead+r.second+rest
 }
 
 // readSource is the type and the store source a release of g reads, and whether it mints, all

@@ -2342,11 +2342,12 @@ func TestABuildWithoutTheDefaultStoreNamesIt(t *testing.T) {
 // TestSecondPrefixSetting pins BROKER_SECRETS_SECOND_PREFIX, the prefix a store move leaves or
 // reaches. Unset or empty, Load reads none, on either store, and the broker is the one it was. A
 // Secret Manager prefix beside gcp-secret-manager, in another project or the same one, is read as
-// it is. Load refuses to start, naming the setting and the rule it breaks: any value under
-// aws-secrets-manager, saying that an AWS source is an ARN a move always changes; a value
-// gcp.ValidPrefix refuses; a value equal to BROKER_SECRETS_PREFIX; and a value that starts
-// with BROKER_SECRETS_PREFIX, or that BROKER_SECRETS_PREFIX starts with, since a secret under the
-// longer of two such prefixes is under both.
+// it is, and so is any prefix beside the memory store, the development store. Load refuses to
+// start, naming the setting and the rule it breaks: any value under aws-secrets-manager, saying
+// that an AWS source is an ARN a move always changes; a value gcp.ValidPrefix refuses; a value
+// equal to BROKER_SECRETS_PREFIX; and a value that starts with BROKER_SECRETS_PREFIX, or that
+// BROKER_SECRETS_PREFIX starts with, since a secret under the longer of two such prefixes is under
+// both, on Secret Manager and on the memory store.
 //
 // The named reverts: drop the store check, and the aws-secrets-manager row starts; drop the nesting
 // check, and the two nested rows start; check only that the two differ, and the nested rows start
@@ -2392,6 +2393,21 @@ func TestSecondPrefixSetting(t *testing.T) {
 		if cfg.SecretsSecondPrefix != second || cfg.Secrets.Prefix() != prefix {
 			t.Fatalf("Load(gcp, second prefix %q) = second prefix %q, prefix %q; want both read as given", second, cfg.SecretsSecondPrefix, cfg.Secrets.Prefix())
 		}
+	}
+	// The development store reads one as given, so a local run or a test can rehearse a move, and
+	// a nested one is refused there as on Secret Manager.
+	onMemory := func() map[string]string {
+		e := validEnv()
+		e["BROKER_SECRETS_STORE"] = "memory"
+		delete(e, "BROKER_SECRETS_KMS_KEY_ARN")
+		e["BROKER_MEMORY_SECRETS_FILE"] = "/srv/memory-secrets.json"
+		return e
+	}
+	if cfg, err := Load(env(with(onMemory(), "example/old-agent-secrets/"))); err != nil || cfg.SecretsSecondPrefix != "example/old-agent-secrets/" {
+		t.Fatalf("Load(memory, second prefix) = second prefix %q, %v; want it read as given", cfg.SecretsSecondPrefix, err)
+	}
+	if _, err := Load(env(with(onMemory(), validEnv()["BROKER_SECRETS_PREFIX"]+"old-"))); err == nil || !strings.Contains(err.Error(), "one starts with the other") {
+		t.Fatalf("Load(memory, a second prefix that nests) = %v; want the nesting refused", err)
 	}
 
 	for name, row := range map[string]struct {
