@@ -67,6 +67,9 @@ type legionHandoff struct {
 	sessions *session.SessionRegistry
 	agents   *legionAgentRegistry
 	logger   *logging.Logger
+	// giveUpClock bounds a hand-off from agent delivery. Nil uses the real clock,
+	// including when no hand-off is configured.
+	giveUpClock clock.Timeouts
 }
 
 // legionHandedOff is a hand-off handOffToLegion published: the body, the subject it was published
@@ -449,7 +452,7 @@ const legionHandedOffDeliveryStatus = "handed_off"
 // stream refuses it as still in process under an earlier attempt (publishPastInProcess), and a
 // refusal that outlives the window is a hand-off that failed, answered as any other is.
 func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.handoffWindow())
+	ctx, cancel := clock.WithShownTimeout(cfg.handoff.giveUpClockOrReal(), context.Background(), cfg.handoffWindow())
 	defer cancel()
 	handed, err := cfg.handoff.handOffToLegion(ctx, legionHandoffTarget{envelope: item, session: sessionID})
 	switch {
@@ -479,6 +482,13 @@ func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliv
 		return false
 	}
 	return true
+}
+
+func (h *legionHandoff) giveUpClockOrReal() clock.Timeouts {
+	if h == nil || h.giveUpClock == nil {
+		return clock.Real()
+	}
+	return h.giveUpClock
 }
 
 // handoffWindow is the bound of one hand-off the agent-subject delivery's decision makes

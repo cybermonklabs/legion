@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -382,14 +383,11 @@ const inProcessForwardWindow = 300 * time.Millisecond
 
 // A role resend whose first forward's window ends while the earlier send's forward is still in
 // process gets the stored copy from its next forward. The first forward is sent again while the
-// stream refuses it as in process, until its window ends (publishPastInProcess), so it ends no
-// sooner than that window, as a forward that ended while an earlier forward was in process
-// (earlierAttemptInProcess). That error wraps the refusal when the window's end stops the pause,
-// and the failed send when it stops a send the pause let go past it; the answer and the charge are
-// the same either way. It failed with no refusal, so it costs the sender one, as every such
-// forward does, and the next forward, answered Duplicate once the earlier forward is stored, is the
-// resend's 200. Both sends are charged by main's rule for a role send (sendToRole), and the stream
-// holds one forward.
+// stream refuses it as in process, until its window ends (publishPastInProcess). The result
+// names both the earlier in-process forward and the expired deadline, not just a refusal.
+// The forward failed without a permanent refusal, so it costs the sender one. The next
+// forward, answered Duplicate once the earlier forward is stored, is the resend's 200.
+// Both sends are charged (sendToRole), and the stream holds one forward.
 //
 // The rig's forward seam shortens the resend's first forward to inProcessForwardWindow, so its
 // window ends while the routes are frozen, and the thaw comes once it has ended.
@@ -400,11 +398,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	role := "in-process-next-" + id.New()[:8]
 	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, holder, role, nil)
 	path := roleInProcessPath(role, holder)
-	type ended struct {
-		err  error
-		took time.Duration
-	}
-	first := make(chan ended, 1)
+	first := make(chan error, 1)
 	var forwards atomic.Int32
 	forward := rig.d.delivery.forwardRole
 	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
@@ -412,15 +406,14 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 		if n != 2 {
 			return forward(subject, item, msgID, timeout)
 		}
-		started := time.Now()
 		wait, err := forward(subject, item, msgID, inProcessForwardWindow)
 		if err != nil {
-			first <- ended{err, time.Since(started)}
+			first <- err
 			return nil, err
 		}
 		return func() (bus.StoredAck, error) {
 			ack, err := wait()
-			first <- ended{err, time.Since(started)}
+			first <- err
 			return ack, err
 		}, nil
 	}
@@ -440,9 +433,9 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 			t.Errorf("%s was answered %d %s; want 200", name, answer.Code, strings.TrimSpace(answer.Body.String()))
 		}
 	}
-	if firstForward.took < inProcessForwardWindow || !earlierAttemptInProcess(firstForward.err) {
-		t.Errorf("the resend's first forward ended after %s with %v; want its whole window of %s, ending as a forward whose earlier forward was still in process: a refused forward is sent again until its window ends",
-			firstForward.took, firstForward.err, inProcessForwardWindow)
+	if !earlierAttemptInProcess(firstForward) || !errors.Is(firstForward, context.DeadlineExceeded) {
+		t.Errorf("the resend's first forward ended with %v; want the forward deadline to end it while its earlier forward was still in process",
+			firstForward)
 	}
 	if n := forwards.Load(); n != 3 {
 		t.Errorf("the two sends made %d forwards, want 3: the earlier send's, and the resend's first and next", n)
@@ -699,13 +692,14 @@ func (rig *inProcessRig) stoppedAgentHandoff(t *testing.T) *legionHandoff {
 // The window is that context: the give-up returns once it ends, records the failed hand-off (its
 // line and its count) and NAKs the message to be tried again, rather than publishing again for as
 // long as the earlier attempt is not stored, which a stream that lost its quorum may never store.
-// The rig keeps this window short so the frozen cluster keeps its leader until the thaw.
+// Expire the actual give-up budget on the fake while the cluster is still frozen.
 func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t *testing.T) {
 	t.Parallel()
 	rig := newInProcessRig(t)
 	cfg := rig.harness.config
 	cfg.handoff = rig.stoppedAgentHandoff(t)
-	cfg.handoffGiveUpWindow = time.Second
+	fake := clocktest.New(time.Unix(0, 0))
+	cfg.handoff.giveUpClock = fake
 	subject := listenerwire.LegionHandoffSubject("infra", handoffAgent)
 	item := envelopeFor(contracts.LegacyAgentSubject(handoffAgent), "agent."+handoffAgent+"."+id.New(), "agent")
 
@@ -741,15 +735,31 @@ func TestTheAgentSubjectGiveUpStopsAtItsWindowWhileItsHandoffIsStillInProcess(t 
 	}()
 	awaitHanded(t, heard, 1)
 
-	window := cfg.handoffGiveUpWindow
-	started := time.Now()
+	deadline := fake.Now().Add(legionHandoffGiveUpWindow)
 	answered := make(chan bool, 1)
 	go func() { answered <- offerAgentDeliveryToLegion(cfg, message, item, handoffAgent) }()
+	defer fake.Set(deadline)
+	// The give-up's retry is a marker after its first refusal. It must retry while
+	// the fake still stands at the start of the window.
+	testwait.Until(t, fmt.Sprintf("the give-up window armed for %v and the leader to receive its first publish and retry", deadline), func() (string, bool) {
+		select {
+		case <-answered:
+			t.Fatalf("the give-up returned before its window ended:\n%s", rig.harness.logs.String())
+		default:
+		}
+		pending, _, err := heard.Pending()
+		if err != nil {
+			t.Fatalf("read the leader's pending hand-off publishes: %v", err)
+		}
+		armed := fake.Armed()
+		return fmt.Sprintf("armed %v, publishes %d", armed, pending), slices.ContainsFunc(armed, deadline.Equal) && pending >= 2
+	})
+	fake.Set(deadline)
 	if owned := testwait.Receive(t, "the give-up to stop retrying the in-process hand-off", answered); !owned {
 		t.Fatalf("the give-up answered that the hand-off was not the message's outcome; want it to own the failed hand-off:\n%s", rig.harness.logs.String())
 	}
-	if elapsed := time.Since(started); elapsed < window {
-		t.Errorf("the give-up returned after %s, inside its %s window: it was to publish again until the window ended", elapsed, window)
+	if !strings.Contains(rig.harness.logs.String(), context.DeadlineExceeded.Error()) {
+		t.Errorf("the give-up did not fail because its window ended:\n%s", rig.harness.logs.String())
 	}
 	failed := deliveryRecords(t, rig.harness.logs.String(), "listener legion hand-off failed")
 	if len(failed) != 1 || failed[0].SessionID != handoffAgent || failed[0].DeliveryStatus != "failed" {
