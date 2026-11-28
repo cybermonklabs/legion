@@ -798,9 +798,9 @@ func eventWaitMachineBusy(t *testing.T) {
 			return told[since], true
 		})
 		if before, after := change[0], change[1]; before.State != after.State || before.Generation != after.Generation ||
-			!before.LastReady.Equal(after.LastReady) || !before.LastTurnStart.Equal(after.LastTurnStart) {
-			t.Fatalf("the end of the tool step told the hook of %s at launch %d becoming %s at launch %d, want views that match: the refusal alone told",
-				before.State, before.Generation, after.State, after.Generation)
+			before.Readies != after.Readies || !before.LastTurnStart.Equal(after.LastTurnStart) {
+			t.Fatalf("the end of the tool step told the hook of %s at launch %d (readies %d) becoming %s at launch %d (readies %d), want views that match: the refusal alone told",
+				before.State, before.Generation, before.Readies, after.State, after.Generation, after.Readies)
 		}
 	})
 }
