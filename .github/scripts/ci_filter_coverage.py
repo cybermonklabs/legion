@@ -4062,6 +4062,7 @@ def check() -> int:
     # own. It is imported here, not at the top, because it imports this module's constants and
     # helpers: by the time main() runs, this module is loaded whole.
     import ci_workflow_rules as rules
+    import ci_report_rule
 
     quantifier = changes_quantifier(document, problems)
     files = repo_files()
@@ -4146,7 +4147,7 @@ def check() -> int:
     rules.check_one_merge_group_workflow(problems)
     # Rule 26: a job that runs the results action makes its go test -json report with no -v. Its
     # line says what it read of the jobs that run the action, zero included.
-    report += rules.check_report_steps(problems)
+    report += ci_report_rule.check_report_steps(problems)
     # Rule 20: a vet for another platform passes over no file a build tag would compile.
     report += check_vet_tags(session, data, problems)
     problems += session.problems

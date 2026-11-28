@@ -810,6 +810,7 @@ with contextlib.ExitStack() as stop:
         loaded = time.monotonic() - started
         progress = ci_filter_coverage.early_progress()
         import ci_workflow_rules
+        import ci_report_rule
     print(f"::{token}::", flush=True)
     print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
     if progress is not None:

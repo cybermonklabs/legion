@@ -235,8 +235,8 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/ci-gates" "$root/mod/cmd/app" \
     "$root/mod/lib" "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py workflow_paths.py \
-    go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py audited_scripts.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_filter_sources.py ci_workflow_rules.py ci_report_rule.py \
+    workflow_paths.py go_build_tags.py ci-filters-generate.sh fetch-depth-if-shallow.sh ci_ts_listing.py audited_scripts.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'PROGRAMS = []\nBUNDLES = []\nLISTED = []\n' > "$root/.github/scripts/ci_ts_programs.py"
