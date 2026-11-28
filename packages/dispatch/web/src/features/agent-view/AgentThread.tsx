@@ -586,6 +586,8 @@ export function AgentThread({
           <ThreadPrimitive.Viewport
             autoScroll={false}
             className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 pl-1 [overflow-anchor:none]"
+            // The scroller whose place the keyboard's switch keeps (`useKeyboardOverlay`).
+            data-live-thread=""
             data-testid="agent-thread"
             onClick={() => {
               if (phone && document.activeElement === inputRef.current) inputRef.current?.blur();

@@ -1,6 +1,7 @@
 import { type RefObject, useLayoutEffect } from "react";
 
 import { PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
+import { atLiveEnd } from "./use-live-follow";
 
 /** How much shorter than the screen the visual viewport must be before the view reads it as an
  *  on-screen keyboard: more than a browser's toolbars change the height as they collapse and come
@@ -30,6 +31,13 @@ const KEYBOARD_MIN_HEIGHT = 150;
  *
  * Everything is written in the event's own task, as `useKeyboardFit` writes its cap, so no frame
  * shows the composer behind the keyboard.
+ *
+ * The thread (`data-live-thread`) keeps the reader's place through the switch: at its live end
+ * if it was there when the box took focus, else at the same offset. Measured in WebKit with a
+ * keyboard that resizes the layout viewport: without this, the thread came back on its first
+ * turn, and the live view's follow took that for the reader scrolling away. The layout between
+ * the resize and the switch, at the keyboard's height with the view still in the page, gives the
+ * thread no height, which is the likely cause.
  */
 export function useKeyboardOverlay(ref: RefObject<HTMLElement | null>, enabled: boolean): void {
   useLayoutEffect(() => {
@@ -40,7 +48,14 @@ export function useKeyboardOverlay(ref: RefObject<HTMLElement | null>, enabled: 
     const phone = window.matchMedia(PHONE_VIEWPORT_QUERY);
     let width = window.innerWidth;
     let tallest = window.innerHeight;
-    const place = () => {
+    let shown = false;
+    // Where the thread was when the box took focus, before the keyboard came up.
+    let kept: { atEnd: boolean; top: number } | null = null;
+    const place = (event?: Event) => {
+      const thread = element.querySelector<HTMLElement>("[data-live-thread]");
+      if (event?.type === "focusin" && !shown && thread !== null) {
+        kept = { atEnd: atLiveEnd(thread), top: thread.scrollTop };
+      }
       // A turn of the phone is another screen, with another tallest height.
       if (window.innerWidth !== width) {
         width = window.innerWidth;
@@ -57,9 +72,15 @@ export function useKeyboardOverlay(ref: RefObject<HTMLElement | null>, enabled: 
         element.dataset.keyboard = "up";
         element.style.top = `${viewport.offsetTop}px`;
         element.style.height = `${viewport.height}px`;
+        if (!shown && thread !== null && kept !== null) {
+          thread.scrollTop = kept.atEnd ? thread.scrollHeight : kept.top;
+        }
       } else {
         clear(element);
+        // The keyboard is down: the next one keeps the place the box's next focus finds.
+        if (shown) kept = null;
       }
+      shown = up;
     };
     // The window's own resize too: Chromium on Android resizes the layout viewport.
     window.addEventListener("resize", place);
