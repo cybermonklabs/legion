@@ -586,21 +586,19 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
   }
 });
 
-// A Change's write names its issue on the write store, as Keep does.
+// A Change's write names its issue at the press, as Keep does. The `api.createComment` mock
+// hides the request's path from the write store, so only the press's `issue` names the write.
 test("a Change's write names its issue on the write store", async () => {
-  const answer = { ...read, decisions: [decision] };
   const out = Promise.withResolvers<unknown>();
   const createComment = spyOn(api, "createComment").mockReturnValue(out.promise as never);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["decisions", KEY], answer);
-  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
+  client.setQueryData(["decisions", KEY], read);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
   const documentText = spyDocumentText(DOCUMENT_TEXT);
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>
-      <ReferenceNamesProvider>
-        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
-      </ReferenceNamesProvider>
+      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
     </QueryClientProvider>
   );
   try {

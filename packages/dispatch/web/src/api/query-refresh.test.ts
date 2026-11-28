@@ -246,29 +246,29 @@ test("a test of a first load's data runs on the response that lands, and fetches
 });
 
 test("a refresh judges every check before it marks any query, and gives each check the client", () => {
-  const client = newClient();
+  const queryClient = newClient();
   const keyA = ["issue-summary", "CORE-1"];
   const keyB = ["issue-summary", "CORE-2"];
-  client.setQueryData(keyA, { title: "First issue" });
-  client.setQueryData(keyB, { title: "Second issue" });
+  queryClient.setQueryData(keyA, { title: "First issue" });
+  queryClient.setQueryData(keyB, { title: "Second issue" });
   let checkClient: QueryClient | undefined;
   try {
-    refreshQueries(client, [
+    refreshQueries(queryClient, [
       { queryKey: keyA },
       {
         queryKey: keyB,
         when: (_data, _query, receivedClient) => {
           checkClient = receivedClient;
-          return client.getQueryState(keyA)?.isInvalidated !== true;
+          return queryClient.getQueryState(keyA)?.isInvalidated !== true;
         },
       },
     ]);
 
-    expect(client.getQueryState(keyB)?.isInvalidated).toBe(true);
-    expect(client.getQueryState(keyA)?.isInvalidated).toBe(true);
-    expect(checkClient).toBe(client);
+    expect(queryClient.getQueryState(keyB)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(keyA)?.isInvalidated).toBe(true);
+    expect(checkClient).toBe(queryClient);
   } finally {
-    client.clear();
+    queryClient.clear();
   }
 });
 
