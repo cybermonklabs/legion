@@ -503,7 +503,7 @@ func placeRequestAsDocument(markdown, outer string, texts []string) []string {
 // BenchmarkARequestPlacingBlocksWithManyCopiesInOneContainer place: its name, which names the
 // subtest and the sub-benchmark, and build, which makes the list and the stored texts of its 256
 // paragraphs. The benchmark makes the shape once for the whole run, by its first call of it, which
-// logs the document's size: list and texts; markdown, the list's document, the list and the
+// logs the document's size: list and texts; document, the list's document, the list and the
 // newline the renderer writes after a document's last line; size, the document's size as an
 // upload measures it (pmdoc.MeasureDocument); and parsed, the prefix of each paragraph that the
 // document's parse gives it (footnoteParseOf, rangedPrefix), "" for a paragraph it gives no
@@ -515,7 +515,7 @@ type manyCopiesShape struct {
 	once     sync.Once
 	list     string
 	texts    []string
-	markdown string
+	document string
 	size     pmdoc.DocumentSize
 	parsed   []string
 	unranged int
@@ -593,13 +593,13 @@ func BenchmarkARequestPlacingBlocksWithManyCopiesInOneContainer(b *testing.B) {
 		b.Run(shape.name, func(b *testing.B) {
 			shape.once.Do(func() {
 				shape.list, shape.texts = shape.build()
-				shape.markdown = shape.list + "\n"
-				shape.size = pmdoc.MeasureDocument(shape.markdown)
+				shape.document = shape.list + "\n"
+				shape.size = pmdoc.MeasureDocument(shape.document)
 				b.Logf("the document is %d bytes and %d elements (counted %t)", shape.size.Bytes, shape.size.Elements, shape.size.Counted)
-				nested := footnoteParseOf(shape.markdown, "document", true).Nested
+				nested := footnoteParseOf(shape.document, "document", true).Nested
 				shape.parsed = make([]string, len(shape.texts))
 				for index, text := range shape.texts {
-					prefix, found := rangedPrefix(shape.markdown, nested, text)
+					prefix, found := rangedPrefix(shape.document, nested, text)
 					if !found {
 						shape.unranged++
 					}
@@ -613,11 +613,11 @@ func BenchmarkARequestPlacingBlocksWithManyCopiesInOneContainer(b *testing.B) {
 			if shape.unranged > 0 {
 				b.Fatalf("the parse of the document gives %d of its %d paragraphs no range", shape.unranged, len(shape.texts))
 			}
-			footnoteParseOf(shape.markdown, "document", true)
+			footnoteParseOf(shape.document, "document", true)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				prefixes := placeRequestAsDocument(shape.markdown, shape.list, shape.texts)
+				prefixes := placeRequestAsDocument(shape.document, shape.list, shape.texts)
 				if len(prefixes) != len(shape.texts) {
 					b.Fatalf("the request answers %d prefixes for %d paragraphs", len(prefixes), len(shape.texts))
 				}
