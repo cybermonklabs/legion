@@ -23,6 +23,7 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
+import { countReferenceRead } from "./reference-reads";
 import { pageInBound, routeInBound } from "./target-id";
 
 export type IssueRoute =
@@ -684,11 +685,13 @@ export function routeProjectOf(pathname: string): string | undefined {
  * (`collectReferenceAnchors`); undefined for an external link or a dashboard path that is not an
  * issue/document reference (`pageRoutes`). A `#b-<block id>` fragment names the page's block
  * while text cites it (`pageInBound`), else the page; a reference past the bounds names nothing
- * (`parseDispatchReference`). */
+ * (`parseDispatchReference`). Each call is counted with the length of `href`
+ * (`countReferenceRead`), which its steps read a fixed number of times over. */
 export function referenceRouteFromHref(
   href: string,
   appOrigins: readonly string[] = dispatchOrigins()
 ): DispatchReferenceRoute | undefined {
+  countReferenceRead("referenceRouteFromHref", href.length);
   if (href.startsWith("dispatch://")) {
     return parseDispatchReference(href);
   }

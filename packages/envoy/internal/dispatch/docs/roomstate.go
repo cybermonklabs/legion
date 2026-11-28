@@ -416,10 +416,10 @@ func (s *Service) unusedLocked(state *roomState) bool {
 		len(state.parked) == 0 && state.retiring == nil
 }
 
-// parkedBytes is one commit's parked bytes and the cursor of the room instance that took them.
+// parkedBytes is one commit's parked bytes and the room instance that took them (storeParked).
 type parkedBytes struct {
-	update []byte
-	cursor *roomCursor
+	update   []byte
+	instance *roomInstance
 }
 
 // queueUpdateClass records what the room's update observer read off one update, for the
