@@ -81,11 +81,12 @@ type Config struct {
 	Logger *slog.Logger
 
 	// clock is what the fill's timers run on and its times are read from: the standby's ticker of
-	// standbyRetry, the bounds of its take and release of the hold, the passes' waits (await), the
-	// check of the hold's loss deadline (lost), the caught-up line's pace, and the filler's
-	// re-reads of the horizon and its rest after a batch. Nil, as every serving process leaves it,
-	// is the wall clock (clock.Real); a test of this package sets a clocktest.Fake, so the waits it
-	// asserts come at the moments it moves the fake to.
+	// standbyRetry, the bounds of its take and release of the hold, the hold's renewals and its loss
+	// deadline (duty.HoldOptions.Clock), the passes' waits (await), the check of the hold's loss
+	// deadline (lost), the caught-up line's pace, and the filler's re-reads of the horizon and its
+	// rest after a batch. Nil, as every serving process leaves it, is the wall clock (clock.Real); a
+	// test of this package sets a clocktest.Fake, so the waits it asserts come at the moments it
+	// moves the fake to.
 	clock clock.Clock
 	// waiting, when set, is called in await before it waits for the next pass, with the wait due
 	// then, zero for none, on the fill's own goroutine. awaitingServing, when set, is called in run
@@ -240,11 +241,14 @@ func (r *runner) standBy(ctx context.Context) *duty.Hold {
 }
 
 // tryHold takes the hold when no other holder holds it live, within one renewal interval on the
-// fill's clock.
+// fill's clock. The hold runs on that clock too (duty.HoldOptions.Clock): its renewals every
+// holdOptions.Renew and its loss deadline, which lost reads on the same clock.
 func (r *runner) tryHold(ctx context.Context) (*duty.Hold, error) {
 	bounded, cancel := r.clock.WithTimeout(ctx, holdOptions.Renew)
 	defer cancel()
-	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, holdOptions)
+	opts := holdOptions
+	opts.Clock = r.clock
+	return duty.TryHold(bounded, r.cfg.Leases, fillHoldName, r.fill.holder, opts)
 }
 
 // fillUnder runs the fill's passes under hold until ctx ends or the hold is lost: a pass at once,
