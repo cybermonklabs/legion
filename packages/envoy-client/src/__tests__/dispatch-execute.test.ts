@@ -40,7 +40,6 @@ import {
   type DispatchToolResult,
   dispatchRefFromUrl,
   dryRunAsksDispatch,
-  executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
   positionText,
@@ -60,12 +59,14 @@ import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
+import { executeDispatchTool as executeTool } from "./whoami-stand-in";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
 
 /**
- * The executor (`executeDispatchTool` of `dispatch-execute.ts`) against the stand-in of Dispatch
- * a row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
+ * The executor (`executeDispatchTool` of `dispatch-execute.ts`, through `whoami-stand-in.ts`,
+ * which answers the whoami every read command reads first) against the stand-in of Dispatch a
+ * row gives it (`fetchImpl`), put behind Dispatch's keyed layer (`keyedLayer`): each 2xx it
  * gives a write names the write's key back, as Dispatch's own answers do, unless the row's
  * `layer` says otherwise. Every row of this file runs the executor through here.
  */
@@ -1046,6 +1047,35 @@ describe("executeDispatchTool", () => {
       `reply_to_ask 01234567 names 2 open asks of this issue. Write more of the id. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
     ]);
     expect(failure.message).not.toContain("Allowed flags");
+    expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
+  });
+
+  // Under a token that carries a cut, Dispatch answers the issue read at that cut and leaves out
+  // the question of an ask whose wording the records at the cut cannot give. The refusal still
+  // lists the asks, naming that question as left out, and never throws on it in its place.
+  test("a reply_to_ask refusal names a question the issue's answer left out as left out", async () => {
+    const requests: string[] = [];
+    const unworded = openAsks.map((ask, index) => (index === 2 ? { id: ask.id } : ask));
+    const fetchImpl = (async (url: RequestInfo | URL): Promise<Response> => {
+      const pathname = new URL(String(url)).pathname;
+      requests.push(pathname);
+      if (pathname === "/api/v1/issues/DSP-41") {
+        return response({ key: "DSP-41", open_asks: unworded });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    }) as typeof fetch;
+
+    const failure = await replyToAsk("deadbeef", fetchImpl).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError))
+      throw new Error(`expected ToolInputError: ${failure}`);
+    expect(failure.problems).toEqual([
+      `reply_to_ask deadbeef names no open ask of this issue. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… left out by Dispatch.`,
+    ]);
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
   });
 
