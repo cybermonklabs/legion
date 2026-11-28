@@ -995,6 +995,21 @@ test("the New priority title holds no more than an issue title may, so no longer
   expect(create.mock.calls[0]?.[0]).toEqual({ title: "t".repeat(ISSUE_TITLE_MAX) });
 });
 
+// Cancel closes the New priority form and puts the focus back on New priority, the button that
+// opened it. Left to the control row's hand-off (`ControlRow`), the focus Cancel held went where
+// that rule found a control at the window's width: the page's body, New priority or Columns.
+test("Cancel closes the New priority form and puts the focus back on New priority", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN);
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  const opener = screen.getByRole("button", { name: "New priority" });
+  await user.click(opener);
+  const form = screen.getByRole("form", { name: "New priority" });
+  await user.click(within(form).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("form", { name: "New priority" })).toBeNull();
+  expect(document.activeElement).toBe(opener);
+});
+
 test("a title is a link to the priority's own page, where it is renamed, and no field", async () => {
   page(FIFTEEN);
   const row = await screen.findByRole("row", { name: "#2 Linkage closure eval" });
