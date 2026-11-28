@@ -46,10 +46,16 @@
 #
 # Last it reads O's one dependency through GET /api/v1/issues/{key}, GET /api/v1/issues (the
 # summary read: its rows are model.IssueSummary) and GET /api/v1/issues/{key}/events, blocked_by
-# beside needs in
-# each, both naming W; a PATCH naming needs and blocked_by with the same targets is served from
-# them and one whose two lists differ is refused 400 naming both; and every field O's issue read
-# answered before the upgrade still answers, not null, once O has converted.
+# beside needs in each, both naming W; both answer from the needs tuples, and the stored
+# issue_links row is their projection: the store's current needs tuples out of O name W alone, and
+# O's issue_links rows are one (O, blocked_by, target) row for each such tuple and no other, a
+# failure printing both reads.
+# A PATCH naming needs and blocked_by with the same targets is served from them: one naming W and
+# H in both lists answers both, appends the needs tuple at H, whose issue_links row the same
+# transaction writes (one xmin), and the tuples and the rows then name W and H; one naming W alone
+# in both lists leaves them naming W again. One whose two lists differ is refused 400 naming both
+# and writes neither; and every field O's issue read answered before the upgrade still answers,
+# not null, once O has converted.
 #
 # Inputs: DATABASE_URL, PROJECT, BASELINE_SHA (or BASELINE_BINARY, with BASELINE_SHA still naming
 # its commit, which the schema and route reads take), DISPATCH_TOKEN (the agent bearer every server
@@ -176,6 +182,29 @@ issue_tree_order_routes() {
 issue_tree_order_schema_version() {
   schema_version="$(git -C "$checkout" show "$1:$schema_path" 2>/dev/null | jq -r '.version // empty' 2>/dev/null)" ||
     schema_version=""
+}
+
+# issue_tree_order_projection SECTION WHAT TARGET…: the store's current needs tuples out of the
+# ordered issue name the issues TARGET… and no other, and its issue_links rows are their projection,
+# one (issue, blocked_by, target) row for each and no other row. A failure prints both reads.
+issue_tree_order_projection() {
+  local section="$1" what="$2" want_tuples want_links tuples links target
+  shift 2
+  want_tuples="$(printf 'issue/%s\n' "$@" | LC_ALL=C sort | paste -sd ',' -)"
+  want_links="$(for target in "$@"; do printf '%s blocked_by %s\n' "$ordered" "$target"; done | LC_ALL=C sort | paste -sd ',' -)"
+  tree_node_far "$section" "issue/$ordered" needs
+  tuples="$(tr ',' '\n' <<<"$answer" | LC_ALL=C sort | paste -sd ',' -)"
+  with_vars "$section" "read the issue_links rows of $ordered" \
+    "select coalesce(string_agg(issue_key || ' ' || kind || ' ' || target_key, ','), '') from issue_links where issue_key = :'k'" \
+    k="$ordered"
+  links="$(tr ',' '\n' <<<"$answer" | LC_ALL=C sort | paste -sd ',' -)"
+  [[ "$tuples" == "$want_tuples" ]] ||
+    fail "$section" "$what: the store's current needs tuples out of $ordered name them, and issue_links holds their projection" \
+      "the current needs tuples out of $ordered name '$tuples'; issue_links holds '$links'; want '$want_tuples' beside '$want_links'"
+  [[ "$links" == "$want_links" ]] ||
+    fail "$section" "$what: issue_links holds the projection of the needs tuples out of $ordered, and no other row" \
+      "issue_links holds '$links'; the current needs tuples out of $ordered name '$tuples'; want '$want_links' beside '$want_tuples'"
+  pass "$section" "$what: the current needs tuples out of $ordered name '$tuples', and issue_links holds their projection '$links'"
 }
 
 # --- setup: the earlier release over an emptied database --------------------------------------
@@ -495,16 +524,53 @@ expect "$section" "GET /api/v1/issues/$ordered/events answers no object whose bl
 expect "$section" "GET /api/v1/issues/$ordered/events answers an object holding both members, naming $blocker" true \
   --arg b "$blocker" '[.. | objects | select(has("blocked_by") or has("needs"))] as $held
     | ($held | length > 0) and any($held[]; (.needs // []) | index($b) != null)'
+# Both answer from the needs tuples, and the stored issue_links row is their projection.
+issue_tree_order_projection "$section" "the dependency the three reads answer" "$blocker"
 tree_send PATCH "/api/v1/issues/$ordered" "$(jq -cn --arg b "$blocker" --argjson a "$(tree_actor)" \
   '{needs: [$b], blocked_by: [$b], actor: $a}')"
 tree_want 200 "$section" "PATCH $ordered with needs and blocked_by naming the same target"
 expect "$section" "a PATCH naming needs and blocked_by with the same target is served from them" \
   "$(jq -cn --arg b "$blocker" '[[$b], [$b]]')" '[.blocked_by, .needs]'
+issue_tree_order_projection "$section" "the dependency that PATCH is served from" "$blocker"
+# A PATCH whose two lists name the same two targets appends the needs tuple at the second, and its
+# answer, the issue read and issue_links read the tuples it leaves; the transaction that appends
+# that tuple writes its row. One naming the blocker alone in both lists leaves them as before.
+tree_send PATCH "/api/v1/issues/$ordered" "$(jq -cn --arg b "$blocker" --arg f "$fresh" --argjson a "$(tree_actor)" \
+  '{needs: [$b, $f], blocked_by: [$b, $f], actor: $a}')"
+tree_want 200 "$section" "PATCH $ordered with needs and blocked_by naming $blocker and $fresh"
+both_targets="$(jq -cn --arg b "$blocker" --arg f "$fresh" '[$b, $f] | sort | [., .]')"
+readonly both_targets
+expect "$section" "a PATCH naming needs and blocked_by with $blocker and $fresh is served from them" \
+  "$both_targets" '[(.blocked_by | sort), (.needs | sort)]'
+issue_tree_order_projection "$section" "the dependencies a PATCH naming $blocker and $fresh in both lists leaves" "$blocker" "$fresh"
+tree_send GET "/api/v1/issues/$ordered"
+tree_want 200 "$section" "read $ordered after the PATCH naming $blocker and $fresh"
+expect "$section" "GET /api/v1/issues/$ordered answers blocked_by beside needs, each naming $blocker and $fresh, as the needs tuples do" \
+  "$both_targets" '[(.blocked_by | sort), (.needs | sort)]'
+query "$section" "read the transactions that wrote the needs tuple $ordered -> $fresh and its issue_links row" "
+    select coalesce((select xmin::text from graph_tuples
+                     where from_kind = 'issue' and from_id = '$ordered' and kind = 'needs' and to_kind = 'issue' and to_id = '$fresh'
+                       and asserted order by seq desc limit 1), 'none') || ' ' ||
+           coalesce((select xmin::text from issue_links where issue_key = '$ordered' and kind = 'blocked_by' and target_key = '$fresh'), 'none')"
+read -r tuple_xmin row_xmin <<<"$answer"
+[[ "$tuple_xmin" =~ ^[0-9]+$ ]] ||
+  fail "$section" "the store holds the needs tuple $ordered -> $fresh the PATCH appended" "the tuple's transaction reads '$tuple_xmin'"
+[[ "$row_xmin" == "$tuple_xmin" ]] ||
+  fail "$section" "the transaction that appended the needs tuple $ordered -> $fresh wrote its issue_links row" \
+    "the tuple was written by transaction $tuple_xmin and the row by '$row_xmin'"
+pass "$section" "transaction $tuple_xmin appended the needs tuple $ordered -> $fresh and wrote its issue_links row"
+tree_send PATCH "/api/v1/issues/$ordered" "$(jq -cn --arg b "$blocker" --argjson a "$(tree_actor)" \
+  '{needs: [$b], blocked_by: [$b], actor: $a}')"
+tree_want 200 "$section" "PATCH $ordered with needs and blocked_by naming $blocker alone again"
+expect "$section" "a PATCH naming needs and blocked_by with $blocker alone is served from them" \
+  "$(jq -cn --arg b "$blocker" '[[$b], [$b]]')" '[.blocked_by, .needs]'
+issue_tree_order_projection "$section" "the dependency a PATCH naming $blocker alone in both lists leaves" "$blocker"
 tree_send PATCH "/api/v1/issues/$ordered" "$(jq -cn --arg b "$blocker" --arg f "$fresh" --argjson a "$(tree_actor)" \
   '{needs: [$b], blocked_by: [$f], actor: $a}')"
 tree_want 400 "$section" "PATCH $ordered with needs and blocked_by naming different targets"
 expect "$section" "the refusal of two different lists names needs and blocked_by" true \
   '(tostring | contains("needs")) and (tostring | contains("blocked_by"))'
+issue_tree_order_projection "$section" "the dependency the refused PATCH leaves as it was" "$blocker"
 # Each field the issue read answered before the upgrade still answers once the issue converted.
 lost="$(jq -r --slurpfile after "$work/issue.after.json" \
   '[to_entries[] | select(.value != null) | .key as $k | select(($after[0] | has($k) | not) or $after[0][$k] == null) | $k] | join(", ")' \

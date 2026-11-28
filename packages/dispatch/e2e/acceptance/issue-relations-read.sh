@@ -13,7 +13,11 @@
 #      and a block of a spec. Each is 400 naming filed_from, and I's filed_from still names the
 #      comment after each. A 200 fails naming the value that was taken.
 #   R3 GET /api/v1/references?from=<I> answers child_of P, needs S, duplicate_of D and filed_from
-#      the comment, one edge of each kind, each at its target.
+#      the comment, one edge of each kind, each at its target. The read reaches no node through a
+#      document row: each of the four edges is the store's current tuple of its kind out of I's
+#      own node, no mention and no block of a document; and a document the driver uploads to I,
+#      citing T and the message, to which I holds no relation, reaches both (the same read from
+#      that document answers them), while the read of I answers neither.
 #   R4 `dispatch read --issue I` prints the same four, once each, in its Links: section.
 #   R5 `dispatch issue --duplicate-of I` creates I2, and `dispatch issue-update --filed-from` sets
 #      its filed_from to the message's canonical reference; the store holds I2's current
@@ -22,12 +26,16 @@
 #      from I2 to S and issue_links holds the row (I2, blocked_by, S). A failure prints both reads.
 #   R7 The issue read of I, which is converted, answers in verification_artifact_id and
 #      plan_artifact_id the artifact ids of its verification and plan query nodes, and its spec as
-#      its primary document, the store holding a query node for each of its four queries. While a
-#      server process that lists no issue_room capability is live, an issue is born unconverted:
-#      the driver stands one in (a copy of the server's own row of server_processes, with no
-#      capabilities and a heartbeat of its own, removed again before the section ends) and
-#      creates U, whose issue read answers in those two fields the ids of its role documents,
-#      neither of them a query node.
+#      its primary document, the store holding a query node for each of its four queries and the
+#      read's `queries` naming each of them. Neither field reaches its node through a document row:
+#      the driver gives two other documents of I the verification and the plan role in their rows
+#      (the role a document row of an issue that has not converted carries), and the issue read of
+#      I still answers the query nodes in both fields and in `queries`, never those documents; the
+#      roles are cleared again before the section ends. While a server process that lists no
+#      issue_room capability is live, an issue is born unconverted: the driver stands one in (a copy
+#      of the server's own row of server_processes, with no capabilities and a heartbeat of its
+#      own, removed again before the section ends) and creates U, whose issue read answers in those
+#      two fields the ids of its role documents, neither of them a query node.
 #   R8 It searches packages/dispatch/web/src, packages/envoy-client/src and packages/daemon for a
 #      reader of either field, after finding a reader it plants in a scratch copy of one file, and
 #      finds none that is not marked `kept for one release: role-artifact-ids` on its line or the
@@ -104,10 +112,14 @@ tree_cli_init
 keys=()
 hold_instance=""
 hold_pid=""
+# The documents of I whose rows R7 gives a role, cleared again before R7 ends or, after a failure,
+# by cleanup.
+role_documents=()
 cleanup() {
   local code=$? closing
   trap - EXIT INT TERM
   issue_relations_read_release_room
+  issue_relations_read_clear_roles
   for closing in "${keys[@]}"; do
     close_issue "$closing"
   done
@@ -181,6 +193,26 @@ issue_relations_read_release_room() {
       printf '%s: could not remove the process row %s: %s\n' "$driver" "$hold_instance" "$(<"$work/release")" >&2
     hold_instance=""
   fi
+}
+
+# issue_relations_read_clear_roles: clears the role R7 gave the rows of the documents in
+# role_documents; safe to call twice and when none holds one. A failure is printed on stderr.
+issue_relations_read_clear_roles() {
+  local list
+  ((${#role_documents[@]} > 0)) || return 0
+  list="$(printf "'%s'," "${role_documents[@]}")"
+  env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" -X -q -At \
+    -c "update artifacts set role = null where id in (${list%,})" >/dev/null 2>"$work/clear" ||
+    printf '%s: could not clear the role of %s: %s\n' "$driver" "${role_documents[*]}" "$(<"$work/clear")" >&2
+  role_documents=()
+}
+
+# issue_relations_read_reached FILE: the edges of the references read in FILE at the third issue or
+# at the message, each as `<kind> <node kind> <node id>`.
+issue_relations_read_reached() {
+  jq -c --arg t "$third" --arg m "$message_id" --arg mr "$message_ref" \
+    '[.edges[] | select((.node.kind == "issue" and (.node.id == $t or .node.ref == ("dispatch://" + $t)))
+      or (.node.kind == "message" and (.node.id == $m or .node.ref == $mr))) | "\(.kind) \(.node.kind) \(.node.id)"]' "$1"
 }
 
 # issue_relations_read_readers DIR…: prints each reader of the issue read's verification_artifact_id
@@ -321,6 +353,57 @@ for kind in "${relations[@]}"; do
     fail R3 "GET /api/v1/references?from=dispatch://$issue answers $kind once, at ${relation_ref[$kind]}" "its $kind edges are $got"
   pass R3 "GET /api/v1/references?from=dispatch://$issue answers $kind once, at ${relation_ref[$kind]}"
 done
+# Neither read reaches a node through a document row. This one answers each relation out of the
+# issue's own node: each edge is the store's current tuple of its kind out of issue/<I>, no mention
+# (a mention carries the event that introduced it, source_seq) and no block of a document.
+for kind in "${relations[@]}"; do
+  tree_node_far R3 "issue/$issue" "$kind"
+  [[ "$answer" == "${relation_node[$kind]}/${relation_id[$kind]}" ]] ||
+    fail R3 "the $kind edge the read of $issue answers is the store's current $kind tuple out of issue/$issue" \
+      "the store's current $kind tuples out of issue/$issue name '$answer'; the read answers ${relation_ref[$kind]}"
+  edge="$(jq -c --arg k "$kind" '[.edges[] | select(.kind == $k) | {direction, source_seq, block: (.block // null)}]' \
+    "$work/references.json")"
+  jq -e 'length == 1 and .[0].direction == "out" and .[0].source_seq == null and .[0].block == null' <<<"$edge" >/dev/null ||
+    fail R3 "the $kind edge of $issue goes out of the issue's own node, no mention and no block of a document" "it reads $edge"
+  pass R3 "the $kind edge of $issue is the store's current tuple out of issue/$issue at '$answer', no mention and no block of a document"
+done
+# A document of I that cites the third issue and the message, to neither of which I holds a
+# relation: the same read from that document reaches both, and the read of I reaches neither and
+# answers its four relations as before.
+readonly relation_kinds_json='["child_of","needs","duplicate_of","filed_from"]'
+jq -cS --argjson kinds "$relation_kinds_json" \
+  '[.edges[] | select(.kind as $k | $kinds | index($k)) | {kind, node: .node.kind, id: .node.id}] | sort' \
+  "$work/references.json" >"$work/relations.before"
+printf 'A document of %s citing dispatch://%s and %s, to neither of which the issue holds a relation.\n' \
+  "$issue" "$third" "$message_ref" >"$work/cited.md"
+corpus_upload R3 "$issue" relations-cited.md "$work/cited.md"
+readonly cited_ref="dispatch://$issue/artifact/$corpus_slug"
+deadline=$((SECONDS + tree_wait_seconds))
+while true; do
+  tree_send GET "/api/v1/references?from=$(q "$cited_ref")"
+  tree_want 200 R3 "read the edges of $cited_ref"
+  reached="$(issue_relations_read_reached "$work/body")"
+  if jq -e 'map(split(" ")[1]) | unique == ["issue", "message"]' <<<"$reached" >/dev/null; then
+    break
+  fi
+  ((SECONDS < deadline)) ||
+    fail R3 "the document $cited_ref reaches $third and the message $message_id it cites" \
+      "after ${tree_wait_seconds} s its references read answers $reached of them: $(head -c 600 "$work/body")"
+  sleep "$tree_poll_seconds"
+done
+pass R3 "the document $cited_ref reaches what it cites: $reached"
+tree_send GET "/api/v1/references?from=$(q "dispatch://$issue")"
+tree_want 200 R3 "read the relations of $issue again"
+reached="$(issue_relations_read_reached "$work/body")"
+[[ "$reached" == "[]" ]] ||
+  fail R3 "the read of $issue reaches no node through its document $cited_ref" "it answers $reached"
+jq -cS --argjson kinds "$relation_kinds_json" \
+  '[.edges[] | select(.kind as $k | $kinds | index($k)) | {kind, node: .node.kind, id: .node.id}] | sort' \
+  "$work/body" >"$work/relations.after"
+[[ "$(<"$work/relations.after")" == "$(<"$work/relations.before")" ]] ||
+  fail R3 "the read of $issue answers its four relations as before its document cited anything" \
+    "before: $(<"$work/relations.before"); after: $(<"$work/relations.after")"
+pass R3 "the read of $issue reaches neither $third nor the message its document $cited_ref cites, and answers its four relations as before"
 
 # --- R4: dispatch read --issue prints them under Links: --------------------------------------------
 
@@ -397,6 +480,38 @@ tree_want 200 R7 "read $issue"
 expect R7 "the issue read of $issue answers its query nodes in primary_artifact_id, verification_artifact_id and plan_artifact_id" \
   "$(jq -cS '{primary: .spec, verification: .verification, plan: .plan}' <<<"$queries")" \
   '{primary: .primary_artifact_id, verification: .verification_artifact_id, plan: .plan_artifact_id}'
+expect R7 "the issue read of $issue names a query node for each of its four queries in queries" \
+  "$(jq -cS . <<<"$queries")" '[.queries[] | {key: .query, value: .artifact_id}] | from_entries'
+# Neither field reaches its node through a document row: two other documents of I, whose rows the
+# driver gives the verification and the plan role (the column a role document of an issue that has
+# not converted is found by), answer neither field and no query.
+printf 'A document of %s whose row the relations check gives the verification role.\n' "$issue" >"$work/role-verification.md"
+corpus_upload R7 "$issue" relations-role-verification.md "$work/role-verification.md"
+readonly role_verification="$corpus_doc"
+printf 'A document of %s whose row the relations check gives the plan role.\n' "$issue" >"$work/role-plan.md"
+corpus_upload R7 "$issue" relations-role-plan.md "$work/role-plan.md"
+readonly role_plan="$corpus_doc"
+role_documents=("$role_verification" "$role_plan")
+with_vars R7 "give the rows of $role_verification and $role_plan the verification and the plan role" \
+  "with given as (update artifacts set role = case when id = :'v'::uuid then 'verification' else 'plan' end
+     where id in (:'v'::uuid, :'p'::uuid) returning 1)
+   select count(*) from given" v="$role_verification" p="$role_plan"
+[[ "$answer" == 2 ]] || fail R7 "give two documents of $issue a role in their rows" "the update wrote $answer rows"
+want_value R7 "the rows of $issue that hold the verification and the plan role are $role_verification and $role_plan" \
+  "$role_verification $role_plan" \
+  "select coalesce((select id::text from artifacts where issue_key = '$issue' and role = 'verification'), 'none') || ' ' ||
+          coalesce((select id::text from artifacts where issue_key = '$issue' and role = 'plan'), 'none')"
+tree_send GET "/api/v1/issues/$issue"
+tree_want 200 R7 "read $issue while two documents of it hold the verification and the plan role in their rows"
+expect R7 "the issue read of $issue answers its query nodes in verification_artifact_id and plan_artifact_id, not $role_verification and $role_plan, whose rows hold those roles" \
+  "$(jq -cS '{verification: .verification, plan: .plan}' <<<"$queries")" \
+  '{verification: .verification_artifact_id, plan: .plan_artifact_id}'
+expect R7 "the issue read of $issue names its query nodes in queries, not $role_verification and $role_plan" \
+  "$(jq -cS . <<<"$queries")" '[.queries[] | {key: .query, value: .artifact_id}] | from_entries'
+want_value R7 "clear the role of $role_verification and $role_plan" 2 \
+  "with cleared as (update artifacts set role = null where id in ('$role_verification', '$role_plan') returning 1)
+   select count(*) from cleared"
+role_documents=()
 
 issue_relations_read_hold_room R7
 issue_relations_read_create R7 "Relations check: an issue born while a process lists no issue room $stamp" '{}'

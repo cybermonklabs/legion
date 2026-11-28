@@ -36,10 +36,15 @@
 #     both replies under it, and the ask); every requirement hangs where its `From:` line puts it,
 #     under the first conversation node of the parent the line cites, else under the issue, and the
 #     count of requirements so redrawn equals the count of requirements before, else the run prints
-#     each requirement that hangs elsewhere, by its id, and fails; every check hangs under the
-#     requirement it serves; each requirement and check keeps its author and its words; the parent
-#     holds no criterion node; its ?view=spec answers its four requirements and no prose node; and
-#     its spec still reads approved, by a carried review at the version the conversion wrote;
+#     each requirement that hangs elsewhere, by its id, and fails; every check, walked up its
+#     parents, passes through the requirement it serves and stops at the exchange that produced it
+#     (the conversation node its requirement's From: line names, the issue for the one whose line
+#     cites none of the parent's), and the count of checks so redrawn equals the count of checks
+#     before, else the run prints each check that hangs elsewhere, by its id with its walk, and
+#     fails; every check hangs under the requirement it serves; each requirement and check keeps
+#     its author and its words; the parent holds no criterion node; its ?view=spec answers its four
+#     requirements and no prose node; and its spec still reads approved, by a carried review at the
+#     version the conversion wrote;
 #   - children: the first child's tree read answers no conversation node (a node of kind comment,
 #     comment_block, message or ask of its own issue), each one found printed, and GET
 #     /api/v1/issues/{key}/asks of it answers no ask of kind approval; the second child reads
@@ -321,6 +326,12 @@ readonly requirements_before
   fail "$section" "the parent $parent_key holds its four requirements before the conversion" \
     "its tree read answers $requirements_before: $(<"$work/parent-nodes.before")"
 pass "$section" "the parent $parent_key holds $requirements_before requirements and their checks before the conversion"
+checks_before="$(jq '[.[] | select(.supertag == "check")] | length' "$work/parent-nodes.before")"
+readonly checks_before
+[[ "$checks_before" == 4 ]] ||
+  fail "$section" "the parent $parent_key holds its four checks before the conversion" \
+    "its tree read answers $checks_before: $(<"$work/parent-nodes.before")"
+pass "$section" "the parent $parent_key holds $checks_before checks before the conversion"
 tree_wait_announcement "$section"
 
 section=convert
@@ -396,6 +407,38 @@ done
   fail "$section" "every requirement of $parent_key hangs where its From: line puts it" \
     "$redrawn of $requirements_before requirements redrawn${misplaced}"
 pass "$section" "all $redrawn requirements of $parent_key hang where their From: lines put them"
+# Every verification node of the parent hangs under the exchange that produced it: each check,
+# walked up its parents in the tree read, passes through the requirement it serves and stops at the
+# first conversation node it meets, the one its requirement's From: line puts that requirement
+# under, or at the issue for the requirement whose line cites none of the parent's.
+checks_redrawn=0
+misplaced=""
+for placed in "c-from-ask r-from-ask ask $parent_ask" "c-from-comment r-from-comment comment $parent_comment" \
+  "c-from-other r-from-other issue $parent_key" "c-from-both r-from-both comment $parent_comment"; do
+  read -r check requirement kind id <<<"$placed"
+  walk="$(jq -c --arg c "$check" --arg k "$parent_key" '
+    def up($by; $node; $depth):
+      if $depth > 32 or ($node.parent // null) == null then [{kind: "none", id: "none"}]
+      else ($node.parent.kind // "none") as $kind | ($node.parent.id // "none") as $id
+        | [{kind: $kind, id: $id, supertag: ($by[$id].supertag // null), block_id: ($by[$id].block_id // null)}]
+          + (if (["ask", "comment", "message", "issue"] | index($kind)) != null or $by[$id] == null then []
+             else up($by; $by[$id]; $depth + 1) end)
+      end;
+    (.nodes | map({key: .id, value: .}) | from_entries) as $by
+    | [.nodes[] | select(.supertag == "check" and .block_id == $c and ((.issue // $k) == $k))]
+    | if length == 1 then up($by; .[0]; 0) else [{kind: "\(length) nodes", id: "none"}] end' "$work/parent.after.json")"
+  if jq -e --arg r "$requirement" --arg kind "$kind" --arg id "$id" \
+    'length == 2 and .[0].supertag == "requirement" and .[0].block_id == $r and .[1].kind == $kind and (.[1].id | endswith($id))' \
+    <<<"$walk" >/dev/null; then
+    checks_redrawn=$((checks_redrawn + 1))
+  else
+    misplaced+="; $check hangs under $(jq -r 'map(if .block_id != null then "\(.supertag) \(.block_id)" else "\(.kind) \(.id)" end) | join(" < ")' <<<"$walk"), want requirement $requirement < $kind $id"
+  fi
+done
+[[ "$checks_redrawn" == "$checks_before" ]] ||
+  fail "$section" "every check of $parent_key hangs, through the requirement it serves, under the exchange that produced it" \
+    "$checks_redrawn of $checks_before checks redrawn${misplaced}"
+pass "$section" "all $checks_redrawn checks of $parent_key hang, through the requirement each serves, under the exchange its From: line names (the issue for r-from-other)"
 # Each check under the requirement it serves.
 for requirement in r-from-ask r-from-comment r-from-other r-from-both; do
   expect "$section" "the check c-${requirement#r-} hangs under the requirement $requirement it serves" true \
