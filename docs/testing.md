@@ -686,7 +686,8 @@ go test starts no parallel test until every serial one has run, so a test with n
 nor the comment runs alone for no reason, as 46 of `internal/daemon`'s did by 2026-11-25.
 
 Each package checks itself: its `TestEveryTestCallsParallelOrSaysWhyNot` (`parallel_rule_test.go`,
-or the five daemon packages' `main_test.go`) calls `packages/envoy/testparallel`'s `Require`, which reads every
+or the file that declares `TestMain` in six daemon packages: `main_test.go`, and `workspace_test.go`
+in `internal/workspace`) calls `packages/envoy/testparallel`'s `Require`, which reads every
 `_test.go` file of the package and fails naming each test that breaks the rule, and how. The
 daemon module's packages call the same check, since that module requires this one. A package that
 comes to run its tests beside each other adds itself to the list above and that test.
