@@ -1,0 +1,10 @@
+{"Time":"2026-11-28T09:46:01.430379623Z","Action":"start","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout"}
+{"Time":"2026-11-28T09:46:01.442317207Z","Action":"run","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Test":"TestACalloutStormAfterAServerRestartAdmitsEveryConnection"}
+{"Time":"2026-11-28T09:46:06.63580106Z","Action":"run","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Test":"TestACalloutStormAfterAServerRestartAdmitsEveryConnection/control:_admissions_the_server_stopped_waiting_for"}
+{"Time":"2026-11-28T09:46:09.143635856Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Test":"TestACalloutStormAfterAServerRestartAdmitsEveryConnection/control:_admissions_the_server_stopped_waiting_for","Elapsed":2.51}
+{"Time":"2026-11-28T09:46:09.14364744Z","Action":"run","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Test":"TestACalloutStormAfterAServerRestartAdmitsEveryConnection/control:_clients_that_give_up_on_a_refused_credential"}
+{"Time":"2026-11-28T09:46:18.19333101Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Test":"TestACalloutStormAfterAServerRestartAdmitsEveryConnection/control:_clients_that_give_up_on_a_refused_credential","Elapsed":9.05}
+{"Time":"2026-11-28T09:46:18.205226973Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Test":"TestACalloutStormAfterAServerRestartAdmitsEveryConnection","Elapsed":16.76}
+{"Time":"2026-11-28T09:46:18.205234661Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T09:46:18.221245084Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Output":"ok  \tgithub.com/sjawhar/envoy/internal/cipher/natscallout\t16.791s\n"}
+{"Time":"2026-11-28T09:46:18.221268676Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/cipher/natscallout","Elapsed":16.791}

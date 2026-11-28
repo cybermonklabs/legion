@@ -1,0 +1,63 @@
+name: Report the Go CPU record
+description: >-
+  The step of an envoy-go job that closes what the go-cpu-start action opened: it runs
+  .github/scripts/go-cpu-runner.py report, which stops the /proc/stat sampler, keeps /proc/stat
+  as the job's end, and prints the `go-cpu job:` line, the rows of the job's test binaries summed
+  by class (the CPU and wall seconds its Go tests took), and the `go-cpu usage:` line, the CPU
+  the whole machine used between the two steps, with the Go build cache entries the job added and
+  the CPU of its Postgres containers; the script's header says what each figure is.
+  The calling step sets `if: always()`, so a failed or cancelled job is measured too,
+  `continue-on-error: true` and `timeout-minutes: 2`, because the report only measures and must
+  neither fail nor hold the job. It runs before the job's step "Upload the go test events"
+  (.github/actions/go-test-events-upload), which uploads `$RUNNER_TEMP/go-test-events/` as the
+  artifact `go-test-events-<job id>`, so that artifact carries the files the report writes there.
+
+inputs:
+  rows:
+    description: >-
+      "true" reads the rows and the Postgres containers and prints the job line; "false"
+      (`report --no-rows`) prints the usage line alone, for the envoy-go-checks job, which runs no
+      go test.
+    required: false
+    default: "true"
+  postgres:
+    description: >-
+      `job.services.postgres.id` of the calling job, its Postgres service container, read as
+      `--postgres service=<id>`; empty for a job with no service.
+    required: false
+    default: ""
+  containers:
+    description: >-
+      The names of the other Postgres containers the job started, separated by spaces, each read
+      as `--postgres <name>=<name>`.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Report the Go CPU record
+      shell: bash
+      env:
+        ROWS: ${{ inputs.rows }}
+        POSTGRES: ${{ inputs.postgres }}
+        CONTAINERS: ${{ inputs.containers }}
+      run: |
+        set -euo pipefail
+        arguments=()
+        case "$ROWS" in
+          true) ;;
+          false) arguments+=(--no-rows) ;;
+          *)
+            echo "::error::go-cpu-report: the rows input is \"$ROWS\", and it takes \"true\" or \"false\"" >&2
+            exit 1
+            ;;
+        esac
+        if [ -n "$POSTGRES" ]; then
+          arguments+=(--postgres "service=$POSTGRES")
+        fi
+        read -r -a names <<< "$CONTAINERS"
+        for name in "${names[@]}"; do
+          arguments+=(--postgres "$name=$name")
+        done
+        "$GITHUB_ACTION_PATH/../../scripts/go-cpu-runner.py" report "${arguments[@]}"

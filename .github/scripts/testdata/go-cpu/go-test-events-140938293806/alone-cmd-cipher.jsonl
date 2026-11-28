@@ -1,0 +1,8 @@
+{"Time":"2026-11-28T09:39:34.767308019Z","Action":"start","Package":"github.com/sjawhar/envoy/cmd/cipher"}
+{"Time":"2026-11-28T09:39:34.780208507Z","Action":"run","Package":"github.com/sjawhar/envoy/cmd/cipher","Test":"TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown"}
+{"Time":"2026-11-28T09:39:45.080778284Z","Action":"pass","Package":"github.com/sjawhar/envoy/cmd/cipher","Test":"TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown","Elapsed":10.3}
+{"Time":"2026-11-28T09:39:45.080795557Z","Action":"run","Package":"github.com/sjawhar/envoy/cmd/cipher","Test":"TestExecLearnsOfTheGrantWithinASecond"}
+{"Time":"2026-11-28T09:39:49.981518411Z","Action":"pass","Package":"github.com/sjawhar/envoy/cmd/cipher","Test":"TestExecLearnsOfTheGrantWithinASecond","Elapsed":4.9}
+{"Time":"2026-11-28T09:40:26.864955329Z","Action":"output","Package":"github.com/sjawhar/envoy/cmd/cipher","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T09:40:26.895322444Z","Action":"output","Package":"github.com/sjawhar/envoy/cmd/cipher","Output":"ok  \tgithub.com/sjawhar/envoy/cmd/cipher\t52.128s\n"}
+{"Time":"2026-11-28T09:40:26.895355517Z","Action":"pass","Package":"github.com/sjawhar/envoy/cmd/cipher","Elapsed":52.128}

@@ -1,0 +1,8 @@
+{"Time":"2026-11-28T09:41:50.017937017Z","Action":"start","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt"}
+{"Time":"2026-11-28T09:41:50.020310048Z","Action":"run","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Test":"TestTheAdoptStepCarriesARouteAcrossTheMoveAndTwoAddedRoutesMerge"}
+{"Time":"2026-11-28T09:41:50.482340861Z","Action":"pass","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Test":"TestTheAdoptStepCarriesARouteAcrossTheMoveAndTwoAddedRoutesMerge","Elapsed":0.46}
+{"Time":"2026-11-28T09:41:50.482353636Z","Action":"run","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Test":"TestTheAdoptStepRemovesARouteTheBranchRemoved"}
+{"Time":"2026-11-28T09:41:50.719172409Z","Action":"pass","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Test":"TestTheAdoptStepRemovesARouteTheBranchRemoved","Elapsed":0.24}
+{"Time":"2026-11-28T09:41:55.983265348Z","Action":"output","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T09:41:55.984666217Z","Action":"output","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Output":"ok  \tgithub.com/sjawhar/envoy/cmd/dispatch-route-adopt\t5.966s\n"}
+{"Time":"2026-11-28T09:41:55.984685975Z","Action":"pass","Package":"github.com/sjawhar/envoy/cmd/dispatch-route-adopt","Elapsed":5.967}

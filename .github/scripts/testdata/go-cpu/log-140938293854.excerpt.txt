@@ -1,0 +1,10 @@
+2026-11-28T09:43:16.9694768Z Version: 20261111.635
+2026-11-28T09:43:16.9696750Z Worker ID: {925a2caf-80f1-4e1b-ae73-fa013ebe74a1}
+2026-11-28T09:43:16.9697698Z Region: eastus2
+2026-11-28T09:43:16.9703532Z Image: ubuntu-24.04
+2026-11-28T09:43:16.9704034Z Version: 20261122.23.1
+2026-11-28T09:43:51.9149486Z Cache hit for restore-key: go-envoy-Linux-X64-go1.27.3-c959deafa91232ac13f9a1213b0df6936deffe1a
+2026-11-28T09:43:52.5730265Z Cache Size: ~118 MB (124142684 B)
+2026-11-28T09:43:53.4091017Z Cache restored from key: go-envoy-Linux-X64-go1.27.3-c959deafa91232ac13f9a1213b0df6936deffe1a
+2026-11-28T09:43:54.1510177Z go-cpu runner: part= cpus=4 mem_kib=16366488 kernel=7.0.0-1020-azure probe_one=1456.1 probe_all=3362.7 cache_entries=1848 goflags="" model="INTEL(R) XEON(R) PLATINUM 8573C"
+2026-11-28T09:52:11.3107772Z go-cpu usage: busy=1844.79 user=1147.62 sys=697.17 iowait=8.34 steal=0.00 idle=128.73

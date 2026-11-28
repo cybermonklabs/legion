@@ -1,0 +1,12 @@
+{"ImportPath":"github.com/sjawhar/envoy/internal/dispatch/docs.test","Action":"build-output","Output":"# github.com/sjawhar/envoy/internal/dispatch/docs.test\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\ncheckfinalizers: queue: 0 finalizers + 0 cleanups\n"}
+{"Time":"2026-11-28T09:48:30.035494868Z","Action":"start","Package":"github.com/sjawhar/envoy/internal/dispatch/docs"}
+{"Time":"2026-11-28T09:48:30.043779264Z","Action":"run","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Test":"TestXidWindowAnchorBlockBackfill"}
+{"Time":"2026-11-28T09:48:34.742867029Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Test":"TestXidWindowAnchorBlockBackfill","Elapsed":4.7}
+{"Time":"2026-11-28T09:48:34.742888789Z","Action":"run","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Test":"TestXidWindowKeepsD6WhenTheLoadHoldsThePs"}
+{"Time":"2026-11-28T09:48:35.233240337Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Test":"TestXidWindowKeepsD6WhenTheLoadHoldsThePs","Elapsed":0.49}
+{"Time":"2026-11-28T09:48:43.769272013Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T09:48:43.805172193Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Output":"checkfinalizers: queue: 0 finalizers + 0 cleanups\n"}
+{"Time":"2026-11-28T09:48:43.809393862Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Output":"checkfinalizers: queue: 0 finalizers + 0 cleanups\n"}
+{"Time":"2026-11-28T09:48:43.809426111Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Output":"docs: 21 services built, 0 still alive after 9ms\n"}
+{"Time":"2026-11-28T09:48:43.81950546Z","Action":"output","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Output":"ok  \tgithub.com/sjawhar/envoy/internal/dispatch/docs\t13.784s\n"}
+{"Time":"2026-11-28T09:48:43.819537965Z","Action":"pass","Package":"github.com/sjawhar/envoy/internal/dispatch/docs","Elapsed":13.784}
