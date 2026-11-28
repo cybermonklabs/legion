@@ -49,10 +49,11 @@ jobs:
     runs-on: ubuntu-24.04
     # The setup below (Bun, the workspace install, Go and the go-envoy restore) is the one these
     # tests ran under in that job, kept whole so that no test loses a tool it reads. Their steps took
-    # 15.8 min at the median and 21.4 at most over 695 pull-request runs of 2026-11-22.
-    timeout-minutes: 30
+    # 15.8 min at the median and 21.4 at most over 695 pull-request runs of 2026-11-22; 30 minutes
+    # for them, and the CPU record's 3 (its start's 1 and its report's 2), make 33.
+    timeout-minutes: 33
     env:
-      JOB_TIMEOUT_MINUTES: 30 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 33 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +75,10 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Record the runner's facts and start its CPU sample
+        timeout-minutes: 1
+        uses: ./.github/actions/go-cpu-start
 
       # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
       # instead of building helm with `go run`, which downloads and compiles it first: the render
@@ -224,6 +229,15 @@ jobs:
         uses: ./.github/actions/harness-times-upload
         with:
           check-run-id: ${{ job.check_run_id }}
+      # The usage line alone: this job runs no go test, and has no Postgres to read.
+      # why: .github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary
+      - name: Report the CPU time of each test binary
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.github/actions/go-cpu-report
+        with:
+          rows: "false"
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

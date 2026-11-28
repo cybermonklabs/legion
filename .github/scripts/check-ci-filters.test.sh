@@ -10,7 +10,10 @@
 # entry's pinned script or directory is refused naming the first line that differs, or both
 # directories, and on a -run or -skip list each test one side names and the other lacks, a step
 # an exact entry pins under an env, shell, container or job that could move it is refused naming
-# what does, a why that cites a step must name a workflow file that still holds it,
+# what does, but for GOFLAGS set to the CPU record's -exec alone in the workflow's or a job's env of
+# a file whose gate reads that wrapper, which moves nothing, and a change to only the record's
+# wrapper, runner or actions selects the envoy-go jobs that run them, a why that cites a step must
+# name a workflow file that still holds it,
 # CI_OK_SELECTED_BY must map every job changes gates, it and CI_OK_PULL_REQUEST_ONLY must say what
 # each job's if: tests, every job of ci.yaml must be in exactly one of ci-ok's three classes
 # (CI_OK_SELECTED_BY, CI_OK_ALWAYS_RUN, CI_OK_EXEMPT) and a CI_OK_ALWAYS_RUN job must be gated by
@@ -4186,6 +4189,108 @@ for around in env shell container github-env; do
   check "and says how to keep a setting that moves nothing" "$(contains "$out" 'or, for a name with which go compiles the same files and runs the same tests, add it to ENV_ALLOWED$')"
 done
 
+# One GOFLAGS value is taken as if its name were in ENV_ALLOWED (ci_filter_coverage.py's
+# GO_CPU_GOFLAGS): -exec of the wrapper that records the CPU of each test binary, as GOFLAGS' whole
+# value, in the workflow's or a job's env, in a workflow file holding the steps of a job whose gate
+# reads that wrapper. go compiles the same files with it, and the wrapper runs the same tests, so
+# the app job's simple go test stays reduced and its pinned step unrefused. Any other value, this
+# one in a step's env, and this one in a file whose gate does not read the wrapper move what the
+# job runs as any other GOFLAGS does: each case below is one way a wider exception would let them.
+go_cpu_goflags='-exec=${{ github.workspace }}/.github/scripts/go-cpu-exec.py'
+
+# go_cpu_reader <root>: the fixture holds the wrapper, and the app gate reads it.
+go_cpu_reader() {
+  printf '#!/usr/bin/env python3\n' > "$1/.github/scripts/go-cpu-exec.py"
+  replace "$1/.github/ci-gates/app.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+    'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), Read(".github/scripts/go-cpu-exec.py", "the wrapper the GOFLAGS around the job runs its go test through")]'
+}
+
+# goflags_at <file> <workflow|job|step> <value>: sets GOFLAGS to <value> in the env of the fixture's
+# ci.yaml (<file>), of its app job, or of that job's step "Test the app".
+goflags_at() {
+  case $2 in
+    workflow) replace "$1" "  CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" "  CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'"$'\n'"  GOFLAGS: $3" ;;
+    job) replace "$1" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Test the app' \
+      $'    runs-on: ubuntu-24.04\n    env:\n      GOFLAGS: '"$3"$'\n    steps:\n      - name: Test the app' ;;
+    step) replace "$1" "        working-directory: mod" $'        working-directory: mod\n        env:\n          GOFLAGS: '"$3" ;;
+  esac
+}
+
+for level in workflow job; do
+  echo "case: the wrapper's GOFLAGS in the $level's env, where the gate reads the wrapper, keeps a simple go test reduced"
+  root=$(fixture "go-cpu-goflags-$level")
+  go_cpu_reader "$root"
+  goflags_at "$root/.github/workflows/ci.yaml" "$level" "$go_cpu_goflags"
+  run_check "$root"
+  check "exits 0" "$(is "$status" 0)"
+  check "and reduces the command to its closure and the wrapper" "$(contains "$out" '^report: app: 9 files (filter app)$')"
+  check "and the $level does carry the value" "$(is "$(python3 -c '
+import sys, yaml
+document = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+print((document if sys.argv[2] == "workflow" else document["jobs"]["app"])["env"]["GOFLAGS"])
+' "$root/.github/workflows/ci.yaml" "$level")" "$go_cpu_goflags")"
+
+  echo "case: the wrapper's GOFLAGS in the $level's env, where the gate reads the wrapper, refuses no step pinned whole"
+  root=$(fixture "go-cpu-goflags-$level-pinned")
+  exact_step_table "$root"
+  go_cpu_reader "$root"
+  goflags_at "$root/.github/workflows/ci.yaml" "$level" "$go_cpu_goflags"
+  run_check "$root"
+  check "exits 0" "$(is "$status" 0)"
+  check "and reads the step as its runs and the wrapper" "$(contains "$out" '^report: app: 9 files (filter app)$')"
+done
+
+# refused_goflags <name> <workflow|job|step> <value> <where>: a fixture whose app gate reads the
+# wrapper and pins its step whole, with GOFLAGS <value> at that level, must fail on the pinned step
+# alone, naming the env that sets it: <where>, as a pattern of the refusal's words.
+refused_goflags() {
+  root=$(fixture "$1")
+  exact_step_table "$root"
+  go_cpu_reader "$root"
+  goflags_at "$root/.github/workflows/ci.yaml" "$2" "$3"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "naming the pinned step and the env that sets GOFLAGS" \
+    "$(contains "$out" "::error file=.github/workflows/ci.yaml::job app step \"Test the app\" is pinned whole by gate app.s exact entry, but $4 env sets GOFLAGS, and that can change ")"
+  check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+}
+
+echo "case: an -exec of another wrapper in the workflow's env refuses a step pinned whole"
+refused_goflags go-cpu-goflags-other-exec workflow '-exec=${{ github.workspace }}/.github/scripts/other-exec.py' "the workflow.s"
+
+echo "case: the wrapper's -exec beside another entry in the workflow's env refuses a step pinned whole"
+refused_goflags go-cpu-goflags-more workflow "$go_cpu_goflags -tags=probe" "the workflow.s"
+
+echo "case: the wrapper's GOFLAGS in a step's env refuses that step, pinned whole"
+refused_goflags go-cpu-goflags-step step "$go_cpu_goflags" 'step "Test the app".s'
+
+echo "case: the wrapper's GOFLAGS in the workflow's env, where no gate reads the wrapper, refuses a step pinned whole"
+root=$(fixture go-cpu-goflags-unread)
+exact_step_table "$root"
+printf '#!/usr/bin/env python3\n' > "$root/.github/scripts/go-cpu-exec.py"
+goflags_at "$root/.github/workflows/ci.yaml" workflow "$go_cpu_goflags"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the pinned step and the workflow's GOFLAGS" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is pinned whole by gate app.s exact entry, but the workflow.s env sets GOFLAGS, and that can change ')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
+# The exception is the file's: a gate reading the wrapper takes it for the file that holds its
+# job's steps, ci.yaml here, and not for a workflow another job calls, whose gate does not read it.
+echo "case: the wrapper's GOFLAGS in a called workflow's env, whose gate does not read the wrapper, widens its go command"
+root=$(fixture go-cpu-goflags-called-unread)
+calls_workflow "$root"
+go_cpu_reader "$root"
+goflags_at "$root/.github/workflows/ci.yaml" workflow "$go_cpu_goflags"
+replace "$root/.github/workflows/suite.yaml" $'jobs:\n  rows:' $'env:\n  GOFLAGS: '"$go_cpu_goflags"$'\njobs:\n  rows:'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "the report names the called file's GOFLAGS" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml, which job suite calls step "Build the app" runs `go build ./cmd/app`, which this check does not reduce (the workflow.s env sets GOFLAGS)')"
+check "and the suite's filter takes every Go file" "$(widened suite)"
+check "while the app job under the same value in ci.yaml, whose gate reads the wrapper, stays reduced" \
+  "$(contains "$out" '^report: app: 9 files (filter app)$')"
+
 # A write of $GITHUB_ENV or $GITHUB_PATH reaches only the steps after the one that makes it, so a
 # write after the pinned step moves nothing it runs, while the same write before it does (the
 # github-env case above).
@@ -5414,6 +5519,39 @@ PY
 )
 check "no filter gates a job that compiles or reads files it does not select" \
   "$(is "$uncovered" "")"
+
+# The CPU record's wrapper runs every go test of envoy-go's jobs (their file's GOFLAGS), and its two
+# actions and the runner they run are steps of envoy-go's jobs and of envoy-go-checks, so a change to
+# one of them alone must select those jobs: read off the same computed filters as the case above.
+echo "case: a change to only the CPU record's wrapper, runner or actions selects the envoy-go jobs that run them"
+selected=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$real_filters" <<'PY'
+import sys, yaml, workflow_paths as wp
+from pathlib import Path
+
+filters = yaml.load(Path(sys.argv[1]).read_text(), Loader=wp.UniqueKeyLoader)
+
+
+def flat(entry):
+    return [entry] if isinstance(entry, str) else [p for x in entry for p in flat(x)]
+
+
+for path in (".github/scripts/go-cpu-exec.py", ".github/scripts/go-cpu-runner.py",
+             ".github/actions/go-cpu-start/action.yml", ".github/actions/go-cpu-report/action.yml"):
+    names = [name for name in ("envoy_go", "envoy_go_checks")
+             if name in filters and wp.Filter(flat(filters[name])).covers(path)]
+    print(f"{path}: {' '.join(names)}")
+PY
+) || selected=""
+computed=$([ -s "$real_filters" ] && ! grep -q '^# FAIL-OPEN:' "$real_filters" && echo yes || echo no)
+check "on filters the changes job computed" "$(is "$computed" yes)"
+check "a change to only .github/scripts/go-cpu-exec.py selects envoy_go" \
+  "$(contains "$selected" '^.github/scripts/go-cpu-exec.py: envoy_go\b')"
+check "one to only .github/actions/go-cpu-start/ selects envoy_go and envoy_go_checks" \
+  "$(contains "$selected" '^.github/actions/go-cpu-start/action.yml: envoy_go envoy_go_checks$')"
+check "and so does one to only .github/actions/go-cpu-report/" \
+  "$(contains "$selected" '^.github/actions/go-cpu-report/action.yml: envoy_go envoy_go_checks$')"
+check "and one to only .github/scripts/go-cpu-runner.py" \
+  "$(contains "$selected" '^.github/scripts/go-cpu-runner.py: envoy_go envoy_go_checks$')"
 
 # Rule 13 reads the root manifest as check-bun-workspace-manifests.sh reads it, at every shape:
 # a list it cannot read is named rather than taken for an empty one, which would hold WORKSPACES

@@ -67,6 +67,15 @@
 # lists for the package, which the counter holds a run of that package to, and one test that
 # passes, since a package whose tests all skip shows no run.
 #
+# Each such GOFLAGS replaces the environment's, so it starts with GOFLAGS_EXEC, the environment's
+# -exec= entry or nothing: envoy-go's jobs set GOFLAGS to an -exec= of the wrapper that records
+# the CPU each test binary takes (.github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary),
+# which these runs' binaries go through too, while no other entry of it (a local -race or -tags)
+# reaches a control, and a local run with no -exec= runs as it did. Where RUNNER_TEMP is set and
+# GO_CPU_DIR is not, the script sets GO_CPU_DIR to $RUNNER_TEMP/go-test-events/cpu, the job's
+# record directory, so the wrapper writes each run's rows there whatever RUNNER_TEMP a control
+# hands the counter.
+#
 # Every test this script plants, whether in a package through an overlay or as a --report
 # report's events, is named TestPlanted...; a report's other events name real tests of the
 # package, which it needs to show a run. A planted failure that a failed control prints so says it
@@ -90,6 +99,18 @@ API="$MODULE/internal/dispatch/api"
 # A test of the API package that passes in any run, which its narrowed runs hold beside the
 # skips.
 API_ANCHOR=TestTheDeploymentsRelatedCheckAllowanceIsTheDocumentedBound
+
+# The environment's -exec= entry, the last if it names two, as go reads them; the header says why.
+GOFLAGS_EXEC=""
+read -r -a goflags <<<"${GOFLAGS:-}"
+for flag in "${goflags[@]}"; do
+  case "$flag" in
+    -exec=*) GOFLAGS_EXEC="$flag" ;;
+  esac
+done
+if [ -n "${RUNNER_TEMP:-}" ] && [ -z "${GO_CPU_DIR:-}" ]; then
+  export GO_CPU_DIR="$RUNNER_TEMP/go-test-events/cpu"
+fi
 
 WORK="$(mktemp -d)"
 TREE=""
@@ -194,13 +215,13 @@ for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
   read -r dir run <<<"$row"
   name="planted-${dir//\//-}"
   plant "$name" "$dir" "$SKIP_BODY"
-  count "$name" env GOFLAGS="-overlay=$WORK/$name.overlay -run=$run" bash "$COUNTER" \
+  count "$name" env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/$name.overlay -run=$run" bash "$COUNTER" \
     --var BROKER_TEST_DATABASE_URL --var DISPATCH_TEST_DATABASE_URL "./$dir/"
   judge "$([ "$(code "$name")" = 1 ] && [ "$(grep -c '^SKIP ' "$WORK/$name.out")" = 1 ] &&
     grep -qxF "SKIP $MODULE/$dir TestPlantedSkip" "$WORK/$name.out" &&
     grep -qxF 'database_skips=1' "$WORK/$name.out" && echo 0 || echo 1)" \
     "control 1: a test planted in ./$dir/ that skips is counted, and fails the counter" "$(seen "$name")"
-  count "$name-none" env GOFLAGS="-run=$run" bash "$COUNTER" \
+  count "$name-none" env GOFLAGS="$GOFLAGS_EXEC -run=$run" bash "$COUNTER" \
     --var BROKER_TEST_DATABASE_URL --var DISPATCH_TEST_DATABASE_URL "./$dir/"
   judge "$([ "$(code "$name-none")" = 0 ] && grep -qxF 'database_skips=0' "$WORK/$name-none.out" &&
     grep -qxF 'go_test_exit=0' "$WORK/$name-none.out" && echo 0 || echo 1)" \
@@ -213,11 +234,11 @@ echo "database-skips.test.sh: control 2, the variable unset" >&2
 # The first run calls the counter by its path, as both CI steps do, so a counter that lost its
 # executable bit fails here (exit 126, nothing printed) rather than in the merge queue.
 default_run="-run=^(TestHealthzIsPublic|TestBootBindsOnlyAfterTheCatchUp|$airlock_expected)$"
-count unset env -u BROKER_TEST_DATABASE_URL GOFLAGS="$default_run" "$COUNTER"
+count unset env -u BROKER_TEST_DATABASE_URL GOFLAGS="$GOFLAGS_EXEC $default_run" "$COUNTER"
 judge "$([ "$(code unset)" = 1 ] && [ "$(out unset)" = 'database_skips=UNKNOWN' ] &&
   said unset 'BROKER_TEST_DATABASE_URL is unset or empty' && echo 0 || echo 1)" \
   "control 2: with BROKER_TEST_DATABASE_URL unset the counter prints UNKNOWN naming it and runs no test" "$(seen unset)"
-count empty env BROKER_TEST_DATABASE_URL= GOFLAGS="$default_run" bash "$COUNTER"
+count empty env BROKER_TEST_DATABASE_URL= GOFLAGS="$GOFLAGS_EXEC $default_run" bash "$COUNTER"
 judge "$([ "$(code empty)" = 1 ] && [ "$(out empty)" = 'database_skips=UNKNOWN' ] &&
   said empty 'BROKER_TEST_DATABASE_URL is unset or empty' && echo 0 || echo 1)" \
   "control 2: with BROKER_TEST_DATABASE_URL empty the counter prints UNKNOWN naming it and runs no test" "$(seen empty)"
@@ -345,12 +366,12 @@ unknown_report stale "EXPECTED_SKIPS names $airlock FuzzAirlock" \
 echo "database-skips.test.sh: control 4, --timeout" >&2
 plant wait internal/cipher/api "$WAIT_BODY"
 wait_run='-run=^(TestPlantedWait|TestPlantedQuick)$'
-count timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" --timeout 1s ./internal/cipher/api/
+count timeout env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" --timeout 1s ./internal/cipher/api/
 judge "$([ "$(code timeout)" = 1 ] && grep -qE '^go_test_exit=[1-9]' "$WORK/timeout.out" &&
   said timeout 'panic: test timed out after 1s' && said timeout "UNFINISHED $MODULE/internal/cipher/api TestPlantedWait" &&
   echo 0 || echo 1)" \
   "control 4: --timeout 1s ends the binary of a package whose test runs three seconds, fails the counter and prints the timeout's panic though a passed test's line came last" "$(seen timeout)"
-count no-timeout env GOFLAGS="-overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" ./internal/cipher/api/
+count no-timeout env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/wait.overlay $wait_run" bash "$COUNTER" ./internal/cipher/api/
 judge "$([ "$(code no-timeout)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/no-timeout.out" &&
   grep -qxF 'go_test_exit=0' "$WORK/no-timeout.out" && echo 0 || echo 1)" \
   "control 4: the same run without --timeout passes" "$(seen no-timeout)"
@@ -371,12 +392,12 @@ judge "$([ "$(($(wc -l <"$COUNTER") - $(wc -l <"$copy")))" = 1 ] && echo 0 || ec
   "control 5: the copy differs from the counter by exactly the deleted line" \
   "$(($(wc -l <"$COUNTER") - $(wc -l <"$copy"))) lines fewer"
 api_run="^($API_ANCHOR|$api_expected)$"
-count deleted env GOFLAGS="-run=$api_run" bash "$copy" \
+count deleted env GOFLAGS="$GOFLAGS_EXEC -run=$api_run" bash "$copy" \
   --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL ./internal/dispatch/api/
 judge "$([ "$(code deleted)" = 1 ] && [ "$(grep -c '^SKIP ' "$WORK/deleted.out")" = 1 ] &&
   grep -qxF "SKIP $API TestSearchLatencyOnCorpus" "$WORK/deleted.out" && echo 0 || echo 1)" \
   "control 5: without its EXPECTED_SKIPS line, TestSearchLatencyOnCorpus's skip is counted" "$(seen deleted)"
-count kept env GOFLAGS="-run=$api_run" bash "$COUNTER" \
+count kept env GOFLAGS="$GOFLAGS_EXEC -run=$api_run" bash "$COUNTER" \
   --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL ./internal/dispatch/api/
 judge "$([ "$(code kept)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/kept.out" && echo 0 || echo 1)" \
   "control 5: the counter itself passes the same run, the table's tests skipping as expected" "$(seen kept)"
@@ -390,7 +411,7 @@ judge "$([ "$(code noreason)" = 1 ] && said noreason "EXPECTED_SKIPS line \"$API
 for name in DISPATCH_TEST_DATABASE_URL BROKER_TEST_DATABASE_URL; do
   for how in unset empty; do
     if [ "$how" = unset ]; then drop=(-u "$name"); else drop=("$name="); fi
-    count "var-$how" env "${drop[@]}" GOFLAGS="-run=$api_run" bash "$COUNTER" \
+    count "var-$how" env "${drop[@]}" GOFLAGS="$GOFLAGS_EXEC -run=$api_run" bash "$COUNTER" \
       --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL ./internal/dispatch/api/
     judge "$([ "$(code "var-$how")" = 1 ] && [ "$(out "var-$how")" = 'database_skips=UNKNOWN' ] &&
       said "var-$how" "$name is unset or empty" && echo 0 || echo 1)" \
@@ -406,7 +427,7 @@ echo "database-skips.test.sh: control 6, --count-table" >&2
 fold="$MODULE/internal/fold"
 table_run='-run=^(TestPlantedSkip|TestPlantedFail|TestHealthzIsPublic)$'
 plant fold-skip internal/fold "$SKIP_BODY"
-count table-skip env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
+count table-skip env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
   --count-table ./internal/fold/ ./internal/cipher/api/
 judge "$([ "$(code table-skip)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/table-skip.out" &&
   grep -qxF 'go_test_exit=0' "$WORK/table-skip.out" && grep -qE "^pass $fold " "$WORK/table-skip.err" &&
@@ -414,13 +435,13 @@ judge "$([ "$(code table-skip)" = 0 ] && grep -qxF 'database_skips=0' "$WORK/tab
   "control 6: a skip planted in a package of the run outside the table is not counted, and both packages' times are printed" \
   "$(seen table-skip); stderr $(tr '\n' '|' <"$WORK/table-skip.err")"
 plant api-skip internal/cipher/api "$SKIP_BODY"
-count table-counted env GOFLAGS="-overlay=$WORK/api-skip.overlay $table_run" bash "$COUNTER" \
+count table-counted env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/api-skip.overlay $table_run" bash "$COUNTER" \
   --count-table ./internal/fold/ ./internal/cipher/api/
 judge "$([ "$(code table-counted)" = 1 ] && grep -qxF "SKIP $MODULE/internal/cipher/api TestPlantedSkip" "$WORK/table-counted.out" &&
   grep -qxF 'database_skips=1' "$WORK/table-counted.out" && echo 0 || echo 1)" \
   "control 6: a skip planted in the table's package among the run's is counted, and fails the counter" "$(seen table-counted)"
 plant fold-fail internal/fold 'func TestPlantedFail(t *testing.T) { t.Fatal("planted failure") }'
-count table-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
+count table-fail env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
   --count-table ./internal/fold/ ./internal/cipher/api/
 judge "$([ "$(code table-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/table-fail.out" &&
   grep -qE '^go_test_exit=[1-9]' "$WORK/table-fail.out" && said table-fail "FAIL $fold TestPlantedFail" &&
@@ -428,13 +449,13 @@ judge "$([ "$(code table-fail)" = 1 ] && grep -qxF 'database_skips=0' "$WORK/tab
   "control 6: a failure planted in a package of the run outside the table fails the counter, which prints it" "$(seen table-fail)"
 # A leg that holds no package of the table counts nothing: it says so, rather than read as a
 # count of zero, and go test's result alone decides.
-count table-none env GOFLAGS="-overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
+count table-none env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/fold-skip.overlay $table_run" bash "$COUNTER" \
   --count-table ./internal/fold/
 judge "$([ "$(code table-none)" = 0 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none.out" &&
   grep -qxF 'go_test_exit=0' "$WORK/table-none.out" && said table-none 'so this run counts no skip' &&
   echo 0 || echo 1)" \
   "control 6: a run with no package of the table prints database_skips=NONE, not a zero, and passes on go test's pass" "$(seen table-none)"
-count table-none-fail env GOFLAGS="-overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
+count table-none-fail env GOFLAGS="$GOFLAGS_EXEC -overlay=$WORK/fold-fail.overlay $table_run" bash "$COUNTER" \
   --count-table ./internal/fold/
 judge "$([ "$(code table-none-fail)" = 1 ] && grep -qxF 'database_skips=NONE' "$WORK/table-none-fail.out" &&
   grep -qE '^go_test_exit=[1-9]' "$WORK/table-none-fail.out" && said table-none-fail "FAIL $fold TestPlantedFail" &&

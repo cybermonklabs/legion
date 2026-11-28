@@ -159,7 +159,7 @@ jobs:
       # prints each one's log. A
       # harness that needs an earlier step is queued after it: release-push.test.sh after
       # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh,
-      # go-cache-working-set.test.sh and go-legs.test.sh after setup-go.
+      # go-cache-working-set.test.sh, go-legs.test.sh and go-cpu.test.sh after setup-go.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"release_push_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/release-push.test.sh .github/scripts/release-push.test.sh
@@ -472,6 +472,12 @@ jobs:
       - name: Test the Go legs' package lists
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
+
+      # After setup-go: its W12 case runs the real go test, go run, go vet and go list through the
+      # wrapper over a scratch module, with a build cache, module cache and GOFLAGS of its own.
+      - name: Test the Go CPU record's wrapper and runner
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_cpu_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-cpu.test.sh .github/scripts/go-cpu.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.

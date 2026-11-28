@@ -2881,6 +2881,69 @@ Postgres), install nothing and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 
+## The CPU time of each envoy-go test binary
+
+Each Go job of `.github/workflows/ci-job-envoy-go.yaml` records, for each test binary its go tests
+run, the package, the wall seconds and the user and system CPU seconds, so that a job's time can be
+split by package and compared across the runners of one label, whose CPUs differ.
+
+The file's workflow-level `env:` sets GOFLAGS to
+`-exec=${{ github.workspace }}/.github/scripts/go-cpu-exec.py`. go applies a GOFLAGS entry only to a
+command that takes the flag: `go test` and `go run` take `-exec` and run each binary through the
+wrapper, and `go vet`, `go list`, `go build` and `go env` ignore it (go-cpu.test.sh's W12 holds
+this of go test, go run, go vet and go list). So that one line reaches every go test of the five
+jobs, those that `database-skips.sh`, `backend-count.sh` and `database-skips.test.sh` run included,
+and no go test line changes: the pins of `.github/ci-gates/envoy-go.py` and the hashes
+`.github/scripts/audited_scripts.py` keeps of the audited scripts stay as they are. The wrapper runs
+the binary unchanged and exits as it did, then writes one JSON row for it into
+`$RUNNER_TEMP/go-test-events/cpu/`; its header says what it passes on and what a row holds.
+`database-skips.test.sh` sets GOFLAGS itself in fourteen runs, each replacing the job's, so it puts
+the job's `-exec=` entry first in each of them, and points GO_CPU_DIR at the job's directory.
+
+The CI filter engine refuses an env name outside `ENV_ALLOWED` around a go command it reduces or a
+step an exact entry pins, GOFLAGS among them, since most of its values change what go compiles or
+which tests run. It takes this one value (`GO_CPU_GOFLAGS` in
+`.github/scripts/ci_filter_coverage.py`): with `-exec` go compiles the same files, and the wrapper
+hands the test binary its arguments unchanged, so the same tests run, which
+`.github/scripts/go-cpu.test.sh` holds the wrapper to. It takes the value only whole, only in a
+workflow's or a job's `env:`, and only in a workflow file that holds the steps of a job whose gate
+reads the wrapper: `.github/ci-gates/envoy-go.py` reads it, so a change to the wrapper alone selects
+envoy-go. Another `-exec`, the value beside another entry and the value in a step's `env:` are
+refused as before.
+
+Two steps around each job's tests print what the rows add up to:
+
+- "Record the runner's facts and start its CPU sample" (`.github/actions/go-cpu-start`), right after
+  the cache restore, runs `go-cpu-runner.py start`. It prints one `go-cpu runner:` line (the CPU
+  parts and their counts, the CPUs the job may use, the memory, the kernel, a fixed SHA-256 probe on
+  one CPU and on all of them, the Go build cache's entries, GOFLAGS and the CPU model) and the raw
+  lscpu and /proc/cpuinfo in a collapsed group, keeps the same under
+  `$RUNNER_TEMP/go-test-events/cpu/runner/` with /proc/stat as the job's start, and leaves a sampler
+  appending /proc/stat's cpu line there every 2 s. envoy-go-alone starts no sampler
+  (`sampler: "false"`): its rows measure time on a runner nothing else loads, and the sampler would
+  be one more process there.
+- "Report the CPU time of each test binary" (`.github/actions/go-cpu-report`), the step before the
+  ci-ok report, runs `go-cpu-runner.py report`. It stops the sampler, keeps /proc/stat as the job's
+  end, and prints the `go-cpu job:` line, the rows summed by class, and the `go-cpu usage:` line,
+  the CPU the whole machine used between the two steps, with the build cache entries the job added
+  and the CPU of the job's Postgres containers (the service, and pg-stat-statements in
+  envoy-go-race-impossible). Given the job's `check_run_id`, it uploads
+  `$RUNNER_TEMP/go-test-events/` as the artifact `go-test-events-<check-run-id>`, an upload that
+  stands until dispatch://INFRA-6313's own upload of that directory lands in the jobs.
+
+The report only measures: it runs under `if: always()`, so a failed or cancelled job is measured
+too, with `continue-on-error: true`, so it fails neither the job nor its ci-ok report, and with
+`timeout-minutes: 2`. The start's `timeout-minutes: 1` bounds its probe, which hashes 256 MiB once
+and once on each CPU. Each job's `timeout-minutes` and `JOB_TIMEOUT_MINUTES` grew by those 3: the
+legs, envoy-go-race-impossible and envoy-go-skips from 35 to 38, envoy-go-natslive from 50 to 53 and
+envoy-go-alone from 175 to 178. envoy-go-checks, which runs no go test, runs the same two steps, its
+report printing the usage line alone (`rows: "false"`, with no Postgres and no upload), and its
+limit went from 30 to 33.
+
+With `-exec` go caches no test result, so a go test that `-count=1` did not already keep from the
+cache runs its binary every time: the `go test -list .` that `database-skips.sh` runs under a
+`-run`, to hold its expected-skip table to the package's tests, now runs the binary on each call.
+
 ## The envoy-infra module, its own workspace and its live tests
 
 The envoy-infra Pulumi plugin's module (packages/envoy/infra). It is not in the root go.work:

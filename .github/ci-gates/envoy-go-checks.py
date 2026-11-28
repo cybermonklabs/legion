@@ -1,3 +1,7 @@
+# The two steps that open and close the job's CPU record
+# (.github/ci-notes/ci.md#the-cpu-time-of-each-envoy-go-test-binary).
+GO_CPU_START = "Record the runner's facts and start its CPU sample"
+GO_CPU_REPORT = "Report the CPU time of each test binary"
 # envoy's script tests, the merge-queue half of the old envoy-go-checks job
 # (.github/ci-notes/ci.md#envoy-go-checks-envoys-script-tests-in-the-merge-queue-only): each
 # step runs a bash harness of packages/envoy over fakes, and none starts a go command.
@@ -35,4 +39,9 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", reads=reads(
     (".github/scripts/harness_line_times.py",
      f"{at('envoy-go-checks', HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each harness it runs, on that harness's log"),
     (".github/actions/harness-times-upload/**", at("envoy-go-checks", "Upload the harness case times")),
+    # The CPU record's two actions, and the script both run.
+    (".github/actions/go-cpu-start/**", at("envoy-go-checks", GO_CPU_START)),
+    (".github/actions/go-cpu-report/**", at("envoy-go-checks", GO_CPU_REPORT)),
+    (".github/scripts/go-cpu-runner.py",
+     f"{at('envoy-go-checks', GO_CPU_START)} and {at('envoy-go-checks', GO_CPU_REPORT)} run it through their actions"),
 ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks"))
