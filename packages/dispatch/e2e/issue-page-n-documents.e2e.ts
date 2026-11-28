@@ -162,7 +162,7 @@ import {
 } from "./issue-page-n-documents";
 import { withIssuePage } from "./issue-page-option";
 import { IPHONE_13, MEASURED_TITLE, viewportAt } from "./issue-page-p";
-import { expectThreadsDrawn } from "./issue-page-threads";
+import { expectThreadsDrawn, threadsView } from "./issue-page-threads";
 import { sql } from "./psql";
 import {
   type Browser,
@@ -1249,6 +1249,18 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
         // with the page, so the reading is R9's own, as for the open document: nothing in it
         // scrolls sideways.
         await assertNoSidewaysScroll(dashboardView(page));
+        expect(
+          await scrollersOutsideAuthorText(page),
+          `a code block, a table or a picture is drawn outside a node's own text with ${at}`
+        ).toEqual([]);
+        continue;
+      }
+      if (state.kind === "view" && state.preset === "threads") {
+        // Threads, like Dashboard, draws no outline and so no row for the walk below: its own
+        // view - its choices, its list and the record it opens - scrolls down with the page, so
+        // the reading is R9's own, as for Dashboard: nothing in it scrolls sideways
+        // (dispatch://INFRA-3940/comment/6ae85f75-56fc-470c-9794-87baa73e2e22).
+        await assertNoSidewaysScroll(threadsView(page));
         expect(
           await scrollersOutsideAuthorText(page),
           `a code block, a table or a picture is drawn outside a node's own text with ${at}`
