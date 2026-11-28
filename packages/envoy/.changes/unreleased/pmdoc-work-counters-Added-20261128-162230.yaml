@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `pmdoc` counts the work its parse, render and update do where Go's coverage counters cannot see
+  it, and four functions read the process totals: `ParseWork` (the bytes the inline raw HTML walks
+  read while they look for a closer), `RenderWork` (the bytes the rendered text's forward scans for
+  a closing bracket or angle bracket read), `UpdateWork` (the items in the fragment that a write
+  reaches) and `ScanWork` (the bytes of the source's tab scan and of each run of tildes that the
+  delimiter scan reads). `pmdoc`'s tests read these totals beside a coverage count of the work, so
+  a quadratic regression inside a standard-library search fails a test by its count, not by a
+  clock.
+time: 2026-11-28T16:22:30Z
+custom:
+    Issue: pmdoc-work-counters
