@@ -244,8 +244,14 @@ type bootConfig struct {
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
 	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
 	// whose request holds the drain waits all of it out; resolveBootConfig refuses one longer than
-	// httpDrainBeforeDocuments (outboxStopBudget).
+	// httpDrainBeforeDocuments, so a deployment's document budget after it still ends 5 s inside
+	// stopGrace.
 	HTTPDrain time.Duration
+	// DocumentShutdown is the document service's budget as the process stops, zero for
+	// documentShutdownTimeout's fourteen seconds; only DISPATCH_TEST_DOCUMENT_SHUTDOWN, under the
+	// test hooks, sets it, since a test whose request is held past that budget waits all of it out;
+	// resolveBootConfig refuses one longer than documentShutdownTimeout.
+	DocumentShutdown time.Duration
 	// RateReadingBeforeReset sets how early the GitHub rate reading aims before a reset.
 	// Zero keeps githubrate.BeforeReset; only DISPATCH_TEST_RATE_READING_BEFORE_RESET, under the
 	// test hooks, sets it.
@@ -1600,8 +1606,12 @@ func main() {
 	if boot.HTTPDrain > 0 {
 		httpDrain = boot.HTTPDrain
 	}
+	documentBudget := documentShutdownTimeout
+	if boot.DocumentShutdown > 0 {
+		documentBudget = boot.DocumentShutdown
+	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, httpDrain, documentBudget); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1899,6 +1909,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY", &boot.SearchFillStandbyRetry},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
+		{"DISPATCH_TEST_DOCUMENT_SHUTDOWN", &boot.DocumentShutdown},
 		{"DISPATCH_TEST_RATE_READING_BEFORE_RESET", &boot.RateReadingBeforeReset},
 		{"DISPATCH_TEST_OIDC_DISCOVERY_RETRY", &boot.OIDCDiscoveryRetry},
 	} {
@@ -1928,6 +1939,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.HTTPDrain > httpDrainBeforeDocuments {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
+	}
+	if boot.DocumentShutdown > documentShutdownTimeout {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_DOCUMENT_SHUTDOWN=%q (expected at most %s, a deployment's document shutdown budget: a test can shorten it but cannot lengthen shutdown)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_DOCUMENT_SHUTDOWN")), documentShutdownTimeout)
 	}
 	if boot.RateReadingBeforeReset > githubrate.LastMinute {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_RATE_READING_BEFORE_RESET=%q (expected at most %s, the last-minute reading window)",

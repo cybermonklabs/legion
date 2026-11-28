@@ -202,16 +202,28 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 }
 
 // A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
-// service's budget and the point a fixed shutdown bound would end it, here a title change behind
-// another writer that holds the issue for 27 seconds after the signal, 3 s inside the runtime's
-// kill. The database is answering, so Dispatch keeps the request's connection open until the write
-// commits and its answer is sent, and only then closes the pool, as the deferred close of the pool
-// before this shutdown order did.
+// service's budget and the outbox's wait, here a title change behind another writer that holds the
+// issue past all three. The database is answering, so Dispatch keeps the request's connection open
+// until the write commits and its answer is sent, and only then closes the pool. The child takes a
+// tenth of a deployment's drain and document budget, and the hold keeps a deployment's 11 : 14 : 27
+// ratio to them: the 27 s a deployment's hold would last ends 2 s past the latest of its bounds (25 s)
+// and 3 s inside the runtime's kill.
 func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.T) {
 	t.Parallel()
-	const lockHeldAfterSIGTERM = 27 * time.Second
+	// The HTTP drain, document budget and lock hold keep their 11 : 14 : 27 ratio at one tenth scale.
+	const (
+		httpDrain            = 1100 * time.Millisecond
+		documentBudget       = 1400 * time.Millisecond
+		lockHeldAfterSIGTERM = 2700 * time.Millisecond
+	)
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		Env: map[string]string{
+			"DISPATCH_TEST_HOOKS":             "1",
+			"DISPATCH_TEST_HTTP_DRAIN":        httpDrain.String(),
+			"DISPATCH_TEST_DOCUMENT_SHUTDOWN": documentBudget.String(),
+		},
+	})
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	// The issue's spec settles on its own timer, which would queue behind the lock too.
@@ -235,23 +247,17 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 	storetest.WaitForLockWaiters(t, holder, 1)
 
 	signalled := process.Terminate(t)
-	select {
-	case <-process.Exited:
-		t.Errorf("Dispatch exited %v after SIGTERM, with the write still waiting on the lock", time.Since(signalled))
-	case <-time.After(time.Until(signalled.Add(lockHeldAfterSIGTERM))):
-	}
+	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
+	testwait.Quiet(t, "Dispatch's exit", process.Exited, time.Until(signalled.Add(lockHeldAfterSIGTERM)),
+		"releasing the lock ends the blocked write, and no state shows whether Dispatch would exit with the lock still held before the document budget and outbox wait end")
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
 	process.WaitExit(t, "SIGTERM")
 	t.Logf("exited %v after SIGTERM", time.Since(signalled))
-	select {
-	case got := <-answered:
-		if got.err != nil || got.status != http.StatusOK {
-			t.Errorf("the title change answered %d (%v), want 200", got.status, got.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Errorf("the title change had no answer 5s after Dispatch exited")
+	got := testwait.Receive(t, "the title change's answer", answered)
+	if got.err != nil || got.status != http.StatusOK {
+		t.Errorf("the title change answered %d (%v), want 200", got.status, got.err)
 	}
 	var title string
 	if err := database.Pool.QueryRow(context.Background(), `select title from issues where key = $1`, key).Scan(&title); err != nil {
@@ -569,7 +575,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil, httpDrainBeforeDocuments)
+		}, func() {}, func() {}, nil, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	testwait.Receive(t, "shutdown to wait for delivery work", entered)
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -688,7 +694,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(fake, server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	// The fake stands at the shutdown's start, so the wait for the outbox, once armed for its
 	// budget (waitForOutbox), is where the shutdown stands: no other timer on the fake is due then,
@@ -738,7 +744,7 @@ func TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
+		shutdown(fake, server.Config, documentService, database.Pool, func() {}, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	fake.AwaitArmedAt(t, "shutdown's wait for the outbox, outboxStopBudget after it began", budget)
 	select {
@@ -888,7 +894,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments, documentShutdownTimeout)
 	}()
 	cancel()
 	select {

@@ -2356,14 +2356,34 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": invalid},
 					fmt.Sprintf("DISPATCH_TEST_HTTP_DRAIN=%q (expected a positive Go duration)", invalid))
 			}
-			// The ceiling: a deployment's drain is taken, and anything longer would end the
-			// document service's budget past the outbox's wait (outboxStopBudget).
+			// The ceiling: a deployment's drain is taken, and anything longer would end a
+			// deployment's document budget after it less than five seconds inside the stop grace.
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": "11s"}); boot.HTTPDrain != 11*time.Second {
 				t.Errorf("DISPATCH_TEST_HTTP_DRAIN=11s: HTTPDrain = %v, want 11s", boot.HTTPDrain)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": "11.001s"},
 				`DISPATCH_TEST_HTTP_DRAIN="11.001s" (expected at most 11s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_DOCUMENT_SHUTDOWN": func(t *testing.T) {
+			const name = "DISPATCH_TEST_DOCUMENT_SHUTDOWN"
+			if boot := resolveWith(t, nil); boot.DocumentShutdown != 0 {
+				t.Errorf("%s unset: DocumentShutdown = %v, want 0 (documentShutdownTimeout's fourteen seconds)", name, boot.DocumentShutdown)
+			}
+			const quick = 1400 * time.Millisecond
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: quick.String()}); boot.DocumentShutdown != quick {
+				t.Errorf("%s: DocumentShutdown = %v, want %v", name, boot.DocumentShutdown, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+					fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "14s"}); boot.DocumentShutdown != 14*time.Second {
+				t.Errorf("%s=14s: DocumentShutdown = %v, want 14s", name, boot.DocumentShutdown)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "14.001s"},
+				name+`="14.001s" (expected at most 14s`)
+			refusedWith(t, map[string]string{name: quick.String()}, "DISPATCH_TEST_HOOKS=1 required with "+name)
 		},
 		"DISPATCH_TEST_RATE_READING_BEFORE_RESET": func(t *testing.T) {
 			const name = "DISPATCH_TEST_RATE_READING_BEFORE_RESET"
