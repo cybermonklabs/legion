@@ -286,9 +286,9 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
  * leaves Details shut costs no request for it. Whether an item's address names a turn of a
- * thread the history holds is the outline's own landing's answer (`AgentsOnlyTurn`), so Details
- * opens at that turn exactly when the outline lands on the turn's nearest drawn ancestor and says
- * there that the thread is in the history.
+ * thread the history holds is the outline's own landing's answer (`AddressedHistoryTurn`), so
+ * Details opens at that turn exactly when the outline lands on the turn's nearest drawn ancestor
+ * and says there that the thread is in the history.
  */
 export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const { hash, pathname, search } = useLocation();
@@ -305,7 +305,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     outlineItemRoute(route, search, addressed) !== undefined;
   // A turn of a thread the history holds (`agents-only.ts`) is no row of the outline: it is an
   // entry of the history, which Details opens at, with the turn marked and brought into view once
-  // for each following of its address. The turn is the one `AgentsOnlyTurn` told for the
+  // for each following of its address. The turn is the one `AddressedHistoryTurn` told for the
   // following the reader is at; until it tells, the one it told for the following before - at
   // another address, maybe a row's, or at this one under another fragment or key - is no answer
   // here.
@@ -386,7 +386,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   return (
     <>
       {namesItem ? (
-        <AgentsOnlyTurn
+        <AddressedHistoryTurn
           address={addressed}
           issue={issue}
           onTurn={setTurn}
@@ -426,7 +426,7 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
  * Drawn only while the address names an ask, a comment or a message of the outline, the only
  * address that can name such a turn, so the tree is built here only then. It draws nothing.
  */
-function AgentsOnlyTurn({
+function AddressedHistoryTurn({
   address,
   issue,
   onTurn,

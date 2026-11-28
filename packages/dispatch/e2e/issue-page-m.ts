@@ -103,6 +103,15 @@ export function historyNextPage(page: Page): Locator {
   return historyPanel(page).getByRole("button", { name: READS_FIRST });
 }
 
+/** What the history's Show more says (`historyShowMoreState`). */
+export type HistoryShowMoreState =
+  | "counted"
+  | "gone"
+  | "reading"
+  | "reads"
+  | "stopped"
+  | "uncounted";
+
 /** What the history's Show more says, read once the page shows one of them: `reads` where its
  *  press reads the log's next page before it draws (`historyNextPage`); `stopped` where it says
  *  "0+", the history having drawn every entry it read and stopped with an older page of the log
@@ -110,9 +119,7 @@ export function historyNextPage(page: Page): Locator {
  *  says how many entries read are left and its press draws the next ones; `uncounted` where it
  *  says no number; `reading` while it reads; and `gone` where the history has drawn entries and
  *  no control stands under them. */
-export function historyShowMoreState(
-  page: Page
-): Promise<"counted" | "gone" | "reading" | "reads" | "stopped" | "uncounted"> {
+export function historyShowMoreState(page: Page): Promise<HistoryShowMoreState> {
   const busy = 'button[aria-busy="true"]';
   return settledState("the history's Show more", [
     ["reads", historyNextPage(page)],
@@ -131,6 +138,18 @@ export function historyShowMoreState(
         .filter({ hasNot: page.locator(busy) }),
     ],
   ]);
+}
+
+/** Fails where `state`, what the history's Show more says (`historyShowMoreState`), is no number
+ *  (`uncounted`) or "0+" (`stopped`), with the message of that one: the history says how many
+ *  entries are left while any may be, and its first view and each press read on until more
+ *  entries are read than they draw. */
+export function expectShowMoreCounts(
+  state: HistoryShowMoreState,
+  messages: { readonly stopped: string; readonly uncounted: string }
+): void {
+  expect(state, messages.uncounted).not.toBe("uncounted");
+  expect(state, messages.stopped).not.toBe("stopped");
 }
 
 /** Whether `url` is a read of a page of issue `key`'s log older than the first (`GET

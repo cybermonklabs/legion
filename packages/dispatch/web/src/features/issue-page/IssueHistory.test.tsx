@@ -82,9 +82,11 @@ function claim(seq: number): DispatchEvent {
 /** The reads the history makes (`IssueHistory.tsx`), stubbed: the log answers `events`, the
  *  issue's messages read `messages` and its comments read `comments`, none unless given, with no
  *  ask; the read of the first event past the reader's read mark answers `boundary`, none unless
- *  given. Returns what restores them. */
+ *  given. Where `events` is a reader of the log instead, it answers every read of the log, that
+ *  one among them, and `boundary` is not read. Returns how many reads of an older page of the log
+ *  (`before`) the history has sent, and what restores the reads. */
 function stubHistoryReads(
-  events: readonly DispatchEvent[],
+  events: readonly DispatchEvent[] | typeof api.getIssueEvents,
   {
     boundary = [],
     comments = [],
@@ -94,17 +96,24 @@ function stubHistoryReads(
     comments?: readonly Comment[];
     messages?: readonly MessageRead[];
   } = {}
-): () => void {
+): { olderReads: () => number; restore: () => void } {
+  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(
+    typeof events === "function"
+      ? events
+      : async (_key, options) => (options?.after === undefined ? [...events] : [...boundary])
+  );
   const reads = [
-    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
-      options?.after === undefined ? [...events] : [...boundary]
-    ),
+    getIssueEvents,
     spyOn(api, "listComments").mockResolvedValue([...comments]),
     spyOn(api, "listIssueMessages").mockResolvedValue([...messages]),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
   ];
-  return () => {
-    for (const read of reads) read.mockRestore();
+  return {
+    olderReads: () =>
+      getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length,
+    restore: () => {
+      for (const read of reads) read.mockRestore();
+    },
   };
 }
 
@@ -164,7 +173,7 @@ const HISTORY_LOG = historyLogKey(KEY);
 // `data-history-entry`, its own id, the identity the anchor follows.
 test("an event arriving while the reader is in the history leaves their entry where it was", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 12 }, (_, index) => claim(12 - index))
   );
   const layout = installRowLayout();
@@ -225,7 +234,7 @@ test("an event arriving while the reader is in the history leaves their entry wh
 test("an event arriving just after midnight leaves the entry the reader reads where it was", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
   setSystemTime(new Date(2026, 10, 19, 23, 59, 50, 0));
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 12 }, (_, index) => claim(12 - index))
   );
   const layout = installRowLayout();
@@ -312,7 +321,7 @@ function agentMessage(id: string, ago: number): MessageRead {
 // holds the first of them while the reader is on the second.
 test("a reader on one of two threads whose events are unread keeps their entry when an event arrives", async () => {
   const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 6 }, (_, index) => claim(6 - index)),
     { messages: [agentMessage("m-older", 200), agentMessage("m-newer", 100)] }
   );
@@ -370,7 +379,9 @@ test("a reader on one of two threads whose events are unread keeps their entry w
 
 // A turn's Reply is drawn only under the page's writer, and sets it to reply to that turn.
 test("a turn's Reply sets the writer to reply to that turn", async () => {
-  const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
+  const { restore: restoreReads } = stubHistoryReads([], {
+    messages: [agentMessage("m-turn", 60)],
+  });
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -443,7 +454,9 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
   async (width) => {
     await warmMarkdownRenderer();
     const restoreViewport = stubViewport(width);
-    const restoreReads = stubHistoryReads([], { messages: [agentMessage("m-turn", 60)] });
+    const { restore: restoreReads } = stubHistoryReads([], {
+      messages: [agentMessage("m-turn", 60)],
+    });
 
     try {
       for (const [preset, replies] of [
@@ -492,7 +505,7 @@ test("every day is drawn open, and its line is no control", async () => {
     slug: "plan-md",
     versions: [],
   };
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     [
       {
         ...claim(3),
@@ -795,7 +808,7 @@ test("the address of an agents' turn older than the log's first page marks that 
 // b0082656: with a large real issue's 79 entries drawn, Details closed and opened again 31 s
 // later with the log answering 500 drew "Could not load the activity." and no entry at all.
 test("a failed read of the log once the history holds it keeps every entry it holds, and says no failure", async () => {
-  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  const { restore: restoreReads } = stubHistoryReads([claim(3), claim(2), claim(1)]);
   let unmount: (() => void) | undefined;
 
   try {
@@ -861,7 +874,7 @@ function upload(seq: number, ago: number, name: string): DispatchEvent {
 // a running build of b0082656: every line of a large real issue's history drew Pin but the entry
 // of thirteen uploads, which drew none.
 test("the entry of one author's uploads has Pin, as every other line of the history does", async () => {
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     upload(3, 10, "a.png"),
     upload(2, 20, "b.png"),
     claimAgo(1, 120),
@@ -894,7 +907,7 @@ test("the entry of one author's uploads has Pin, as every other line of the hist
 // mounted anew, and a focus on one of its files' Pins fell to the page; the panel draws the run
 // on under the key it first drew it with.
 test("a newer upload that joins a run drawn keeps the run's Pin and the focus on it", async () => {
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     upload(3, 10, "a.png"),
     upload(2, 20, "b.png"),
     claimAgo(1, 120),
@@ -936,7 +949,7 @@ test("a newer upload that joins a run drawn keeps the run's Pin and the focus on
 // stays or goes; once every entry is drawn the control goes. The entries are all read on the
 // log's first page, so no press reads the log again.
 test("the history draws 20 entries at a time, and Show more says how many are left, moves the focus to the first entry it drew, and goes at the end", async () => {
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
   );
   let unmount: (() => void) | undefined;
@@ -988,17 +1001,9 @@ test("Show more says + while an older page is unread, and a press that would lea
   const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
   // The older page is held out until the case lets it land.
   const older = Promise.withResolvers<DispatchEvent[]>();
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? [...firstPage] : older.promise
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   const left = () => document.querySelector("[data-history-left]")?.textContent;
   let unmount: (() => void) | undefined;
 
@@ -1039,7 +1044,7 @@ test("Show more says + while an older page is unread, and a press that would lea
     expect(olderReads()).toBe(1);
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1053,7 +1058,7 @@ function drawOverPages(pages: readonly (readonly DispatchEvent[])[]): {
   restore: () => void;
 } {
   const atRead: { entries: number; loading: boolean }[] = [];
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) => {
     const before = options?.before;
     const at =
       before === undefined ? 0 : pages.findIndex((page) => page.at(-1)?.seq === before) + 1;
@@ -1065,20 +1070,13 @@ function drawOverPages(pages: readonly (readonly DispatchEvent[])[]): {
     }
     return [...(pages[at] ?? [])];
   });
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
   const { unmount } = drawHistory(undefined);
   return {
     atRead,
-    olderReads: () =>
-      getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length,
+    olderReads,
     restore: () => {
       unmount();
-      for (const read of reads) read.mockRestore();
+      restoreReads();
     },
   };
 }
@@ -1147,17 +1145,10 @@ test("the address of a turn whose thread is the oldest entry read, an older page
   // oldest read, under the 20 its first view draws.
   const firstPage = pageOf(PAGE_SIZE + 5, 400);
   const olderPage = Array.from({ length: 30 }, (_, index) => claimAgo(100 - index, 300 + index));
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
-    options?.before === undefined ? [...firstPage] : [...olderPage]
+  const { olderReads, restore: restoreReads } = stubHistoryReads(
+    async (_key, options) => (options?.before === undefined ? [...firstPage] : [...olderPage]),
+    { messages: [agentMessage("m-old", 100)] }
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([agentMessage("m-old", 100)]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   let unmount: (() => void) | undefined;
 
   try {
@@ -1192,7 +1183,7 @@ test("the address of a turn whose thread is the oldest entry read, an older page
     expect(more.textContent).toBe(showMoreName(10));
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1263,18 +1254,10 @@ test("a refetch of the log out after the next page's read failed with every entr
   // The event the live refetch brings: a claim newer than every event of the first page.
   const arrived = claimAgo(401, 0);
   let readLog = async (): Promise<DispatchEvent[]> => [...firstPage];
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) => {
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) => {
     if (options?.before !== undefined) throw new Error("the next page is down");
     return readLog();
   });
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   // The refetch is held out until the case lets it land.
   const refetched = Promise.withResolvers<DispatchEvent[]>();
   let unmount: (() => void) | undefined;
@@ -1332,7 +1315,7 @@ test("a refetch of the log out after the next page's read failed with every entr
   } finally {
     refetched.resolve([...firstPage]);
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1897,17 +1880,9 @@ test("two presses of Show more before a render read its page once, and the focus
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   // The next page is held out until the case lets it land.
   const older = Promise.withResolvers<DispatchEvent[]>();
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? [...firstPage] : older.promise
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   let unmount: (() => void) | undefined;
 
   try {
@@ -1942,7 +1917,7 @@ test("two presses of Show more before a render read its page once, and the focus
     ).toBe(true);
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -1952,17 +1927,9 @@ test("two presses of the next page's Retry before a render read that page once, 
   let readOlder = async (): Promise<DispatchEvent[]> => {
     throw new Error("the next page is down");
   };
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? [...firstPage] : readOlder()
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   let unmount: (() => void) | undefined;
 
   try {
@@ -2002,7 +1969,7 @@ test("two presses of the next page's Retry before a render read that page once, 
     ).toBe(true);
   } finally {
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -2014,17 +1981,9 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
   const firstPage = pageOf(PAGE_SIZE + 1, 600);
   const secondPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 201));
   let readFirst = async (): Promise<DispatchEvent[]> => [...firstPage];
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+  const { olderReads, restore: restoreReads } = stubHistoryReads(async (_key, options) =>
     options?.before === undefined ? readFirst() : [...secondPage]
   );
-  const reads = [
-    getIssueEvents,
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-  ];
-  const olderReads = () =>
-    getIssueEvents.mock.calls.filter(([, options]) => options?.before !== undefined).length;
   // The refetch is held out until the case ends.
   const refetched = Promise.withResolvers<DispatchEvent[]>();
   let unmount: (() => void) | undefined;
@@ -2053,7 +2012,7 @@ test("Show more pressed while a refetch of the log is out reads the next page", 
   } finally {
     refetched.resolve([...firstPage]);
     unmount?.();
-    for (const read of reads) read.mockRestore();
+    restoreReads();
   }
 });
 
@@ -2349,7 +2308,7 @@ async function drawFortyFiveIn(
   heightOf: (row: Element) => number,
   scrollTop: number
 ): Promise<{ box: HTMLElement; more: HTMLElement; restore: () => void }> {
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 45 }, (_, index) => claimAgo(45 - index, index + 1))
   );
   // Details' own box, which the history scrolls in, at the top of the window.
@@ -2773,7 +2732,9 @@ test("the address of a short reply under a long root turn keeps the reply where 
   ];
   const root = agentMessage("m-root", 120);
   const reply = { ...agentMessage("m-reply", 60).message, in_reply_to: "m-root" };
-  const restoreReads = stubHistoryReads(log, { messages: [{ ...root, replies: [reply] }] });
+  const { restore: restoreReads } = stubHistoryReads(log, {
+    messages: [{ ...root, replies: [reply] }],
+  });
   // Details' own box, which the history scrolls in, at the top of the window.
   const box = document.body.appendChild(document.createElement("div"));
   box.style.overflowY = "auto";
@@ -2851,7 +2812,7 @@ test("the address of a short reply under a long root turn keeps the reply where 
 // reader has read since. The landing once happened once for each turn the list drew.
 test("a turn past the first 20 entries is drawn by its address, also when the address is followed again", async () => {
   // Twenty-five claims newer than the daemon's thread of a minute ago, whose entry is the 26th.
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: 25 }, (_, index) => claimAgo(25 - index, index + 1)),
     { messages: [agentMessage("m-past", 60)] }
   );
@@ -2967,7 +2928,7 @@ async function drawLandingHistory({
 }> {
   await warmMarkdownRenderer();
   const restoreViewport = phone ? stubViewport(PHONE_WIDTH) : undefined;
-  const restoreReads = stubHistoryReads(
+  const { restore: restoreReads } = stubHistoryReads(
     Array.from({ length: newer }, (_, index) => claimAgo(newer + 10 - index, index + 1)),
     { comments, messages: [daemonThread()] }
   );
@@ -3500,7 +3461,7 @@ test("on a phone, a reply sent from a turn of the history that lands in the outl
 test("a turn its author edited reads edited after its author, and a turn its author deleted is drawn as its deleted line", async () => {
   const root = agentMessage("m-edited", 120).message;
   const person = { id: "alice", kind: "user" } as const;
-  const restoreReads = stubHistoryReads([], {
+  const { restore: restoreReads } = stubHistoryReads([], {
     messages: [
       {
         message: { ...root, edited_at: new Date(Date.now() - 60_000).toISOString() },
@@ -3572,7 +3533,7 @@ test("a turn its author edited reads edited after its author, and a turn its aut
 test("a long turn is drawn whole, with no more control", async () => {
   const words = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
   const long = agentMessage("m-long", 60);
-  const restoreReads = stubHistoryReads([], {
+  const { restore: restoreReads } = stubHistoryReads([], {
     messages: [{ ...long, message: { ...long.message, body: words } }],
   });
   await warmMarkdownRenderer();
@@ -3649,7 +3610,7 @@ function drawHandoff(
 // proof entry read with no press. Only the reader folds it, by its line's Hide fields, and Show
 // fields opens it again from the body read once.
 test("a handoff is drawn open with its fields and each proof entry, and a press on its line folds it", async () => {
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     {
       ...claim(1),
       payload: { handoff_id: "handoff-1", phase: "implement", version: 1 },
@@ -4135,7 +4096,7 @@ test("a block's line in the history reads a reference as its target's name", asy
   const askId = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
   const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
   const question = `Wait on ${address} first. Then ship.`;
-  const restoreReads = stubHistoryReads([
+  const { restore: restoreReads } = stubHistoryReads([
     {
       ...claim(1),
       payload: { block_id: block, disturbed_by: { id: "alice", kind: "user" }, version: 3 },
@@ -4186,7 +4147,7 @@ test("a block's line in the history reads a reference as its target's name", asy
 // (`HISTORY_EXCLUDED_TYPES`), so a log of thousands of comments is read in one request, and holds
 // the filtered pages under its own key: Activity's key holds every event, and never a filtered page.
 test("the history reads the log without the events that write a post, under its own key", async () => {
-  const restoreReads = stubHistoryReads([claim(3), claim(2), claim(1)]);
+  const { restore: restoreReads } = stubHistoryReads([claim(3), claim(2), claim(1)]);
   let unmount: (() => void) | undefined;
 
   try {
@@ -4239,7 +4200,7 @@ test("a thread is new where it began after the read mark, with the line that say
     payload: { id: "boundary" },
     type: "comment.created",
   } as unknown as DispatchEvent;
-  const restoreReads = stubHistoryReads([claimAgo(3, 600)], {
+  const { restore: restoreReads } = stubHistoryReads([claimAgo(3, 600)], {
     boundary: [boundary],
     messages: [agentMessage("m-before", 300), agentMessage("m-after", 50)],
   });

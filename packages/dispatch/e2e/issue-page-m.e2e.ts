@@ -127,6 +127,7 @@ import {
   daemonOf,
   drawnInstant,
   expectDashboardDrawn,
+  expectShowMoreCounts,
   focusedNodeFacts,
   focusedRowFacts,
   historyDayOf,
@@ -240,14 +241,10 @@ async function readHistoryDown(
   for (let presses = 0; ; presses += 1) {
     const state = await historyShowMoreState(page);
     if (state === end || state === "gone") return;
-    expect(
-      state,
-      `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`
-    ).not.toBe("uncounted");
-    expect(
-      state,
-      `the history drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`
-    ).not.toBe("stopped");
+    expectShowMoreCounts(state, {
+      stopped: `the history drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`,
+      uncounted: `${CONTROL_LABELS.show_more} says no number while entries of the log may be left`,
+    });
     if (state === "reading") {
       await expect(
         historyPanel(page).locator('button[aria-busy="true"]'),
@@ -1555,14 +1552,11 @@ test("the history leaves the comments of people out of its read of the log, so i
     });
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const firstView = await historyShowMoreState(page);
-    expect(
-      firstView,
-      "the history's first view drew a Show more that says no number, the older page unread"
-    ).not.toBe("uncounted");
-    expect(
-      firstView,
-      `the history's first view drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`
-    ).not.toBe("stopped");
+    expectShowMoreCounts(firstView, {
+      stopped: `the history's first view drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`,
+      uncounted:
+        "the history's first view drew a Show more that says no number, the older page unread",
+    });
     await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
     await expect(
       historyEntries(page),

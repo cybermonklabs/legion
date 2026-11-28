@@ -81,11 +81,10 @@ import { useThreadsOpen } from "./threads-open";
  * else, with who handed it on and when; on a comment that heads a thread its Resolve or Reopen,
  * and Accept and Reject on a suggestion not yet decided. They are ordinary controls of Details,
  * so Tab reaches each from the row's own facts; Reply and Answer are the row's own
- * (`NodeRow.tsx`). Each of a comment's controls is hidden where Dispatch refuses it, as today's
- * thread card (`ThreadCard.tsx`) hides it for those reasons: on a closed issue (`isClosed`),
- * where Pin and a delivery's Retry stay; Edit on the reader's own deleted comment; Accept and
- * Reject on an orphaned anchor; Accept on a suggestion tied to no text; and Resolve and Reopen
- * on a comment under an ask.
+ * (`NodeRow.tsx`). A comment's control is hidden where Dispatch refuses it for one of the
+ * reasons `ItemControls` gives, and so is Edit on a closed issue (`isClosed`), which Dispatch
+ * takes but today's thread card (`ThreadCard.tsx`) does not draw; Pin and a delivery's Retry
+ * stay there.
  */
 export function FocusedNodeFacts({
   isClosed,
@@ -306,11 +305,15 @@ interface Delivery extends DeliveryOutcome {
 /** The pin of an ask, a comment or a message; an open question's hand-on; a thread head's Resolve
  *  or Reopen, Accept and Reject; the Edit of the reader's own comment, but under Threads, where
  *  the page mounts no box at the foot for it to aim (`useThreadsOpen`); and each delivery to an
- *  agent with its Retry. Resolve, Reopen, Accept, Reject and Edit are each hidden where Dispatch
- *  refuses it, as today's thread card (`ThreadCard.tsx`) hides it for those reasons, so that none
- *  is drawn that does nothing (R7): on a closed issue, where Pin and a delivery's Retry stay;
- *  Edit on the reader's own deleted comment; Accept and Reject on an orphaned anchor; Accept on
- *  a suggestion tied to no text; and Resolve and Reopen on a comment under an ask. */
+ *  agent with its Retry. A comment under an ask (a question or an approval request) heads no
+ *  thread, since its thread is the ask's, so it is offered no Resolve or Reopen: Dispatch refuses
+ *  its Reopen, and takes its Resolve. A comment's control is hidden where Dispatch refuses it for
+ *  one of these reasons, so that none of them is drawn to do nothing (R7): Resolve, Reopen,
+ *  Accept and Reject on a closed issue, where Pin and a delivery's Retry stay; Edit on the
+ *  reader's own deleted comment; Accept and Reject on an orphaned anchor; and Accept on a
+ *  suggestion tied to no text. Edit is hidden on a closed issue too, though Dispatch takes it,
+ *  since today's thread card (`ThreadCard.tsx`) draws none there. The comments below name each
+ *  refusal. */
 function ItemControls({
   isClosed,
   issueKey,
