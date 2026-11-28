@@ -12,25 +12,24 @@ package api
 // release that suspended none and on one recorded before this release: a release's mark matches
 // the claims it suspended by their tokens, so two claims of one role are two claims, and `roles`
 // names each role once. A resume of the same answer names the token of the claim its wake brought
-// back in a new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before the
-// claim-resume migration: each claim of a role can be woken, and the stranded report reads a wake
-// by that claim. A caller below the entry's number is served each release and each resume without
-// these keys (shaping.go's withoutRecordClaims). A claim view of the state and of the issue record
-// names its claim's token, `token` (api.ClaimView), and an issue lists each claim neither its
-// `architect` nor its `workers` shows, with its role, in `otherClaims` (api.Issue.OtherClaims):
-// `workers` holds one entry per role, so the other claim of a role a keyed agent works the step of
-// was absent from the state. A caller below the entry's number is served the issues without
-// either (withoutClaimTokens). A row a pause holds (api.PauseHeldView) that names no claim, a
-// merge-queue message or a row the release before wrote, names in `claim` the worker on its role's
-// step, the claim its executor reaches, where it named the role's own token; the key and its shape
-// are unchanged, so every contract is served it. Every action of the controller's agent door —
-// `POST /legion/v1/claims/fresh-session`, `POST /legion/v1/claims/compact`, and `POST
-// /legion/v1/agents/stop`, `retry`, `suspend` and `resume` — takes a claim's token in a new
-// member, `claim` (api.ClaimRequest, the one type the six share), a claim of the issue that holds
-// the role the body names: the issue and the role reach the claim that works the role's step, and
-// the other claim of that role a notice can name was out of the controller's reach. A plugin
-// sends it only when it names one, since a daemon below the entry's number refuses an unknown
-// member.
+// back in a new key, `resumes.*.claim` (api.ResumeRecord): each claim of a role can be woken, and
+// the stranded report reads a wake by that claim. A caller below the entry's number is served each
+// release and each resume without these keys (shaping.go's withoutRecordClaims). A claim view of
+// the state and of the issue record names its claim's token, `token` (api.ClaimView), and an issue
+// lists each claim neither its `architect` nor its `workers` shows, with its role, in `otherClaims`
+// (api.Issue.OtherClaims): `workers` holds one entry per role, so the other claim of a role a keyed
+// agent works the step of was absent from the state. A caller below the entry's number is served
+// the issues without either (withoutClaimTokens). A row a pause holds (api.PauseHeldView) that
+// names no claim, a merge-queue message or a row the release before wrote, names in `claim` the
+// worker on its role's step, the claim its executor reaches, where it named the role's own token;
+// the key and its shape are unchanged, so every contract is served it. Every action of the
+// controller's agent door — `POST /legion/v1/claims/fresh-session`, `POST
+// /legion/v1/claims/compact`, and `POST /legion/v1/agents/stop`, `retry`, `suspend` and `resume` —
+// takes a claim's token in a new member, `claim` (api.ClaimRequest, the one type the six share), a
+// claim of the issue that holds the role the body names: the issue and the role reach the claim
+// that works the role's step, and the other claim of that role a notice can name was out of the
+// controller's reach. A plugin sends it only when it names one, since a daemon below the entry's
+// number refuses an unknown member.
 // `POST /legion/v1/handoff/complete` refuses, at every contract, a completion from a claim of the
 // role that does not work the role's step the record names, `HANDOFF_NOT_THE_STEPS_WORKER`, and
 // the same report from two claims of one role is two completions, so neither is answered

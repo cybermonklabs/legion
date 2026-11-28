@@ -189,19 +189,20 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.InRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || wake.InRelease {
 			return err
 		}
-		// The claim's role, as its row holds it now, is read without a lock first: a start queued
-		// before starts named their claim names the role it reached (startNamesClaim). The row is
-		// read again under its lock below, after the pause's row, as the lock order requires.
-		var role string
-		if err := tx.QueryRow(ctx, `select role from claims where project = $1 and token = $2`,
-			project, string(token)).Scan(&role); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("read the role of %s: %w", token, err)
-		}
 		_, _, open, err := openPodResume(ctx, tx, project, issue, token)
 		if err != nil {
 			return err
 		}
+		var role string
 		if !open {
+			// The claim's role, as its row holds it now, is read without a lock first: a start
+			// queued before starts named their claim names the role it reached (startNamesClaim).
+			// The row is read again under its lock below, after the pause's row, as the lock order
+			// requires.
+			if err := tx.QueryRow(ctx, `select role from claims where project = $1 and token = $2`,
+				project, string(token)).Scan(&role); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("read the role of %s: %w", token, err)
+			}
 			if wake.StartQueued, err = startQueued(ctx, tx, issue, token, claim.Role(role), generation); err != nil || wake.StartQueued {
 				return err
 			}

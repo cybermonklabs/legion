@@ -127,11 +127,11 @@ func queueClaimState(ctx context.Context, tx pgx.Tx, state *statePublication, c 
 // issue's plan (step_task set), and the role c is named for (claim.Token.Slot: the role of its
 // agent's first step, whose own token is c's), unless that role's row runs a step, whose agent it
 // then names. This package sits below record (package stateevent's comment says why), so it
-// restates the rule over the columns it reads, as the idle view carries them for it
+// restates the rule over the rows phasesOf reads, which the idle view carries too
 // (pods.IdleView.Phases). A token that names no role is read as the role c holds. The roles are in
 // claim.Roles' order, a role of the deployment after them by name.
 func workedRoles(ctx context.Context, tx pgx.Tx, c supervise.Claim) ([]claim.Role, error) {
-	rows, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, c.Issue)
+	phases, err := phasesOf(ctx, tx, c.Issue)
 	if err != nil {
 		return nil, fmt.Errorf("read the phases rows of %s for the state of %s: %w", c.Issue, c.Token, err)
 	}
@@ -141,25 +141,16 @@ func workedRoles(ctx context.Context, tx pgx.Tx, c supervise.Claim) ([]claim.Rol
 	}
 	var roles []claim.Role
 	namedRunsAStep := false
-	for rows.Next() {
-		var role, token, stepTask string
-		if err := rows.Scan(&role, &token, &stepTask); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read the phases rows of %s for the state of %s: %w", c.Issue, c.Token, err)
-		}
-		if stepTask == "" || token == "" {
+	for role, row := range phases {
+		if row.StepTask == "" || row.Claim == "" {
 			continue
 		}
-		if claim.Role(role) == named {
+		if role == named {
 			namedRunsAStep = true
 		}
-		if claim.Token(token) == c.Token {
-			roles = append(roles, claim.Role(role))
+		if row.Claim == c.Token {
+			roles = append(roles, role)
 		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the phases rows of %s for the state of %s: %w", c.Issue, c.Token, err)
 	}
 	if !namedRunsAStep {
 		roles = append(roles, named)

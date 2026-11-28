@@ -79,18 +79,18 @@ const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' an
 // it start, so it neither holds the pod nor cancels the release.
 //
 // A hook prompt (record.HookPrompt) or a phase-ended message (record.PhaseEnded) whose claim — the
-// claim the row names, else a claim of the row's role — the issue does not have, or whose claim
-// failed, was retired or was suspended for any cause but an idle release
-// (heldMessageForNoClaimThisPodAnswers). Such a claim comes back only by a start or a resume, the
-// operator's or the controller's, and either brings a pod of its own, so a release under the row
-// loses it nothing: the row waits on and ends undelivered once its hour has passed, a hook prompt
-// with a message on the issue and a phase-ended message with a log line (the daemon's
-// keptRoleMessageEnded). A claim that runs or is starting holds the pod, since its session is in
-// this pod or coming to it, and so does a claim an idle release suspended, since the row's own
-// first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on either way,
-// about one a minute on its backoff, and the Envoy listener answers each `404` with a WARN request
-// line, a refusal exception and a role wake report. A pod held for such a row would stand idle
-// for all that time.
+// claim the row names, else the claim record.WorkerClaim gives the row's role, the one the row's
+// executor reaches — the issue does not have, or whose claim failed, was retired or was suspended
+// for any cause but an idle release (heldMessageForNoClaimThisPodAnswers). Such a claim comes back
+// only by a start or a resume, the operator's or the controller's, and either brings a pod of its
+// own, so a release under the row loses it nothing: the row waits on and ends undelivered once its
+// hour has passed, a hook prompt with a message on the issue and a phase-ended message with a log
+// line (the daemon's keptRoleMessageEnded). A claim that runs or is starting holds the pod, since
+// its session is in this pod or coming to it, and so does a claim an idle release suspended, since
+// the row's own first attempt wakes it (the daemon's wakeForDelivery). The row's attempts go on
+// either way, about one a minute on its backoff, and the Envoy listener answers each `404` with a
+// WARN request line, a refusal exception and a role wake report. A pod held for such a row would
+// stand idle for all that time.
 //
 // All three reads take this one rule, so the rule that holds a pod and the rules that cancel its
 // release never disagree. The teardown passes over one start of this predicate: a wake's own
@@ -114,13 +114,22 @@ const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and co
 
 // heldMessageForNoClaimThisPodAnswers is the predicate, over an outbox row the statement names
 // `outbox`, of a hook prompt or a phase-ended message with no claim on the issue that runs, is
-// starting, or was suspended by an idle release: the claim the row names (record.HookPrompt.Claim,
-// record.PhaseEnded.Claim), or, for a row the release before wrote, which names none, a claim of
-// the row's role. A step's agent can be the agent of a key, whose claim holds another role, so the
-// row's role alone would miss it. The idle rule leaves such a row out (idleWaitingRow).
+// starting, or was suspended by an idle release, of the one claim its executor reaches: the claim
+// the row names (record.HookPrompt.Claim, record.PhaseEnded.Claim); else, for a row that names
+// none, the claim record.WorkerClaim gives the row's role: the claim of the role's phases row while
+// that row runs a step of the plan (step_task set), else the role's own claim, whose token names
+// the role's own agent (claim.NewToken, `legion-<project>-<issue, lower case>-<role>`), whatever
+// role that claim is on now. A claim takes the role of each step its agent runs, so a claim on the
+// row's role need not be the claim the row reaches: a row whose named claim, or whose role's own
+// claim, has failed holds no pod, though a keyed agent's claim on that role runs. The phases table
+// keys a row by issue and role, so the subquery reads one row at most. The idle rule leaves such a
+// row out (idleWaitingRow).
 const heldMessageForNoClaimThisPodAnswers = `kind in ('hook_prompt', 'phase_ended') and not exists (select 1 from claims c
 	where c.issue = outbox.issue
-		and (c.token = outbox.payload->>'claim' or (coalesce(outbox.payload->>'claim', '') = '' and c.role = outbox.payload->>'role'))
+		and c.token = coalesce(nullif(outbox.payload->>'claim', ''),
+			(select p.claim from phases p where p.issue = outbox.issue and p.role = outbox.payload->>'role'
+				and p.step_task <> '' and p.claim <> ''),
+			'legion-' || c.project || '-' || lower(outbox.issue) || '-' || (outbox.payload->>'role'))
 		and (c.state not in ('suspended', 'failed', 'retired') or (c.state = 'suspended' and c.suspended_by = 'released')))`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
@@ -821,8 +830,8 @@ func deleteIssueRelease(ctx context.Context, tx pgx.Tx, project, issue string) e
 // issueStepRoleColumn is the role of the step the task of issue i's generation stands at, "" where
 // its plan rows hold none or the task stands at no step: the subquery record.issueColumns ends
 // with, written here a second time over the alias i, since store and record import neither each
-// other. The idle view, a release's cancel and an update round's keep (PodKeepOf) read it, so each
-// names the worker of a step's open phase as the issue's own record does (record.Issue.StepRole).
+// other. The idle view and an update round's keep (PodKeepOf) read it, so each names the worker of
+// a step's open phase as the issue's own record does (record.Issue.StepRole).
 // No statement here judges a queued start by it: whether a start is the work of the step the task
 // stands at is record.Issue.HoldsQueued's one statement to say, which the workflow asks of the
 // starts PodRecords.SlotWaitingStarts reads.
@@ -901,23 +910,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
-	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, issue)
-	if err != nil {
-		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
-	}
-	for phases.Next() {
-		var role, token, stepTask string
-		if err := phases.Scan(&role, &token, &stepTask); err != nil {
-			phases.Close()
-			return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
-		}
-		if view.Phases == nil {
-			view.Phases = map[claim.Role]pods.IdlePhase{}
-		}
-		view.Phases[claim.Role(role)] = pods.IdlePhase{Claim: claim.Token(token), StepTask: stepTask}
-	}
-	phases.Close()
-	if err := phases.Err(); err != nil {
+	if view.Phases, err = phasesOf(ctx, tx, issue); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}
 
@@ -986,4 +979,29 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	view.Holding = holding
 	return view, nil
+}
+
+// phasesOf is issue's phases rows as tx reads them, keyed by role: each role's claim and the task
+// of the plan step its row runs (phases.claim and phases.step_task), what record.WorkerClaim reads
+// of a row, and nil where the issue has none. The idle view carries them (pods.IdleView.Phases),
+// and a claim write's state event reads them (workedRoles). The phases table keys a row by issue
+// and role, so the map holds every row.
+func phasesOf(ctx context.Context, tx pgx.Tx, issue string) (map[claim.Role]pods.IdlePhase, error) {
+	rows, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1`, issue)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var phases map[claim.Role]pods.IdlePhase
+	for rows.Next() {
+		var role, token, stepTask string
+		if err := rows.Scan(&role, &token, &stepTask); err != nil {
+			return nil, err
+		}
+		if phases == nil {
+			phases = map[claim.Role]pods.IdlePhase{}
+		}
+		phases[claim.Role(role)] = pods.IdlePhase{Claim: claim.Token(token), StepTask: stepTask}
+	}
+	return phases, rows.Err()
 }

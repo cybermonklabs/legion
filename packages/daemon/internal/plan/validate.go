@@ -138,7 +138,7 @@ var causeWords = [causes]string{
 // release does not take, each step that reads a pull request with no implementer before it) gets
 // a refusal of at most MostReasons + 1 reasons of each kind, however many items it holds: one
 // reason for each item answered a 1 MiB attribute in 34 MB (its `needs` words), 44 MB (roles) or
-// 66 MB (keyed steps).
+// tens of MB (keyed steps).
 type reasons struct {
 	named []namedReason
 	found [causes]int // the causes of each kind found, named or not

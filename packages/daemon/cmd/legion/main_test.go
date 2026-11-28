@@ -3166,13 +3166,14 @@ func TestPlainStateNamesTheClaimsNothingWillWake(t *testing.T) {
 	released := `[{"issue":"LEGION-208","role":"implementer","state":"suspended","token":"legion-legion-legion-208-implementer"},` +
 		`{"issue":"LEGION-209","role":"tester","state":"suspended","token":"legion-legion-legion-209-tester"},` +
 		`{"issue":"LEGION-210","role":"reviewer","state":"failed","token":"legion-legion-legion-210-reviewer"}]`
-	// The record of LEGION-212, whose two claims hold the role tester: the tester's own, which an
-	// operator suspended, and key a's, named implementer, on its tester step, which the release
-	// suspended. The command reads each suspender by the claim's token.
+	// The record of LEGION-212, whose two claims hold the role tester: key a's, named implementer,
+	// which works the tester step and which the release suspended, and so shows under
+	// `workers.tester`; and the tester's own, which an operator suspended, under `otherClaims`
+	// (issuesOf). The command reads each suspender by the claim's token.
 	twoTesters := []recorded{
 		{"LEGION-212", "testing", "architect", "ready", "", ""},
-		{"LEGION-212", "testing", "tester", "suspended", "operator", ""},
 		{"LEGION-212", "testing", "tester", "suspended", "released", "legion-legion-legion-212-implementer"},
+		{"LEGION-212", "testing", "tester", "suspended", "operator", ""},
 	}
 	// The phrase `legion state` puts before the claims a workflow start brings back
 	// (main.go's strandedPhrases), which names a retired claim beside a failed one and the acts

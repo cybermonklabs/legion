@@ -693,7 +693,7 @@ func resumeRow(token claim.Token, role claim.Role, generation uint64, _ DroppedW
 func releasedClaim(t *testing.T, st *Store, role claim.Role) {
 	t.Helper()
 	if err := st.PutClaim(context.Background(), supervise.Claim{
-		Token: claim.Token("legion-legion-legion-208-" + string(role)), Project: "legion", Tree: rootIssue,
+		Token: rootToken(role), Project: "legion", Tree: rootIssue,
 		Issue: rootIssue, Role: role, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
 		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
 		t.Fatalf("seed the released %s: %v", role, err)
@@ -1322,7 +1322,7 @@ func recordRelease(t *testing.T, st *Store, at time.Time) {
 func rootClaim(t *testing.T, st *Store, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) {
 	t.Helper()
 	if err := st.PutClaim(context.Background(), supervise.Claim{
-		Token: claim.Token("legion-legion-legion-208-" + string(role)), Project: "legion", Tree: rootIssue,
+		Token: rootToken(role), Project: "legion", Tree: rootIssue,
 		Issue: rootIssue, Role: role, TreeEpoch: 1, Generation: 1, State: state, SuspendedBy: by}); err != nil {
 		t.Fatalf("seed the %s %s: %v", state, role, err)
 	}
@@ -1376,7 +1376,7 @@ func stoppedByTheRelease(t *testing.T, st *Store, role claim.Role, row int64) {
 }
 
 // rootToken is the claim token of the agent named for role on the root issue, the claim each
-// helper here seeds (releasedClaim).
+// helper here seeds (releasedClaim, rootClaim).
 func rootToken(role claim.Role) claim.Token {
 	return claim.Token("legion-legion-legion-208-" + string(role))
 }

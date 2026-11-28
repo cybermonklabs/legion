@@ -466,8 +466,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 	ctx := context.Background()
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour}, quietLogger())
-	// The cancel names the claims it queued a resume for, by token, which is the one place that
-	// set is read after the fact: a resume the lane has already run leaves no row behind.
+	// The cancel names the roles it queued a resume for, which is the one place that set is
+	// read after the fact: a resume the lane has already run leaves no row behind.
 	logs := &syncBuffer{}
 	rig.runner.log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	rig.runner.handlers = []intake.Handler{engine}

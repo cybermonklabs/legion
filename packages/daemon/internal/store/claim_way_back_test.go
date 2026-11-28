@@ -7,6 +7,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -17,8 +18,8 @@ import (
 )
 
 // planStepAgentMigrationFile is the migration whose header carries the way back of the release that
-// names each step's agent.
-const planStepAgentMigrationFile = "20261128145833_plan_step_agent.up.sql"
+// names each step's agent: the file of planStepAgentVersion.
+var planStepAgentMigrationFile = strconv.Itoa(planStepAgentVersion) + "_plan_step_agent.up.sql"
 
 // headerWayBackOf is the transaction the header of the embedded migration file carries between its
 // psql heredoc and the heredoc's terminator, with the comment marker and the opener's indent taken

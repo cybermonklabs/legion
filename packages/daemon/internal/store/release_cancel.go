@@ -494,16 +494,8 @@ func unrecordedStops(ctx context.Context, tx pgx.Tx, project, issue string, firs
 	if err != nil {
 		return nil, fmt.Errorf("read the stops of the release of %s that its mark does not record: %w", issue, err)
 	}
-	defer rows.Close()
-	var tokens []string
-	for rows.Next() {
-		var token string
-		if err := rows.Scan(&token); err != nil {
-			return nil, fmt.Errorf("read the stops of the release of %s that its mark does not record: %w", issue, err)
-		}
-		tokens = append(tokens, token)
-	}
-	if err := rows.Err(); err != nil {
+	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("read the stops of the release of %s that its mark does not record: %w", issue, err)
 	}
 	return tokens, nil
@@ -567,12 +559,12 @@ func StandsInWorkflow(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflo
 // (empty, or a row lock clause). An issue or a root the record no longer holds is not live.
 func readIssueStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool, lock string) (issueStanding, error) {
 	var generation int64
-	var issuePhase, stepRole, status, rootPhase, rootStatus string
+	var issuePhase, status, rootPhase, rootStatus string
 	var lingering, rootLingering bool
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, `+issueStepRoleColumn+`, i.status, i.linger_until is not null,
+	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
 		root.phase, root.status, root.linger_until is not null
 		from issues i join issues root on root.key = i.tree where i.key = $1`+lock, issue).Scan(
-		&generation, &issuePhase, &stepRole, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
+		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}

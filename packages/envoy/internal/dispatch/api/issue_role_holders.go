@@ -74,23 +74,21 @@ import (
 //
 // Each write that changes which session holds which role (sameRoleHolders) appends one issue
 // event, issue.role_holders_changed (issueRoleHoldersChange), in the transaction that stores the
-// set: the set before the write and
-// the set it stored, each in the order the routes answer, as the daemon's session and at the time
-// of the write, which is the event's own time. So the issue's event log says which session held
-// each role at a past time, which the set alone cannot: a reader that judges a comment by the role
-// its author held when it wrote it, such as a review gate that counts an approval of a parent's
-// architect, reads the newest such event at or before that comment. The log starts at the release
-// that writes the event: a change made before it has no event. A write that keeps each role with
-// the sessions that held it appends nothing - one that stores the set already stored, as the
-// daemon's publication at each boot does, and one that changes only a holder's claim or
-// works_step - so a republished set moves no issue's sequence or activity feed. The event is quiet
-// (events.Quiet), since it is the daemon's own record of what it did: it wakes nobody, and the
-// daemon's intake reads no fact from
-// it (packages/daemon's intake.decodeDispatchEvent passes over a type it does not act on). It
-// moves the issue's sequence, as every issue event does, so a fenced daemon write that read the
-// issue before it is refused ISSUE_CHANGED and read again (packages/daemon's
-// dispatch.HTTPClient.SetStatusAt). The write takes a closed issue, because the tester's production
-// check runs after the close.
+// set: the set before the write and the set it stored, each in the order the routes answer, as the
+// daemon's session and at the time of the write, which is the event's own time. So the issue's
+// event log says which session held each role at a past time, which the set alone cannot: a reader
+// that judges a comment by the role its author held when it wrote it, such as a review gate that
+// counts an approval of a parent's architect, reads the newest such event at or before that
+// comment. The log starts at the release that writes the event: a change made before it has no
+// event. A write that keeps each role with the sessions that held it appends nothing - one that
+// stores the set already stored, as the daemon's publication at each boot does, and one that
+// changes only a holder's claim or works_step - so a republished set moves no issue's sequence or
+// activity feed. The event is quiet (events.Quiet), since it is the daemon's own record of what it
+// did: it wakes nobody, and the daemon's intake reads no fact from it (packages/daemon's
+// intake.decodeDispatchEvent passes over a type it does not act on). It moves the issue's sequence,
+// as every issue event does, so a fenced daemon write that read the issue before it is refused
+// ISSUE_CHANGED and read again (packages/daemon's dispatch.HTTPClient.SetStatusAt). The write takes
+// a closed issue, because the tester's production check runs after the close.
 
 // issueRoleHoldersChange is the payload of issue.role_holders_changed: the issue, the set this
 // write stored and the set it replaced, each pair with the time Dispatch first stored it.

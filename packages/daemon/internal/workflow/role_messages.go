@@ -31,10 +31,10 @@ type addressedRole struct {
 }
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
-// tellGateMoved, mergeForward, mergeForwardLanded, tellRole, awaitChildren): the claim of the
-// worker on each recipient's role's step (record.WorkerClaim over the recipient issue's phases
-// rows, read in tx), in the order given and each token once, so a role named twice - the
-// implementer that also holds the phase, two roles one keyed agent works - is told once. The
+// tellGateMoved, mergeForward, sendToWorker for mergeForwardLanded and tellRole, awaitChildren):
+// the claim of the worker on each recipient's role's step (record.WorkerClaim over the recipient
+// issue's phases rows, read in tx), in the order given and each token once, so a role named twice -
+// the implementer that also holds the phase, two roles one keyed agent works - is told once. The
 // recipients are those of one message, or of messages one of which covers the others (the ask of
 // a merge forward covers its hold): a sender whose roles are owed messages that say different
 // things, none covering another, addresses each message on its own, so one agent that works two
@@ -42,10 +42,10 @@ type addressedRole struct {
 // R5). A recipient with no role is a phase no worker holds, and is nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, and the one thing the
-// six senders choose of how the collection runs: nil ends the collection with that error, and so
+// five senders choose of how the collection runs: nil ends the collection with that error, and so
 // the fact's transaction, while a function is given the recipient and the error and may answer nil
-// to leave that one untold and address the rest. tellChecks, mergeForward, mergeForwardLanded,
-// tellRole and awaitChildren pass nil, so a holder they cannot name rolls their fact back.
+// to leave that one untold and address the rest. tellChecks, mergeForward, sendToWorker and
+// awaitChildren pass nil, so a holder they cannot name rolls their fact back.
 // tellGateMoved, whose message is secondary to the record the transaction writes, passes a
 // function that logs (logUnnamable), since aborting would roll the gate's move back for a name the
 // daemon could not spell.

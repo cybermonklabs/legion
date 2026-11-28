@@ -3972,15 +3972,37 @@ func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role cla
 }
 
 // workerClaim is the claim of the agent that works role's step of issue now, read from the issue's
-// phases rows in tx (record.ReadWorkerClaim): what the engine tells a role's worker reaches that
-// agent, a keyed agent on a step of another role included. Where the role's row runs no step of
-// the plan, it is the role's own token.
+// phases rows in tx (workerClaimOf over the engine's store): what the engine tells a role's worker
+// reaches that agent, a keyed agent on a step of another role included. Where the role's row runs
+// no step of the plan, it is the role's own token.
 func (e *Engine) workerClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
+	return workerClaimOf(ctx, e.store, tx, issue, role)
+}
+
+// workerClaimOf is the claim of the agent that works role's step of issue now, read through phases
+// in tx under issue's project token (record.ReadWorkerClaim): Engine.workerClaim's read, and
+// askAgain's, which the daemon's executor reaches without an engine (MergeForwardAskEnded).
+func workerClaimOf(ctx context.Context, phases record.PhaseReader, tx pgx.Tx, issue record.Issue, role claim.Role) (claim.Token, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
 	}
-	return record.ReadWorkerClaim(ctx, e.store, tx, project, issue.Key, role)
+	return record.ReadWorkerClaim(ctx, phases, tx, project, issue.Key, role)
+}
+
+// workerRows is what record.WorkerClaim reads of issue: its project token and its phases rows as
+// tx reads them, failing as record.ReadWorkerClaim fails. It is for a caller that reads the claims
+// of the workers of several roles of issue from one read of the rows (askAgainAtLaunch, oneAgent).
+func (e *Engine) workerRows(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, []record.PhaseRow, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return "", nil, err
+	}
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", nil, fmt.Errorf("read the phases rows of %s: %w", issue.Key, err)
+	}
+	return project, rows, nil
 }
 
 // issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on

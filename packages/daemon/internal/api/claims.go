@@ -505,12 +505,10 @@ type ReleaseRecord struct {
 // claim took its first turn — each absent until it is observed — and whether the wake went ten
 // minutes with no turn. Claim is the claim's token (store.PodResume.Claim): two claims of one
 // issue can hold one role, and each can be woken, so the role does not say which came back. It is
-// absent on a wake recorded before 20261128145834, which stands for each claim of its role, and
-// below the stranded token's entry (strandedTokenContract, withoutRecordClaims). Pause is the
-// project pause that held the wake (store.PodResume.Pause), absent for a wake no pause held: a
+// absent below the stranded token's entry (strandedTokenContract, withoutRecordClaims). Pause is
+// the project pause that held the wake (store.PodResume.Pause), absent for a wake no pause held: a
 // held wake pairs with no release, and its wait to the first turn measures the pause, so a reader
-// of the release measurements counts it
-// apart (decision 15 of dispatch://INFRA-3759).
+// of the release measurements counts it apart (decision 15 of dispatch://INFRA-3759).
 type ResumeRecord struct {
 	ID          int64  `json:"id"`
 	Release     int64  `json:"release"`

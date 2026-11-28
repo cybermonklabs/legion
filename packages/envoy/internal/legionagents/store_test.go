@@ -103,18 +103,11 @@ func agent(project, issue, role, id, started string) legionagents.Entry {
 		LegionProject: project,
 		Issue:         issue,
 		Role:          role,
-		RoleToken:     claimToken(project, issue, role),
+		RoleToken:     legionagents.RoleToken(project, issue, role),
 		Title:         "Legion " + role + " · " + issue,
 		Harness:       "omp",
 		StartedAt:     started,
 	}
-}
-
-// claimToken is the claim token of the agent named agentName on issue under the Legion project
-// token project, as the daemon spells it (claim.AgentToken): legion-<project>-<issue
-// lower-cased>-<agent>.
-func claimToken(project, issue, agentName string) string {
-	return "legion-" + project + "-" + strings.ToLower(issue) + "-" + agentName
 }
 
 func ctx(t *testing.T) context.Context {
@@ -567,14 +560,14 @@ func TestAnEntryOfADeploymentRoleIsValidAndListedAfterTheSix(t *testing.T) {
 	}
 
 	project, issue := strings.Repeat("p", 64), strings.Repeat("A", 27)+"-1234"
-	longest := claimToken(project, issue, strings.Repeat("r", 32))
+	longest := legionagents.RoleToken(project, issue, strings.Repeat("r", 32))
 	if len(longest) != 137 {
 		t.Fatalf("the longest token is %d bytes, want 137", len(longest))
 	}
 	if err := legionagents.ValidateRoleToken(longest); err != nil {
 		t.Fatalf("the token of a 32-byte role: %v", err)
 	}
-	err = legionagents.ValidateRoleToken(claimToken(project, issue, strings.Repeat("r", 33)))
+	err = legionagents.ValidateRoleToken(legionagents.RoleToken(project, issue, strings.Repeat("r", 33)))
 	if !errors.Is(err, legionagents.ErrInvalid) || !strings.Contains(err.Error(), "role_token is 138 bytes, past 137") {
 		t.Fatalf("the token of a 33-byte role: %v, want role_token is 138 bytes, past 137", err)
 	}
@@ -738,7 +731,7 @@ func (r *registry) listsUnder(t *testing.T, issue, role string, want []string) {
 	if err != nil {
 		t.Fatalf("by issue %s: %v", issue, err)
 	}
-	byRole, err := r.store.ByRoleToken(ctx(t), claimToken("infra", issue, role))
+	byRole, err := r.store.ByRoleToken(ctx(t), legionagents.RoleToken("infra", issue, role))
 	if err != nil {
 		t.Fatalf("by role token of %s %s: %v", issue, role, err)
 	}

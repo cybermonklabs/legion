@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -129,7 +128,7 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 	}
 	reviewer := supervise.Claim{Token: mustClaimToken(t, "LEGION-209", claim.RoleReviewer), Issue: "LEGION-209", Tree: "LEGION-208", Role: claim.RoleReviewer}
 	architect := mustClaimToken(t, "LEGION-208", claim.RoleArchitect)
-	told := addressingFragment("legion", reviewer, architect, workers, ghrepo.Repository{}, "", nil, nil)
+	told := addressingFragment("legion", reviewer, architect, workers, launchRepository{}, nil)
 	for _, want := range []string{
 		"step 1 of task a (implementer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
 		"step 2 of task a (tester) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
@@ -140,7 +139,7 @@ func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
 			t.Errorf("the reviewer is told %q; want it naming %q", told, want)
 		}
 	}
-	if bare := addressingFragment("legion", reviewer, architect, nil, ghrepo.Repository{}, "", nil, nil); !strings.HasSuffix(bare,
+	if bare := addressingFragment("legion", reviewer, architect, nil, launchRepository{}, nil); !strings.HasSuffix(bare,
 		"your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: "+
 			"a sibling role on your issue is your topic with the trailing `-<role>` replaced, "+
 			"and once your issue runs a plan, `dispatch steps --issue LEGION-209` gives the agent of each of its steps.") {

@@ -252,13 +252,12 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// correction the next task names beside it (addressingFragment): the three are of one row,
 	// and a second read for the correction would let one that commits between the two tell the
 	// launch it left the repository it is working.
-	var corrected *RepositoryCorrection
+	var launch launchRepository
 	if s.repository != nil {
-		read, err := s.repository(ctx, c.Issue)
-		if err != nil {
+		if launch, err = s.repository(ctx, c.Issue); err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the repository of %s: %w", c.Token, err)
 		}
-		spec.Repository, spec.DefaultBranch, corrected = read.Repo, read.DefaultBranch, read.Corrected
+		spec.Repository, spec.DefaultBranch = launch.Repo, launch.DefaultBranch
 	}
 	spec.IssueTrailer = s.issueTrailer(spec.Repository, c.Issue)
 	// Every launch, not only a claim's first: a claim resumed, relaunched or recovered on this host
@@ -280,7 +279,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 		}
 	}
-	addressing := addressingFragment(s.project, c, architect, workers, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role), corrected)
+	addressing := addressingFragment(s.project, c, architect, workers, launch, s.ownersOf(c.Role))
 	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
 	// before the tree architect's design-gate line, and the production check line ends every
 	// architect's addressing.
@@ -722,14 +721,15 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	return addressingFragment(project, c, architect, nil, repo, defaultBranch, owners, nil), nil
+	return addressingFragment(project, c, architect, nil, launchRepository{Repo: repo, DefaultBranch: defaultBranch}, owners), nil
 }
 
 // addressingFragment is the sentence that tells an agent where it and its peers are reached: its
 // own role topic, the topic of architect, and the project controller's, spelled from the tokens so
-// the model never hand-encodes one; then, when repo is not the zero repository, the issue's own
-// repository and default branch and the reach its role's own App gives it (RepositoriesClause) —
-// left off entirely for a daemon that runs no workflow, whose claims name no repository.
+// the model never hand-encodes one; then, when launch names a repository (launchRepository.Repo is
+// not the zero repository), the issue's own repository and default branch and the reach its role's
+// own App gives it (RepositoriesClause) — left off entirely for a daemon that runs no workflow,
+// whose claims name no repository.
 //
 // architect is the architect that owns c (specs.ownerOf): its tree's architect for a claim on the
 // tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
@@ -759,8 +759,8 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
 //
-// corrected is what a correction of the issue's repository left on its record, and nil for an
-// issue no correction has reached. Where there is one, the issue's own repository sentence is
+// launch.Corrected is what a correction of the issue's repository left on its record, and nil for
+// an issue no correction has reached. Where there is one, the issue's own repository sentence is
 // followed by the correction's three: that the daemon changed the repository, and when; that the
 // issue's branch and its pull request stay on the repository the issue left; and that the work
 // is on the new repository now. They are rendered at every launch of the issue from then on, so
@@ -771,8 +771,7 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // more sentences, which name that pull request and the repository it is open on. They are the
 // whole of what a role is told about it: no notice is sent, and the record is where a role reads
 // the same thing (api.Issue.PullRequest, whose repository is that pull request's own).
-func addressingFragment(project string, c supervise.Claim, architect claim.Token, workers []stepWorker, repo ghrepo.Repository, defaultBranch string,
-	owners []string, corrected *RepositoryCorrection) string {
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, workers []stepWorker, launch launchRepository, owners []string) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"
@@ -818,11 +817,12 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 			"`dispatch handoff-read --issue %s --phase <word>`; Dispatch keeps it, whatever the workspace holds.",
 			c.Session, claim.IssueBranch(c.Issue), c.Issue, c.Issue)
 	}
+	repo, corrected := launch.Repo, launch.Corrected
 	if repo.IsZero() {
 		return fragment
 	}
 	fragment += " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
-		repo.String(), defaultBranch, workerRepositoriesClause(owners))
+		repo.String(), launch.DefaultBranch, workerRepositoriesClause(owners))
 	// The pair is read from one row (workflowRuntime.issueLaunchRepository), so a correction
 	// never names the repository the launch works: the record writes the repository it left and
 	// the moment of the correction together, and it writes them only where the two names differ

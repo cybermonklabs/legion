@@ -2170,16 +2170,15 @@ const legionReleaseRecord = z.object({
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
  * no release row is recorded for it), the role of the claim it brought back, that claim's token
- * (`claim`, the stranded token's contract entry; absent on a wake recorded before it, which
- * stands for each claim of its role: two claims of one issue can hold one role and each can be
- * woken), what woke it, when the daemon took the wake, and `podReadyAt` and `firstTurnAt`, the
- * first turn of that claim, each absent until it is observed. `stuck` is a wake that went ten
- * minutes with no turn of the claim it brought back. `pause` is the project pause that held
- * the wake (contract 178), absent on a wake no pause held: a held wake pairs with no release, so
- * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
- * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`).
- * That report keeps such a wake under its `issue`, which is required for that reason, and reads
- * `pause` where the daemon writes it. */
+ * (`claim`, the stranded token's contract entry: two claims of one issue can hold one role and
+ * each can be woken), what woke it, when the daemon took the wake, and `podReadyAt` and
+ * `firstTurnAt`, the first turn of that claim, each absent until it is observed. `stuck` is a wake
+ * that went ten minutes with no turn of the claim it brought back. `pause` is the project pause
+ * that held the wake (contract 178), absent on a wake no pause held: a held wake pairs with no
+ * release, so its `release` is 0, and its time to the first turn measures the pause, so a reader
+ * of these records counts it apart (`releaseRecords` in
+ * `packages/pi-shared/src/legion-phase-ops.ts`). That report keeps such a wake under its `issue`,
+ * which is required for that reason, and reads `pause` where the daemon writes it. */
 const legionResumeRecord = z.object({
   id: z.number().int().positive().optional(),
   release: z.number().int().nonnegative(),

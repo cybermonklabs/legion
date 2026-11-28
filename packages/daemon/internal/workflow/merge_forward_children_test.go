@@ -176,19 +176,12 @@ func TestAKeyedAgentWhosePhaseAWaitOnChildrenEndsIsToldToFinishTheMergeItOwes(t 
 			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Head != conflictHead || mf.Asked() != claim.RoleImplementer {
 				t.Fatalf("the record's merge forward = %+v, want the implementer's open ask of %s", mf, conflictHead)
 			}
-			messages := len(issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindRoleMessage)))
+			messages := len(childrenRoleMessageRecords(t, pool))
 			ends := len(cwPhaseEnded(t, pool, "LEGION-208"))
 
 			stopsForChild(t, pool)
 
-			var told []record.RoleMessage
-			for _, row := range issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindRoleMessage))[messages:] {
-				var message record.RoleMessage
-				if err := json.Unmarshal(row.payload, &message); err != nil {
-					t.Fatalf("decode role-message row %d: %v", row.id, err)
-				}
-				told = append(told, message)
-			}
+			told := childrenRoleMessageRecords(t, pool)[messages:]
 			if want := []record.RoleMessage{{Role: string(implementer), Body: dropped.RoleMessageBody("LEGION-208")}}; !reflect.DeepEqual(told, want) {
 				t.Errorf("the role messages the stop sent are %+v, want %+v: the claim the merge forward was asked of told of its drop", told, want)
 			}
@@ -217,14 +210,24 @@ func unwithdrawn(t *testing.T, pool *pgxpool.Pool) *pgxpool.Pool {
 func childrenRoleMessages(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
 	var bodies []string
+	for _, message := range childrenRoleMessageRecords(t, pool) {
+		bodies = append(bodies, message.Body)
+	}
+	return bodies
+}
+
+// childrenRoleMessageRecords is every role message queued for LEGION-208, decoded, oldest first.
+func childrenRoleMessageRecords(t *testing.T, pool *pgxpool.Pool) []record.RoleMessage {
+	t.Helper()
+	var messages []record.RoleMessage
 	for _, row := range issueOutboxOf(t, pool, "LEGION-208", string(record.OutboxKindRoleMessage)) {
 		var message record.RoleMessage
 		if err := json.Unmarshal(row.payload, &message); err != nil {
 			t.Fatalf("decode role-message row %d: %v", row.id, err)
 		}
-		bodies = append(bodies, message.Body)
+		messages = append(messages, message)
 	}
-	return bodies
+	return messages
 }
 
 // stopsForChild is the admission pass's stop of LEGION-208 for its open Dispatch child LEGION-209
