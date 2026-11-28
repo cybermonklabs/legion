@@ -1,5 +1,6 @@
-// Package natsauth resolves the NATS nkey user a Legion process connects to Envoy's NATS as, and
-// connects as it.
+// Package natsauth resolves the NATS credential a Legion process connects to Envoy's NATS with (an
+// nkey user's seed, or the daemon's platform identity token, which the NATS auth service admits),
+// and connects with it.
 package natsauth
 
 import (
@@ -35,8 +36,8 @@ const (
 
 // DaemonSeedFileKey, DaemonSeedFileVariable and DaemonSeedVariable name the seed the daemon's own
 // connection authenticates with, the same three ways: a `legion.yaml` key, a variable naming a file,
-// and a variable holding the seed. No pane is ever handed it; unset, the daemon connects as the pane
-// seed.
+// and a variable holding the seed. No pane is ever handed it; unset, the daemon connects with its
+// service token when one is set (ServiceTokenFileKey), else as the pane seed.
 const (
 	DaemonSeedFileKey      = "nats_daemon_nkey_seed_file"
 	DaemonSeedFileVariable = "NATS_DAEMON_NKEY_SEED_FILE"
@@ -102,11 +103,12 @@ func SeedFile(file string) (string, error) {
 	return fileSource(paneSeed.fileKey, file, config.ReadPrivateSecretPointer).seed()
 }
 
-// source is one place a seed is read from: its name, which every refusal carries, and read, which
+// source is one place a seed is read from: the key or variable that names it (setting), its name,
+// which every refusal of what it holds carries (the setting, and a file's path), and read, which
 // answers the seed or why the source holds none.
 type source struct {
-	name string
-	read func() (string, error)
+	setting, name string
+	read          func() (string, error)
 }
 
 // resolve is the one precedence every reader of a seed shares, under n's names: file when the
@@ -119,14 +121,14 @@ func resolve(n names, file string, lookup func(string) (string, bool), read func
 	}
 	if path, set := lookup(n.fileVariable); set {
 		if path == "" {
-			return source{n.fileVariable, func() (string, error) {
+			return source{n.fileVariable, n.fileVariable, func() (string, error) {
 				return "", fmt.Errorf("%s is set but empty", n.fileVariable)
 			}}, true
 		}
 		return fileSource(n.fileVariable, path, read), true
 	}
 	if value, set := lookup(n.variable); set {
-		return source{n.variable, func() (string, error) {
+		return source{n.variable, n.variable, func() (string, error) {
 			if seed := strings.TrimSpace(value); seed != "" {
 				return seed, nil
 			}
@@ -138,7 +140,7 @@ func resolve(n names, file string, lookup func(string) (string, bool), read func
 
 // fileSource is the file path that key (a configuration key or a variable) names, which read reads.
 func fileSource(key, path string, read func(key, path string) (string, error)) source {
-	return source{fmt.Sprintf("%s (%s)", key, path), func() (string, error) { return read(key, path) }}
+	return source{key, fmt.Sprintf("%s (%s)", key, path), func() (string, error) { return read(key, path) }}
 }
 
 // seed is the source's seed, refused unless it is a user's nkey seed.
@@ -167,6 +169,11 @@ func (s source) seed() (string, error) {
 // (unreadableURL), before any dial. A connect that fails prints as its class alone
 // (natsconn.ConnectionError), never nats.go's text, which names the server it failed at by its host
 // and port; errors.Is and errors.As still read the error beneath it.
+//
+// It leaves nats.go's IgnoreAuthErrorAbort at its default, so a connection with a seed, or with no
+// credential, that the server refuses the same way twice while reconnecting closes: that refusal
+// is a misconfiguration no wait fixes. The credential the NATS auth service decides, the daemon's
+// service token, is ConnectService's, which retries a refusal.
 func Connect(urls []string, seed string, name string, options ...nats.Option) (*nats.Conn, error) {
 	if err := unreadableURL(urls); err != nil {
 		return nil, err
@@ -361,6 +368,11 @@ func WithLastError(err error, conn *nats.Conn) error {
 // unanswered call takes (a clustered JetStream that is itself unavailable, say): this package has
 // no way to tell that shape from an unjoined permission violation, so both are refused rather
 // than waited on.
+// It knows nothing of the credential, so an authorization violation is a misconfiguration here
+// whatever was presented, as it is for a seed and for no credential; the start's wait with the
+// daemon's service token waits one out (Credential.WaitsOut, Refused), since the NATS auth service
+// refuses a token while it cannot read the key set of the token's issuer, and the server answers
+// that refusal as it answers every other.
 func Unreachable(err error) bool {
 	if errors.Is(err, nats.ErrPermissionViolation) || errors.Is(err, nats.ErrAuthorization) || tlsalert.In(err) {
 		return false
