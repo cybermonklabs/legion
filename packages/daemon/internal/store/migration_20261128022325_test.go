@@ -102,8 +102,11 @@ func schemaShape(t *testing.T, store *Store) []string {
 			from information_schema.columns where table_schema = current_schema()`,
 		`select 'constraint ' || conrelid::regclass::text || '.' || conname || ' ' || pg_get_constraintdef(oid)
 			from pg_constraint where connamespace = current_schema()::regnamespace`,
+		// An extension's functions are the server's, not the migrations': the pod's test Postgres
+		// puts pgvector in template1, and pg_get_functiondef refuses its aggregates.
 		`select 'function ' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') ' || pg_get_functiondef(p.oid)
-			from pg_proc p where p.pronamespace = current_schema()::regnamespace`,
+			from pg_proc p where p.pronamespace = current_schema()::regnamespace
+			and not exists (select from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')`,
 		`select 'index ' || indexname || ' ' || indexdef from pg_indexes where schemaname = current_schema()`,
 		`select 'version ' || version::text from schema_version`,
 	} {
@@ -391,7 +394,7 @@ func TestTheWayBackOfDoneByChecks(t *testing.T) {
 // columns, the four-argument design_news_current and the migration's version all stand, and the
 // other project's issue still stands in verifying. Once that project's block A ran, block B runs.
 //
-// The negative control is block B without its refusal: run first, it fails on issues_phase_check
+// The negative control is block B without its refusal: run first, it fails on outbox_kind_check
 // instead, with no words for the operator, and this test fails at the words it wants.
 func TestTheWayBackRunsForEachProjectInAnyOrder(t *testing.T) {
 	t.Parallel()
